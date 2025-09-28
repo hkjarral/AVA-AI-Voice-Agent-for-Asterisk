@@ -120,3 +120,63 @@ def test_download_models_for_tier_derives_safe_stt_target(
     assert expected_target.exists()
     assert (expected_target / "model.bin").exists()
 
+
+def test_download_models_for_tier_derives_llm_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_download(url: str, dest: Path, label: str) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("llm weights")
+
+    monkeypatch.setattr(model_setup, "download_file", fake_download)
+
+    tier_info = {
+        "models": {
+            "llm": {
+                "name": "Chat Model",
+                "url": "https://example.com/llm/chat-model.bin",
+            }
+        }
+    }
+
+    model_setup.download_models_for_tier(tier_info, models_dir)
+
+    expected_path = models_dir / "llm" / "chat-model.bin"
+    assert expected_path.exists()
+    assert expected_path.read_text() == "llm weights"
+
+
+def test_download_models_for_tier_derives_tts_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_download(url: str, dest: Path, label: str) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("tts data")
+
+    monkeypatch.setattr(model_setup, "download_file", fake_download)
+
+    tier_info = {
+        "models": {
+            "tts": {
+                "files": [
+                    {
+                        "name": "TTS voice",
+                        "url": "https://example.com/voices/voice.pt",
+                    }
+                ]
+            }
+        }
+    }
+
+    model_setup.download_models_for_tier(tier_info, models_dir)
+
+    expected_path = models_dir / "tts" / "voice.pt"
+    assert expected_path.exists()
+    assert expected_path.read_text() == "tts data"
+

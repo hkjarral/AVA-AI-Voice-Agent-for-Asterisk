@@ -263,8 +263,31 @@ def _derive_archive_stem(url: str) -> str:
     return stem or "model"
 
 
+def _derive_file_name(url: str, fallback: str) -> str:
+    parsed = urlparse(url)
+    name = Path(parsed.path or fallback).name
+    return name or fallback
+
+
+def _summarize_downloads(planned: List[str]) -> None:
+    """Print a friendly, numbered list of work that will be performed."""
+
+    if not planned:
+        print("All models already exist locally — nothing to download.")
+        return
+
+    print("\nDownload plan:")
+    for idx, line in enumerate(planned, start=1):
+        print(f"  {idx}. {line}")
+    print("\nTip: You can re-run this script at any time; it will skip files that are already present.")
+
+
 def download_models_for_tier(tier_info: Dict[str, Any], models_dir: Path) -> None:
+    """Download every model artifact described by ``tier_info`` into ``models_dir``."""
+
     models = tier_info.get("models", {})
+    planned_actions: List[str] = []
+    queued_downloads: List[Dict[str, Any]] = []
 
     stt = models.get("stt")
     if stt:
@@ -291,27 +314,80 @@ def download_models_for_tier(tier_info: Dict[str, Any], models_dir: Path) -> Non
         if target_path.exists() and any(target_path.iterdir()):
             print(f"STT model already present: {target_path}")
         else:
-            download_file(url, archive_path, stt["name"])
-            extract_zip(archive_path, target_path)
-            archive_path.unlink(missing_ok=True)
+            planned_actions.append(f"Download STT '{stt['name']}' → {target_path}")
+            queued_downloads.append(
+                {
+                    "kind": "stt",
+                    "name": stt["name"],
+                    "url": url,
+                    "archive_path": archive_path,
+                    "target_path": target_path,
+                }
+            )
 
     llm = models.get("llm")
     if llm:
-        dest_path = models_dir / llm.get("dest_path", "")
+        dest_rel_value = llm.get("dest_path")
+        if dest_rel_value:
+            dest_path = _safe_relative_path(
+                models_dir, Path(dest_rel_value), purpose="LLM dest_path"
+            )
+        else:
+            derived_rel = Path("llm") / _derive_file_name(llm["url"], "model.bin")
+            dest_path = _safe_relative_path(
+                models_dir, derived_rel, purpose="LLM dest_path"
+            )
+
         if dest_path.exists():
             print(f"LLM model already present: {dest_path}")
         else:
-            download_file(llm["url"], dest_path, llm["name"])
+            planned_actions.append(f"Download LLM '{llm['name']}' → {dest_path}")
+            queued_downloads.append(
+                {
+                    "kind": "llm",
+                    "name": llm["name"],
+                    "url": llm["url"],
+                    "dest_path": dest_path,
+                }
+            )
 
     tts = models.get("tts")
     if tts:
         files: Iterable[Dict[str, str]] = tts.get("files", [])
         for item in files:
-            dest_path = models_dir / item.get("dest_path", "")
+            dest_rel_value = item.get("dest_path")
+            if dest_rel_value:
+                dest_path = _safe_relative_path(
+                    models_dir, Path(dest_rel_value), purpose="TTS dest_path"
+                )
+            else:
+                derived_rel = Path("tts") / _derive_file_name(item["url"], "artifact.bin")
+                dest_path = _safe_relative_path(
+                    models_dir, derived_rel, purpose="TTS dest_path"
+                )
+
             if dest_path.exists():
                 print(f"TTS artifact already present: {dest_path}")
             else:
-                download_file(item["url"], dest_path, item["name"])
+                planned_actions.append(f"Download TTS '{item['name']}' → {dest_path}")
+                queued_downloads.append(
+                    {
+                        "kind": "tts",
+                        "name": item["name"],
+                        "url": item["url"],
+                        "dest_path": dest_path,
+                    }
+                )
+
+    _summarize_downloads(planned_actions)
+
+    for task in queued_downloads:
+        if task["kind"] == "stt":
+            download_file(task["url"], task["archive_path"], task["name"])
+            extract_zip(task["archive_path"], task["target_path"])
+            task["archive_path"].unlink(missing_ok=True)
+        else:
+            download_file(task["url"], task["dest_path"], task["name"])
 
 
 def print_expectations(tier_name: str, tier_info: Dict[str, Any]) -> None:
