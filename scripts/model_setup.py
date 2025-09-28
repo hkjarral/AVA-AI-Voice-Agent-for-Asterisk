@@ -18,7 +18,8 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 REGISTRY_PATH = Path("models/registry.json")
@@ -108,7 +109,12 @@ def detect_environment() -> str:
 
 
 def determine_tier(
-    registry: Dict[str, Any], cpu_cores: int, ram_gb: int, override: Optional[str] = None
+    registry: Dict[str, Any],
+    cpu_cores: int,
+    ram_gb: int,
+    override: Optional[str] = None,
+    *,
+    gpu_info: Optional[Dict[str, Any]] = None,
 ) -> str:
     tiers = registry.get("tiers", {})
     if override:
@@ -117,17 +123,69 @@ def determine_tier(
         return override
 
     # Select the highest tier whose requirements are satisfied
-    selected: Optional[str] = None
+    if not tiers:
+        raise SystemExit("Registry does not contain any tiers")
+
+    gpu_info = gpu_info or {"available": False, "max_vram_gb": 0}
+    max_vram = float(gpu_info.get("max_vram_gb", 0) or 0)
+    has_gpu = bool(gpu_info.get("available", False))
+
+    tier_records: List[Tuple[str, Dict[str, Any], Tuple[float, ...]]] = []
     for name, info in tiers.items():
-        requirements = info.get("requirements", {})
-        min_ram = requirements.get("min_ram_gb", 0)
-        min_cpu = requirements.get("min_cpu_cores", 0)
-        if ram_gb >= min_ram and cpu_cores >= min_cpu:
-            selected = name
-    if not selected:
-        # Default to LIGHT if nothing matches
-        selected = "LIGHT"
-    return selected
+        requirements = info.get("requirements")
+        if not isinstance(requirements, dict):
+            raise SystemExit(f"Tier '{name}' is missing a requirements object")
+
+        try:
+            min_cpu = float(requirements["min_cpu_cores"])
+            min_ram = float(requirements["min_ram_gb"])
+        except KeyError as exc:
+            raise SystemExit(
+                f"Tier '{name}' requirements must include 'min_cpu_cores' and 'min_ram_gb'"
+            ) from exc
+
+        requires_gpu = bool(requirements.get("requires_gpu", False))
+        min_vram = float(requirements.get("min_vram_gb", 0) or 0)
+
+        if "priority" in requirements:
+            priority = float(requirements["priority"])
+            sort_key = (priority,)
+        else:
+            sort_key = (
+                1.0 if requires_gpu else 0.0,
+                min_cpu,
+                min_ram,
+                min_vram,
+            )
+
+        tier_records.append((name, info, sort_key))
+
+    # Highest priority / capability first
+    tier_records.sort(key=lambda item: item[2], reverse=True)
+
+    for name, info, _ in tier_records:
+        requirements = info["requirements"]
+        min_cpu = float(requirements["min_cpu_cores"])
+        min_ram = float(requirements["min_ram_gb"])
+        requires_gpu = bool(requirements.get("requires_gpu", False))
+        min_vram = float(requirements.get("min_vram_gb", 0) or 0)
+
+        if cpu_cores < min_cpu or ram_gb < min_ram:
+            continue
+
+        if requires_gpu:
+            if not has_gpu or max_vram < min_vram:
+                continue
+
+        return name
+
+    # Default to LIGHT if nothing matches
+    if "LIGHT" in tiers:
+        return "LIGHT"
+
+    raise SystemExit(
+        "Unable to determine a compatible tier and no 'LIGHT' fallback is available"
+    )
 
 
 def human_readable_size_mb(size_mb: float) -> str:
@@ -164,11 +222,45 @@ def download_file(url: str, dest: Path, label: str) -> None:
 
 def extract_zip(archive: Path, target_dir: Path) -> None:
     print(f"Extracting {archive.name} → {target_dir}")
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive, "r") as zip_ref:
-        zip_ref.extractall(target_dir)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        with zipfile.ZipFile(archive, "r") as zip_ref:
+            zip_ref.extractall(tmp_path)
+
+        for item in tmp_path.iterdir():
+            destination = target_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, destination, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, destination)
+
+
+def _safe_relative_path(base: Path, relative: Path, *, purpose: str) -> Path:
+    if relative.is_absolute():
+        raise SystemExit(f"{purpose} must be a relative path (got: {relative})")
+
+    base_resolved = base.resolve(strict=False)
+    target = (base / relative).resolve(strict=False)
+
+    try:
+        target.relative_to(base_resolved)
+    except ValueError as exc:
+        raise SystemExit(f"{purpose} must stay within {base_resolved} (got: {relative})") from exc
+
+    if target == base_resolved:
+        raise SystemExit(f"{purpose} must not be the base directory {base_resolved}")
+
+    return target
+
+
+def _derive_archive_stem(url: str) -> str:
+    parsed = urlparse(url)
+    name = Path(parsed.path or "model").name
+    stem = Path(name).stem
+    if stem.endswith(".tar"):
+        stem = stem[: -len(".tar")]
+    return stem or "model"
 
 
 def download_models_for_tier(tier_info: Dict[str, Any], models_dir: Path) -> None:
@@ -177,11 +269,26 @@ def download_models_for_tier(tier_info: Dict[str, Any], models_dir: Path) -> Non
     stt = models.get("stt")
     if stt:
         url = stt["url"]
-        dest_dir = models_dir / stt.get("dest_dir", "")
-        target_path = models_dir / stt.get("target_path", "")
-        archive_name = Path(url).name
+        dest_dir_value = stt.get("dest_dir") or "downloads"
+        dest_dir_rel = Path(dest_dir_value)
+        if dest_dir_rel in {Path(""), Path(".")}:
+            dest_dir_rel = Path("downloads")
+        dest_dir = _safe_relative_path(models_dir, dest_dir_rel, purpose="STT dest_dir")
+        archive_name = Path(urlparse(url).path).name or "model.zip"
         archive_path = dest_dir / archive_name
-        if target_path.exists():
+
+        target_rel = stt.get("target_path")
+        if target_rel:
+            target_path = _safe_relative_path(
+                models_dir, Path(target_rel), purpose="STT target_path"
+            )
+        else:
+            default_rel = Path("stt") / _derive_archive_stem(url)
+            target_path = _safe_relative_path(
+                models_dir, default_rel, purpose="STT target_path"
+            )
+
+        if target_path.exists() and any(target_path.iterdir()):
             print(f"STT model already present: {target_path}")
         else:
             download_file(url, archive_path, stt["name"])
@@ -230,6 +337,65 @@ def print_expectations(tier_name: str, tier_info: Dict[str, Any]) -> None:
         print(f"Recommended concurrent calls: {rec_calls}")
 
 
+def detect_gpu_info() -> Dict[str, Any]:
+    gpus: List[Dict[str, Any]] = []
+
+    # torch-based detection
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            for idx in range(torch.cuda.device_count()):
+                try:
+                    device_name = torch.cuda.get_device_name(idx)
+                    props = torch.cuda.get_device_properties(idx)
+                    total_gb = round(props.total_memory / (1024**3), 1)
+                except Exception:
+                    device_name = f"CUDA:{idx}"
+                    total_gb = 0.0
+                gpus.append({"name": device_name, "total_vram_gb": total_gb})
+    except Exception:
+        pass
+
+    # nvidia-smi fallback
+    if not gpus:
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,memory.total",
+                    "--format=csv,noheader",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for line in result.stdout.strip().splitlines():
+                if not line.strip():
+                    continue
+                parts = [part.strip() for part in line.split(",")]
+                name = parts[0]
+                memory_gb = 0.0
+                if len(parts) > 1:
+                    tokens = parts[1].split()
+                    if tokens:
+                        try:
+                            value = float(tokens[0])
+                            unit = tokens[1].lower() if len(tokens) > 1 else "mb"
+                            if unit.startswith("gb"):
+                                memory_gb = value
+                            elif unit.startswith("mb"):
+                                memory_gb = value / 1024
+                        except Exception:
+                            memory_gb = 0.0
+                gpus.append({"name": name, "total_vram_gb": round(memory_gb, 1)})
+        except Exception:
+            pass
+
+    max_vram = max((gpu.get("total_vram_gb", 0) or 0) for gpu in gpus) if gpus else 0.0
+    return {"available": bool(gpus), "gpus": gpus, "max_vram_gb": max_vram}
+
+
 def main() -> None:
     args = parse_args()
     if not args.registry.exists():
@@ -240,6 +406,7 @@ def main() -> None:
     ram = detect_total_ram_gb()
     disk = detect_available_disk_gb(Path.cwd())
     env = detect_environment()
+    gpu_info = detect_gpu_info()
 
     print("=== System detection ===")
     print(f"CPU cores: {cpu}")
@@ -247,8 +414,15 @@ def main() -> None:
     print(f"Available disk: {disk} GB")
     print(f"Environment: {env}")
     print(f"Architecture: {platform.machine()} ({platform.system()})")
+    if gpu_info["available"]:
+        gpu_descriptions = ", ".join(
+            f"{gpu['name']} ({gpu['total_vram_gb']} GB)" for gpu in gpu_info["gpus"]
+        )
+        print(f"GPU(s): {gpu_descriptions}")
+    else:
+        print("GPU(s): none detected")
 
-    tier_name = determine_tier(registry, cpu, ram, args.tier)
+    tier_name = determine_tier(registry, cpu, ram, args.tier, gpu_info=gpu_info)
     tier_info = registry["tiers"][tier_name]
     print(f"\nSelected tier: {tier_name} — {tier_info.get('description','')}")
 
