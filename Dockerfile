@@ -1,7 +1,7 @@
 # --- Stage 1: Builder (Dependencies) ---
 # Pin to specific digest for reproducible builds and supply chain security
 # python:3.11 as of 2025-11-06
-FROM python:3.11@sha256:e8ab764baee5109566456913b42d7d4ad97c13385e4002973c896e1dd5f01146 as builder
+FROM python:3.14@sha256:97aa8cc0b87a4a312a294d2d4d7b20f6e2a21ed6d4e64ef08c03088c4aa9890f as builder
 
 WORKDIR /usr/src/app
 
@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Stage 2: Final Runtime Image ---
 # Pin to same digest as builder for consistency
-FROM python:3.11@sha256:e8ab764baee5109566456913b42d7d4ad97c13385e4002973c896e1dd5f01146
+FROM python:3.14@sha256:97aa8cc0b87a4a312a294d2d4d7b20f6e2a21ed6d4e64ef08c03088c4aa9890f
 
 # Install sox (audio), curl (downloads), unzip (model extraction)
 RUN apt-get update \
