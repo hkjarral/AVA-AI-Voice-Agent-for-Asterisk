@@ -2,5 +2,5 @@ websockets==15.0.1
 vosk==0.3.45
 llama-cpp-python==0.3.16
 piper-tts==1.2.0
-numpy==1.26.4
+numpy==2.3.4
 soundfile==0.13.1
