@@ -4,7 +4,7 @@ websockets==12.0
 aiohttp==3.12.14
 
 # Configuration and logging
-pydantic==2.5.3
+pydantic==2.12.4
 pydantic_settings==2.1.0
 structlog==24.1.0
 prometheus-client==0.20.0
