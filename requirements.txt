@@ -11,7 +11,7 @@ prometheus-client==0.20.0
 PyYAML==6.0.1
 
 # Utilities
-tenacity==8.2.3
+tenacity==9.1.2
 
 # Optional dependencies for audio processing
 numpy>=1.21.0
