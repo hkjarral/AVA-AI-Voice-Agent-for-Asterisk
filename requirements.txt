@@ -8,7 +8,7 @@ pydantic==2.5.3
 pydantic_settings==2.1.0
 structlog==24.1.0
 prometheus-client==0.20.0
-PyYAML==6.0.1
+PyYAML==6.0.3
 
 # Utilities
 tenacity==8.2.3
@@ -21,5 +21,5 @@ webrtcvad==2.0.10
 
 # Email tools dependencies
 resend==0.8.0
-jinja2==3.1.2
+jinja2==3.1.6
 dnspython==2.4.2
