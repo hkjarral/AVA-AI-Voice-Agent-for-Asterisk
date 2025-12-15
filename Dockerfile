@@ -1,6 +1,6 @@
 # --- Stage 1: Builder (Dependencies) ---
 # Use slim image for smaller build
-FROM python:3.11-slim as builder
+FROM python:3.14-slim as builder
 
 WORKDIR /usr/src/app
 
@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Stage 2: Final Runtime Image ---
 # Use slim image for smaller footprint
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Optimization env vars
 ENV PYTHONDONTWRITEBYTECODE=1 \
