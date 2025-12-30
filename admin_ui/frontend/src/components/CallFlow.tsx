@@ -103,6 +103,10 @@ const CallFlowContent: React.FC = () => {
                 return;
             }
 
+            if (!reactFlowInstance) {
+                return;
+            }
+
             const position = reactFlowInstance.screenToFlowPosition({
                 x: event.clientX,
                 y: event.clientY,
