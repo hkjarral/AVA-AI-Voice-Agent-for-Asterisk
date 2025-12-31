@@ -82,7 +82,7 @@ Each milestone includes scope, implementation details, and verification criteria
   - Greeting on connect using `response.create` with explicit instructions.
   - Hardened error logging to avoid structlog conflicts; added correlation and visibility of `input_audio_buffer.*` acks.
   - Added YAML streaming tuning knobs (`min_start_ms`, `low_watermark_ms`, `jitter_buffer_ms`, `provider_grace_ms`) and wired them into `StreamingPlaybackManager`.
-  - Refreshed `examples/pipelines/cloud_only_openai.yaml` so the monolithic OpenAI pipeline defaults to the 24 kHz settings and works out-of-the-box.
+  - Refreshed `examples/pipelines/cloud_only_openai.yaml` so the modular OpenAI pipeline (STT+LLM+TTS) works out-of-the-box.
 
 - **Verification (2025‑09‑25 08:59 PDT)**:
   - Successful regression call with initial greeting; two-way conversation sustained.

@@ -6744,6 +6744,39 @@ class Engine:
                     exc_info=True,
                 )
                 prompt_source = "error"
+
+            # Inject context tools allowlist into pipeline LLM options (Milestone7 tool calling).
+            # This mirrors the legacy provider flow behavior: tools are only exposed to the model
+            # when the active context explicitly specifies a tools allowlist.
+            try:
+                context_name = getattr(session, "context_name", None)
+                if context_name:
+                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    if context_config and hasattr(context_config, "tools") and context_config.tools is not None:
+                        tools_enabled = True
+                        try:
+                            if isinstance(self.config.tools, dict):
+                                tools_enabled = bool(self.config.tools.get("enabled", True))
+                        except Exception:
+                            tools_enabled = True
+
+                        if tools_enabled:
+                            llm_options = dict(llm_options)
+                            llm_options["tools"] = list(context_config.tools or [])
+                            logger.info(
+                                "Pipeline LLM tools resolved from context",
+                                call_id=call_id,
+                                context=context_name,
+                                tools_count=len(llm_options["tools"]),
+                            )
+                        else:
+                            logger.info(
+                                "Pipeline LLM tools disabled globally; skipping tool injection",
+                                call_id=call_id,
+                                context=context_name,
+                            )
+            except Exception:
+                logger.debug("Pipeline tool injection failed", call_id=call_id, exc_info=True)
             
             # Open per-call state for adapters (best-effort)
             try:
@@ -7234,7 +7267,8 @@ class Engine:
                         # Create execution context
                         tool_ctx = ToolExecutionContext(
                             call_id=call_id,
-                            caller_channel_id=getattr(session, 'channel_id', call_id),
+                            caller_channel_id=getattr(session, "caller_channel_id", None) or call_id,
+                            bridge_id=getattr(session, "bridge_id", None),
                             session_store=self.session_store,
                             ari_client=self.ari_client,
                             config=self.config.dict(),
@@ -7310,7 +7344,7 @@ class Engine:
                                         
                                         logger.info("Executing explicit hangup via ARI", call_id=call_id)
                                         try:
-                                            channel_id = getattr(session, 'channel_id', call_id)
+                                            channel_id = getattr(session, "caller_channel_id", None) or call_id
                                             await self.ari_client.hangup_channel(channel_id)
                                         except Exception as e:
                                             logger.error("ARI hangup failed", error=str(e))

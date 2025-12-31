@@ -221,6 +221,18 @@ Common pitfalls:
 - providers.openai_realtime.turn_detection: Server‑side VAD (type, silence_duration_ms, threshold, prefix_padding_ms); improves turn handling.
   - Metrics: `ai_agent_openai_assumed_output_sample_rate_hz`, `ai_agent_openai_provider_output_sample_rate_hz`, and `ai_agent_openai_measured_output_sample_rate_hz` are **low-cardinality gauges** (latest observed across calls). Use Call History for per-call debugging.
 
+### OpenAI (pipelines)
+
+Modular OpenAI pipeline components use `type: openai` provider blocks:
+
+- `openai_llm`: Chat Completions (`chat_base_url`, `chat_model`)
+- `openai_stt`: Speech-to-Text via `audio/transcriptions` (`stt_base_url`, `stt_model`)
+- `openai_tts`: Text-to-Speech via `audio/speech` (`tts_base_url`, `tts_model`, `voice`, `response_format`)
+
+Requirements:
+
+- `OPENAI_API_KEY` must be set in the environment (or referenced via `${OPENAI_API_KEY}`).
+
 ### Deepgram Voice Agent
 
 - providers.deepgram.api_key, model, tts_model.

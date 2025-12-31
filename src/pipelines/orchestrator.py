@@ -928,9 +928,25 @@ class PipelineOrchestrator:
 
     def _hydrate_openai_config(self) -> Optional[OpenAIProviderConfig]:
         providers = getattr(self.config, "providers", {}) or {}
-        raw_config = providers.get("openai")
-        if not raw_config:
-            # Fallback: accept modular OpenAI providers (openai_stt/openai_llm/openai_tts) but skip realtime agent
+        merged: Dict[str, Any] = {}
+
+        # Base OpenAI config (optional)
+        raw_base = providers.get("openai")
+        if isinstance(raw_base, dict):
+            merged.update(raw_base)
+        elif isinstance(raw_base, OpenAIProviderConfig):
+            merged.update(raw_base.model_dump())
+
+        # Prefer explicit modular OpenAI provider blocks when present.
+        for key in ("openai_llm", "openai_stt", "openai_tts"):
+            raw = providers.get(key)
+            if isinstance(raw, dict):
+                merged.update(raw)
+            elif isinstance(raw, OpenAIProviderConfig):
+                merged.update(raw.model_dump())
+
+        # Backward-compatible fallback: accept any openai_* provider entries but skip realtime agent.
+        if not merged:
             for name, cfg in providers.items():
                 try:
                     lower = str(name).lower()
@@ -938,26 +954,22 @@ class PipelineOrchestrator:
                     lower = ""
                 if "realtime" in lower:
                     continue
-                if lower.startswith("openai_") or (isinstance(cfg, dict) and str(cfg.get("type", "")).lower() == "openai"):
-                    raw_config = cfg
-                    break
-        if not raw_config:
+                if not lower.startswith("openai_"):
+                    continue
+                if isinstance(cfg, dict):
+                    merged.update(cfg)
+                elif isinstance(cfg, OpenAIProviderConfig):
+                    merged.update(cfg.model_dump())
+
+        if not merged:
             return None
-        if isinstance(raw_config, OpenAIProviderConfig):
-            config = raw_config
-        elif isinstance(raw_config, dict):
-            try:
-                config = OpenAIProviderConfig(**raw_config)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to hydrate OpenAI provider config for pipelines",
-                    error=str(exc),
-                )
-                return None
-        else:
+
+        try:
+            config = OpenAIProviderConfig(**merged)
+        except Exception as exc:
             logger.warning(
-                "Unsupported OpenAI provider config type for pipelines",
-                config_type=type(raw_config).__name__,
+                "Failed to hydrate OpenAI provider config for pipelines",
+                error=str(exc),
             )
             return None
 
@@ -1138,7 +1150,7 @@ class PipelineOrchestrator:
 
         hints = []
         if provider in ("openai", "openai_realtime"):
-            hints.append("Set OPENAI_API_KEY (and configure providers.openai for pipeline adapters).")
+            hints.append("Set OPENAI_API_KEY (and configure providers.openai_llm/providers.openai_stt/providers.openai_tts).")
         elif provider == "google":
             hints.append("Set GOOGLE_API_KEY or GOOGLE_APPLICATION_CREDENTIALS.")
         elif provider == "elevenlabs":

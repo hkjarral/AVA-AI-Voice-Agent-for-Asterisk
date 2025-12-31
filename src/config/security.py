@@ -159,12 +159,26 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
     try:
         providers_block = config_data.get('providers', {}) or {}
         
-        # Inject OPENAI_API_KEY (only if provider exists in YAML)
-        if 'openai' in providers_block:
-            openai_block = providers_block.get('openai', {}) or {}
-            if isinstance(openai_block, dict):
-                openai_block['api_key'] = os.getenv('OPENAI_API_KEY')
-                providers_block['openai'] = openai_block
+        # Inject OPENAI_API_KEY for OpenAI provider blocks (openai_llm/openai_stt/openai_tts/openai_realtime, etc.)
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            for provider_name, provider_cfg in list(providers_block.items()):
+                if not isinstance(provider_cfg, dict):
+                    continue
+                name_lower = str(provider_name).lower()
+                cfg_type = str(provider_cfg.get("type", "")).lower()
+                if not (name_lower.startswith("openai") or cfg_type == "openai"):
+                    continue
+
+                url_fields = ("chat_base_url", "tts_base_url", "realtime_base_url", "base_url", "ws_url")
+                url_blob = " ".join(str(provider_cfg.get(field, "")) for field in url_fields).lower()
+
+                # If the provider is explicitly named openai*, always inject. If it's only "type: openai",
+                # inject only when it's actually pointing at OpenAI endpoints to avoid stomping other
+                # OpenAI-compatible providers (e.g., Groq/OpenRouter/etc).
+                if name_lower.startswith("openai") or "api.openai.com" in url_blob:
+                    provider_cfg["api_key"] = openai_key
+                    providers_block[provider_name] = provider_cfg
 
         # Inject GROQ_API_KEY for any groq* provider blocks (groq_llm, groq_stt, groq_tts, etc.)
         groq_key = os.getenv('GROQ_API_KEY')

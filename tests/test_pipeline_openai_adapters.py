@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import json
+import wave
+from io import BytesIO
 
 import pytest
 
@@ -38,7 +40,7 @@ def _build_app_config() -> AppConfig:
             "llm": "openai_llm",
             "tts": "openai_tts",
             "options": {
-                "stt": {"modalities": ["text"]},
+                "stt": {},
                 "llm": {"use_realtime": False, "temperature": 0.5},
                 "tts": {"format": {"encoding": "mulaw", "sample_rate": 8000}},
             },
@@ -100,8 +102,8 @@ class _FakeSession:
         self.requests = []
         self.closed = False
 
-    def post(self, url, json=None, headers=None, timeout=None):
-        self.requests.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+    def post(self, url, json=None, data=None, headers=None, timeout=None):
+        self.requests.append({"url": url, "json": json, "data": data, "headers": headers, "timeout": timeout})
         return _FakeResponse(self._body, status=self._status)
 
     async def close(self):
@@ -112,38 +114,26 @@ class _FakeSession:
 async def test_openai_stt_adapter_transcribes(monkeypatch):
     app_config = _build_app_config()
     provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
-    adapter = OpenAISTTAdapter("openai_stt", app_config, provider_config, {"modalities": ["text"]})
-
-    mock_ws = _MockWebSocket()
-
-    async def fake_connect(*args, **kwargs):
-        return mock_ws
-
-    monkeypatch.setattr("src.pipelines.openai.websockets.connect", fake_connect)
+    body = json.dumps({"text": "hello"}).encode("utf-8")
+    fake_session = _FakeSession(body)
+    adapter = OpenAISTTAdapter(
+        "openai_stt",
+        app_config,
+        provider_config,
+        {},
+        session_factory=lambda: fake_session,
+    )
 
     await adapter.start()
     await adapter.open_call("call-1", {})
 
-    session_event = json.loads(mock_ws.sent[0])
-    assert session_event["type"] == "session.create"
-
-    audio_buffer = b"\x00\x10" * 160  # 20 ms @ 8 kHz
-    task = asyncio.create_task(adapter.transcribe("call-1", audio_buffer, 8000, {}))
-
-    await asyncio.sleep(0)
-    mock_ws.push(json.dumps({"type": "response.output_text.delta", "delta": "hello"}))
-    mock_ws.push(json.dumps({"type": "response.output_text.done"}))
-
-    transcript = await task
+    audio_buffer = b"\x00\x10" * 160  # 10 ms @ 16 kHz
+    transcript = await adapter.transcribe("call-1", audio_buffer, 16000, {})
     assert transcript == "hello"
-
-    send_events = [json.loads(evt) for evt in mock_ws.sent[1:]]
-    event_types = [evt["type"] for evt in send_events]
-    assert event_types == [
-        "input_audio_buffer.append",
-        "input_audio_buffer.commit",
-        "response.create",
-    ]
+    request = fake_session.requests[0]
+    assert request["url"].endswith("/audio/transcriptions")
+    assert request["headers"]["Authorization"] == "Bearer test-key"
+    assert request["data"] is not None
 
 
 @pytest.mark.asyncio
@@ -212,14 +202,20 @@ async def test_openai_tts_adapter_synthesizes_chunks():
     provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
 
     pcm_audio = b"\x00\x10" * 160  # 20 ms @ 8 kHz
-    audio_payload = json.dumps({"data": base64.b64encode(pcm_audio).decode("ascii")}).encode("utf-8")
-    fake_session = _FakeSession(audio_payload)
+    buf = BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(8000)
+        wf.writeframes(pcm_audio)
+    wav_bytes = buf.getvalue()
+    fake_session = _FakeSession(wav_bytes)
 
     adapter = OpenAITTSAdapter(
         "openai_tts",
         app_config,
         provider_config,
-        {"format": {"encoding": "mulaw", "sample_rate": 8000}},
+        {"response_format": "wav", "format": {"encoding": "mulaw", "sample_rate": 8000}},
         session_factory=lambda: fake_session,
     )
 
@@ -234,6 +230,7 @@ async def test_openai_tts_adapter_synthesizes_chunks():
     request = fake_session.requests[0]
     assert request["json"]["model"] == "gpt-4o-mini-tts"
     assert request["json"]["voice"] == "alloy"
+    assert request["json"]["format"] == "wav"
 
 
 @pytest.mark.asyncio
@@ -246,4 +243,4 @@ async def test_pipeline_orchestrator_registers_openai_adapters():
     assert isinstance(resolution.stt_adapter, OpenAISTTAdapter)
     assert isinstance(resolution.llm_adapter, OpenAILLMAdapter)
     assert isinstance(resolution.tts_adapter, OpenAITTSAdapter)
-    assert resolution.stt_options["modalities"] == ["text"]
+    assert resolution.tts_options["format"]["encoding"] == "mulaw"

@@ -751,6 +751,16 @@ async def test_provider_connection(request: ProviderTestRequest):
             chat_base_url = (provider_config.get('chat_base_url') or 'https://api.openai.com/v1').rstrip('/')
             api_key = provider_config.get('api_key')
             if not api_key:
+                inferred_env = None
+                if 'groq' in provider_name or 'api.groq.com' in chat_base_url:
+                    inferred_env = 'GROQ_API_KEY'
+                elif 'openai' in provider_name or 'api.openai.com' in chat_base_url:
+                    inferred_env = 'OPENAI_API_KEY'
+
+                if inferred_env:
+                    api_key = get_env_key(inferred_env) or os.getenv(inferred_env) or ''
+
+            if not api_key:
                 return {"success": False, "message": "API key missing for OpenAI-compatible provider (set api_key or env var)"}
 
             try:
@@ -772,6 +782,42 @@ async def test_provider_connection(request: ProviderTestRequest):
                     return {"success": False, "message": f"Provider API error: HTTP {response.status_code}"}
             except Exception as e:
                 return {"success": False, "message": f"Cannot connect to provider at {chat_base_url}: {str(e)}"}
+
+        # ============================================================
+        # GROQ SPEECH (STT/TTS) - validate via /models (OpenAI-compatible)
+        # ============================================================
+        if provider_config.get('type') == 'groq':
+            api_key = provider_config.get('api_key') or get_env_key('GROQ_API_KEY') or os.getenv('GROQ_API_KEY') or ''
+            if not api_key:
+                return {"success": False, "message": "GROQ_API_KEY not set (set api_key or env var)"}
+
+            # Derive an OpenAI-compatible base URL for validation.
+            # Prefer the configured STT/TTS base URLs if present, otherwise default to Groq.
+            base_url = 'https://api.groq.com/openai/v1'
+            raw_url = (provider_config.get('stt_base_url') or provider_config.get('tts_base_url') or '').strip()
+            if raw_url and '/audio/' in raw_url:
+                base_url = raw_url.rsplit('/audio/', 1)[0]
+            base_url = base_url.rstrip('/')
+
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{base_url}/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200:
+                        try:
+                            data = response.json()
+                            models = data.get('data') or []
+                            return {"success": True, "message": f"Connected (Groq Speech). Found {len(models)} models."}
+                        except Exception:
+                            return {"success": True, "message": f"Connected (Groq Speech) (HTTP {response.status_code})"}
+                    if response.status_code == 401:
+                        return {"success": False, "message": "Invalid API key (401)"}
+                    return {"success": False, "message": f"Provider API error: HTTP {response.status_code}"}
+            except Exception as e:
+                return {"success": False, "message": f"Cannot connect to provider at {base_url}: {str(e)}"}
                 
         elif 'google_live' in provider_config or ('llm_model' in provider_config and 'gemini' in provider_config.get('llm_model', '')):
             # Google Live

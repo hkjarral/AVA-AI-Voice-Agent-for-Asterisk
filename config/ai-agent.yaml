@@ -1073,14 +1073,18 @@ providers:
     input_gain_target_rms: 0
     input_gain_max_db: 0
   openai_stt:
-    chunk_size_ms: 20
     enabled: true
     input_encoding: linear16
     input_sample_rate_hz: 16000
+    stt_base_url: https://api.openai.com/v1/audio/transcriptions
     stt_model: whisper-1
+    response_format: json
+    temperature: 0
+    request_timeout_sec: 15
     type: openai
   openai_tts:
     enabled: true
+    response_format: wav
     target_encoding: mulaw
     target_sample_rate_hz: 8000
     tts_base_url: https://api.openai.com/v1/audio/speech

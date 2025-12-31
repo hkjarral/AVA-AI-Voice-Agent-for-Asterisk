@@ -144,7 +144,7 @@ active_pipeline: hybrid_support
 
 - `providers.*` blocks define credentials and provider-wide defaults; adapters retrieve them through provider-specific config dataclasses. The local provider now accepts `ws_url`, `connect_timeout_sec`, `response_timeout_sec`, and `chunk_ms` so deployments can tune the WebSocket handshake and batching cadence without code changes.
 - `pipelines.*.options` is merged with provider defaults and handed to adapters via `AdapterContext`. Nested maps (e.g., `options.tts.voice`) are preserved.
-- `examples/pipelines/cloud_only_openai.yaml` provides a turnkey OpenAI-only configuration that advertises 24 kHz provider audio while the engine resamples back to 8 kHz for AudioSocket playback.
+- `examples/pipelines/cloud_only_openai.yaml` provides a turnkey OpenAI-only configuration for modular pipelines (OpenAI STT + OpenAI LLM + OpenAI TTS).
 
 ##### Adapter Mapping
 
@@ -152,7 +152,7 @@ active_pipeline: hybrid_support
 | ---------- | ------------- | ----- |
 | `local_stt`, `local_llm`, `local_tts` | `LocalSTTAdapter`, `LocalLLMAdapter`, `LocalTTSAdapter` (registered by the orchestrator when local provider is enabled) | Respect selective enable flags so unused roles do not bind WebSocket channels. |
 | `deepgram_streaming`, `deepgram_llm`, `deepgram_tts` | `DeepgramSTTAdapter`, `DeepgramLLMAdapter` (future), `DeepgramTTSAdapter` | STT uses WebSocket AudioSocket transport; TTS synthesizes via REST and converts to μ-law. |
-| `openai_realtime`, `openai_chat`, `openai_tts` | `OpenAISTTAdapter`, `OpenAILLMAdapter`, `OpenAITTSAdapter` | Realtime STT/LLM share WebRTC session IDs; chat + TTS use HTTPS endpoints. |
+| `openai_stt`, `openai_llm`, `openai_tts` | `OpenAISTTAdapter`, `OpenAILLMAdapter`, `OpenAITTSAdapter` | STT uses `audio/transcriptions`; LLM uses Chat Completions by default; TTS uses `audio/speech` and converts to μ-law for telephony playback. |
 | `google_stt`, `google_llm`, `google_tts` | `GoogleSTTAdapter`, `GoogleLLMAdapter`, `GoogleTTSAdapter` | REST-based integrations leveraging Google Speech-to-Text, Generative Language, and Text-to-Speech APIs. |
 
 When the configuration watcher detects a change, it:

@@ -32,7 +32,7 @@ providers:
     target_sample_rate_hz: 8000
 
 pipelines:
-  cloud_only_groq_speech:
+  cloud_only_groq:
     stt: groq_stt
     llm: groq_llm
     tts: groq_tts
@@ -45,5 +45,4 @@ pipelines:
           encoding: mulaw
           sample_rate: 8000
 
-active_pipeline: cloud_only_groq_speech
-
+active_pipeline: cloud_only_groq
