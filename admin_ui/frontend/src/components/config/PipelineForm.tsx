@@ -195,6 +195,19 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                 </div>
             </div>
 
+            <div className="rounded-lg border border-border bg-card/40 p-3 text-sm text-muted-foreground">
+                <div className="font-medium text-foreground mb-1">Tools</div>
+                <div>
+                    Tools are configured per <strong>Context</strong> and take precedence over any legacy pipeline tool settings.
+                    Manage tools in the <strong>Contexts</strong> page.
+                </div>
+                {!!(localConfig.tools && Array.isArray(localConfig.tools) && localConfig.tools.length) && (
+                    <div className="mt-2 text-xs text-yellow-600 dark:text-yellow-500">
+                        This pipeline has legacy <code className="px-1 rounded bg-muted">tools</code> configured. Saving the pipeline will remove them.
+                    </div>
+                )}
+            </div>
+
         </div>
     );
 };
