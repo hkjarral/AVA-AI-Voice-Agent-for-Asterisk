@@ -1,5 +1,6 @@
 import React from 'react';
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
+import { isFullAgentProvider } from '../../utils/providerNaming';
 
 interface ContextFormProps {
     config: any;
@@ -47,10 +48,12 @@ const ContextForm = ({ config, providers, pipelines, availableTools, onChange, i
         label: `[Pipeline] ${name}`,
     }));
 
-    const providerOptions = Object.entries(providers || {}).map(([name, p]: [string, any]) => ({
-        value: `provider:${name}`,
-        label: `[Provider] ${name}${p.enabled === false ? ' (Disabled)' : ''}`,
-    }));
+    const providerOptions = Object.entries(providers || {})
+        .filter(([_, p]: [string, any]) => isFullAgentProvider(p))
+        .map(([name, p]: [string, any]) => ({
+            value: `provider:${name}`,
+            label: `[Provider] ${name}${p.enabled === false ? ' (Disabled)' : ''}`,
+        }));
 
     const overrideValue = config.pipeline
         ? `pipeline:${config.pipeline}`
