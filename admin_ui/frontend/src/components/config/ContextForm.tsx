@@ -4,12 +4,13 @@ import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 interface ContextFormProps {
     config: any;
     providers: any;
+    pipelines?: any;
     availableTools?: string[];
     onChange: (newConfig: any) => void;
     isNew?: boolean;
 }
 
-const ContextForm = ({ config, providers, availableTools, onChange, isNew }: ContextFormProps) => {
+const ContextForm = ({ config, providers, pipelines, availableTools, onChange, isNew }: ContextFormProps) => {
     const updateConfig = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -41,10 +42,36 @@ const ContextForm = ({ config, providers, availableTools, onChange, isNew }: Con
         updateConfig('tools', newTools);
     };
 
-    const providerOptions = Object.entries(providers || {}).map(([name, p]: [string, any]) => ({
-        value: name,
-        label: `${name}${p.enabled === false ? ' (Disabled)' : ''}`
+    const pipelineOptions = Object.entries(pipelines || {}).map(([name, _]: [string, any]) => ({
+        value: `pipeline:${name}`,
+        label: `[Pipeline] ${name}`,
     }));
+
+    const providerOptions = Object.entries(providers || {}).map(([name, p]: [string, any]) => ({
+        value: `provider:${name}`,
+        label: `[Provider] ${name}${p.enabled === false ? ' (Disabled)' : ''}`,
+    }));
+
+    const overrideValue = config.pipeline
+        ? `pipeline:${config.pipeline}`
+        : (config.provider ? `provider:${config.provider}` : '');
+
+    const handleOverrideChange = (raw: string) => {
+        if (!raw) {
+            updateConfig('provider', '');
+            updateConfig('pipeline', '');
+            return;
+        }
+        if (raw.startsWith('pipeline:')) {
+            updateConfig('pipeline', raw.slice('pipeline:'.length));
+            updateConfig('provider', '');
+            return;
+        }
+        if (raw.startsWith('provider:')) {
+            updateConfig('provider', raw.slice('provider:'.length));
+            updateConfig('pipeline', '');
+        }
+    };
 
     return (
         <div className="space-y-6">
@@ -83,10 +110,15 @@ const ContextForm = ({ config, providers, availableTools, onChange, isNew }: Con
                 />
 
                 <FormSelect
-                    label="Provider Override (Optional)"
-                    options={[{ value: '', label: 'Default (None)' }, ...providerOptions]}
-                    value={config.provider || ''}
-                    onChange={(e) => updateConfig('provider', e.target.value)}
+                    label="Provider/Pipeline Override (Optional)"
+                    tooltip="Choose either a monolithic provider or a modular pipeline. Pipeline overrides provider when set."
+                    options={[
+                        { value: '', label: 'Default (None)' },
+                        ...pipelineOptions,
+                        ...providerOptions,
+                    ]}
+                    value={overrideValue}
+                    onChange={(e) => handleOverrideChange(e.target.value)}
                 />
             </div>
 

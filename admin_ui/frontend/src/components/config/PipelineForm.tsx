@@ -1,18 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FormInput, FormLabel } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider } from '../../utils/providerNaming';
-import { CheckCircle, AlertCircle, Loader2, Wrench } from 'lucide-react';
-
-// Available tools that can be enabled for pipelines
-const AVAILABLE_TOOLS = [
-    { id: 'transfer', label: 'Transfer Call', description: 'Transfer to extensions, queues, or ring groups' },
-    { id: 'attended_transfer', label: 'Attended Transfer', description: 'Warm transfer with agent announcement + DTMF accept/decline (requires Local AI Server)' },
-    { id: 'cancel_transfer', label: 'Cancel Transfer', description: 'Cancel an in-progress transfer' },
-    { id: 'hangup_call', label: 'Hangup Call', description: 'End the call with a farewell message' },
-    { id: 'leave_voicemail', label: 'Leave Voicemail', description: 'Send caller to voicemail' },
-    { id: 'send_email_summary', label: 'Email Summary', description: 'Email call summary after hangup' },
-    { id: 'request_transcript', label: 'Request Transcript', description: 'Email transcript to caller' },
-];
+import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 interface LocalAIStatus {
     stt_backend?: string;
@@ -206,51 +195,6 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                 </div>
             </div>
 
-            <div className="space-y-4 border-t border-border pt-6">
-                <div className="flex items-center gap-2">
-                    <Wrench className="h-4 w-4 text-muted-foreground" />
-                    <h4 className="font-semibold">Tool Capabilities</h4>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                    Select which tools the AI can use during calls. These enable actions like transferring calls and sending emails.
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {AVAILABLE_TOOLS.map((tool) => {
-                        const isEnabled = (localConfig.tools || []).includes(tool.id);
-                        return (
-                            <label
-                                key={tool.id}
-                                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                                    isEnabled 
-                                        ? 'border-primary bg-primary/5' 
-                                        : 'border-border hover:border-muted-foreground/50'
-                                }`}
-                            >
-                                <input
-                                    type="checkbox"
-                                    checked={isEnabled}
-                                    onChange={(e) => {
-                                        const currentTools = localConfig.tools || [];
-                                        if (e.target.checked) {
-                                            updateConfig({ tools: [...currentTools, tool.id] });
-                                        } else {
-                                            updateConfig({ tools: currentTools.filter((t: string) => t !== tool.id) });
-                                        }
-                                    }}
-                                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                                />
-                                <div className="flex-1">
-                                    <div className="font-medium text-sm">{tool.label}</div>
-                                    <div className="text-xs text-muted-foreground">{tool.description}</div>
-                                </div>
-                            </label>
-                        );
-                    })}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                    <strong>Note:</strong> Some LLM providers (e.g., Groq) may not support tool calling. Check provider documentation.
-                </p>
-            </div>
         </div>
     );
 };

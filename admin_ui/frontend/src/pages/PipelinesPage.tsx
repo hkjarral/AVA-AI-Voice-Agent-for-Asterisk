@@ -94,8 +94,7 @@ const PipelinesPage = () => {
                 stt: { streaming: true, chunk_ms: 160, stream_format: 'pcm16_16k' },
                 llm: { model: 'gpt-4o-mini', temperature: 0.7, max_tokens: 150 },
                 tts: { format: { encoding: 'mulaw', sample_rate: 8000 } }
-            },
-            tools: []
+            }
         });
         setIsNewPipeline(true);
     };
@@ -122,6 +121,11 @@ const PipelinesPage = () => {
             llm: ensureModularKey(pipelineForm.llm || '', 'llm'),
             tts: ensureModularKey(pipelineForm.tts || '', 'tts'),
         };
+
+        // Tools allowlists belong to Contexts. Strip pipeline-level tools from the saved config.
+        if ('tools' in normalizedForm) {
+            delete normalizedForm.tools;
+        }
 
         // Validate required components
         if (!normalizedForm.stt || !normalizedForm.llm || !normalizedForm.tts) {

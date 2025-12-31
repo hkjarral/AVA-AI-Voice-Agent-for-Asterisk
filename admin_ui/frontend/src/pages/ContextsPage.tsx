@@ -222,6 +222,11 @@ const ContextsPage = () => {
                                             <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-muted-foreground bg-secondary/50">
                                                 {contextData.profile || 'default'}
                                             </span>
+                                            {contextData.pipeline && (
+                                                <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-muted-foreground bg-secondary/50">
+                                                    {contextData.pipeline}
+                                                </span>
+                                            )}
                                             {contextData.provider && (
                                                 <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-muted-foreground bg-secondary/50">
                                                     {contextData.provider}
@@ -300,6 +305,7 @@ const ContextsPage = () => {
                 <ContextForm
                     config={contextForm}
                     providers={config.providers}
+                    pipelines={config.pipelines}
                     availableTools={availableTools}
                     onChange={setContextForm}
                     isNew={isNewContext}
