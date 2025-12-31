@@ -305,7 +305,13 @@ class GroqSTTAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        model = runtime_options.get("model", self._pipeline_defaults.get("model", self._provider_defaults.stt_model))
+        model = runtime_options.get(
+            "model",
+            runtime_options.get(
+                "stt_model",
+                self._pipeline_defaults.get("model", self._pipeline_defaults.get("stt_model", self._provider_defaults.stt_model)),
+            ),
+        )
         merged = {
             "api_key": runtime_options.get("api_key", self._pipeline_defaults.get("api_key", self._provider_defaults.api_key)),
             "stt_base_url": runtime_options.get(
@@ -497,7 +503,13 @@ class GroqTTSAdapter(TTSComponent):
                 "tts_base_url",
                 runtime_options.get("base_url", self._pipeline_defaults.get("tts_base_url", self._provider_defaults.tts_base_url)),
             ),
-            "model": runtime_options.get("model", self._pipeline_defaults.get("model", self._provider_defaults.tts_model)),
+            "model": runtime_options.get(
+                "model",
+                runtime_options.get(
+                    "tts_model",
+                    self._pipeline_defaults.get("model", self._pipeline_defaults.get("tts_model", self._provider_defaults.tts_model)),
+                ),
+            ),
             "voice": runtime_options.get("voice", self._pipeline_defaults.get("voice", self._provider_defaults.voice)),
             "response_format": runtime_options.get(
                 "response_format",
@@ -517,4 +529,3 @@ class GroqTTSAdapter(TTSComponent):
 
 
 __all__ = ["GroqSTTAdapter", "GroqTTSAdapter"]
-
