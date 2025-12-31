@@ -287,6 +287,11 @@ class GroqSTTAdapter(STTComponent):
         )
         return transcript or ""
 
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        # Ensure base connectivity checks see the provider defaults (stt_base_url).
+        merged = self._compose_options(options or {})
+        return await super().validate_connectivity(merged)
+
     @staticmethod
     def _parse_transcript(payload: bytes, *, response_format: str) -> str:
         fmt = (response_format or "json").lower()
@@ -411,6 +416,11 @@ class GroqTTSAdapter(TTSComponent):
             for chunk in _chunk_audio(converted, target_encoding, target_sample_rate, chunk_ms):
                 if chunk:
                     yield chunk
+
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        # Ensure base connectivity checks see the provider defaults (tts_base_url).
+        merged = self._compose_options(options or {})
+        return await super().validate_connectivity(merged)
 
     async def _synthesize_one(self, call_id: str, text: str, merged: Dict[str, Any]) -> Tuple[bytes, int]:
         assert self._session is not None
