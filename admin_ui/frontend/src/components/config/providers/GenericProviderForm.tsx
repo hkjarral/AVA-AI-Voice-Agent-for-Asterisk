@@ -35,6 +35,12 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
         tts_model: ['tts-1', 'tts-1-hd'],
         tts_voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
     },
+    groq: {
+        stt_model: ['whisper-large-v3-turbo', 'whisper-large-v3'],
+        response_format: ['json', 'verbose_json', 'text', 'wav'],
+        tts_model: ['canopylabs/orpheus-v1-english', 'canopylabs/orpheus-arabic-saudi'],
+        voice: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy', 'fahad', 'sultan', 'lulwa', 'noura'],
+    },
     openai_realtime: {
         model: ['gpt-4o-realtime-preview', 'gpt-4o-realtime-preview-2024-10-01'],
         voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
@@ -215,6 +221,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
 
         if (name.includes('openai') && name.includes('realtime')) providerKey = 'openai_realtime';
         else if (name.includes('openai')) providerKey = 'openai';
+        else if (name.includes('groq')) providerKey = 'groq';
         else if (name.includes('deepgram')) providerKey = 'deepgram';
         else if (name.includes('google') || name.includes('gemini')) providerKey = 'google_live';
 

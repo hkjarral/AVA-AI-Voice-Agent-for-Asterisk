@@ -82,6 +82,7 @@ export const REGISTERED_PROVIDER_TYPES = [
     // Modular provider types (single capability)
     'local',
     'openai',
+    'groq',
     'google',
     'elevenlabs',
     'ollama',

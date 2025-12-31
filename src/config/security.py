@@ -147,6 +147,7 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
     
     Environment variables:
     - OPENAI_API_KEY: OpenAI provider API key
+    - GROQ_API_KEY: Groq provider API key (Groq Speech + Groq OpenAI-compatible LLM)
     - DEEPGRAM_API_KEY: Deepgram provider API key
     - GOOGLE_API_KEY: Google provider API key
     
@@ -164,6 +165,19 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
             if isinstance(openai_block, dict):
                 openai_block['api_key'] = os.getenv('OPENAI_API_KEY')
                 providers_block['openai'] = openai_block
+
+        # Inject GROQ_API_KEY for any groq* provider blocks (groq_llm, groq_stt, groq_tts, etc.)
+        groq_key = os.getenv('GROQ_API_KEY')
+        if groq_key:
+            for provider_name, provider_cfg in list(providers_block.items()):
+                if not isinstance(provider_cfg, dict):
+                    continue
+                name_lower = str(provider_name).lower()
+                cfg_type = str(provider_cfg.get("type", "")).lower()
+                chat_base_url = str(provider_cfg.get("chat_base_url", "")).lower()
+                if name_lower.startswith("groq") or cfg_type == "groq" or "api.groq.com" in chat_base_url:
+                    provider_cfg["api_key"] = groq_key
+                    providers_block[provider_name] = provider_cfg
         
         # Inject DEEPGRAM_API_KEY
         deepgram_block = providers_block.get('deepgram', {}) or {}

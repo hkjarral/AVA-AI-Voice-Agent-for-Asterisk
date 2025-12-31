@@ -1,0 +1,49 @@
+# Cloud-only pipeline using Groq Speech-to-Text + Groq LLM + Groq Text-to-Speech.
+# Requirements:
+#   - GROQ_API_KEY set in environment (.env for docker-compose deployments).
+#
+# Notes:
+#   - Groq STT endpoint is OpenAI-compatible: /openai/v1/audio/transcriptions
+#   - Groq TTS endpoint is OpenAI-compatible: /openai/v1/audio/speech (Orpheus models, WAV-only)
+#   - Engine provides STT PCM16 @ 16 kHz; Groq TTS WAV is decoded, resampled, and converted to μ-law @ 8 kHz.
+
+providers:
+  groq_llm:
+    type: openai
+    api_key: ${GROQ_API_KEY}
+    chat_base_url: https://api.groq.com/openai/v1
+    chat_model: llama-3.3-70b-versatile
+    tools_enabled: false
+  groq_stt:
+    type: groq
+    api_key: ${GROQ_API_KEY}
+    stt_base_url: https://api.groq.com/openai/v1/audio/transcriptions
+    stt_model: whisper-large-v3-turbo
+    response_format: json
+    temperature: 0
+  groq_tts:
+    type: groq
+    api_key: ${GROQ_API_KEY}
+    tts_base_url: https://api.groq.com/openai/v1/audio/speech
+    tts_model: canopylabs/orpheus-v1-english
+    voice: hannah
+    response_format: wav
+    target_encoding: mulaw
+    target_sample_rate_hz: 8000
+
+pipelines:
+  cloud_only_groq_speech:
+    stt: groq_stt
+    llm: groq_llm
+    tts: groq_tts
+    options:
+      llm:
+        use_realtime: false
+        tools_enabled: false
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
+
+active_pipeline: cloud_only_groq_speech
+

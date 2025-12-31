@@ -236,6 +236,22 @@ Common pitfalls:
 - google_tts/tts fields: voice, language, audio encoding/sample rate, target format.
 - google_stt/stt fields: encoding, language, model, sampleRateHertz.
 
+### Groq Speech (pipelines)
+
+Groq Speech uses OpenAI-compatible REST endpoints:
+
+- STT: `https://api.groq.com/openai/v1/audio/transcriptions`
+- TTS: `https://api.groq.com/openai/v1/audio/speech` (Orpheus, WAV-only)
+
+Requirements:
+
+- `GROQ_API_KEY` must be set in the environment.
+
+Config notes:
+
+- `groq_stt` options: `stt_model` (`whisper-large-v3-turbo`, `whisper-large-v3`), plus optional `language`, `prompt`, `response_format` (`json|verbose_json|text`), `temperature`, `timestamp_granularities`.
+- `groq_tts` options: `tts_model` (`canopylabs/orpheus-v1-english`, `canopylabs/orpheus-arabic-saudi`), `voice` (Orpheus voice IDs), `response_format` (`wav` only), and output format controls (`target_encoding`/`target_sample_rate_hz` or pipeline `tts.format`).
+
 ### Local provider (pipelines)
 
 - Local STT/LLM/TTS parameters live under pipeline `options`. The engine plays `llm.initial_greeting` first if configured.

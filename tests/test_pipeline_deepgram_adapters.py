@@ -81,6 +81,9 @@ class _FakeResponse:
     async def text(self):
         return self._body.decode("utf-8", errors="ignore")
 
+    async def json(self):
+        return json.loads(self._body.decode("utf-8"))
+
 
 class _FakeSession:
     def __init__(self, body: bytes, status: int = 200):
@@ -89,8 +92,8 @@ class _FakeSession:
         self.requests = []
         self.closed = False
 
-    def post(self, url, json=None, params=None, headers=None):
-        self.requests.append({"url": url, "json": json, "params": params, "headers": headers})
+    def post(self, url, json=None, params=None, headers=None, data=None, timeout=None):
+        self.requests.append({"url": url, "json": json, "params": params, "headers": headers, "data": data, "timeout": timeout})
         return _FakeResponse(self._body, status=self._status)
 
     async def close(self):
@@ -98,34 +101,36 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_deepgram_stt_adapter_transcribes(monkeypatch):
+async def test_deepgram_stt_adapter_transcribes():
     app_config = _build_app_config()
     provider_config = DeepgramProviderConfig(**app_config.providers["deepgram"])
-    adapter = DeepgramSTTAdapter("deepgram_stt", app_config, provider_config, {"language": "en-US"})
-
-    mock_ws = _MockWebSocket()
-
-    async def fake_connect(*args, **kwargs):
-        return mock_ws
-
-    monkeypatch.setattr("src.pipelines.deepgram.websockets.connect", fake_connect)
+    deepgram_payload = json.dumps(
+        {
+            "results": {
+                "channels": [
+                    {"alternatives": [{"transcript": "hello world", "confidence": 0.92}]}
+                ]
+            }
+        }
+    ).encode("utf-8")
+    fake_session = _FakeSession(deepgram_payload)
+    adapter = DeepgramSTTAdapter(
+        "deepgram_stt",
+        app_config,
+        provider_config,
+        {"language": "en-US"},
+        session_factory=lambda: fake_session,
+    )
 
     await adapter.start()
     await adapter.open_call("call-1", {"model": "nova-2-general"})
-    mock_ws.push(
-        json.dumps(
-            {
-                "channel": {"alternatives": [{"transcript": "hello world", "confidence": 0.92}]},
-                "is_final": True,
-            }
-        )
-    )
 
     audio_buffer = b"\x00\x00" * 160
     transcript = await adapter.transcribe("call-1", audio_buffer, 8000, {})
     assert transcript == "hello world"
-    assert mock_ws.sent[0] == audio_buffer
-    assert json.loads(mock_ws.sent[1])["type"] == "flush"
+    request = fake_session.requests[0]
+    assert request["url"].startswith("https://api.deepgram.com")
+    assert request["headers"]["Authorization"] == "Token test-key"
 
 
 @pytest.mark.asyncio

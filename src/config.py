@@ -229,6 +229,41 @@ class GoogleProviderConfig(BaseModel):
     farewell_hangup_delay_sec: Optional[float] = None
 
 
+class GroqSTTProviderConfig(BaseModel):
+    """Groq Speech-to-Text (OpenAI-compatible audio/transcriptions + audio/translations)."""
+
+    enabled: bool = Field(default=True)
+    api_key: Optional[str] = None
+    stt_base_url: str = Field(default="https://api.groq.com/openai/v1/audio/transcriptions")
+    # Groq STT supported models: whisper-large-v3-turbo, whisper-large-v3
+    stt_model: str = Field(default="whisper-large-v3-turbo")
+    language: Optional[str] = None  # ISO-639-1 (e.g., en, tr)
+    prompt: Optional[str] = None
+    response_format: str = Field(default="json")  # json | verbose_json | text
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    timestamp_granularities: Optional[List[str]] = None  # ["segment"] and/or ["word"] (requires verbose_json)
+    request_timeout_sec: float = Field(default=15.0)
+
+
+class GroqTTSProviderConfig(BaseModel):
+    """Groq Text-to-Speech (OpenAI-compatible audio/speech; Orpheus models)."""
+
+    enabled: bool = Field(default=True)
+    api_key: Optional[str] = None
+    tts_base_url: str = Field(default="https://api.groq.com/openai/v1/audio/speech")
+    # Groq TTS supported models: canopylabs/orpheus-v1-english, canopylabs/orpheus-arabic-saudi
+    tts_model: str = Field(default="canopylabs/orpheus-v1-english")
+    voice: str = Field(default="hannah")
+    response_format: str = Field(default="wav")  # Orpheus docs: only supported response_format is wav.
+    # Orpheus docs: input max 200 characters; adapter should chunk longer strings.
+    max_input_chars: int = Field(default=200, ge=1)
+    # Output format expected by downstream playback
+    target_encoding: str = Field(default="mulaw")
+    target_sample_rate_hz: int = Field(default=8000)
+    chunk_size_ms: int = Field(default=20)
+    request_timeout_sec: float = Field(default=15.0)
+
+
 class ElevenLabsProviderConfig(BaseModel):
     """ElevenLabs TTS provider configuration.
     

@@ -971,6 +971,32 @@ providers:
     temperature: 0.7
     tools_enabled: false
     type: openai
+  groq_stt:
+    capabilities:
+      - stt
+    type: groq
+    enabled: false
+    # API key comes from GROQ_API_KEY env var
+    stt_base_url: https://api.groq.com/openai/v1/audio/transcriptions
+    stt_model: whisper-large-v3-turbo
+    response_format: json
+    temperature: 0
+    request_timeout_sec: 15
+  groq_tts:
+    capabilities:
+      - tts
+    type: groq
+    enabled: false
+    # API key comes from GROQ_API_KEY env var
+    tts_base_url: https://api.groq.com/openai/v1/audio/speech
+    tts_model: canopylabs/orpheus-v1-english
+    voice: hannah
+    response_format: wav
+    max_input_chars: 200
+    target_encoding: mulaw
+    target_sample_rate_hz: 8000
+    chunk_size_ms: 20
+    request_timeout_sec: 15
   ollama_llm:
     capabilities:
       - llm

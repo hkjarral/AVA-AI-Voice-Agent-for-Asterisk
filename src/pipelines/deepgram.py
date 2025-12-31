@@ -110,11 +110,14 @@ class DeepgramSTTAdapter(STTComponent):
         app_config: AppConfig,
         provider_config: DeepgramProviderConfig,
         options: Optional[Dict[str, Any]] = None,
+        *,
+        session_factory: Optional[Callable[[], aiohttp.ClientSession]] = None,
     ):
         self.component_key = component_key
         self._app_config = app_config
         self._provider_defaults = provider_config
         self._pipeline_defaults = options or {}
+        self._session_factory = session_factory
         self._sessions: Dict[str, _STTSessionState] = {}
         self._default_timeout = float(self._pipeline_defaults.get("response_timeout_sec", 5.0))
 
@@ -138,7 +141,8 @@ class DeepgramSTTAdapter(STTComponent):
             raise RuntimeError("Deepgram STT requires an API key")
 
         # Create HTTP session for reuse across multiple transcribe() calls
-        http_session = aiohttp.ClientSession()
+        factory = self._session_factory or aiohttp.ClientSession
+        http_session = factory()
         self._sessions[call_id] = _STTSessionState(options=merged, http_session=http_session)
 
         logger.info(
