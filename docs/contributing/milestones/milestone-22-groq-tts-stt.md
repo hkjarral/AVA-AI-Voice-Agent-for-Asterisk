@@ -4,7 +4,7 @@
 **Priority**: High  
 **Estimated Effort**: 3–5 days  
 **Branch**: `feature/groq-tts-stt-implementation`  
-**Completed**: December 31, 2025
+**Completed**: January 1, 2026
 
 ## Summary
 
@@ -15,6 +15,15 @@ Add **Groq Cloud Speech-to-Text (STT)** and **Groq Text-to-Speech (TTS)** as **m
 - `tts: groq_tts`
 
 This milestone focuses on the modular pipeline system (STT/LLM/TTS adapters) and Admin UI configuration, not a monolithic “Groq realtime agent”.
+
+## What shipped in this branch (beyond Groq speech)
+
+This milestone also includes related “make it work end-to-end” hardening needed to support swapping providers inside modular pipelines without regressions:
+
+- **Modular OpenAI STT + TTS correctness** (per official OpenAI docs): defaults, option validation, and safer fallbacks when swapping providers.
+- **Tools source-of-truth: Contexts only** (pipeline/provider tool enablement is deprecated and removed from UI).
+- **Admin UI reliability**: YAML editor + forms behave consistently, prevent invalid configs, and avoid silently hiding user-defined values.
+- **Capability-driven modular provider UX**: modular providers advertise `capabilities` and pipeline dropdowns filter based on those capabilities.
 
 ## Motivation
 
@@ -110,6 +119,7 @@ Operators want a simple cloud-only stack that works well on telephony (μ-law @ 
 ### Required environment variable
 
 - `GROQ_API_KEY`
+- `OPENAI_API_KEY` (only if using modular OpenAI components)
 
 ### Provider examples
 
@@ -126,6 +136,8 @@ providers:
 
   groq_stt:
     type: groq
+    capabilities: [stt]
+    enabled: false
     stt_base_url: https://api.groq.com/openai/v1/audio/transcriptions
     stt_model: whisper-large-v3-turbo
     response_format: json
@@ -134,6 +146,8 @@ providers:
 
   groq_tts:
     type: groq
+    capabilities: [tts]
+    enabled: false
     tts_base_url: https://api.groq.com/openai/v1/audio/speech
     tts_model: canopylabs/orpheus-v1-english
     voice: hannah
@@ -159,11 +173,35 @@ pipelines:
 active_pipeline: cloud_only_groq
 ```
 
+## OpenAI modular components (updates included)
+
+These are **modular pipeline components** and are separate from `openai_realtime` (which is a full agent provider).
+
+- **STT** (`openai_stt`):
+  - Default model is `whisper-1`.
+  - Supported models also include the GPT-4o transcribe family (see the UI + config reference).
+  - Uses `response_format` correctly and validates compatibility by model family.
+- **TTS** (`openai_tts`):
+  - Built-in voices only (no custom voice IDs yet).
+  - Uses `/v1/audio/speech` with `response_format` (not `format`), preferring `wav`/`pcm` for low-latency decoding.
+  - Adds safe fallbacks when a pipeline swap leaves a Groq voice/model in the OpenAI TTS config.
+
+## Tools: Contexts are the source of truth
+
+Tool enablement and allowlisting is managed **only via Contexts**.
+
+- Legacy `pipelines.*.tools` is treated as deprecated and removed from the Admin UI pipeline editor.
+- Admin UI save flows sanitize configs to strip `pipelines.*.tools` when saving YAML from form pages.
+- Providers that do not reliably support tool calling (notably Groq’s OpenAI-compatible chat) will not block the call:
+  - If a tool-enabled request fails with Groq tool-calling errors, we retry once without tools to keep the conversation flowing.
+  - This means “tools enabled in context” stays the source of truth, but a given LLM may effectively run tool-less if it can’t support them.
+
 ## Testing
 
 - `tests/test_pipeline_groq_adapters.py`
   - Validates STT request construction and transcript parsing.
   - Validates TTS WAV decode + conversion to target encoding and chunking behavior.
+  - Includes coverage for Groq tool-calling failure fallback behavior when using Groq OpenAI-compatible chat.
 
 ## Operational Notes / Known Issues
 
