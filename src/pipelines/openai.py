@@ -663,26 +663,47 @@ class OpenAITTSAdapter(TTSComponent):
             text_preview=text[:64],
         )
 
-        async with self._session.post(url, json=payload, headers=headers, timeout=merged["timeout_sec"]) as response:
-            data = await response.read()
-            if response.status >= 400:
-                body = data.decode("utf-8", errors="ignore")
+        async def _post_tts(req_payload: Dict[str, Any]) -> tuple[int, bytes, str]:
+            async with self._session.post(url, json=req_payload, headers=headers, timeout=merged["timeout_sec"]) as resp:
+                raw = await resp.read()
+                body_text = raw.decode("utf-8", errors="ignore")
+                return resp.status, raw, body_text
+
+        status, data, body = await _post_tts(payload)
+        if status >= 400:
+            body_lower = (body or "").lower()
+            # Some OpenAI accounts do not have access to all TTS models. If we hit an invalid model error,
+            # retry with the broadly-available `tts-1` to avoid silent-call failures (e.g., greeting).
+            if status == 400 and "invalid model" in body_lower and payload.get("model") != "tts-1":
+                logger.warning(
+                    "OpenAI TTS model rejected; retrying with tts-1",
+                    call_id=call_id,
+                    requested_model=payload.get("model"),
+                    status=status,
+                    body_preview=body[:128],
+                )
+                retry_payload = {**payload, "model": "tts-1"}
+                status, data, body = await _post_tts(retry_payload)
+
+            if status >= 400:
                 logger.error(
                     "OpenAI TTS synthesis failed",
                     call_id=call_id,
-                    status=response.status,
-                    body_preview=body[:128],
+                    status=status,
+                    body_preview=(body or "")[:128],
                 )
-                response.raise_for_status()
+                raise RuntimeError(
+                    f"OpenAI TTS request failed (status {status}): {(body or '')[:256]}"
+                )
 
-            audio_bytes = _decode_audio_payload(data)
-            pcm_bytes, source_rate = self._decode_to_pcm16le(audio_bytes, merged)
-            converted = self._convert_pcm(
-                pcm_bytes,
-                source_rate,
-                merged["target_format"]["encoding"],
-                merged["target_format"]["sample_rate"],
-            )
+        audio_bytes = _decode_audio_payload(data)
+        pcm_bytes, source_rate = self._decode_to_pcm16le(audio_bytes, merged)
+        converted = self._convert_pcm(
+            pcm_bytes,
+            source_rate,
+            merged["target_format"]["encoding"],
+            merged["target_format"]["sample_rate"],
+        )
 
         logger.info(
             "OpenAI TTS synthesis completed",

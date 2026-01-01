@@ -171,7 +171,9 @@ class OpenAIProviderConfig(BaseModel):
     realtime_model: str = Field(default="gpt-4o-realtime-preview-2024-12-17")
     chat_model: str = Field(default="gpt-4o-mini")
     stt_model: str = Field(default="whisper-1")
-    tts_model: str = Field(default="gpt-4o-mini-tts")
+    # NOTE: Default to widely-available TTS model to avoid silent-call failures when
+    # accounts don't have access to newer/limited models.
+    tts_model: str = Field(default="tts-1")
     voice: str = Field(default="alloy")
     tts_response_format: str = Field(default="wav")
     default_modalities: List[str] = Field(default_factory=lambda: ["text"])

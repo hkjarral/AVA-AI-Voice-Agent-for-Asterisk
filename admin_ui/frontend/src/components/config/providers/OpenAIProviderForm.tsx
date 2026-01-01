@@ -196,13 +196,16 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             <label className="text-sm font-medium">TTS Model</label>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.tts_model || 'gpt-4o-mini-tts'}
+                                value={config.tts_model || 'tts-1'}
                                 onChange={(e) => handleChange('tts_model', e.target.value)}
                             >
-                                <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
                                 <option value="tts-1">tts-1</option>
                                 <option value="tts-1-hd">tts-1-hd</option>
+                                <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
                             </select>
+                            <p className="text-xs text-muted-foreground">
+                                If you see “invalid model ID”, switch to <code>tts-1</code>.
+                            </p>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Voice</label>
