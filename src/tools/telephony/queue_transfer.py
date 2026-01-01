@@ -71,7 +71,15 @@ class TransferToQueueTool(Tool):
             }
         """
         await self.validate_parameters(parameters)
-        
+
+        tool_cfg = context.get_config_value("tools.transfer_to_queue") or {}
+        if isinstance(tool_cfg, dict) and tool_cfg.get("enabled") is False:
+            return {
+                "status": "error",
+                "message": "Queue transfer is currently disabled.",
+                "ai_should_speak": True,
+            }
+
         queue_name = parameters['queue'].lower().strip()
         
         logger.info(

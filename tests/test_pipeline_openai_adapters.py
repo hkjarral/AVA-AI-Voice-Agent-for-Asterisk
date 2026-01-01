@@ -230,7 +230,7 @@ async def test_openai_tts_adapter_synthesizes_chunks():
     request = fake_session.requests[0]
     assert request["json"]["model"] == "gpt-4o-mini-tts"
     assert request["json"]["voice"] == "alloy"
-    assert request["json"]["format"] == "wav"
+    assert request["json"]["response_format"] == "wav"
 
 
 @pytest.mark.asyncio
