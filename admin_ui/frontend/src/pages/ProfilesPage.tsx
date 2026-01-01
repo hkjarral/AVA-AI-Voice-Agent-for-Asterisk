@@ -1,20 +1,22 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import yaml from 'js-yaml';
-import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus } from 'lucide-react';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormComponents';
 
 const ProfilesPage = () => {
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [editingProfile, setEditingProfile] = useState<string | null>(null);
-    const [profileForm, setProfileForm] = useState<any>({});
-    const [pendingApply, setPendingApply] = useState(false);
-    const [applying, setApplying] = useState(false);
-    const [applyMethod, setApplyMethod] = useState<'hot_reload' | 'restart'>('restart');
+	const [config, setConfig] = useState<any>({});
+	const [loading, setLoading] = useState(true);
+	const [editingProfile, setEditingProfile] = useState<string | null>(null);
+	const [profileForm, setProfileForm] = useState<any>({});
+	const [isNewProfile, setIsNewProfile] = useState(false);
+	const [newProfileName, setNewProfileName] = useState('');
+	const [pendingApply, setPendingApply] = useState(false);
+	const [applying, setApplying] = useState(false);
+	const [applyMethod, setApplyMethod] = useState<'hot_reload' | 'restart'>('restart');
 
     useEffect(() => {
         fetchConfig();
@@ -86,21 +88,60 @@ const ProfilesPage = () => {
         }
     };
 
-    const handleEditProfile = (name: string) => {
-        setEditingProfile(name);
-        setProfileForm({ ...config.profiles?.[name] });
-    };
+	const handleEditProfile = (name: string) => {
+		setEditingProfile(name);
+		setProfileForm({ ...config.profiles?.[name] });
+		setIsNewProfile(false);
+		setNewProfileName('');
+	};
 
-    const handleSaveProfile = async () => {
-        if (!editingProfile) return;
-        
-        const newConfig = { ...config };
-        if (!newConfig.profiles) newConfig.profiles = {};
-        
-        newConfig.profiles[editingProfile] = profileForm;
-        await saveConfig(newConfig);
-        setEditingProfile(null);
-    };
+	const handleAddProfile = () => {
+		setEditingProfile('new_profile');
+		setProfileForm({
+			chunk_ms: 'auto',
+			idle_cutoff_ms: 600,
+			internal_rate_hz: 8000,
+			provider_pref: {
+				input_encoding: 'mulaw',
+				input_sample_rate_hz: 8000,
+				output_encoding: 'mulaw',
+				output_sample_rate_hz: 8000
+			},
+			transport_out: {
+				encoding: 'slin',
+				sample_rate_hz: 8000
+			}
+		});
+		setIsNewProfile(true);
+		setNewProfileName('');
+	};
+
+	const handleSaveProfile = async () => {
+		if (!editingProfile) return;
+
+		const profileKey = isNewProfile ? newProfileName.trim() : editingProfile;
+		if (!profileKey) {
+			alert('Profile name is required');
+			return;
+		}
+		if (profileKey === 'default') {
+			alert("Profile name 'default' is reserved (profiles.default selects the default profile).");
+			return;
+		}
+		if (isNewProfile && (config.profiles?.[profileKey] != null)) {
+			alert(`Profile '${profileKey}' already exists.`);
+			return;
+		}
+
+		const newConfig = { ...config };
+		if (!newConfig.profiles) newConfig.profiles = {};
+		
+		newConfig.profiles[profileKey] = profileForm;
+		await saveConfig(newConfig);
+		setEditingProfile(null);
+		setIsNewProfile(false);
+		setNewProfileName('');
+	};
 
     const updateProfileField = (field: string, value: any) => {
         setProfileForm({ ...profileForm, [field]: value });
@@ -141,40 +182,50 @@ const ProfilesPage = () => {
     const profileKeys = Object.keys(profiles).filter(k => k !== 'default');
     const defaultProfile = profiles.default || 'telephony_responsive';
 
-    return (
-        <div className="space-y-6">
-            <div className={`${pendingApply ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    {applyMethod === 'hot_reload'
-                        ? 'Saved profile changes can be applied via hot reload.'
-                        : 'Profile changes require an AI Engine restart to take effect.'}
-                </div>
-                <button
-                    onClick={() => applyChanges(false)}
-                    disabled={applying || !pendingApply}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
-                        pendingApply
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium'
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                    } disabled:opacity-50`}
-                >
-                    {applying ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {applying ? 'Applying...' : applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine'}
-                </button>
-            </div>
-            <div className="flex justify-between items-center">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Audio Profiles</h1>
-                    <p className="text-muted-foreground mt-1">
-                        Audio encoding and sampling configurations for different scenarios and providers.
-                    </p>
-                </div>
-            </div>
+	return (
+		<div className="space-y-6">
+			{pendingApply && (
+				<div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
+					<div className="flex items-center">
+						<AlertCircle className="w-5 h-5 mr-2" />
+						Changes saved. Apply to make them active.
+					</div>
+					<button
+						onClick={() => {
+							const msg = applyMethod === 'hot_reload'
+								? 'Apply profile changes via hot reload now? Active calls should continue, new calls use updated config.'
+								: 'Restart AI Engine now? This may disconnect active calls.';
+							if (window.confirm(msg)) {
+								applyChanges(false);
+							}
+						}}
+						disabled={applying || !pendingApply}
+						className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+					>
+						{applying ? (
+							<Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+						) : (
+							<RefreshCw className="w-3 h-3 mr-1.5" />
+						)}
+						{applying ? 'Applying...' : applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine'}
+					</button>
+				</div>
+			)}
+			<div className="flex justify-between items-center">
+				<div>
+					<h1 className="text-3xl font-bold tracking-tight">Audio Profiles</h1>
+					<p className="text-muted-foreground mt-1">
+						Audio encoding and sampling configurations for different scenarios and providers.
+					</p>
+				</div>
+				<button
+					onClick={handleAddProfile}
+					className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+				>
+					<Plus className="w-4 h-4 mr-2" />
+					Add Profile
+				</button>
+			</div>
 
             <ConfigSection title="Audio Profiles" description="Click a profile card to edit its settings.">
                 <div className="grid grid-cols-1 gap-4">
@@ -262,33 +313,52 @@ const ProfilesPage = () => {
                 </div>
             </ConfigSection>
 
-            <Modal
-                isOpen={!!editingProfile}
-                onClose={() => setEditingProfile(null)}
-                title={`Edit Profile: ${editingProfile}`}
-                size="lg"
-                footer={
-                    <>
-                        <button
-                            onClick={() => setEditingProfile(null)}
-                            className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
-                        >
-                            Cancel
-                        </button>
+			<Modal
+				isOpen={!!editingProfile}
+				onClose={() => {
+					setEditingProfile(null);
+					setIsNewProfile(false);
+					setNewProfileName('');
+				}}
+				title={isNewProfile ? 'Add Profile' : `Edit Profile: ${editingProfile}`}
+				size="lg"
+				footer={
+					<>
+						<button
+							onClick={() => {
+								setEditingProfile(null);
+								setIsNewProfile(false);
+								setNewProfileName('');
+							}}
+							className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
+						>
+							Cancel
+						</button>
                         <button
                             onClick={handleSaveProfile}
                             className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                         >
                             Save Changes
                         </button>
-                    </>
-                }
-            >
-                <div className="space-y-6">
-                    {/* Core Settings */}
-                    <div>
-                        <h4 className="font-semibold mb-3">Core Settings</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+					</>
+				}
+			>
+				{isNewProfile && (
+					<div className="pb-4 border-b border-border mb-4">
+						<FormInput
+							label="Profile Name"
+							value={newProfileName}
+							onChange={(e) => setNewProfileName(e.target.value)}
+							placeholder="e.g., telephony_pcm_16k"
+							tooltip="Key under profiles.<name>. Use lowercase letters, numbers, and underscores."
+						/>
+					</div>
+				)}
+				<div className="space-y-6">
+					{/* Core Settings */}
+					<div>
+						<h4 className="font-semibold mb-3">Core Settings</h4>
+						<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <FormInput
                                 label="Chunk Duration (ms)"
                                 value={profileForm.chunk_ms || 'auto'}

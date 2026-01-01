@@ -14,7 +14,8 @@ const ContextsPage = () => {
     const [editingContext, setEditingContext] = useState<string | null>(null);
     const [contextForm, setContextForm] = useState<any>({});
     const [isNewContext, setIsNewContext] = useState(false);
-    const [pendingRestart, setPendingRestart] = useState(false);
+    const [pendingApply, setPendingApply] = useState(false);
+    const [applyMethod, setApplyMethod] = useState<'hot_reload' | 'restart'>('restart');
     const [restartingEngine, setRestartingEngine] = useState(false);
 
     useEffect(() => {
@@ -40,7 +41,16 @@ const ContextsPage = () => {
             const routes = res.data?.tool_routes || {};
             const mcpTools = Object.keys(routes).filter((t) => typeof t === 'string' && t.startsWith('mcp_'));
 
-            const toolsFromYaml = Object.keys(parsedConfig?.tools || {}).filter((t) => typeof t === 'string' && t.length > 0);
+            const toolsBlock = parsedConfig?.tools || {};
+            const toolsFromYaml = Object.entries(toolsBlock)
+                .filter(([k, v]) => {
+                    if (typeof k !== 'string' || !k) return false;
+                    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+                    // Tool configs are dict-like and typically include an `enabled` flag.
+                    // Exclude tool-system settings like ai_identity/extensions/default_action_timeout.
+                    return Object.prototype.hasOwnProperty.call(v, 'enabled');
+                })
+                .map(([k]) => k);
             const fallbackBuiltin = [
                 'transfer',
                 'attended_transfer',
@@ -58,7 +68,14 @@ const ContextsPage = () => {
             setAvailableTools(merged);
         } catch (err) {
             // Non-fatal: MCP may be disabled or ai-engine down. Fall back to YAML tools.
-            const toolsFromYaml = Object.keys(parsedConfig?.tools || {}).filter((t) => typeof t === 'string' && t.length > 0);
+            const toolsBlock = parsedConfig?.tools || {};
+            const toolsFromYaml = Object.entries(toolsBlock)
+                .filter(([k, v]) => {
+                    if (typeof k !== 'string' || !k) return false;
+                    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+                    return Object.prototype.hasOwnProperty.call(v, 'enabled');
+                })
+                .map(([k]) => k);
             const fallbackBuiltin = [
                 'transfer',
                 'attended_transfer',
@@ -74,20 +91,24 @@ const ContextsPage = () => {
 
     const saveConfig = async (newConfig: any) => {
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(newConfig) });
+            const res = await axios.post('/api/config/yaml', { content: yaml.dump(newConfig) });
             setConfig(newConfig);
-            setPendingRestart(true);
+            const method = (res.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
+            setApplyMethod(method);
+            setPendingApply(true);
         } catch (err) {
             console.error('Failed to save config', err);
             alert('Failed to save configuration');
         }
     };
 
-    const handleReloadAIEngine = async (force: boolean = false) => {
+    const handleApplyChanges = async (force: boolean = false) => {
         setRestartingEngine(true);
         try {
-            // Context changes - use restart for consistency
-            const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
+            const endpoint = applyMethod === 'hot_reload'
+                ? '/api/system/containers/ai_engine/reload'
+                : `/api/system/containers/ai_engine/restart?force=${force}`;
+            const response = await axios.post(endpoint);
 
             if (response.data.status === 'warning') {
                 const confirmForce = window.confirm(
@@ -95,7 +116,7 @@ const ContextsPage = () => {
                 );
                 if (confirmForce) {
                     setRestartingEngine(false);
-                    return handleReloadAIEngine(true);
+                    return handleApplyChanges(true);
                 }
                 return;
             }
@@ -106,11 +127,14 @@ const ContextsPage = () => {
             }
 
             if (response.data.status === 'success') {
-                setPendingRestart(false);
-                alert('AI Engine restarted! Changes are now active.');
+                setPendingApply(false);
+                alert(applyMethod === 'hot_reload'
+                    ? 'AI Engine hot reloaded! Changes apply to new calls.'
+                    : 'AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
-            alert(`Failed to restart AI Engine: ${error.response?.data?.detail || error.message}`);
+            const action = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
+            alert(`Failed to ${action} AI Engine: ${error.response?.data?.detail || error.message}`);
         } finally {
             setRestartingEngine(false);
         }
@@ -190,30 +214,40 @@ const ContextsPage = () => {
         .map(([k]) => k)
         .sort();
 
+    const displayToolName = (tool: string) => {
+        if (tool === 'transfer') return 'blind_transfer';
+        return tool;
+    };
+
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Changes to context configurations require an AI Engine restart to take effect.
+            {pendingApply && (
+                <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        Changes saved. Apply to make them active.
+                    </div>
+                    <button
+                        onClick={() => {
+                            const msg = applyMethod === 'hot_reload'
+                                ? 'Apply changes via hot reload now? Active calls should continue, new calls use updated config.'
+                                : 'Restart AI Engine now? This may disconnect active calls.';
+                            if (window.confirm(msg)) {
+                                handleApplyChanges(false);
+                            }
+                        }}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine ? 'Applying...' : applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine'}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
-                        pendingRestart 
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium' 
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                    } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Reload AI Engine'}
-                </button>
-            </div>
+            )}
 
             <div className="flex justify-between items-center">
                 <div>
@@ -287,7 +321,7 @@ const ContextsPage = () => {
                                         <div className="flex flex-wrap gap-1.5">
                                             {contextData.tools.map((tool: string) => (
                                                 <span key={tool} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
-                                                    {tool}
+                                                    {displayToolName(tool)}
                                                 </span>
                                             ))}
                                         </div>

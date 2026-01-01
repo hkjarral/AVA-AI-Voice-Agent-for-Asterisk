@@ -902,15 +902,15 @@ const EnvPage = () => {
 
 
             {/* Health Checks */}
-            <ConfigSection title="Health Checks" description="URLs used for system health monitoring.">
-                <ConfigCard>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <FormInput
-                            label="Local AI Health URL"
-                            value={env['HEALTH_CHECK_LOCAL_AI_URL'] || 'ws://local_ai_server:8765'}
-                            onChange={(e) => updateEnv('HEALTH_CHECK_LOCAL_AI_URL', e.target.value)}
-                            placeholder="ws://local_ai_server:8765"
-                        />
+	            <ConfigSection title="Health Checks" description="URLs used for system health monitoring.">
+	                <ConfigCard>
+	                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+	                        <FormInput
+	                            label="Local AI Health URL"
+	                            value={env['HEALTH_CHECK_LOCAL_AI_URL'] || 'ws://127.0.0.1:8765'}
+	                            onChange={(e) => updateEnv('HEALTH_CHECK_LOCAL_AI_URL', e.target.value)}
+	                            placeholder="ws://127.0.0.1:8765"
+	                        />
                         <FormInput
                             label="AI Engine Health URL"
                             value={env['HEALTH_CHECK_AI_ENGINE_URL'] || 'http://ai_engine:15000/health'}

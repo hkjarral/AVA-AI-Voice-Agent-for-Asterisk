@@ -665,12 +665,38 @@ async def test_provider_connection(request: ProviderTestRequest):
                 ws_url = 'ws://127.0.0.1:8765'  # Default fallback
             
             try:
-                async with websockets.connect(ws_url, open_timeout=5.0) as ws:
+                def _fallback_ws_url(url: str) -> str:
+                    """
+                    In host-networked deployments, `local_ai_server` DNS does not resolve because it is not
+                    a Docker bridge network hostname. Fall back to localhost for best compatibility.
+                    """
+                    try:
+                        if 'local_ai_server' in url:
+                            return url.replace('local_ai_server', '127.0.0.1')
+                    except Exception:
+                        pass
+                    return url
+
+                async def _try_connect(url: str):
+                    async with websockets.connect(url, open_timeout=5.0) as ws:
+                        # Send status request to check models
+                        await ws.send(json.dumps({"type": "status"}))
+                        response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        data = json.loads(response)
+                        return data
+
+                try:
+                    data = await _try_connect(ws_url)
+                    effective_url = ws_url
+                except Exception as e:
+                    alt = _fallback_ws_url(ws_url)
+                    if alt != ws_url:
+                        data = await _try_connect(alt)
+                        effective_url = alt
+                    else:
+                        raise e
+
                     # Send status request to check models
-                    await ws.send(json.dumps({"type": "status"}))
-                    response = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                    data = json.loads(response)
-                    
                     if data.get("type") == "status_response" and data.get("status") == "ok":
                         models = data.get("models", {})
                         stt_loaded = models.get("stt", {}).get("loaded", False)
@@ -698,7 +724,7 @@ async def test_provider_connection(request: ProviderTestRequest):
                         all_loaded = stt_loaded and llm_loaded and tts_loaded
                         return {
                             "success": all_loaded,
-                            "message": f"Local AI Server connected. {' | '.join(status_parts)}"
+                            "message": f"Local AI Server connected ({effective_url}). {' | '.join(status_parts)}"
                         }
                     else:
                         return {"success": False, "message": "Local AI Server responded but status invalid"}

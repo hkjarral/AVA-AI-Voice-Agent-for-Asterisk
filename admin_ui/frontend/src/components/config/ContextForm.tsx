@@ -48,6 +48,11 @@ const ContextForm = ({ config, providers, pipelines, availableTools, availablePr
         updateConfig('tools', newTools);
     };
 
+    const displayToolName = (tool: string) => {
+        if (tool === 'transfer') return 'blind_transfer';
+        return tool;
+    };
+
     const pipelineOptions = Object.entries(pipelines || {}).map(([name, _]: [string, any]) => ({
         value: `pipeline:${name}`,
         label: `[Pipeline] ${name}`,
@@ -145,7 +150,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, availablePr
                                 checked={(config.tools || []).includes(tool)}
                                 onChange={() => handleToolToggle(tool)}
                             />
-                            <span className="text-sm font-medium">{tool}</span>
+                            <span className="text-sm font-medium">{displayToolName(tool)}</span>
                         </label>
                     ))}
                 </div>
