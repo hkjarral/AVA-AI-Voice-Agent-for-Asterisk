@@ -6939,7 +6939,29 @@ class Engine:
             # Accumulate into ~160ms chunks for STT while keeping ingestion responsive
             bytes_per_ms = 32  # 16k Hz * 2 bytes / 1000 ms
             base_commit_ms = 160
-            stt_chunk_ms = int(pipeline.stt_options.get("chunk_ms", base_commit_ms)) if pipeline.stt_options else base_commit_ms
+            # NOTE: In pipeline mode, users frequently swap STT providers in the UI. Local STT is designed
+            # for low-latency streaming, but buffered cloud STT settings (e.g., chunk_ms=4000) can linger
+            # and cause queue overflows and "no transcript" behavior. Keep explicit config behavior when
+            # present, but make local_stt robust when omitted/misaligned.
+            raw_stt_options = pipeline.stt_options or {}
+            stt_options: Dict[str, Any] = dict(raw_stt_options)
+            streaming_explicit = "streaming" in raw_stt_options
+            chunk_ms_explicit = "chunk_ms" in raw_stt_options
+
+            if getattr(pipeline, "stt_key", "") == "local_stt":
+                stt_options.setdefault("streaming", True)
+                stt_options.setdefault("stream_format", stt_options.get("stream_format") or "pcm16_16k")
+                stt_options.setdefault("mode", stt_options.get("mode") or "stt")
+                if not chunk_ms_explicit or stt_options.get("chunk_ms") in (None, "", 0):
+                    stt_options["chunk_ms"] = 160
+                if not streaming_explicit:
+                    try:
+                        if int(stt_options.get("chunk_ms", 160)) > 1000:
+                            stt_options["chunk_ms"] = 160
+                    except Exception:
+                        stt_options["chunk_ms"] = 160
+
+            stt_chunk_ms = int(stt_options.get("chunk_ms", base_commit_ms)) if stt_options else base_commit_ms
             commit_ms = max(stt_chunk_ms, 80)
             commit_bytes = bytes_per_ms * commit_ms
 
@@ -6950,7 +6972,7 @@ class Engine:
             buffer_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=200)
             transcript_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=8)
 
-            use_streaming = bool((pipeline.stt_options or {}).get("streaming", False))
+            use_streaming = bool(stt_options.get("streaming", False))
             if use_streaming:
                 streaming_supported = all(
                     hasattr(pipeline.stt_adapter, attr)
@@ -6963,7 +6985,7 @@ class Engine:
                         component=getattr(pipeline.stt_adapter, "component_key", "unknown"),
                     )
                     use_streaming = False
-            stream_format = (pipeline.stt_options or {}).get("stream_format", "pcm16_16k")
+            stream_format = stt_options.get("stream_format", "pcm16_16k")
             if use_streaming:
                 try:
                     logger.info(
@@ -7012,7 +7034,7 @@ class Engine:
                             call_id,
                             audio_chunk,
                             16000,
-                            pipeline.stt_options,
+                            stt_options,
                         )
                     except Exception:
                         logger.debug("STT transcribe failed", call_id=call_id, exc_info=True)
@@ -7546,7 +7568,7 @@ class Engine:
                 stop_called = False
 
                 try:
-                    await pipeline.stt_adapter.start_stream(call_id, pipeline.stt_options or {})
+                    await pipeline.stt_adapter.start_stream(call_id, stt_options)
                     stt_send_task = asyncio.create_task(stt_sender())
                     stt_recv_task = asyncio.create_task(stt_receiver())
                     dialog_task = asyncio.create_task(dialog_worker())

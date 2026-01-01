@@ -18,6 +18,29 @@ const PipelinesPage = () => {
     const [restartingEngine, setRestartingEngine] = useState(false);
     const providers = config?.providers || {};
 
+    const normalizeSttOptions = (sttKey: string, sttOptions: any) => {
+        const opts = (sttOptions && typeof sttOptions === 'object') ? sttOptions : {};
+
+        if (sttKey === 'local_stt') {
+            return {
+                streaming: true,
+                chunk_ms: 160,
+                stream_format: 'pcm16_16k',
+                mode: 'stt',
+            };
+        }
+
+        const normalized: any = {};
+        normalized.chunk_ms = typeof opts.chunk_ms === 'number' ? opts.chunk_ms : 4000;
+        if (typeof opts.response_format === 'string') normalized.response_format = opts.response_format;
+        if (typeof opts.temperature === 'number') normalized.temperature = opts.temperature;
+        if (typeof opts.language === 'string') normalized.language = opts.language;
+        if (typeof opts.prompt === 'string') normalized.prompt = opts.prompt;
+        if (opts.request_timeout_sec != null) normalized.request_timeout_sec = opts.request_timeout_sec;
+        if (opts.timeout_sec != null) normalized.timeout_sec = opts.timeout_sec;
+        return normalized;
+    };
+
     useEffect(() => {
         fetchConfig();
     }, []);
@@ -219,21 +242,7 @@ const PipelinesPage = () => {
         if (!isNewPipeline && existingData?.stt && mergedPipeline.stt && existingData.stt !== mergedPipeline.stt) {
             const existingSttOpts = (existingData.options || {}).stt || {};
             const nextSttOpts = (mergedPipeline.options || {}).stt || existingSttOpts;
-            const portable: any = {};
-            if (nextSttOpts && typeof nextSttOpts === 'object') {
-                // Intentionally exclude model/stt_model to prevent cross-provider drift.
-                if (nextSttOpts.chunk_ms != null) portable.chunk_ms = nextSttOpts.chunk_ms;
-                if (nextSttOpts.streaming != null) portable.streaming = nextSttOpts.streaming;
-                if (nextSttOpts.stream_format) portable.stream_format = nextSttOpts.stream_format;
-                if (nextSttOpts.mode) portable.mode = nextSttOpts.mode;
-                if (nextSttOpts.response_format) portable.response_format = nextSttOpts.response_format;
-                if (nextSttOpts.temperature != null) portable.temperature = nextSttOpts.temperature;
-                if (nextSttOpts.language) portable.language = nextSttOpts.language;
-                if (nextSttOpts.prompt) portable.prompt = nextSttOpts.prompt;
-                if (nextSttOpts.request_timeout_sec != null) portable.request_timeout_sec = nextSttOpts.request_timeout_sec;
-                if (nextSttOpts.timeout_sec != null) portable.timeout_sec = nextSttOpts.timeout_sec;
-            }
-            mergedPipeline.options = { ...(mergedPipeline.options || {}), stt: portable };
+            mergedPipeline.options = { ...(mergedPipeline.options || {}), stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts) };
         }
 
         // Keep only portable LLM options when LLM provider changes (avoid carrying provider-specific base_url/model).
@@ -252,6 +261,11 @@ const PipelinesPage = () => {
             }
             mergedPipeline.options = { ...(mergedPipeline.options || {}), llm: portable };
         }
+
+        // Always normalize STT options for the selected STT provider. This prevents stale cloud STT keys
+        // (e.g., response_format/temperature/chunk_ms=4000) from breaking local_stt when users swap providers.
+        mergedPipeline.options = { ...(mergedPipeline.options || {}) };
+        mergedPipeline.options.stt = normalizeSttOptions(mergedPipeline.stt, (mergedPipeline.options || {}).stt);
 
         newConfig.pipelines[pipelineName] = mergedPipeline;
 
@@ -364,7 +378,11 @@ const PipelinesPage = () => {
                                     <span className="font-semibold text-xs uppercase tracking-wider text-muted-foreground mb-1">STT</span>
                                     <span className="font-medium">{pipeline.stt || 'default'}</span>
                                     <span className="text-xs text-muted-foreground mt-1">
-                                        {pipeline.options?.stt?.streaming ? 'Streaming' : 'Buffered'}
+                                        {(() => {
+                                            const explicit = pipeline.options?.stt?.streaming;
+                                            if (explicit != null) return explicit ? 'Streaming' : 'Buffered';
+                                            return (pipeline.stt === 'local_stt') ? 'Streaming' : 'Buffered';
+                                        })()}
                                     </span>
                                 </div>
 
