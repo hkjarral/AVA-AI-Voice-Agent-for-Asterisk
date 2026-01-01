@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
 import os
 import re
 import asyncio
@@ -15,6 +17,37 @@ import settings
 MAX_BACKUPS = 5
 
 router = APIRouter()
+
+# YAML duplicate-key protection:
+# - PyYAML tolerates duplicate keys (last one wins), but the Admin UI frontend YAML parser rejects them.
+# - Enforce "no duplicate mapping keys" on reads/writes so we fail fast with a clear error.
+class _NoDuplicateSafeLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_mapping_no_duplicates(loader: yaml.SafeLoader, node: MappingNode, deep: bool = False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key ({key!r})",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_NoDuplicateSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_mapping_no_duplicates,
+)
+
+
+def _safe_load_no_duplicates(content: str):
+    return yaml.load(content, Loader=_NoDuplicateSafeLoader)
 
 # Regex to strip ANSI escape codes from logs
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -161,7 +194,7 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
       HTTPException(400) on validation errors
     """
     try:
-        parsed = yaml.safe_load(content) or {}
+        parsed = _safe_load_no_duplicates(content) or {}
     except yaml.YAMLError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(exc)}")
 
@@ -297,8 +330,8 @@ async def update_yaml_config(update: ConfigUpdate):
                     old_content = f.read()
             
             if old_content:
-                old_parsed = yaml.safe_load(old_content) or {}
-                new_parsed = yaml.safe_load(update.content) or {}
+                old_parsed = _safe_load_no_duplicates(old_content) or {}
+                new_parsed = _safe_load_no_duplicates(update.content) or {}
                 
                 # Keys that can be hot-reloaded
                 hot_reload_keys = {'contexts', 'profiles', 'mcp'}
@@ -341,7 +374,7 @@ async def get_yaml_config():
     try:
         with open(settings.CONFIG_PATH, 'r') as f:
             config_content = f.read()
-        yaml.safe_load(config_content) # Validate content is still valid YAML
+        _safe_load_no_duplicates(config_content)  # Validate YAML and reject duplicate keys
         return {"content": config_content}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=500, detail=f"Error reading or parsing YAML config: {str(e)}")
@@ -1166,7 +1199,7 @@ def update_yaml_provider_field(provider_name: str, field: str, value: Any) -> bo
             return False
 
         with open(settings.CONFIG_PATH, 'r') as f:
-            config = yaml.safe_load(f)
+            config = _safe_load_no_duplicates(f.read())
 
         if not isinstance(config, dict):
             return False
