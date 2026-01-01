@@ -10,6 +10,7 @@ import { FormInput, FormSelect } from '../components/ui/FormComponents';
 const ProfilesPage = () => {
 	const [config, setConfig] = useState<any>({});
 	const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 	const [editingProfile, setEditingProfile] = useState<string | null>(null);
 	const [profileForm, setProfileForm] = useState<any>({});
 	const [isNewProfile, setIsNewProfile] = useState(false);
@@ -27,8 +28,15 @@ const ProfilesPage = () => {
             const res = await axios.get('/api/config/yaml');
             const parsed = yaml.load(res.data.content) as any;
             setConfig(parsed || {});
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
+            const status = (err as any)?.response?.status;
+            if (status === 401) {
+                setError('Not authenticated. Please refresh and log in again.');
+            } else {
+                setError('Failed to load configuration. Check backend logs and try again.');
+            }
         } finally {
             setLoading(false);
         }
@@ -284,6 +292,20 @@ const ProfilesPage = () => {
 					</button>
 				</div>
 			)}
+            {error && (
+                <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        {error}
+                    </div>
+                    <button
+                        onClick={() => window.location.reload()}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-red-500 text-white hover:bg-red-600 font-medium"
+                    >
+                        Reload
+                    </button>
+                </div>
+            )}
 			<div className="flex justify-between items-center">
 				<div>
 					<h1 className="text-3xl font-bold tracking-tight">Audio Profiles</h1>

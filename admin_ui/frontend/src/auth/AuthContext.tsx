@@ -25,6 +25,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [loading, setLoading] = useState(true);
     const [mustChangePassword, setMustChangePassword] = useState(false);
 
+    // Ensure auth headers are available synchronously during initial render.
+    // Many pages fetch config on mount; relying only on async interceptor setup can race and produce 401s + empty UI.
+    if (token) {
+        axios.defaults.headers.common.Authorization = `Bearer ${token}`;
+    } else {
+        delete axios.defaults.headers.common.Authorization;
+    }
+
     useEffect(() => {
         console.log("AuthProvider effect: token =", token);
         if (token) {
@@ -89,8 +97,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Add interceptor to attach token to all requests
     useEffect(() => {
         const interceptor = axios.interceptors.request.use(config => {
-            if (token && !config.headers.Authorization) {
-                config.headers.Authorization = `Bearer ${token}`;
+            if (!config.headers) {
+                config.headers = {};
+            }
+            if (token && !(config.headers as any).Authorization) {
+                (config.headers as any).Authorization = `Bearer ${token}`;
             }
             return config;
         });

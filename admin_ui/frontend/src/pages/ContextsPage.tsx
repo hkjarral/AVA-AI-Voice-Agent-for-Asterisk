@@ -10,6 +10,7 @@ import ContextForm from '../components/config/ContextForm';
 const ContextsPage = () => {
     const [config, setConfig] = useState<any>({});
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [availableTools, setAvailableTools] = useState<string[]>([]);
     const [toolEnabledMap, setToolEnabledMap] = useState<Record<string, boolean>>({});
     const [editingContext, setEditingContext] = useState<string | null>(null);
@@ -29,8 +30,15 @@ const ContextsPage = () => {
             const parsed = yaml.load(res.data.content) as any;
             setConfig(parsed || {});
             await fetchMcpTools(parsed || {});
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
+            const status = (err as any)?.response?.status;
+            if (status === 401) {
+                setError('Not authenticated. Please refresh and log in again.');
+            } else {
+                setError('Failed to load configuration. Check backend logs and try again.');
+            }
         } finally {
             setLoading(false);
         }
@@ -286,6 +294,21 @@ const ContextsPage = () => {
                             <RefreshCw className="w-3 h-3 mr-1.5" />
                         )}
                         {restartingEngine ? 'Applying...' : applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine'}
+                    </button>
+                </div>
+            )}
+
+            {error && (
+                <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        {error}
+                    </div>
+                    <button
+                        onClick={() => window.location.reload()}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-red-500 text-white hover:bg-red-600 font-medium"
+                    >
+                        Reload
                     </button>
                 </div>
             )}
