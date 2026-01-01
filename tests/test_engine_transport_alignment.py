@@ -3,20 +3,22 @@ import types
 import pytest
 
 from src.engine import Engine, _CODEC_ALIGNMENT
-from src.core.models import CallSession
+from src.core.models import CallSession, LegacyTransportProfile
 
 
 def _make_session(call_id: str, fmt: str, rate: int) -> CallSession:
     session = CallSession(call_id=call_id, caller_channel_id=f"{call_id}-chan")
-    session.transport_profile.format = fmt
-    session.transport_profile.sample_rate = rate
+    # transport_profile is optional in CallSession; tests should set a legacy profile explicitly.
+    session.transport_profile = LegacyTransportProfile(format=fmt, sample_rate=rate)
     return session
 
 
 def _make_engine() -> Engine:
     engine = Engine.__new__(Engine)
     engine.providers = {}
+    engine._call_providers = {}
     engine.call_audio_preferences = {}
+    engine._transport_card_logged = set()
     return engine
 
 
@@ -45,7 +47,7 @@ def test_resolve_stream_targets_resets_preferences(pref_format, pref_rate, trans
     assert engine.call_audio_preferences[call_id]["format"] == transport_format
     assert engine.call_audio_preferences[call_id]["sample_rate"] == transport_rate
     assert remediation is None
-    _CODEC_ALIGNMENT.remove(call_id, "deepgram")
+    _CODEC_ALIGNMENT.remove("deepgram")
 
 
 def test_resolve_stream_targets_detects_provider_mismatch():
@@ -65,7 +67,7 @@ def test_resolve_stream_targets_detects_provider_mismatch():
     assert "target_encoding" in remediation
     assert "target_sample_rate_hz" in remediation
     assert session.codec_alignment_ok is False
-    _CODEC_ALIGNMENT.remove(call_id, "openai_realtime")
+    _CODEC_ALIGNMENT.remove("openai_realtime")
 
 
 def test_resolve_stream_targets_pass_through_when_aligned():
@@ -83,4 +85,4 @@ def test_resolve_stream_targets_pass_through_when_aligned():
     assert target_rate == 8000
     assert remediation is None
     assert session.codec_alignment_ok is True
-    _CODEC_ALIGNMENT.remove(call_id, "openai_realtime")
+    _CODEC_ALIGNMENT.remove("openai_realtime")

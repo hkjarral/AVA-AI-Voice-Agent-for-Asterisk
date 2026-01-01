@@ -10,15 +10,7 @@ import ContextForm from '../components/config/ContextForm';
 const ContextsPage = () => {
     const [config, setConfig] = useState<any>({});
     const [loading, setLoading] = useState(true);
-    const [availableTools, setAvailableTools] = useState<string[]>([
-        'transfer',
-        'attended_transfer',
-        'cancel_transfer',
-        'hangup_call',
-        'leave_voicemail',
-        'send_email_summary',
-        'request_transcript'
-    ]);
+    const [availableTools, setAvailableTools] = useState<string[]>([]);
     const [editingContext, setEditingContext] = useState<string | null>(null);
     const [contextForm, setContextForm] = useState<any>({});
     const [isNewContext, setIsNewContext] = useState(false);
@@ -34,7 +26,7 @@ const ContextsPage = () => {
             const res = await axios.get('/api/config/yaml');
             const parsed = yaml.load(res.data.content) as any;
             setConfig(parsed || {});
-            await fetchMcpTools();
+            await fetchMcpTools(parsed || {});
         } catch (err) {
             console.error('Failed to load config', err);
         } finally {
@@ -42,12 +34,14 @@ const ContextsPage = () => {
         }
     };
 
-    const fetchMcpTools = async () => {
+    const fetchMcpTools = async (parsedConfig: any) => {
         try {
             const res = await axios.get('/api/mcp/status');
             const routes = res.data?.tool_routes || {};
             const mcpTools = Object.keys(routes).filter((t) => typeof t === 'string' && t.startsWith('mcp_'));
-            const builtin = [
+
+            const toolsFromYaml = Object.keys(parsedConfig?.tools || {}).filter((t) => typeof t === 'string' && t.length > 0);
+            const fallbackBuiltin = [
                 'transfer',
                 'attended_transfer',
                 'cancel_transfer',
@@ -56,10 +50,25 @@ const ContextsPage = () => {
                 'send_email_summary',
                 'request_transcript'
             ];
-            const merged = Array.from(new Set([...builtin, ...mcpTools])).sort();
+
+            const merged = Array.from(new Set([
+                ...(toolsFromYaml.length > 0 ? toolsFromYaml : fallbackBuiltin),
+                ...mcpTools
+            ])).sort();
             setAvailableTools(merged);
         } catch (err) {
-            // Non-fatal: MCP may be disabled or ai-engine down.
+            // Non-fatal: MCP may be disabled or ai-engine down. Fall back to YAML tools.
+            const toolsFromYaml = Object.keys(parsedConfig?.tools || {}).filter((t) => typeof t === 'string' && t.length > 0);
+            const fallbackBuiltin = [
+                'transfer',
+                'attended_transfer',
+                'cancel_transfer',
+                'hangup_call',
+                'leave_voicemail',
+                'send_email_summary',
+                'request_transcript'
+            ];
+            setAvailableTools((toolsFromYaml.length > 0 ? toolsFromYaml : fallbackBuiltin).slice().sort());
         }
     };
 
@@ -114,14 +123,15 @@ const ContextsPage = () => {
     };
 
     const handleAddContext = () => {
+        const defaultTools = ['transfer', 'hangup_call'].filter((t) => availableTools.includes(t));
         setEditingContext('new_context');
         setContextForm({
             name: '',
             greeting: 'Hi {caller_name}, how can I help you today?',
             prompt: 'You are a helpful voice assistant.',
-            profile: 'telephony_ulaw_8k',
+            profile: '',
             provider: '',
-            tools: ['transfer', 'hangup_call']
+            tools: defaultTools
         });
         setIsNewContext(true);
     };
@@ -153,18 +163,32 @@ const ContextsPage = () => {
         if (!newConfig.contexts) newConfig.contexts = {};
 
         const { name, ...contextData } = contextForm;
+        const cleanedContextData = { ...contextData };
+        // Avoid persisting empty-string overrides into YAML (prefer omission for "use default")
+        ['profile', 'provider', 'pipeline'].forEach((k) => {
+            if ((cleanedContextData as any)[k] === '') {
+                delete (cleanedContextData as any)[k];
+            }
+        });
 
         if (isNewContext && newConfig.contexts[name]) {
             alert('Context already exists');
             return;
         }
 
-        newConfig.contexts[name] = contextData;
+        newConfig.contexts[name] = cleanedContextData;
         await saveConfig(newConfig);
         setEditingContext(null);
     };
 
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>;
+
+    const profilesBlock = config.profiles || {};
+    const defaultProfileName = (typeof profilesBlock.default === 'string' && profilesBlock.default) ? profilesBlock.default : '';
+    const availableProfiles = Object.entries(profilesBlock)
+        .filter(([k, v]) => k !== 'default' && !!v && typeof v === 'object' && !Array.isArray(v))
+        .map(([k]) => k)
+        .sort();
 
     return (
         <div className="space-y-6">
@@ -220,7 +244,7 @@ const ContextsPage = () => {
                                         <h4 className="font-semibold text-lg">{name}</h4>
                                         <div className="flex gap-2 mt-1">
                                             <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-muted-foreground bg-secondary/50">
-                                                {contextData.profile || 'default'}
+                                                {contextData.profile || defaultProfileName || 'default'}
                                             </span>
                                             {contextData.pipeline && (
                                                 <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-muted-foreground bg-secondary/50">
@@ -307,6 +331,8 @@ const ContextsPage = () => {
                     providers={config.providers}
                     pipelines={config.pipelines}
                     availableTools={availableTools}
+                    availableProfiles={availableProfiles}
+                    defaultProfileName={defaultProfileName}
                     onChange={setContextForm}
                     isNew={isNewContext}
                 />

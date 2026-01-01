@@ -2,6 +2,7 @@ import React from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import YamlRewriteBanner from './YamlRewriteBanner';
 
 const AppShell = () => {
     return (
@@ -10,6 +11,7 @@ const AppShell = () => {
 
             <main className="flex-1 flex flex-col min-w-0">
                 <Header />
+                <YamlRewriteBanner />
 
                 <div className="flex-1 overflow-auto p-6">
                     <div className="max-w-6xl mx-auto">

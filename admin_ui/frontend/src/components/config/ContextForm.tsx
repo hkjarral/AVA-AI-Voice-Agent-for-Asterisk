@@ -7,11 +7,13 @@ interface ContextFormProps {
     providers: any;
     pipelines?: any;
     availableTools?: string[];
+    availableProfiles?: string[];
+    defaultProfileName?: string;
     onChange: (newConfig: any) => void;
     isNew?: boolean;
 }
 
-const ContextForm = ({ config, providers, pipelines, availableTools, onChange, isNew }: ContextFormProps) => {
+const ContextForm = ({ config, providers, pipelines, availableTools, availableProfiles, defaultProfileName, onChange, isNew }: ContextFormProps) => {
     const updateConfig = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -25,15 +27,18 @@ const ContextForm = ({ config, providers, pipelines, availableTools, onChange, i
         'send_email_summary',
         'request_transcript'
     ];
-    const toolOptions = (availableTools && availableTools.length > 0) ? availableTools : fallbackTools;
+    const toolOptionsBase = (availableTools && availableTools.length > 0) ? availableTools : fallbackTools;
+    const selectedTools = Array.isArray(config.tools) ? config.tools : [];
+    const toolOptions = Array.from(new Set([...toolOptionsBase, ...selectedTools])).sort();
 
-    const availableProfiles = [
-        'default',
+    const fallbackProfiles = [
         'telephony_responsive',
         'telephony_ulaw_8k',
         'openai_realtime_24k',
         'wideband_pcm_16k'
     ];
+    const profileOptions = (availableProfiles && availableProfiles.length > 0) ? availableProfiles : fallbackProfiles;
+    const defaultProfileLabel = defaultProfileName ? `Default (${defaultProfileName})` : 'Default (from profiles.default)';
 
     const handleToolToggle = (tool: string) => {
         const currentTools = config.tools || [];
@@ -107,8 +112,12 @@ const ContextForm = ({ config, providers, pipelines, availableTools, onChange, i
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <FormSelect
                     label="Audio Profile"
-                    options={availableProfiles.map(p => ({ value: p, label: p }))}
-                    value={config.profile || 'telephony_ulaw_8k'}
+                    tooltip="Optional. If not set, the default profile from profiles.default is used."
+                    options={[
+                        { value: '', label: defaultProfileLabel },
+                        ...profileOptions.map(p => ({ value: p, label: p }))
+                    ]}
+                    value={config.profile || ''}
                     onChange={(e) => updateConfig('profile', e.target.value)}
                 />
 
