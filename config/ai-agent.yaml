@@ -1074,6 +1074,8 @@ providers:
     input_gain_max_db: 0
   openai_stt:
     enabled: true
+    capabilities:
+      - stt
     input_encoding: linear16
     input_sample_rate_hz: 16000
     stt_base_url: https://api.openai.com/v1/audio/transcriptions
@@ -1084,6 +1086,8 @@ providers:
     type: openai
   openai_tts:
     enabled: true
+    capabilities:
+      - tts
     response_format: wav
     target_encoding: mulaw
     target_sample_rate_hz: 8000

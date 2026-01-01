@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FormInput, FormLabel } from '../ui/FormComponents';
-import { ensureModularKey, isFullAgentProvider, isRegisteredProvider } from '../../utils/providerNaming';
+import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 interface LocalAIStatus {
@@ -54,30 +54,56 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     };
 
     // Helper to filter providers by capability
-    // STRICT: Only use capabilities array. NO name matching.
+    // Prefer capabilities array (authoritative). For legacy configs missing capabilities, infer from key suffix.
     // Only show registered providers that have engine adapter support.
-    const getProvidersByCapability = (cap: 'stt' | 'llm' | 'tts') => {
-        return Object.entries(providers || {})
-            .filter(([_, p]: [string, any]) => {
+    const getProvidersByCapability = (cap: 'stt' | 'llm' | 'tts', selectedProvider?: string) => {
+        const base = Object.entries(providers || {})
+            .filter(([providerKey, p]: [string, any]) => {
                 // Exclude Full Agents from modular slots
                 if (isFullAgentProvider(p)) return false;
 
                 // Exclude unregistered providers (no engine adapter)
                 if (!isRegisteredProvider(p)) return false;
 
-                // Check capability existence
-                return (p.capabilities || []).includes(cap);
+                // Hide disabled providers from choices (but keep them visible if currently selected).
+                if (p.enabled === false) return false;
+
+                const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
+                if (caps.length > 0) {
+                    return caps.includes(cap);
+                }
+
+                // Legacy: infer from provider key suffix (e.g., openai_stt/openai_llm/openai_tts).
+                // This keeps pipelines editable even if capabilities haven't been persisted yet.
+                return capabilityFromKey(providerKey) === cap;
             })
             .map(([name, p]: [string, any]) => ({
                 value: name,
-                label: name,
-                disabled: p.enabled === false
+                label: (Array.isArray(p.capabilities) && p.capabilities.length > 0) ? name : `${name} (inferred)`,
+                disabled: false
             }));
+
+        // If the current pipeline references a disabled provider, keep it visible as the selected value
+        // so users understand why audio may be failing.
+        if (selectedProvider && !base.some((p) => p.value === selectedProvider)) {
+            const selectedCfg = providers?.[selectedProvider];
+            if (selectedCfg && selectedCfg.enabled === false) {
+                const caps = Array.isArray(selectedCfg.capabilities) ? selectedCfg.capabilities : [];
+                const matches =
+                    (caps.length > 0 && caps.includes(cap)) ||
+                    (caps.length === 0 && capabilityFromKey(selectedProvider) === cap);
+                if (matches) {
+                    base.unshift({ value: selectedProvider, label: `${selectedProvider} (Disabled)`, disabled: true });
+                }
+            }
+        }
+
+        return base;
     };
 
-    const sttProviders = getProvidersByCapability('stt');
-    const llmProviders = getProvidersByCapability('llm');
-    const ttsProviders = getProvidersByCapability('tts');
+    const sttProviders = getProvidersByCapability('stt', localConfig.stt);
+    const llmProviders = getProvidersByCapability('llm', localConfig.llm);
+    const ttsProviders = getProvidersByCapability('tts', localConfig.tts);
 
     const handleProviderChange = (cap: 'stt' | 'llm' | 'tts', value: string) => {
         if (!value) {

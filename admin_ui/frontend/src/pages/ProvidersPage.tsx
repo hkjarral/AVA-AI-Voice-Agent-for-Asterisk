@@ -15,7 +15,9 @@ import DeepgramProviderForm from '../components/config/providers/DeepgramProvide
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
-import { ensureModularKey, getModularCapability, isFullAgentProvider } from '../utils/providerNaming';
+import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider } from '../utils/providerNaming';
+
+const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
 
 const ProvidersPage: React.FC = () => {
     const [config, setConfig] = useState<any>({});
@@ -46,10 +48,35 @@ const ProvidersPage: React.FC = () => {
         }
     };
 
+    const normalizeProviderCapabilities = (nextConfig: any) => {
+        const providers = nextConfig?.providers || {};
+        const normalizedProviders: Record<string, any> = { ...providers };
+
+        Object.entries(providers).forEach(([providerKey, providerData]) => {
+            if (!providerData || typeof providerData !== 'object' || Array.isArray(providerData)) return;
+            // Only auto-fill for modular providers.
+            if (isFullAgentProvider(providerData)) return;
+
+            const caps = Array.isArray((providerData as any).capabilities) ? (providerData as any).capabilities : [];
+            if (caps.length > 0) return;
+
+            const inferred = capabilityFromKey(providerKey);
+            if (!inferred) return;
+
+            normalizedProviders[providerKey] = {
+                ...providerData,
+                capabilities: [inferred],
+            };
+        });
+
+        return { ...nextConfig, providers: normalizedProviders };
+    };
+
     const saveConfig = async (newConfig: any) => {
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(newConfig) });
-            setConfig(newConfig);
+            const normalized = normalizeProviderCapabilities(newConfig);
+            await axios.post('/api/config/yaml', { content: yaml.dump(normalized) });
+            setConfig(normalized);
             setPendingRestart(true);
         } catch (err) {
             console.error('Failed to save config', err);
@@ -59,7 +86,7 @@ const ProvidersPage: React.FC = () => {
 
     const handleEditProvider = (name: string) => {
         setEditingProvider(name);
-        const providerData = config.providers?.[name] || {};
+        const providerData = { ...(config.providers?.[name] || {}) };
 
         if (!providerData.type) {
             if (isFullAgentProvider(providerData)) {
@@ -73,6 +100,17 @@ const ProvidersPage: React.FC = () => {
                 else if (lowerName.includes('ollama')) providerData.type = 'ollama';
                 else if (lowerName.includes('local')) providerData.type = 'local';
                 else providerData.type = 'other';
+            }
+        }
+
+        // Legacy migration: if capabilities are missing for a modular provider, infer from suffix for UX.
+        if (!isFullAgentProvider(providerData)) {
+            const caps = Array.isArray(providerData.capabilities) ? providerData.capabilities : [];
+            if (caps.length === 0) {
+                const inferred = capabilityFromKey(name);
+                if (inferred) {
+                    providerData.capabilities = [inferred];
+                }
             }
         }
 
@@ -260,15 +298,25 @@ const ProvidersPage: React.FC = () => {
 
         const isFull = isFullAgentProvider(providerForm);
         let finalName = (providerForm.name || '').toLowerCase();
-        let capabilities = providerForm.capabilities || [];
+        let capabilities = Array.isArray(providerForm.capabilities) ? providerForm.capabilities : [];
 
         if (!isFull) {
-            const cap = getModularCapability(providerForm);
+            // Capabilities are authoritative when present. If missing, infer from suffix for existing legacy configs
+            // and persist to YAML. New modular providers must select a capability explicitly.
+            let cap: Capability | null = (capabilities.length === 1) ? (capabilities[0] as Capability) : null;
+            const inferred = capabilityFromKey(finalName);
+
             if (!cap) {
-                alert('Select exactly one capability for modular providers (STT/LLM/TTS).');
-                return;
+                if (!isNewProvider && inferred) {
+                    cap = inferred;
+                    capabilities = [cap];
+                } else {
+                    alert('Capability is required for modular providers. Select STT, LLM, or TTS.');
+                    return;
+                }
             }
-            finalName = ensureModularKey(finalName, cap);
+
+            finalName = ensureModularKey(stripModularSuffix(finalName), cap);
             capabilities = [cap];
         } else {
             capabilities = ['stt', 'llm', 'tts'];
@@ -300,7 +348,7 @@ const ProvidersPage: React.FC = () => {
 
         if (!isFull) {
             const cap = providerData.capabilities[0];
-            providerData.name = ensureModularKey(providerData.name, cap);
+            providerData.name = ensureModularKey(stripModularSuffix(providerData.name), cap);
         }
 
         if (!isNewProvider && editingProvider && editingProvider !== finalName) {
@@ -343,6 +391,16 @@ const ProvidersPage: React.FC = () => {
         } finally {
             setTestingProvider(null);
         }
+    };
+
+    const handleSetModularCapability = (cap: Capability) => {
+        const rawName = (providerForm.name || '').toLowerCase();
+        if (!rawName.trim()) {
+            alert('Please enter a provider name before selecting a capability.');
+            return;
+        }
+        const normalizedName = ensureModularKey(stripModularSuffix(rawName), cap);
+        setProviderForm({ ...providerForm, name: normalizedName, capabilities: [cap] });
     };
 
     const renderProviderForm = () => {
@@ -726,7 +784,54 @@ const ProvidersPage: React.FC = () => {
                     </div>
                 }
             >
-                {renderProviderForm()}
+                <div className="space-y-4">
+                    {!isFullAgentProvider(providerForm) && (
+                        <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Capability (required)</label>
+                                    <select
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={Array.isArray(providerForm.capabilities) && providerForm.capabilities.length === 1 ? providerForm.capabilities[0] : ''}
+                                        disabled={!isNewProvider && Array.isArray(providerForm.capabilities) && providerForm.capabilities.length === 1}
+                                        onChange={(e) => handleSetModularCapability(e.target.value as Capability)}
+                                    >
+                                        <option value="">Select capability...</option>
+                                        <option value="stt">Speech-to-Text (STT)</option>
+                                        <option value="llm">Large Language Model (LLM)</option>
+                                        <option value="tts">Text-to-Speech (TTS)</option>
+                                    </select>
+                                    <p className="text-xs text-muted-foreground">
+                                        Determines which pipeline slot this provider appears in. Saved providers will persist this in YAML.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {(() => {
+                                const declared = Array.isArray(providerForm.capabilities) && providerForm.capabilities.length === 1
+                                    ? (providerForm.capabilities[0] as Capability)
+                                    : null;
+                                const suffix = capabilityFromKey(providerForm.name || '');
+                                if (!declared || !suffix || declared === suffix) return null;
+                                const suggested = ensureModularKey(stripModularSuffix((providerForm.name || '').toLowerCase()), declared);
+                                return (
+                                    <div className="bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 p-3 rounded-md text-sm">
+                                        <div className="font-semibold mb-1">Capability/name mismatch</div>
+                                        <div>
+                                            This provider name ends with <code className="px-1 rounded bg-muted">_{suffix}</code> but capabilities says{' '}
+                                            <code className="px-1 rounded bg-muted">{declared}</code>. Pipelines will trust capabilities.
+                                        </div>
+                                        <div className="mt-2">
+                                            Suggested fix: rename to <code className="px-1 rounded bg-muted">{suggested}</code>.
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    )}
+
+                    {renderProviderForm()}
+                </div>
             </Modal>
 
             {/* Add Provider Templates Modal */}
