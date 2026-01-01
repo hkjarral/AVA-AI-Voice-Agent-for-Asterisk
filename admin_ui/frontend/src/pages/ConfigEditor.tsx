@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import { Save, Download, AlertCircle, Settings, Server, Trash2, RefreshCw, Loader2 } from 'lucide-react';
 import yaml from 'js-yaml';
-import { sanitizeConfigForSave } from '../lib/configSanitizers';
+import { sanitizeConfigForSave } from '../utils/configSanitizers';
 
 // Import Config Components
 import GeneralConfig from '../components/config/GeneralConfig';

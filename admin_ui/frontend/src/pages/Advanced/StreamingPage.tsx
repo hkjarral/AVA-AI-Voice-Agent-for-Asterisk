@@ -5,7 +5,7 @@ import { Save, Zap, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
-import { sanitizeConfigForSave } from '../../lib/configSanitizers';
+import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
 const StreamingPage = () => {
     const [config, setConfig] = useState<any>({});

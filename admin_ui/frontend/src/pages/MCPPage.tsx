@@ -6,7 +6,7 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormLabel } from '../components/ui/FormComponents';
-import { sanitizeConfigForSave } from '../lib/configSanitizers';
+import { sanitizeConfigForSave } from '../utils/configSanitizers';
 
 type MCPStatus = {
     enabled: boolean;

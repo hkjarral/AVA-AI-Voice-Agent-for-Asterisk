@@ -5,7 +5,7 @@ import { Save, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect } from '../../components/ui/FormComponents';
-import { sanitizeConfigForSave } from '../../lib/configSanitizers';
+import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
 const TransportPage = () => {
     const [config, setConfig] = useState<any>({});

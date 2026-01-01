@@ -6,7 +6,7 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import ToolForm from '../components/config/ToolForm';
 import { useAuth } from '../auth/AuthContext';
-import { sanitizeConfigForSave } from '../lib/configSanitizers';
+import { sanitizeConfigForSave } from '../utils/configSanitizers';
 
 const ToolsPage = () => {
     const { token } = useAuth();
