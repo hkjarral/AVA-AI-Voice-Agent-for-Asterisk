@@ -202,6 +202,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                 <option value="tts-1">tts-1</option>
                                 <option value="tts-1-hd">tts-1-hd</option>
                                 <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
+                                <option value="gpt-4o-mini-tts-2025-12-15">gpt-4o-mini-tts-2025-12-15</option>
                             </select>
                             <p className="text-xs text-muted-foreground">
                                 If you see “invalid model ID”, switch to <code>tts-1</code>.
@@ -216,6 +217,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             >
                                 <option value="alloy">Alloy</option>
                                 <option value="ash">Ash</option>
+                                <option value="ballad">Ballad</option>
                                 <option value="coral">Coral</option>
                                 <option value="echo">Echo</option>
                                 <option value="fable">Fable</option>
@@ -223,6 +225,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                 <option value="nova">Nova</option>
                                 <option value="sage">Sage</option>
                                 <option value="shimmer">Shimmer</option>
+                                <option value="verse">Verse</option>
                             </select>
                         </div>
                         <div className="space-y-2">

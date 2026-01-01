@@ -651,60 +651,61 @@ class OpenAITTSAdapter(TTSComponent):
         if not api_key:
             raise RuntimeError("OpenAI TTS requires an API key")
 
-        # OpenAI audio.speech models are a small, validated set. When a pipeline is edited and the
-        # TTS provider is swapped, legacy pipeline-level options may still include a model from
-        # a different provider (e.g., Groq "canopylabs/orpheus-*"). Fall back to a safe OpenAI
-        # model to avoid a guaranteed 400 + silent greeting.
-        allowed_models = {"tts-1", "tts-1-hd", "gpt-4o-mini-tts"}
+        # OpenAI audio.speech expects a small enum set for model/voice/response_format. We avoid hard-failing
+        # on unknown values (to reduce drift with upstream), but we keep "safe fallbacks" + retries for the
+        # common case where a pipeline TTS provider is swapped and stale options remain (e.g., Groq model/voice).
         model = (merged.get("tts_model") or "").strip()
-        if model not in allowed_models:
-            fallback_model = (getattr(self._provider_defaults, "tts_model", None) or "tts-1").strip()
-            if fallback_model not in allowed_models:
-                fallback_model = "tts-1"
+        if not model or "/" in model:
+            fallback_model = (self._provider_defaults.tts_model or "tts-1").strip()
             logger.warning(
-                "OpenAI TTS model invalid; falling back to supported model",
+                "OpenAI TTS model looks invalid for OpenAI; falling back",
                 call_id=call_id,
                 requested_model=merged.get("tts_model"),
                 fallback_model=fallback_model,
             )
             merged["tts_model"] = fallback_model
 
-        # OpenAI audio.speech voice must be one of a known enum. When pipelines are edited and the
-        # TTS provider is swapped, legacy pipeline-level options may still include a voice from
-        # a different provider (e.g., Groq "hannah"). Fall back to a safe OpenAI voice to avoid
-        # silent-call failures (greeting synthesis).
-        allowed_voices = {
-            "alloy",
-            "ash",
-            "coral",
-            "echo",
-            "fable",
-            "nova",
-            "onyx",
-            "sage",
-            "shimmer",
-        }
         voice = (merged.get("voice") or "").strip().lower()
-        if voice not in allowed_voices:
-            fallback = (getattr(self._provider_defaults, "voice", None) or "alloy").strip().lower()
-            if fallback not in allowed_voices:
-                fallback = "alloy"
+        if voice in {
+            "autumn",
+            "diana",
+            "hannah",
+            "austin",
+            "daniel",
+            "troy",
+            "fahad",
+            "sultan",
+            "lulwa",
+            "noura",
+        }:
+            fallback_voice = (self._provider_defaults.voice or "alloy").strip().lower()
             logger.warning(
-                "OpenAI TTS voice invalid; falling back to supported voice",
+                "OpenAI TTS voice looks invalid for OpenAI; falling back",
                 call_id=call_id,
                 requested_voice=merged.get("voice"),
-                fallback_voice=fallback,
+                fallback_voice=fallback_voice,
             )
-            merged["voice"] = fallback
+            merged["voice"] = fallback_voice
+
+        response_format = (merged.get("response_format") or "wav").strip().lower()
+        if response_format not in {"wav", "pcm"}:
+            logger.warning(
+                "OpenAI TTS response_format not supported by engine; falling back to wav",
+                call_id=call_id,
+                requested_response_format=merged.get("response_format"),
+            )
+            response_format = "wav"
+            merged["response_format"] = response_format
 
         headers = _make_http_headers(merged)
         url = merged["tts_base_url"]
 
+        # Per OpenAI API spec (/v1/audio/speech), request field is `response_format` (not `format`).
         payload = {
             "model": merged["tts_model"],
             "input": text,
             "voice": merged["voice"],
-            "format": merged["response_format"],
+            "response_format": response_format,
         }
 
         logger.info(
@@ -735,6 +736,20 @@ class OpenAITTSAdapter(TTSComponent):
                     body_preview=body[:128],
                 )
                 retry_payload = {**payload, "model": "tts-1"}
+                status, data, body = await _post_tts(retry_payload)
+
+            # Voice enums can drift; if a pipeline swap left an invalid voice, retry with the provider default.
+            fallback_voice = (self._provider_defaults.voice or "alloy")
+            if status == 400 and "voice" in body_lower and "input should be" in body_lower and payload.get("voice") != fallback_voice:
+                logger.warning(
+                    "OpenAI TTS voice rejected; retrying with fallback voice",
+                    call_id=call_id,
+                    requested_voice=payload.get("voice"),
+                    fallback_voice=fallback_voice,
+                    status=status,
+                    body_preview=body[:128],
+                )
+                retry_payload = {**payload, "voice": fallback_voice}
                 status, data, body = await _post_tts(retry_payload)
 
             if status >= 400:
@@ -839,7 +854,23 @@ class OpenAITTSAdapter(TTSComponent):
             return b"", int(merged["target_format"]["sample_rate"])
 
         fmt = (merged.get("response_format") or "wav").lower()
-        if fmt == "wav" or (audio_bytes[:4] == b"RIFF" and b"WAVE" in audio_bytes[:32]):
+        if fmt == "wav":
+            if not (audio_bytes[:4] == b"RIFF" and b"WAVE" in audio_bytes[:32]):
+                header = audio_bytes[:12]
+                raise RuntimeError(
+                    "Failed to decode OpenAI WAV payload: expected RIFF/WAVE header "
+                    f"but received bytes starting with {header!r}. Ensure OpenAI TTS `response_format` is set to 'wav' "
+                    "and is being sent as `response_format` in the request."
+                )
+            try:
+                with wave.open(BytesIO(audio_bytes), "rb") as wf:
+                    if wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+                        raise ValueError("Only mono PCM16 WAV is supported")
+                    frames = wf.readframes(wf.getnframes())
+                    return frames, int(wf.getframerate())
+            except Exception as exc:
+                raise RuntimeError(f"Failed to decode OpenAI WAV payload: {exc}") from exc
+        if audio_bytes[:4] == b"RIFF" and b"WAVE" in audio_bytes[:32]:
             try:
                 with wave.open(BytesIO(audio_bytes), "rb") as wf:
                     if wf.getnchannels() != 1 or wf.getsampwidth() != 2:
