@@ -162,22 +162,43 @@ class OpenAISTTAdapter(STTComponent):
         if not api_key:
             raise RuntimeError("OpenAI STT requires an API key")
 
+        fallback_model = (getattr(self._provider_defaults, "stt_model", None) or "whisper-1").strip()
+        requested_model = str(merged.get("model") or "").strip()
+        # Avoid obvious cross-provider model drift when swapping STT providers in a pipeline editor.
+        # Example: Groq STT model `whisper-large-v3-turbo` carried into OpenAI STT causes 404 and a silent call.
+        if (
+            not requested_model
+            or "/" in requested_model
+            or requested_model.startswith("whisper-large-")
+            or requested_model in {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+        ):
+            if requested_model and requested_model != fallback_model:
+                logger.warning(
+                    "OpenAI STT model looks invalid for OpenAI; falling back",
+                    call_id=call_id,
+                    requested_model=requested_model,
+                    fallback_model=fallback_model,
+                )
+            merged["model"] = fallback_model
+
         wav_bytes = _pcm16le_to_wav(audio_pcm16, sample_rate_hz)
-        form = aiohttp.FormData()
-        form.add_field("file", wav_bytes, filename="audio.wav", content_type="audio/wav")
-        form.add_field("model", str(merged["model"]))
-        if merged.get("language"):
-            form.add_field("language", str(merged["language"]))
-        if merged.get("prompt"):
-            form.add_field("prompt", str(merged["prompt"]))
-        if merged.get("temperature") is not None:
-            form.add_field("temperature", str(merged["temperature"]))
-        if merged.get("response_format"):
-            form.add_field("response_format", str(merged["response_format"]))
-        timestamp_granularities = merged.get("timestamp_granularities")
-        if timestamp_granularities:
-            for val in list(timestamp_granularities):
-                form.add_field("timestamp_granularities[]", str(val))
+        def _build_form(model: str) -> aiohttp.FormData:
+            form = aiohttp.FormData()
+            form.add_field("file", wav_bytes, filename="audio.wav", content_type="audio/wav")
+            form.add_field("model", str(model))
+            if merged.get("language"):
+                form.add_field("language", str(merged["language"]))
+            if merged.get("prompt"):
+                form.add_field("prompt", str(merged["prompt"]))
+            if merged.get("temperature") is not None:
+                form.add_field("temperature", str(merged["temperature"]))
+            if merged.get("response_format"):
+                form.add_field("response_format", str(merged["response_format"]))
+            timestamp_granularities = merged.get("timestamp_granularities")
+            if timestamp_granularities:
+                for val in list(timestamp_granularities):
+                    form.add_field("timestamp_granularities[]", str(val))
+            return form
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -188,26 +209,48 @@ class OpenAISTTAdapter(STTComponent):
         timeout_sec = float(merged.get("request_timeout_sec", self._default_timeout))
         request_id = f"openai-stt-{uuid.uuid4().hex[:12]}"
 
-        started_at = time.perf_counter()
-        async with self._session.post(
-            url,
-            data=form,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=timeout_sec),
-        ) as resp:
-            body = await resp.read()
-            if resp.status >= 400:
-                body_preview = body.decode("utf-8", errors="ignore")[:200]
-                logger.error(
-                    "OpenAI STT request failed",
+        async def _post(model: str) -> tuple[int, bytes, str, float]:
+            started_at = time.perf_counter()
+            async with self._session.post(
+                url,
+                data=_build_form(model),
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout_sec),
+            ) as resp:
+                raw = await resp.read()
+                body_text = raw.decode("utf-8", errors="ignore")
+                latency_ms = (time.perf_counter() - started_at) * 1000.0
+                if resp.status >= 400:
+                    logger.error(
+                        "OpenAI STT request failed",
+                        call_id=call_id,
+                        request_id=request_id,
+                        status=resp.status,
+                        model=model,
+                        body_preview=body_text[:200],
+                    )
+                return resp.status, raw, body_text, latency_ms
+
+        status, body, body_text, latency_ms = await _post(str(merged["model"]))
+        if status >= 400:
+            body_lower = (body_text or "").lower()
+            # If a model is invalid/unavailable, retry with whisper-1 (or provider default) to avoid silent calls.
+            if status in {400, 404} and ("does not exist" in body_lower or "invalid model" in body_lower) and str(merged["model"]) != fallback_model:
+                logger.warning(
+                    "OpenAI STT model rejected; retrying with fallback model",
                     call_id=call_id,
                     request_id=request_id,
-                    status=resp.status,
-                    body_preview=body_preview,
+                    requested_model=str(merged["model"]),
+                    fallback_model=fallback_model,
+                    status=status,
+                    body_preview=(body_text or "")[:200],
                 )
-                resp.raise_for_status()
+                status, body, body_text, latency_ms = await _post(fallback_model)
+                merged["model"] = fallback_model
 
-        latency_ms = (time.perf_counter() - started_at) * 1000.0
+        if status >= 400:
+            raise RuntimeError(f"OpenAI STT request failed (status {status}): {(body_text or '')[:256]}")
+
         transcript = self._parse_transcript(body, response_format=merged.get("response_format") or "json")
         logger.info(
             "OpenAI STT transcript received",

@@ -214,6 +214,27 @@ const PipelinesPage = () => {
             mergedPipeline.options = { ...(mergedPipeline.options || {}), tts: portable };
         }
 
+        // Keep only portable STT options when STT provider changes (avoid carrying provider-specific models).
+        if (!isNewPipeline && existingData?.stt && mergedPipeline.stt && existingData.stt !== mergedPipeline.stt) {
+            const existingSttOpts = (existingData.options || {}).stt || {};
+            const nextSttOpts = (mergedPipeline.options || {}).stt || existingSttOpts;
+            const portable: any = {};
+            if (nextSttOpts && typeof nextSttOpts === 'object') {
+                // Intentionally exclude model/stt_model to prevent cross-provider drift.
+                if (nextSttOpts.chunk_ms != null) portable.chunk_ms = nextSttOpts.chunk_ms;
+                if (nextSttOpts.streaming != null) portable.streaming = nextSttOpts.streaming;
+                if (nextSttOpts.stream_format) portable.stream_format = nextSttOpts.stream_format;
+                if (nextSttOpts.mode) portable.mode = nextSttOpts.mode;
+                if (nextSttOpts.response_format) portable.response_format = nextSttOpts.response_format;
+                if (nextSttOpts.temperature != null) portable.temperature = nextSttOpts.temperature;
+                if (nextSttOpts.language) portable.language = nextSttOpts.language;
+                if (nextSttOpts.prompt) portable.prompt = nextSttOpts.prompt;
+                if (nextSttOpts.request_timeout_sec != null) portable.request_timeout_sec = nextSttOpts.request_timeout_sec;
+                if (nextSttOpts.timeout_sec != null) portable.timeout_sec = nextSttOpts.timeout_sec;
+            }
+            mergedPipeline.options = { ...(mergedPipeline.options || {}), stt: portable };
+        }
+
         newConfig.pipelines[pipelineName] = mergedPipeline;
 
         await saveConfig(newConfig);
