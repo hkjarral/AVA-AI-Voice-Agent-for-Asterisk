@@ -144,6 +144,12 @@ class OpenAISTTAdapter(STTComponent):
     async def close_call(self, call_id: str) -> None:
         return
 
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        # The base validator expects URLs/credentials in the options dict. For OpenAI modular providers
+        # those values typically live in provider defaults, so we validate using composed options.
+        merged = self._compose_options(options or {})
+        return await super().validate_connectivity(merged)
+
     async def transcribe(
         self,
         call_id: str,

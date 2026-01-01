@@ -235,6 +235,23 @@ const PipelinesPage = () => {
             mergedPipeline.options = { ...(mergedPipeline.options || {}), stt: portable };
         }
 
+        // Keep only portable LLM options when LLM provider changes (avoid carrying provider-specific base_url/model).
+        if (!isNewPipeline && existingData?.llm && mergedPipeline.llm && existingData.llm !== mergedPipeline.llm) {
+            const existingLlmOpts = (existingData.options || {}).llm || {};
+            const nextLlmOpts = (mergedPipeline.options || {}).llm || existingLlmOpts;
+            const portable: any = {};
+            if (nextLlmOpts && typeof nextLlmOpts === 'object') {
+                if (nextLlmOpts.max_tokens != null) portable.max_tokens = nextLlmOpts.max_tokens;
+                if (nextLlmOpts.temperature != null) portable.temperature = nextLlmOpts.temperature;
+                if (nextLlmOpts.top_p != null) portable.top_p = nextLlmOpts.top_p;
+                if (nextLlmOpts.top_k != null) portable.top_k = nextLlmOpts.top_k;
+                if (nextLlmOpts.response_timeout_sec != null) portable.response_timeout_sec = nextLlmOpts.response_timeout_sec;
+                if (nextLlmOpts.timeout_sec != null) portable.timeout_sec = nextLlmOpts.timeout_sec;
+                if (nextLlmOpts.mode) portable.mode = nextLlmOpts.mode;
+            }
+            mergedPipeline.options = { ...(mergedPipeline.options || {}), llm: portable };
+        }
+
         newConfig.pipelines[pipelineName] = mergedPipeline;
 
         await saveConfig(newConfig);
