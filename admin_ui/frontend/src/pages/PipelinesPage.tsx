@@ -194,7 +194,27 @@ const PipelinesPage = () => {
 
         // Merge with existing config
         const existingData = !isNewPipeline && config.pipelines ? config.pipelines[pipelineName] : {};
-        newConfig.pipelines[pipelineName] = { ...existingData, ...pipelineData };
+        const mergedPipeline = { ...existingData, ...pipelineData };
+
+        // If the user swaps a component provider, provider-specific option keys from the old provider can linger
+        // (e.g., Groq TTS voice "hannah" carried into OpenAI TTS and causing silent greetings).
+        // Keep only portable TTS options when TTS provider changes.
+        if (!isNewPipeline && existingData?.tts && mergedPipeline.tts && existingData.tts !== mergedPipeline.tts) {
+            const existingTtsOpts = (existingData.options || {}).tts || {};
+            const nextTtsOpts = (mergedPipeline.options || {}).tts || existingTtsOpts;
+            const portable: any = {};
+            if (nextTtsOpts && typeof nextTtsOpts === 'object') {
+                if (nextTtsOpts.format) portable.format = nextTtsOpts.format;
+                if (nextTtsOpts.response_format) portable.response_format = nextTtsOpts.response_format;
+                if (nextTtsOpts.chunk_size_ms != null) portable.chunk_size_ms = nextTtsOpts.chunk_size_ms;
+                if (nextTtsOpts.timeout_sec != null) portable.timeout_sec = nextTtsOpts.timeout_sec;
+                if (nextTtsOpts.response_timeout_sec != null) portable.response_timeout_sec = nextTtsOpts.response_timeout_sec;
+                if (nextTtsOpts.mode) portable.mode = nextTtsOpts.mode;
+            }
+            mergedPipeline.options = { ...(mergedPipeline.options || {}), tts: portable };
+        }
+
+        newConfig.pipelines[pipelineName] = mergedPipeline;
 
         await saveConfig(newConfig);
         setEditingPipeline(null);

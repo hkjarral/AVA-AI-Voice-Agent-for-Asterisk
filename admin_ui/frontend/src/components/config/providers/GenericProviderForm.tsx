@@ -33,8 +33,9 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
         llm_model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
         stt_model: ['whisper-1'],
         tts_model: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
-        voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
-        tts_voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
+        // OpenAI audio.speech voices (validated by API). Keep this aligned with engine validation.
+        voice: ['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'],
+        tts_voice: ['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'],
         response_format: ['wav', 'pcm'],
     },
     groq: {

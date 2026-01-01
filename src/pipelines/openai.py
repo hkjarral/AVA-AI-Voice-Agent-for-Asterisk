@@ -645,6 +645,34 @@ class OpenAITTSAdapter(TTSComponent):
         if not api_key:
             raise RuntimeError("OpenAI TTS requires an API key")
 
+        # OpenAI audio.speech voice must be one of a known enum. When pipelines are edited and the
+        # TTS provider is swapped, legacy pipeline-level options may still include a voice from
+        # a different provider (e.g., Groq "hannah"). Fall back to a safe OpenAI voice to avoid
+        # silent-call failures (greeting synthesis).
+        allowed_voices = {
+            "alloy",
+            "ash",
+            "coral",
+            "echo",
+            "fable",
+            "nova",
+            "onyx",
+            "sage",
+            "shimmer",
+        }
+        voice = (merged.get("voice") or "").strip().lower()
+        if voice not in allowed_voices:
+            fallback = (getattr(self._provider_defaults, "voice", None) or "alloy").strip().lower()
+            if fallback not in allowed_voices:
+                fallback = "alloy"
+            logger.warning(
+                "OpenAI TTS voice invalid; falling back to supported voice",
+                call_id=call_id,
+                requested_voice=merged.get("voice"),
+                fallback_voice=fallback,
+            )
+            merged["voice"] = fallback
+
         headers = _make_http_headers(merged)
         url = merged["tts_base_url"]
 

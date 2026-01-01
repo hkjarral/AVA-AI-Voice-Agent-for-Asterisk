@@ -215,10 +215,13 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                 onChange={(e) => handleChange('voice', e.target.value)}
                             >
                                 <option value="alloy">Alloy</option>
+                                <option value="ash">Ash</option>
+                                <option value="coral">Coral</option>
                                 <option value="echo">Echo</option>
                                 <option value="fable">Fable</option>
                                 <option value="onyx">Onyx</option>
                                 <option value="nova">Nova</option>
+                                <option value="sage">Sage</option>
                                 <option value="shimmer">Shimmer</option>
                             </select>
                         </div>
