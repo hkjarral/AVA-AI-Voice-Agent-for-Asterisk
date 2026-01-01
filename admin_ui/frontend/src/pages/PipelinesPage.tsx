@@ -374,7 +374,18 @@ const PipelinesPage = () => {
                                     <span className="font-semibold text-xs uppercase tracking-wider text-primary mb-1">LLM</span>
                                     <span className="font-medium">{pipeline.llm || 'default'}</span>
                                     <span className="text-xs text-muted-foreground mt-1">
-                                        {pipeline.options?.llm?.model || 'default model'}
+                                        {(() => {
+                                            const llmKey = pipeline.llm || '';
+                                            const provider = (llmKey && providers && (providers as any)[llmKey]) ? (providers as any)[llmKey] : null;
+                                            return (
+                                                provider?.chat_model ||
+                                                provider?.llm_model ||
+                                                provider?.model ||
+                                                pipeline.options?.llm?.chat_model ||
+                                                pipeline.options?.llm?.model ||
+                                                'default model'
+                                            );
+                                        })()}
                                     </span>
                                 </div>
 

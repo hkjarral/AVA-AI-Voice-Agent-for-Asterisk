@@ -645,6 +645,22 @@ class OpenAILLMAdapter(LLMComponent):
             "tools": runtime_options.get("tools", self._pipeline_defaults.get("tools", [])),
         }
 
+        # If a pipeline swap left provider-specific LLM settings behind (e.g., Groq base_url + llama model),
+        # ignore them and fall back to OpenAI defaults. This keeps modular providers interchangeable in pipelines.
+        chat_base = str(merged.get("chat_base_url") or "")
+        chat_model = str(merged.get("chat_model") or "")
+        if "api.groq.com" in chat_base or chat_model.startswith("llama-") or "mixtral" in chat_model:
+            logger.warning(
+                "OpenAI LLM options look incompatible (likely from a previous provider); falling back to OpenAI defaults",
+                component=self.component_key,
+                requested_chat_base_url=chat_base,
+                requested_chat_model=chat_model,
+                fallback_chat_base_url=self._provider_defaults.chat_base_url,
+                fallback_chat_model=self._provider_defaults.chat_model,
+            )
+            merged["chat_base_url"] = self._provider_defaults.chat_base_url
+            merged["chat_model"] = self._provider_defaults.chat_model
+
         # Fallback persona when missing
         try:
             sys_p = (merged.get("system_prompt") or "").strip()
@@ -955,21 +971,6 @@ class OpenAITTSAdapter(TTSComponent):
             "source_format": merged_source,
             "target_format": merged_target,
         }
-        # If a pipeline swap left Groq-specific LLM settings behind (e.g., base_url api.groq.com + llama model),
-        # ignore them and fall back to OpenAI defaults to keep modular providers swappable.
-        chat_base = str(merged.get("chat_base_url") or "")
-        chat_model = str(merged.get("chat_model") or "")
-        if "api.groq.com" in chat_base or chat_model.startswith("llama-") or "mixtral" in chat_model:
-            logger.warning(
-                "OpenAI LLM options look incompatible (likely from a previous provider); falling back to OpenAI defaults",
-                component=self.component_key,
-                requested_chat_base_url=chat_base,
-                requested_chat_model=chat_model,
-                fallback_chat_base_url=self._provider_defaults.chat_base_url,
-                fallback_chat_model=self._provider_defaults.chat_model,
-            )
-            merged["chat_base_url"] = self._provider_defaults.chat_base_url
-            merged["chat_model"] = self._provider_defaults.chat_model
         return merged
 
     @staticmethod
