@@ -367,6 +367,12 @@ class OpenAILLMAdapter(LLMComponent):
             "api_key": self._provider_defaults.api_key,
         }
         merged.update(options)
+        # Backward compatible: allow legacy `base_url` to behave as `chat_base_url` for OpenAI-compatible endpoints.
+        # If both are present, treat `chat_base_url` as authoritative.
+        if "base_url" in options and "chat_base_url" not in options:
+            merged["chat_base_url"] = options["base_url"]
+        # Avoid validator selecting the wrong URL (it prioritizes `base_url`).
+        merged.pop("base_url", None)
         return await super().validate_connectivity(merged)
 
     async def generate(
@@ -558,7 +564,10 @@ class OpenAILLMAdapter(LLMComponent):
             ),
             "chat_base_url": runtime_options.get(
                 "chat_base_url",
-                self._pipeline_defaults.get("chat_base_url", self._provider_defaults.chat_base_url),
+                runtime_options.get(
+                    "base_url",
+                    self._pipeline_defaults.get("chat_base_url", self._pipeline_defaults.get("base_url", self._provider_defaults.chat_base_url)),
+                ),
             ),
             "realtime_base_url": runtime_options.get(
                 "realtime_base_url",
@@ -566,7 +575,10 @@ class OpenAILLMAdapter(LLMComponent):
             ),
             "chat_model": runtime_options.get(
                 "chat_model",
-                self._pipeline_defaults.get("chat_model", self._provider_defaults.chat_model),
+                runtime_options.get(
+                    "model",
+                    self._pipeline_defaults.get("chat_model", self._pipeline_defaults.get("model", self._provider_defaults.chat_model)),
+                ),
             ),
             "realtime_model": runtime_options.get(
                 "realtime_model",
