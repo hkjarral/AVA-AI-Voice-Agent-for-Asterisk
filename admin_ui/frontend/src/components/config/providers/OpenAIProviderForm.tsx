@@ -233,6 +233,8 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                 <option value="sage">Sage</option>
                                 <option value="shimmer">Shimmer</option>
                                 <option value="verse">Verse</option>
+                                <option value="marin">Marin</option>
+                                <option value="cedar">Cedar</option>
                             </select>
                         </div>
                         <div className="space-y-2">
