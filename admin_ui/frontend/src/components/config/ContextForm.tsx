@@ -7,13 +7,14 @@ interface ContextFormProps {
     providers: any;
     pipelines?: any;
     availableTools?: string[];
+    toolEnabledMap?: Record<string, boolean>;
     availableProfiles?: string[];
     defaultProfileName?: string;
     onChange: (newConfig: any) => void;
     isNew?: boolean;
 }
 
-const ContextForm = ({ config, providers, pipelines, availableTools, availableProfiles, defaultProfileName, onChange, isNew }: ContextFormProps) => {
+const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, availableProfiles, defaultProfileName, onChange, isNew }: ContextFormProps) => {
     const updateConfig = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -41,6 +42,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, availablePr
     const defaultProfileLabel = defaultProfileName ? `Default (${defaultProfileName})` : 'Default (from profiles.default)';
 
     const handleToolToggle = (tool: string) => {
+        if (toolEnabledMap && toolEnabledMap[tool] === false) return;
         const currentTools = config.tools || [];
         const newTools = currentTools.includes(tool)
             ? currentTools.filter((t: string) => t !== tool)
@@ -51,6 +53,11 @@ const ContextForm = ({ config, providers, pipelines, availableTools, availablePr
     const displayToolName = (tool: string) => {
         if (tool === 'transfer') return 'blind_transfer';
         return tool;
+    };
+
+    const isToolDisabled = (tool: string) => {
+        if (!toolEnabledMap) return false;
+        return toolEnabledMap[tool] === false;
     };
 
     const pipelineOptions = Object.entries(pipelines || {}).map(([name, _]: [string, any]) => ({
@@ -143,10 +150,18 @@ const ContextForm = ({ config, providers, pipelines, availableTools, availablePr
                 <FormLabel>Available Tools</FormLabel>
                 <div className="grid grid-cols-2 gap-3">
                     {toolOptions.map(tool => (
-                        <label key={tool} className="flex items-center space-x-3 p-3 rounded-md border border-border bg-card/50 hover:bg-accent cursor-pointer transition-colors">
+                        <label
+                            key={tool}
+                            title={isToolDisabled(tool) ? 'Disabled globally in Tools settings' : undefined}
+                            className={[
+                                "flex items-center space-x-3 p-3 rounded-md border border-border bg-card/50 transition-colors",
+                                isToolDisabled(tool) ? "opacity-50 cursor-not-allowed" : "hover:bg-accent cursor-pointer"
+                            ].join(' ')}
+                        >
                             <input
                                 type="checkbox"
                                 className="rounded border-input text-primary focus:ring-primary"
+                                disabled={isToolDisabled(tool)}
                                 checked={(config.tools || []).includes(tool)}
                                 onChange={() => handleToolToggle(tool)}
                             />

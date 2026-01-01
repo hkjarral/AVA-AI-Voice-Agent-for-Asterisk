@@ -11,6 +11,7 @@ const ContextsPage = () => {
     const [config, setConfig] = useState<any>({});
     const [loading, setLoading] = useState(true);
     const [availableTools, setAvailableTools] = useState<string[]>([]);
+    const [toolEnabledMap, setToolEnabledMap] = useState<Record<string, boolean>>({});
     const [editingContext, setEditingContext] = useState<string | null>(null);
     const [contextForm, setContextForm] = useState<any>({});
     const [isNewContext, setIsNewContext] = useState(false);
@@ -42,7 +43,7 @@ const ContextsPage = () => {
             const mcpTools = Object.keys(routes).filter((t) => typeof t === 'string' && t.startsWith('mcp_'));
 
             const toolsBlock = parsedConfig?.tools || {};
-            const toolsFromYaml = Object.entries(toolsBlock)
+            const yamlToolEntries = Object.entries(toolsBlock)
                 .filter(([k, v]) => {
                     if (typeof k !== 'string' || !k) return false;
                     if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
@@ -50,7 +51,8 @@ const ContextsPage = () => {
                     // Exclude tool-system settings like ai_identity/extensions/default_action_timeout.
                     return Object.prototype.hasOwnProperty.call(v, 'enabled');
                 })
-                .map(([k]) => k);
+                .map(([k, v]) => ({ name: k, enabled: (v as any)?.enabled !== false }));
+            const toolsFromYaml = yamlToolEntries.map((t) => t.name);
             const fallbackBuiltin = [
                 'transfer',
                 'attended_transfer',
@@ -66,16 +68,25 @@ const ContextsPage = () => {
                 ...mcpTools
             ])).sort();
             setAvailableTools(merged);
+            const nextMap: Record<string, boolean> = {};
+            yamlToolEntries.forEach((t) => { nextMap[t.name] = t.enabled; });
+            mcpTools.forEach((t) => { nextMap[t] = true; });
+            // If we are falling back (no tools in YAML), assume enabled unless selected otherwise.
+            if (toolsFromYaml.length === 0) {
+                fallbackBuiltin.forEach((t) => { if (nextMap[t] == null) nextMap[t] = true; });
+            }
+            setToolEnabledMap(nextMap);
         } catch (err) {
             // Non-fatal: MCP may be disabled or ai-engine down. Fall back to YAML tools.
             const toolsBlock = parsedConfig?.tools || {};
-            const toolsFromYaml = Object.entries(toolsBlock)
+            const yamlToolEntries = Object.entries(toolsBlock)
                 .filter(([k, v]) => {
                     if (typeof k !== 'string' || !k) return false;
                     if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
                     return Object.prototype.hasOwnProperty.call(v, 'enabled');
                 })
-                .map(([k]) => k);
+                .map(([k, v]) => ({ name: k, enabled: (v as any)?.enabled !== false }));
+            const toolsFromYaml = yamlToolEntries.map((t) => t.name);
             const fallbackBuiltin = [
                 'transfer',
                 'attended_transfer',
@@ -86,6 +97,12 @@ const ContextsPage = () => {
                 'request_transcript'
             ];
             setAvailableTools((toolsFromYaml.length > 0 ? toolsFromYaml : fallbackBuiltin).slice().sort());
+            const nextMap: Record<string, boolean> = {};
+            yamlToolEntries.forEach((t) => { nextMap[t.name] = t.enabled; });
+            if (toolsFromYaml.length === 0) {
+                fallbackBuiltin.forEach((t) => { if (nextMap[t] == null) nextMap[t] = true; });
+            }
+            setToolEnabledMap(nextMap);
         }
     };
 
@@ -126,11 +143,22 @@ const ContextsPage = () => {
                 return;
             }
 
+            if (response.data.status === 'partial' || response.data.restart_required === true) {
+                // Hot reload succeeded but indicated some changes require a restart (e.g. providers added/removed,
+                // MCP reload deferred due to active calls).
+                setApplyMethod('restart');
+                setPendingApply(true);
+                alert(response.data.message || 'Hot reload applied partially; restart AI Engine to fully apply changes.');
+                return;
+            }
+
             if (response.data.status === 'success') {
                 setPendingApply(false);
                 alert(applyMethod === 'hot_reload'
                     ? 'AI Engine hot reloaded! Changes apply to new calls.'
                     : 'AI Engine restarted! Changes are now active.');
+                // Refresh config/tool availability after apply (best-effort)
+                fetchConfig();
             }
         } catch (error: any) {
             const action = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
@@ -225,7 +253,7 @@ const ContextsPage = () => {
                 <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
                         <AlertCircle className="w-5 h-5 mr-2" />
-                        Changes saved. Apply to make them active.
+                        {applyMethod === 'hot_reload' ? 'Changes saved. Apply to make them active.' : 'Changes saved. Restart required to make them active.'}
                     </div>
                     <button
                         onClick={() => {
@@ -365,6 +393,7 @@ const ContextsPage = () => {
                     providers={config.providers}
                     pipelines={config.pipelines}
                     availableTools={availableTools}
+                    toolEnabledMap={toolEnabledMap}
                     availableProfiles={availableProfiles}
                     defaultProfileName={defaultProfileName}
                     onChange={setContextForm}
