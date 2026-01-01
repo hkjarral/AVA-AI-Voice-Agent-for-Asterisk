@@ -47,46 +47,57 @@ const ProfilesPage = () => {
         }
     };
 
-    const applyChanges = async (force: boolean = false) => {
-        setApplying(true);
-        try {
-            if (applyMethod === 'hot_reload') {
-                const response = await axios.post('/api/system/containers/ai_engine/reload');
-                if (response.data?.restart_required) {
-                    setApplyMethod('restart');
-                    setPendingApply(true);
-                    alert('Hot reload applied partially; restart AI Engine to fully apply changes.');
-                    return;
-                }
-                setPendingApply(false);
-                alert('AI Engine hot reloaded! Changes are now active.');
-                return;
-            }
+	    const applyChanges = async (force: boolean = false) => {
+	        setApplying(true);
+	        try {
+	            if (applyMethod === 'hot_reload') {
+	                const response = await axios.post('/api/system/containers/ai_engine/reload');
+	                const status = response.data?.status ?? (response.status === 200 ? 'success' : undefined);
+	                if (status === 'partial' || response.data?.restart_required) {
+	                    setApplyMethod('restart');
+	                    setPendingApply(true);
+	                    alert('Hot reload applied partially; restart AI Engine to fully apply changes.');
+	                    return;
+	                }
+	                if (status === 'success' || response.status === 200) {
+	                    setPendingApply(false);
+	                    alert('AI Engine hot reloaded! Changes are now active.');
+	                    fetchConfig();
+	                    return;
+	                }
+	            }
 
-            const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
-            if (response.data.status === 'warning') {
-                const confirmForce = window.confirm(
-                    `${response.data.message}\n\nDo you want to force restart anyway? This may disconnect active calls.`
-                );
-                if (confirmForce) {
-                    setApplying(false);
-                    return applyChanges(true);
-                }
-                return;
-            }
-            if (response.data.status === 'degraded') {
-                alert(`AI Engine restarted but may not be fully healthy: ${response.data.output || 'Health check issue'}\n\nPlease verify manually.`);
-                return;
-            }
-            setPendingApply(false);
-            alert('AI Engine restarted! Changes are now active.');
-        } catch (err: any) {
-            const action = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
-            alert(`Failed to ${action} AI Engine: ${err.response?.data?.detail || err.message}`);
-        } finally {
-            setApplying(false);
-        }
-    };
+	            const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
+	            const status = response.data?.status ?? (response.status === 200 ? 'success' : undefined);
+	            if (status === 'warning') {
+	                const confirmForce = window.confirm(
+	                    `${response.data.message}\n\nDo you want to force restart anyway? This may disconnect active calls.`
+	                );
+	                if (confirmForce) {
+	                    setApplying(false);
+	                    return applyChanges(true);
+	                }
+	                return;
+	            }
+	            if (status === 'degraded') {
+	                setPendingApply(false);
+	                alert(`AI Engine restarted but may not be fully healthy: ${response.data.output || 'Health check issue'}\n\nPlease verify manually.`);
+	                fetchConfig();
+	                return;
+	            }
+	            if (status === 'success' || response.status === 200) {
+	                setPendingApply(false);
+	                alert('AI Engine restarted! Changes are now active.');
+	                fetchConfig();
+	                return;
+	            }
+	        } catch (err: any) {
+	            const action = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
+	            alert(`Failed to ${action} AI Engine: ${err.response?.data?.detail || err.message}`);
+	        } finally {
+	            setApplying(false);
+	        }
+	    };
 
 	const handleEditProfile = (name: string) => {
 		setEditingProfile(name);
@@ -188,7 +199,7 @@ const ProfilesPage = () => {
 				<div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
 					<div className="flex items-center">
 						<AlertCircle className="w-5 h-5 mr-2" />
-						Changes saved. Apply to make them active.
+						{applyMethod === 'hot_reload' ? 'Changes saved. Apply to make them active.' : 'Changes saved. Restart required to make them active.'}
 					</div>
 					<button
 						onClick={() => {

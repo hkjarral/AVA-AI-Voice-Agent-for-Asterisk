@@ -126,8 +126,9 @@ const ContextsPage = () => {
                 ? '/api/system/containers/ai_engine/reload'
                 : `/api/system/containers/ai_engine/restart?force=${force}`;
             const response = await axios.post(endpoint);
+            const status = response.data?.status ?? (response.status === 200 ? 'success' : undefined);
 
-            if (response.data.status === 'warning') {
+            if (status === 'warning') {
                 const confirmForce = window.confirm(
                     `${response.data.message}\n\nDo you want to force restart anyway? This may disconnect active calls.`
                 );
@@ -138,12 +139,14 @@ const ContextsPage = () => {
                 return;
             }
 
-            if (response.data.status === 'degraded') {
+            if (status === 'degraded') {
+                setPendingApply(false);
                 alert(`AI Engine restarted but may not be fully healthy: ${response.data.output || 'Health check issue'}\n\nPlease verify manually.`);
+                fetchConfig();
                 return;
             }
 
-            if (response.data.status === 'partial' || response.data.restart_required === true) {
+            if (status === 'partial' || response.data?.restart_required === true) {
                 // Hot reload succeeded but indicated some changes require a restart (e.g. providers added/removed,
                 // MCP reload deferred due to active calls).
                 setApplyMethod('restart');
@@ -152,13 +155,23 @@ const ContextsPage = () => {
                 return;
             }
 
-            if (response.data.status === 'success') {
+            if (status === 'success') {
                 setPendingApply(false);
                 alert(applyMethod === 'hot_reload'
                     ? 'AI Engine hot reloaded! Changes apply to new calls.'
                     : 'AI Engine restarted! Changes are now active.');
                 // Refresh config/tool availability after apply (best-effort)
                 fetchConfig();
+                return;
+            }
+
+            // Be conservative: if the apply endpoint returned 200 but an unexpected payload, assume the action
+            // completed so the UI doesn't get stuck showing "Apply Changes" forever.
+            if (response.status === 200) {
+                setPendingApply(false);
+                alert('AI Engine updated. Please verify with a test call and logs.');
+                fetchConfig();
+                return;
             }
         } catch (error: any) {
             const action = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
