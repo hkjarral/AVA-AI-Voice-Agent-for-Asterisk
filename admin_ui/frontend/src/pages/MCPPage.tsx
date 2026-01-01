@@ -6,6 +6,7 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormLabel } from '../components/ui/FormComponents';
+import { sanitizeConfigForSave } from '../lib/configSanitizers';
 
 type MCPStatus = {
     enabled: boolean;
@@ -98,7 +99,8 @@ const MCPPage = () => {
     const handleSave = async () => {
         setSaving(true);
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(config) });
+            const sanitized = sanitizeConfigForSave(config);
+            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             try {
                 setReloadingEngine(true);
                 const res = await axios.post('/api/system/containers/ai_engine/reload');

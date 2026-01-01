@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { sanitizeConfigForSave } from '../lib/configSanitizers';
 import { Plus, Settings, Trash2, Server, AlertCircle, CheckCircle2, Loader2, RefreshCw, Wand2, Star } from 'lucide-react';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -83,8 +84,9 @@ const ProvidersPage: React.FC = () => {
     const saveConfig = async (newConfig: any) => {
         try {
             const normalized = normalizeProviderCapabilities(newConfig);
-            await axios.post('/api/config/yaml', { content: yaml.dump(normalized) });
-            setConfig(normalized);
+            const sanitized = sanitizeConfigForSave(normalized);
+            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            setConfig(sanitized);
             setPendingRestart(true);
         } catch (err) {
             console.error('Failed to save config', err);

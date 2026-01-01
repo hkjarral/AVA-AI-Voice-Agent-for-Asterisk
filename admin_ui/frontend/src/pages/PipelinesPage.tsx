@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { sanitizeConfigForSave } from '../lib/configSanitizers';
 import { Plus, Settings, Trash2, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -120,8 +121,9 @@ const PipelinesPage = () => {
 
     const saveConfig = async (newConfig: any) => {
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(newConfig) });
-            setConfig(newConfig);
+            const sanitized = sanitizeConfigForSave(newConfig);
+            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            setConfig(sanitized);
             setPendingRestart(true);
         } catch (err) {
             console.error('Failed to save config', err);
@@ -164,7 +166,9 @@ const PipelinesPage = () => {
 
     const handleEditPipeline = (name: string) => {
         setEditingPipeline(name);
-        setPipelineForm({ name, ...config.pipelines?.[name] });
+        const existing = config.pipelines?.[name] || {};
+        const { tools: _legacyTools, ...rest } = (existing && typeof existing === 'object') ? existing : {};
+        setPipelineForm({ name, ...rest });
         setIsNewPipeline(false);
     };
 
@@ -280,6 +284,8 @@ const PipelinesPage = () => {
         // Merge with existing config
         const existingData = !isNewPipeline && config.pipelines ? config.pipelines[pipelineName] : {};
         const mergedPipeline = { ...existingData, ...pipelineData };
+        // Tools are configured per-context only (pipelines.*.tools is deprecated).
+        delete (mergedPipeline as any).tools;
 
         // If the user swaps a component provider, provider-specific option keys from the old provider can linger
         // (e.g., Groq TTS voice "hannah" carried into OpenAI TTS and causing silent greetings).

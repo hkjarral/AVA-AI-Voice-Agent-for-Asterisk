@@ -6,6 +6,7 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import ToolForm from '../components/config/ToolForm';
 import { useAuth } from '../auth/AuthContext';
+import { sanitizeConfigForSave } from '../lib/configSanitizers';
 
 const ToolsPage = () => {
     const { token } = useAuth();
@@ -34,7 +35,8 @@ const ToolsPage = () => {
     const handleSave = async () => {
         setSaving(true);
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(config) }, {
+            const sanitized = sanitizeConfigForSave(config);
+            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) }, {
                 headers: { Authorization: `Bearer ${token}` },
                 timeout: 30000  // 30 second timeout
             });

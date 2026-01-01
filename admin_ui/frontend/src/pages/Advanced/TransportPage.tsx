@@ -5,6 +5,7 @@ import { Save, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect } from '../../components/ui/FormComponents';
+import { sanitizeConfigForSave } from '../../lib/configSanitizers';
 
 const TransportPage = () => {
     const [config, setConfig] = useState<any>({});
@@ -33,7 +34,8 @@ const TransportPage = () => {
     const handleSave = async () => {
         setSaving(true);
         try {
-            const response = await axios.post('/api/config/yaml', { content: yaml.dump(config) });
+            const sanitized = sanitizeConfigForSave(config);
+            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             const method = response.data?.recommended_apply_method || 'restart';
             setApplyMethod(method);
             setPendingRestart(true);

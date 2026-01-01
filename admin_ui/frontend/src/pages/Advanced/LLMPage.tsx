@@ -5,6 +5,7 @@ import { Save, Brain, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput } from '../../components/ui/FormComponents';
+import { sanitizeConfigForSave } from '../../lib/configSanitizers';
 
 const LLMPage = () => {
     const [config, setConfig] = useState<any>({});
@@ -32,7 +33,8 @@ const LLMPage = () => {
     const handleSave = async () => {
         setSaving(true);
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(config) });
+            const sanitized = sanitizeConfigForSave(config);
+            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setPendingRestart(true);
             alert('LLM configuration saved successfully');
         } catch (err) {

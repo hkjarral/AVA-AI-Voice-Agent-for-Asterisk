@@ -470,6 +470,7 @@ class OpenAILLMAdapter(LLMComponent):
         )
 
         retries = 1
+        tools_stripped = False
         for attempt in range(retries + 1):
             try:
                 async with self._session.post(url, json=payload, headers=headers, timeout=merged["timeout_sec"]) as response:
@@ -481,6 +482,26 @@ class OpenAILLMAdapter(LLMComponent):
                             status=response.status,
                             body_preview=body[:128],
                         )
+                        # Some OpenAI-compatible endpoints (notably Groq) are not reliable with tool calling.
+                        # If the request included tools and the provider reports a tool-calling failure, retry once without tools.
+                        if (
+                            not tools_stripped
+                            and payload.get("tools")
+                            and response.status in (400, 422)
+                            and ("Failed to call a function" in body or "failed_generation" in body)
+                            and attempt < retries
+                        ):
+                            tools_stripped = True
+                            payload = dict(payload)
+                            payload.pop("tools", None)
+                            payload.pop("tool_choice", None)
+                            logger.warning(
+                                "Tool calling failed; retrying chat completion without tools",
+                                call_id=call_id,
+                                status=response.status,
+                            )
+                            continue
+
                         response.raise_for_status()
 
                     data = json.loads(body)

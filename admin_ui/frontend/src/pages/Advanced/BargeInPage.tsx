@@ -5,6 +5,7 @@ import { Save, Zap, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSwitch } from '../../components/ui/FormComponents';
+import { sanitizeConfigForSave } from '../../lib/configSanitizers';
 
 const BargeInPage = () => {
     const [config, setConfig] = useState<any>({});
@@ -32,7 +33,8 @@ const BargeInPage = () => {
     const handleSave = async () => {
         setSaving(true);
         try {
-            await axios.post('/api/config/yaml', { content: yaml.dump(config) });
+            const sanitized = sanitizeConfigForSave(config);
+            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setPendingRestart(true);
             alert('Barge-in configuration saved successfully');
         } catch (err) {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { sanitizeConfigForSave } from '../lib/configSanitizers';
 import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2 } from 'lucide-react';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -44,11 +45,12 @@ const ProfilesPage = () => {
 
     const saveConfig = async (newConfig: any) => {
         try {
-            const response = await axios.post('/api/config/yaml', { content: yaml.dump(newConfig) });
+            const sanitized = sanitizeConfigForSave(newConfig);
+            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             const method = (response.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
             setApplyMethod(method);
             setPendingApply(true);
-            setConfig(newConfig);
+            setConfig(sanitized);
         } catch (err) {
             console.error('Failed to save config', err);
             alert('Failed to save configuration');

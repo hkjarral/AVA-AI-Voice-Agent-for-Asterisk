@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import { Save, Download, AlertCircle, Settings, Server, Trash2, RefreshCw, Loader2 } from 'lucide-react';
 import yaml from 'js-yaml';
+import { sanitizeConfigForSave } from '../lib/configSanitizers';
 
 // Import Config Components
 import GeneralConfig from '../components/config/GeneralConfig';
@@ -99,7 +100,8 @@ const ConfigEditor = () => {
                     // If invalid YAML, backend might reject it
                 }
             } else {
-                contentToSave = yaml.dump(parsedConfig);
+                const sanitized = sanitizeConfigForSave(parsedConfig);
+                contentToSave = yaml.dump(sanitized);
                 setYamlContent(contentToSave);
             }
 
@@ -207,7 +209,7 @@ const ConfigEditor = () => {
     // When switching TO YAML tab, ensure it's up to date with parsedConfig
     const handleTabChange = (tab: any) => {
         if (tab === 'yaml') {
-            setYamlContent(yaml.dump(parsedConfig));
+            setYamlContent(yaml.dump(sanitizeConfigForSave(parsedConfig)));
         } else if (activeTab === 'yaml' && tab !== 'yaml') {
             // If switching FROM yaml, parse it back to object
             try {
