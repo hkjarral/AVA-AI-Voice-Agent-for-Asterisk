@@ -187,6 +187,48 @@ class OpenAISTTAdapter(STTComponent):
                 )
             merged["model"] = fallback_model
 
+        # Validate response_format per model family (per OpenAI speech-to-text guide).
+        model_lower = str(merged.get("model") or "").strip().lower()
+        response_format = str(merged.get("response_format") or "json").strip().lower()
+        if model_lower.startswith("gpt-4o-") and "transcribe" in model_lower:
+            if model_lower == "gpt-4o-transcribe-diarize":
+                allowed_formats = {"json", "text", "diarized_json"}
+            else:
+                allowed_formats = {"json", "text"}
+            if response_format not in allowed_formats:
+                logger.warning(
+                    "OpenAI STT response_format not supported for selected model; falling back to json",
+                    call_id=call_id,
+                    model=model_lower,
+                    requested_response_format=response_format,
+                )
+                response_format = "json"
+                merged["response_format"] = response_format
+        if response_format == "diarized_json" and model_lower != "gpt-4o-transcribe-diarize":
+            logger.warning(
+                "OpenAI STT diarized_json requires gpt-4o-transcribe-diarize; falling back to json",
+                call_id=call_id,
+                model=model_lower,
+            )
+            merged["response_format"] = "json"
+
+        # timestamp_granularities[] is only supported for whisper-1.
+        if merged.get("timestamp_granularities") and model_lower != "whisper-1":
+            logger.warning(
+                "OpenAI STT timestamp_granularities is only supported for whisper-1; ignoring",
+                call_id=call_id,
+                model=model_lower,
+            )
+            merged["timestamp_granularities"] = None
+
+        # Prompting is not supported for diarize model; ignore to avoid request failure.
+        if merged.get("prompt") and model_lower == "gpt-4o-transcribe-diarize":
+            logger.warning(
+                "OpenAI STT prompt is not supported for gpt-4o-transcribe-diarize; ignoring",
+                call_id=call_id,
+            )
+            merged["prompt"] = None
+
         wav_bytes = _pcm16le_to_wav(audio_pcm16, sample_rate_hz)
         def _build_form(model: str) -> aiohttp.FormData:
             form = aiohttp.FormData()
@@ -370,9 +412,15 @@ class OpenAILLMAdapter(LLMComponent):
         # Backward compatible: allow legacy `base_url` to behave as `chat_base_url` for OpenAI-compatible endpoints.
         # If both are present, treat `chat_base_url` as authoritative.
         if "base_url" in options and "chat_base_url" not in options:
-            merged["chat_base_url"] = options["base_url"]
+            # Avoid applying known cross-provider leftovers (e.g., Groq base_url carried into OpenAI).
+            if "api.groq.com" not in str(options.get("base_url") or ""):
+                merged["chat_base_url"] = options["base_url"]
         # Avoid validator selecting the wrong URL (it prioritizes `base_url`).
         merged.pop("base_url", None)
+        # If options contain an incompatible model, don't let it override validation.
+        if "model" in options and "chat_model" not in options:
+            if not str(options.get("model") or "").startswith(("gpt-", "o", "chatgpt")):
+                merged.pop("model", None)
         return await super().validate_connectivity(merged)
 
     async def generate(
@@ -907,6 +955,21 @@ class OpenAITTSAdapter(TTSComponent):
             "source_format": merged_source,
             "target_format": merged_target,
         }
+        # If a pipeline swap left Groq-specific LLM settings behind (e.g., base_url api.groq.com + llama model),
+        # ignore them and fall back to OpenAI defaults to keep modular providers swappable.
+        chat_base = str(merged.get("chat_base_url") or "")
+        chat_model = str(merged.get("chat_model") or "")
+        if "api.groq.com" in chat_base or chat_model.startswith("llama-") or "mixtral" in chat_model:
+            logger.warning(
+                "OpenAI LLM options look incompatible (likely from a previous provider); falling back to OpenAI defaults",
+                component=self.component_key,
+                requested_chat_base_url=chat_base,
+                requested_chat_model=chat_model,
+                fallback_chat_base_url=self._provider_defaults.chat_base_url,
+                fallback_chat_model=self._provider_defaults.chat_model,
+            )
+            merged["chat_base_url"] = self._provider_defaults.chat_base_url
+            merged["chat_model"] = self._provider_defaults.chat_model
         return merged
 
     @staticmethod

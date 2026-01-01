@@ -116,30 +116,37 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
 
             {isSTT && (
                 <div className="space-y-4">
-                    <h4 className="font-semibold text-sm border-b pb-2">STT (Realtime)</h4>
+                    <h4 className="font-semibold text-sm border-b pb-2">STT (audio.transcriptions)</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">
-                                Realtime API Base URL
-                                <span className="text-xs text-muted-foreground ml-2">(realtime_base_url)</span>
+                                STT API Base URL
+                                <span className="text-xs text-muted-foreground ml-2">(stt_base_url)</span>
                             </label>
                             <input
                                 type="text"
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.realtime_base_url || 'wss://api.openai.com/v1/realtime'}
-                                onChange={(e) => handleChange('realtime_base_url', e.target.value)}
-                                placeholder="wss://api.openai.com/v1/realtime"
+                                value={config.stt_base_url || 'https://api.openai.com/v1/audio/transcriptions'}
+                                onChange={(e) => handleChange('stt_base_url', e.target.value)}
+                                placeholder="https://api.openai.com/v1/audio/transcriptions"
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Realtime/STT Model</label>
-                            <input
-                                type="text"
+                            <label className="text-sm font-medium">STT Model</label>
+                            <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.realtime_model || config.stt_model || 'gpt-4o-realtime-preview-2024-12-17'}
-                                onChange={(e) => handleChange('realtime_model', e.target.value)}
-                                placeholder="gpt-4o-realtime-preview-2024-12-17"
-                            />
+                                value={config.stt_model || 'whisper-1'}
+                                onChange={(e) => handleChange('stt_model', e.target.value)}
+                            >
+                                <option value="whisper-1">whisper-1 (default)</option>
+                                <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
+                                <option value="gpt-4o-mini-transcribe-2025-12-15">gpt-4o-mini-transcribe-2025-12-15</option>
+                                <option value="gpt-4o-transcribe">gpt-4o-transcribe</option>
+                                <option value="gpt-4o-transcribe-diarize">gpt-4o-transcribe-diarize</option>
+                            </select>
+                            <p className="text-xs text-muted-foreground">
+                                Note: <code>whisper-1</code> supports more <code>response_format</code> options than the GPT-4o transcribe models.
+                            </p>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Input Encoding</label>

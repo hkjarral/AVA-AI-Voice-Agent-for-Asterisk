@@ -31,7 +31,14 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     openai: {
         model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
         llm_model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-        stt_model: ['whisper-1'],
+        // STT models per OpenAI Speech-to-Text guide.
+        stt_model: [
+            'whisper-1',
+            'gpt-4o-mini-transcribe',
+            'gpt-4o-mini-transcribe-2025-12-15',
+            'gpt-4o-transcribe',
+            'gpt-4o-transcribe-diarize',
+        ],
         tts_model: ['gpt-4o-mini-tts', 'gpt-4o-mini-tts-2025-12-15', 'tts-1', 'tts-1-hd'],
         // OpenAI audio.speech voices (validated by API). Keep this aligned with engine validation.
         voice: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse'],
