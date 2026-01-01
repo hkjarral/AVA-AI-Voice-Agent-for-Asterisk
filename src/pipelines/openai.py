@@ -651,6 +651,24 @@ class OpenAITTSAdapter(TTSComponent):
         if not api_key:
             raise RuntimeError("OpenAI TTS requires an API key")
 
+        # OpenAI audio.speech models are a small, validated set. When a pipeline is edited and the
+        # TTS provider is swapped, legacy pipeline-level options may still include a model from
+        # a different provider (e.g., Groq "canopylabs/orpheus-*"). Fall back to a safe OpenAI
+        # model to avoid a guaranteed 400 + silent greeting.
+        allowed_models = {"tts-1", "tts-1-hd", "gpt-4o-mini-tts"}
+        model = (merged.get("tts_model") or "").strip()
+        if model not in allowed_models:
+            fallback_model = (getattr(self._provider_defaults, "tts_model", None) or "tts-1").strip()
+            if fallback_model not in allowed_models:
+                fallback_model = "tts-1"
+            logger.warning(
+                "OpenAI TTS model invalid; falling back to supported model",
+                call_id=call_id,
+                requested_model=merged.get("tts_model"),
+                fallback_model=fallback_model,
+            )
+            merged["tts_model"] = fallback_model
+
         # OpenAI audio.speech voice must be one of a known enum. When pipelines are edited and the
         # TTS provider is swapped, legacy pipeline-level options may still include a voice from
         # a different provider (e.g., Groq "hannah"). Fall back to a safe OpenAI voice to avoid
