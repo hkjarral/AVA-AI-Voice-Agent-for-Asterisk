@@ -16,6 +16,7 @@ const PipelinesPage = () => {
     const [isNewPipeline, setIsNewPipeline] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
+    const providers = config?.providers || {};
 
     useEffect(() => {
         fetchConfig();
