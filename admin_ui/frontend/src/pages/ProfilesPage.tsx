@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import yaml from 'js-yaml';
-import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus } from 'lucide-react';
+import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2 } from 'lucide-react';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
@@ -187,6 +187,68 @@ const ProfilesPage = () => {
         return descriptions[profileName] || 'Custom audio profile';
     };
 
+    const handleDeleteProfile = async (profileName: string) => {
+        const currentProfiles = config.profiles || {};
+        const currentProfileKeys = Object.keys(currentProfiles).filter((k) => k !== 'default');
+        const currentDefaultProfile = currentProfiles.default || 'telephony_responsive';
+
+        if (currentProfileKeys.length <= 1) {
+            alert('Cannot delete the last remaining audio profile.');
+            return;
+        }
+
+        const contextsUsing = getContextsUsingProfile(profileName);
+        const remainingProfiles = currentProfileKeys.filter((p) => p !== profileName);
+        const fallbackDefault =
+            (remainingProfiles.includes('telephony_responsive') ? 'telephony_responsive' : remainingProfiles[0]) || 'telephony_responsive';
+
+        const isDefault = currentDefaultProfile === profileName || currentProfiles.default === profileName;
+
+        const lines: string[] = [`Delete audio profile "${profileName}"?`];
+        if (isDefault) {
+            lines.push('', `This profile is currently set as the default (profiles.default).`);
+            lines.push(`Default will be changed to "${fallbackDefault}".`);
+        }
+        if (contextsUsing.length > 0) {
+            lines.push('', `This profile is used by ${contextsUsing.length} context(s): ${contextsUsing.join(', ')}`);
+            lines.push('Those contexts will fall back to the default profile.');
+        }
+        lines.push('', 'This cannot be undone.');
+
+        if (!window.confirm(lines.join('\n'))) return;
+
+        const newConfig = { ...config };
+        newConfig.profiles = { ...(newConfig.profiles || {}) };
+
+        delete newConfig.profiles[profileName];
+
+        // If any contexts reference this profile, remove the explicit override so they fall back to default.
+        if (newConfig.contexts) {
+            const nextContexts: Record<string, any> = { ...newConfig.contexts };
+            Object.entries(nextContexts).forEach(([ctxName, ctx]) => {
+                if (ctx && typeof ctx === 'object' && ctx.profile === profileName) {
+                    const nextCtx = { ...ctx };
+                    delete nextCtx.profile;
+                    nextContexts[ctxName] = nextCtx;
+                }
+            });
+            newConfig.contexts = nextContexts;
+        }
+
+        // If this was the default profile, switch profiles.default to a safe remaining value.
+        if (newConfig.profiles.default === profileName || isDefault) {
+            newConfig.profiles.default = fallbackDefault;
+        }
+
+        await saveConfig(newConfig);
+
+        if (editingProfile === profileName) {
+            setEditingProfile(null);
+            setIsNewProfile(false);
+            setNewProfileName('');
+        }
+    };
+
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading profiles...</div>;
 
     const profiles = config.profiles || {};
@@ -238,17 +300,18 @@ const ProfilesPage = () => {
 				</button>
 			</div>
 
-            <ConfigSection title="Audio Profiles" description="Click a profile card to edit its settings.">
-                <div className="grid grid-cols-1 gap-4">
-                    {profileKeys.map((profileName) => {
-                        const profile = profiles[profileName];
-                        const contextsUsing = getContextsUsingProfile(profileName);
-                        const isDefault = defaultProfile === profileName;
-                        
-                        return (
-                            <div 
-                                key={profileName}
-                                onClick={() => handleEditProfile(profileName)}
+	            <ConfigSection title="Audio Profiles" description="Click a profile card to edit its settings.">
+	                <div className="grid grid-cols-1 gap-4">
+	                    {profileKeys.map((profileName) => {
+	                        const profile = profiles[profileName];
+	                        const contextsUsing = getContextsUsingProfile(profileName);
+	                        const isDefault = defaultProfile === profileName;
+                            const canDelete = profileKeys.length > 1;
+	                        
+	                        return (
+	                            <div 
+	                                key={profileName}
+	                                onClick={() => handleEditProfile(profileName)}
                             >
                             <ConfigCard 
                                 className="group relative hover:border-primary/50 transition-colors cursor-pointer"
@@ -273,18 +336,34 @@ const ProfilesPage = () => {
                                             </p>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleEditProfile(profileName);
-                                            }}
-                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                        >
-                                            <Settings className="w-4 h-4" />
-                                        </button>
-                                    </div>
-                                </div>
+	                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+	                                        <button
+	                                            onClick={(e) => {
+	                                                e.stopPropagation();
+	                                                handleEditProfile(profileName);
+	                                            }}
+	                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+	                                        >
+	                                            <Settings className="w-4 h-4" />
+	                                        </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleDeleteProfile(profileName);
+                                                }}
+                                                disabled={!canDelete}
+                                                title={!canDelete ? 'Cannot delete the last remaining audio profile' : undefined}
+                                                className={[
+                                                    "p-2 rounded-md",
+                                                    canDelete
+                                                        ? "hover:bg-destructive/10 text-destructive"
+                                                        : "text-muted-foreground/50 cursor-not-allowed"
+                                                ].join(' ')}
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+	                                    </div>
+	                                </div>
 
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                                     <div className="bg-secondary/30 p-2 rounded-md">
@@ -324,21 +403,35 @@ const ProfilesPage = () => {
                 </div>
             </ConfigSection>
 
-			<Modal
-				isOpen={!!editingProfile}
-				onClose={() => {
-					setEditingProfile(null);
+				<Modal
+					isOpen={!!editingProfile}
+					onClose={() => {
+						setEditingProfile(null);
 					setIsNewProfile(false);
 					setNewProfileName('');
 				}}
 				title={isNewProfile ? 'Add Profile' : `Edit Profile: ${editingProfile}`}
-				size="lg"
-				footer={
-					<>
-						<button
-							onClick={() => {
-								setEditingProfile(null);
-								setIsNewProfile(false);
+					size="lg"
+					footer={
+						<>
+                            {!isNewProfile && (
+                                <button
+                                    onClick={() => {
+                                        if (editingProfile) {
+                                            handleDeleteProfile(editingProfile);
+                                        }
+                                    }}
+                                    disabled={!editingProfile || profileKeys.length <= 1}
+                                    title={profileKeys.length <= 1 ? 'Cannot delete the last remaining audio profile' : undefined}
+                                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2 mr-auto"
+                                >
+                                    Delete
+                                </button>
+                            )}
+							<button
+								onClick={() => {
+									setEditingProfile(null);
+									setIsNewProfile(false);
 								setNewProfileName('');
 							}}
 							className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
