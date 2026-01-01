@@ -18,6 +18,59 @@ const PipelinesPage = () => {
     const [restartingEngine, setRestartingEngine] = useState(false);
     const providers = config?.providers || {};
 
+    const compactModelLabel = (val: any) => {
+        if (val == null) return '';
+        const str = String(val).trim();
+        if (!str) return '';
+        const looksLikePath =
+            str.includes('models/') ||
+            str.startsWith('/') ||
+            str.endsWith('.onnx') ||
+            str.endsWith('.gguf') ||
+            str.endsWith('.bin') ||
+            str.endsWith('.pt') ||
+            str.endsWith('.pth') ||
+            str.endsWith('.tflite');
+        if (looksLikePath && str.includes('/')) {
+            const parts = str.split('/').filter(Boolean);
+            return parts[parts.length - 1] || str;
+        }
+        return str;
+    };
+
+    const getProviderModelLabel = (providerKey: string, role: 'stt' | 'llm' | 'tts', pipeline: any) => {
+        const provider = (providerKey && providers && (providers as any)[providerKey]) ? (providers as any)[providerKey] : null;
+        if (!provider) return 'default';
+
+        if (role === 'stt') {
+            const model = provider?.stt_model || provider?.model || pipeline?.options?.stt?.model || '';
+            const label = compactModelLabel(model);
+            if (label) return label;
+            const explicit = pipeline?.options?.stt?.streaming;
+            if (explicit != null) return explicit ? 'Streaming' : 'Buffered';
+            return providerKey === 'local_stt' ? 'Streaming' : 'Buffered';
+        }
+
+        if (role === 'tts') {
+            // Local TTS typically stores the voice/model path in `tts_voice`.
+            const modelOrVoice = provider?.tts_model || provider?.model_id || provider?.model || provider?.tts_voice || '';
+            const label = compactModelLabel(modelOrVoice);
+            const voice = provider?.voice || '';
+            if (label && voice && voice !== label) return `${label} (${voice})`;
+            if (label) return label;
+            return pipeline?.options?.tts?.format?.encoding || 'mulaw';
+        }
+
+        const llmLabel =
+            provider?.chat_model ||
+            provider?.llm_model ||
+            provider?.model ||
+            pipeline?.options?.llm?.chat_model ||
+            pipeline?.options?.llm?.model ||
+            '';
+        return compactModelLabel(llmLabel) || 'default model';
+    };
+
     const normalizeSttOptions = (sttKey: string, sttOptions: any) => {
         const opts = (sttOptions && typeof sttOptions === 'object') ? sttOptions : {};
 
@@ -378,11 +431,7 @@ const PipelinesPage = () => {
                                     <span className="font-semibold text-xs uppercase tracking-wider text-muted-foreground mb-1">STT</span>
                                     <span className="font-medium">{pipeline.stt || 'default'}</span>
                                     <span className="text-xs text-muted-foreground mt-1">
-                                        {(() => {
-                                            const explicit = pipeline.options?.stt?.streaming;
-                                            if (explicit != null) return explicit ? 'Streaming' : 'Buffered';
-                                            return (pipeline.stt === 'local_stt') ? 'Streaming' : 'Buffered';
-                                        })()}
+                                        {getProviderModelLabel(pipeline.stt || '', 'stt', pipeline)}
                                     </span>
                                 </div>
 
@@ -393,18 +442,7 @@ const PipelinesPage = () => {
                                     <span className="font-semibold text-xs uppercase tracking-wider text-primary mb-1">LLM</span>
                                     <span className="font-medium">{pipeline.llm || 'default'}</span>
                                     <span className="text-xs text-muted-foreground mt-1">
-                                        {(() => {
-                                            const llmKey = pipeline.llm || '';
-                                            const provider = (llmKey && providers && (providers as any)[llmKey]) ? (providers as any)[llmKey] : null;
-                                            return (
-                                                provider?.chat_model ||
-                                                provider?.llm_model ||
-                                                provider?.model ||
-                                                pipeline.options?.llm?.chat_model ||
-                                                pipeline.options?.llm?.model ||
-                                                'default model'
-                                            );
-                                        })()}
+                                        {getProviderModelLabel(pipeline.llm || '', 'llm', pipeline)}
                                     </span>
                                 </div>
 
@@ -415,7 +453,7 @@ const PipelinesPage = () => {
                                     <span className="font-semibold text-xs uppercase tracking-wider text-muted-foreground mb-1">TTS</span>
                                     <span className="font-medium">{pipeline.tts || 'default'}</span>
                                     <span className="text-xs text-muted-foreground mt-1">
-                                        {pipeline.options?.tts?.format?.encoding || 'mulaw'}
+                                        {getProviderModelLabel(pipeline.tts || '', 'tts', pipeline)}
                                     </span>
                                 </div>
                             </div>
