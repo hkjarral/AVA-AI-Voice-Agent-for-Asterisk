@@ -73,11 +73,11 @@ class VoicemailTool(Tool):
         """
         # Get voicemail config
         config = context.get_config_value("tools.leave_voicemail")
-        if not config or not config.get("enabled"):
+        if not config:
             logger.warning("Voicemail tool not configured", call_id=context.call_id)
             return {
                 "status": "failed",
-                "message": "Voicemail is not available"
+                "message": "Voicemail is not available",
             }
         
         extension = config.get('extension')

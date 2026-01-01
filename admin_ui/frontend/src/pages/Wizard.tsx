@@ -866,7 +866,7 @@ const Wizard = () => {
                                                         <strong>Note:</strong> Groq does not support function/tool calling reliably.
                                                     </p>
                                                     <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                                                        Tools are disabled by default. Do not enable tools_enabled in the provider config.
+                                                        Tools are allowlisted per Context. If you use Groq as the LLM, keep context tools empty.
                                                     </p>
                                                 </div>
                                             )}

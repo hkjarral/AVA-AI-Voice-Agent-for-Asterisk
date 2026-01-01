@@ -234,21 +234,8 @@ const OllamaProviderForm: React.FC<OllamaProviderFormProps> = ({ config, onChang
         </p>
       </div>
 
-      {/* Tools Enabled Toggle */}
-      <div className="flex items-center gap-3">
-        <input
-          type="checkbox"
-          id="tools_enabled"
-          checked={config.tools_enabled ?? true}
-          onChange={(e) => onChange({ tools_enabled: e.target.checked })}
-          className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary"
-        />
-        <label htmlFor="tools_enabled" className="text-sm font-medium">
-          Enable Tool Calling
-        </label>
-        <span className="text-xs text-muted-foreground">
-          (Requires compatible model: Llama 3.2, Mistral, Qwen, etc.)
-        </span>
+      <div className="text-xs text-muted-foreground">
+        Tools are allowlisted per <strong>Context</strong>. Your selected model must support tool calling for actions to work.
       </div>
 
       {/* Tool Capable Models Info */}

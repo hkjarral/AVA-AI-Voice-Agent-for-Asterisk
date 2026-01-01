@@ -6745,36 +6745,29 @@ class Engine:
                 )
                 prompt_source = "error"
 
-            # Inject context tools allowlist into pipeline LLM options (Milestone7 tool calling).
-            # This mirrors the legacy provider flow behavior: tools are only exposed to the model
-            # when the active context explicitly specifies a tools allowlist.
+            # Inject context tools allowlist into pipeline LLM options.
+            # Contexts are the single source of truth for tool allowlisting.
             try:
                 context_name = getattr(session, "context_name", None)
+                allowed_tools: List[str] = []
                 if context_name:
                     context_config = self.transport_orchestrator.get_context_config(context_name)
-                    if context_config and hasattr(context_config, "tools") and context_config.tools is not None:
-                        tools_enabled = True
-                        try:
-                            if isinstance(self.config.tools, dict):
-                                tools_enabled = bool(self.config.tools.get("enabled", True))
-                        except Exception:
-                            tools_enabled = True
+                    if context_config and hasattr(context_config, "tools"):
+                        allowed_tools = list(getattr(context_config, "tools") or [])
 
-                        if tools_enabled:
-                            llm_options = dict(llm_options)
-                            llm_options["tools"] = list(context_config.tools or [])
-                            logger.info(
-                                "Pipeline LLM tools resolved from context",
-                                call_id=call_id,
-                                context=context_name,
-                                tools_count=len(llm_options["tools"]),
-                            )
-                        else:
-                            logger.info(
-                                "Pipeline LLM tools disabled globally; skipping tool injection",
-                                call_id=call_id,
-                                context=context_name,
-                            )
+                # Always override any legacy pipeline/provider tool settings.
+                llm_options = dict(llm_options)
+                if allowed_tools:
+                    llm_options["tools"] = allowed_tools
+                else:
+                    llm_options.pop("tools", None)
+
+                logger.info(
+                    "Pipeline LLM tools resolved from context",
+                    call_id=call_id,
+                    context=context_name,
+                    tools_count=len(allowed_tools),
+                )
             except Exception:
                 logger.debug("Pipeline tool injection failed", call_id=call_id, exc_info=True)
             
@@ -7200,6 +7193,31 @@ class Engine:
                         response_text = (str(llm_result) or "").strip()
                         tool_calls = []
 
+                    # Contexts are the source of truth for tool allowlisting: enforce at execution time too.
+                    allowed_tools: set[str] = set()
+                    try:
+                        allowed_tools = set((llm_options or {}).get("tools") or [])
+                    except Exception:
+                        allowed_tools = set()
+                    if tool_calls:
+                        if not allowed_tools:
+                            logger.info(
+                                "Dropping tool calls (no tools enabled for context)",
+                                call_id=call_id,
+                                tool_count=len(tool_calls),
+                            )
+                            tool_calls = []
+                        else:
+                            before_count = len(tool_calls)
+                            tool_calls = [tc for tc in tool_calls if tc.get("name") in allowed_tools]
+                            dropped = before_count - len(tool_calls)
+                            if dropped:
+                                logger.info(
+                                    "Dropping disallowed tool calls",
+                                    call_id=call_id,
+                                    dropped=dropped,
+                                )
+
                     if not response_text and not tool_calls:
                         return
                     
@@ -7267,14 +7285,6 @@ class Engine:
 
                     # 2. Execute Tools (if any)
                     if tool_calls:
-                        # Respect global tools toggle
-                        try:
-                            if isinstance(self.config.tools, dict) and not bool(self.config.tools.get("enabled", True)):
-                                logger.debug("Tools disabled; skipping pipeline tool execution", call_id=call_id)
-                                return
-                        except Exception:
-                            pass
-
                         # Wait for playback to finish before executing tools (especially transfer/hangup)
                         if playback_id:
                             try:
@@ -7431,6 +7441,16 @@ class Engine:
                                                     for next_tc in llm_response.tool_calls:
                                                         next_name = next_tc.get("name")
                                                         next_args = next_tc.get("parameters") or {}
+                                                        try:
+                                                            if allowed_tools and next_name not in allowed_tools:
+                                                                logger.info(
+                                                                    "Skipping disallowed follow-up tool call",
+                                                                    call_id=call_id,
+                                                                    tool=next_name,
+                                                                )
+                                                                continue
+                                                        except Exception:
+                                                            pass
                                                         next_tool = tool_registry.get(next_name)
                                                         if next_tool:
                                                             logger.info("Executing follow-up tool", tool=next_name, call_id=call_id)
@@ -9105,29 +9125,14 @@ class Engine:
                         has_tools_attr=hasattr(context_config, 'tools') if context_config else False,
                     )
                     if context_config:
-                        # Include tools if context explicitly specifies them.
-                        # - tools is None: legacy/unspecified (provider may choose defaults)
-                        # - tools is []: explicitly no tools
-                        if hasattr(context_config, 'tools') and context_config.tools is not None:
-                            tools_enabled = True
-                            try:
-                                tools_enabled = bool((self.config.tools or {}).get("enabled", True))
-                            except Exception:
-                                tools_enabled = True
-                            provider_context['tools'] = context_config.tools if tools_enabled else []
-                            logger.debug(
-                                "Added tools to provider context",
-                                call_id=call_id,
-                                tools=provider_context['tools'],
-                                tools_enabled=tools_enabled,
-                            )
-                        else:
-                            logger.debug(
-                                "No tools specified in context config",
-                                call_id=call_id,
-                                has_tools_attr=hasattr(context_config, 'tools'),
-                                tools_value=getattr(context_config, 'tools', 'NO_ATTR'),
-                            )
+                        # Contexts are the source of truth for tool allowlisting.
+                        provider_context["tools"] = list(getattr(context_config, "tools", None) or [])
+                        logger.debug(
+                            "Added tools to provider context",
+                            call_id=call_id,
+                            tools=provider_context["tools"],
+                            tools_count=len(provider_context["tools"]),
+                        )
                         # Include prompt for reference (though config.instructions should already be set)
                         if hasattr(context_config, 'prompt') and context_config.prompt:
                             provider_context['prompt'] = context_config.prompt
@@ -9360,25 +9365,16 @@ class Engine:
         tool_start_time = time.time()
 
         try:
-            # Determine allowlisted tools for this call.
-            # - None: legacy/unspecified => allow all (backward compatible)
-            # - []: explicitly none allowed
-            allowed_tools = None
-            try:
-                if isinstance(self.config.tools, dict) and not bool(self.config.tools.get("enabled", True)):
-                    allowed_tools = []
-            except Exception:
-                pass
-
+            # Determine allowlisted tools for this call (contexts are the source of truth).
+            allowed_tools: list[str] = []
             try:
                 if getattr(session, "context_name", None):
                     ctx_cfg = self.transport_orchestrator.get_context_config(session.context_name)
-                    if ctx_cfg and hasattr(ctx_cfg, "tools") and ctx_cfg.tools is not None:
-                        allowed_tools = list(ctx_cfg.tools or [])
+                    allowed_tools = list(getattr(ctx_cfg, "tools", None) or []) if ctx_cfg else []
             except Exception:
                 logger.debug("Failed resolving context tool allowlist", call_id=call_id, exc_info=True)
 
-            if allowed_tools is not None and function_name not in allowed_tools:
+            if function_name not in allowed_tools:
                 result = {"status": "error", "message": f"Tool '{function_name}' not allowed for this call"}
             else:
                 # Build tool execution context

@@ -22,15 +22,8 @@ const ToolsConfig: React.FC<ToolsConfigProps> = ({ config, onChange }) => {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center space-x-2">
-                <input
-                    type="checkbox"
-                    id="tools_enabled"
-                    className="rounded border-input"
-                    checked={config.enabled ?? true}
-                    onChange={(e) => handleChange('enabled', e.target.checked)}
-                />
-                <label htmlFor="tools_enabled" className="text-sm font-medium">Enable Tools</label>
+            <div className="rounded-lg border border-border bg-card/40 p-3 text-sm text-muted-foreground">
+                Tools are allowlisted per <strong>Context</strong>. This section configures tool settings only.
             </div>
 
             <div className="space-y-4">
@@ -60,15 +53,14 @@ const ToolsConfig: React.FC<ToolsConfigProps> = ({ config, onChange }) => {
             <div className="space-y-4">
                 <h3 className="text-lg font-semibold">Transfer Tool</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="flex items-center space-x-2">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Technology</label>
                         <input
-                            type="checkbox"
-                            id="transfer_enabled"
-                            className="rounded border-input"
-                            checked={config.transfer?.enabled ?? true}
-                            onChange={(e) => handleNestedChange('transfer', 'enabled', e.target.checked)}
+                            type="text"
+                            className="w-full p-2 rounded border border-input bg-background"
+                            value={config.transfer?.technology || 'SIP'}
+                            onChange={(e) => handleNestedChange('transfer', 'technology', e.target.value)}
                         />
-                        <label htmlFor="transfer_enabled" className="text-sm font-medium">Enable Transfer</label>
                     </div>
                 </div>
                 {/* Destinations editing could be complex, maybe just JSON for now or a list editor later */}
@@ -91,16 +83,6 @@ const ToolsConfig: React.FC<ToolsConfigProps> = ({ config, onChange }) => {
             <div className="space-y-4">
                 <h3 className="text-lg font-semibold">Hangup Tool</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="flex items-center space-x-2">
-                        <input
-                            type="checkbox"
-                            id="hangup_enabled"
-                            className="rounded border-input"
-                            checked={config.hangup_call?.enabled ?? true}
-                            onChange={(e) => handleNestedChange('hangup_call', 'enabled', e.target.checked)}
-                        />
-                        <label htmlFor="hangup_enabled" className="text-sm font-medium">Enable Hangup</label>
-                    </div>
                     <div className="space-y-2">
                         <label className="text-sm font-medium">Farewell Message</label>
                         <input

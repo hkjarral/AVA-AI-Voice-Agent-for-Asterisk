@@ -350,11 +350,12 @@ class DeepgramProvider(AIProviderInterface):
 
             # Persist call context for downstream events
             self.call_id = call_id
-            # Per-call tool allowlist: if None => legacy (all tools); if [] => no tools
+            # Per-call tool allowlist (contexts are the source of truth).
+            # Missing/None is treated as [] for safety.
             if context and "tools" in context:
-                self._allowed_tools = context.get("tools")
+                self._allowed_tools = list(context.get("tools") or [])
             else:
-                self._allowed_tools = None
+                self._allowed_tools = []
             # Capture Deepgram request id if provided
             try:
                 rid = None
@@ -476,26 +477,18 @@ class DeepgramProvider(AIProviderInterface):
             }
         }
         
-        # Add tools if enabled in configuration.
+        # Add tools from context allowlist only.
         # Per Deepgram docs: functions go in agent.think.functions.
         try:
-            full_cfg = getattr(self, "_full_config", None)
-            tools_cfg = (full_cfg or {}).get("tools", {}) if isinstance(full_cfg, dict) else {}
-            tools_enabled = bool(tools_cfg.get("enabled", False))
-            if tools_enabled:
-                tools_schemas = self.tool_adapter.get_tools_config(self._allowed_tools)
-                if tools_schemas:
-                    settings["agent"]["think"]["functions"] = tools_schemas
-                    logger.info(
-                        "✅ Deepgram functions configured",
-                        call_id=self.call_id,
-                        function_count=len(tools_schemas),
-                        functions=[t["name"] for t in tools_schemas],
-                    )
-                else:
-                    logger.debug("Tools enabled but none selected for this call", call_id=self.call_id)
-            else:
-                logger.debug("Tools disabled in configuration", call_id=self.call_id)
+            tools_schemas = self.tool_adapter.get_tools_config(list(self._allowed_tools or []))
+            if tools_schemas:
+                settings["agent"]["think"]["functions"] = tools_schemas
+                logger.info(
+                    "✅ Deepgram functions configured",
+                    call_id=self.call_id,
+                    function_count=len(tools_schemas),
+                    functions=[t["name"] for t in tools_schemas],
+                )
         except Exception as e:
             logger.warning(f"Failed to configure tools: {e}", call_id=self.call_id, exc_info=True)
         # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error

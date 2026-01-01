@@ -88,7 +88,6 @@ class OllamaLLMAdapter(LLMComponent):
         merged.setdefault("timeout_sec", 60)  # Local models may be slower
         merged.setdefault("stream", False)
         merged.setdefault("max_tokens", 200)
-        merged.setdefault("tools_enabled", True)  # Try tools by default
         
         return merged
 
@@ -216,12 +215,11 @@ class OllamaLLMAdapter(LLMComponent):
             },
         }
         
-        # Add tools if model supports them and tools are enabled
-        tools_enabled = merged.get("tools_enabled", True)
+        # Add tools if model supports them.
+        # Tool availability is resolved per-context by the engine (contexts are the source of truth).
         tool_names = merged.get("tools", [])
         use_tools = (
-            tools_enabled
-            and tool_names
+            tool_names
             and self._model_supports_tools(model)
             and not session_state.get("tools_failed", False)
         )

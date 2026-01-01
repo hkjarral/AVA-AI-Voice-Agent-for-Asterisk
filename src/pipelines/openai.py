@@ -442,10 +442,10 @@ class OpenAILLMAdapter(LLMComponent):
         assert self._session
         payload = self._build_chat_payload(transcript, context, merged)
         
-        # Milestone7: Tool support
-        tools_enabled = bool(merged.get("tools_enabled", True))
+        # Tool support: tool allowlists are resolved per-context by the engine and passed in via `merged["tools"]`.
+        # Do not gate tools by provider-level flags; contexts are the source of truth for tool availability.
         tools_list = merged.get("tools")
-        if tools_enabled and tools_list and isinstance(tools_list, list):
+        if tools_list and isinstance(tools_list, list):
             tool_schemas = []
             for tool_name in tools_list:
                 tool = tool_registry.get(tool_name)

@@ -100,20 +100,6 @@ class OpenAIToolAdapter:
         function_call_id = item.get('call_id')  # OpenAI uses 'call_id' field
         function_name = item.get('name')
 
-        try:
-            full_cfg = context.get("config")
-            if isinstance(full_cfg, dict) and not bool((full_cfg.get("tools") or {}).get("enabled", True)):
-                error_msg = f"Tools disabled; rejecting '{function_name}'"
-                logger.warning(error_msg, tool=function_name)
-                return {
-                    "call_id": function_call_id,
-                    "function_name": function_name,
-                    "status": "error",
-                    "message": error_msg,
-                }
-        except Exception:
-            pass
-
         allowed = context.get("allowed_tools", None)
         if allowed is not None and function_name not in allowed:
             error_msg = f"Tool '{function_name}' not allowed for this call"

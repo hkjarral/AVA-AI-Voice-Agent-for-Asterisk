@@ -50,8 +50,6 @@ class AttendedTransferTool(Tool):
             return {"status": "failed", "message": "Missing destination"}
 
         cfg = context.get_config_value("tools.attended_transfer") or {}
-        if not cfg.get("enabled"):
-            return {"status": "failed", "message": "Attended transfer is not enabled"}
 
         transfer_cfg = context.get_config_value("tools.transfer") or {}
         destinations = (transfer_cfg.get("destinations") or {}) if isinstance(transfer_cfg, dict) else {}

@@ -344,11 +344,14 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         # Initialize session ACK mechanism (similar to Deepgram pattern)
         self._session_ack_event = asyncio.Event()
         self._outfmt_acknowledged = False
-        # Per-call tool allowlist: if None => legacy (all tools); if [] => no tools
+        # Per-call tool allowlist (contexts are the source of truth):
+        # - [] => no tools
+        # - ["hangup_call", ...] => allowlisted tools
+        # Missing/None is treated as [] for safety.
         if context and "tools" in context:
-            self._allowed_tools = context.get("tools")
+            self._allowed_tools = list(context.get("tools") or [])
         else:
-            self._allowed_tools = None
+            self._allowed_tools = []
 
         self._reset_output_meter()
 
@@ -819,27 +822,22 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         else:
             session["instructions"] = audio_forcing_prefix
 
-        # Add tool calling configuration
+        # Add tool calling configuration (context allowlist only)
         try:
-            tools_enabled = True
-            full_cfg = getattr(self, "_full_config", None)
-            if isinstance(full_cfg, dict):
-                tools_enabled = bool((full_cfg.get("tools") or {}).get("enabled", True))
-
-            if tools_enabled:
-                tools = self.tool_adapter.get_tools_config(self._allowed_tools)
-                if tools:
-                    session["tools"] = tools
-                    session["tool_choice"] = "auto"  # Let OpenAI decide when to call tools
-                    logger.info(
-                        f"🛠️  OpenAI session configured with {len(tools)} tools",
-                        call_id=self._call_id,
-                    )
-            else:
-                logger.debug("Tools disabled via config; not configuring OpenAI tools", call_id=self._call_id)
+            tools = self.tool_adapter.get_tools_config(list(self._allowed_tools or []))
+            if tools:
+                session["tools"] = tools
+                session["tool_choice"] = "auto"  # Let OpenAI decide when to call tools
+                logger.info(
+                    f"🛠️  OpenAI session configured with {len(tools)} tools",
+                    call_id=self._call_id,
+                )
         except Exception as e:
-            logger.warning(f"Failed to add tools to OpenAI session: {e}", 
-                          call_id=self._call_id, exc_info=True)
+            logger.warning(
+                f"Failed to add tools to OpenAI session: {e}",
+                call_id=self._call_id,
+                exc_info=True,
+            )
 
         payload: Dict[str, Any] = {
             "type": "session.update",

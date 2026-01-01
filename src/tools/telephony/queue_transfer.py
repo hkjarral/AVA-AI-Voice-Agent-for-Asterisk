@@ -178,15 +178,11 @@ class TransferToQueueTool(Tool):
         Returns:
             Queue config dict or None if not found
         """
-        config = context.get_config_value("tools.transfer_to_queue")
-        if not config or not config.get("enabled"):
-            logger.warning(
-                "Queue transfer tool not configured",
-                call_id=context.call_id
-            )
+        config = context.get_config_value("tools.transfer_to_queue") or {}
+        queues = (config.get("queues") or {}) if isinstance(config, dict) else {}
+        if not queues:
+            logger.warning("Queue transfer tool not configured", call_id=context.call_id)
             return None
-        
-        queues = config.get("queues", {})
         
         # Case-insensitive lookup
         queue_name_lower = queue_name.lower()

@@ -176,11 +176,12 @@ class GoogleLiveProvider(AIProviderInterface):
         self._conversation_history = []
         self._setup_complete = False
         self._greeting_completed = False
-        # Per-call tool allowlist: if None => legacy (all tools); if [] => no tools
+        # Per-call tool allowlist (contexts are the source of truth).
+        # Missing/None is treated as [] for safety.
         if context and "tools" in context:
-            self._allowed_tools = context.get("tools")
+            self._allowed_tools = list(context.get("tools") or [])
         else:
-            self._allowed_tools = None
+            self._allowed_tools = []
 
         logger.info(
             "Starting Google Live session",
@@ -932,18 +933,8 @@ class GoogleLiveProvider(AIProviderInterface):
                     provider_name="google_live",
                 )
 
-                tools_enabled = True
-                try:
-                    full_cfg = getattr(self, "_full_config", None)
-                    if isinstance(full_cfg, dict):
-                        tools_enabled = bool((full_cfg.get("tools") or {}).get("enabled", True))
-                except Exception:
-                    tools_enabled = True
-
-                # Enforce allowlist (if provided by engine context)
-                if not tools_enabled:
-                    result = {"status": "error", "message": "Tools are disabled"}
-                elif self._allowed_tools is not None and func_name not in self._allowed_tools:
+                # Enforce allowlist from context
+                if not self._allowed_tools or func_name not in self._allowed_tools:
                     result = {
                         "status": "error",
                         "message": f"Tool '{func_name}' not allowed for this call",

@@ -356,7 +356,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                                     Groq does not support function/tool calling reliably and will return errors if tools are enabled.
                                 </p>
                                 <p className="text-sm">
-                                    <strong>Do not enable <code>tools_enabled</code></strong> in the configuration fields below.
+                                    Tools are allowlisted per <strong>Context</strong>. If this provider is backed by Groq, keep context tools empty.
                                 </p>
                             </div>
                         </div>

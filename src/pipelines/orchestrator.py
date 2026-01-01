@@ -1296,9 +1296,8 @@ class PipelineOrchestrator:
         llm_options = dict(options_map.get("llm", {}))
         tts_options = dict(options_map.get("tts", {}))
 
-        # Inject tools into LLM options if configured
-        if hasattr(entry, "tools") and entry.tools:
-            llm_options["tools"] = entry.tools
+        # Tools are allowlisted per-context (engine injects llm_options["tools"]).
+        # Do not allow pipeline-level tool configuration.
 
         stt_adapter = self._build_component(entry.stt, stt_options)
         llm_adapter = self._build_component(entry.llm, llm_options)

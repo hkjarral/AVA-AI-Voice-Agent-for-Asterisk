@@ -73,15 +73,14 @@ class UnifiedTransferTool(Tool):
         destination = parameters.get('destination') or parameters.get('target')
         
         # Get destinations from config via context
-        config = context.get_config_value("tools.transfer")
-        if not config or not config.get("enabled"):
+        config = context.get_config_value("tools.transfer") or {}
+        destinations = (config.get('destinations') or {}) if isinstance(config, dict) else {}
+        if not destinations:
             logger.warning("Unified transfer tool not configured", call_id=context.call_id)
             return {
                 "status": "failed",
-                "message": "Transfer service is not available"
+                "message": "Transfer service is not available",
             }
-        
-        destinations = config.get('destinations', {})
         
         # Fuzzy matching for common destination patterns
         # Maps generic terms to configured destination keys
