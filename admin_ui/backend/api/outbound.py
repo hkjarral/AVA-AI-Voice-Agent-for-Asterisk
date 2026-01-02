@@ -46,6 +46,12 @@ def _get_outbound_store():
 def _media_dir() -> str:
     return os.getenv("AAVA_MEDIA_DIR", "/mnt/asterisk_media/ai-generated")
 
+def _vm_upload_max_bytes() -> int:
+    try:
+        return max(1, int(os.getenv("AAVA_VM_UPLOAD_MAX_BYTES", "5242880")))
+    except Exception:
+        return 5242880
+
 
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
@@ -67,7 +73,7 @@ class CampaignCreateRequest(BaseModel):
 
 
 class CampaignStatusRequest(BaseModel):
-    status: str  # running|paused|stopped|draft
+    status: str  # running|paused|stopped|draft|archived
     cancel_pending: bool = False
 
 
@@ -80,10 +86,34 @@ class LeadImportResponse(BaseModel):
     error_csv_truncated: bool = False
 
 
+@router.get("/sample.csv")
+async def download_sample_csv():
+    """
+    Download a sample CSV for lead import.
+
+    Columns supported by the importer:
+      - phone_number (required)
+      - context (optional)
+      - timezone (optional)
+      - caller_id (optional)
+      - custom_vars (optional JSON object)
+    """
+    csv_text = (
+        "phone_number,context,timezone,caller_id,custom_vars\n"
+        "+15551234567,default,UTC,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1001\"\"}\"\n"
+        "+15557654321,demo_google_live,America/New_York,6789,\"{\"\"name\"\":\"\"Bob Example\"\",\"\"note\"\":\"\"Follow up from web form\"\"}\"\n"
+    )
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="outbound_sample_leads.csv"'},
+    )
+
+
 @router.get("/campaigns")
-async def list_campaigns():
+async def list_campaigns(include_archived: bool = Query(False)):
     store = _get_outbound_store()
-    return await store.list_campaigns()
+    return await store.list_campaigns(include_archived=bool(include_archived))
 
 
 @router.post("/campaigns")
@@ -119,6 +149,31 @@ async def clone_campaign(campaign_id: str):
         return await store.clone_campaign(campaign_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+@router.post("/campaigns/{campaign_id}/archive")
+async def archive_campaign(campaign_id: str):
+    store = _get_outbound_store()
+    try:
+        campaign = await store.get_campaign(campaign_id)
+        if str(campaign.get("status") or "").strip().lower() == "running":
+            raise HTTPException(status_code=400, detail="Pause/stop the campaign before archiving")
+        return await store.set_campaign_status(campaign_id, "archived", cancel_pending=False)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: str):
+    store = _get_outbound_store()
+    try:
+        await store.delete_campaign(campaign_id)
+        return {"ok": True}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/campaigns/{campaign_id}/status")
@@ -205,8 +260,9 @@ async def list_attempts(
 async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...)):
     store = _get_outbound_store()
     filename = (file.filename or "").strip() or "voicemail.ulaw"
-    if not filename.lower().endswith(".ulaw"):
-        raise HTTPException(status_code=400, detail="Upload must be a .ulaw file (8kHz μ-law)")
+    ext = os.path.splitext(filename)[1].lower().strip()
+    if ext not in (".ulaw", ".wav"):
+        raise HTTPException(status_code=400, detail="Upload must be .ulaw (8kHz μ-law) or .wav (PCM) audio")
 
     raw_name = os.path.basename(filename)
     if not _SAFE_NAME_RE.match(raw_name):
@@ -219,8 +275,40 @@ async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...))
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
+    if len(data) > _vm_upload_max_bytes():
+        raise HTTPException(status_code=400, detail="Upload too large")
+
+    if ext == ".ulaw":
+        ulaw_data = data
+    else:
+        # Convert WAV (PCM) -> 8kHz μ-law so Asterisk Playback() can use it directly.
+        try:
+            with wave.open(io.BytesIO(data), "rb") as wavf:
+                nch = wavf.getnchannels()
+                sampwidth = wavf.getsampwidth()
+                fr = wavf.getframerate()
+                nframes = wavf.getnframes()
+                frames = wavf.readframes(nframes)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid WAV file: {e}")
+
+        if nch != 1:
+            raise HTTPException(status_code=400, detail="WAV must be mono (1 channel)")
+        if sampwidth not in (1, 2, 3, 4):
+            raise HTTPException(status_code=400, detail="Unsupported WAV sample width")
+
+        # Normalize to 16-bit little-endian PCM for processing.
+        if sampwidth != 2:
+            frames = audioop.lin2lin(frames, sampwidth, 2)
+
+        # Resample to 8kHz if needed.
+        if fr != 8000:
+            frames, _ = audioop.ratecv(frames, 2, 1, fr, 8000, None)
+
+        ulaw_data = audioop.lin2ulaw(frames, 2)
+
     with open(path, "wb") as f:
-        f.write(data)
+        f.write(ulaw_data)
     try:
         os.chmod(path, 0o664)
     except Exception:

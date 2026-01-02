@@ -16,7 +16,7 @@ import {
     PhoneCall
 } from 'lucide-react';
 
-type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped';
+type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived';
 
 interface OutboundCampaign {
     id: string;
@@ -82,6 +82,8 @@ const StatusBadge = ({ status, label }: { status: CampaignStatus; label?: string
                 ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'
                 : status === 'stopped'
                     ? 'bg-red-500/10 text-red-500 border-red-500/20'
+                    : status === 'archived'
+                        ? 'bg-muted text-muted-foreground border-border'
                     : 'bg-muted text-muted-foreground border-border';
     return (
         <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium ${cls}`}>
@@ -133,6 +135,7 @@ const CallSchedulingPage = () => {
     const [tab, setTab] = useState<'campaigns' | 'leads' | 'attempts'>('campaigns');
     const [campaigns, setCampaigns] = useState<OutboundCampaign[]>([]);
     const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+    const [showArchived, setShowArchived] = useState(false);
     const selectedCampaign = useMemo(
         () => campaigns.find(c => c.id === selectedCampaignId) || null,
         [campaigns, selectedCampaignId]
@@ -196,10 +199,15 @@ const CallSchedulingPage = () => {
     }, [editForm.daily_window_start_local, editForm.daily_window_end_local]);
 
     const refreshCampaigns = async () => {
-        const res = await axios.get('/api/outbound/campaigns');
-        setCampaigns(res.data || []);
-        if (!selectedCampaignId && res.data?.length) {
-            setSelectedCampaignId(res.data[0].id);
+        const res = await axios.get('/api/outbound/campaigns', { params: { include_archived: showArchived } });
+        const list = res.data || [];
+        setCampaigns(list);
+        if (!list.length) {
+            setSelectedCampaignId(null);
+            return;
+        }
+        if (!selectedCampaignId || !list.some((c: OutboundCampaign) => c.id === selectedCampaignId)) {
+            setSelectedCampaignId(list[0].id);
         }
     };
 
@@ -230,8 +238,7 @@ const CallSchedulingPage = () => {
         return () => {
             mounted = false;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [showArchived]);
 
     useEffect(() => {
         if (!selectedCampaignId) return;
@@ -257,7 +264,7 @@ const CallSchedulingPage = () => {
             clearInterval(interval);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedCampaignId]);
+    }, [selectedCampaignId, showArchived]);
 
     const createCampaign = async () => {
         try {
@@ -299,6 +306,28 @@ const CallSchedulingPage = () => {
             setNotice({ type: 'success', message: 'Campaign cloned' });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to clone campaign' });
+        }
+    };
+
+    const archiveCampaign = async (campaignId: string) => {
+        try {
+            await axios.post(`/api/outbound/campaigns/${campaignId}/archive`);
+            await refreshCampaigns();
+            if (selectedCampaignId === campaignId) setSelectedCampaignId(null);
+            setNotice({ type: 'success', message: 'Campaign archived' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to archive campaign' });
+        }
+    };
+
+    const deleteCampaign = async (campaignId: string) => {
+        try {
+            await axios.delete(`/api/outbound/campaigns/${campaignId}`);
+            await refreshCampaigns();
+            if (selectedCampaignId === campaignId) setSelectedCampaignId(null);
+            setNotice({ type: 'success', message: 'Campaign deleted' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to delete campaign' });
         }
     };
 
@@ -381,6 +410,20 @@ const CallSchedulingPage = () => {
             setNotice({ type: 'success', message: 'Voicemail uploaded and linked to campaign' });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to upload voicemail' });
+        }
+    };
+
+    const downloadSampleCsv = async () => {
+        try {
+            const res = await axios.get('/api/outbound/sample.csv', { responseType: 'blob' });
+            const url = URL.createObjectURL(res.data);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'outbound_sample_leads.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to download sample CSV' });
         }
     };
 
@@ -470,10 +513,21 @@ const CallSchedulingPage = () => {
 
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                 <div className="lg:col-span-1 border border-border rounded-lg bg-card/50 overflow-hidden">
-                    <div className="p-3 border-b border-border flex items-center justify-between">
-                        <div className="text-sm font-medium">Campaigns</div>
-                        <div className="text-xs text-muted-foreground">{campaigns.length}</div>
-                    </div>
+                                <div className="p-3 border-b border-border flex items-center justify-between gap-2">
+                                    <div className="text-sm font-medium">Campaigns</div>
+                                    <div className="flex items-center gap-2">
+                                        <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                className="accent-current"
+                                                checked={showArchived}
+                                                onChange={e => setShowArchived(e.target.checked)}
+                                            />
+                                            Show archived
+                                        </label>
+                                        <div className="text-xs text-muted-foreground">{campaigns.length}</div>
+                                    </div>
+                                </div>
                     <div className="max-h-[520px] overflow-y-auto">
                         {campaigns.length === 0 && (
                             <div className="p-4 text-sm text-muted-foreground">No campaigns yet.</div>
@@ -540,51 +594,54 @@ const CallSchedulingPage = () => {
 	                                            </div>
 	                                        )}
 	                                    </div>
-	                                    <div className="flex items-center gap-2">
-	                                        <button
-	                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-	                                            onClick={openEdit}
-	                                            disabled={selectedCampaign.status === 'running'}
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                            onClick={openEdit}
+                                            disabled={selectedCampaign.status === 'running'}
 	                                            title={selectedCampaign.status === 'running' ? 'Pause the campaign to edit' : 'Edit campaign'}
 	                                        >
 	                                            <Pencil className="w-4 h-4" />
 	                                            Edit
 	                                        </button>
-	                                        <button
-	                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-	                                            onClick={() => cloneCampaign(selectedCampaign.id)}
-	                                        >
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
+                                            onClick={() => cloneCampaign(selectedCampaign.id)}
+                                        >
                                             <Copy className="w-4 h-4" />
                                             Clone
                                         </button>
-                                        <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm cursor-pointer">
-                                            <Upload className="w-4 h-4" />
-                                            Upload VM (.ulaw)
-                                            <input
-                                                type="file"
-                                                accept=".ulaw"
-                                                className="hidden"
-                                                onChange={e => {
-                                                    const f = e.target.files?.[0];
-                                                    if (f) uploadVoicemail(selectedCampaign.id, f);
-                                                    e.currentTarget.value = '';
-                                                }}
-                                            />
-                                        </label>
-	                                        <button
-	                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-	                                            onClick={() => previewVoicemail(selectedCampaign.id)}
-	                                            disabled={!selectedHasVoicemail}
-	                                            title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Preview voicemail'}
-	                                        >
-	                                            <PhoneCall className="w-4 h-4" />
-	                                            Preview VM
-	                                        </button>
-	                                        {selectedCampaign.status !== 'running' ? (
-	                                            <button
-	                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-600/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-	                                                onClick={() => setStatus(selectedCampaign.id, 'running')}
-	                                                disabled={!selectedHasVoicemail}
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                            onClick={() => {
+                                                const ok = confirm(
+                                                    'Archive this campaign?\n\nIt will be hidden by default (use “Show archived” to view it again).'
+                                                );
+                                                if (ok) archiveCampaign(selectedCampaign.id);
+                                            }}
+                                            disabled={selectedCampaign.status === 'running'}
+                                            title={selectedCampaign.status === 'running' ? 'Pause/stop the campaign before archiving' : 'Archive campaign'}
+                                        >
+                                            Archive
+                                        </button>
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                            onClick={() => {
+                                                const ok = confirm(
+                                                    'Permanently delete this campaign?\n\nThis will delete ALL leads and attempts for this campaign and cannot be undone.'
+                                                );
+                                                if (ok) deleteCampaign(selectedCampaign.id);
+                                            }}
+                                            disabled={selectedCampaign.status === 'running'}
+                                            title={selectedCampaign.status === 'running' ? 'Pause/stop the campaign before deleting' : 'Delete campaign'}
+                                        >
+                                            Delete
+                                        </button>
+                                        {selectedCampaign.status !== 'running' ? (
+                                            <button
+                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-600/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                onClick={() => setStatus(selectedCampaign.id, 'running')}
+                                                disabled={!selectedHasVoicemail}
 	                                                title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Start campaign'}
 	                                            >
 	                                                <Play className="w-4 h-4" />
@@ -660,6 +717,14 @@ const CallSchedulingPage = () => {
                                     </div>
                                     {tab === 'leads' && (
                                         <div className="flex items-center gap-2">
+                                            <button
+                                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/80 text-sm"
+                                                onClick={downloadSampleCsv}
+                                                title="Download a sample lead import CSV"
+                                            >
+                                                <FileDown className="w-4 h-4" />
+                                                Sample CSV
+                                            </button>
                                             <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm cursor-pointer">
                                                 <Upload className="w-4 h-4" />
                                                 Import CSV (skip existing)
@@ -683,6 +748,52 @@ const CallSchedulingPage = () => {
                                         <div className="text-sm text-muted-foreground">
                                             Configure the campaign and press Start. Routing assumption: your FreePBX outbound routes handle dialing from extension 6789.
                                         </div>
+
+                                        <div className="border border-border rounded-md bg-background p-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div>
+                                                    <div className="text-sm font-medium">Voicemail Drop</div>
+                                                    <div className="text-xs text-muted-foreground mt-1">
+                                                        {selectedHasVoicemail ? (
+                                                            <>
+                                                                Ready: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri}</span>
+                                                            </>
+                                                        ) : (
+                                                            <>Required before Start (MVP).</>
+                                                        )}
+                                                    </div>
+                                                    <div className="text-xs text-muted-foreground mt-1">
+                                                        Upload <span className="font-mono">.wav</span> (recommended) or <span className="font-mono">.ulaw</span>. WAV is converted to 8kHz μ-law automatically.
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm cursor-pointer">
+                                                        <Upload className="w-4 h-4" />
+                                                        Upload
+                                                        <input
+                                                            type="file"
+                                                            accept=".wav,.ulaw,audio/wav"
+                                                            className="hidden"
+                                                            onChange={e => {
+                                                                const f = e.target.files?.[0];
+                                                                if (f) uploadVoicemail(selectedCampaign.id, f);
+                                                                e.currentTarget.value = '';
+                                                            }}
+                                                        />
+                                                    </label>
+                                                    <button
+                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        onClick={() => previewVoicemail(selectedCampaign.id)}
+                                                        disabled={!selectedHasVoicemail}
+                                                        title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Preview voicemail'}
+                                                    >
+                                                        <PhoneCall className="w-4 h-4" />
+                                                        Preview
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         <button
                                             className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
                                             onClick={() => setShowSetupGuide(v => !v)}

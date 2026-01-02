@@ -1,6 +1,6 @@
 # Milestone 15: Groq Speech (STT/TTS) for Modular Pipelines
 
-**Status**: 🟡 Draft / Missing milestone doc (restored)  
+**Status**: 🟡 Draft (restored)  
 **Priority**: Medium  
 **Estimated Effort**: 5–10 days  
 **Branch**: `feature/groq-speech-pipelines`  
@@ -17,9 +17,7 @@ This is pipeline-only (not a monolithic realtime provider).
 
 ## Where the “Groq milestone” is today
 
-There is currently **no milestone document** under `docs/contributing/milestones/` for Groq Speech.
-
-The existing material lives in:
+This milestone document is the restored Groq Speech plan. Prior to this, the existing material lived in:
 
 - `archived/groq-tts-stt-modular-implementation.md` (implementation plan / notes)
 
@@ -83,4 +81,3 @@ The engine expects TTS adapters to yield audio in the downstream target format (
 - A pipeline can be configured with `stt: groq_stt` and `tts: groq_tts` and successfully complete a basic turn.
 - Errors are readable (HTTP status + body snippet) and do not crash the engine.
 - Configuration is documented and validated by Admin UI config validation flow.
-

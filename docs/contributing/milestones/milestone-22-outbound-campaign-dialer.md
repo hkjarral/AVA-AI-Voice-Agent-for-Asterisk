@@ -30,14 +30,14 @@ We want robust outcomes and observability without introducing call-center comple
 
 ## Canonical Design Notes (Architecture Alignment)
 
-The engine is ARI-first and event driven (`src/engine.py:458`). Outbound requires adding a small “control plane” (scheduler + persistence) without impacting the “media plane” (audio transport, VAD, provider sessions).
+The engine is ARI-first and event driven (`src/engine.py:186`). Outbound requires adding a small “control plane” (scheduler + persistence) without impacting the “media plane” (audio transport, VAD, provider sessions).
 
 Key existing primitives to reuse:
 
 - **SessionStore** for per-call state (`src/core/session_store.py:18`)
-- **Tool system** initialized at engine boot (`src/engine.py:498`)
-- **Media playback** via shared `/mnt/asterisk_media/ai-generated` (`src/core/playback_manager.py:41`)
-- **Call history persistence** patterns (SQLite WAL + busy_timeout) (`src/core/call_history.py:181`)
+- **Tool system** initialized at engine boot (`src/engine.py:512`)
+- **Media playback** via shared `/mnt/asterisk_media/ai-generated` (`src/core/playback_manager.py:25`)
+- **Call history persistence** patterns (SQLite WAL + busy_timeout) (`src/core/call_history.py:186`)
 
 Reference draft (design discussion notes):
 
@@ -137,8 +137,10 @@ Key UI behaviors:
 - CSV import:
   - default `skip_existing` by `phone_number`
   - show only first N errors and provide downloadable error CSV
+  - provide downloadable sample CSV with dummy data
 - Voicemail preview:
   - backend serves WAV preview derived from `.ulaw` for browser playback
+  - voicemail upload accepts `.wav` (PCM) and auto-converts to 8kHz μ-law
 - Collapsible “Setup Guide” with dialplan snippet and verification commands
 
 ## Implementation Plan (Phases)
@@ -151,7 +153,7 @@ Key UI behaviors:
 
 ### Phase 2 — Engine scheduler + originate
 
-- Add outbound scheduler background task in `Engine.start()` (`src/engine.py:492`)
+- Add outbound scheduler background task in `Engine.start()` (`src/engine.py:507`)
 - Implement leasing + pacing + concurrency
 - Implement originate wrapper + immediate error handling
 - Add watchdog timers for “no answer / never returned” attempts
@@ -265,3 +267,56 @@ Optional (post-MVP):
   - `aava_outbound_active_calls{campaign_id}`
   - `aava_outbound_amd_duration_seconds`
   - `aava_outbound_pending_leads{campaign_id}`
+
+## Audit Alignment (What We Take vs What We Don’t)
+
+The archived audit report (`archived/Outbound - Asterisk AI Voice Agent Audit.md`) is written for an **enterprise outbound platform** (Vicidial/Genesys/Connect style). This milestone intentionally targets a **single-node, simpler-than-Vicidial** implementation.
+
+### Lessons we take (aligns with this milestone)
+
+- Outbound requires a proactive “pacer” loop (control plane) that is decoupled from the media plane.
+- Originations must be treated as *distributed state transitions* (originate → answer → AMD → AI attach) with persistent attempt tracking and crash recovery.
+- AMD in dialplan is the pragmatic way to avoid wasting AI sessions on machines; `NOTSURE` should be treated as `MACHINE` (cost control).
+- Outcomes must be first-class: classify originate failures and call progress (busy/noanswer/congestion/chanunavail) so operators can recycle leads safely.
+- Operator UX matters: start/pause/stop, queue visibility, and link attempts to call history for debugging.
+- Compliance-lite is still necessary even for MVP: campaign time windows + (future) a DNC mechanism.
+
+### Lessons we defer (valuable, but not MVP)
+
+- DNC workflows:
+  - manual DNC import/scrub
+  - “stop calling me” intent → add to DNC automatically via a tool
+- Retry automation (policy-based backoff by outcome) and lead hygiene automation.
+  - Future “minimal automation”: `max_attempts` + backoff for `busy`/`no_answer` only (manual remains v1).
+- Rate limiting beyond min-interval pacing (calls-per-second burst control, trunk protection), plus circuit breakers (auto-pause on repeated originate failures).
+- Real-time dashboards (WebSocket push) and richer analytics (ASR/AHT/abandonment-style metrics).
+- Multi-campaign pacing fairness, list mixing/priority, and multi-list assignment.
+
+### Lessons we explicitly do not adopt (conflicts with project constraints)
+
+- Predictive dialing, abandonment-rate control, agent seats, and call-center “hopper” semantics.
+- Mandatory microservices split (Orchestrator + Pacer + Redis + PostgreSQL) for the MVP path.
+  - We keep module boundaries clean so a future contributor can extract services later, but we do not introduce that operational complexity now.
+
+## Improvement Plan (Post-MVP Hardening Backlog)
+
+These are concrete follow-ups that preserve the single-node architecture while addressing the most useful “enterprise” lessons.
+
+### Phase 6 — Outcome classification + resilience
+
+- Map ARI originate HTTP errors to attempt outcomes (4xx vs 5xx) and ensure a failed originate immediately releases the lease.
+- Enrich “call progress” outcomes using hangup cause / ARI events (busy/noanswer/congestion/chanunavail/canceled) and persist `error_message` for operator review.
+- Add a simple circuit breaker per campaign: auto-pause after N consecutive `error` outcomes within a time window.
+- Add watchdog cleanup on engine boot: requeue stale `leased`/`dialing` leads past TTL (already supported via `leased_until_utc`, ensure periodic cleanup is scheduled too).
+
+### Phase 7 — Compliance-lite + operator controls
+
+- Add `outbound_dnc` table(s) (SQLite) with **per-campaign** DNC plus an optional **global** DNC list (campaigns default to scrubbing against global + their own).
+- Scrub during import + leasing (config-gated), and support importing into global vs campaign scope.
+- Add a minimal “DNC this number” action in Call History + lead row action in Call Scheduling UI (choose campaign scope; global is the default).
+- Add a dialplan-safe caller ID policy doc (we assume PBX routes/rewrites final outbound caller ID; the dialer sets extension identity only).
+
+### Phase 8 — Observability + export
+
+- Expose outbound Prometheus metrics (optional) and add a small “Outbound Health” panel in Admin UI.
+- Add CSV export endpoints for leads and attempts (campaign scoped).

@@ -71,7 +71,7 @@ class OutboundStore:
         CREATE TABLE IF NOT EXISTS outbound_campaigns (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'draft', -- draft|running|paused|stopped
+            status TEXT NOT NULL DEFAULT 'draft', -- draft|running|paused|stopped|archived
             timezone TEXT NOT NULL DEFAULT 'UTC',
             run_start_at_utc TEXT,
             run_end_at_utc TEXT,
@@ -251,16 +251,23 @@ class OutboundStore:
     async def get_campaign(self, campaign_id: str) -> Dict[str, Any]:
         return await self._run(lambda: self.get_campaign_sync(campaign_id))
 
-    async def list_campaigns(self) -> List[Dict[str, Any]]:
+    async def list_campaigns(self, *, include_archived: bool = False) -> List[Dict[str, Any]]:
         if not self._enabled:
             return []
 
         def _sync():
+            clauses = []
+            args: List[Any] = []
+            if not include_archived:
+                clauses.append("status != 'archived'")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
             with self._lock:
                 conn = self._get_connection()
                 try:
                     rows = conn.execute(
-                        "SELECT * FROM outbound_campaigns ORDER BY created_at_utc DESC"
+                        f"SELECT * FROM outbound_campaigns {where} ORDER BY created_at_utc DESC",
+                        args,
                     ).fetchall()
                     out: List[Dict[str, Any]] = []
                     for r in rows:
@@ -276,7 +283,7 @@ class OutboundStore:
 
     async def list_running_campaigns(self) -> List[Dict[str, Any]]:
         """Return campaigns with status=running (lightweight filter for scheduler)."""
-        campaigns = await self.list_campaigns()
+        campaigns = await self.list_campaigns(include_archived=False)
         return [c for c in campaigns if (str(c.get("status") or "").lower() == "running")]
 
     async def update_campaign(self, campaign_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -345,7 +352,7 @@ class OutboundStore:
             raise RuntimeError("OutboundStore disabled")
 
         status = (status or "").strip().lower()
-        if status not in ("draft", "running", "paused", "stopped"):
+        if status not in ("draft", "running", "paused", "stopped", "archived"):
             raise ValueError("invalid status")
 
         def _sync():
@@ -372,6 +379,42 @@ class OutboundStore:
                 finally:
                     conn.close()
             return self.get_campaign_sync(campaign_id)
+
+        return await self._run(_sync)
+
+    async def delete_campaign(self, campaign_id: str) -> None:
+        """
+        Permanently delete a campaign and all associated leads/attempts.
+
+        This is intentionally destructive and cannot be undone.
+        """
+        if not self._enabled:
+            raise RuntimeError("OutboundStore disabled")
+
+        def _sync():
+            campaign = self.get_campaign_sync(campaign_id)
+            if str(campaign.get("status") or "").lower() == "running":
+                raise ValueError("cannot delete a running campaign")
+
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("BEGIN IMMEDIATE")
+                    cur.execute("DELETE FROM outbound_attempts WHERE campaign_id = ?", (campaign_id,))
+                    cur.execute("DELETE FROM outbound_leads WHERE campaign_id = ?", (campaign_id,))
+                    cur.execute("DELETE FROM outbound_campaigns WHERE id = ?", (campaign_id,))
+                    if cur.rowcount == 0:
+                        raise KeyError("campaign not found")
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    conn.close()
 
         return await self._run(_sync)
 
