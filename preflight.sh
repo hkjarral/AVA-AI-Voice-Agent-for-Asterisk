@@ -1166,6 +1166,132 @@ check_asterisk_uid_gid() {
 }
 
 # ============================================================================
+# GPU Detection (AAVA-140)
+# ============================================================================
+check_gpu() {
+    GPU_AVAILABLE=false
+    GPU_NAME=""
+    GPU_PASSTHROUGH_OK=false
+    
+    # Step 1: Check if nvidia-smi exists on host
+    if ! command -v nvidia-smi &>/dev/null; then
+        log_info "No NVIDIA GPU detected (nvidia-smi not found)"
+        update_env_gpu "false"
+        return 0
+    fi
+    
+    # Step 2: Check if nvidia-smi works (driver loaded)
+    if ! nvidia-smi &>/dev/null; then
+        log_warn "NVIDIA driver not working (nvidia-smi failed)"
+        log_info "  Check driver status: nvidia-smi"
+        log_info "  Install drivers: https://docs.nvidia.com/datacenter/tesla/tesla-installation-notes/"
+        update_env_gpu "false"
+        return 0
+    fi
+    
+    # GPU detected!
+    GPU_AVAILABLE=true
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+    GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1 | xargs)
+    log_ok "NVIDIA GPU detected: $GPU_NAME ($GPU_MEMORY)"
+    
+    # Step 3: Check nvidia-container-toolkit
+    if ! command -v nvidia-container-cli &>/dev/null; then
+        log_warn "nvidia-container-toolkit not installed"
+        log_info "  GPU detected but Docker cannot use it without the toolkit"
+        
+        # Offer install instructions based on OS
+        case "$OS_FAMILY" in
+            debian)
+                log_info "  Install with:"
+                log_info "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
+                log_info "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
+                log_info "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                log_info "    sudo systemctl restart docker"
+                ;;
+            rhel)
+                log_info "  Install with:"
+                log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \\"
+                log_info "      sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo"
+                log_info "    sudo yum install -y nvidia-container-toolkit"
+                log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                log_info "    sudo systemctl restart docker"
+                ;;
+        esac
+        log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+        update_env_gpu "true"  # GPU exists, just toolkit missing
+        return 0
+    fi
+    
+    log_ok "nvidia-container-toolkit installed"
+    
+    # Step 4: Test Docker GPU passthrough
+    log_info "Testing Docker GPU passthrough..."
+    if docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi &>/dev/null 2>&1; then
+        GPU_PASSTHROUGH_OK=true
+        log_ok "Docker GPU passthrough working"
+        update_env_gpu "true"
+        
+        # Inform user - GPU detection works via .env, no workflow change needed
+        log_info ""
+        log_info "  GPU will be detected by Setup Wizard automatically (via GPU_AVAILABLE in .env)"
+        log_info ""
+        log_info "  To use GPU for LLM inference (optional, faster responses):"
+        log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
+        log_info "    2. Start local-ai-server with GPU override:"
+        log_info "       ${COMPOSE_CMD:-docker compose} -f docker-compose.yml -f docker-compose.gpu.yml up -d local-ai-server"
+    else
+        log_warn "Docker GPU passthrough test failed"
+        log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
+        log_info "  Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+        update_env_gpu "true"  # GPU exists, passthrough just needs config
+    fi
+}
+
+# Helper: Update GPU_AVAILABLE in .env
+update_env_gpu() {
+    local gpu_value="$1"
+    
+    [ ! -f "$SCRIPT_DIR/.env" ] && return 0
+    
+    # Check if GPU_AVAILABLE already set correctly
+    local current_value
+    current_value="$(grep -E '^GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
+    
+    if [ "$current_value" = "$gpu_value" ]; then
+        return 0  # Already correct
+    fi
+    
+    # Update or add GPU_AVAILABLE
+    if grep -qE '^#?GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null; then
+        # Update existing line
+        sed -i.bak "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env" 2>/dev/null || \
+            sed -i '' "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env"
+        rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null
+    else
+        # Add new line in GPU section (after LOCAL_LLM_GPU_LAYERS or at end)
+        if grep -q "LOCAL_LLM_GPU_LAYERS" "$SCRIPT_DIR/.env" 2>/dev/null; then
+            sed -i.bak "/LOCAL_LLM_GPU_LAYERS/a\\
+GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env" 2>/dev/null || \
+                sed -i '' "/LOCAL_LLM_GPU_LAYERS/a\\
+GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
+            rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null
+        else
+            echo "" >> "$SCRIPT_DIR/.env"
+            echo "# GPU detected by preflight.sh (AAVA-140)" >> "$SCRIPT_DIR/.env"
+            echo "GPU_AVAILABLE=$gpu_value" >> "$SCRIPT_DIR/.env"
+        fi
+    fi
+    
+    if [ "$gpu_value" = "true" ]; then
+        log_ok "Set GPU_AVAILABLE=true in .env"
+    fi
+}
+
+# ============================================================================
 # Port Check
 # ============================================================================
 check_ports() {
@@ -1353,6 +1479,7 @@ main() {
     check_env
     check_asterisk
     check_asterisk_uid_gid
+    check_gpu
     check_ports
     
     # Apply fixes if requested

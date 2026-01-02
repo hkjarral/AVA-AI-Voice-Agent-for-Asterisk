@@ -1,0 +1,39 @@
+# docker-compose.gpu.yml - NVIDIA GPU Support Override
+#
+# AAVA-140: GPU passthrough for Local AI Server LLM acceleration
+#
+# Usage (only needed when using GPU for inference):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d local-ai-server
+#
+# NOTE: GPU detection for Setup Wizard uses GPU_AVAILABLE from .env (set by preflight.sh).
+#       You do NOT need this file just for GPU detection - only for actual GPU inference.
+#
+# Prerequisites:
+#   1. NVIDIA GPU with drivers installed (nvidia-smi should work)
+#   2. nvidia-container-toolkit installed and configured
+#   3. Run preflight.sh to detect GPU and set GPU_AVAILABLE=true in .env
+#   4. Set LOCAL_LLM_GPU_LAYERS=-1 in .env to enable GPU offloading
+#
+# Installation (Debian/Ubuntu):
+#   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+#     sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+#   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+#     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+#     sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+#   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+#   sudo nvidia-ctk runtime configure --runtime=docker
+#   sudo systemctl restart docker
+#
+# Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+
+services:
+  # Local AI Server needs GPU for LLM inference acceleration
+  # Set LOCAL_LLM_GPU_LAYERS=-1 in .env to auto-use GPU
+  local-ai-server:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
