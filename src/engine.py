@@ -738,6 +738,15 @@ class Engine:
         # Outbound scheduler (runs even if no campaigns are active; lightweight idle)
         try:
             if not self._outbound_scheduler_task:
+                # Cleanup stale attempts/leads that can get stuck across restarts.
+                try:
+                    result = await self.outbound_store.cleanup_stale_attempts_and_leads(
+                        stale_seconds=int(os.getenv("AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS", "120") or "120")
+                    )
+                    if result.get("attempts_closed") or result.get("leads_failed"):
+                        logger.info("Outbound cleanup applied", **result)
+                except Exception:
+                    logger.debug("Outbound cleanup failed", exc_info=True)
                 self._outbound_scheduler_task = asyncio.create_task(self._outbound_scheduler_loop())
         except Exception:
             logger.debug("Failed to start outbound scheduler task", exc_info=True)

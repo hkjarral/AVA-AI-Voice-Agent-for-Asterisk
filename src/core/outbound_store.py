@@ -454,6 +454,79 @@ class OutboundStore:
         payload["name"] = f"{original.get('name') or 'Campaign'} (Copy)"
         return await self.create_campaign(payload)
 
+    async def cleanup_stale_attempts_and_leads(self, *, stale_seconds: int = 120) -> Dict[str, int]:
+        """
+        Best-effort cleanup for attempts/leads stuck due to restarts or pre-answer failures.
+
+        - Finalizes outbound_attempts where ended_at_utc is NULL and started_at_utc is older than stale_seconds.
+        - Marks associated leads as failed if they are stuck in dialing/leased/amd_pending/in_progress.
+        """
+        if not self._enabled:
+            return {"attempts_closed": 0, "leads_failed": 0}
+
+        def _sync():
+            now = _utcnow_iso()
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=max(10, int(stale_seconds or 120)))
+            attempts_closed = 0
+            leads_failed = 0
+
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT id, lead_id, started_at_utc
+                        FROM outbound_attempts
+                        WHERE ended_at_utc IS NULL
+                        """
+                    ).fetchall()
+                    for r in rows:
+                        started_raw = str(r["started_at_utc"] or "")
+                        try:
+                            started_dt = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
+                            if started_dt.tzinfo is None:
+                                started_dt = started_dt.replace(tzinfo=timezone.utc)
+                        except Exception:
+                            started_dt = datetime.fromtimestamp(0, tz=timezone.utc)
+                        if started_dt >= cutoff_dt:
+                            continue
+
+                        attempt_id = str(r["id"])
+                        lead_id = str(r["lead_id"])
+                        conn.execute(
+                            """
+                            UPDATE outbound_attempts
+                            SET ended_at_utc = ?,
+                                outcome = COALESCE(outcome, 'error'),
+                                error_message = COALESCE(error_message, 'stale attempt cleanup (engine restart or pre-answer failure)')
+                            WHERE id = ? AND ended_at_utc IS NULL
+                            """,
+                            (now, attempt_id),
+                        )
+                        attempts_closed += 1
+
+                        cur = conn.execute(
+                            """
+                            UPDATE outbound_leads
+                            SET state='failed',
+                                last_outcome=COALESCE(last_outcome, 'error'),
+                                leased_until_utc=NULL,
+                                updated_at_utc=?
+                            WHERE id = ?
+                              AND state IN ('dialing','leased','amd_pending','in_progress')
+                            """,
+                            (now, lead_id),
+                        )
+                        leads_failed += int(cur.rowcount or 0)
+
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            return {"attempts_closed": attempts_closed, "leads_failed": leads_failed}
+
+        return await self._run(_sync)
+
     # ---------------------------------------------------------------------
     # Leads
     # ---------------------------------------------------------------------
