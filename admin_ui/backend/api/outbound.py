@@ -48,9 +48,10 @@ def _media_dir() -> str:
 
 def _vm_upload_max_bytes() -> int:
     try:
-        return max(1, int(os.getenv("AAVA_VM_UPLOAD_MAX_BYTES", "5242880")))
+        # Default: 12MB (enough for ~30s stereo 44.1k WAV) while still preventing abuse.
+        return max(1, int(os.getenv("AAVA_VM_UPLOAD_MAX_BYTES", "12582912")))
     except Exception:
-        return 5242880
+        return 12582912
 
 
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
@@ -275,8 +276,9 @@ async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...))
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
-    if len(data) > _vm_upload_max_bytes():
-        raise HTTPException(status_code=400, detail="Upload too large")
+    max_bytes = _vm_upload_max_bytes()
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=400, detail=f"Upload too large (max {max_bytes} bytes)")
 
     if ext == ".ulaw":
         ulaw_data = data
@@ -292,14 +294,17 @@ async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...))
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid WAV file: {e}")
 
-        if nch != 1:
-            raise HTTPException(status_code=400, detail="WAV must be mono (1 channel)")
+        if nch not in (1, 2):
+            raise HTTPException(status_code=400, detail="WAV must be mono or stereo (1–2 channels)")
         if sampwidth not in (1, 2, 3, 4):
             raise HTTPException(status_code=400, detail="Unsupported WAV sample width")
 
         # Normalize to 16-bit little-endian PCM for processing.
         if sampwidth != 2:
             frames = audioop.lin2lin(frames, sampwidth, 2)
+        if nch == 2:
+            # Downmix stereo -> mono.
+            frames = audioop.tomono(frames, 2, 0.5, 0.5)
 
         # Resample to 8kHz if needed.
         if fr != 8000:
