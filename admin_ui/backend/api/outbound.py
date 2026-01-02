@@ -23,6 +23,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo, available_timezones
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+    available_timezones = None  # type: ignore
 
 # Add project root to path for imports (mirrors calls.py)
 project_root = os.environ.get("PROJECT_ROOT", "/app/project")
@@ -55,6 +61,67 @@ def _vm_upload_max_bytes() -> int:
 
 
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+
+def _detect_server_timezone() -> str:
+    """
+    Best-effort detection of server timezone as an IANA string.
+    Prefer explicit env var, then /etc/localtime symlink, then /etc/timezone.
+    """
+    env_tz = (os.getenv("AAVA_SERVER_TIMEZONE") or "").strip()
+    if env_tz:
+        if ZoneInfo is None:
+            return env_tz
+        try:
+            ZoneInfo(env_tz)
+            return env_tz
+        except Exception:
+            return "UTC"
+
+    try:
+        target = os.path.realpath("/etc/localtime")
+        marker = f"{os.sep}zoneinfo{os.sep}"
+        if marker in target:
+            tz = target.split(marker, 1)[1].strip(os.sep)
+            if tz:
+                if ZoneInfo is None:
+                    return tz
+                ZoneInfo(tz)
+                return tz
+    except Exception:
+        pass
+
+    try:
+        tz = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if tz:
+            if ZoneInfo is None:
+                return tz
+            ZoneInfo(tz)
+            return tz
+    except Exception:
+        pass
+
+    return "UTC"
+
+
+@router.get("/meta")
+async def outbound_meta():
+    """
+    UI helper metadata:
+    - server_timezone: what the server/container thinks is the local timezone (IANA)
+    - iana_timezones: list for validation/autocomplete
+    """
+    tz = _detect_server_timezone()
+    tzs: List[str] = []
+    if available_timezones is not None:
+        try:
+            tzs = sorted(list(available_timezones()))
+        except Exception:
+            tzs = []
+    return {
+        "server_timezone": tz,
+        "iana_timezones": tzs,
+        "server_now_iso": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 class CampaignCreateRequest(BaseModel):
@@ -190,6 +257,15 @@ async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
                     status_code=400,
                     detail="voicemail_drop_media_uri is required before starting a campaign (upload/generate voicemail first)",
                 )
+            tz_name = (campaign.get("timezone") or "").strip() or "UTC"
+            if ZoneInfo is not None and tz_name.upper() != "UTC":
+                try:
+                    ZoneInfo(tz_name)
+                except Exception:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid timezone '{tz_name}'. Use an IANA timezone like 'America/Phoenix' or 'UTC'.",
+                    )
         return await store.set_campaign_status(campaign_id, req.status, cancel_pending=bool(req.cancel_pending))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -244,6 +320,14 @@ async def cancel_lead(lead_id: str):
     ok = await store.cancel_lead(lead_id)
     if not ok:
         raise HTTPException(status_code=400, detail="Lead cannot be canceled in its current state")
+    return {"ok": True}
+
+@router.post("/leads/{lead_id}/recycle")
+async def recycle_lead(lead_id: str):
+    store = _get_outbound_store()
+    ok = await store.recycle_lead(lead_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Lead cannot be recycled in its current state")
     return {"ok": True}
 
 

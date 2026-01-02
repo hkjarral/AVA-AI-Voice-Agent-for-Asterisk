@@ -32,6 +32,11 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -56,6 +61,24 @@ def _safe_json_loads(raw: str) -> Dict[str, Any]:
         return {}
     except Exception:
         return {}
+
+def _validate_iana_timezone_name(tz_name: str) -> str:
+    """
+    Enforce IANA timezone names like 'America/Phoenix' (not 'Phoenix').
+    """
+    tz_name = (tz_name or "").strip()
+    if not tz_name:
+        raise ValueError("timezone is required")
+    if tz_name.upper() == "UTC":
+        return "UTC"
+    if ZoneInfo is None:
+        # Should not happen in our container images, but avoid hard failure.
+        return tz_name
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        raise ValueError(f"Invalid timezone '{tz_name}'. Use an IANA timezone like 'America/Phoenix' or 'UTC'.")
+    return tz_name
 
 
 @dataclass(frozen=True)
@@ -183,7 +206,7 @@ class OutboundStore:
             now = _utcnow_iso()
             campaign_id = str(uuid.uuid4())
             name = _as_str(payload.get("name")).strip() or "Untitled Campaign"
-            timezone_name = _as_str(payload.get("timezone")).strip() or "UTC"
+            timezone_name = _validate_iana_timezone_name(_as_str(payload.get("timezone")).strip() or "UTC")
             daily_start = _as_str(payload.get("daily_window_start_local")).strip() or "09:00"
             daily_end = _as_str(payload.get("daily_window_end_local")).strip() or "17:00"
             max_concurrent = max(1, min(5, _as_int(payload.get("max_concurrent"), 1)))
@@ -314,6 +337,9 @@ class OutboundStore:
                     updates[key] = payload[key]
             if "amd_options" in payload and isinstance(payload.get("amd_options"), dict):
                 updates["amd_options_json"] = json.dumps(payload.get("amd_options") or {})
+
+            if "timezone" in updates:
+                updates["timezone"] = _validate_iana_timezone_name(_as_str(updates.get("timezone")).strip() or "UTC")
 
             if "max_concurrent" in updates:
                 updates["max_concurrent"] = max(1, min(5, _as_int(updates.get("max_concurrent"), 1)))
@@ -800,6 +826,40 @@ class OutboundStore:
                         UPDATE outbound_leads
                         SET state='canceled', updated_at_utc=?
                         WHERE id=? AND state IN ('pending','leased','dialing','amd_pending')
+                        """,
+                        (now, lead_id),
+                    )
+                    conn.commit()
+                    return cur.rowcount > 0
+                finally:
+                    conn.close()
+
+        return await self._run(_sync)
+
+    async def recycle_lead(self, lead_id: str) -> bool:
+        """
+        Re-queue a lead by moving it back to 'pending'.
+
+        MVP policy:
+        - Allowed only from canceled/failed.
+        - attempt_count is preserved; attempts table remains the audit trail.
+        """
+        if not self._enabled:
+            return False
+
+        def _sync():
+            now = _utcnow_iso()
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.execute(
+                        """
+                        UPDATE outbound_leads
+                        SET state='pending',
+                            last_outcome=NULL,
+                            leased_until_utc=NULL,
+                            updated_at_utc=?
+                        WHERE id=? AND state IN ('canceled','failed')
                         """,
                         (now, lead_id),
                     )

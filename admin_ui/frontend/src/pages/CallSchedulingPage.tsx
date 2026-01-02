@@ -13,10 +13,17 @@ import {
     Trash2,
     FileDown,
     AlertTriangle,
-    PhoneCall
+    PhoneCall,
+    RotateCcw
 } from 'lucide-react';
 
 type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived';
+
+type OutboundMeta = {
+    server_timezone: string;
+    iana_timezones: string[];
+    server_now_iso?: string;
+};
 
 interface OutboundCampaign {
     id: string;
@@ -49,6 +56,7 @@ interface LeadRow {
     last_attempt_at_utc?: string | null;
     custom_vars?: Record<string, any>;
     created_at_utc?: string;
+    updated_at_utc?: string;
 }
 
 interface AttemptRow {
@@ -136,11 +144,24 @@ const CallSchedulingPage = () => {
     const [campaigns, setCampaigns] = useState<OutboundCampaign[]>([]);
     const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
     const [showArchived, setShowArchived] = useState(false);
+    const [meta, setMeta] = useState<OutboundMeta | null>(null);
     const selectedCampaign = useMemo(
         () => campaigns.find(c => c.id === selectedCampaignId) || null,
         [campaigns, selectedCampaignId]
     );
     const selectedHasVoicemail = Boolean((selectedCampaign?.voicemail_drop_media_uri || '').trim());
+
+    const ianaTimezones = useMemo(() => meta?.iana_timezones || [], [meta]);
+    const isTimezoneValid = (tz: string) => {
+        const t = (tz || '').trim();
+        if (!t) return false;
+        if (t.toUpperCase() === 'UTC') return true;
+        return ianaTimezones.includes(t);
+    };
+    const selectedTimezoneValid = useMemo(
+        () => (selectedCampaign ? isTimezoneValid(selectedCampaign.timezone || '') : true),
+        [selectedCampaign, ianaTimezones]
+    );
 
     const windowInfo = useMemo(() => {
         if (!selectedCampaign) return null;
@@ -198,6 +219,15 @@ const CallSchedulingPage = () => {
         return Boolean(s && e && e < s);
     }, [editForm.daily_window_start_local, editForm.daily_window_end_local]);
 
+    const refreshMeta = async () => {
+        const res = await axios.get('/api/outbound/meta');
+        setMeta(res.data || null);
+        const serverTz = (res.data?.server_timezone || '').trim();
+        if (serverTz) {
+            setCreateForm(prev => ((prev.timezone || '').trim() && prev.timezone !== 'UTC' ? prev : { ...prev, timezone: serverTz }));
+        }
+    };
+
     const refreshCampaigns = async () => {
         const res = await axios.get('/api/outbound/campaigns', { params: { include_archived: showArchived } });
         const list = res.data || [];
@@ -239,6 +269,14 @@ const CallSchedulingPage = () => {
             mounted = false;
         };
     }, [showArchived]);
+
+    useEffect(() => {
+        // Load meta once; avoids overwriting user input in create modal.
+        refreshMeta().catch(() => {
+            // ignore
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     useEffect(() => {
         if (!selectedCampaignId) return;
@@ -367,6 +405,16 @@ const CallSchedulingPage = () => {
         }
     };
 
+    const recycleLead = async (leadId: string) => {
+        try {
+            await axios.post(`/api/outbound/leads/${leadId}/recycle`);
+            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            setNotice({ type: 'success', message: 'Lead recycled back to pending' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to recycle lead' });
+        }
+    };
+
     const downloadText = (filename: string, text: string) => {
         const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -452,6 +500,11 @@ const CallSchedulingPage = () => {
 
     return (
         <div className="p-6 space-y-6">
+            <datalist id="aava-iana-timezones">
+                {ianaTimezones.map(tz => (
+                    <option key={tz} value={tz} />
+                ))}
+            </datalist>
             <div className="flex items-start justify-between gap-4">
                 <div>
                     <h1 className="text-3xl font-bold flex items-center gap-2">
@@ -579,20 +632,29 @@ const CallSchedulingPage = () => {
 	                                            Max concurrent: {selectedCampaign.max_concurrent} ·
 	                                            Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
 	                                        </div>
-	                                        <div className="text-xs text-muted-foreground mt-1">
-	                                            Voicemail media: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
-	                                            {selectedCampaign.status === 'running' && windowInfo && (
-	                                                <span className="ml-3">
-	                                                    Now ({selectedCampaign.timezone}): <span className="font-mono">{windowInfo.nowLocal}</span>
-	                                                </span>
-	                                            )}
-	                                        </div>
-	                                        {!selectedHasVoicemail && (
-	                                            <div className="mt-2 text-xs text-yellow-500 flex items-center gap-2">
-	                                                <AlertTriangle className="w-3 h-3" />
-	                                                Upload voicemail media before starting (required for MVP).
-	                                            </div>
-	                                        )}
+                                    <div className="text-xs text-muted-foreground mt-1">
+                                        Voicemail media: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
+                                        {selectedCampaign.status === 'running' && windowInfo && (
+                                            <span className="ml-3">
+                                                Now ({selectedCampaign.timezone}): <span className="font-mono">{windowInfo.nowLocal}</span>
+                                            </span>
+                                        )}
+                                    </div>
+                                    {!selectedTimezoneValid && (
+                                        <div className="mt-2 text-xs text-red-500 flex items-start gap-2">
+                                            <AlertTriangle className="w-3 h-3 mt-0.5" />
+                                            <div>
+                                                Invalid timezone <span className="font-mono">{selectedCampaign.timezone}</span>. Use an IANA timezone like{' '}
+                                                <span className="font-mono">America/Phoenix</span> or <span className="font-mono">UTC</span>. Calls will not dial until fixed.
+                                            </div>
+                                        </div>
+                                    )}
+                                    {!selectedHasVoicemail && (
+                                        <div className="mt-2 text-xs text-yellow-500 flex items-center gap-2">
+                                            <AlertTriangle className="w-3 h-3" />
+                                            Upload voicemail media before starting (required for MVP).
+                                        </div>
+                                    )}
 	                                    </div>
                                     <div className="flex items-center gap-2">
                                         <button
@@ -641,12 +703,18 @@ const CallSchedulingPage = () => {
                                             <button
                                                 className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-600/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                                 onClick={() => setStatus(selectedCampaign.id, 'running')}
-                                                disabled={!selectedHasVoicemail}
-	                                                title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Start campaign'}
-	                                            >
-	                                                <Play className="w-4 h-4" />
-	                                                Start
-	                                            </button>
+                                                disabled={!selectedHasVoicemail || !selectedTimezoneValid}
+                                                title={
+                                                    !selectedHasVoicemail
+                                                        ? 'Upload voicemail media first'
+                                                        : !selectedTimezoneValid
+                                                            ? 'Fix invalid timezone before starting'
+                                                            : 'Start campaign'
+                                                }
+                                            >
+                                                <Play className="w-4 h-4" />
+                                                Start
+                                            </button>
                                         ) : (
                                             <button
                                                 className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-600 text-white hover:bg-yellow-600/90 text-sm"
@@ -830,7 +898,7 @@ const CallSchedulingPage = () => {
                                 {tab === 'leads' && (
                                     <div className="p-4">
                                         <div className="text-xs text-muted-foreground mb-2">
-                                            Showing most recent 50 leads. Use CSV import to add more (default: skip duplicates).
+                                            Showing most recent 50 leads. Use CSV import to add more (default: skip duplicates). Times are shown in your browser local time (stored in UTC).
                                         </div>
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-sm">
@@ -840,7 +908,9 @@ const CallSchedulingPage = () => {
                                                         <th className="py-2 pr-3">State</th>
                                                         <th className="py-2 pr-3">Attempts</th>
                                                         <th className="py-2 pr-3">Last outcome</th>
+                                                        <th className="py-2 pr-3">Last attempt</th>
                                                         <th className="py-2 pr-3">Created</th>
+                                                        <th className="py-2 pr-3">Updated</th>
                                                         <th className="py-2 pr-3"></th>
                                                     </tr>
                                                 </thead>
@@ -851,16 +921,29 @@ const CallSchedulingPage = () => {
                                                             <td className="py-2 pr-3">{l.state}</td>
                                                             <td className="py-2 pr-3">{l.attempt_count}</td>
                                                             <td className="py-2 pr-3">{l.last_outcome || '-'}</td>
+                                                            <td className="py-2 pr-3">{formatUtc(l.last_attempt_at_utc)}</td>
                                                             <td className="py-2 pr-3">{formatUtc(l.created_at_utc)}</td>
+                                                            <td className="py-2 pr-3">{formatUtc(l.updated_at_utc)}</td>
                                                             <td className="py-2 pr-0 text-right">
-                                                                <button
-                                                                    className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
-                                                                    onClick={() => cancelLead(l.id)}
-                                                                    title="Cancel lead"
-                                                                >
-                                                                    <Trash2 className="w-3 h-3" />
-                                                                    Cancel
-                                                                </button>
+                                                                {l.state === 'canceled' || l.state === 'failed' ? (
+                                                                    <button
+                                                                        className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
+                                                                        onClick={() => recycleLead(l.id)}
+                                                                        title="Recycle lead back to pending"
+                                                                    >
+                                                                        <RotateCcw className="w-3 h-3" />
+                                                                        Recycle
+                                                                    </button>
+                                                                ) : (
+                                                                    <button
+                                                                        className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
+                                                                        onClick={() => cancelLead(l.id)}
+                                                                        title="Cancel lead"
+                                                                    >
+                                                                        <Trash2 className="w-3 h-3" />
+                                                                        Cancel
+                                                                    </button>
+                                                                )}
                                                             </td>
                                                         </tr>
                                                     ))}
@@ -873,13 +956,15 @@ const CallSchedulingPage = () => {
                                 {tab === 'attempts' && (
                                     <div className="p-4">
                                         <div className="text-xs text-muted-foreground mb-2">
-                                            Showing most recent 50 attempts.
+                                            Showing most recent 50 attempts. Times are shown in your browser local time (stored in UTC).
                                         </div>
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-sm">
                                                 <thead>
                                                     <tr className="text-left text-xs text-muted-foreground border-b border-border">
                                                         <th className="py-2 pr-3">Started</th>
+                                                        <th className="py-2 pr-3">Ended</th>
+                                                        <th className="py-2 pr-3">Duration</th>
                                                         <th className="py-2 pr-3">Phone</th>
                                                         <th className="py-2 pr-3">Outcome</th>
                                                         <th className="py-2 pr-3">AMD</th>
@@ -891,6 +976,19 @@ const CallSchedulingPage = () => {
                                                     {attempts.map(a => (
                                                         <tr key={a.id} className="border-b border-border/50">
                                                             <td className="py-2 pr-3">{formatUtc(a.started_at_utc)}</td>
+                                                            <td className="py-2 pr-3">{formatUtc(a.ended_at_utc)}</td>
+                                                            <td className="py-2 pr-3">
+                                                                {a.started_at_utc && a.ended_at_utc ? (() => {
+                                                                    try {
+                                                                        const s = new Date(a.started_at_utc).getTime();
+                                                                        const e = new Date(a.ended_at_utc).getTime();
+                                                                        const sec = Math.max(0, Math.round((e - s) / 1000));
+                                                                        return `${sec}s`;
+                                                                    } catch {
+                                                                        return '-';
+                                                                    }
+                                                                })() : '-'}
+                                                            </td>
                                                             <td className="py-2 pr-3 font-mono">{a.phone_number || '-'}</td>
                                                             <td className="py-2 pr-3">{a.outcome || '-'}</td>
                                                             <td className="py-2 pr-3">
@@ -942,16 +1040,16 @@ const CallSchedulingPage = () => {
                 </div>
             </div>
 
-            {showCreate && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="w-full max-w-2xl border border-border rounded-lg bg-background p-5">
-                        <div className="flex items-center justify-between mb-4">
-                            <div className="text-lg font-semibold">Create Campaign</div>
-                            <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setShowCreate(false)}>
-                                Close
-                            </button>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+	            {showCreate && (
+	                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+	                    <div className="w-full max-w-2xl border border-border rounded-lg bg-background p-5">
+	                        <div className="flex items-center justify-between mb-4">
+	                            <div className="text-lg font-semibold">Create Campaign</div>
+	                            <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setShowCreate(false)}>
+	                                Close
+	                            </button>
+	                        </div>
+	                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">
                                 <label className="text-xs text-muted-foreground">Name</label>
                                 <input
@@ -961,15 +1059,25 @@ const CallSchedulingPage = () => {
                                     placeholder="Sales follow-up"
                                 />
                             </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Timezone</label>
-                                <input
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={createForm.timezone}
-                                    onChange={e => setCreateForm({ ...createForm, timezone: e.target.value })}
-                                    placeholder="UTC"
-                                />
-                            </div>
+	                            <div className="space-y-2">
+	                                <label className="text-xs text-muted-foreground">Timezone</label>
+	                                <div className="text-[11px] text-muted-foreground">
+	                                    Server default: <span className="font-mono">{meta?.server_timezone || 'UTC'}</span> (IANA timezone required)
+	                                </div>
+	                                <input
+	                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
+	                                    value={createForm.timezone}
+	                                    onChange={e => setCreateForm({ ...createForm, timezone: e.target.value })}
+	                                    placeholder="America/Phoenix"
+	                                    list="aava-iana-timezones"
+	                                />
+	                                {!isTimezoneValid(createForm.timezone) && (
+	                                    <div className="text-xs text-red-500 flex items-center gap-2">
+	                                        <AlertTriangle className="w-3 h-3" />
+	                                        Invalid timezone. Use an IANA timezone like <span className="font-mono">America/Phoenix</span> or <span className="font-mono">UTC</span>.
+	                                    </div>
+	                                )}
+	                            </div>
                             <div className="space-y-2">
                                 <label className="text-xs text-muted-foreground">Daily Window Start (local)</label>
                                 <input
@@ -1026,21 +1134,21 @@ const CallSchedulingPage = () => {
                                 />
                             </div>
                         </div>
-                        <div className="flex items-center justify-end gap-2 mt-5">
-                            <button className="px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm" onClick={() => setShowCreate(false)}>
-                                Cancel
-                            </button>
-                            <button
-                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                                onClick={createCampaign}
-                                disabled={!createForm.name.trim()}
-                            >
-                                Create
-                            </button>
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-3">
-                            Voicemail drop media is required before a campaign can start. Upload a <span className="font-mono">.ulaw</span> file after creation.
-                        </div>
+	                        <div className="flex items-center justify-end gap-2 mt-5">
+	                            <button className="px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm" onClick={() => setShowCreate(false)}>
+	                                Cancel
+	                            </button>
+	                            <button
+	                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+	                                onClick={createCampaign}
+	                                disabled={!createForm.name.trim() || !isTimezoneValid(createForm.timezone)}
+	                            >
+	                                Create
+	                            </button>
+	                        </div>
+	                        <div className="text-xs text-muted-foreground mt-3">
+	                            Voicemail drop media is required before a campaign can start. Upload a <span className="font-mono">.wav</span> (recommended) or <span className="font-mono">.ulaw</span> file after creation.
+	                        </div>
                     </div>
                 </div>
             )}
@@ -1063,14 +1171,24 @@ const CallSchedulingPage = () => {
                                     onChange={e => setEditForm({ ...editForm, name: e.target.value })}
                                 />
                             </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Timezone</label>
-                                <input
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={editForm.timezone}
-                                    onChange={e => setEditForm({ ...editForm, timezone: e.target.value })}
-                                />
-                            </div>
+	                            <div className="space-y-2">
+	                                <label className="text-xs text-muted-foreground">Timezone</label>
+	                                <div className="text-[11px] text-muted-foreground">
+	                                    IANA timezone required (e.g. <span className="font-mono">America/Phoenix</span>)
+	                                </div>
+	                                <input
+	                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
+	                                    value={editForm.timezone}
+	                                    onChange={e => setEditForm({ ...editForm, timezone: e.target.value })}
+	                                    list="aava-iana-timezones"
+	                                />
+	                                {!isTimezoneValid(editForm.timezone) && (
+	                                    <div className="text-xs text-red-500 flex items-center gap-2">
+	                                        <AlertTriangle className="w-3 h-3" />
+	                                        Invalid timezone. Use an IANA timezone like <span className="font-mono">America/Phoenix</span> or <span className="font-mono">UTC</span>.
+	                                    </div>
+	                                )}
+	                            </div>
                             <div className="space-y-2">
                                 <label className="text-xs text-muted-foreground">Daily Window Start (local)</label>
                                 <input
@@ -1130,13 +1248,13 @@ const CallSchedulingPage = () => {
                             <button className="px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm" onClick={() => setShowEdit(false)}>
                                 Cancel
                             </button>
-                            <button
-                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                                onClick={saveEdit}
-                                disabled={!editForm.name.trim()}
-                            >
-                                Save
-                            </button>
+	                            <button
+	                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+	                                onClick={saveEdit}
+	                                disabled={!editForm.name.trim() || !isTimezoneValid(editForm.timezone)}
+	                            >
+	                                Save
+	                            </button>
                         </div>
                         <div className="text-xs text-muted-foreground mt-3">
                             Edits are disabled while a campaign is running. Pause first, then edit and resume.
