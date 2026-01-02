@@ -114,6 +114,21 @@ const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string):
     return nowHHMM >= startHHMM || nowHHMM <= endHHMM;
 };
 
+const DIALPLAN_SNIPPET = [
+    '[aava-outbound-amd]',
+    'exten => s,1,NoOp(AAVA Outbound AMD hop)',
+    ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
+    ' same => n,AMD(${AAVA_AMD_OPTS})',
+    ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
+    ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
+    ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
+    ' same => n(machine),WaitForSilence(1500,3)',
+    ' same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE})',
+    ' same => n,Hangup()',
+    ' same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE})',
+    ' same => n,Hangup()'
+].join('\n');
+
 const CallSchedulingPage = () => {
     const [tab, setTab] = useState<'campaigns' | 'leads' | 'attempts'>('campaigns');
     const [campaigns, setCampaigns] = useState<OutboundCampaign[]>([]);
@@ -679,38 +694,12 @@ const CallSchedulingPage = () => {
                                                 <div className="text-xs text-muted-foreground mb-2">
                                                     Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
                                                 </div>
-                                                <pre className="text-xs overflow-x-auto p-3 rounded bg-muted/50 border border-border">
-{`[aava-outbound-amd]
-exten => s,1,NoOp(AAVA Outbound AMD hop)
- same => n,NoOp(Attempt=\${AAVA_ATTEMPT_ID} Campaign=\${AAVA_CAMPAIGN_ID} Lead=\${AAVA_LEAD_ID})
- same => n,AMD(\${AAVA_AMD_OPTS})
- same => n,NoOp(AMDSTATUS=\${AMDSTATUS} AMDCAUSE=\${AMDCAUSE})
- same => n,GotoIf($["\${AMDSTATUS}" = "HUMAN"]?human)
- same => n,GotoIf($["\${AMDSTATUS}" = "NOTSURE"]?machine)
- same => n(machine),WaitForSilence(1500,3)
- same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,\${AAVA_ATTEMPT_ID},MACHINE,\${AMDCAUSE})
- same => n,Hangup()
- same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,\${AAVA_ATTEMPT_ID},HUMAN,\${AMDCAUSE})
- same => n,Hangup()`}
-                                                </pre>
+                                                <pre className="text-xs overflow-x-auto p-3 rounded bg-muted/50 border border-border">{DIALPLAN_SNIPPET}</pre>
                                                 <div className="flex items-center gap-2 mt-3">
                                                     <button
                                                         className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
                                                         onClick={() => {
-                                                            navigator.clipboard.writeText(
-`[aava-outbound-amd]
-exten => s,1,NoOp(AAVA Outbound AMD hop)
- same => n,NoOp(Attempt=\${AAVA_ATTEMPT_ID} Campaign=\${AAVA_CAMPAIGN_ID} Lead=\${AAVA_LEAD_ID})
- same => n,AMD(\${AAVA_AMD_OPTS})
- same => n,NoOp(AMDSTATUS=\${AMDSTATUS} AMDCAUSE=\${AMDCAUSE})
- same => n,GotoIf($[\"\\${AMDSTATUS}\" = \"HUMAN\"]?human)
- same => n,GotoIf($[\"\\${AMDSTATUS}\" = \"NOTSURE\"]?machine)
- same => n(machine),WaitForSilence(1500,3)
- same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,\\${AAVA_ATTEMPT_ID},MACHINE,\\${AMDCAUSE})
- same => n,Hangup()
- same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,\\${AAVA_ATTEMPT_ID},HUMAN,\\${AMDCAUSE})
- same => n,Hangup()`
-                                                            );
+                                                            navigator.clipboard.writeText(DIALPLAN_SNIPPET);
                                                             setNotice({ type: 'success', message: 'Dialplan snippet copied to clipboard' });
                                                         }}
                                                     >
