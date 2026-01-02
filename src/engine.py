@@ -3886,6 +3886,17 @@ class Engine:
             if saved:
                 logger.debug("Call history record saved", call_id=call_id, record_id=record.id)
 
+                # CallHistoryStore.save(...) is dedupe-by-call_id; when a record already exists,
+                # `record.id` is not the persisted row id. Resolve the persisted id so outbound
+                # attempts can link to the correct Call History row for UI click-through.
+                persisted_record_id = record.id
+                try:
+                    persisted = await store.get_by_call_id(call_id)
+                    if persisted and getattr(persisted, "id", None):
+                        persisted_record_id = str(getattr(persisted, "id"))
+                except Exception:
+                    persisted_record_id = record.id
+
                 # Outbound attempt linkage: store call history record id for UI click-through.
                 try:
                     if getattr(session, "is_outbound", False) and getattr(session, "outbound_attempt_id", None):
@@ -3905,7 +3916,7 @@ class Engine:
                                 outcome=final_outcome,
                                 amd_status=(amd or {}).get("amd_status"),
                                 amd_cause=(amd or {}).get("amd_cause"),
-                                call_history_call_id=record.id,
+                                call_history_call_id=persisted_record_id,
                                 error_message=session.error_message,
                             )
                             if lead_id:
