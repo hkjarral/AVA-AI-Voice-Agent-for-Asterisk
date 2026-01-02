@@ -124,7 +124,7 @@ const DIALPLAN_SNIPPET = [
     ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
     ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
     ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
-    ' same => n(machine),WaitForSilence(1500,3)',
+    ' same => n(machine),WaitForSilence(1500,3,10)',
     ' same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE})',
     ' same => n,Hangup()',
     ' same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE})',
