@@ -1,0 +1,266 @@
+"""
+Outbound Campaign Dialer API endpoints (Milestone 22).
+
+MVP scope:
+- Campaign CRUD + status transitions (running/paused/stopped)
+- CSV lead import (skip_existing default)
+- Leads list + cancel
+- Attempts list + basic stats
+- Voicemail drop media upload + WAV preview (for browser playback)
+"""
+
+import io
+import logging
+import os
+import re
+import sys
+import uuid
+import wave
+import audioop
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
+
+# Add project root to path for imports (mirrors calls.py)
+project_root = os.environ.get("PROJECT_ROOT", "/app/project")
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/outbound", tags=["outbound"])
+
+
+def _get_outbound_store():
+    try:
+        from src.core.outbound_store import get_outbound_store
+        return get_outbound_store()
+    except ImportError as e:
+        logger.error("Failed to import outbound_store module: %s", e)
+        raise HTTPException(status_code=500, detail="Outbound dialer module not available")
+
+
+def _media_dir() -> str:
+    return os.getenv("AAVA_MEDIA_DIR", "/mnt/asterisk_media/ai-generated")
+
+
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+
+
+class CampaignCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    timezone: str = "UTC"
+    run_start_at_utc: Optional[str] = None
+    run_end_at_utc: Optional[str] = None
+    daily_window_start_local: str = "09:00"
+    daily_window_end_local: str = "17:00"
+    max_concurrent: int = Field(1, ge=1, le=5)
+    min_interval_seconds_between_calls: int = Field(5, ge=0, le=3600)
+    default_context: str = "default"
+    voicemail_drop_mode: str = "upload"  # upload|tts
+    voicemail_drop_text: Optional[str] = None
+    voicemail_drop_media_uri: Optional[str] = None
+    amd_options: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CampaignStatusRequest(BaseModel):
+    status: str  # running|paused|stopped|draft
+    cancel_pending: bool = False
+
+
+class LeadImportResponse(BaseModel):
+    accepted: int = 0
+    rejected: int = 0
+    duplicates: int = 0
+    errors: List[Dict[str, Any]] = Field(default_factory=list)
+    error_csv: str = ""
+    error_csv_truncated: bool = False
+
+
+@router.get("/campaigns")
+async def list_campaigns():
+    store = _get_outbound_store()
+    return await store.list_campaigns()
+
+
+@router.post("/campaigns")
+async def create_campaign(req: CampaignCreateRequest):
+    store = _get_outbound_store()
+    return await store.create_campaign(req.model_dump())
+
+
+@router.get("/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: str):
+    store = _get_outbound_store()
+    try:
+        return await store.get_campaign(campaign_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+
+@router.patch("/campaigns/{campaign_id}")
+async def update_campaign(campaign_id: str, body: Dict[str, Any]):
+    store = _get_outbound_store()
+    try:
+        return await store.update_campaign(campaign_id, body or {})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/campaigns/{campaign_id}/clone")
+async def clone_campaign(campaign_id: str):
+    store = _get_outbound_store()
+    try:
+        return await store.clone_campaign(campaign_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+
+@router.post("/campaigns/{campaign_id}/status")
+async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
+    store = _get_outbound_store()
+    try:
+        # Guardrails: require voicemail media before running.
+        if req.status.strip().lower() == "running":
+            campaign = await store.get_campaign(campaign_id)
+            media_uri = (campaign.get("voicemail_drop_media_uri") or "").strip()
+            if not media_uri:
+                raise HTTPException(
+                    status_code=400,
+                    detail="voicemail_drop_media_uri is required before starting a campaign (upload/generate voicemail first)",
+                )
+        return await store.set_campaign_status(campaign_id, req.status, cancel_pending=bool(req.cancel_pending))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/campaigns/{campaign_id}/stats")
+async def campaign_stats(campaign_id: str):
+    store = _get_outbound_store()
+    return await store.campaign_stats(campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/leads/import", response_model=LeadImportResponse)
+async def import_leads(
+    campaign_id: str,
+    file: UploadFile = File(...),
+    skip_existing: bool = Query(True),
+    max_error_rows: int = Query(20, ge=1, le=200),
+):
+    store = _get_outbound_store()
+    try:
+        data = await file.read()
+        result = await store.import_leads_csv(
+            campaign_id,
+            data,
+            skip_existing=bool(skip_existing),
+            max_error_rows=int(max_error_rows),
+        )
+        return LeadImportResponse(**result)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/campaigns/{campaign_id}/leads")
+async def list_leads(
+    campaign_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    state: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+):
+    store = _get_outbound_store()
+    return await store.list_leads(campaign_id, page=page, page_size=page_size, state=state, q=q)
+
+
+@router.post("/leads/{lead_id}/cancel")
+async def cancel_lead(lead_id: str):
+    store = _get_outbound_store()
+    ok = await store.cancel_lead(lead_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Lead cannot be canceled in its current state")
+    return {"ok": True}
+
+
+@router.get("/campaigns/{campaign_id}/attempts")
+async def list_attempts(
+    campaign_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+):
+    store = _get_outbound_store()
+    return await store.list_attempts(campaign_id, page=page, page_size=page_size)
+
+
+@router.post("/campaigns/{campaign_id}/voicemail/upload")
+async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...)):
+    store = _get_outbound_store()
+    filename = (file.filename or "").strip() or "voicemail.ulaw"
+    if not filename.lower().endswith(".ulaw"):
+        raise HTTPException(status_code=400, detail="Upload must be a .ulaw file (8kHz μ-law)")
+
+    raw_name = os.path.basename(filename)
+    if not _SAFE_NAME_RE.match(raw_name):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    media_dir = _media_dir()
+    os.makedirs(media_dir, exist_ok=True)
+    unique = f"outbound-vm-{campaign_id[:8]}-{uuid.uuid4().hex[:8]}.ulaw"
+    path = os.path.join(media_dir, unique)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    with open(path, "wb") as f:
+        f.write(data)
+    try:
+        os.chmod(path, 0o664)
+    except Exception:
+        pass
+
+    media_uri = f"sound:ai-generated/{unique[:-5]}"
+    try:
+        campaign = await store.update_campaign(campaign_id, {"voicemail_drop_media_uri": media_uri})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return {"media_uri": media_uri, "campaign": campaign}
+
+
+@router.get("/campaigns/{campaign_id}/voicemail/preview.wav")
+async def preview_voicemail_wav(campaign_id: str):
+    store = _get_outbound_store()
+    try:
+        campaign = await store.get_campaign(campaign_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    media_uri = (campaign.get("voicemail_drop_media_uri") or "").strip()
+    if not media_uri.startswith("sound:ai-generated/"):
+        raise HTTPException(status_code=400, detail="Campaign voicemail media is not in ai-generated")
+    base = media_uri.split("sound:ai-generated/", 1)[1].strip()
+    if not base:
+        raise HTTPException(status_code=400, detail="Invalid media_uri")
+
+    ulaw_path = os.path.join(_media_dir(), f"{base}.ulaw")
+    if not os.path.exists(ulaw_path):
+        raise HTTPException(status_code=404, detail="Voicemail media file not found on server")
+    with open(ulaw_path, "rb") as f:
+        ulaw_data = f.read()
+
+    pcm16 = audioop.ulaw2lin(ulaw_data, 2)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wavf:
+        wavf.setnchannels(1)
+        wavf.setsampwidth(2)
+        wavf.setframerate(8000)
+        wavf.writeframes(pcm16)
+    wav_bytes = buf.getvalue()
+    return Response(content=wav_bytes, media_type="audio/wav")

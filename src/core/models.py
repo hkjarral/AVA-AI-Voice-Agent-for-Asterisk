@@ -157,6 +157,13 @@ class CallSession:
     error_message: Optional[str] = None                              # Error if call failed
     transfer_destination: Optional[str] = None                       # Transfer target if transferred
 
+    # Outbound campaign dialer (Milestone 22)
+    is_outbound: bool = False
+    outbound_campaign_id: Optional[str] = None
+    outbound_lead_id: Optional[str] = None
+    outbound_attempt_id: Optional[str] = None
+    outbound_custom_vars: Dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self):
         """Initialize default VAD and fallback state."""
         if not self.vad_state:

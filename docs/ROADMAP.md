@@ -326,6 +326,18 @@ Keep this roadmap updated after each milestone to help any collaborator—or fut
 
 ## Future Roadmap
 
+## Milestone 22 — Outbound Campaign Dialer (🟡 Draft)
+
+- **Goal**: Add scheduled outbound campaigns with pacing, AMD detection, voicemail drop, and Admin UI management.
+- **Docs**: `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md`
+
+---
+
+## Milestone 15 — Groq Speech (STT/TTS) for Modular Pipelines (🟡 Draft)
+
+- **Goal**: Add Groq Speech STT/TTS as modular pipeline components (`groq_stt`, `groq_tts`) to complement `groq_llm`.
+- **Docs**: `docs/contributing/milestones/milestone-15-groq-speech-pipelines.md`
+
 ### Hi-Fi Audio & Multi-Provider Demos (Planned)
 
 - **Goal**: Improve resampling quality for hi-fi profiles and demonstrate multi-provider parity. ROADMAPv4 P3 milestone.

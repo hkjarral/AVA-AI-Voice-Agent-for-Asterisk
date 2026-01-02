@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocat
 import AppShell from './components/layout/AppShell';
 import Dashboard from './pages/Dashboard';
 import CallHistoryPage from './pages/CallHistoryPage';
+import CallSchedulingPage from './pages/CallSchedulingPage';
 import axios from 'axios';
 
 // Auth
@@ -130,6 +131,7 @@ function App() {
                                         <Route element={<AppShell />}>
                                             <Route path="/" element={<Dashboard />} />
                                             <Route path="/history" element={<CallHistoryPage />} />
+                                            <Route path="/scheduling" element={<CallSchedulingPage />} />
 
                                             {/* Core Configuration */}
                                             <Route path="/providers" element={<ProvidersPage />} />
