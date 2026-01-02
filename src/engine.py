@@ -1069,9 +1069,11 @@ class Engine:
         # Ensure correlation vars exist for the dialplan hop (FreePBX/local channels can drop vars).
         try:
             if meta:
+                await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND", "1")
                 await self.ari_client.set_channel_var(channel_id, "AAVA_ATTEMPT_ID", str(meta.get("attempt_id") or attempt_id))
                 await self.ari_client.set_channel_var(channel_id, "AAVA_CAMPAIGN_ID", str(meta.get("campaign_id") or ""))
                 await self.ari_client.set_channel_var(channel_id, "AAVA_LEAD_ID", str(meta.get("lead_id") or ""))
+                await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND_PHONE", str(meta.get("phone_number") or ""))
                 # Ensure AI_CONTEXT survives to the final StasisStart so context prompt/greeting resolve correctly.
                 await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", str(meta.get("context") or "default"))
                 # Ensure AMD tuning is present for the dialplan hop.
@@ -1203,6 +1205,7 @@ class Engine:
         try:
             ctx = str((meta or {}).get("context") or "").strip()
             if ctx:
+                await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND", "1")
                 await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", ctx)
         except Exception:
             logger.debug("Failed to set AI_CONTEXT for outbound human path", channel_id=channel_id, exc_info=True)
