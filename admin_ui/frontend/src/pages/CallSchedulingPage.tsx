@@ -7,6 +7,7 @@ import {
     Pause,
     Square,
     Copy,
+    Pencil,
     Upload,
     RefreshCw,
     Trash2,
@@ -62,6 +63,8 @@ interface AttemptRow {
     error_message?: string | null;
 }
 
+type Notice = { type: 'success' | 'error' | 'info'; message: string };
+
 const formatUtc = (iso?: string | null) => {
     if (!iso) return '-';
     try {
@@ -71,7 +74,7 @@ const formatUtc = (iso?: string | null) => {
     }
 };
 
-const StatusBadge = ({ status }: { status: CampaignStatus }) => {
+const StatusBadge = ({ status, label }: { status: CampaignStatus; label?: string }) => {
     const cls =
         status === 'running'
             ? 'bg-green-500/10 text-green-500 border-green-500/20'
@@ -82,9 +85,33 @@ const StatusBadge = ({ status }: { status: CampaignStatus }) => {
                     : 'bg-muted text-muted-foreground border-border';
     return (
         <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium ${cls}`}>
-            {status}
+            {label || status}
         </span>
     );
+};
+
+const timeStringInZone = (timeZone: string): string | null => {
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone,
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).formatToParts(new Date());
+        const hour = parts.find(p => p.type === 'hour')?.value;
+        const minute = parts.find(p => p.type === 'minute')?.value;
+        if (!hour || !minute) return null;
+        return `${hour}:${minute}`;
+    } catch {
+        return null;
+    }
+};
+
+const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
+    if (!nowHHMM || !startHHMM || !endHHMM) return true;
+    const crossesMidnight = endHHMM < startHHMM;
+    if (!crossesMidnight) return nowHHMM >= startHHMM && nowHHMM <= endHHMM;
+    return nowHHMM >= startHHMM || nowHHMM <= endHHMM;
 };
 
 const CallSchedulingPage = () => {
@@ -95,6 +122,19 @@ const CallSchedulingPage = () => {
         () => campaigns.find(c => c.id === selectedCampaignId) || null,
         [campaigns, selectedCampaignId]
     );
+    const selectedHasVoicemail = Boolean((selectedCampaign?.voicemail_drop_media_uri || '').trim());
+
+    const windowInfo = useMemo(() => {
+        if (!selectedCampaign) return null;
+        const nowLocal = timeStringInZone(selectedCampaign.timezone || 'UTC');
+        if (!nowLocal) return null;
+        const within = withinDailyWindow(
+            nowLocal,
+            selectedCampaign.daily_window_start_local,
+            selectedCampaign.daily_window_end_local
+        );
+        return { nowLocal, within };
+    }, [selectedCampaign]);
 
     const [stats, setStats] = useState<CampaignStats | null>(null);
     const [leads, setLeads] = useState<LeadRow[]>([]);
@@ -102,6 +142,7 @@ const CallSchedulingPage = () => {
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<Notice | null>(null);
 
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({
@@ -114,11 +155,30 @@ const CallSchedulingPage = () => {
         default_context: 'default'
     });
 
+    const [showEdit, setShowEdit] = useState(false);
+    const [editForm, setEditForm] = useState({
+        name: '',
+        timezone: 'UTC',
+        daily_window_start_local: '09:00',
+        daily_window_end_local: '17:00',
+        max_concurrent: 1,
+        min_interval_seconds_between_calls: 5,
+        default_context: 'default'
+    });
+
+    const [showSetupGuide, setShowSetupGuide] = useState(false);
+
     const crossesMidnight = useMemo(() => {
         const s = createForm.daily_window_start_local;
         const e = createForm.daily_window_end_local;
         return Boolean(s && e && e < s);
     }, [createForm.daily_window_start_local, createForm.daily_window_end_local]);
+
+    const editCrossesMidnight = useMemo(() => {
+        const s = editForm.daily_window_start_local;
+        const e = editForm.daily_window_end_local;
+        return Boolean(s && e && e < s);
+    }, [editForm.daily_window_start_local, editForm.daily_window_end_local]);
 
     const refreshCampaigns = async () => {
         const res = await axios.get('/api/outbound/campaigns');
@@ -185,36 +245,82 @@ const CallSchedulingPage = () => {
     }, [selectedCampaignId]);
 
     const createCampaign = async () => {
-        const res = await axios.post('/api/outbound/campaigns', createForm);
-        await refreshCampaigns();
-        setSelectedCampaignId(res.data.id);
-        setShowCreate(false);
-        setCreateForm({
-            name: '',
-            timezone: 'UTC',
-            daily_window_start_local: '09:00',
-            daily_window_end_local: '17:00',
-            max_concurrent: 1,
-            min_interval_seconds_between_calls: 5,
-            default_context: 'default'
-        });
+        try {
+            const res = await axios.post('/api/outbound/campaigns', createForm);
+            await refreshCampaigns();
+            setSelectedCampaignId(res.data.id);
+            setShowCreate(false);
+            setNotice({ type: 'success', message: 'Campaign created. Upload voicemail and import leads before starting.' });
+            setCreateForm({
+                name: '',
+                timezone: 'UTC',
+                daily_window_start_local: '09:00',
+                daily_window_end_local: '17:00',
+                max_concurrent: 1,
+                min_interval_seconds_between_calls: 5,
+                default_context: 'default'
+            });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to create campaign' });
+        }
     };
 
     const setStatus = async (campaignId: string, status: CampaignStatus, cancel_pending: boolean = false) => {
-        await axios.post(`/api/outbound/campaigns/${campaignId}/status`, { status, cancel_pending });
-        await refreshCampaigns();
-        await refreshCampaignDetails(campaignId);
+        try {
+            await axios.post(`/api/outbound/campaigns/${campaignId}/status`, { status, cancel_pending });
+            await refreshCampaigns();
+            await refreshCampaignDetails(campaignId);
+            setNotice({ type: 'success', message: `Campaign status set to ${status}` });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to update campaign status' });
+        }
     };
 
     const cloneCampaign = async (campaignId: string) => {
-        const res = await axios.post(`/api/outbound/campaigns/${campaignId}/clone`);
-        await refreshCampaigns();
-        setSelectedCampaignId(res.data.id);
+        try {
+            const res = await axios.post(`/api/outbound/campaigns/${campaignId}/clone`);
+            await refreshCampaigns();
+            setSelectedCampaignId(res.data.id);
+            setNotice({ type: 'success', message: 'Campaign cloned' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to clone campaign' });
+        }
+    };
+
+    const openEdit = () => {
+        if (!selectedCampaign) return;
+        setEditForm({
+            name: selectedCampaign.name || '',
+            timezone: selectedCampaign.timezone || 'UTC',
+            daily_window_start_local: selectedCampaign.daily_window_start_local || '09:00',
+            daily_window_end_local: selectedCampaign.daily_window_end_local || '17:00',
+            max_concurrent: selectedCampaign.max_concurrent || 1,
+            min_interval_seconds_between_calls: selectedCampaign.min_interval_seconds_between_calls || 5,
+            default_context: selectedCampaign.default_context || 'default'
+        });
+        setShowEdit(true);
+    };
+
+    const saveEdit = async () => {
+        if (!selectedCampaign) return;
+        try {
+            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, editForm);
+            setShowEdit(false);
+            await refreshCampaigns();
+            await refreshCampaignDetails(selectedCampaign.id);
+            setNotice({ type: 'success', message: 'Campaign updated' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to update campaign' });
+        }
     };
 
     const cancelLead = async (leadId: string) => {
-        await axios.post(`/api/outbound/leads/${leadId}/cancel`);
-        if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+        try {
+            await axios.post(`/api/outbound/leads/${leadId}/cancel`);
+            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to cancel lead' });
+        }
     };
 
     const downloadText = (filename: string, text: string) => {
@@ -230,34 +336,49 @@ const CallSchedulingPage = () => {
     const importLeads = async (campaignId: string, file: File) => {
         const formData = new FormData();
         formData.append('file', file);
-        const res = await axios.post(`/api/outbound/campaigns/${campaignId}/leads/import?skip_existing=true`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
-        });
-        const data = res.data as LeadImportResponse;
-        if (data?.error_csv) {
-            downloadText(`outbound_import_errors_${new Date().toISOString().slice(0, 19)}.csv`, data.error_csv);
+        try {
+            const res = await axios.post(`/api/outbound/campaigns/${campaignId}/leads/import?skip_existing=true`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            const data = res.data as LeadImportResponse;
+            if (data?.error_csv) {
+                downloadText(`outbound_import_errors_${new Date().toISOString().slice(0, 19)}.csv`, data.error_csv);
+            }
+            await refreshCampaignDetails(campaignId);
+            setNotice({
+                type: data.rejected > 0 ? 'info' : 'success',
+                message: `Imported leads: accepted=${data.accepted}, rejected=${data.rejected}, duplicates=${data.duplicates}`
+            });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to import leads' });
         }
-        await refreshCampaignDetails(campaignId);
-        alert(`Imported leads: accepted=${data.accepted}, rejected=${data.rejected}, duplicates=${data.duplicates}`);
     };
 
     const uploadVoicemail = async (campaignId: string, file: File) => {
         const formData = new FormData();
         formData.append('file', file);
-        await axios.post(`/api/outbound/campaigns/${campaignId}/voicemail/upload`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
-        });
-        await refreshCampaigns();
-        await refreshCampaignDetails(campaignId);
-        alert('Voicemail uploaded and linked to campaign');
+        try {
+            await axios.post(`/api/outbound/campaigns/${campaignId}/voicemail/upload`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            await refreshCampaigns();
+            await refreshCampaignDetails(campaignId);
+            setNotice({ type: 'success', message: 'Voicemail uploaded and linked to campaign' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to upload voicemail' });
+        }
     };
 
     const previewVoicemail = async (campaignId: string) => {
-        const res = await axios.get(`/api/outbound/campaigns/${campaignId}/voicemail/preview.wav`, { responseType: 'blob' });
-        const url = URL.createObjectURL(res.data);
-        const audio = new Audio(url);
-        audio.onended = () => URL.revokeObjectURL(url);
-        await audio.play();
+        try {
+            const res = await axios.get(`/api/outbound/campaigns/${campaignId}/voicemail/preview.wav`, { responseType: 'blob' });
+            const url = URL.createObjectURL(res.data);
+            const audio = new Audio(url);
+            audio.onended = () => URL.revokeObjectURL(url);
+            await audio.play();
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to preview voicemail' });
+        }
     };
 
     if (loading) {
@@ -303,6 +424,28 @@ const CallSchedulingPage = () => {
                     </button>
                 </div>
             </div>
+
+            {notice && (
+                <div
+                    className={`p-4 rounded-md border text-sm ${notice.type === 'error'
+                        ? 'border-red-500/30 bg-red-500/10 text-red-500'
+                        : notice.type === 'success'
+                            ? 'border-green-500/30 bg-green-500/10 text-green-500'
+                            : 'border-border bg-card/50 text-muted-foreground'
+                        }`}
+                >
+                    <div className="flex items-start justify-between gap-3">
+                        <div>{notice.message}</div>
+                        <button
+                            className="text-xs px-2 py-1 rounded hover:bg-accent/60"
+                            onClick={() => setNotice(null)}
+                            title="Dismiss"
+                        >
+                            ×
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {error && (
                 <div className="p-4 rounded-md border border-red-500/30 bg-red-500/10 text-red-500 text-sm">
@@ -350,25 +493,52 @@ const CallSchedulingPage = () => {
                         <>
                             <div className="border border-border rounded-lg bg-card/50 p-4 flex flex-col gap-3">
                                 <div className="flex items-start justify-between gap-4">
-                                    <div>
-                                        <div className="flex items-center gap-2">
-                                            <div className="text-xl font-semibold">{selectedCampaign.name}</div>
-                                            <StatusBadge status={selectedCampaign.status} />
-                                        </div>
-                                        <div className="text-sm text-muted-foreground">
-                                            Default context: <span className="font-mono">{selectedCampaign.default_context}</span> ·
-                                            Max concurrent: {selectedCampaign.max_concurrent} ·
-                                            Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
-                                        </div>
-                                        <div className="text-xs text-muted-foreground mt-1">
-                                            Voicemail media: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-                                            onClick={() => cloneCampaign(selectedCampaign.id)}
-                                        >
+	                                    <div>
+	                                        <div className="flex items-center gap-2">
+	                                            <div className="text-xl font-semibold">{selectedCampaign.name}</div>
+	                                            <StatusBadge
+	                                                status={selectedCampaign.status}
+	                                                label={
+	                                                    selectedCampaign.status === 'running' && windowInfo && !windowInfo.within
+	                                                        ? 'running (outside window)'
+	                                                        : undefined
+	                                                }
+	                                            />
+	                                        </div>
+	                                        <div className="text-sm text-muted-foreground">
+	                                            Default context: <span className="font-mono">{selectedCampaign.default_context}</span> ·
+	                                            Max concurrent: {selectedCampaign.max_concurrent} ·
+	                                            Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
+	                                        </div>
+	                                        <div className="text-xs text-muted-foreground mt-1">
+	                                            Voicemail media: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
+	                                            {selectedCampaign.status === 'running' && windowInfo && (
+	                                                <span className="ml-3">
+	                                                    Now ({selectedCampaign.timezone}): <span className="font-mono">{windowInfo.nowLocal}</span>
+	                                                </span>
+	                                            )}
+	                                        </div>
+	                                        {!selectedHasVoicemail && (
+	                                            <div className="mt-2 text-xs text-yellow-500 flex items-center gap-2">
+	                                                <AlertTriangle className="w-3 h-3" />
+	                                                Upload voicemail media before starting (required for MVP).
+	                                            </div>
+	                                        )}
+	                                    </div>
+	                                    <div className="flex items-center gap-2">
+	                                        <button
+	                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+	                                            onClick={openEdit}
+	                                            disabled={selectedCampaign.status === 'running'}
+	                                            title={selectedCampaign.status === 'running' ? 'Pause the campaign to edit' : 'Edit campaign'}
+	                                        >
+	                                            <Pencil className="w-4 h-4" />
+	                                            Edit
+	                                        </button>
+	                                        <button
+	                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
+	                                            onClick={() => cloneCampaign(selectedCampaign.id)}
+	                                        >
                                             <Copy className="w-4 h-4" />
                                             Clone
                                         </button>
@@ -386,23 +556,25 @@ const CallSchedulingPage = () => {
                                                 }}
                                             />
                                         </label>
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-                                            onClick={() => previewVoicemail(selectedCampaign.id)}
-                                            disabled={!selectedCampaign.voicemail_drop_media_uri}
-                                            title={!selectedCampaign.voicemail_drop_media_uri ? 'Upload voicemail media first' : 'Preview voicemail'}
-                                        >
-                                            <PhoneCall className="w-4 h-4" />
-                                            Preview VM
-                                        </button>
-                                        {selectedCampaign.status !== 'running' ? (
-                                            <button
-                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-600/90 text-sm"
-                                                onClick={() => setStatus(selectedCampaign.id, 'running')}
-                                            >
-                                                <Play className="w-4 h-4" />
-                                                Start
-                                            </button>
+	                                        <button
+	                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
+	                                            onClick={() => previewVoicemail(selectedCampaign.id)}
+	                                            disabled={!selectedHasVoicemail}
+	                                            title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Preview voicemail'}
+	                                        >
+	                                            <PhoneCall className="w-4 h-4" />
+	                                            Preview VM
+	                                        </button>
+	                                        {selectedCampaign.status !== 'running' ? (
+	                                            <button
+	                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-600/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+	                                                onClick={() => setStatus(selectedCampaign.id, 'running')}
+	                                                disabled={!selectedHasVoicemail}
+	                                                title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Start campaign'}
+	                                            >
+	                                                <Play className="w-4 h-4" />
+	                                                Start
+	                                            </button>
                                         ) : (
                                             <button
                                                 className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-600 text-white hover:bg-yellow-600/90 text-sm"
@@ -492,9 +664,66 @@ const CallSchedulingPage = () => {
                                 </div>
 
                                 {tab === 'campaigns' && (
-                                    <div className="p-4 text-sm text-muted-foreground">
-                                        Configure the campaign (window/pacing/voicemail) and press Start. For trunk routing, ensure your FreePBX outbound routes
-                                        handle dialing from extension 6789.
+                                    <div className="p-4 space-y-3">
+                                        <div className="text-sm text-muted-foreground">
+                                            Configure the campaign and press Start. Routing assumption: your FreePBX outbound routes handle dialing from extension 6789.
+                                        </div>
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
+                                            onClick={() => setShowSetupGuide(v => !v)}
+                                        >
+                                            {showSetupGuide ? 'Hide Setup Guide' : 'Show Setup Guide'}
+                                        </button>
+                                        {showSetupGuide && (
+                                            <div className="border border-border rounded-md bg-background p-3 text-sm">
+                                                <div className="text-xs text-muted-foreground mb-2">
+                                                    Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
+                                                </div>
+                                                <pre className="text-xs overflow-x-auto p-3 rounded bg-muted/50 border border-border">
+{`[aava-outbound-amd]
+exten => s,1,NoOp(AAVA Outbound AMD hop)
+ same => n,NoOp(Attempt=\${AAVA_ATTEMPT_ID} Campaign=\${AAVA_CAMPAIGN_ID} Lead=\${AAVA_LEAD_ID})
+ same => n,AMD(\${AAVA_AMD_OPTS})
+ same => n,NoOp(AMDSTATUS=\${AMDSTATUS} AMDCAUSE=\${AMDCAUSE})
+ same => n,GotoIf($["\${AMDSTATUS}" = "HUMAN"]?human)
+ same => n,GotoIf($["\${AMDSTATUS}" = "NOTSURE"]?machine)
+ same => n(machine),WaitForSilence(1500,3)
+ same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,\${AAVA_ATTEMPT_ID},MACHINE,\${AMDCAUSE})
+ same => n,Hangup()
+ same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,\${AAVA_ATTEMPT_ID},HUMAN,\${AMDCAUSE})
+ same => n,Hangup()`}
+                                                </pre>
+                                                <div className="flex items-center gap-2 mt-3">
+                                                    <button
+                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                                                        onClick={() => {
+                                                            navigator.clipboard.writeText(
+`[aava-outbound-amd]
+exten => s,1,NoOp(AAVA Outbound AMD hop)
+ same => n,NoOp(Attempt=\${AAVA_ATTEMPT_ID} Campaign=\${AAVA_CAMPAIGN_ID} Lead=\${AAVA_LEAD_ID})
+ same => n,AMD(\${AAVA_AMD_OPTS})
+ same => n,NoOp(AMDSTATUS=\${AMDSTATUS} AMDCAUSE=\${AMDCAUSE})
+ same => n,GotoIf($[\"\\${AMDSTATUS}\" = \"HUMAN\"]?human)
+ same => n,GotoIf($[\"\\${AMDSTATUS}\" = \"NOTSURE\"]?machine)
+ same => n(machine),WaitForSilence(1500,3)
+ same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,\\${AAVA_ATTEMPT_ID},MACHINE,\\${AMDCAUSE})
+ same => n,Hangup()
+ same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,\\${AAVA_ATTEMPT_ID},HUMAN,\\${AMDCAUSE})
+ same => n,Hangup()`
+                                                            );
+                                                            setNotice({ type: 'success', message: 'Dialplan snippet copied to clipboard' });
+                                                        }}
+                                                    >
+                                                        <FileDown className="w-4 h-4" />
+                                                        Copy Snippet
+                                                    </button>
+                                                    <div className="text-xs text-muted-foreground">
+                                                        Reload: <span className="font-mono">asterisk -rx "dialplan reload"</span> · Verify:{' '}
+                                                        <span className="font-mono">asterisk -rx "dialplan show aava-outbound-amd"</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
 
@@ -715,6 +944,106 @@ const CallSchedulingPage = () => {
                     </div>
                 </div>
             )}
+
+            {showEdit && selectedCampaign && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                    <div className="w-full max-w-2xl border border-border rounded-lg bg-background p-5">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="text-lg font-semibold">Edit Campaign</div>
+                            <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setShowEdit(false)}>
+                                Close
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground">Name</label>
+                                <input
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
+                                    value={editForm.name}
+                                    onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground">Timezone</label>
+                                <input
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
+                                    value={editForm.timezone}
+                                    onChange={e => setEditForm({ ...editForm, timezone: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground">Daily Window Start (local)</label>
+                                <input
+                                    type="time"
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
+                                    value={editForm.daily_window_start_local}
+                                    onChange={e => setEditForm({ ...editForm, daily_window_start_local: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground">Daily Window End (local)</label>
+                                <input
+                                    type="time"
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
+                                    value={editForm.daily_window_end_local}
+                                    onChange={e => setEditForm({ ...editForm, daily_window_end_local: e.target.value })}
+                                />
+                                {editCrossesMidnight && (
+                                    <div className="text-xs text-yellow-500 flex items-center gap-2">
+                                        <AlertTriangle className="w-3 h-3" />
+                                        Crosses midnight (window runs across two days)
+                                    </div>
+                                )}
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground">Max Concurrent</label>
+                                <input
+                                    type="number"
+                                    min={1}
+                                    max={5}
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
+                                    value={editForm.max_concurrent}
+                                    onChange={e => setEditForm({ ...editForm, max_concurrent: Number(e.target.value) })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground">Min Interval Between Calls (sec)</label>
+                                <input
+                                    type="number"
+                                    min={0}
+                                    max={3600}
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
+                                    value={editForm.min_interval_seconds_between_calls}
+                                    onChange={e => setEditForm({ ...editForm, min_interval_seconds_between_calls: Number(e.target.value) })}
+                                />
+                            </div>
+                            <div className="space-y-2 md:col-span-2">
+                                <label className="text-xs text-muted-foreground">Default Context</label>
+                                <input
+                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
+                                    value={editForm.default_context}
+                                    onChange={e => setEditForm({ ...editForm, default_context: e.target.value })}
+                                />
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 mt-5">
+                            <button className="px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm" onClick={() => setShowEdit(false)}>
+                                Cancel
+                            </button>
+                            <button
+                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                                onClick={saveEdit}
+                                disabled={!editForm.name.trim()}
+                            >
+                                Save
+                            </button>
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-3">
+                            Edits are disabled while a campaign is running. Pause first, then edit and resume.
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -729,4 +1058,3 @@ interface LeadImportResponse {
 }
 
 export default CallSchedulingPage;
-
