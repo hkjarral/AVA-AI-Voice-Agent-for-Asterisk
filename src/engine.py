@@ -875,6 +875,8 @@ class Engine:
         try:
             while True:
                 await asyncio.sleep(1.0)
+                # Guard against pre-answer failures that never enter Stasis (prevents capacity lockup).
+                await self._outbound_cleanup_stale_attempts()
                 try:
                     campaigns = await self.outbound_store.list_running_campaigns()
                 except Exception:
@@ -929,6 +931,7 @@ class Engine:
                                 "phone_number": phone,
                                 "context": (lead.get("context_override") or campaign.get("default_context") or "default"),
                                 "custom_vars": lead.get("custom_vars") or {},
+                                "created_at_ts": time.time(),
                             }
 
                             marked = await self.outbound_store.mark_lead_dialing(lead_id)
@@ -961,6 +964,14 @@ class Engine:
         if not (campaign_id and lead_id and phone):
             return
 
+        # FreePBX outbound patterns typically don't match E.164 '+'; normalize for Local dialing.
+        dial_phone = "".join(ch for ch in phone if (ch.isdigit() or ch in ("+", "*", "#")))
+        if dial_phone.startswith("+"):
+            dial_phone = dial_phone[1:]
+        dial_phone = dial_phone.strip()
+        if not dial_phone:
+            dial_phone = phone.lstrip("+").strip()
+
         context_name = str(lead.get("context_override") or campaign.get("default_context") or "default").strip() or "default"
         custom_vars = lead.get("custom_vars") if isinstance(lead.get("custom_vars"), dict) else {}
 
@@ -987,7 +998,7 @@ class Engine:
         except Exception:
             channel_vars["AAVA_CUSTOM_VARS_JSON"] = "{}"
 
-        endpoint = f"Local/{phone}@from-internal"
+        endpoint = f"Local/{dial_phone}@from-internal"
         app_args = f"outbound,{attempt_id},{campaign_id},{lead_id}"
 
         logger.info(
@@ -1031,8 +1042,89 @@ class Engine:
         await self.outbound_store.set_attempt_channel(attempt_id, str(channel_id))
         meta = self._outbound_attempt_meta_by_attempt_id.get(attempt_id) or {}
         meta["channel_id"] = str(channel_id)
+        meta["originated_at_ts"] = time.time()
         self._outbound_attempt_meta_by_attempt_id[attempt_id] = meta
         self._outbound_attempt_meta_by_channel_id[str(channel_id)] = meta
+
+    async def _outbound_cleanup_stale_attempts(self) -> None:
+        """
+        Finalize outbound attempts that never reached StasisStart.
+
+        ARI event websockets often only emit events for channels that enter the Stasis app; for
+        pre-answer failures (route mismatch, immediate hangup, etc) the dialer would otherwise
+        get stuck "dialing" forever. This watchdog keeps capacity flowing.
+        """
+        try:
+            now = time.time()
+            stale_after = float(os.getenv("AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS", "90") or "90")
+            if stale_after < 10:
+                stale_after = 10.0
+
+            # Copy values to avoid mutation during iteration.
+            metas = list(self._outbound_attempt_meta_by_attempt_id.values())
+            for meta in metas:
+                attempt_id = str(meta.get("attempt_id") or "").strip()
+                channel_id = str(meta.get("channel_id") or "").strip()
+                lead_id = str(meta.get("lead_id") or "").strip()
+                created_at_ts = float(meta.get("originated_at_ts") or meta.get("created_at_ts") or 0.0)
+                if not (attempt_id and lead_id and created_at_ts):
+                    continue
+                if (now - created_at_ts) < stale_after:
+                    continue
+                if channel_id and channel_id in self._outbound_awaiting_amd_channel_ids:
+                    continue
+
+                # If a call session exists, normal cleanup will finish the attempt.
+                if channel_id:
+                    try:
+                        session = await self.session_store.get_by_channel_id(channel_id)
+                        if session and getattr(session, "is_outbound", False):
+                            continue
+                    except Exception:
+                        pass
+
+                # Probe channel existence (404 => already gone).
+                exists = False
+                if channel_id:
+                    try:
+                        resp = await self.ari_client.send_command(
+                            "GET",
+                            f"channels/{channel_id}",
+                            tolerate_statuses=[404],
+                        )
+                        if isinstance(resp, dict) and int(resp.get("status") or 0) == 404:
+                            exists = False
+                        else:
+                            exists = True
+                    except Exception:
+                        # Avoid aggressive cleanup if ARI is flaky.
+                        continue
+
+                if exists and channel_id:
+                    try:
+                        await self.ari_client.hangup_channel(channel_id)
+                    except Exception:
+                        pass
+
+                try:
+                    await self.outbound_store.finish_attempt(
+                        attempt_id,
+                        outcome="no_answer",
+                        error_message="stale originate (no StasisStart)",
+                    )
+                except Exception:
+                    pass
+                try:
+                    await self.outbound_store.set_lead_state(lead_id, state="failed", last_outcome="no_answer")
+                except Exception:
+                    pass
+
+                self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
+                self._outbound_attempt_amd.pop(attempt_id, None)
+                if channel_id:
+                    self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
+        except Exception:
+            logger.debug("Outbound stale-attempt cleanup failed", exc_info=True)
 
     async def _handle_outbound_stasis(self, channel_id: str, channel: Dict[str, Any], args: List[Any]) -> None:
         """Handle outbound call StasisStart for both answer and AMD return."""

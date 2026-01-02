@@ -54,6 +54,8 @@ interface LeadRow {
     attempt_count: number;
     last_outcome?: string | null;
     last_attempt_at_utc?: string | null;
+    context_override?: string | null;
+    lead_timezone?: string | null;
     custom_vars?: Record<string, any>;
     created_at_utc?: string;
     updated_at_utc?: string;
@@ -898,13 +900,14 @@ const CallSchedulingPage = () => {
                                 {tab === 'leads' && (
                                     <div className="p-4">
                                         <div className="text-xs text-muted-foreground mb-2">
-                                            Showing most recent 50 leads. Use CSV import to add more (default: skip duplicates). Times are shown in your browser local time (stored in UTC).
+                                            Showing most recent 50 leads. Use CSV import to add more (default: skip duplicates). If a CSV row includes a context/timezone, it overrides campaign defaults. Times are shown in your browser local time (stored in UTC).
                                         </div>
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-sm">
                                                 <thead>
                                                     <tr className="text-left text-xs text-muted-foreground border-b border-border">
                                                         <th className="py-2 pr-3">Phone</th>
+                                                        <th className="py-2 pr-3">Context</th>
                                                         <th className="py-2 pr-3">State</th>
                                                         <th className="py-2 pr-3">Attempts</th>
                                                         <th className="py-2 pr-3">Last outcome</th>
@@ -918,6 +921,15 @@ const CallSchedulingPage = () => {
                                                     {leads.map(l => (
                                                         <tr key={l.id} className="border-b border-border/50">
                                                             <td className="py-2 pr-3 font-mono">{l.phone_number}</td>
+                                                            <td className="py-2 pr-3">
+                                                                {l.context_override ? (
+                                                                    <span className="font-mono">{l.context_override}</span>
+                                                                ) : (
+                                                                    <span className="text-xs text-muted-foreground">
+                                                                        (campaign) <span className="font-mono">{selectedCampaign.default_context}</span>
+                                                                    </span>
+                                                                )}
+                                                            </td>
                                                             <td className="py-2 pr-3">{l.state}</td>
                                                             <td className="py-2 pr-3">{l.attempt_count}</td>
                                                             <td className="py-2 pr-3">{l.last_outcome || '-'}</td>

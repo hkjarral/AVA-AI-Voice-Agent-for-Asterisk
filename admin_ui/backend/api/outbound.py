@@ -168,7 +168,9 @@ async def download_sample_csv():
     """
     csv_text = (
         "phone_number,context,timezone,caller_id,custom_vars\n"
-        "+15551234567,default,UTC,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1001\"\"}\"\n"
+        # Leave context/timezone blank to use campaign defaults.
+        "+15551234567,,,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1001\"\"}\"\n"
+        # Example override: per-lead context + timezone.
         "+15557654321,demo_google_live,America/New_York,6789,\"{\"\"name\"\":\"\"Bob Example\"\",\"\"note\"\":\"\"Follow up from web form\"\"}\"\n"
     )
     return Response(
