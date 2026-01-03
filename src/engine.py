@@ -1352,12 +1352,46 @@ class Engine:
                 await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND_PHONE", str(meta.get("phone_number") or ""))
                 # Ensure AI_CONTEXT survives to the final StasisStart so context prompt/greeting resolve correctly.
                 await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", str(meta.get("context") or "default"))
+                # Ensure lead name survives so greeting can render {caller_name}.
+                if meta.get("lead_name"):
+                    try:
+                        await self.ari_client.set_channel_var(channel_id, "AAVA_LEAD_NAME", str(meta.get("lead_name") or ""))
+                    except Exception:
+                        pass
                 # Ensure AMD tuning is present for the dialplan hop.
                 try:
                     campaign = await self.outbound_store.get_campaign(str(meta.get("campaign_id") or ""))
                     amd_opts = self._outbound_build_amd_opts(campaign.get("amd_options") or {})
                     if amd_opts:
                         await self.ari_client.set_channel_var(channel_id, "AAVA_AMD_OPTS", amd_opts)
+
+                    # Ensure voicemail/consent controls are present for the dialplan hop.
+                    try:
+                        voicemail_enabled = bool(int(campaign.get("voicemail_drop_enabled") or 1))
+                    except Exception:
+                        voicemail_enabled = True
+                    try:
+                        consent_enabled = bool(int(campaign.get("consent_enabled") or 0))
+                    except Exception:
+                        consent_enabled = False
+
+                    await self.ari_client.set_channel_var(channel_id, "AAVA_VM_ENABLED", "1" if voicemail_enabled else "0")
+                    await self.ari_client.set_channel_var(channel_id, "AAVA_CONSENT_ENABLED", "1" if consent_enabled else "0")
+
+                    consent_timeout = int(campaign.get("consent_timeout_seconds") or 5)
+                    if consent_timeout < 1:
+                        consent_timeout = 5
+                    if consent_timeout > 30:
+                        consent_timeout = 30
+                    await self.ari_client.set_channel_var(channel_id, "AAVA_CONSENT_TIMEOUT", str(consent_timeout))
+
+                    consent_media_uri = str(campaign.get("consent_media_uri") or "").strip()
+                    if consent_enabled:
+                        playback = consent_media_uri
+                        if playback.startswith("sound:"):
+                            playback = playback.split("sound:", 1)[1]
+                        playback = playback.strip() or "beep"
+                        await self.ari_client.set_channel_var(channel_id, "AAVA_CONSENT_PLAYBACK", playback)
                 except Exception:
                     pass
         except Exception:
