@@ -191,6 +191,13 @@ docker-data/
 # Asterisk media files (generated at runtime)
 asterisk_media/
 
+# Shipped outbound prompt assets (tracked in git)
+!assets/
+!assets/outbound_prompts/
+!assets/outbound_prompts/**/*
+!assets/outbound_prompts/**/*.wav
+!assets/outbound_prompts/**/*.ulaw
+
 # Admin UI user database (generated at first login)
 config/users.json
 

@@ -21,6 +21,7 @@ import {
     HelpCircle,
     HardDrive,
     Phone,
+    CalendarClock,
     LogOut,
     Lock
 } from 'lucide-react';
@@ -74,6 +75,7 @@ const Sidebar = () => {
                 <SidebarGroup title="Overview">
                     <SidebarItem to="/" icon={LayoutDashboard} label="Dashboard" end />
                     <SidebarItem to="/history" icon={Phone} label="Call History" />
+                    <SidebarItem to="/scheduling" icon={CalendarClock} label="Call Scheduling" />
                     <SidebarItem to="/wizard" icon={Zap} label="Setup Wizard" />
                 </SidebarGroup>
 

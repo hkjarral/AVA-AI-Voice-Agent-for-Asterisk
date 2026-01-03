@@ -93,6 +93,35 @@ See also:
 - [Installation Guide](INSTALLATION.md)
 - [Transport Compatibility](Transport-Mode-Compatibility.md)
 
+---
+
+## Outbound Campaign Dialer (Milestone 22)
+
+Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI originate**, with **dialplan-assisted AMD** for voicemail detection.
+
+### Assumptions (MVP)
+
+- Your outbound **trunk(s) and outbound routes** are already configured in Asterisk/FreePBX.
+- Outbound calls originate as **extension identity `6789`** (default), and routing happens via your existing FreePBX dialplan patterns.
+- Persistence reuses the existing Call History SQLite DB path (`CALL_HISTORY_DB_PATH`) by adding outbound tables.
+
+### Key env vars
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AAVA_OUTBOUND_EXTENSION_IDENTITY` | `6789` | Extension identity for FreePBX routing (sets `AMPUSER` + `CALLERID(num)` on originate) |
+| `AAVA_OUTBOUND_AMD_CONTEXT` | `aava-outbound-amd` | Dialplan context name used for AMD hop (`continueInDialplan`) |
+| `AAVA_MEDIA_DIR` | `/mnt/asterisk_media/ai-generated` | Where the Admin UI uploads voicemail drop `.ulaw` files |
+
+### Dialplan requirements
+
+- Create a custom dialplan context (default: `[aava-outbound-amd]`) that runs `AMD(${AAVA_AMD_OPTS})` and returns to Stasis with:
+  - `outbound_amd` (action)
+  - `${AAVA_ATTEMPT_ID}` (attempt correlation)
+  - `${AMDSTATUS}` and `${AMDCAUSE}`
+
+See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for the full snippet and smoke test checklist.
+
 ## Canonical persona and greeting
 
 - llm.initial_greeting: Text the agent speaks first (if provider supports explicit greeting or the engine plays via TTS).

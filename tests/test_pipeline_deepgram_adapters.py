@@ -93,7 +93,9 @@ class _FakeSession:
         self.closed = False
 
     def post(self, url, json=None, params=None, headers=None, data=None, timeout=None):
-        self.requests.append({"url": url, "json": json, "params": params, "headers": headers, "data": data, "timeout": timeout})
+        self.requests.append(
+            {"url": url, "json": json, "params": params, "headers": headers, "data": data, "timeout": timeout}
+        )
         return _FakeResponse(self._body, status=self._status)
 
     async def close(self):
@@ -131,6 +133,7 @@ async def test_deepgram_stt_adapter_transcribes():
     request = fake_session.requests[0]
     assert request["url"].startswith("https://api.deepgram.com")
     assert request["headers"]["Authorization"] == "Token test-key"
+    assert fake_session.requests
 
 
 @pytest.mark.asyncio

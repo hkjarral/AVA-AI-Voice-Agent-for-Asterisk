@@ -306,6 +306,55 @@ class ARIClient:
             logger.error("ARI HTTP request failed", exc_info=True)
             return {"status": 500, "reason": str(e)}
 
+    async def originate_channel(
+        self,
+        *,
+        endpoint: str,
+        app: str,
+        app_args: str = "",
+        timeout: int = 60,
+        channel_vars: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Originate an outbound channel via ARI (POST /channels).
+
+        This mirrors the engine's existing originate usage patterns and relies on the
+        ARI server to place the call and enter the Stasis app on answer.
+        """
+        params: Dict[str, Any] = {
+            "endpoint": str(endpoint),
+            "app": str(app),
+            "timeout": str(int(timeout)),
+        }
+        if app_args:
+            params["appArgs"] = str(app_args)
+        if channel_vars:
+            params["channelVars"] = channel_vars
+        return await self.send_command("POST", "channels", params=params)
+
+    async def continue_in_dialplan(
+        self,
+        channel_id: str,
+        *,
+        context: str,
+        extension: str = "s",
+        priority: int = 1,
+        label: Optional[str] = None,
+    ) -> bool:
+        """Return a Stasis channel back to the dialplan (POST /channels/{id}/continue)."""
+        params: Dict[str, Any] = {
+            "context": str(context),
+            "extension": str(extension),
+            "priority": str(int(priority)),
+        }
+        if label:
+            params["label"] = str(label)
+        resp = await self.send_command("POST", f"channels/{channel_id}/continue", params=params)
+        status = resp.get("status") if isinstance(resp, dict) else None
+        if status is not None and int(status) >= 400:
+            return False
+        return True
+
     async def answer_channel(self, channel_id: str):
         """Answer a channel."""
         logger.info("Answering channel", channel_id=channel_id)

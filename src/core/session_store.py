@@ -234,6 +234,18 @@ class SessionStore:
         """Get all active sessions."""
         async with self._lock:
             return list(self._sessions_by_call_id.values())
+
+    async def count_active_outbound_calls(self, campaign_id: Optional[str] = None) -> int:
+        """Count active outbound calls (optionally scoped to a campaign)."""
+        async with self._lock:
+            count = 0
+            for session in self._sessions_by_call_id.values():
+                if not getattr(session, "is_outbound", False):
+                    continue
+                if campaign_id and getattr(session, "outbound_campaign_id", None) != campaign_id:
+                    continue
+                count += 1
+            return count
     
     async def get_session_stats(self) -> Dict[str, int]:
         """Get statistics about active sessions."""

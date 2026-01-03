@@ -8,7 +8,7 @@ from src.core.models import CallSession, LegacyTransportProfile
 
 def _make_session(call_id: str, fmt: str, rate: int) -> CallSession:
     session = CallSession(call_id=call_id, caller_channel_id=f"{call_id}-chan")
-    # transport_profile is optional in CallSession; tests should set a legacy profile explicitly.
+    # Engine initializes transport_profile in normal runtime; tests create sessions directly.
     session.transport_profile = LegacyTransportProfile(format=fmt, sample_rate=rate)
     return session
 
@@ -19,6 +19,7 @@ def _make_engine() -> Engine:
     engine._call_providers = {}
     engine.call_audio_preferences = {}
     engine._transport_card_logged = set()
+    engine.config = types.SimpleNamespace(default_provider="local")
     return engine
 
 

@@ -4,9 +4,14 @@ This directory tracks major project milestones and implementation achievements.
 
 ## Recent Milestones
 
-### **Milestone 22: Groq STT + TTS (Modular Pipelines)**
+### **Milestone 22: Outbound Campaign Dialer (Scheduled Calls + Voicemail Drop)** 📞
+- [View Details →](milestone-22-outbound-campaign-dialer.md)
+- **Status**: 🟡 In Progress (dev validated)
+- **Impact**: Admin UI-managed outbound campaigns with AMD + voicemail drop + optional consent gate, using ARI-first architecture
+
+### **Milestone 15: Groq STT + TTS (Modular Pipelines)** 🧩
 - [View Details →](milestone-22-groq-tts-stt.md)
-- **Date**: December 31, 2025
+- **Date**: January 1, 2026
 - **Status**: ✅ Complete
 - **Impact**: Cloud-only Groq pipeline (STT+LLM+TTS) for modular pipelines
 
