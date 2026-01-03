@@ -85,37 +85,66 @@ const DEFAULT_AMD_OPTIONS = {
     total_analysis_time_ms: 5000
 };
 
-const DIALPLAN_SNIPPET = [
-    '[aava-outbound-amd]',
-    'exten => s,1,NoOp(AAVA Outbound AMD hop)',
-    ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
-    ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))',
-    ' same => n,AMD(${AAVA_AMD_OPTS})',
-    ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
-    ' same => n,GotoIf($["${AMDCAUSE:0:7}" = "TOOLONG"]?human)',
-    ' same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)',
-    ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
-    ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
-    ' same => n(machine),GotoIf($["${AAVA_VM_ENABLED}" = "1"]?vm:machine_done)',
-    ' same => n(vm),WaitForSilence(1500,3,10)',
-    ' same => n(machine_done),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE},,)',
-    ' same => n,Hangup()',
-    ' same => n(human),GotoIf($["${AAVA_CONSENT_ENABLED}" = "1"]?consent:human_done)',
-    ' same => n(consent),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})',
-    // Use Read() with a prompt so DTMF is captured while the consent message plays.
-    // If we Playback() then Read(), DTMF pressed during Playback is consumed and Read() times out.
-    ' same => n,Read(AAVA_CONSENT_DTMF,${AAVA_CONSENT_PLAYBACK},1)',
-    ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)',
-    ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)',
-    ' same => n(human_timeout),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,timeout)',
-    ' same => n,Hangup()',
-    ' same => n(human_denied),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},2,denied)',
-    ' same => n,Hangup()',
-    ' same => n(human_ok),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},1,accepted)',
-    ' same => n,Hangup()',
-    ' same => n(human_done),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,skipped)',
-    ' same => n,Hangup()'
-].join('\n');
+const buildDialplanSnippet = (opts: {
+    stasisAppName: string;
+    voicemailEnabled: boolean;
+    consentEnabled: boolean;
+}): string => {
+    const stasis = opts.stasisAppName || 'asterisk-ai-voice-agent';
+    const attemptVar = '${AAVA_ATTEMPT_ID}';
+    const amdCauseVar = '${AMDCAUSE}';
+
+    const lines: string[] = [
+        '[aava-outbound-amd]',
+        'exten => s,1,NoOp(AAVA Outbound AMD hop)',
+        ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
+        ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))',
+        ' same => n,AMD(${AAVA_AMD_OPTS})',
+        ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
+        ' ; Guardrails to reduce false MACHINE on silent humans',
+        ' same => n,GotoIf($["${AMDCAUSE:0:7}" = "TOOLONG"]?human)',
+        ' same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)',
+        ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
+        ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
+        ` ; Campaign: consent_enabled=${opts.consentEnabled ? 'true' : 'false'} voicemail_drop_enabled=${opts.voicemailEnabled ? 'true' : 'false'}`,
+    ];
+
+    if (!opts.voicemailEnabled) {
+        lines.push(' ; NOTE: voicemail drop is disabled for this campaign; MACHINE/NOTSURE will record machine_detected (no voicemail playback).');
+    }
+    lines.push(
+        ' same => n(machine),GotoIf($["${AAVA_VM_ENABLED}" = "1"]?vm:machine_done)',
+        ' same => n(vm),WaitForSilence(1500,3,10)',
+        ` same => n(machine_done),Stasis(${stasis},outbound_amd,${attemptVar},MACHINE,${amdCauseVar},,)`,
+        ' same => n,Hangup()',
+    );
+
+    if (!opts.consentEnabled) {
+        lines.push(' ; NOTE: consent gate is disabled for this campaign; HUMAN will connect to AI immediately.');
+    }
+    lines.push(
+        ' ; HUMAN path: optional consent gate (DTMF 1 accept / 2 deny)',
+        ' same => n(human),GotoIf($["${AAVA_CONSENT_ENABLED}" = "1"]?consent:human_done)',
+        ' same => n(consent),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})',
+        ' same => n,NoOp(AAVA CONSENT enabled=${AAVA_CONSENT_ENABLED} timeout=${AAVA_CONSENT_TIMEOUT} playback=${AAVA_CONSENT_PLAYBACK})',
+        ' ; IMPORTANT: Use Read() with a prompt so DTMF is captured while the consent message plays.',
+        ' ; If we Playback() then Read(), DTMF pressed during Playback is consumed and Read() times out.',
+        ' same => n,Read(AAVA_CONSENT_DTMF,${AAVA_CONSENT_PLAYBACK},1)',
+        ' same => n,NoOp(AAVA CONSENT dtmf=${AAVA_CONSENT_DTMF})',
+        ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)',
+        ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)',
+        ` same => n(human_timeout),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},,timeout)`,
+        ' same => n,Hangup()',
+        ` same => n(human_denied),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},2,denied)`,
+        ' same => n,Hangup()',
+        ` same => n(human_ok),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},1,accepted)`,
+        ' same => n,Hangup()',
+        ` same => n(human_done),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},,skipped)`,
+        ' same => n,Hangup()',
+    );
+
+    return lines.join('\\n');
+};
 
 const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
     if (!nowHHMM || !startHHMM || !endHHMM) return true;
@@ -163,8 +192,8 @@ const CallSchedulingPage = () => {
 
     const [showCampaignModal, setShowCampaignModal] = useState(false);
     const [campaignModalMode, setCampaignModalMode] = useState<'create' | 'edit'>('create');
-    const [campaignModalStep, setCampaignModalStep] = useState<'settings' | 'leads' | 'recordings' | 'advanced'>('settings');
-    const [showSetupGuide, setShowSetupGuide] = useState(false);
+    const [campaignModalStep, setCampaignModalStep] = useState<'settings' | 'leads' | 'recordings' | 'setup' | 'advanced'>('settings');
+    const [dialplanNeedsReview, setDialplanNeedsReview] = useState(false);
 
     const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
     const [pendingVoicemailFile, setPendingVoicemailFile] = useState<File | null>(null);
@@ -253,6 +282,14 @@ const CallSchedulingPage = () => {
 
     const modalTimezone = (campaignModalMode === 'create' ? createForm.timezone : editForm.timezone) || 'UTC';
     const modalTimezoneValid = isTimezoneValid(modalTimezone);
+    const modalForm = campaignModalMode === 'create' ? createForm : editForm;
+    const modalConsentEnabled = Boolean((modalForm as any)?.consent_enabled);
+    const modalVoicemailEnabled = Boolean((modalForm as any)?.voicemail_drop_enabled);
+    const modalDialplanSnippet = buildDialplanSnippet({
+        stasisAppName: 'asterisk-ai-voice-agent',
+        consentEnabled: modalConsentEnabled,
+        voicemailEnabled: modalVoicemailEnabled,
+    });
 
     useEffect(() => {
         const id = setInterval(() => setClockTick(t => t + 1), 1000);
@@ -365,7 +402,7 @@ const CallSchedulingPage = () => {
     const openCreate = () => {
         setCampaignModalMode('create');
         setCampaignModalStep('settings');
-        setShowSetupGuide(false);
+        setDialplanNeedsReview(false);
         setShowCampaignModal(true);
     };
 
@@ -373,7 +410,7 @@ const CallSchedulingPage = () => {
         if (!selectedCampaign) return;
         setCampaignModalMode('edit');
         setCampaignModalStep('settings');
-        setShowSetupGuide(false);
+        setDialplanNeedsReview(false);
         setEditForm({
             name: selectedCampaign.name || '',
             timezone: selectedCampaign.timezone || 'UTC',
@@ -1086,14 +1123,24 @@ const CallSchedulingPage = () => {
                     onClose={() => {
                         setShowCampaignModal(false);
                         setCampaignModalStep('settings');
-                        setShowSetupGuide(false);
+                        setDialplanNeedsReview(false);
                         setPendingImportFile(null);
                         setPendingVoicemailFile(null);
                         setPendingConsentFile(null);
                     }}
                     footer={
                         <>
-                            <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setShowCampaignModal(false)}>
+                            <button
+                                className="px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                onClick={() => {
+                                    setShowCampaignModal(false);
+                                    setCampaignModalStep('settings');
+                                    setDialplanNeedsReview(false);
+                                    setPendingImportFile(null);
+                                    setPendingVoicemailFile(null);
+                                    setPendingConsentFile(null);
+                                }}
+                            >
                                 Close
                             </button>
                             {campaignModalMode === 'create' ? (
@@ -1159,6 +1206,14 @@ const CallSchedulingPage = () => {
                             </button>
                             <button
                                 className={`px-3 py-1 rounded border text-sm ${
+                                    campaignModalStep === 'setup' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                                }`}
+                                onClick={() => setCampaignModalStep('setup')}
+                            >
+                                Setup Guide
+                            </button>
+                            <button
+                                className={`px-3 py-1 rounded border text-sm ${
                                     campaignModalStep === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                                 }`}
                                 onClick={() => setCampaignModalStep('advanced')}
@@ -1166,6 +1221,12 @@ const CallSchedulingPage = () => {
                                 Advanced (AMD)
                             </button>
                         </div>
+
+                        {dialplanNeedsReview && (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                                Consent/voicemail settings changed in this modal. Review the updated dialplan in the “Setup Guide” tab and reload Asterisk dialplan if needed.
+                            </div>
+                        )}
 
                         {campaignModalStep === 'settings' ? (
                             <div className="space-y-3">
@@ -1295,8 +1356,14 @@ const CallSchedulingPage = () => {
                                             }
                                             onChange={e =>
                                                 campaignModalMode === 'create'
-                                                    ? setCreateForm(p => ({ ...p, voicemail_drop_enabled: e.target.checked }))
-                                                    : setEditForm(p => ({ ...p, voicemail_drop_enabled: e.target.checked }))
+                                                    ? setCreateForm(p => {
+                                                          setDialplanNeedsReview(true);
+                                                          return { ...p, voicemail_drop_enabled: e.target.checked };
+                                                      })
+                                                    : setEditForm(p => {
+                                                          setDialplanNeedsReview(true);
+                                                          return { ...p, voicemail_drop_enabled: e.target.checked };
+                                                      })
                                             }
                                         />
                                         Voicemail drop (AMD MACHINE/NOTSURE → leave voicemail recording)
@@ -1307,8 +1374,14 @@ const CallSchedulingPage = () => {
                                             checked={Boolean(campaignModalMode === 'create' ? createForm.consent_enabled : editForm.consent_enabled)}
                                             onChange={e =>
                                                 campaignModalMode === 'create'
-                                                    ? setCreateForm(p => ({ ...p, consent_enabled: e.target.checked }))
-                                                    : setEditForm(p => ({ ...p, consent_enabled: e.target.checked }))
+                                                    ? setCreateForm(p => {
+                                                          setDialplanNeedsReview(true);
+                                                          return { ...p, consent_enabled: e.target.checked };
+                                                      })
+                                                    : setEditForm(p => {
+                                                          setDialplanNeedsReview(true);
+                                                          return { ...p, consent_enabled: e.target.checked };
+                                                      })
                                             }
                                         />
                                         Consent gate (HUMAN → play consent prompt, DTMF 1 accept / 2 deny)
@@ -1395,7 +1468,14 @@ const CallSchedulingPage = () => {
                                         )}
                                     </div>
                                     <div className="flex items-center gap-2 flex-wrap">
-                                        <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingConsentFile(e.target.files?.[0] || null)} />
+                                        <input
+                                            type="file"
+                                            accept=".wav,.ulaw,audio/wav"
+                                            onChange={e => {
+                                                setPendingConsentFile(e.target.files?.[0] || null);
+                                                setDialplanNeedsReview(true);
+                                            }}
+                                        />
                                         <button
                                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
                                             disabled={campaignModalMode === 'create' || !pendingConsentFile || !selectedCampaign}
@@ -1403,6 +1483,7 @@ const CallSchedulingPage = () => {
                                                 if (!pendingConsentFile || !selectedCampaign) return;
                                                 await uploadMedia(selectedCampaign.id, 'consent', pendingConsentFile);
                                                 setPendingConsentFile(null);
+                                                setDialplanNeedsReview(true);
                                             }}
                                         >
                                             <Upload className="w-4 h-4" /> Upload
@@ -1434,7 +1515,14 @@ const CallSchedulingPage = () => {
                                         )}
                                     </div>
                                     <div className="flex items-center gap-2 flex-wrap">
-                                        <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingVoicemailFile(e.target.files?.[0] || null)} />
+                                        <input
+                                            type="file"
+                                            accept=".wav,.ulaw,audio/wav"
+                                            onChange={e => {
+                                                setPendingVoicemailFile(e.target.files?.[0] || null);
+                                                setDialplanNeedsReview(true);
+                                            }}
+                                        />
                                         <button
                                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
                                             disabled={campaignModalMode === 'create' || !pendingVoicemailFile || !selectedCampaign}
@@ -1442,6 +1530,7 @@ const CallSchedulingPage = () => {
                                                 if (!pendingVoicemailFile || !selectedCampaign) return;
                                                 await uploadMedia(selectedCampaign.id, 'voicemail', pendingVoicemailFile);
                                                 setPendingVoicemailFile(null);
+                                                setDialplanNeedsReview(true);
                                             }}
                                         >
                                             <Upload className="w-4 h-4" /> Upload
@@ -1459,6 +1548,37 @@ const CallSchedulingPage = () => {
                                 {campaignModalMode === 'create' && (
                                     <div className="text-xs text-muted-foreground">
                                         Files are queued in this modal and will upload right after campaign creation.
+                                    </div>
+                                )}
+                            </div>
+                        ) : campaignModalStep === 'setup' ? (
+                            <div className="space-y-3">
+                                <div className="text-sm text-muted-foreground">
+                                    Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
+                                </div>
+                                <div className="rounded-lg border bg-muted/20 p-3 text-sm">
+                                    <div className="font-medium">Generated from current campaign settings</div>
+                                    <div className="text-xs text-muted-foreground mt-1">
+                                        Consent enabled: <span className="font-mono">{String(modalConsentEnabled)}</span>
+                                        {' · '}
+                                        Voicemail drop enabled: <span className="font-mono">{String(modalVoicemailEnabled)}</span>
+                                    </div>
+                                    <div className="text-xs text-muted-foreground mt-1">
+                                        Replace <span className="font-mono">asterisk-ai-voice-agent</span> with your configured ARI app name if different.
+                                    </div>
+                                </div>
+                                <pre className="bg-muted/30 rounded-lg p-3 overflow-x-auto text-xs">{modalDialplanSnippet}</pre>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                        onClick={() => navigator.clipboard.writeText(modalDialplanSnippet)}
+                                    >
+                                        <Copy className="w-4 h-4" /> Copy
+                                    </button>
+                                </div>
+                                {(modalConsentEnabled || modalVoicemailEnabled) && (
+                                    <div className="text-xs text-muted-foreground">
+                                        If you change consent/voicemail settings later, re-check this tab and reload the dialplan.
                                     </div>
                                 )}
                             </div>
@@ -1504,31 +1624,6 @@ const CallSchedulingPage = () => {
                                             );
                                         })}
                                     </div>
-                                </div>
-
-                                <div className="border rounded-lg p-3">
-                                    <button
-                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
-                                        onClick={() => setShowSetupGuide(v => !v)}
-                                    >
-                                        {showSetupGuide ? 'Hide' : 'Show'} Setup Guide
-                                    </button>
-                                    {showSetupGuide && (
-                                        <div className="mt-3 space-y-2">
-                                            <div className="text-sm text-muted-foreground">
-                                                Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
-                                            </div>
-                                            <pre className="bg-muted/30 rounded-lg p-3 overflow-x-auto text-xs">{DIALPLAN_SNIPPET}</pre>
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
-                                                    onClick={() => navigator.clipboard.writeText(DIALPLAN_SNIPPET)}
-                                                >
-                                                    <Copy className="w-4 h-4" /> Copy
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
                                 </div>
                             </div>
                         )}
