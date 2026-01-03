@@ -23,6 +23,7 @@ import os
 import sqlite3
 import threading
 import uuid
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -61,6 +62,64 @@ def _safe_json_loads(raw: str) -> Dict[str, Any]:
         return {}
     except Exception:
         return {}
+
+
+_NON_DIAL_CHAR_RE = re.compile(r"[^0-9+*#]+")
+
+
+def _normalize_phone_number(raw: str) -> str:
+    """
+    Normalize a phone number for storage.
+
+    Accepts common user formats:
+      - +15551234567 (E.164)
+      - 15551234567
+      - 2765 (internal extension)
+      - (555) 123-4567, 555-123-4567, etc.
+
+    We store:
+      - "+<digits>" when a leading '+' is present
+      - "<digits>" otherwise
+    """
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("Missing phone_number")
+    # Reject alphabets and unsafe characters early. We intentionally avoid enforcing E.164 or digit-length
+    # rules because trunk routing/formatting varies internationally and by PBX configuration.
+    #
+    # Allowed (after stripping formatting): digits plus optional leading '+', and '*'/'#'
+    # (useful for lab testing / feature codes).
+    if re.search(r"[A-Za-z]", s):
+        raise ValueError("Invalid phone_number (letters not allowed)")
+    if re.search(r"[^0-9+*#() ./-]", s):
+        raise ValueError("Invalid phone_number (contains unsupported characters)")
+    s = _NON_DIAL_CHAR_RE.sub("", s)
+    if not s:
+        raise ValueError("Invalid phone_number (no dialable characters)")
+
+    has_plus = s.startswith("+")
+    core = s[1:] if has_plus else s
+    if not core:
+        raise ValueError("Invalid phone_number (missing digits)")
+    if not re.fullmatch(r"[0-9*#]+", core):
+        raise ValueError("Invalid phone_number (contains invalid characters)")
+    if not re.search(r"[0-9]", core):
+        raise ValueError("Invalid phone_number (must include at least one digit)")
+
+    # Keep '+' only if it was leading; remove any other '+' via regex above.
+    return f"+{core}" if has_plus else core
+
+
+def _normalize_header_key(raw: str) -> str:
+    return (raw or "").strip().lower().replace(" ", "_")
+
+
+def _optional_timezone_or_error(raw: Optional[str]) -> Optional[str]:
+    tz = (raw or "").strip()
+    if not tz:
+        return None
+    return _validate_iana_timezone_name(tz)
+
 
 def _validate_iana_timezone_name(tz_name: str) -> str:
     """
@@ -378,7 +437,7 @@ class OutboundStore:
             raise RuntimeError("OutboundStore disabled")
 
         status = (status or "").strip().lower()
-        if status not in ("draft", "running", "paused", "stopped", "archived"):
+        if status not in ("draft", "running", "paused", "stopped", "archived", "completed"):
             raise ValueError("invalid status")
 
         def _sync():
@@ -722,28 +781,46 @@ class OutboundStore:
             errors: List[ImportErrorRow] = []
 
             # CSV decode
-            text = (csv_bytes or b"").decode("utf-8", errors="replace")
+            text = (csv_bytes or b"").decode("utf-8-sig", errors="replace")
             reader = csv.DictReader(io.StringIO(text))
             if not reader.fieldnames:
                 raise ValueError("CSV missing header row")
 
-            # Normalize header keys
-            headers = [h.strip() for h in (reader.fieldnames or []) if h and h.strip()]
-            if "phone_number" not in headers:
+            normalized_to_raw: Dict[str, str] = {}
+            for h in (reader.fieldnames or []):
+                if not h:
+                    continue
+                normalized = _normalize_header_key(h)
+                if normalized:
+                    normalized_to_raw[normalized] = h
+
+            phone_key = (
+                normalized_to_raw.get("phone_number")
+                or normalized_to_raw.get("phone")
+                or normalized_to_raw.get("number")
+            )
+            if not phone_key:
                 raise ValueError("CSV must include 'phone_number' column")
+
+            custom_vars_key = normalized_to_raw.get("custom_vars")
+            context_key = normalized_to_raw.get("context")
+            tz_key = normalized_to_raw.get("timezone")
+            caller_id_key = normalized_to_raw.get("caller_id")
 
             with self._lock:
                 conn = self._get_connection()
                 try:
                     for idx, row in enumerate(reader, start=2):  # header is row 1
-                        phone = _as_str((row or {}).get("phone_number")).strip()
-                        if not phone:
+                        raw_phone = _as_str((row or {}).get(phone_key)).strip()
+                        try:
+                            phone = _normalize_phone_number(raw_phone)
+                        except Exception as exc:
                             rejected += 1
                             if len(errors) < max_error_rows:
-                                errors.append(ImportErrorRow(idx, "", "Missing phone_number"))
+                                errors.append(ImportErrorRow(idx, (raw_phone or ""), str(exc)))
                             continue
 
-                        custom_vars_raw = _as_str((row or {}).get("custom_vars")).strip()
+                        custom_vars_raw = _as_str((row or {}).get(custom_vars_key)).strip() if custom_vars_key else ""
                         if custom_vars_raw:
                             try:
                                 custom_vars = json.loads(custom_vars_raw)
@@ -757,9 +834,26 @@ class OutboundStore:
                         else:
                             custom_vars = {}
 
-                        context_override = _as_str((row or {}).get("context")).strip() or None
-                        tz_override = _as_str((row or {}).get("timezone")).strip() or None
-                        caller_id_override = _as_str((row or {}).get("caller_id")).strip() or None
+                        context_override = _as_str((row or {}).get(context_key)).strip() if context_key else ""
+                        context_override = context_override or None
+                        if context_override:
+                            if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", context_override):
+                                rejected += 1
+                                if len(errors) < max_error_rows:
+                                    errors.append(ImportErrorRow(idx, phone, "Invalid context (use letters/numbers/._- only)"))
+                                continue
+
+                        tz_override_raw = _as_str((row or {}).get(tz_key)).strip() if tz_key else ""
+                        try:
+                            tz_override = _optional_timezone_or_error(tz_override_raw)
+                        except Exception as exc:
+                            rejected += 1
+                            if len(errors) < max_error_rows:
+                                errors.append(ImportErrorRow(idx, phone, str(exc)))
+                            continue
+
+                        caller_id_override = _as_str((row or {}).get(caller_id_key)).strip() if caller_id_key else ""
+                        caller_id_override = caller_id_override or None
 
                         lead_id = str(uuid.uuid4())
                         try:
@@ -814,18 +908,21 @@ class OutboundStore:
                 finally:
                     conn.close()
 
-            error_csv = io.StringIO()
-            w = csv.writer(error_csv)
-            w.writerow(["row_number", "phone_number", "error_reason"])
-            for e in errors:
-                w.writerow([e.row_number, e.phone_number, e.error_reason])
+            error_csv_value = ""
+            if errors:
+                error_csv = io.StringIO()
+                w = csv.writer(error_csv)
+                w.writerow(["row_number", "phone_number", "error_reason"])
+                for e in errors:
+                    w.writerow([e.row_number, e.phone_number, e.error_reason])
+                error_csv_value = error_csv.getvalue()
 
             return {
                 "accepted": accepted,
                 "rejected": rejected,
                 "duplicates": duplicates,
                 "errors": [e.__dict__ for e in errors],
-                "error_csv": error_csv.getvalue(),
+                "error_csv": error_csv_value,
                 "error_csv_truncated": rejected > len(errors),
             }
 
@@ -914,7 +1011,7 @@ class OutboundStore:
         Re-queue a lead by moving it back to 'pending'.
 
         MVP policy:
-        - Allowed only from canceled/failed.
+        - Allowed from canceled/failed/completed (manual retry only; no automatic retries in v1).
         - attempt_count is preserved; attempts table remains the audit trail.
         """
         if not self._enabled:
@@ -932,7 +1029,7 @@ class OutboundStore:
                             last_outcome=NULL,
                             leased_until_utc=NULL,
                             updated_at_utc=?
-                        WHERE id=? AND state IN ('canceled','failed')
+                        WHERE id=? AND state IN ('canceled','failed','completed')
                         """,
                         (now, lead_id),
                     )

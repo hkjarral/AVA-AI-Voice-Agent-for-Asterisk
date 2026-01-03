@@ -6,6 +6,7 @@ import {
     BarChart3, Users, Timer, Activity, TrendingUp, Zap, PieChart
 } from 'lucide-react';
 import axios from 'axios';
+import { useLocation } from 'react-router-dom';
 
 interface CallRecordSummary {
     id: string;
@@ -93,6 +94,7 @@ const OutcomeIcon = ({ outcome }: { outcome: string }) => {
 };
 
 const CallHistoryPage = () => {
+    const location = useLocation();
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
     const [stats, setStats] = useState<CallStats | null>(null);
     const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
@@ -176,6 +178,45 @@ const CallHistoryPage = () => {
         fetchStats();
         fetchFilterOptions();
     }, [fetchCalls, fetchStats, fetchFilterOptions]);
+
+    // Deep-link support: /history?id=<call_record_id>
+    useEffect(() => {
+        const id = new URLSearchParams(location.search).get('id');
+        if (!id) return;
+        if (selectedCall?.id === id || selectedCallSummary?.id === id) return;
+
+        setSelectedCallSummary(null);
+        setSelectedCall(null);
+        setSelectedCallLoading(true);
+        axios
+            .get(`/api/calls/${id}`)
+            .then(res => {
+                const detail: CallRecordDetail = res.data;
+                setSelectedCall(detail);
+                setSelectedCallSummary({
+                    id: detail.id,
+                    call_id: detail.call_id,
+                    caller_number: detail.caller_number,
+                    caller_name: detail.caller_name,
+                    start_time: detail.start_time,
+                    end_time: detail.end_time,
+                    duration_seconds: detail.duration_seconds,
+                    provider_name: detail.provider_name,
+                    pipeline_name: detail.pipeline_name,
+                    context_name: detail.context_name,
+                    outcome: detail.outcome,
+                    error_message: detail.error_message,
+                    avg_turn_latency_ms: detail.avg_turn_latency_ms,
+                    total_turns: detail.total_turns,
+                    barge_in_count: detail.barge_in_count,
+                });
+            })
+            .catch(err => {
+                console.error('Failed to open deep-linked call record:', err);
+                setError(err?.response?.data?.detail || 'Failed to open call history record');
+            })
+            .finally(() => setSelectedCallLoading(false));
+    }, [location.search, selectedCall?.id, selectedCallSummary?.id]);
 
     const handleExport = async (format: 'csv' | 'json') => {
         try {

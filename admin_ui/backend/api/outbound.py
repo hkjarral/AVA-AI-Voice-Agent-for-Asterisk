@@ -141,7 +141,7 @@ class CampaignCreateRequest(BaseModel):
 
 
 class CampaignStatusRequest(BaseModel):
-    status: str  # running|paused|stopped|draft|archived
+    status: str  # running|paused|stopped|draft|archived|completed
     cancel_pending: bool = False
 
 
@@ -161,6 +161,7 @@ async def download_sample_csv():
 
     Columns supported by the importer:
       - phone_number (required)
+        - Can be E.164 (+15551234567) or an internal extension (e.g., 2765)
       - context (optional)
       - timezone (optional)
       - caller_id (optional)
@@ -168,6 +169,8 @@ async def download_sample_csv():
     """
     csv_text = (
         "phone_number,context,timezone,caller_id,custom_vars\n"
+        # Internal extension example (useful for PBX-to-PBX / lab testing).
+        "2765,,,6789,\"{\"\"name\"\":\"\"Extension Test\"\",\"\"note\"\":\"\"Call internal extension\"\"}\"\n"
         # Leave context/timezone blank to use campaign defaults.
         "+15551234567,,,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1001\"\"}\"\n"
         # Example override: per-lead context + timezone.

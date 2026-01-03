@@ -1,6 +1,6 @@
 # Milestone 22: Outbound Campaign Dialer (Scheduled Calls + Voicemail Drop)
 
-**Status**: 🟡 Draft  
+**Status**: 🟡 In Progress (dev validated)  
 **Priority**: High  
 **Estimated Effort**: 2–3 weeks (MVP)  
 **Branch**: `feature/outbound-campaign-dialer`  
@@ -17,6 +17,24 @@ Add a **simple, AI-native outbound campaign dialer** to Asterisk AI Voice Agent:
 - Operator-first management via Admin UI (Campaigns / Leads / Attempts)
 
 This milestone is designed to be **simpler than Vicidial** while aligning with the project’s ARI-first architecture and existing Admin UI + SQLite patterns.
+
+## Current Status (What Works on Dev)
+
+Validated end-to-end on the development server (single-node, FreePBX-friendly):
+
+- ✅ Admin UI “Call Scheduling” page (Campaigns / Leads / Attempts), sample CSV download, CSV import with `skip_existing`, cancel + recycle.
+- ✅ Engine scheduler loop leases leads from SQLite and originates outbound calls with pacing/concurrency.
+- ✅ FreePBX routing: originate uses `Local/<number>@from-internal` with extension identity `6789` (PBX/trunk controls final caller ID).
+- ✅ Dialplan-assisted AMD via `[aava-outbound-amd]` in `extensions_custom.conf`.
+- ✅ HUMAN path attaches AI with the campaign/lead context and honors provider selection from the Context.
+- ✅ MACHINE/NOTSURE path leaves voicemail drop media and hangs up.
+- ✅ Campaign auto-transitions `running → completed` when the queue is empty and no in-flight/active calls remain.
+
+Notable fixes/hardening already applied during validation:
+
+- SQLite WAL/SHM permission hardening so `ai-engine` can write even after Admin UI touches the DB (prevents `sqlite3.OperationalError: attempt to write a readonly database`).
+- Voicemail media path unified so Asterisk can play uploaded/converted media from `ai-generated/`.
+- Dialplan AMD guardrails fixed (`INITIALSILENCE` prefix length) to reduce false voicemail drops.
 
 ## Motivation
 
@@ -53,6 +71,7 @@ Reference draft (design discussion notes):
 - AMD policy:
   - `HUMAN` → connect AI
   - `MACHINE` or `NOTSURE` → voicemail drop + hangup
+  - Guardrails: allow dialplan heuristics to override to HUMAN for some `AMDCAUSE` prefixes to reduce false VM drops
 
 ### PBX routing assumption
 
@@ -80,10 +99,20 @@ We run AMD using a dedicated context in `extensions_custom.conf`:
 
 ```
 [aava-outbound-amd]
-exten => s,1,NoOp(AAVA Outbound AMD: attempt=${AAVA_OUTBOUND_ATTEMPT_ID})
+exten => s,1,NoOp(AAVA Outbound AMD hop)
+ same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})
+ same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))
  same => n,AMD(${AAVA_AMD_OPTS})
  same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
- same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_OUTBOUND_ATTEMPT_ID},${AMDSTATUS},${AMDCAUSE})
+ ; Guardrails (reduce false VM drop on silent humans / long words)
+ same => n,GotoIf($["${AMDCAUSE:0:7}" = "TOOLONG"]?human)
+ same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)
+ same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)
+ same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)
+ same => n(machine),WaitForSilence(1500,3,10)
+ same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE})
+ same => n,Hangup()
+ same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE})
  same => n,Hangup()
 ```
 
@@ -209,6 +238,7 @@ Expected: the CLI output includes the `AMD()` step and the `Stasis(...,outbound_
 
 - Confirm `ai-engine` is running and connected to ARI (baseline behavior for inbound).
 - If using `voicemail_drop_mode=tts`, confirm `local-ai-server` is running and healthy (per your existing deployment docs).
+- After deploying code changes, restart `ai-engine` (outbound provider/context selection relies on originate-time variables).
 
 ### 3) Admin UI happy path
 
@@ -253,6 +283,14 @@ Expected:
 - Stop campaign (choose “stop dialing only”) and confirm pending leads remain `pending`.
 - Stop campaign (choose “stop and cancel pending”) and confirm pending leads become `canceled`.
 - While an outbound campaign is running, place an inbound test call and confirm inbound audio quality is unaffected.
+
+## Operational Notes (Dev)
+
+Common “out of the box” gotchas:
+
+- SQLite permissions: when multiple containers touch the same SQLite DB, ensure `call_history.db`, `call_history.db-wal`, and `call_history.db-shm` remain writable by the `ai-engine` user/group.
+- Voicemail media visibility: Asterisk must be able to resolve the uploaded/converted μ-law file under `ai-generated/` via its `sounds` path (symlink or bind mount).
+- Dialplan changes require a reload: `asterisk -rx "dialplan reload"`.
 
 ## Observability
 

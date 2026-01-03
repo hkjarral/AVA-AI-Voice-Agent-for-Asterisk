@@ -862,21 +862,91 @@ class Engine:
                 ("silence_threshold", None),
                 ("maximum_word_length_ms", None),
             ]
-            values: List[str] = []
-            any_set = False
-            for key, _ in mapping:
+            values: List[str | None] = []
+            set_indexes: List[int] = []
+            for idx, (key, _) in enumerate(mapping):
                 raw = opts.get(key)
                 if raw is None:
-                    values.append("")
-                else:
-                    any_set = True
-                    values.append(str(int(raw)))
-            if not any_set:
+                    values.append(None)
+                    continue
+                values.append(str(int(raw)))
+                set_indexes.append(idx)
+
+            if not set_indexes:
                 return ""
-            # Preserve empty placeholders to keep positions aligned.
-            return ",".join(values)
+
+            # AMD() args are positional; you can't safely "skip" a middle arg.
+            # Only allow a contiguous prefix [0..last_set] so we never pass empty values
+            # (Asterisk parsing often treats empty as 0, which is worse than defaults).
+            last_set = max(set_indexes)
+            for i in range(0, last_set + 1):
+                if values[i] is None:
+                    logger.warning(
+                        "Outbound AMD options invalid (missing earlier positional arg); ignoring amd_options",
+                        missing_key=mapping[i][0],
+                        amd_options=opts,
+                    )
+                    return ""
+
+            return ",".join(v for v in values[: last_set + 1] if v is not None)
         except Exception:
             return ""
+
+    async def _outbound_maybe_mark_campaign_completed(
+        self,
+        campaign: Dict[str, Any],
+        *,
+        inflight: int,
+        active_outbound: int,
+    ) -> None:
+        """
+        Mark a running campaign as completed when there is no remaining runnable work.
+
+        MVP definition of "completed":
+        - campaign is `running`
+        - no pending/leased/dialing/amd_pending/in_progress leads
+        - no active outbound sessions and no inflight originated attempts
+        - campaign has at least one lead (avoid completing an empty campaign)
+        """
+        try:
+            campaign_id = str(campaign.get("id") or "").strip()
+            status = str(campaign.get("status") or "").strip().lower()
+            if not campaign_id or status != "running":
+                return
+            if inflight > 0 or active_outbound > 0:
+                return
+
+            stats = await self.outbound_store.campaign_stats(campaign_id)
+            lead_states = (stats or {}).get("lead_states") or {}
+            try:
+                total_leads = sum(int(v) for v in lead_states.values())
+            except Exception:
+                total_leads = 0
+                for v in lead_states.values():
+                    try:
+                        total_leads += int(v)
+                    except Exception:
+                        pass
+            if total_leads <= 0:
+                return
+
+            active_states = ("pending", "leased", "dialing", "amd_pending", "in_progress")
+            try:
+                active_count = sum(int(lead_states.get(s, 0) or 0) for s in active_states)
+            except Exception:
+                active_count = 0
+                for s in active_states:
+                    try:
+                        active_count += int(lead_states.get(s, 0) or 0)
+                    except Exception:
+                        pass
+            if active_count != 0:
+                return
+
+            await self.outbound_store.set_campaign_status(campaign_id, "completed", cancel_pending=False)
+            logger.info("Outbound campaign completed", campaign_id=campaign_id)
+        except Exception:
+            logger.debug("Failed to mark outbound campaign completed", exc_info=True)
 
     async def _outbound_scheduler_loop(self) -> None:
         """Background control-plane: lease leads and originate outbound calls."""
@@ -924,6 +994,11 @@ class Engine:
 
                         leads = await self.outbound_store.lease_pending_leads(campaign_id, limit=min(capacity, 1))
                         if not leads:
+                            await self._outbound_maybe_mark_campaign_completed(
+                                campaign,
+                                inflight=inflight,
+                                active_outbound=active_outbound,
+                            )
                             continue
 
                         for lead in leads:
@@ -984,6 +1059,26 @@ class Engine:
         context_name = str(lead.get("context_override") or campaign.get("default_context") or "default").strip() or "default"
         custom_vars = lead.get("custom_vars") if isinstance(lead.get("custom_vars"), dict) else {}
 
+        # If a context declares a monolithic provider (e.g., google_live), honor it by setting
+        # AI_PROVIDER on the originated channel. This prevents pipeline defaults from taking over
+        # when the dialplan does not explicitly set AI_PROVIDER.
+        context_provider = None
+        try:
+            ctx_cfg = self.transport_orchestrator.get_context_config(context_name)
+            context_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
+        except Exception:
+            context_provider = None
+        if isinstance(context_provider, str):
+            context_provider = context_provider.strip()
+        provider_aliases = {
+            "openai": "openai_realtime",
+            "deepgram_agent": "deepgram",
+            "google": "google_live",
+        }
+        resolved_context_provider = provider_aliases.get(context_provider, context_provider)
+        if resolved_context_provider and resolved_context_provider not in self.providers:
+            resolved_context_provider = None
+
         amd_opts = ""
         try:
             amd_opts = self._outbound_build_amd_opts(campaign.get("amd_options") or {})
@@ -997,6 +1092,8 @@ class Engine:
             "AAVA_ATTEMPT_ID": attempt_id,
             "AAVA_OUTBOUND_PHONE": phone,
             "AI_CONTEXT": context_name,
+            # Honor context provider by default for outbound calls (unless dialplan overrides later).
+            **({"AI_PROVIDER": resolved_context_provider} if resolved_context_provider else {}),
             "AMPUSER": self._outbound_extension_identity,
             "CALLERID(num)": self._outbound_extension_identity,
         }
@@ -1352,6 +1449,10 @@ class Engine:
                 outcome = "chanunavail"
             elif "cancel" in cause_txt:
                 outcome = "canceled"
+            elif not amd and (not cause_txt or "unknown" in cause_txt):
+                # ARI often reports "Unknown" for unanswered outbound originate timeouts.
+                # If we never reached AMD (so we never got an answer/StasisStart), treat as no_answer.
+                outcome = "no_answer"
 
             if attempt_id:
                 await self.outbound_store.finish_attempt(
@@ -8591,10 +8692,48 @@ class Engine:
             if context_name:
                 context_config = self.transport_orchestrator.get_context_config(context_name)
                 if context_config and context_config.provider:
-                    provider_name = context_config.provider
+                    provider_name = str(context_config.provider).strip()
         
         if not provider_name:
             provider_name = session.provider_name or self.config.default_provider
+
+        # Normalize common aliases (keeps admin UX forgiving).
+        try:
+            aliases = {
+                "openai": "openai_realtime",
+                "deepgram_agent": "deepgram",
+                "google": "google_live",
+            }
+            provider_name = aliases.get(str(provider_name or "").strip(), provider_name)
+        except Exception:
+            pass
+
+        # Persist provider selection for the rest of the call flow. This is critical when
+        # pipeline mode is enabled globally (active_pipeline), but a context wants a
+        # monolithic realtime provider (e.g., google_live).
+        try:
+            if provider_name:
+                normalized = str(provider_name).strip()
+                previous = getattr(session, "provider_name", None)
+                # If the selected provider is a monolithic provider, force it onto the session so
+                # later pipeline-default logic doesn't override it.
+                if normalized in self.providers and previous != normalized:
+                    session.provider_name = normalized
+                    await self._save_session(session)
+                    logger.info(
+                        "Context/provider selection applied to session",
+                        call_id=session.call_id,
+                        previous_provider=previous,
+                        provider=session.provider_name,
+                        context_name=session.context_name,
+                    )
+        except Exception:
+            logger.debug(
+                "Failed to persist provider selection",
+                call_id=session.call_id,
+                provider=provider_name,
+                exc_info=True,
+            )
         
         # Get provider instance
         provider = self._call_providers.get(session.call_id) or self.providers.get(provider_name)
@@ -9558,6 +9697,13 @@ class Engine:
             return None
         if not self.pipeline_orchestrator.enabled:
             return None
+        # If a monolithic provider is selected for this session (e.g., google_live),
+        # do not auto-attach the active pipeline unless explicitly requested.
+        try:
+            if not pipeline_name and getattr(session, "provider_name", None) in self.providers:
+                return None
+        except Exception:
+            pass
         try:
             resolution = self.pipeline_orchestrator.get_pipeline(session.call_id, pipeline_name)
         except PipelineOrchestratorError as exc:

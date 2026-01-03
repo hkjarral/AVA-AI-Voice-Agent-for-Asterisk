@@ -17,7 +17,7 @@ import {
     RotateCcw
 } from 'lucide-react';
 
-type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived';
+type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived' | 'completed';
 
 type OutboundMeta = {
     server_timezone: string;
@@ -88,6 +88,8 @@ const StatusBadge = ({ status, label }: { status: CampaignStatus; label?: string
     const cls =
         status === 'running'
             ? 'bg-green-500/10 text-green-500 border-green-500/20'
+            : status === 'completed'
+                ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
             : status === 'paused'
                 ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'
                 : status === 'stopped'
@@ -130,8 +132,11 @@ const DIALPLAN_SNIPPET = [
     '[aava-outbound-amd]',
     'exten => s,1,NoOp(AAVA Outbound AMD hop)',
     ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
+    ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))',
     ' same => n,AMD(${AAVA_AMD_OPTS})',
     ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
+    ' same => n,GotoIf($["${AMDCAUSE:0:7}" = "TOOLONG"]?human)',
+    ' same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)',
     ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
     ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
     ' same => n(machine),WaitForSilence(1500,3,10)',
@@ -435,7 +440,7 @@ const CallSchedulingPage = () => {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
             const data = res.data as LeadImportResponse;
-            if (data?.error_csv) {
+            if (data?.rejected > 0 && data?.error_csv) {
                 downloadText(`outbound_import_errors_${new Date().toISOString().slice(0, 19)}.csv`, data.error_csv);
             }
             await refreshCampaignDetails(campaignId);
@@ -937,7 +942,7 @@ const CallSchedulingPage = () => {
                                                             <td className="py-2 pr-3">{formatUtc(l.created_at_utc)}</td>
                                                             <td className="py-2 pr-3">{formatUtc(l.updated_at_utc)}</td>
                                                             <td className="py-2 pr-0 text-right">
-                                                                {l.state === 'canceled' || l.state === 'failed' ? (
+                                                                {l.state === 'canceled' || l.state === 'failed' || l.state === 'completed' ? (
                                                                     <button
                                                                         className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
                                                                         onClick={() => recycleLead(l.id)}
@@ -1015,16 +1020,29 @@ const CallSchedulingPage = () => {
                                                             </td>
                                                             <td className="py-2 pr-3">
                                                                 {a.call_history_call_id ? (
-                                                                    <button
-                                                                        className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-accent hover:bg-accent/80 text-xs"
-                                                                        onClick={() => {
-                                                                            navigator.clipboard.writeText(a.call_history_call_id || '');
-                                                                            alert('Call History record id copied to clipboard');
-                                                                        }}
-                                                                    >
-                                                                        <FileDown className="w-3 h-3" />
-                                                                        Copy ID
-                                                                    </button>
+                                                                    <div className="flex items-center gap-2">
+                                                                        <a
+                                                                            className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-accent hover:bg-accent/80 text-xs"
+                                                                            href={`/history?id=${encodeURIComponent(a.call_history_call_id || '')}`}
+                                                                            target="_blank"
+                                                                            rel="noreferrer"
+                                                                            title="Open the linked Call History record"
+                                                                        >
+                                                                            <PhoneCall className="w-3 h-3" />
+                                                                            Open
+                                                                        </a>
+                                                                        <button
+                                                                            className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
+                                                                            onClick={() => {
+                                                                                navigator.clipboard.writeText(a.call_history_call_id || '');
+                                                                                alert('Call History record id copied to clipboard');
+                                                                            }}
+                                                                            title="Copy Call History record id"
+                                                                        >
+                                                                            <FileDown className="w-3 h-3" />
+                                                                            Copy ID
+                                                                        </button>
+                                                                    </div>
                                                                 ) : (
                                                                     '-'
                                                                 )}
