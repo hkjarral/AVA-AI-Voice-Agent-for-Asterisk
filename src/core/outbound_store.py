@@ -351,11 +351,22 @@ class OutboundStore:
                             consent_enabled, consent_media_uri, consent_timeout_seconds,
                             amd_options_json,
                             created_at_utc, updated_at_utc
-                        ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, ?,
+                            ?, ?,
+                            ?,
+                            ?, ?, ?,
+                            ?,
+                            ?, ?, ?,
+                            ?,
+                            ?, ?
+                        )
                         """,
                         (
                             campaign_id,
                             name,
+                            "draft",
                             timezone_name,
                             payload.get("run_start_at_utc"),
                             payload.get("run_end_at_utc"),
@@ -1029,14 +1040,14 @@ class OutboundStore:
             size_i = max(1, min(200, int(page_size or 50)))
             offset = (page_i - 1) * size_i
 
-            clauses = ["campaign_id = ?"]
+            clauses = ["l.campaign_id = ?"]
             args: List[Any] = [campaign_id]
 
             if state:
-                clauses.append("state = ?")
+                clauses.append("l.state = ?")
                 args.append(state)
             if q:
-                clauses.append("(phone_number LIKE ? OR COALESCE(name,'') LIKE ?)")
+                clauses.append("(l.phone_number LIKE ? OR COALESCE(l.name,'') LIKE ?)")
                 args.append(f"%{q}%")
                 args.append(f"%{q}%")
 
@@ -1044,7 +1055,10 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
-                    total = conn.execute(f"SELECT COUNT(*) AS c FROM outbound_leads WHERE {where}", args).fetchone()["c"]
+                    total = conn.execute(
+                        f"SELECT COUNT(*) AS c FROM outbound_leads l WHERE {where}",
+                        args,
+                    ).fetchone()["c"]
                     rows = conn.execute(
                         f"""
                         SELECT
@@ -1071,7 +1085,7 @@ class OutboundStore:
                             LIMIT 1
                           )
                         WHERE {where}
-                        ORDER BY created_at_utc DESC
+                        ORDER BY l.created_at_utc DESC
                         LIMIT ? OFFSET ?
                         """,
                         args + [size_i, offset],

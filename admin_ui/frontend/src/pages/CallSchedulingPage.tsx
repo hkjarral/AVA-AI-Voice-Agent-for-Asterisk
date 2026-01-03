@@ -154,7 +154,7 @@ const CallSchedulingPage = () => {
 
     const [showCampaignModal, setShowCampaignModal] = useState(false);
     const [campaignModalMode, setCampaignModalMode] = useState<'create' | 'edit'>('create');
-    const [campaignModalStep, setCampaignModalStep] = useState<'settings' | 'assets'>('settings');
+    const [campaignModalStep, setCampaignModalStep] = useState<'settings' | 'leads' | 'recordings' | 'advanced'>('settings');
     const [showSetupGuide, setShowSetupGuide] = useState(false);
 
     const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
@@ -368,11 +368,26 @@ const CallSchedulingPage = () => {
     const createCampaign = async () => {
         try {
             const res = await axios.post('/api/outbound/campaigns', createForm);
+            const campaignId = res.data.id as string;
+
+            if (createForm.consent_enabled && pendingConsentFile) {
+                await uploadMedia(campaignId, 'consent', pendingConsentFile);
+            }
+            if (createForm.voicemail_drop_enabled && pendingVoicemailFile) {
+                await uploadMedia(campaignId, 'voicemail', pendingVoicemailFile);
+            }
+            if (pendingImportFile) {
+                await importLeads(campaignId, pendingImportFile);
+            }
+
             await refreshCampaigns();
-            setSelectedCampaignId(res.data.id);
-            setCampaignModalMode('edit');
-            setCampaignModalStep('assets');
-            setNotice({ type: 'success', message: 'Campaign created. Finish setup (recordings/leads) in this modal.' });
+            setSelectedCampaignId(campaignId);
+            setShowCampaignModal(false);
+            setCampaignModalStep('settings');
+            setPendingImportFile(null);
+            setPendingVoicemailFile(null);
+            setPendingConsentFile(null);
+            setNotice({ type: 'success', message: 'Campaign created' });
             setCreateForm({
                 name: '',
                 timezone: serverTz,
@@ -859,7 +874,7 @@ const CallSchedulingPage = () => {
                                     className="inline-flex items-center gap-2 px-2 py-1 rounded-md border hover:bg-muted text-xs"
                                     onClick={() => {
                                         setCampaignModalMode('edit');
-                                        setCampaignModalStep('assets');
+                                        setCampaignModalStep('leads');
                                         setShowCampaignModal(true);
                                     }}
                                 >
@@ -1067,13 +1082,27 @@ const CallSchedulingPage = () => {
                             </button>
                             <button
                                 className={`px-3 py-1 rounded border text-sm ${
-                                    campaignModalStep === 'assets' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                                    campaignModalStep === 'leads' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                                 }`}
-                                onClick={() => setCampaignModalStep('assets')}
-                                disabled={campaignModalMode === 'create'}
-                                title={campaignModalMode === 'create' ? 'Create the campaign first' : ''}
+                                onClick={() => setCampaignModalStep('leads')}
                             >
-                                Leads & Recordings
+                                Leads
+                            </button>
+                            <button
+                                className={`px-3 py-1 rounded border text-sm ${
+                                    campaignModalStep === 'recordings' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                                }`}
+                                onClick={() => setCampaignModalStep('recordings')}
+                            >
+                                Recordings
+                            </button>
+                            <button
+                                className={`px-3 py-1 rounded border text-sm ${
+                                    campaignModalStep === 'advanced' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                                }`}
+                                onClick={() => setCampaignModalStep('advanced')}
+                            >
+                                Advanced (AMD)
                             </button>
                         </div>
 
@@ -1242,8 +1271,140 @@ const CallSchedulingPage = () => {
                                     </div>
                                 </div>
 
-                                <details className="border rounded-lg p-3">
-                                    <summary className="cursor-pointer font-medium text-sm">Advanced AMD settings</summary>
+                            </div>
+                        ) : campaignModalStep === 'leads' ? (
+                            <div className="space-y-4">
+                                <div className="border rounded-lg p-3 space-y-2">
+                                    <div className="font-medium text-sm">Leads (CSV)</div>
+                                    <div className="text-xs text-muted-foreground">
+                                        Import leads from CSV. Default behavior is <span className="font-mono">skip_existing</span>.
+                                        {campaignModalMode === 'create' ? ' Choose a CSV now; it will import after Create.' : ''}
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                            onClick={downloadSampleCsv}
+                                        >
+                                            <FileDown className="w-4 h-4" /> Sample CSV
+                                        </button>
+                                        <input type="file" accept=".csv,text/csv" onChange={e => setPendingImportFile(e.target.files?.[0] || null)} />
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                            disabled={!pendingImportFile || (campaignModalMode === 'edit' && !selectedCampaign)}
+                                            onClick={async () => {
+                                                if (!pendingImportFile) return;
+                                                if (campaignModalMode === 'create') {
+                                                    setNotice({ type: 'info', message: 'CSV selected. It will import after campaign creation.' });
+                                                    return;
+                                                }
+                                                if (!selectedCampaign) return;
+                                                await importLeads(selectedCampaign.id, pendingImportFile);
+                                                setPendingImportFile(null);
+                                            }}
+                                        >
+                                            <Upload className="w-4 h-4" /> Import CSV (skip existing)
+                                        </button>
+                                    </div>
+                                    {campaignModalMode === 'create' && pendingImportFile && (
+                                        <div className="text-xs text-muted-foreground">
+                                            Queued: <span className="font-mono">{pendingImportFile.name}</span>
+                                        </div>
+                                    )}
+                                    {campaignModalMode === 'edit' && !selectedCampaign && (
+                                        <div className="text-xs text-muted-foreground">Select a campaign to import leads.</div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : campaignModalStep === 'recordings' ? (
+                            <div className="space-y-4">
+                                <div className="border rounded-lg p-3 space-y-3">
+                                    <div className="font-medium text-sm">Consent prompt</div>
+                                    <div className="text-xs text-muted-foreground">
+                                        Used only when “Consent gate” is enabled (DTMF 1 accept / 2 deny).
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                        {campaignModalMode === 'edit' ? (
+                                            <>
+                                                Current: <span className="font-mono">{(selectedCampaign as any)?.consent_media_uri || '(not set)'}</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                Queued: <span className="font-mono">{pendingConsentFile?.name || '(none)'}</span>
+                                            </>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingConsentFile(e.target.files?.[0] || null)} />
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                            disabled={campaignModalMode === 'create' || !pendingConsentFile || !selectedCampaign}
+                                            onClick={async () => {
+                                                if (!pendingConsentFile || !selectedCampaign) return;
+                                                await uploadMedia(selectedCampaign.id, 'consent', pendingConsentFile);
+                                                setPendingConsentFile(null);
+                                            }}
+                                        >
+                                            <Upload className="w-4 h-4" /> Upload
+                                        </button>
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                            disabled={campaignModalMode === 'create' || !selectedCampaign || !Boolean(((selectedCampaign as any)?.consent_media_uri || '').trim())}
+                                            onClick={() => selectedCampaign && previewMedia(selectedCampaign.id, 'consent')}
+                                        >
+                                            Preview
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="border rounded-lg p-3 space-y-3">
+                                    <div className="font-medium text-sm">Voicemail drop</div>
+                                    <div className="text-xs text-muted-foreground">
+                                        Used only when “Voicemail drop” is enabled and AMD indicates MACHINE/NOTSURE.
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                        {campaignModalMode === 'edit' ? (
+                                            <>
+                                                Current: <span className="font-mono">{selectedCampaign?.voicemail_drop_media_uri || '(not set)'}</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                Queued: <span className="font-mono">{pendingVoicemailFile?.name || '(none)'}</span>
+                                            </>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingVoicemailFile(e.target.files?.[0] || null)} />
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                            disabled={campaignModalMode === 'create' || !pendingVoicemailFile || !selectedCampaign}
+                                            onClick={async () => {
+                                                if (!pendingVoicemailFile || !selectedCampaign) return;
+                                                await uploadMedia(selectedCampaign.id, 'voicemail', pendingVoicemailFile);
+                                                setPendingVoicemailFile(null);
+                                            }}
+                                        >
+                                            <Upload className="w-4 h-4" /> Upload
+                                        </button>
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                            disabled={campaignModalMode === 'create' || !selectedCampaign || !Boolean((selectedCampaign?.voicemail_drop_media_uri || '').trim())}
+                                            onClick={() => selectedCampaign && previewMedia(selectedCampaign.id, 'voicemail')}
+                                        >
+                                            Preview
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {campaignModalMode === 'create' && (
+                                    <div className="text-xs text-muted-foreground">
+                                        Files are queued in this modal and will upload right after campaign creation.
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="border rounded-lg p-3">
+                                    <div className="font-medium text-sm">Advanced AMD settings</div>
                                     <div className="text-xs text-muted-foreground mt-1">
                                         AMD() positional args. Leave blank to use defaults.
                                     </div>
@@ -1282,151 +1443,57 @@ const CallSchedulingPage = () => {
                                             );
                                         })}
                                     </div>
-                                </details>
+                                </div>
 
-                                <div className="flex justify-end gap-2">
-                                    <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setShowCampaignModal(false)}>
-                                        Close
+                                <div className="border rounded-lg p-3">
+                                    <button
+                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                        onClick={() => setShowSetupGuide(v => !v)}
+                                    >
+                                        {showSetupGuide ? 'Hide' : 'Show'} Setup Guide
                                     </button>
-                                    {campaignModalMode === 'create' ? (
-                                        <button
-                                            className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                                            onClick={createCampaign}
-                                            disabled={!createForm.name.trim() || !modalTimezoneValid}
-                                        >
-                                            Create
-                                        </button>
-                                    ) : (
-                                        <button
-                                            className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
-                                            onClick={saveEdit}
-                                            disabled={!modalTimezoneValid}
-                                        >
-                                            Save
-                                        </button>
+                                    {showSetupGuide && (
+                                        <div className="mt-3 space-y-2">
+                                            <div className="text-sm text-muted-foreground">
+                                                Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
+                                            </div>
+                                            <pre className="bg-muted/30 rounded-lg p-3 overflow-x-auto text-xs">{DIALPLAN_SNIPPET}</pre>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                                    onClick={() => navigator.clipboard.writeText(DIALPLAN_SNIPPET)}
+                                                >
+                                                    <Copy className="w-4 h-4" /> Copy
+                                                </button>
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
                             </div>
-                        ) : (
-                            <div className="space-y-4">
-                                {!selectedCampaign ? (
-                                    <div className="text-sm text-muted-foreground">Select a campaign to manage leads/recordings.</div>
-                                ) : (
-                                    <>
-                                        <div className="border rounded-lg p-3 space-y-2">
-                                            <div className="font-medium text-sm">Leads (CSV)</div>
-                                            <div className="flex items-center gap-2">
-                                                <button className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={downloadSampleCsv}>
-                                                    <FileDown className="w-4 h-4" /> Sample CSV
-                                                </button>
-                                                <input type="file" accept=".csv,text/csv" onChange={e => setPendingImportFile(e.target.files?.[0] || null)} />
-                                                <button
-                                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
-                                                    disabled={!pendingImportFile}
-                                                    onClick={async () => {
-                                                        if (!pendingImportFile) return;
-                                                        await importLeads(selectedCampaign.id, pendingImportFile);
-                                                        setPendingImportFile(null);
-                                                    }}
-                                                >
-                                                    <Upload className="w-4 h-4" /> Import CSV (skip existing)
-                                                </button>
-                                            </div>
-                                        </div>
-
-                                        <div className="border rounded-lg p-3 space-y-3">
-                                            <div className="font-medium text-sm">Recordings</div>
-                                            <div className="flex items-center justify-between gap-3">
-                                                <div>
-                                                    <div className="text-sm font-medium">Consent prompt</div>
-                                                    <div className="text-xs text-muted-foreground">Used only when “Consent gate” is enabled.</div>
-                                                    <div className="text-xs text-muted-foreground mt-1">
-                                                        Current: <span className="font-mono">{(selectedCampaign as any).consent_media_uri || '(not set)'}</span>
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingConsentFile(e.target.files?.[0] || null)} />
-                                                    <button
-                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
-                                                        disabled={!pendingConsentFile}
-                                                        onClick={async () => {
-                                                            if (!pendingConsentFile) return;
-                                                            await uploadMedia(selectedCampaign.id, 'consent', pendingConsentFile);
-                                                            setPendingConsentFile(null);
-                                                        }}
-                                                    >
-                                                        <Upload className="w-4 h-4" /> Upload
-                                                    </button>
-                                                    <button
-                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
-                                                        disabled={!Boolean(((selectedCampaign as any).consent_media_uri || '') as string)}
-                                                        onClick={() => previewMedia(selectedCampaign.id, 'consent')}
-                                                    >
-                                                        Preview
-                                                    </button>
-                                                </div>
-                                            </div>
-
-                                            <div className="flex items-center justify-between gap-3">
-                                                <div>
-                                                    <div className="text-sm font-medium">Voicemail drop</div>
-                                                    <div className="text-xs text-muted-foreground">Used only when “Voicemail drop” is enabled and AMD indicates MACHINE/NOTSURE.</div>
-                                                    <div className="text-xs text-muted-foreground mt-1">
-                                                        Current: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingVoicemailFile(e.target.files?.[0] || null)} />
-                                                    <button
-                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
-                                                        disabled={!pendingVoicemailFile}
-                                                        onClick={async () => {
-                                                            if (!pendingVoicemailFile) return;
-                                                            await uploadMedia(selectedCampaign.id, 'voicemail', pendingVoicemailFile);
-                                                            setPendingVoicemailFile(null);
-                                                        }}
-                                                    >
-                                                        <Upload className="w-4 h-4" /> Upload
-                                                    </button>
-                                                    <button
-                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
-                                                        disabled={!Boolean((selectedCampaign.voicemail_drop_media_uri || '').trim())}
-                                                        onClick={() => previewMedia(selectedCampaign.id, 'voicemail')}
-                                                    >
-                                                        Preview
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="border rounded-lg p-3">
-                                            <button
-                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
-                                                onClick={() => setShowSetupGuide(v => !v)}
-                                            >
-                                                {showSetupGuide ? 'Hide' : 'Show'} Setup Guide
-                                            </button>
-                                            {showSetupGuide && (
-                                                <div className="mt-3 space-y-2">
-                                                    <div className="text-sm text-muted-foreground">
-                                                        Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
-                                                    </div>
-                                                    <pre className="bg-muted/30 rounded-lg p-3 overflow-x-auto text-xs">{DIALPLAN_SNIPPET}</pre>
-                                                    <div className="flex items-center gap-2">
-                                                        <button
-                                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
-                                                            onClick={() => navigator.clipboard.writeText(DIALPLAN_SNIPPET)}
-                                                        >
-                                                            <Copy className="w-4 h-4" /> Copy
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </>
-                                )}
-                            </div>
                         )}
+
+                        <div className="flex justify-end gap-2 pt-2">
+                            <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setShowCampaignModal(false)}>
+                                Close
+                            </button>
+                            {campaignModalMode === 'create' ? (
+                                <button
+                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                    onClick={createCampaign}
+                                    disabled={!createForm.name.trim() || !modalTimezoneValid}
+                                >
+                                    Create
+                                </button>
+                            ) : (
+                                <button
+                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                    onClick={saveEdit}
+                                    disabled={!modalTimezoneValid}
+                                >
+                                    Save
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </Modal>
             )}
