@@ -41,6 +41,50 @@ def _ensure_shared_sqlite_perms() -> None:
         # Never block Admin UI startup for this.
         pass
 
+
+def _ensure_outbound_prompt_assets() -> None:
+    """
+    Install shipped outbound prompt assets into the runtime media directory.
+
+    This keeps "out of the box" campaigns functional without requiring the user to upload
+    consent/voicemail recordings before first use.
+    """
+    try:
+        project_root = (os.getenv("PROJECT_ROOT") or "/app/project").strip() or "/app/project"
+        src_dir = Path(project_root) / "assets" / "outbound_prompts" / "en-US"
+        if not src_dir.exists():
+            return
+
+        media_dir = Path(os.getenv("AAVA_MEDIA_DIR") or "/mnt/asterisk_media/ai-generated")
+        try:
+            media_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        mapping = {
+            "aava-consent-default.ulaw": "aava-consent-default.ulaw",
+            "aava-voicemail-default.ulaw": "aava-voicemail-default.ulaw",
+        }
+        for src_name, dst_name in mapping.items():
+            src = src_dir / src_name
+            dst = media_dir / dst_name
+            if not src.exists():
+                continue
+            if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                continue
+            try:
+                data = src.read_bytes()
+                dst.write_bytes(data)
+                try:
+                    os.chmod(str(dst), 0o664)
+                except Exception:
+                    pass
+            except Exception:
+                continue
+    except Exception:
+        # Never block Admin UI startup for this.
+        pass
+
 # Load environment variables (wizard will create .env from .env.example on first Next click)
 load_dotenv(settings.ENV_PATH)
 
@@ -51,6 +95,7 @@ except Exception:
     pass
 
 _ensure_shared_sqlite_perms()
+_ensure_outbound_prompt_assets()
 
 # SECURITY: Admin UI binds to 0.0.0.0 by default (DX-first).
 # If JWT_SECRET is missing/placeholder, generate an ephemeral secret so tokens

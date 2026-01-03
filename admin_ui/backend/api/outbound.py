@@ -61,6 +61,21 @@ def _vm_upload_max_bytes() -> int:
         return 12582912
 
 
+DEFAULT_CONSENT_MEDIA_URI = "sound:ai-generated/aava-consent-default"
+DEFAULT_VOICEMAIL_MEDIA_URI = "sound:ai-generated/aava-voicemail-default"
+
+
+def _media_uri_exists(media_uri: str) -> bool:
+    uri = (media_uri or "").strip()
+    if not uri.startswith("sound:ai-generated/"):
+        return False
+    base = uri.split("sound:ai-generated/", 1)[1].strip()
+    if not base:
+        return False
+    p = os.path.join(_media_dir(), f"{base}.ulaw")
+    return os.path.exists(p)
+
+
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
 def _detect_server_timezone() -> str:
@@ -204,7 +219,17 @@ async def list_campaigns(include_archived: bool = Query(False)):
 @router.post("/campaigns")
 async def create_campaign(req: CampaignCreateRequest):
     store = _get_outbound_store()
-    return await store.create_campaign(req.model_dump())
+    payload = req.model_dump()
+    try:
+        if payload.get("voicemail_drop_enabled") and not (payload.get("voicemail_drop_media_uri") or "").strip():
+            if _media_uri_exists(DEFAULT_VOICEMAIL_MEDIA_URI):
+                payload["voicemail_drop_media_uri"] = DEFAULT_VOICEMAIL_MEDIA_URI
+        if payload.get("consent_enabled") and not (payload.get("consent_media_uri") or "").strip():
+            if _media_uri_exists(DEFAULT_CONSENT_MEDIA_URI):
+                payload["consent_media_uri"] = DEFAULT_CONSENT_MEDIA_URI
+    except Exception:
+        pass
+    return await store.create_campaign(payload)
 
 
 @router.get("/campaigns/{campaign_id}")
