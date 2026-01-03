@@ -1159,6 +1159,29 @@ class Engine:
         except Exception:
             channel_vars["AAVA_CUSTOM_VARS_JSON"] = "{}"
 
+        # Local/ channels can create two halves (;1 / ;2). Ensure our outbound control vars
+        # survive any Local channel boundary by also setting the inherited variants.
+        # (Asterisk treats leading underscores as variable-inheritance hints.)
+        _inherit_keys = [
+            "AAVA_OUTBOUND",
+            "AAVA_CAMPAIGN_ID",
+            "AAVA_LEAD_ID",
+            "AAVA_ATTEMPT_ID",
+            "AAVA_OUTBOUND_PHONE",
+            "AI_CONTEXT",
+            "AI_PROVIDER",
+            "AAVA_VM_ENABLED",
+            "AAVA_CONSENT_ENABLED",
+            "AAVA_CONSENT_TIMEOUT",
+            "AAVA_CONSENT_PLAYBACK",
+            "AAVA_AMD_OPTS",
+            "AAVA_CUSTOM_VARS_JSON",
+            "AAVA_LEAD_NAME",
+        ]
+        for key in _inherit_keys:
+            if key in channel_vars and f"__{key}" not in channel_vars:
+                channel_vars[f"__{key}"] = channel_vars[key]
+
         endpoint = f"Local/{dial_phone}@from-internal"
         app_args = f"outbound,{attempt_id},{campaign_id},{lead_id}"
 
@@ -7403,8 +7426,23 @@ class Engine:
                         session = await self.session_store.get_by_call_id(call_id)
                         if session and getattr(session, 'cleanup_after_tts', False):
                             logger.info("🔚 Cleanup after TTS requested - hanging up call", call_id=call_id)
-                            # Give a small delay for audio to finish playing
-                            await asyncio.sleep(0.5)
+                            # Delay to ensure audio completes through RTP pipeline.
+                            # Use the same logic as HangupReady (provider/global configurable).
+                            hangup_delay = getattr(self.config, 'farewell_hangup_delay_sec', 2.5)
+                            try:
+                                provider_name = getattr(session, 'provider', None)
+                                if provider_name and provider_name in self.config.providers:
+                                    provider_cfg = self.config.providers.get(provider_name, {})
+                                    provider_delay = (
+                                        provider_cfg.get('farewell_hangup_delay_sec')
+                                        if isinstance(provider_cfg, dict)
+                                        else getattr(provider_cfg, 'farewell_hangup_delay_sec', None)
+                                    )
+                                    if provider_delay is not None:
+                                        hangup_delay = provider_delay
+                            except Exception:
+                                pass
+                            await asyncio.sleep(hangup_delay)
                             try:
                                 await self.ari_client.hangup_channel(session.caller_channel_id)
                                 logger.info("✅ Call hung up successfully", call_id=call_id, channel_id=session.caller_channel_id)

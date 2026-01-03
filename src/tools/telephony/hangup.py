@@ -84,13 +84,9 @@ class HangupCallTool(Tool):
                    farewell=farewell)
         
         try:
-            session = await context.get_session()
-            if not session:
-                return {
-                    "status": "error",
-                    "message": "Session not found"
-                }
-            
+            # Mark the session so the engine will hang up after the farewell audio finishes.
+            # This is a safety net in case provider-specific "HangupReady" events do not fire.
+            await context.update_session(cleanup_after_tts=True)
             logger.info("✅ Call will hangup after farewell", call_id=context.call_id)
             
             # Return farewell message with will_hangup flag
