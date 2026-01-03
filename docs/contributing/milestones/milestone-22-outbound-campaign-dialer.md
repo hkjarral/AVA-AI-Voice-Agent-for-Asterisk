@@ -43,6 +43,7 @@ Notable fixes/hardening already applied during validation:
 - Voicemail media path unified so Asterisk can play uploaded/converted media from `ai-generated/`.
 - Dialplan AMD guardrails fixed (`INITIALSILENCE` prefix length) to reduce false voicemail drops.
 - Admin UI “Setup Guide” dialplan generator hardened so disabling consent/voicemail never removes required labels (fixes Asterisk `No such label 'human'` / immediate hangup on answer).
+- Shipped default consent/voicemail prompt assets in `assets/outbound_prompts/en-US/` and auto-install them into `asterisk_media/ai-generated/` on Admin UI startup (campaign creation auto-defaults to these URIs when enabled).
 
 ## Motivation
 
