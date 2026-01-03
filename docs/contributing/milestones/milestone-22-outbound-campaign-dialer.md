@@ -42,6 +42,7 @@ Notable fixes/hardening already applied during validation:
 - SQLite WAL/SHM permission hardening so `ai-engine` can write even after Admin UI touches the DB (prevents `sqlite3.OperationalError: attempt to write a readonly database`).
 - Voicemail media path unified so Asterisk can play uploaded/converted media from `ai-generated/`.
 - Dialplan AMD guardrails fixed (`INITIALSILENCE` prefix length) to reduce false voicemail drops.
+- Admin UI “Setup Guide” dialplan generator hardened so disabling consent/voicemail never removes required labels (fixes Asterisk `No such label 'human'` / immediate hangup on answer).
 
 ## Motivation
 
