@@ -109,10 +109,24 @@ exten => s,1,NoOp(AAVA Outbound AMD hop)
  same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)
  same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)
  same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)
- same => n(machine),WaitForSilence(1500,3,10)
- same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE})
+ same => n(machine),GotoIf($["${AAVA_VM_ENABLED}" = "1"]?vm:machine_done)
+ same => n(vm),WaitForSilence(1500,3,10)
+ same => n(machine_done),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE},,)
  same => n,Hangup()
- same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE})
+ ; HUMAN path: optional consent gate (DTMF captured only for consent)
+ same => n(human),GotoIf($["${AAVA_CONSENT_ENABLED}" = "1"]?consent:human_done)
+ same => n(consent),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})
+ same => n,Playback(${AAVA_CONSENT_PLAYBACK})
+ same => n,Read(AAVA_CONSENT_DTMF,,1)
+ same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)
+ same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)
+ same => n(human_timeout),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,timeout)
+ same => n,Hangup()
+ same => n(human_denied),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},2,denied)
+ same => n,Hangup()
+ same => n(human_ok),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},1,accepted)
+ same => n,Hangup()
+ same => n(human_done),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,skipped)
  same => n,Hangup()
 ```
 
@@ -151,26 +165,72 @@ This must happen before provider session initialization so monolithic providers 
 
 ## Admin UI (MVP)
 
-Add a new page “Call Scheduling” under Overview (near Call History), implemented as a single page with 3 tabs:
+Add a new page “Call Scheduling” under Overview (near Call History) with a **campaign list + a single lead-centric table**.
 
-1) Campaigns
-2) Leads
-3) Attempts
+### Layout (revised)
 
-Key UI behaviors:
+- **Left column**: Campaigns list (smaller, scrollable).
+- **Right column**: Selected campaign summary/actions.
+- **Main table**: Extends under the left column, aligned with the campaign list (single table; one row per lead).
+- **Clocks**: Show live “Server Time” and “Selected Campaign Time” in the page header (near Refresh).
 
-- Campaign daily window supports “crosses midnight” with explicit warning.
-- “Stop Campaign” prompts user intent:
-  - stop dialing only (resumable)
-  - stop + cancel pending (non-resumable)
-- CSV import:
-  - default `skip_existing` by `phone_number`
-  - show only first N errors and provide downloadable error CSV
-  - provide downloadable sample CSV with dummy data
-- Voicemail preview:
-  - backend serves WAV preview derived from `.ulaw` for browser playback
-  - voicemail upload accepts `.wav` (PCM) and auto-converts to 8kHz μ-law
-- Collapsible “Setup Guide” with dialplan snippet and verification commands
+### Lead Table (one row per lead)
+
+Columns:
+
+- Name
+- Number
+- State
+- Context (effective: lead override → campaign default; resolved at runtime)
+- Provider (resolved for last attempt)
+- Time (last attempt start time in campaign timezone)
+- Duration (last attempt duration)
+- Attempts (count)
+- Outcome (last attempt outcome)
+- AMD (last attempt AMD status/cause)
+- DTMF (consent digit only; last attempt)
+- Call History (opens the Call History modal inline; same window)
+- Actions: Recycle, Delete, Ignore
+
+Actions rules:
+
+- **Recycle** prompts:
+  - Re-dial (keep attempts/history; set lead `pending`)
+  - Reset completely (delete attempts for the lead; reset lead counters/state)
+- **Delete** deletes lead + attempts (warn before delete); disabled when campaign is `running`.
+- **Ignore** sets lead to `canceled` (reversible via Recycle); allowed even when campaign is `running`.
+
+### New Campaign modal (revised)
+
+Move “Sample CSV” + “Import CSV” under the New Campaign modal:
+
+- Campaign can be created without leads; if there are no leads, show an inline “Import leads” call-to-action.
+- Sample CSV is “full format” only and includes an explicit `name` column.
+- Show live “Server now” and “Campaign local now” clocks in the modal.
+
+### Consent gate + voicemail recording (optional)
+
+Campaign settings include optional toggles:
+
+- **Consent gate** (HUMAN only): play a consent prompt and require DTMF (`1` accept / `2` deny).
+- **Voicemail drop** (MACHINE/NOTSURE): leave a voicemail recording when AMD indicates a machine.
+
+Both recordings are uploaded as `.wav` (recommended) or `.ulaw`; WAV is converted to 8kHz μ-law for Asterisk.
+
+Outcomes:
+
+- `consent_denied` (DTMF `2`)
+- `consent_timeout` (no DTMF)
+- Normal HUMAN conversation path remains `answered_human` (DTMF `1` recorded if consent is enabled)
+
+### Advanced AMD settings (per campaign)
+
+Expose AMD tuning under “Advanced” with per-parameter help text (positional AMD args).
+Defaults remain Vicidial-style unless overridden.
+
+### Setup Guide
+
+Keep a collapsible “Setup Guide” with dialplan snippet and verification commands.
 
 ## Implementation Plan (Phases)
 
@@ -211,11 +271,15 @@ Key UI behaviors:
 ## Acceptance Criteria (MVP)
 
 - Campaign can be created, cloned, started, paused, stopped, and shows accurate stats in Admin UI.
-- CSV import supports `skip_existing` default and error CSV output.
+- CSV import supports `skip_existing` default and error CSV output; sample CSV includes `name`.
 - Engine dials via Local/from-internal routing as extension `6789`.
 - AMD:
   - `HUMAN` calls enter AI and produce a Call History record.
-  - `MACHINE/NOTSURE` triggers voicemail drop playback and results in `voicemail_dropped`.
+  - `MACHINE/NOTSURE` triggers voicemail drop playback when enabled and results in `voicemail_dropped` (or `machine_detected` when voicemail drop is disabled).
+- Consent gate (when enabled):
+  - On HUMAN: prompt for DTMF (`1` accept / `2` deny) before AI attaches.
+  - Denied/timeout attempts persist outcomes (`consent_denied` / `consent_timeout`) and do not attach AI.
+  - DTMF captured for consent only and displayed in the lead table.
 - Attempt outcomes are persisted and visible in Attempts tab and exportable.
 - Outbound scheduler does not impact inbound call quality (no blocking DB operations on the asyncio loop).
 
@@ -245,8 +309,9 @@ Expected: the CLI output includes the `AMD()` step and the `Stasis(...,outbound_
 1. Open Admin UI and create a campaign:
    - timezone + daily window
    - `max_concurrent` = 1 (first test)
-   - `voicemail_drop_mode=tts` and generate voicemail audio (or upload `.ulaw`)
-2. Import a small CSV (2–3 leads):
+   - optionally enable “Consent gate” and/or “Voicemail drop”
+   - upload/generate the required recordings for enabled features
+2. Import a small CSV (2–3 leads) from the New Campaign modal (or via the empty-state CTA):
    - one number you can answer (HUMAN path)
    - one number that reliably hits voicemail (MACHINE path)
 3. Start the campaign.
@@ -260,6 +325,7 @@ Expected:
 ### 4) HUMAN call validation
 
 1. Answer the outbound call and speak.
+2. If consent gate is enabled, press `1` to accept.
 2. Confirm AI engages (greeting + turn-taking).
 3. End the call.
 

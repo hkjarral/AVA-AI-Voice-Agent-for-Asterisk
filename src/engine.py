@@ -1007,13 +1007,41 @@ class Engine:
                             if not lead_id or not phone:
                                 continue
 
-                            attempt_id = await self.outbound_store.create_attempt(campaign_id, lead_id)
+                            context_name = str(
+                                lead.get("context_override") or campaign.get("default_context") or "default"
+                            ).strip() or "default"
+                            # Best-effort provider resolution for metadata/UI.
+                            resolved_context_provider = None
+                            try:
+                                ctx_cfg = self.transport_orchestrator.get_context_config(context_name)
+                                ctx_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
+                                if isinstance(ctx_provider, str):
+                                    ctx_provider = ctx_provider.strip()
+                                provider_aliases = {
+                                    "openai": "openai_realtime",
+                                    "deepgram_agent": "deepgram",
+                                    "google": "google_live",
+                                }
+                                resolved_context_provider = provider_aliases.get(ctx_provider, ctx_provider)
+                                if resolved_context_provider and resolved_context_provider not in self.providers:
+                                    resolved_context_provider = None
+                            except Exception:
+                                resolved_context_provider = None
+
+                            attempt_id = await self.outbound_store.create_attempt(
+                                campaign_id,
+                                lead_id,
+                                context=context_name,
+                                provider=resolved_context_provider,
+                            )
                             self._outbound_attempt_meta_by_attempt_id[attempt_id] = {
                                 "attempt_id": attempt_id,
                                 "campaign_id": campaign_id,
                                 "lead_id": lead_id,
                                 "phone_number": phone,
-                                "context": (lead.get("context_override") or campaign.get("default_context") or "default"),
+                                "context": context_name,
+                                "provider": resolved_context_provider,
+                                "lead_name": str(lead.get("name") or "").strip() or None,
                                 "custom_vars": lead.get("custom_vars") or {},
                                 "created_at_ts": time.time(),
                             }
@@ -1058,6 +1086,7 @@ class Engine:
 
         context_name = str(lead.get("context_override") or campaign.get("default_context") or "default").strip() or "default"
         custom_vars = lead.get("custom_vars") if isinstance(lead.get("custom_vars"), dict) else {}
+        lead_name = str(lead.get("name") or "").strip() or None
 
         # If a context declares a monolithic provider (e.g., google_live), honor it by setting
         # AI_PROVIDER on the originated channel. This prevents pipeline defaults from taking over
@@ -1085,6 +1114,23 @@ class Engine:
         except Exception:
             amd_opts = ""
 
+        def _sound_uri_to_playback_path(uri: str) -> str:
+            u = (uri or "").strip()
+            if not u:
+                return ""
+            if u.startswith("sound:"):
+                return u.split("sound:", 1)[1]
+            return u
+
+        voicemail_enabled = bool(int(campaign.get("voicemail_drop_enabled") or 1))
+        consent_enabled = bool(int(campaign.get("consent_enabled") or 0))
+        consent_timeout = int(campaign.get("consent_timeout_seconds") or 5)
+        if consent_timeout < 1:
+            consent_timeout = 5
+        if consent_timeout > 30:
+            consent_timeout = 30
+        consent_media_uri = str(campaign.get("consent_media_uri") or "").strip()
+
         channel_vars: Dict[str, Any] = {
             "AAVA_OUTBOUND": "1",
             "AAVA_CAMPAIGN_ID": campaign_id,
@@ -1097,6 +1143,15 @@ class Engine:
             "AMPUSER": self._outbound_extension_identity,
             "CALLERID(num)": self._outbound_extension_identity,
         }
+        if lead_name:
+            channel_vars["AAVA_LEAD_NAME"] = lead_name
+            channel_vars["CALLERID(name)"] = lead_name
+        channel_vars["AAVA_VM_ENABLED"] = "1" if voicemail_enabled else "0"
+        channel_vars["AAVA_CONSENT_ENABLED"] = "1" if consent_enabled else "0"
+        channel_vars["AAVA_CONSENT_TIMEOUT"] = str(consent_timeout)
+        if consent_enabled:
+            playback = _sound_uri_to_playback_path(consent_media_uri) or "beep"
+            channel_vars["AAVA_CONSENT_PLAYBACK"] = playback
         if amd_opts:
             channel_vars["AAVA_AMD_OPTS"] = amd_opts
         try:
@@ -1309,12 +1364,14 @@ class Engine:
         Handle AMD result path (dialplan returns channel to Stasis with args).
 
         Dialplan convention (recommended):
-          Stasis(app_name,outbound_amd,${AAVA_ATTEMPT_ID},${AMDSTATUS},${AMDCAUSE})
+          Stasis(app_name,outbound_amd,${AAVA_ATTEMPT_ID},${AMDSTATUS},${AMDCAUSE},${CONSENT_DTMF},${CONSENT_RESULT})
         """
         self._outbound_awaiting_amd_channel_ids.discard(channel_id)
         attempt_id = str(args[1] or "").strip() if len(args) > 1 else ""
         amd_status = str(args[2] or "").strip().upper() if len(args) > 2 else ""
         amd_cause = str(args[3] or "").strip().upper() if len(args) > 3 else None
+        consent_dtmf = str(args[4] or "").strip() if len(args) > 4 else ""
+        consent_result = str(args[5] or "").strip().lower() if len(args) > 5 else ""
         if amd_status == "NOTSURE":
             amd_status = "MACHINE"
 
@@ -1347,11 +1404,30 @@ class Engine:
             attempt_id=attempt_id,
             amd_status=amd_status,
             amd_cause=amd_cause,
+            consent_dtmf=consent_dtmf or None,
+            consent_result=consent_result or None,
         )
 
         # Cache AMD for later attempt finish (human path).
         if attempt_id:
-            self._outbound_attempt_amd[attempt_id] = {"amd_status": amd_status or None, "amd_cause": amd_cause or None}
+            self._outbound_attempt_amd[attempt_id] = {
+                "amd_status": amd_status or None,
+                "amd_cause": amd_cause or None,
+                "consent_dtmf": consent_dtmf or None,
+                "consent_result": consent_result or None,
+            }
+            try:
+                await self.outbound_store.set_attempt_gate_result(
+                    attempt_id,
+                    amd_status=amd_status or None,
+                    amd_cause=amd_cause or None,
+                    consent_dtmf=consent_dtmf or None,
+                    consent_result=consent_result or None,
+                    context=str((meta or {}).get("context") or "") or None,
+                    provider=str((meta or {}).get("provider") or "") or None,
+                )
+            except Exception:
+                pass
 
         # MACHINE path: voicemail drop and hangup (no AI session).
         if amd_status in ("MACHINE",):
@@ -1359,32 +1435,71 @@ class Engine:
                 campaign = await self.outbound_store.get_campaign(campaign_id) if campaign_id else None
             except Exception:
                 campaign = None
+            vm_enabled = bool(int((campaign or {}).get("voicemail_drop_enabled") or 1))
             media_uri = str((campaign or {}).get("voicemail_drop_media_uri") or "").strip()
             if not media_uri:
                 media_uri = "sound:beep"
 
-            try:
-                pb = await self.ari_client.play_media(channel_id, media_uri)
-                pb_id = pb.get("id") if isinstance(pb, dict) else None
-                if pb_id:
-                    await self._wait_for_ari_playback(str(pb_id), timeout_sec=30.0)
-            except Exception:
-                logger.debug("Outbound voicemail playback failed", channel_id=channel_id, exc_info=True)
+            if vm_enabled:
+                try:
+                    pb = await self.ari_client.play_media(channel_id, media_uri)
+                    pb_id = pb.get("id") if isinstance(pb, dict) else None
+                    if pb_id:
+                        await self._wait_for_ari_playback(str(pb_id), timeout_sec=30.0)
+                except Exception:
+                    logger.debug("Outbound voicemail playback failed", channel_id=channel_id, exc_info=True)
 
             if attempt_id:
                 await self.outbound_store.finish_attempt(
                     attempt_id,
-                    outcome="voicemail_dropped",
+                    outcome="voicemail_dropped" if vm_enabled else "machine_detected",
                     amd_status=amd_status or None,
                     amd_cause=amd_cause or None,
+                    consent_dtmf=consent_dtmf or None,
+                    consent_result=consent_result or None,
+                    context=str((meta or {}).get("context") or "") or None,
+                    provider=str((meta or {}).get("provider") or "") or None,
                 )
             if lead_id:
                 try:
-                    await self.outbound_store.set_lead_state(lead_id, state="completed", last_outcome="voicemail_dropped")
+                    await self.outbound_store.set_lead_state(
+                        lead_id,
+                        state="completed",
+                        last_outcome="voicemail_dropped" if vm_enabled else "machine_detected",
+                    )
                 except Exception:
                     pass
 
             # Cleanup mappings and hang up.
+            if attempt_id:
+                self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
+                self._outbound_attempt_amd.pop(attempt_id, None)
+            self._outbound_attempt_meta_by_channel_id.pop(channel_id, None)
+            await self.ari_client.hangup_channel(channel_id)
+            return
+
+        # HUMAN but consent denied/timeout (no AI attach).
+        if consent_result in ("denied", "timeout"):
+            if attempt_id:
+                await self.outbound_store.finish_attempt(
+                    attempt_id,
+                    outcome="consent_denied" if consent_result == "denied" else "consent_timeout",
+                    amd_status=amd_status or None,
+                    amd_cause=amd_cause or None,
+                    consent_dtmf=consent_dtmf or None,
+                    consent_result=consent_result or None,
+                    context=str((meta or {}).get("context") or "") or None,
+                    provider=str((meta or {}).get("provider") or "") or None,
+                )
+            if lead_id:
+                try:
+                    await self.outbound_store.set_lead_state(
+                        lead_id,
+                        state="canceled",
+                        last_outcome="consent_denied" if consent_result == "denied" else "consent_timeout",
+                    )
+                except Exception:
+                    pass
             if attempt_id:
                 self._outbound_attempt_meta_by_attempt_id.pop(attempt_id, None)
                 self._outbound_attempt_amd.pop(attempt_id, None)
@@ -1408,10 +1523,12 @@ class Engine:
         except Exception:
             logger.debug("Failed to set AI_CONTEXT for outbound human path", channel_id=channel_id, exc_info=True)
 
-        # Override caller metadata so call history shows the dialed number.
+        # Override caller metadata so call history shows the dialed number and uses the lead name (if present).
         phone = str((meta or {}).get("phone_number") or "")
+        lead_name = str((meta or {}).get("lead_name") or "").strip()
         channel_override = dict(channel or {})
-        channel_override["caller"] = {"name": f"Outbound {phone}" if phone else "Outbound", "number": phone or ""}
+        caller_name = lead_name or (f"Outbound {phone}" if phone else "Outbound")
+        channel_override["caller"] = {"name": caller_name, "number": phone or ""}
         await self._handle_caller_stasis_start_hybrid(channel_id, channel_override)
 
     async def _handle_outbound_channel_destroyed(self, event: Dict[str, Any]) -> None:
@@ -1460,6 +1577,10 @@ class Engine:
                     outcome=outcome,
                     amd_status=(amd or {}).get("amd_status"),
                     amd_cause=(amd or {}).get("amd_cause"),
+                    consent_dtmf=(amd or {}).get("consent_dtmf"),
+                    consent_result=(amd or {}).get("consent_result"),
+                    context=str((meta or {}).get("context") or "") or None,
+                    provider=str((meta or {}).get("provider") or "") or None,
                     error_message=str(event.get("cause_txt") or cause_txt or cause or "") or None,
                 )
             if lead_id:
@@ -4118,6 +4239,10 @@ class Engine:
                                 outcome=final_outcome,
                                 amd_status=(amd or {}).get("amd_status"),
                                 amd_cause=(amd or {}).get("amd_cause"),
+                                consent_dtmf=(amd or {}).get("consent_dtmf"),
+                                consent_result=(amd or {}).get("consent_result"),
+                                context=getattr(session, "context_name", None),
+                                provider=getattr(session, "provider_name", None),
                                 call_history_call_id=persisted_record_id,
                                 error_message=session.error_message,
                             )

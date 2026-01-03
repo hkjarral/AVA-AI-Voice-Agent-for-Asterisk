@@ -162,9 +162,13 @@ class OutboundStore:
             max_concurrent INTEGER NOT NULL DEFAULT 1,
             min_interval_seconds_between_calls INTEGER NOT NULL DEFAULT 5,
             default_context TEXT NOT NULL DEFAULT 'default',
+            voicemail_drop_enabled INTEGER NOT NULL DEFAULT 1,
             voicemail_drop_mode TEXT NOT NULL DEFAULT 'upload', -- upload|tts
             voicemail_drop_text TEXT,
             voicemail_drop_media_uri TEXT,
+            consent_enabled INTEGER NOT NULL DEFAULT 0,
+            consent_media_uri TEXT,
+            consent_timeout_seconds INTEGER NOT NULL DEFAULT 5,
             amd_options_json TEXT NOT NULL DEFAULT '{}',
             created_at_utc TEXT NOT NULL,
             updated_at_utc TEXT NOT NULL
@@ -175,6 +179,7 @@ class OutboundStore:
         CREATE TABLE IF NOT EXISTS outbound_leads (
             id TEXT PRIMARY KEY,
             campaign_id TEXT NOT NULL,
+            name TEXT,
             phone_number TEXT NOT NULL,
             lead_timezone TEXT,
             context_override TEXT,
@@ -199,10 +204,15 @@ class OutboundStore:
             lead_id TEXT NOT NULL,
             started_at_utc TEXT NOT NULL,
             ended_at_utc TEXT,
+            duration_seconds INTEGER,
             ari_channel_id TEXT,
             outcome TEXT,
             amd_status TEXT,
             amd_cause TEXT,
+            consent_dtmf TEXT,
+            consent_result TEXT,
+            context TEXT,
+            provider TEXT,
             call_history_call_id TEXT,
             error_message TEXT
         )
@@ -231,6 +241,7 @@ class OutboundStore:
                     cur = conn.cursor()
                     for stmt in self._CREATE_TABLES_SQL:
                         cur.execute(stmt)
+                    self._ensure_schema_sync(conn)
                     conn.commit()
                     self._initialized = True
                     logger.info("Outbound dialer tables initialized", db_path=self._db_path)
@@ -239,6 +250,51 @@ class OutboundStore:
         except Exception as exc:
             logger.error("Failed to initialize outbound tables", error=str(exc), exc_info=True)
             self._enabled = False
+
+    def _ensure_schema_sync(self, conn: sqlite3.Connection) -> None:
+        """
+        Best-effort schema migrations for existing installs.
+
+        SQLite has limited ALTER TABLE support; we add new columns when missing.
+        """
+        try:
+            cur = conn.cursor()
+
+            def _cols(table: str) -> set[str]:
+                rows = cur.execute(f"PRAGMA table_info({table})").fetchall()
+                return {str(r[1]) for r in rows}  # (cid, name, type, notnull, dflt_value, pk)
+
+            # outbound_campaigns
+            ccols = _cols("outbound_campaigns")
+            if "voicemail_drop_enabled" not in ccols:
+                cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN voicemail_drop_enabled INTEGER NOT NULL DEFAULT 1")
+            if "consent_enabled" not in ccols:
+                cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_enabled INTEGER NOT NULL DEFAULT 0")
+            if "consent_media_uri" not in ccols:
+                cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_media_uri TEXT")
+            if "consent_timeout_seconds" not in ccols:
+                cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_timeout_seconds INTEGER NOT NULL DEFAULT 5")
+
+            # outbound_leads
+            lcols = _cols("outbound_leads")
+            if "name" not in lcols:
+                cur.execute("ALTER TABLE outbound_leads ADD COLUMN name TEXT")
+
+            # outbound_attempts
+            acols = _cols("outbound_attempts")
+            if "duration_seconds" not in acols:
+                cur.execute("ALTER TABLE outbound_attempts ADD COLUMN duration_seconds INTEGER")
+            if "consent_dtmf" not in acols:
+                cur.execute("ALTER TABLE outbound_attempts ADD COLUMN consent_dtmf TEXT")
+            if "consent_result" not in acols:
+                cur.execute("ALTER TABLE outbound_attempts ADD COLUMN consent_result TEXT")
+            if "context" not in acols:
+                cur.execute("ALTER TABLE outbound_attempts ADD COLUMN context TEXT")
+            if "provider" not in acols:
+                cur.execute("ALTER TABLE outbound_attempts ADD COLUMN provider TEXT")
+        except Exception:
+            # Never fail startup due to a best-effort migration.
+            logger.debug("Outbound schema migration failed (non-fatal)", exc_info=True)
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
@@ -271,9 +327,13 @@ class OutboundStore:
             max_concurrent = max(1, min(5, _as_int(payload.get("max_concurrent"), 1)))
             min_interval = max(0, _as_int(payload.get("min_interval_seconds_between_calls"), 5))
             default_context = _as_str(payload.get("default_context")).strip() or "default"
+            vm_enabled = 1 if bool(payload.get("voicemail_drop_enabled", True)) else 0
             vm_mode = _as_str(payload.get("voicemail_drop_mode")).strip() or "upload"
             vm_text = _as_str(payload.get("voicemail_drop_text")).strip() or None
             vm_uri = _as_str(payload.get("voicemail_drop_media_uri")).strip() or None
+            consent_enabled = 1 if bool(payload.get("consent_enabled", False)) else 0
+            consent_uri = _as_str(payload.get("consent_media_uri")).strip() or None
+            consent_timeout = max(1, min(30, _as_int(payload.get("consent_timeout_seconds"), 5)))
             amd_opts = payload.get("amd_options") if isinstance(payload.get("amd_options"), dict) else {}
 
             with self._lock:
@@ -285,8 +345,11 @@ class OutboundStore:
                             id, name, status, timezone, run_start_at_utc, run_end_at_utc,
                             daily_window_start_local, daily_window_end_local,
                             max_concurrent, min_interval_seconds_between_calls,
-                            default_context, voicemail_drop_mode, voicemail_drop_text,
-                            voicemail_drop_media_uri, amd_options_json,
+                            default_context,
+                            voicemail_drop_enabled, voicemail_drop_mode, voicemail_drop_text,
+                            voicemail_drop_media_uri,
+                            consent_enabled, consent_media_uri, consent_timeout_seconds,
+                            amd_options_json,
                             created_at_utc, updated_at_utc
                         ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
@@ -301,9 +364,13 @@ class OutboundStore:
                             max_concurrent,
                             min_interval,
                             default_context,
+                            vm_enabled,
                             vm_mode,
                             vm_text,
                             vm_uri,
+                            consent_enabled,
+                            consent_uri,
+                            consent_timeout,
                             json.dumps(amd_opts or {}),
                             now,
                             now,
@@ -384,9 +451,13 @@ class OutboundStore:
                 "max_concurrent",
                 "min_interval_seconds_between_calls",
                 "default_context",
+                "voicemail_drop_enabled",
                 "voicemail_drop_mode",
                 "voicemail_drop_text",
                 "voicemail_drop_media_uri",
+                "consent_enabled",
+                "consent_media_uri",
+                "consent_timeout_seconds",
                 "amd_options_json",
             }
 
@@ -406,6 +477,12 @@ class OutboundStore:
                 updates["min_interval_seconds_between_calls"] = max(
                     0, _as_int(updates.get("min_interval_seconds_between_calls"), 5)
                 )
+            if "voicemail_drop_enabled" in updates:
+                updates["voicemail_drop_enabled"] = 1 if bool(updates.get("voicemail_drop_enabled")) else 0
+            if "consent_enabled" in updates:
+                updates["consent_enabled"] = 1 if bool(updates.get("consent_enabled")) else 0
+            if "consent_timeout_seconds" in updates:
+                updates["consent_timeout_seconds"] = max(1, min(30, _as_int(updates.get("consent_timeout_seconds"), 5)))
 
             updates["updated_at_utc"] = now
 
@@ -764,6 +841,7 @@ class OutboundStore:
         Import leads for a campaign.
 
         Expected columns:
+          - name (optional; stored on lead and used for caller_name in outbound greeting)
           - phone_number (required)
           - custom_vars (optional JSON)
           - context (optional)
@@ -806,6 +884,7 @@ class OutboundStore:
             context_key = normalized_to_raw.get("context")
             tz_key = normalized_to_raw.get("timezone")
             caller_id_key = normalized_to_raw.get("caller_id")
+            name_key = normalized_to_raw.get("name")
 
             with self._lock:
                 conn = self._get_connection()
@@ -854,21 +933,24 @@ class OutboundStore:
 
                         caller_id_override = _as_str((row or {}).get(caller_id_key)).strip() if caller_id_key else ""
                         caller_id_override = caller_id_override or None
+                        lead_name = _as_str((row or {}).get(name_key)).strip() if name_key else ""
+                        lead_name = lead_name or None
 
                         lead_id = str(uuid.uuid4())
                         try:
                             conn.execute(
                                 """
                                 INSERT INTO outbound_leads (
-                                    id, campaign_id, phone_number,
+                                    id, campaign_id, name, phone_number,
                                     lead_timezone, context_override, caller_id_override,
                                     custom_vars_json, state,
                                     attempt_count, created_at_utc, updated_at_utc
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
                                 """,
                                 (
                                     lead_id,
                                     campaign_id,
+                                    lead_name,
                                     phone,
                                     tz_override,
                                     context_override,
@@ -887,7 +969,8 @@ class OutboundStore:
                             conn.execute(
                                 """
                                 UPDATE outbound_leads
-                                SET lead_timezone = COALESCE(?, lead_timezone),
+                                SET name = COALESCE(?, name),
+                                    lead_timezone = COALESCE(?, lead_timezone),
                                     context_override = COALESCE(?, context_override),
                                     caller_id_override = COALESCE(?, caller_id_override),
                                     custom_vars_json = ?,
@@ -895,6 +978,7 @@ class OutboundStore:
                                 WHERE campaign_id = ? AND phone_number = ?
                                 """,
                                 (
+                                    lead_name,
                                     tz_override,
                                     context_override,
                                     caller_id_override,
@@ -952,7 +1036,8 @@ class OutboundStore:
                 clauses.append("state = ?")
                 args.append(state)
             if q:
-                clauses.append("phone_number LIKE ?")
+                clauses.append("(phone_number LIKE ? OR COALESCE(name,'') LIKE ?)")
+                args.append(f"%{q}%")
                 args.append(f"%{q}%")
 
             where = " AND ".join(clauses)
@@ -962,7 +1047,29 @@ class OutboundStore:
                     total = conn.execute(f"SELECT COUNT(*) AS c FROM outbound_leads WHERE {where}", args).fetchone()["c"]
                     rows = conn.execute(
                         f"""
-                        SELECT * FROM outbound_leads
+                        SELECT
+                            l.*,
+                            a.started_at_utc AS last_started_at_utc,
+                            a.ended_at_utc AS last_ended_at_utc,
+                            a.duration_seconds AS last_duration_seconds,
+                            a.outcome AS last_outcome_attempt,
+                            a.amd_status AS last_amd_status,
+                            a.amd_cause AS last_amd_cause,
+                            a.consent_dtmf AS last_consent_dtmf,
+                            a.consent_result AS last_consent_result,
+                            a.context AS last_context,
+                            a.provider AS last_provider,
+                            a.call_history_call_id AS last_call_history_call_id,
+                            a.error_message AS last_error_message
+                        FROM outbound_leads l
+                        LEFT JOIN outbound_attempts a
+                          ON a.id = (
+                            SELECT id
+                            FROM outbound_attempts
+                            WHERE lead_id = l.id
+                            ORDER BY started_at_utc DESC
+                            LIMIT 1
+                          )
                         WHERE {where}
                         ORDER BY created_at_utc DESC
                         LIMIT ? OFFSET ?
@@ -1006,7 +1113,38 @@ class OutboundStore:
 
         return await self._run(_sync)
 
-    async def recycle_lead(self, lead_id: str) -> bool:
+    async def ignore_lead(self, lead_id: str) -> bool:
+        """
+        Mark a lead as ignored (state=canceled). Reversible via recycle.
+
+        This is the operator-facing "Ignore" action in the Scheduling UI.
+        """
+        if not self._enabled:
+            return False
+
+        def _sync():
+            now = _utcnow_iso()
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.execute(
+                        """
+                        UPDATE outbound_leads
+                        SET state='canceled',
+                            leased_until_utc=NULL,
+                            updated_at_utc=?
+                        WHERE id=? AND state NOT IN ('in_progress','amd_pending')
+                        """,
+                        (now, lead_id),
+                    )
+                    conn.commit()
+                    return cur.rowcount > 0
+                finally:
+                    conn.close()
+
+        return await self._run(_sync)
+
+    async def recycle_lead(self, lead_id: str, *, mode: str = "redial") -> bool:
         """
         Re-queue a lead by moving it back to 'pending'.
 
@@ -1022,23 +1160,77 @@ class OutboundStore:
             with self._lock:
                 conn = self._get_connection()
                 try:
-                    cur = conn.execute(
-                        """
-                        UPDATE outbound_leads
-                        SET state='pending',
-                            last_outcome=NULL,
-                            leased_until_utc=NULL,
-                            updated_at_utc=?
-                        WHERE id=? AND state IN ('canceled','failed','completed')
-                        """,
-                        (now, lead_id),
-                    )
+                    m = (mode or "redial").strip().lower()
+                    if m == "reset":
+                        # Reset completely: delete attempts and reset lead counters/state.
+                        conn.execute("DELETE FROM outbound_attempts WHERE lead_id = ?", (lead_id,))
+                        cur = conn.execute(
+                            """
+                            UPDATE outbound_leads
+                            SET state='pending',
+                                attempt_count=0,
+                                last_outcome=NULL,
+                                last_attempt_at_utc=NULL,
+                                leased_until_utc=NULL,
+                                updated_at_utc=?
+                            WHERE id=?
+                            """,
+                            (now, lead_id),
+                        )
+                    else:
+                        # Re-dial: keep attempts/history; requeue lead.
+                        cur = conn.execute(
+                            """
+                            UPDATE outbound_leads
+                            SET state='pending',
+                                last_outcome=NULL,
+                                leased_until_utc=NULL,
+                                updated_at_utc=?
+                            WHERE id=?
+                            """,
+                            (now, lead_id),
+                        )
                     conn.commit()
                     return cur.rowcount > 0
                 finally:
                     conn.close()
 
         return await self._run(_sync)
+
+    async def delete_lead(self, lead_id: str) -> None:
+        """
+        Hard delete a lead and all its attempts.
+
+        The API layer should block this while a campaign is running.
+        """
+        if not self._enabled:
+            raise RuntimeError("OutboundStore disabled")
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    row = conn.execute(
+                        "SELECT campaign_id FROM outbound_leads WHERE id=?",
+                        (lead_id,),
+                    ).fetchone()
+                    if not row:
+                        raise KeyError("lead not found")
+                    campaign_id = str(row["campaign_id"])
+                    camp = conn.execute(
+                        "SELECT status FROM outbound_campaigns WHERE id=?",
+                        (campaign_id,),
+                    ).fetchone()
+                    if camp and str(camp["status"] or "").strip().lower() == "running":
+                        raise ValueError("Pause/stop the campaign before deleting leads")
+
+                    conn.execute("DELETE FROM outbound_attempts WHERE lead_id=?", (lead_id,))
+                    conn.execute("DELETE FROM outbound_leads WHERE id=?", (lead_id,))
+                    conn.commit()
+                finally:
+                    conn.close()
+
+        await self._run(_sync)
 
     async def campaign_stats(self, campaign_id: str) -> Dict[str, Any]:
         if not self._enabled:
@@ -1093,7 +1285,7 @@ class OutboundStore:
                     ).fetchone()["c"]
                     rows = conn.execute(
                         """
-                        SELECT a.*, l.phone_number
+                        SELECT a.*, l.phone_number, l.name
                         FROM outbound_attempts a
                         LEFT JOIN outbound_leads l ON l.id = a.lead_id
                         WHERE a.campaign_id=?
@@ -1110,7 +1302,14 @@ class OutboundStore:
 
         return await self._run(_sync)
 
-    async def create_attempt(self, campaign_id: str, lead_id: str) -> str:
+    async def create_attempt(
+        self,
+        campaign_id: str,
+        lead_id: str,
+        *,
+        context: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> str:
         if not self._enabled:
             raise RuntimeError("OutboundStore disabled")
 
@@ -1122,10 +1321,10 @@ class OutboundStore:
                 try:
                     conn.execute(
                         """
-                        INSERT INTO outbound_attempts (id, campaign_id, lead_id, started_at_utc)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO outbound_attempts (id, campaign_id, lead_id, started_at_utc, context, provider)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                        (attempt_id, campaign_id, lead_id, now),
+                        (attempt_id, campaign_id, lead_id, now, context, provider),
                     )
                     conn.commit()
                 finally:
@@ -1152,6 +1351,59 @@ class OutboundStore:
 
         await self._run(_sync)
 
+    async def set_attempt_gate_result(
+        self,
+        attempt_id: str,
+        *,
+        amd_status: Optional[str] = None,
+        amd_cause: Optional[str] = None,
+        consent_dtmf: Optional[str] = None,
+        consent_result: Optional[str] = None,
+        context: Optional[str] = None,
+        provider: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """
+        Persist mid-call classification data (AMD + consent) without finalizing the attempt.
+
+        Used so the UI can display last AMD/DTMF while a call is still in progress.
+        """
+        if not self._enabled:
+            return
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    conn.execute(
+                        """
+                        UPDATE outbound_attempts
+                        SET amd_status=COALESCE(?, amd_status),
+                            amd_cause=COALESCE(?, amd_cause),
+                            consent_dtmf=COALESCE(?, consent_dtmf),
+                            consent_result=COALESCE(?, consent_result),
+                            context=COALESCE(?, context),
+                            provider=COALESCE(?, provider),
+                            error_message=COALESCE(?, error_message)
+                        WHERE id=? AND ended_at_utc IS NULL
+                        """,
+                        (
+                            amd_status,
+                            amd_cause,
+                            consent_dtmf,
+                            consent_result,
+                            context,
+                            provider,
+                            error_message,
+                            attempt_id,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+        await self._run(_sync)
+
     async def finish_attempt(
         self,
         attempt_id: str,
@@ -1159,6 +1411,10 @@ class OutboundStore:
         outcome: str,
         amd_status: Optional[str] = None,
         amd_cause: Optional[str] = None,
+        consent_dtmf: Optional[str] = None,
+        consent_result: Optional[str] = None,
+        context: Optional[str] = None,
+        provider: Optional[str] = None,
         call_history_call_id: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> None:
@@ -1166,18 +1422,55 @@ class OutboundStore:
             return
 
         def _sync():
-            now = _utcnow_iso()
+            now_dt = datetime.now(timezone.utc)
+            now = now_dt.isoformat()
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    # Best-effort duration in seconds.
+                    duration_seconds = None
+                    try:
+                        row = conn.execute(
+                            "SELECT started_at_utc FROM outbound_attempts WHERE id=?",
+                            (attempt_id,),
+                        ).fetchone()
+                        if row and row["started_at_utc"]:
+                            started = datetime.fromisoformat(str(row["started_at_utc"]))
+                            if started.tzinfo is None:
+                                started = started.replace(tzinfo=timezone.utc)
+                            duration_seconds = max(0, int((now_dt - started).total_seconds()))
+                    except Exception:
+                        duration_seconds = None
                     conn.execute(
                         """
                         UPDATE outbound_attempts
-                        SET ended_at_utc=?, outcome=?, amd_status=?, amd_cause=?,
-                            call_history_call_id=?, error_message=?
+                        SET ended_at_utc=?,
+                            duration_seconds=COALESCE(?, duration_seconds),
+                            outcome=?,
+                            amd_status=?,
+                            amd_cause=?,
+                            consent_dtmf=COALESCE(?, consent_dtmf),
+                            consent_result=COALESCE(?, consent_result),
+                            context=COALESCE(?, context),
+                            provider=COALESCE(?, provider),
+                            call_history_call_id=?,
+                            error_message=?
                         WHERE id=?
                         """,
-                        (now, outcome, amd_status, amd_cause, call_history_call_id, error_message, attempt_id),
+                        (
+                            now,
+                            duration_seconds,
+                            outcome,
+                            amd_status,
+                            amd_cause,
+                            consent_dtmf,
+                            consent_result,
+                            context,
+                            provider,
+                            call_history_call_id,
+                            error_message,
+                            attempt_id,
+                        ),
                     )
                     conn.commit()
                 finally:

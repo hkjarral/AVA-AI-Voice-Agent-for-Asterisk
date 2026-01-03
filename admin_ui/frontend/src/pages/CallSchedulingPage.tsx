@@ -1,23 +1,30 @@
 import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
-    CalendarClock,
-    Plus,
-    Play,
-    Pause,
-    Square,
-    Copy,
-    Pencil,
-    Upload,
-    RefreshCw,
-    Trash2,
-    FileDown,
     AlertTriangle,
+    Ban,
+    CalendarClock,
+    Clock,
+    Copy,
+    ExternalLink,
+    FileDown,
+    Pause,
+    Pencil,
     PhoneCall,
-    RotateCcw
+    Play,
+    Plus,
+    RefreshCw,
+    RotateCcw,
+    Search,
+    Square,
+    Trash2,
+    Upload
 } from 'lucide-react';
+import { Modal } from '../components/ui/Modal';
 
 type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived' | 'completed';
+
+type Notice = { type: 'success' | 'error' | 'info'; message: string };
 
 type OutboundMeta = {
     server_timezone: string;
@@ -35,11 +42,12 @@ interface OutboundCampaign {
     max_concurrent: number;
     min_interval_seconds_between_calls: number;
     default_context: string;
-    voicemail_drop_mode: string;
-    voicemail_drop_text?: string | null;
+    voicemail_drop_enabled?: number | boolean;
     voicemail_drop_media_uri?: string | null;
-    created_at_utc?: string;
-    updated_at_utc?: string;
+    consent_enabled?: number | boolean;
+    consent_media_uri?: string | null;
+    consent_timeout_seconds?: number | null;
+    amd_options?: Record<string, any>;
 }
 
 interface CampaignStats {
@@ -49,84 +57,25 @@ interface CampaignStats {
 
 interface LeadRow {
     id: string;
+    name?: string | null;
     phone_number: string;
     state: string;
     attempt_count: number;
+    context_override?: string | null;
     last_outcome?: string | null;
     last_attempt_at_utc?: string | null;
-    context_override?: string | null;
-    lead_timezone?: string | null;
-    custom_vars?: Record<string, any>;
-    created_at_utc?: string;
-    updated_at_utc?: string;
+
+    last_started_at_utc?: string | null;
+    last_duration_seconds?: number | null;
+    last_outcome_attempt?: string | null;
+    last_amd_status?: string | null;
+    last_amd_cause?: string | null;
+    last_consent_dtmf?: string | null;
+    last_context?: string | null;
+    last_provider?: string | null;
+    last_call_history_call_id?: string | null;
+    last_error_message?: string | null;
 }
-
-interface AttemptRow {
-    id: string;
-    phone_number?: string | null;
-    started_at_utc: string;
-    ended_at_utc?: string | null;
-    outcome?: string | null;
-    amd_status?: string | null;
-    amd_cause?: string | null;
-    call_history_call_id?: string | null;
-    error_message?: string | null;
-}
-
-type Notice = { type: 'success' | 'error' | 'info'; message: string };
-
-const formatUtc = (iso?: string | null) => {
-    if (!iso) return '-';
-    try {
-        return new Date(iso).toLocaleString();
-    } catch {
-        return iso;
-    }
-};
-
-const StatusBadge = ({ status, label }: { status: CampaignStatus; label?: string }) => {
-    const cls =
-        status === 'running'
-            ? 'bg-green-500/10 text-green-500 border-green-500/20'
-            : status === 'completed'
-                ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
-            : status === 'paused'
-                ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'
-                : status === 'stopped'
-                    ? 'bg-red-500/10 text-red-500 border-red-500/20'
-                    : status === 'archived'
-                        ? 'bg-muted text-muted-foreground border-border'
-                    : 'bg-muted text-muted-foreground border-border';
-    return (
-        <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium ${cls}`}>
-            {label || status}
-        </span>
-    );
-};
-
-const timeStringInZone = (timeZone: string): string | null => {
-    try {
-        const parts = new Intl.DateTimeFormat('en-US', {
-            timeZone,
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }).formatToParts(new Date());
-        const hour = parts.find(p => p.type === 'hour')?.value;
-        const minute = parts.find(p => p.type === 'minute')?.value;
-        if (!hour || !minute) return null;
-        return `${hour}:${minute}`;
-    } catch {
-        return null;
-    }
-};
-
-const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
-    if (!nowHHMM || !startHHMM || !endHHMM) return true;
-    const crossesMidnight = endHHMM < startHHMM;
-    if (!crossesMidnight) return nowHHMM >= startHHMM && nowHHMM <= endHHMM;
-    return nowHHMM >= startHHMM || nowHHMM <= endHHMM;
-};
 
 const DIALPLAN_SNIPPET = [
     '[aava-outbound-amd]',
@@ -139,24 +88,91 @@ const DIALPLAN_SNIPPET = [
     ' same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)',
     ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
     ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
-    ' same => n(machine),WaitForSilence(1500,3,10)',
-    ' same => n,Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE})',
+    ' same => n(machine),GotoIf($["${AAVA_VM_ENABLED}" = "1"]?vm:machine_done)',
+    ' same => n(vm),WaitForSilence(1500,3,10)',
+    ' same => n(machine_done),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},MACHINE,${AMDCAUSE},,)',
     ' same => n,Hangup()',
-    ' same => n(human),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE})',
+    ' same => n(human),GotoIf($["${AAVA_CONSENT_ENABLED}" = "1"]?consent:human_done)',
+    ' same => n(consent),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})',
+    ' same => n,Playback(${AAVA_CONSENT_PLAYBACK})',
+    ' same => n,Read(AAVA_CONSENT_DTMF,,1)',
+    ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)',
+    ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)',
+    ' same => n(human_timeout),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,timeout)',
+    ' same => n,Hangup()',
+    ' same => n(human_denied),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},2,denied)',
+    ' same => n,Hangup()',
+    ' same => n(human_ok),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},1,accepted)',
+    ' same => n,Hangup()',
+    ' same => n(human_done),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,skipped)',
     ' same => n,Hangup()'
 ].join('\n');
 
+const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
+    if (!nowHHMM || !startHHMM || !endHHMM) return true;
+    const crossesMidnight = endHHMM < startHHMM;
+    if (!crossesMidnight) return nowHHMM >= startHHMM && nowHHMM <= endHHMM;
+    return nowHHMM >= startHHMM || nowHHMM <= endHHMM;
+};
+
+const timeStringInZone = (timeZone: string, now: Date): string | null => {
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone,
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).formatToParts(now);
+        const hour = parts.find(p => p.type === 'hour')?.value;
+        const minute = parts.find(p => p.type === 'minute')?.value;
+        if (!hour || !minute) return null;
+        return `${hour}:${minute}`;
+    } catch {
+        return null;
+    }
+};
+
 const CallSchedulingPage = () => {
-    const [tab, setTab] = useState<'campaigns' | 'leads' | 'attempts'>('campaigns');
+    const [meta, setMeta] = useState<OutboundMeta | null>(null);
+    const [serverOffsetMs, setServerOffsetMs] = useState(0);
+    const [clockTick, setClockTick] = useState(0);
+
     const [campaigns, setCampaigns] = useState<OutboundCampaign[]>([]);
     const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+    const [stats, setStats] = useState<CampaignStats | null>(null);
+
+    const [leads, setLeads] = useState<LeadRow[]>([]);
+    const [leadPage, setLeadPage] = useState(1);
+    const [leadTotalPages, setLeadTotalPages] = useState(1);
+    const [leadStateFilter, setLeadStateFilter] = useState('');
+    const [leadQuery, setLeadQuery] = useState('');
+
     const [showArchived, setShowArchived] = useState(false);
-    const [meta, setMeta] = useState<OutboundMeta | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<Notice | null>(null);
+
+    const [showCampaignModal, setShowCampaignModal] = useState(false);
+    const [campaignModalMode, setCampaignModalMode] = useState<'create' | 'edit'>('create');
+    const [campaignModalStep, setCampaignModalStep] = useState<'settings' | 'assets'>('settings');
+    const [showSetupGuide, setShowSetupGuide] = useState(false);
+
+    const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
+    const [pendingVoicemailFile, setPendingVoicemailFile] = useState<File | null>(null);
+    const [pendingConsentFile, setPendingConsentFile] = useState<File | null>(null);
+
+    const [recycleLeadRow, setRecycleLeadRow] = useState<LeadRow | null>(null);
+    const [recycleMode, setRecycleMode] = useState<'redial' | 'reset'>('redial');
+
+    const [callHistoryModalId, setCallHistoryModalId] = useState<string | null>(null);
+    const [callHistoryLoading, setCallHistoryLoading] = useState(false);
+    const [callHistoryError, setCallHistoryError] = useState<string | null>(null);
+    const [callHistoryRecord, setCallHistoryRecord] = useState<any | null>(null);
+
     const selectedCampaign = useMemo(
         () => campaigns.find(c => c.id === selectedCampaignId) || null,
         [campaigns, selectedCampaignId]
     );
-    const selectedHasVoicemail = Boolean((selectedCampaign?.voicemail_drop_media_uri || '').trim());
 
     const ianaTimezones = useMemo(() => meta?.iana_timezones || [], [meta]);
     const isTimezoneValid = (tz: string) => {
@@ -165,32 +181,43 @@ const CallSchedulingPage = () => {
         if (t.toUpperCase() === 'UTC') return true;
         return ianaTimezones.includes(t);
     };
-    const selectedTimezoneValid = useMemo(
-        () => (selectedCampaign ? isTimezoneValid(selectedCampaign.timezone || '') : true),
-        [selectedCampaign, ianaTimezones]
-    );
+
+    const serverNow = useMemo(() => new Date(Date.now() + serverOffsetMs), [serverOffsetMs, clockTick]);
+    const serverTz = (meta?.server_timezone || 'UTC').trim() || 'UTC';
+    const selectedTz = (selectedCampaign?.timezone || 'UTC').trim() || 'UTC';
+    const formatClock = (d: Date, tz: string) => {
+        try {
+            return new Intl.DateTimeFormat('en-US', {
+                timeZone: tz,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }).format(d);
+        } catch {
+            return d.toLocaleTimeString();
+        }
+    };
 
     const windowInfo = useMemo(() => {
         if (!selectedCampaign) return null;
-        const nowLocal = timeStringInZone(selectedCampaign.timezone || 'UTC');
+        const nowLocal = timeStringInZone(selectedCampaign.timezone || 'UTC', serverNow);
         if (!nowLocal) return null;
-        const within = withinDailyWindow(
-            nowLocal,
-            selectedCampaign.daily_window_start_local,
-            selectedCampaign.daily_window_end_local
-        );
+        const within = withinDailyWindow(nowLocal, selectedCampaign.daily_window_start_local, selectedCampaign.daily_window_end_local);
         return { nowLocal, within };
-    }, [selectedCampaign]);
+    }, [selectedCampaign, serverNow]);
 
-    const [stats, setStats] = useState<CampaignStats | null>(null);
-    const [leads, setLeads] = useState<LeadRow[]>([]);
-    const [attempts, setAttempts] = useState<AttemptRow[]>([]);
+    const selectedVoicemailEnabled = Boolean((selectedCampaign as any)?.voicemail_drop_enabled ?? true);
+    const selectedConsentEnabled = Boolean((selectedCampaign as any)?.consent_enabled ?? false);
 
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [notice, setNotice] = useState<Notice | null>(null);
+    const statusInfo = useMemo(() => {
+        if (!selectedCampaign) return null;
+        const within = windowInfo?.within ?? true;
+        const missing: string[] = [];
+        if (selectedVoicemailEnabled && !(selectedCampaign.voicemail_drop_media_uri || '').trim()) missing.push('Voicemail recording missing');
+        if (selectedConsentEnabled && !(((selectedCampaign as any).consent_media_uri || '') as string).trim()) missing.push('Consent recording missing');
+        return { within, missing };
+    }, [selectedCampaign, windowInfo?.within, selectedVoicemailEnabled, selectedConsentEnabled]);
 
-    const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({
         name: '',
         timezone: 'UTC',
@@ -198,40 +225,39 @@ const CallSchedulingPage = () => {
         daily_window_end_local: '17:00',
         max_concurrent: 1,
         min_interval_seconds_between_calls: 5,
-        default_context: 'default'
+        default_context: 'default',
+        voicemail_drop_enabled: true,
+        consent_enabled: false,
+        consent_timeout_seconds: 5,
+        amd_options: {} as Record<string, any>
     });
 
-    const [showEdit, setShowEdit] = useState(false);
-    const [editForm, setEditForm] = useState({
-        name: '',
-        timezone: 'UTC',
-        daily_window_start_local: '09:00',
-        daily_window_end_local: '17:00',
-        max_concurrent: 1,
-        min_interval_seconds_between_calls: 5,
-        default_context: 'default'
-    });
+    const [editForm, setEditForm] = useState({ ...createForm });
 
-    const [showSetupGuide, setShowSetupGuide] = useState(false);
+    const modalTimezone = (campaignModalMode === 'create' ? createForm.timezone : editForm.timezone) || 'UTC';
+    const modalTimezoneValid = isTimezoneValid(modalTimezone);
 
-    const crossesMidnight = useMemo(() => {
-        const s = createForm.daily_window_start_local;
-        const e = createForm.daily_window_end_local;
-        return Boolean(s && e && e < s);
-    }, [createForm.daily_window_start_local, createForm.daily_window_end_local]);
-
-    const editCrossesMidnight = useMemo(() => {
-        const s = editForm.daily_window_start_local;
-        const e = editForm.daily_window_end_local;
-        return Boolean(s && e && e < s);
-    }, [editForm.daily_window_start_local, editForm.daily_window_end_local]);
+    useEffect(() => {
+        const id = setInterval(() => setClockTick(t => t + 1), 1000);
+        return () => clearInterval(id);
+    }, []);
 
     const refreshMeta = async () => {
         const res = await axios.get('/api/outbound/meta');
         setMeta(res.data || null);
-        const serverTz = (res.data?.server_timezone || '').trim();
-        if (serverTz) {
-            setCreateForm(prev => ((prev.timezone || '').trim() && prev.timezone !== 'UTC' ? prev : { ...prev, timezone: serverTz }));
+        try {
+            const serverNowIso = res.data?.server_now_iso;
+            if (serverNowIso) {
+                const serverNowUtc = new Date(serverNowIso).getTime();
+                const clientNowUtc = Date.now();
+                setServerOffsetMs(serverNowUtc - clientNowUtc);
+            }
+        } catch {
+            // ignore
+        }
+        const serverTzName = (res.data?.server_timezone || '').trim();
+        if (serverTzName) {
+            setCreateForm(prev => ((prev.timezone || '').trim() && prev.timezone !== 'UTC' ? prev : { ...prev, timezone: serverTzName }));
         }
     };
 
@@ -249,14 +275,20 @@ const CallSchedulingPage = () => {
     };
 
     const refreshCampaignDetails = async (campaignId: string) => {
-        const [statsRes, leadsRes, attemptsRes] = await Promise.all([
+        const [statsRes, leadsRes] = await Promise.all([
             axios.get(`/api/outbound/campaigns/${campaignId}/stats`),
-            axios.get(`/api/outbound/campaigns/${campaignId}/leads`, { params: { page: 1, page_size: 50 } }),
-            axios.get(`/api/outbound/campaigns/${campaignId}/attempts`, { params: { page: 1, page_size: 50 } })
+            axios.get(`/api/outbound/campaigns/${campaignId}/leads`, {
+                params: {
+                    page: leadPage,
+                    page_size: 50,
+                    state: leadStateFilter || undefined,
+                    q: leadQuery || undefined
+                }
+            })
         ]);
         setStats(statsRes.data || {});
         setLeads(leadsRes.data?.leads || []);
-        setAttempts(attemptsRes.data?.attempts || []);
+        setLeadTotalPages(leadsRes.data?.total_pages || 1);
     };
 
     useEffect(() => {
@@ -264,6 +296,7 @@ const CallSchedulingPage = () => {
         (async () => {
             try {
                 setLoading(true);
+                await refreshMeta();
                 await refreshCampaigns();
                 setError(null);
             } catch (e: any) {
@@ -275,15 +308,8 @@ const CallSchedulingPage = () => {
         return () => {
             mounted = false;
         };
-    }, [showArchived]);
-
-    useEffect(() => {
-        // Load meta once; avoids overwriting user input in create modal.
-        refreshMeta().catch(() => {
-            // ignore
-        });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [showArchived]);
 
     useEffect(() => {
         if (!selectedCampaignId) return;
@@ -309,26 +335,71 @@ const CallSchedulingPage = () => {
             clearInterval(interval);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedCampaignId, showArchived]);
+    }, [selectedCampaignId, leadPage, leadStateFilter, leadQuery]);
+
+    const openCreate = () => {
+        setCampaignModalMode('create');
+        setCampaignModalStep('settings');
+        setShowSetupGuide(false);
+        setShowCampaignModal(true);
+    };
+
+    const openEdit = () => {
+        if (!selectedCampaign) return;
+        setCampaignModalMode('edit');
+        setCampaignModalStep('settings');
+        setShowSetupGuide(false);
+        setEditForm({
+            name: selectedCampaign.name || '',
+            timezone: selectedCampaign.timezone || 'UTC',
+            daily_window_start_local: selectedCampaign.daily_window_start_local || '09:00',
+            daily_window_end_local: selectedCampaign.daily_window_end_local || '17:00',
+            max_concurrent: selectedCampaign.max_concurrent || 1,
+            min_interval_seconds_between_calls: selectedCampaign.min_interval_seconds_between_calls || 5,
+            default_context: selectedCampaign.default_context || 'default',
+            voicemail_drop_enabled: Boolean((selectedCampaign as any).voicemail_drop_enabled ?? true),
+            consent_enabled: Boolean((selectedCampaign as any).consent_enabled ?? false),
+            consent_timeout_seconds: Number((selectedCampaign as any).consent_timeout_seconds ?? 5),
+            amd_options: (selectedCampaign as any).amd_options || {}
+        });
+        setShowCampaignModal(true);
+    };
 
     const createCampaign = async () => {
         try {
             const res = await axios.post('/api/outbound/campaigns', createForm);
             await refreshCampaigns();
             setSelectedCampaignId(res.data.id);
-            setShowCreate(false);
-            setNotice({ type: 'success', message: 'Campaign created. Upload voicemail and import leads before starting.' });
+            setCampaignModalMode('edit');
+            setCampaignModalStep('assets');
+            setNotice({ type: 'success', message: 'Campaign created. Finish setup (recordings/leads) in this modal.' });
             setCreateForm({
                 name: '',
-                timezone: 'UTC',
+                timezone: serverTz,
                 daily_window_start_local: '09:00',
                 daily_window_end_local: '17:00',
                 max_concurrent: 1,
                 min_interval_seconds_between_calls: 5,
-                default_context: 'default'
+                default_context: 'default',
+                voicemail_drop_enabled: true,
+                consent_enabled: false,
+                consent_timeout_seconds: 5,
+                amd_options: {}
             });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to create campaign' });
+        }
+    };
+
+    const saveEdit = async () => {
+        if (!selectedCampaign) return;
+        try {
+            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, editForm);
+            await refreshCampaigns();
+            await refreshCampaignDetails(selectedCampaign.id);
+            setNotice({ type: 'success', message: 'Campaign updated' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to update campaign' });
         }
     };
 
@@ -376,62 +447,6 @@ const CallSchedulingPage = () => {
         }
     };
 
-    const openEdit = () => {
-        if (!selectedCampaign) return;
-        setEditForm({
-            name: selectedCampaign.name || '',
-            timezone: selectedCampaign.timezone || 'UTC',
-            daily_window_start_local: selectedCampaign.daily_window_start_local || '09:00',
-            daily_window_end_local: selectedCampaign.daily_window_end_local || '17:00',
-            max_concurrent: selectedCampaign.max_concurrent || 1,
-            min_interval_seconds_between_calls: selectedCampaign.min_interval_seconds_between_calls || 5,
-            default_context: selectedCampaign.default_context || 'default'
-        });
-        setShowEdit(true);
-    };
-
-    const saveEdit = async () => {
-        if (!selectedCampaign) return;
-        try {
-            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, editForm);
-            setShowEdit(false);
-            await refreshCampaigns();
-            await refreshCampaignDetails(selectedCampaign.id);
-            setNotice({ type: 'success', message: 'Campaign updated' });
-        } catch (e: any) {
-            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to update campaign' });
-        }
-    };
-
-    const cancelLead = async (leadId: string) => {
-        try {
-            await axios.post(`/api/outbound/leads/${leadId}/cancel`);
-            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
-        } catch (e: any) {
-            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to cancel lead' });
-        }
-    };
-
-    const recycleLead = async (leadId: string) => {
-        try {
-            await axios.post(`/api/outbound/leads/${leadId}/recycle`);
-            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
-            setNotice({ type: 'success', message: 'Lead recycled back to pending' });
-        } catch (e: any) {
-            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to recycle lead' });
-        }
-    };
-
-    const downloadText = (filename: string, text: string) => {
-        const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-    };
-
     const importLeads = async (campaignId: string, file: File) => {
         const formData = new FormData();
         formData.append('file', file);
@@ -439,9 +454,15 @@ const CallSchedulingPage = () => {
             const res = await axios.post(`/api/outbound/campaigns/${campaignId}/leads/import?skip_existing=true`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
-            const data = res.data as LeadImportResponse;
+            const data = res.data;
             if (data?.rejected > 0 && data?.error_csv) {
-                downloadText(`outbound_import_errors_${new Date().toISOString().slice(0, 19)}.csv`, data.error_csv);
+                const blob = new Blob([data.error_csv], { type: 'text/csv;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `outbound_import_errors_${new Date().toISOString().slice(0, 19)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
             }
             await refreshCampaignDetails(campaignId);
             setNotice({
@@ -453,18 +474,30 @@ const CallSchedulingPage = () => {
         }
     };
 
-    const uploadVoicemail = async (campaignId: string, file: File) => {
+    const uploadMedia = async (campaignId: string, kind: 'voicemail' | 'consent', file: File) => {
         const formData = new FormData();
         formData.append('file', file);
         try {
-            await axios.post(`/api/outbound/campaigns/${campaignId}/voicemail/upload`, formData, {
+            await axios.post(`/api/outbound/campaigns/${campaignId}/${kind}/upload`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
             await refreshCampaigns();
             await refreshCampaignDetails(campaignId);
-            setNotice({ type: 'success', message: 'Voicemail uploaded and linked to campaign' });
+            setNotice({ type: 'success', message: `${kind === 'voicemail' ? 'Voicemail' : 'Consent'} recording uploaded` });
         } catch (e: any) {
-            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to upload voicemail' });
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || `Failed to upload ${kind} recording` });
+        }
+    };
+
+    const previewMedia = async (campaignId: string, kind: 'voicemail' | 'consent') => {
+        try {
+            const res = await axios.get(`/api/outbound/campaigns/${campaignId}/${kind}/preview.wav`, { responseType: 'blob' });
+            const url = URL.createObjectURL(res.data);
+            const audio = new Audio(url);
+            audio.onended = () => URL.revokeObjectURL(url);
+            await audio.play();
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || `Failed to preview ${kind}` });
         }
     };
 
@@ -482,16 +515,76 @@ const CallSchedulingPage = () => {
         }
     };
 
-    const previewVoicemail = async (campaignId: string) => {
+    const ignoreLead = async (leadId: string) => {
         try {
-            const res = await axios.get(`/api/outbound/campaigns/${campaignId}/voicemail/preview.wav`, { responseType: 'blob' });
-            const url = URL.createObjectURL(res.data);
-            const audio = new Audio(url);
-            audio.onended = () => URL.revokeObjectURL(url);
-            await audio.play();
+            await axios.post(`/api/outbound/leads/${leadId}/ignore`);
+            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            setNotice({ type: 'success', message: 'Lead ignored (canceled). Use Recycle to re-dial.' });
         } catch (e: any) {
-            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to preview voicemail' });
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to ignore lead' });
         }
+    };
+
+    const recycleLead = async (leadId: string, mode: 'redial' | 'reset') => {
+        try {
+            await axios.post(`/api/outbound/leads/${leadId}/recycle`, { mode });
+            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            setNotice({ type: 'success', message: mode === 'reset' ? 'Lead reset and re-queued' : 'Lead re-queued for re-dial' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to recycle lead' });
+        }
+    };
+
+    const deleteLead = async (leadId: string) => {
+        if (!confirm('Delete this lead and all its attempts? This cannot be undone.')) return;
+        try {
+            await axios.delete(`/api/outbound/leads/${leadId}`);
+            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+            setNotice({ type: 'success', message: 'Lead deleted' });
+        } catch (e: any) {
+            setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to delete lead' });
+        }
+    };
+
+    const openCallHistory = async (callRecordId: string) => {
+        setCallHistoryModalId(callRecordId);
+        setCallHistoryLoading(true);
+        setCallHistoryError(null);
+        setCallHistoryRecord(null);
+        try {
+            const res = await axios.get(`/api/calls/${callRecordId}`);
+            setCallHistoryRecord(res.data);
+        } catch (e: any) {
+            setCallHistoryError(e?.response?.data?.detail || e?.message || 'Failed to load call history');
+        } finally {
+            setCallHistoryLoading(false);
+        }
+    };
+
+    const renderLeadTime = (iso?: string | null) => {
+        if (!iso || !selectedCampaign) return '-';
+        try {
+            return new Intl.DateTimeFormat('en-US', {
+                timeZone: selectedCampaign.timezone || 'UTC',
+                year: 'numeric',
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }).format(new Date(iso));
+        } catch {
+            return iso;
+        }
+    };
+
+    const renderDuration = (seconds?: number | null) => {
+        if (seconds == null) return '-';
+        const s = Math.max(0, Math.floor(seconds));
+        if (s < 60) return `${s}s`;
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        return `${m}m ${r}s`;
     };
 
     if (loading) {
@@ -499,7 +592,7 @@ const CallSchedulingPage = () => {
             <div className="p-6">
                 <div className="flex items-center gap-2 text-muted-foreground">
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    Loading outbound campaigns…
+                    Loading call scheduling…
                 </div>
             </div>
         );
@@ -512,6 +605,7 @@ const CallSchedulingPage = () => {
                     <option key={tz} value={tz} />
                 ))}
             </datalist>
+
             <div className="flex items-start justify-between gap-4">
                 <div>
                     <h1 className="text-3xl font-bold flex items-center gap-2">
@@ -519,790 +613,931 @@ const CallSchedulingPage = () => {
                         Call Scheduling
                     </h1>
                     <p className="text-sm text-muted-foreground">
-                        Schedule outbound campaigns (MVP: single queue, skip-existing CSV import, voicemail drop).
+                        Campaign scheduler (MVP): lead list + optional voicemail drop + optional consent gate.
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <button
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-                        onClick={async () => {
-                            await refreshCampaigns();
-                            if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
-                        }}
-                    >
-                        <RefreshCw className="w-4 h-4" />
-                        Refresh
-                    </button>
-                    <button
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                        onClick={() => setShowCreate(true)}
-                    >
-                        <Plus className="w-4 h-4" />
-                        New Campaign
-                    </button>
+                <div className="flex flex-col items-end gap-2">
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={async () => {
+                                await refreshCampaigns();
+                                if (selectedCampaignId) await refreshCampaignDetails(selectedCampaignId);
+                            }}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Refresh
+                        </button>
+                        <button
+                            onClick={openCreate}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                        >
+                            <Plus className="w-4 h-4" />
+                            New Campaign
+                        </button>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            Server: <span className="font-mono text-foreground">{formatClock(serverNow, serverTz)}</span>{' '}
+                            <span className="font-mono">{serverTz}</span>
+                        </span>
+                        {selectedCampaign && (
+                            <span className="inline-flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                Campaign: <span className="font-mono text-foreground">{formatClock(serverNow, selectedTz)}</span>{' '}
+                                <span className="font-mono">{selectedTz}</span>
+                            </span>
+                        )}
+                    </div>
                 </div>
             </div>
 
             {notice && (
                 <div
-                    className={`p-4 rounded-md border text-sm ${notice.type === 'error'
-                        ? 'border-red-500/30 bg-red-500/10 text-red-500'
-                        : notice.type === 'success'
-                            ? 'border-green-500/30 bg-green-500/10 text-green-500'
-                            : 'border-border bg-card/50 text-muted-foreground'
-                        }`}
+                    className={`rounded-lg border p-3 text-sm ${
+                        notice.type === 'error'
+                            ? 'border-red-500/30 bg-red-500/10 text-red-600'
+                            : notice.type === 'success'
+                              ? 'border-green-500/30 bg-green-500/10 text-green-700'
+                              : 'border-border bg-muted/30 text-foreground'
+                    }`}
                 >
-                    <div className="flex items-start justify-between gap-3">
-                        <div>{notice.message}</div>
-                        <button
-                            className="text-xs px-2 py-1 rounded hover:bg-accent/60"
-                            onClick={() => setNotice(null)}
-                            title="Dismiss"
-                        >
+                    <div className="flex items-center justify-between gap-3">
+                        <span>{notice.message}</span>
+                        <button className="text-muted-foreground hover:text-foreground" onClick={() => setNotice(null)}>
                             ×
                         </button>
                     </div>
                 </div>
             )}
 
-            {error && (
-                <div className="p-4 rounded-md border border-red-500/30 bg-red-500/10 text-red-500 text-sm">
-                    {error}
-                </div>
-            )}
+            {error && <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600">{error}</div>}
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                <div className="lg:col-span-1 border border-border rounded-lg bg-card/50 overflow-hidden">
-                                <div className="p-3 border-b border-border flex items-center justify-between gap-2">
-                                    <div className="text-sm font-medium">Campaigns</div>
-                                    <div className="flex items-center gap-2">
-                                        <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-                                            <input
-                                                type="checkbox"
-                                                className="accent-current"
-                                                checked={showArchived}
-                                                onChange={e => setShowArchived(e.target.checked)}
-                                            />
-                                            Show archived
-                                        </label>
-                                        <div className="text-xs text-muted-foreground">{campaigns.length}</div>
-                                    </div>
-                                </div>
-                    <div className="max-h-[520px] overflow-y-auto">
-                        {campaigns.length === 0 && (
-                            <div className="p-4 text-sm text-muted-foreground">No campaigns yet.</div>
+            <div className="grid grid-cols-[320px_1fr] gap-6">
+                <div className="border rounded-lg p-3 bg-card">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="font-semibold">Campaigns</div>
+                        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                            Show archived
+                        </label>
+                    </div>
+                    <div className="max-h-[520px] overflow-auto">
+                        {campaigns.length === 0 ? (
+                            <div className="text-sm text-muted-foreground py-6 text-center">No campaigns yet.</div>
+                        ) : (
+                            <div className="space-y-2">
+                                {campaigns.map(c => (
+                                    <button
+                                        key={c.id}
+                                        onClick={() => {
+                                            setSelectedCampaignId(c.id);
+                                            setLeadPage(1);
+                                        }}
+                                        className={`w-full text-left rounded-lg border p-3 hover:bg-muted/40 transition-colors ${
+                                            selectedCampaignId === c.id ? 'border-primary/40 bg-primary/5' : 'border-border'
+                                        }`}
+                                    >
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="font-medium truncate">{c.name}</div>
+                                            <span className="text-xs text-muted-foreground">{c.status}</span>
+                                        </div>
+                                        <div className="text-xs text-muted-foreground mt-1">
+                                            TZ: <span className="font-mono">{c.timezone}</span> · Window: {c.daily_window_start_local}–{c.daily_window_end_local}
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
                         )}
-                        {campaigns.map(c => (
-                            <button
-                                key={c.id}
-                                onClick={() => setSelectedCampaignId(c.id)}
-                                className={`w-full text-left px-3 py-3 border-b border-border/50 hover:bg-accent/40 transition ${selectedCampaignId === c.id ? 'bg-accent/60' : ''
-                                    }`}
-                            >
-                                <div className="flex items-center justify-between gap-2">
-                                    <div className="font-medium text-sm truncate">{c.name}</div>
-                                    <StatusBadge status={c.status} />
-                                </div>
-                                <div className="text-xs text-muted-foreground mt-1 truncate">
-                                    TZ: {c.timezone} · Window: {c.daily_window_start_local}–{c.daily_window_end_local}
-                                </div>
-                            </button>
-                        ))}
                     </div>
                 </div>
 
-                <div className="lg:col-span-3 space-y-4">
-                    {!selectedCampaign && (
-                        <div className="p-6 border border-border rounded-lg bg-card/50 text-muted-foreground">
-                            Select a campaign to view leads and attempts.
-                        </div>
-                    )}
-
-                    {selectedCampaign && (
+                <div className="border rounded-lg p-4 bg-card">
+                    {!selectedCampaign ? (
+                        <div className="text-sm text-muted-foreground py-10 text-center">Select a campaign to view details.</div>
+                    ) : (
                         <>
-                            <div className="border border-border rounded-lg bg-card/50 p-4 flex flex-col gap-3">
-                                <div className="flex items-start justify-between gap-4">
-	                                    <div>
-	                                        <div className="flex items-center gap-2">
-	                                            <div className="text-xl font-semibold">{selectedCampaign.name}</div>
-	                                            <StatusBadge
-	                                                status={selectedCampaign.status}
-	                                                label={
-	                                                    selectedCampaign.status === 'running' && windowInfo && !windowInfo.within
-	                                                        ? 'running (outside window)'
-	                                                        : undefined
-	                                                }
-	                                            />
-	                                        </div>
-	                                        <div className="text-sm text-muted-foreground">
-	                                            Default context: <span className="font-mono">{selectedCampaign.default_context}</span> ·
-	                                            Max concurrent: {selectedCampaign.max_concurrent} ·
-	                                            Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
-	                                        </div>
+                            <div className="flex items-start justify-between gap-4">
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <div className="text-xl font-semibold">{selectedCampaign.name}</div>
+                                        <span className="text-xs px-2 py-0.5 rounded border">{selectedCampaign.status}</span>
+                                    </div>
+                                    <div className="text-sm text-muted-foreground mt-1">
+                                        Default context: <span className="font-mono">{selectedCampaign.default_context}</span> · Max concurrent:{' '}
+                                        {selectedCampaign.max_concurrent} · Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
+                                    </div>
                                     <div className="text-xs text-muted-foreground mt-1">
-                                        Voicemail media: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
-                                        {selectedCampaign.status === 'running' && windowInfo && (
-                                            <span className="ml-3">
-                                                Now ({selectedCampaign.timezone}): <span className="font-mono">{windowInfo.nowLocal}</span>
+                                        TZ: <span className="font-mono">{selectedCampaign.timezone}</span> · Window:{' '}
+                                        {selectedCampaign.daily_window_start_local}–{selectedCampaign.daily_window_end_local}
+                                        {windowInfo && (
+                                            <span>
+                                                {' '}
+                                                · Now: <span className="font-mono">{windowInfo.nowLocal}</span>{' '}
+                                                {windowInfo.within ? <span className="text-green-600">within</span> : <span className="text-yellow-600">outside</span>}
                                             </span>
                                         )}
                                     </div>
-                                    {!selectedTimezoneValid && (
-                                        <div className="mt-2 text-xs text-red-500 flex items-start gap-2">
-                                            <AlertTriangle className="w-3 h-3 mt-0.5" />
-                                            <div>
-                                                Invalid timezone <span className="font-mono">{selectedCampaign.timezone}</span>. Use an IANA timezone like{' '}
-                                                <span className="font-mono">America/Phoenix</span> or <span className="font-mono">UTC</span>. Calls will not dial until fixed.
-                                            </div>
-                                        </div>
+                                </div>
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                    <button className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={openEdit}>
+                                        <Pencil className="w-4 h-4" /> Edit
+                                    </button>
+                                    <button
+                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                        onClick={() => cloneCampaign(selectedCampaign.id)}
+                                    >
+                                        <Copy className="w-4 h-4" /> Clone
+                                    </button>
+                                    {selectedCampaign.status !== 'archived' && (
+                                        <button
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                            onClick={() => archiveCampaign(selectedCampaign.id)}
+                                        >
+                                            <Ban className="w-4 h-4" /> Archive
+                                        </button>
                                     )}
-                                    {!selectedHasVoicemail && (
-                                        <div className="mt-2 text-xs text-yellow-500 flex items-center gap-2">
-                                            <AlertTriangle className="w-3 h-3" />
-                                            Upload voicemail media before starting (required for MVP).
-                                        </div>
-                                    )}
-	                                    </div>
-                                    <div className="flex items-center gap-2">
+                                    <button
+                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-600 hover:bg-red-500/10 text-sm disabled:opacity-50"
+                                        disabled={selectedCampaign.status === 'running'}
+                                        onClick={() => {
+                                            if (!confirm('Permanently delete this campaign and all leads/attempts? This cannot be undone.')) return;
+                                            deleteCampaign(selectedCampaign.id);
+                                        }}
+                                    >
+                                        <Trash2 className="w-4 h-4" /> Delete
+                                    </button>
+                                    {selectedCampaign.status !== 'running' ? (
                                         <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                            onClick={openEdit}
-                                            disabled={selectedCampaign.status === 'running'}
-	                                            title={selectedCampaign.status === 'running' ? 'Pause the campaign to edit' : 'Edit campaign'}
-	                                        >
-	                                            <Pencil className="w-4 h-4" />
-	                                            Edit
-	                                        </button>
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-                                            onClick={() => cloneCampaign(selectedCampaign.id)}
+                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                                            onClick={() => setStatus(selectedCampaign.id, 'running')}
                                         >
-                                            <Copy className="w-4 h-4" />
-                                            Clone
+                                            <Play className="w-4 h-4" /> Start
                                         </button>
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                            onClick={() => {
-                                                const ok = confirm(
-                                                    'Archive this campaign?\n\nIt will be hidden by default (use “Show archived” to view it again).'
-                                                );
-                                                if (ok) archiveCampaign(selectedCampaign.id);
-                                            }}
-                                            disabled={selectedCampaign.status === 'running'}
-                                            title={selectedCampaign.status === 'running' ? 'Pause/stop the campaign before archiving' : 'Archive campaign'}
-                                        >
-                                            Archive
-                                        </button>
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                            onClick={() => {
-                                                const ok = confirm(
-                                                    'Permanently delete this campaign?\n\nThis will delete ALL leads and attempts for this campaign and cannot be undone.'
-                                                );
-                                                if (ok) deleteCampaign(selectedCampaign.id);
-                                            }}
-                                            disabled={selectedCampaign.status === 'running'}
-                                            title={selectedCampaign.status === 'running' ? 'Pause/stop the campaign before deleting' : 'Delete campaign'}
-                                        >
-                                            Delete
-                                        </button>
-                                        {selectedCampaign.status !== 'running' ? (
+                                    ) : (
+                                        <>
                                             <button
-                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-600/90 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                onClick={() => setStatus(selectedCampaign.id, 'running')}
-                                                disabled={!selectedHasVoicemail || !selectedTimezoneValid}
-                                                title={
-                                                    !selectedHasVoicemail
-                                                        ? 'Upload voicemail media first'
-                                                        : !selectedTimezoneValid
-                                                            ? 'Fix invalid timezone before starting'
-                                                            : 'Start campaign'
-                                                }
-                                            >
-                                                <Play className="w-4 h-4" />
-                                                Start
-                                            </button>
-                                        ) : (
-                                            <button
-                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-600 text-white hover:bg-yellow-600/90 text-sm"
+                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500 text-black hover:bg-yellow-500/90 text-sm"
                                                 onClick={() => setStatus(selectedCampaign.id, 'paused')}
                                             >
-                                                <Pause className="w-4 h-4" />
-                                                Pause
+                                                <Pause className="w-4 h-4" /> Pause
                                             </button>
-                                        )}
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-red-600 text-white hover:bg-red-600/90 text-sm"
-                                            onClick={() => {
-                                                const cancel = confirm('Stop campaign and cancel remaining pending leads?\n\nOK = stop + cancel pending\nCancel = stop only');
-                                                setStatus(selectedCampaign.id, 'stopped', cancel);
-                                            }}
-                                        >
-                                            <Square className="w-4 h-4" />
-                                            Stop
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                    <div className="p-3 rounded-md border border-border">
-                                        <div className="text-xs text-muted-foreground">QUEUE</div>
-                                        <div className="text-sm mt-1">
-                                            Pending: {stats?.lead_states?.pending || 0} · Leased: {stats?.lead_states?.leased || 0}
-                                        </div>
-                                    </div>
-                                    <div className="p-3 rounded-md border border-border">
-                                        <div className="text-xs text-muted-foreground">IN PROGRESS</div>
-                                        <div className="text-sm mt-1">
-                                            Dialing: {stats?.lead_states?.dialing || 0} · In call: {stats?.lead_states?.in_progress || 0}
-                                        </div>
-                                    </div>
-                                    <div className="p-3 rounded-md border border-border">
-                                        <div className="text-xs text-muted-foreground">OUTCOMES</div>
-                                        <div className="text-sm mt-1">
-                                            VM: {stats?.attempt_outcomes?.voicemail_dropped || 0} · Human: {stats?.attempt_outcomes?.answered_human || 0} · Errors:{' '}
-                                            {stats?.attempt_outcomes?.error || 0}
-                                        </div>
-                                    </div>
+                                            <button
+                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500 text-white hover:bg-red-500/90 text-sm"
+                                                onClick={() => {
+                                                    const cancel = confirm(
+                                                        'Stop campaign. Cancel all remaining pending leads?\n\nOK = Stop + cancel pending (non-resumable)\nCancel = Stop only (resumable)'
+                                                    );
+                                                    setStatus(selectedCampaign.id, 'stopped', cancel);
+                                                }}
+                                            >
+                                                <Square className="w-4 h-4" /> Stop
+                                            </button>
+                                        </>
+                                    )}
                                 </div>
                             </div>
 
-                            <div className="border border-border rounded-lg bg-card/50 overflow-hidden">
-                                <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-                                    <div className="flex gap-2">
-                                        <button
-                                            className={`px-3 py-1.5 rounded-md text-sm ${tab === 'campaigns' ? 'bg-accent' : 'hover:bg-accent/60'
-                                                }`}
-                                            onClick={() => setTab('campaigns')}
-                                        >
-                                            Campaigns
-                                        </button>
-                                        <button
-                                            className={`px-3 py-1.5 rounded-md text-sm ${tab === 'leads' ? 'bg-accent' : 'hover:bg-accent/60'}`}
-                                            onClick={() => setTab('leads')}
-                                        >
-                                            Leads
-                                        </button>
-                                        <button
-                                            className={`px-3 py-1.5 rounded-md text-sm ${tab === 'attempts' ? 'bg-accent' : 'hover:bg-accent/60'}`}
-                                            onClick={() => setTab('attempts')}
-                                        >
-                                            Attempts
-                                        </button>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+                                <div className="border rounded-lg p-3">
+                                    <div className="text-xs text-muted-foreground">QUEUE</div>
+                                    <div className="text-sm mt-1">
+                                        Pending: <span className="font-medium">{stats?.lead_states?.pending || 0}</span> · Leased:{' '}
+                                        <span className="font-medium">{stats?.lead_states?.leased || 0}</span>
                                     </div>
-                                    {tab === 'leads' && (
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/80 text-sm"
-                                                onClick={downloadSampleCsv}
-                                                title="Download a sample lead import CSV"
-                                            >
-                                                <FileDown className="w-4 h-4" />
-                                                Sample CSV
-                                            </button>
-                                            <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm cursor-pointer">
-                                                <Upload className="w-4 h-4" />
-                                                Import CSV (skip existing)
-                                                <input
-                                                    type="file"
-                                                    accept=".csv,text/csv"
-                                                    className="hidden"
-                                                    onChange={e => {
-                                                        const f = e.target.files?.[0];
-                                                        if (f) importLeads(selectedCampaign.id, f);
-                                                        e.currentTarget.value = '';
-                                                    }}
-                                                />
-                                            </label>
+                                </div>
+                                <div className="border rounded-lg p-3">
+                                    <div className="text-xs text-muted-foreground">IN PROGRESS</div>
+                                    <div className="text-sm mt-1">
+                                        Dialing: <span className="font-medium">{stats?.lead_states?.dialing || 0}</span> · In call:{' '}
+                                        <span className="font-medium">{stats?.lead_states?.in_progress || 0}</span>
+                                    </div>
+                                </div>
+                                <div className="border rounded-lg p-3">
+                                    <div className="text-xs text-muted-foreground">OUTCOMES</div>
+                                    <div className="text-sm mt-1">
+                                        VM: <span className="font-medium">{stats?.attempt_outcomes?.voicemail_dropped || 0}</span> · Human:{' '}
+                                        <span className="font-medium">{stats?.attempt_outcomes?.answered_human || 0}</span> · Errors:{' '}
+                                        <span className="font-medium">{stats?.attempt_outcomes?.error || 0}</span>
+                                    </div>
+                                </div>
+                                <div className="border rounded-lg p-3">
+                                    <div className="text-xs text-muted-foreground">STATUS</div>
+                                    <div className="text-sm mt-1">
+                                        {statusInfo?.within === false ? (
+                                            <span className="inline-flex items-center gap-1 text-yellow-600">
+                                                <AlertTriangle className="w-4 h-4" /> Outside window
+                                            </span>
+                                        ) : (
+                                            <span className="inline-flex items-center gap-1 text-green-700">
+                                                <PhoneCall className="w-4 h-4" /> Ready
+                                            </span>
+                                        )}
+                                    </div>
+                                    {statusInfo?.missing?.length ? (
+                                        <div className="text-xs text-yellow-700 mt-1 space-y-0.5">
+                                            {statusInfo.missing.map(m => (
+                                                <div key={m} className="flex items-center gap-1">
+                                                    <AlertTriangle className="w-3 h-3" /> {m}
+                                                </div>
+                                            ))}
                                         </div>
-                                    )}
+                                    ) : null}
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+
+                <div className="col-span-2 border rounded-lg bg-card">
+                    <div className="flex items-center justify-between gap-3 p-3 border-b">
+                        <div className="flex items-center gap-2">
+                            <div className="font-semibold">Leads</div>
+                            {selectedCampaign && leads.length === 0 && (
+                                <button
+                                    className="inline-flex items-center gap-2 px-2 py-1 rounded-md border hover:bg-muted text-xs"
+                                    onClick={() => {
+                                        setCampaignModalMode('edit');
+                                        setCampaignModalStep('assets');
+                                        setShowCampaignModal(true);
+                                    }}
+                                >
+                                    <Upload className="w-3 h-3" /> Import leads
+                                </button>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="relative">
+                                <Search className="w-4 h-4 absolute left-2 top-2.5 text-muted-foreground" />
+                                <input
+                                    value={leadQuery}
+                                    onChange={e => {
+                                        setLeadQuery(e.target.value);
+                                        setLeadPage(1);
+                                    }}
+                                    placeholder="Search name/number…"
+                                    className="pl-8 pr-3 py-2 rounded-lg border bg-background text-sm w-56"
+                                />
+                            </div>
+                            <select
+                                value={leadStateFilter}
+                                onChange={e => {
+                                    setLeadStateFilter(e.target.value);
+                                    setLeadPage(1);
+                                }}
+                                className="px-3 py-2 rounded-lg border bg-background text-sm"
+                            >
+                                <option value="">All states</option>
+                                <option value="pending">pending</option>
+                                <option value="leased">leased</option>
+                                <option value="dialing">dialing</option>
+                                <option value="in_progress">in_progress</option>
+                                <option value="completed">completed</option>
+                                <option value="failed">failed</option>
+                                <option value="canceled">canceled</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                        <table className="min-w-[1500px] w-full text-sm">
+                            <thead className="bg-muted/30 text-muted-foreground">
+                                <tr className="text-left">
+                                    <th className="py-2 px-3">Name</th>
+                                    <th className="py-2 px-3">Number</th>
+                                    <th className="py-2 px-3">State</th>
+                                    <th className="py-2 px-3">Context</th>
+                                    <th className="py-2 px-3">Provider</th>
+                                    <th className="py-2 px-3">Time</th>
+                                    <th className="py-2 px-3">Duration</th>
+                                    <th className="py-2 px-3">Attempts</th>
+                                    <th className="py-2 px-3">Outcome</th>
+                                    <th className="py-2 px-3">AMD</th>
+                                    <th className="py-2 px-3">DTMF</th>
+                                    <th className="py-2 px-3">Call History</th>
+                                    <th className="py-2 px-3">Last Error</th>
+                                    <th className="py-2 px-3 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {leads.map(l => {
+                                    const effectiveContext = (l.last_context || l.context_override || selectedCampaign?.default_context || 'default') as string;
+                                    const provider = (l.last_provider || '-') as string;
+                                    const amd = l.last_amd_status ? `${l.last_amd_status}${l.last_amd_cause ? `/${l.last_amd_cause}` : ''}` : '-';
+                                    const outcome = l.last_outcome_attempt || l.last_outcome || '-';
+                                    const dtmf = l.last_consent_dtmf || '-';
+                                    const canDelete = Boolean(selectedCampaign && selectedCampaign.status !== 'running');
+                                    const isIgnored = l.state === 'canceled';
+                                    return (
+                                        <tr key={l.id} className="border-b border-border/50">
+                                            <td className="py-2 px-3">{l.name || '-'}</td>
+                                            <td className="py-2 px-3 font-mono">{l.phone_number}</td>
+                                            <td className="py-2 px-3">{l.state}</td>
+                                            <td className="py-2 px-3 font-mono">{effectiveContext}</td>
+                                            <td className="py-2 px-3 font-mono">{provider}</td>
+                                            <td className="py-2 px-3">{renderLeadTime(l.last_started_at_utc || l.last_attempt_at_utc)}</td>
+                                            <td className="py-2 px-3">{renderDuration(l.last_duration_seconds ?? null)}</td>
+                                            <td className="py-2 px-3">{l.attempt_count}</td>
+                                            <td className="py-2 px-3">{outcome}</td>
+                                            <td className="py-2 px-3 font-mono">{amd}</td>
+                                            <td className="py-2 px-3 font-mono">{dtmf}</td>
+                                            <td className="py-2 px-3">
+                                                {l.last_call_history_call_id ? (
+                                                    <button
+                                                        className="inline-flex items-center gap-2 px-2 py-1 rounded-md border hover:bg-muted text-xs"
+                                                        onClick={() => openCallHistory(l.last_call_history_call_id as string)}
+                                                    >
+                                                        <ExternalLink className="w-3 h-3" /> Open
+                                                    </button>
+                                                ) : (
+                                                    <span className="text-muted-foreground">-</span>
+                                                )}
+                                            </td>
+                                            <td className="py-2 px-3 max-w-[260px] truncate" title={l.last_error_message || ''}>
+                                                {l.last_error_message ? (
+                                                    <span className="text-red-600">{l.last_error_message}</span>
+                                                ) : (
+                                                    <span className="text-muted-foreground">-</span>
+                                                )}
+                                            </td>
+                                            <td className="py-2 px-3 text-right whitespace-nowrap">
+                                                <button
+                                                    className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
+                                                    onClick={() => {
+                                                        setRecycleLeadRow(l);
+                                                        setRecycleMode('redial');
+                                                    }}
+                                                    title="Recycle lead"
+                                                >
+                                                    <RotateCcw className="w-3 h-3" /> Recycle
+                                                </button>
+                                                <button
+                                                    className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
+                                                    onClick={() => ignoreLead(l.id)}
+                                                    disabled={isIgnored}
+                                                    title="Ignore lead (canceled, reversible)"
+                                                >
+                                                    <Ban className="w-3 h-3" /> {isIgnored ? 'Ignored' : 'Ignore'}
+                                                </button>
+                                                <button
+                                                    className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs text-red-600 disabled:opacity-50"
+                                                    onClick={() => deleteLead(l.id)}
+                                                    disabled={!canDelete}
+                                                    title={canDelete ? 'Delete lead' : 'Pause/stop campaign to delete leads'}
+                                                >
+                                                    <Trash2 className="w-3 h-3" /> Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {leads.length === 0 && (
+                                    <tr>
+                                        <td colSpan={14} className="py-10 text-center text-sm text-muted-foreground">
+                                            No leads yet. Use the campaign modal to import a CSV.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3">
+                        <div className="text-xs text-muted-foreground">
+                            Page {leadPage} of {leadTotalPages}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                className="px-3 py-1 rounded border text-sm disabled:opacity-50"
+                                disabled={leadPage <= 1 || !selectedCampaignId}
+                                onClick={() => setLeadPage(p => Math.max(1, p - 1))}
+                            >
+                                Prev
+                            </button>
+                            <button
+                                className="px-3 py-1 rounded border text-sm disabled:opacity-50"
+                                disabled={leadPage >= leadTotalPages || !selectedCampaignId}
+                                onClick={() => setLeadPage(p => Math.min(leadTotalPages, p + 1))}
+                            >
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Campaign modal */}
+            {showCampaignModal && (
+                <Modal
+                    isOpen={true}
+                    title={campaignModalMode === 'create' ? 'Create Campaign' : 'Campaign Setup'}
+                    onClose={() => {
+                        setShowCampaignModal(false);
+                        setCampaignModalStep('settings');
+                        setShowSetupGuide(false);
+                        setPendingImportFile(null);
+                        setPendingVoicemailFile(null);
+                        setPendingConsentFile(null);
+                    }}
+                >
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                                <Clock className="w-3 h-3" /> Server now:{' '}
+                                <span className="font-mono text-foreground">{formatClock(serverNow, serverTz)}</span> <span className="font-mono">{serverTz}</span>
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                                <Clock className="w-3 h-3" /> Campaign now:{' '}
+                                <span className="font-mono text-foreground">
+                                    {formatClock(serverNow, (campaignModalMode === 'create' ? createForm.timezone : editForm.timezone) || 'UTC')}
+                                </span>{' '}
+                                <span className="font-mono">{(campaignModalMode === 'create' ? createForm.timezone : editForm.timezone) || 'UTC'}</span>
+                            </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                            <button
+                                className={`px-3 py-1 rounded border text-sm ${
+                                    campaignModalStep === 'settings' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                                }`}
+                                onClick={() => setCampaignModalStep('settings')}
+                            >
+                                Settings
+                            </button>
+                            <button
+                                className={`px-3 py-1 rounded border text-sm ${
+                                    campaignModalStep === 'assets' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+                                }`}
+                                onClick={() => setCampaignModalStep('assets')}
+                                disabled={campaignModalMode === 'create'}
+                                title={campaignModalMode === 'create' ? 'Create the campaign first' : ''}
+                            >
+                                Leads & Recordings
+                            </button>
+                        </div>
+
+                        {campaignModalStep === 'settings' ? (
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="text-sm font-medium">Name</label>
+                                        <input
+                                            value={campaignModalMode === 'create' ? createForm.name : editForm.name}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, name: e.target.value }))
+                                                    : setEditForm(p => ({ ...p, name: e.target.value }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-sm font-medium">Timezone</label>
+                                        <input
+                                            list="aava-iana-timezones"
+                                            value={campaignModalMode === 'create' ? createForm.timezone : editForm.timezone}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, timezone: e.target.value }))
+                                                    : setEditForm(p => ({ ...p, timezone: e.target.value }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background font-mono"
+                                        />
+                                        {!modalTimezoneValid && (
+                                            <div className="mt-1 text-xs text-yellow-700 flex items-center gap-1">
+                                                <AlertTriangle className="w-3 h-3" /> Invalid timezone; use an IANA timezone (e.g., America/Phoenix).
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label className="text-sm font-medium">Daily Window Start (local)</label>
+                                        <input
+                                            type="time"
+                                            value={campaignModalMode === 'create' ? createForm.daily_window_start_local : editForm.daily_window_start_local}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, daily_window_start_local: e.target.value }))
+                                                    : setEditForm(p => ({ ...p, daily_window_start_local: e.target.value }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-sm font-medium">Daily Window End (local)</label>
+                                        <input
+                                            type="time"
+                                            value={campaignModalMode === 'create' ? createForm.daily_window_end_local : editForm.daily_window_end_local}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, daily_window_end_local: e.target.value }))
+                                                    : setEditForm(p => ({ ...p, daily_window_end_local: e.target.value }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                        />
+                                        {(() => {
+                                            const s = campaignModalMode === 'create' ? createForm.daily_window_start_local : editForm.daily_window_start_local;
+                                            const e = campaignModalMode === 'create' ? createForm.daily_window_end_local : editForm.daily_window_end_local;
+                                            const crosses = Boolean(s && e && e < s);
+                                            return crosses ? (
+                                                <div className="mt-1 text-xs text-yellow-700 flex items-center gap-1">
+                                                    <AlertTriangle className="w-3 h-3" /> Crosses midnight
+                                                </div>
+                                            ) : null;
+                                        })()}
+                                    </div>
+                                    <div>
+                                        <label className="text-sm font-medium">Max Concurrent</label>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={5}
+                                            value={campaignModalMode === 'create' ? createForm.max_concurrent : editForm.max_concurrent}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, max_concurrent: Number(e.target.value) || 1 }))
+                                                    : setEditForm(p => ({ ...p, max_concurrent: Number(e.target.value) || 1 }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-sm font-medium">Min Interval Between Calls (sec)</label>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            value={
+                                                campaignModalMode === 'create'
+                                                    ? createForm.min_interval_seconds_between_calls
+                                                    : editForm.min_interval_seconds_between_calls
+                                            }
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, min_interval_seconds_between_calls: Number(e.target.value) || 0 }))
+                                                    : setEditForm(p => ({ ...p, min_interval_seconds_between_calls: Number(e.target.value) || 0 }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                        />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="text-sm font-medium">Default Context</label>
+                                        <input
+                                            value={campaignModalMode === 'create' ? createForm.default_context : editForm.default_context}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, default_context: e.target.value }))
+                                                    : setEditForm(p => ({ ...p, default_context: e.target.value }))
+                                            }
+                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background font-mono"
+                                        />
+                                    </div>
                                 </div>
 
-                                {tab === 'campaigns' && (
-                                    <div className="p-4 space-y-3">
-                                        <div className="text-sm text-muted-foreground">
-                                            Configure the campaign and press Start. Routing assumption: your FreePBX outbound routes handle dialing from extension 6789.
+                                <div className="border rounded-lg p-3 space-y-2">
+                                    <div className="font-medium text-sm">Features</div>
+                                    <label className="flex items-center gap-2 text-sm">
+                                        <input
+                                            type="checkbox"
+                                            checked={
+                                                Boolean(
+                                                    campaignModalMode === 'create' ? createForm.voicemail_drop_enabled : editForm.voicemail_drop_enabled
+                                                )
+                                            }
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, voicemail_drop_enabled: e.target.checked }))
+                                                    : setEditForm(p => ({ ...p, voicemail_drop_enabled: e.target.checked }))
+                                            }
+                                        />
+                                        Voicemail drop (AMD MACHINE/NOTSURE → leave voicemail recording)
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm">
+                                        <input
+                                            type="checkbox"
+                                            checked={Boolean(campaignModalMode === 'create' ? createForm.consent_enabled : editForm.consent_enabled)}
+                                            onChange={e =>
+                                                campaignModalMode === 'create'
+                                                    ? setCreateForm(p => ({ ...p, consent_enabled: e.target.checked }))
+                                                    : setEditForm(p => ({ ...p, consent_enabled: e.target.checked }))
+                                            }
+                                        />
+                                        Consent gate (HUMAN → play consent prompt, DTMF 1 accept / 2 deny)
+                                    </label>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                                        <div>
+                                            <label className="text-sm font-medium">Consent timeout (sec)</label>
+                                            <input
+                                                type="number"
+                                                min={1}
+                                                max={30}
+                                                value={Number((campaignModalMode === 'create' ? createForm.consent_timeout_seconds : editForm.consent_timeout_seconds) || 5)}
+                                                onChange={e =>
+                                                    campaignModalMode === 'create'
+                                                        ? setCreateForm(p => ({ ...p, consent_timeout_seconds: Number(e.target.value) || 5 }))
+                                                        : setEditForm(p => ({ ...p, consent_timeout_seconds: Number(e.target.value) || 5 }))
+                                                }
+                                                className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <details className="border rounded-lg p-3">
+                                    <summary className="cursor-pointer font-medium text-sm">Advanced AMD settings</summary>
+                                    <div className="text-xs text-muted-foreground mt-1">
+                                        AMD() positional args. Leave blank to use defaults.
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                                        {([
+                                            ['initial_silence_ms', 'Initial silence (ms)'],
+                                            ['greeting_ms', 'Greeting (ms)'],
+                                            ['after_greeting_silence_ms', 'After greeting silence (ms)'],
+                                            ['total_analysis_time_ms', 'Total analysis time (ms)'],
+                                            ['minimum_word_length_ms', 'Min word length (ms)'],
+                                            ['between_words_silence_ms', 'Between words silence (ms)'],
+                                            ['maximum_number_of_words', 'Max number of words'],
+                                            ['silence_threshold', 'Silence threshold'],
+                                            ['maximum_word_length_ms', 'Max word length (ms)']
+                                        ] as Array<[string, string]>).map(([key, label]) => {
+                                            const form = campaignModalMode === 'create' ? createForm : editForm;
+                                            const value = (form.amd_options || {})[key] ?? '';
+                                            return (
+                                                <div key={key}>
+                                                    <label className="text-sm font-medium">{label}</label>
+                                                    <input
+                                                        value={value}
+                                                        onChange={e => {
+                                                            const v = e.target.value;
+                                                            const next = { ...(form.amd_options || {}) };
+                                                            if (v === '' || v == null) delete next[key];
+                                                            else next[key] = Number(v);
+                                                            campaignModalMode === 'create'
+                                                                ? setCreateForm(p => ({ ...p, amd_options: next }))
+                                                                : setEditForm(p => ({ ...p, amd_options: next }));
+                                                        }}
+                                                        className="mt-1 w-full px-3 py-2 rounded-lg border bg-background"
+                                                        placeholder="(blank)"
+                                                    />
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </details>
+
+                                <div className="flex justify-end gap-2">
+                                    <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setShowCampaignModal(false)}>
+                                        Close
+                                    </button>
+                                    {campaignModalMode === 'create' ? (
+                                        <button
+                                            className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                                            onClick={createCampaign}
+                                            disabled={!createForm.name.trim() || !modalTimezoneValid}
+                                        >
+                                            Create
+                                        </button>
+                                    ) : (
+                                        <button
+                                            className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                            onClick={saveEdit}
+                                            disabled={!modalTimezoneValid}
+                                        >
+                                            Save
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {!selectedCampaign ? (
+                                    <div className="text-sm text-muted-foreground">Select a campaign to manage leads/recordings.</div>
+                                ) : (
+                                    <>
+                                        <div className="border rounded-lg p-3 space-y-2">
+                                            <div className="font-medium text-sm">Leads (CSV)</div>
+                                            <div className="flex items-center gap-2">
+                                                <button className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={downloadSampleCsv}>
+                                                    <FileDown className="w-4 h-4" /> Sample CSV
+                                                </button>
+                                                <input type="file" accept=".csv,text/csv" onChange={e => setPendingImportFile(e.target.files?.[0] || null)} />
+                                                <button
+                                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                                    disabled={!pendingImportFile}
+                                                    onClick={async () => {
+                                                        if (!pendingImportFile) return;
+                                                        await importLeads(selectedCampaign.id, pendingImportFile);
+                                                        setPendingImportFile(null);
+                                                    }}
+                                                >
+                                                    <Upload className="w-4 h-4" /> Import CSV (skip existing)
+                                                </button>
+                                            </div>
                                         </div>
 
-                                        <div className="border border-border rounded-md bg-background p-3">
+                                        <div className="border rounded-lg p-3 space-y-3">
+                                            <div className="font-medium text-sm">Recordings</div>
                                             <div className="flex items-center justify-between gap-3">
                                                 <div>
-                                                    <div className="text-sm font-medium">Voicemail Drop</div>
+                                                    <div className="text-sm font-medium">Consent prompt</div>
+                                                    <div className="text-xs text-muted-foreground">Used only when “Consent gate” is enabled.</div>
                                                     <div className="text-xs text-muted-foreground mt-1">
-                                                        {selectedHasVoicemail ? (
-                                                            <>
-                                                                Ready: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri}</span>
-                                                            </>
-                                                        ) : (
-                                                            <>Required before Start (MVP).</>
-                                                        )}
-                                                    </div>
-                                                    <div className="text-xs text-muted-foreground mt-1">
-                                                        Upload <span className="font-mono">.wav</span> (recommended) or <span className="font-mono">.ulaw</span>. WAV is converted to 8kHz μ-law automatically.
+                                                        Current: <span className="font-mono">{(selectedCampaign as any).consent_media_uri || '(not set)'}</span>
                                                     </div>
                                                 </div>
                                                 <div className="flex items-center gap-2">
-                                                    <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm cursor-pointer">
-                                                        <Upload className="w-4 h-4" />
-                                                        Upload
-                                                        <input
-                                                            type="file"
-                                                            accept=".wav,.ulaw,audio/wav"
-                                                            className="hidden"
-                                                            onChange={e => {
-                                                                const f = e.target.files?.[0];
-                                                                if (f) uploadVoicemail(selectedCampaign.id, f);
-                                                                e.currentTarget.value = '';
-                                                            }}
-                                                        />
-                                                    </label>
+                                                    <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingConsentFile(e.target.files?.[0] || null)} />
                                                     <button
-                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        onClick={() => previewVoicemail(selectedCampaign.id)}
-                                                        disabled={!selectedHasVoicemail}
-                                                        title={!selectedHasVoicemail ? 'Upload voicemail media first' : 'Preview voicemail'}
+                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                                        disabled={!pendingConsentFile}
+                                                        onClick={async () => {
+                                                            if (!pendingConsentFile) return;
+                                                            await uploadMedia(selectedCampaign.id, 'consent', pendingConsentFile);
+                                                            setPendingConsentFile(null);
+                                                        }}
                                                     >
-                                                        <PhoneCall className="w-4 h-4" />
+                                                        <Upload className="w-4 h-4" /> Upload
+                                                    </button>
+                                                    <button
+                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                                        disabled={!Boolean(((selectedCampaign as any).consent_media_uri || '') as string)}
+                                                        onClick={() => previewMedia(selectedCampaign.id, 'consent')}
+                                                    >
+                                                        Preview
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div>
+                                                    <div className="text-sm font-medium">Voicemail drop</div>
+                                                    <div className="text-xs text-muted-foreground">Used only when “Voicemail drop” is enabled and AMD indicates MACHINE/NOTSURE.</div>
+                                                    <div className="text-xs text-muted-foreground mt-1">
+                                                        Current: <span className="font-mono">{selectedCampaign.voicemail_drop_media_uri || '(not set)'}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <input type="file" accept=".wav,.ulaw,audio/wav" onChange={e => setPendingVoicemailFile(e.target.files?.[0] || null)} />
+                                                    <button
+                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                                        disabled={!pendingVoicemailFile}
+                                                        onClick={async () => {
+                                                            if (!pendingVoicemailFile) return;
+                                                            await uploadMedia(selectedCampaign.id, 'voicemail', pendingVoicemailFile);
+                                                            setPendingVoicemailFile(null);
+                                                        }}
+                                                    >
+                                                        <Upload className="w-4 h-4" /> Upload
+                                                    </button>
+                                                    <button
+                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm disabled:opacity-50"
+                                                        disabled={!Boolean((selectedCampaign.voicemail_drop_media_uri || '').trim())}
+                                                        onClick={() => previewMedia(selectedCampaign.id, 'voicemail')}
+                                                    >
                                                         Preview
                                                     </button>
                                                 </div>
                                             </div>
                                         </div>
 
-                                        <button
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm"
-                                            onClick={() => setShowSetupGuide(v => !v)}
-                                        >
-                                            {showSetupGuide ? 'Hide Setup Guide' : 'Show Setup Guide'}
-                                        </button>
-                                        {showSetupGuide && (
-                                            <div className="border border-border rounded-md bg-background p-3 text-sm">
-                                                <div className="text-xs text-muted-foreground mb-2">
-                                                    Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
-                                                </div>
-                                                <pre className="text-xs overflow-x-auto p-3 rounded bg-muted/50 border border-border">{DIALPLAN_SNIPPET}</pre>
-                                                <div className="flex items-center gap-2 mt-3">
-                                                    <button
-                                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-                                                        onClick={() => {
-                                                            navigator.clipboard.writeText(DIALPLAN_SNIPPET);
-                                                            setNotice({ type: 'success', message: 'Dialplan snippet copied to clipboard' });
-                                                        }}
-                                                    >
-                                                        <FileDown className="w-4 h-4" />
-                                                        Copy Snippet
-                                                    </button>
-                                                    <div className="text-xs text-muted-foreground">
-                                                        Reload: <span className="font-mono">asterisk -rx "dialplan reload"</span> · Verify:{' '}
-                                                        <span className="font-mono">asterisk -rx "dialplan show aava-outbound-amd"</span>
+                                        <div className="border rounded-lg p-3">
+                                            <button
+                                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                                onClick={() => setShowSetupGuide(v => !v)}
+                                            >
+                                                {showSetupGuide ? 'Hide' : 'Show'} Setup Guide
+                                            </button>
+                                            {showSetupGuide && (
+                                                <div className="mt-3 space-y-2">
+                                                    <div className="text-sm text-muted-foreground">
+                                                        Add this to <span className="font-mono">/etc/asterisk/extensions_custom.conf</span> and reload the dialplan.
+                                                    </div>
+                                                    <pre className="bg-muted/30 rounded-lg p-3 overflow-x-auto text-xs">{DIALPLAN_SNIPPET}</pre>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
+                                                            onClick={() => navigator.clipboard.writeText(DIALPLAN_SNIPPET)}
+                                                        >
+                                                            <Copy className="w-4 h-4" /> Copy
+                                                        </button>
                                                     </div>
                                                 </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {tab === 'leads' && (
-                                    <div className="p-4">
-                                        <div className="text-xs text-muted-foreground mb-2">
-                                            Showing most recent 50 leads. Use CSV import to add more (default: skip duplicates). If a CSV row includes a context/timezone, it overrides campaign defaults. Times are shown in your browser local time (stored in UTC).
+                                            )}
                                         </div>
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                                                        <th className="py-2 pr-3">Phone</th>
-                                                        <th className="py-2 pr-3">Context</th>
-                                                        <th className="py-2 pr-3">State</th>
-                                                        <th className="py-2 pr-3">Attempts</th>
-                                                        <th className="py-2 pr-3">Last outcome</th>
-                                                        <th className="py-2 pr-3">Last attempt</th>
-                                                        <th className="py-2 pr-3">Created</th>
-                                                        <th className="py-2 pr-3">Updated</th>
-                                                        <th className="py-2 pr-3"></th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {leads.map(l => (
-                                                        <tr key={l.id} className="border-b border-border/50">
-                                                            <td className="py-2 pr-3 font-mono">{l.phone_number}</td>
-                                                            <td className="py-2 pr-3">
-                                                                {l.context_override ? (
-                                                                    <span className="font-mono">{l.context_override}</span>
-                                                                ) : (
-                                                                    <span className="text-xs text-muted-foreground">
-                                                                        (campaign) <span className="font-mono">{selectedCampaign.default_context}</span>
-                                                                    </span>
-                                                                )}
-                                                            </td>
-                                                            <td className="py-2 pr-3">{l.state}</td>
-                                                            <td className="py-2 pr-3">{l.attempt_count}</td>
-                                                            <td className="py-2 pr-3">{l.last_outcome || '-'}</td>
-                                                            <td className="py-2 pr-3">{formatUtc(l.last_attempt_at_utc)}</td>
-                                                            <td className="py-2 pr-3">{formatUtc(l.created_at_utc)}</td>
-                                                            <td className="py-2 pr-3">{formatUtc(l.updated_at_utc)}</td>
-                                                            <td className="py-2 pr-0 text-right">
-                                                                {l.state === 'canceled' || l.state === 'failed' || l.state === 'completed' ? (
-                                                                    <button
-                                                                        className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
-                                                                        onClick={() => recycleLead(l.id)}
-                                                                        title="Recycle lead back to pending"
-                                                                    >
-                                                                        <RotateCcw className="w-3 h-3" />
-                                                                        Recycle
-                                                                    </button>
-                                                                ) : (
-                                                                    <button
-                                                                        className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
-                                                                        onClick={() => cancelLead(l.id)}
-                                                                        title="Cancel lead"
-                                                                    >
-                                                                        <Trash2 className="w-3 h-3" />
-                                                                        Cancel
-                                                                    </button>
-                                                                )}
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {tab === 'attempts' && (
-                                    <div className="p-4">
-                                        <div className="text-xs text-muted-foreground mb-2">
-                                            Showing most recent 50 attempts. Times are shown in your browser local time (stored in UTC).
-                                        </div>
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                                                        <th className="py-2 pr-3">Started</th>
-                                                        <th className="py-2 pr-3">Ended</th>
-                                                        <th className="py-2 pr-3">Duration</th>
-                                                        <th className="py-2 pr-3">Phone</th>
-                                                        <th className="py-2 pr-3">Outcome</th>
-                                                        <th className="py-2 pr-3">AMD</th>
-                                                        <th className="py-2 pr-3">Call history</th>
-                                                        <th className="py-2 pr-3">Error</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {attempts.map(a => (
-                                                        <tr key={a.id} className="border-b border-border/50">
-                                                            <td className="py-2 pr-3">{formatUtc(a.started_at_utc)}</td>
-                                                            <td className="py-2 pr-3">{formatUtc(a.ended_at_utc)}</td>
-                                                            <td className="py-2 pr-3">
-                                                                {a.started_at_utc && a.ended_at_utc ? (() => {
-                                                                    try {
-                                                                        const s = new Date(a.started_at_utc).getTime();
-                                                                        const e = new Date(a.ended_at_utc).getTime();
-                                                                        const sec = Math.max(0, Math.round((e - s) / 1000));
-                                                                        return `${sec}s`;
-                                                                    } catch {
-                                                                        return '-';
-                                                                    }
-                                                                })() : '-'}
-                                                            </td>
-                                                            <td className="py-2 pr-3 font-mono">{a.phone_number || '-'}</td>
-                                                            <td className="py-2 pr-3">{a.outcome || '-'}</td>
-                                                            <td className="py-2 pr-3">
-                                                                {a.amd_status ? (
-                                                                    <span className="font-mono">
-                                                                        {a.amd_status}
-                                                                        {a.amd_cause ? `/${a.amd_cause}` : ''}
-                                                                    </span>
-                                                                ) : (
-                                                                    '-'
-                                                                )}
-                                                            </td>
-                                                            <td className="py-2 pr-3">
-                                                                {a.call_history_call_id ? (
-                                                                    <div className="flex items-center gap-2">
-                                                                        <a
-                                                                            className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-accent hover:bg-accent/80 text-xs"
-                                                                            href={`/history?id=${encodeURIComponent(a.call_history_call_id || '')}`}
-                                                                            target="_blank"
-                                                                            rel="noreferrer"
-                                                                            title="Open the linked Call History record"
-                                                                        >
-                                                                            <PhoneCall className="w-3 h-3" />
-                                                                            Open
-                                                                        </a>
-                                                                        <button
-                                                                            className="inline-flex items-center gap-2 px-2 py-1 rounded-md hover:bg-accent text-xs"
-                                                                            onClick={() => {
-                                                                                navigator.clipboard.writeText(a.call_history_call_id || '');
-                                                                                alert('Call History record id copied to clipboard');
-                                                                            }}
-                                                                            title="Copy Call History record id"
-                                                                        >
-                                                                            <FileDown className="w-3 h-3" />
-                                                                            Copy ID
-                                                                        </button>
-                                                                    </div>
-                                                                ) : (
-                                                                    '-'
-                                                                )}
-                                                            </td>
-                                                            <td className="py-2 pr-3 text-xs text-muted-foreground">
-                                                                {a.error_message ? (
-                                                                    <span className="inline-flex items-center gap-1 text-red-500">
-                                                                        <AlertTriangle className="w-3 h-3" />
-                                                                        {a.error_message}
-                                                                    </span>
-                                                                ) : (
-                                                                    '-'
-                                                                )}
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
+                                    </>
                                 )}
                             </div>
-                        </>
-                    )}
-                </div>
-            </div>
-
-	            {showCreate && (
-	                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-	                    <div className="w-full max-w-2xl border border-border rounded-lg bg-background p-5">
-	                        <div className="flex items-center justify-between mb-4">
-	                            <div className="text-lg font-semibold">Create Campaign</div>
-	                            <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setShowCreate(false)}>
-	                                Close
-	                            </button>
-	                        </div>
-	                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Name</label>
-                                <input
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
-                                    value={createForm.name}
-                                    onChange={e => setCreateForm({ ...createForm, name: e.target.value })}
-                                    placeholder="Sales follow-up"
-                                />
-                            </div>
-	                            <div className="space-y-2">
-	                                <label className="text-xs text-muted-foreground">Timezone</label>
-	                                <div className="text-[11px] text-muted-foreground">
-	                                    Server default: <span className="font-mono">{meta?.server_timezone || 'UTC'}</span> (IANA timezone required)
-	                                </div>
-	                                <input
-	                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-	                                    value={createForm.timezone}
-	                                    onChange={e => setCreateForm({ ...createForm, timezone: e.target.value })}
-	                                    placeholder="America/Phoenix"
-	                                    list="aava-iana-timezones"
-	                                />
-	                                {!isTimezoneValid(createForm.timezone) && (
-	                                    <div className="text-xs text-red-500 flex items-center gap-2">
-	                                        <AlertTriangle className="w-3 h-3" />
-	                                        Invalid timezone. Use an IANA timezone like <span className="font-mono">America/Phoenix</span> or <span className="font-mono">UTC</span>.
-	                                    </div>
-	                                )}
-	                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Daily Window Start (local)</label>
-                                <input
-                                    type="time"
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={createForm.daily_window_start_local}
-                                    onChange={e => setCreateForm({ ...createForm, daily_window_start_local: e.target.value })}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Daily Window End (local)</label>
-                                <input
-                                    type="time"
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={createForm.daily_window_end_local}
-                                    onChange={e => setCreateForm({ ...createForm, daily_window_end_local: e.target.value })}
-                                />
-                                {crossesMidnight && (
-                                    <div className="text-xs text-yellow-500 flex items-center gap-2">
-                                        <AlertTriangle className="w-3 h-3" />
-                                        Crosses midnight (window runs across two days)
-                                    </div>
-                                )}
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Max Concurrent</label>
-                                <input
-                                    type="number"
-                                    min={1}
-                                    max={5}
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
-                                    value={createForm.max_concurrent}
-                                    onChange={e => setCreateForm({ ...createForm, max_concurrent: Number(e.target.value) })}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Min Interval Between Calls (sec)</label>
-                                <input
-                                    type="number"
-                                    min={0}
-                                    max={3600}
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
-                                    value={createForm.min_interval_seconds_between_calls}
-                                    onChange={e => setCreateForm({ ...createForm, min_interval_seconds_between_calls: Number(e.target.value) })}
-                                />
-                            </div>
-                            <div className="space-y-2 md:col-span-2">
-                                <label className="text-xs text-muted-foreground">Default Context</label>
-                                <input
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={createForm.default_context}
-                                    onChange={e => setCreateForm({ ...createForm, default_context: e.target.value })}
-                                    placeholder="default"
-                                />
-                            </div>
-                        </div>
-	                        <div className="flex items-center justify-end gap-2 mt-5">
-	                            <button className="px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm" onClick={() => setShowCreate(false)}>
-	                                Cancel
-	                            </button>
-	                            <button
-	                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-	                                onClick={createCampaign}
-	                                disabled={!createForm.name.trim() || !isTimezoneValid(createForm.timezone)}
-	                            >
-	                                Create
-	                            </button>
-	                        </div>
-	                        <div className="text-xs text-muted-foreground mt-3">
-	                            Voicemail drop media is required before a campaign can start. Upload a <span className="font-mono">.wav</span> (recommended) or <span className="font-mono">.ulaw</span> file after creation.
-	                        </div>
+                        )}
                     </div>
-                </div>
+                </Modal>
             )}
 
-            {showEdit && selectedCampaign && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="w-full max-w-2xl border border-border rounded-lg bg-background p-5">
-                        <div className="flex items-center justify-between mb-4">
-                            <div className="text-lg font-semibold">Edit Campaign</div>
-                            <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setShowEdit(false)}>
-                                Close
-                            </button>
+            {/* Recycle modal */}
+            {recycleLeadRow && (
+                <Modal isOpen={true} title="Recycle Lead" onClose={() => setRecycleLeadRow(null)}>
+                    <div className="space-y-3">
+                        <div className="text-sm">
+                            Lead: <span className="font-mono">{recycleLeadRow.phone_number}</span>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Name</label>
-                                <input
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
-                                    value={editForm.name}
-                                    onChange={e => setEditForm({ ...editForm, name: e.target.value })}
-                                />
-                            </div>
-	                            <div className="space-y-2">
-	                                <label className="text-xs text-muted-foreground">Timezone</label>
-	                                <div className="text-[11px] text-muted-foreground">
-	                                    IANA timezone required (e.g. <span className="font-mono">America/Phoenix</span>)
-	                                </div>
-	                                <input
-	                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-	                                    value={editForm.timezone}
-	                                    onChange={e => setEditForm({ ...editForm, timezone: e.target.value })}
-	                                    list="aava-iana-timezones"
-	                                />
-	                                {!isTimezoneValid(editForm.timezone) && (
-	                                    <div className="text-xs text-red-500 flex items-center gap-2">
-	                                        <AlertTriangle className="w-3 h-3" />
-	                                        Invalid timezone. Use an IANA timezone like <span className="font-mono">America/Phoenix</span> or <span className="font-mono">UTC</span>.
-	                                    </div>
-	                                )}
-	                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Daily Window Start (local)</label>
-                                <input
-                                    type="time"
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={editForm.daily_window_start_local}
-                                    onChange={e => setEditForm({ ...editForm, daily_window_start_local: e.target.value })}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Daily Window End (local)</label>
-                                <input
-                                    type="time"
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={editForm.daily_window_end_local}
-                                    onChange={e => setEditForm({ ...editForm, daily_window_end_local: e.target.value })}
-                                />
-                                {editCrossesMidnight && (
-                                    <div className="text-xs text-yellow-500 flex items-center gap-2">
-                                        <AlertTriangle className="w-3 h-3" />
-                                        Crosses midnight (window runs across two days)
-                                    </div>
-                                )}
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Max Concurrent</label>
-                                <input
-                                    type="number"
-                                    min={1}
-                                    max={5}
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
-                                    value={editForm.max_concurrent}
-                                    onChange={e => setEditForm({ ...editForm, max_concurrent: Number(e.target.value) })}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs text-muted-foreground">Min Interval Between Calls (sec)</label>
-                                <input
-                                    type="number"
-                                    min={0}
-                                    max={3600}
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border"
-                                    value={editForm.min_interval_seconds_between_calls}
-                                    onChange={e => setEditForm({ ...editForm, min_interval_seconds_between_calls: Number(e.target.value) })}
-                                />
-                            </div>
-                            <div className="space-y-2 md:col-span-2">
-                                <label className="text-xs text-muted-foreground">Default Context</label>
-                                <input
-                                    className="w-full px-3 py-2 rounded-md bg-background border border-border font-mono"
-                                    value={editForm.default_context}
-                                    onChange={e => setEditForm({ ...editForm, default_context: e.target.value })}
-                                />
-                            </div>
-                        </div>
-                        <div className="flex items-center justify-end gap-2 mt-5">
-                            <button className="px-3 py-2 rounded-md bg-accent hover:bg-accent/80 text-sm" onClick={() => setShowEdit(false)}>
+                        <label className="flex items-start gap-2 text-sm">
+                            <input type="radio" checked={recycleMode === 'redial'} onChange={() => setRecycleMode('redial')} />
+                            <span>
+                                <span className="font-medium">Re-dial</span>
+                                <div className="text-xs text-muted-foreground">Keep attempt history; set lead back to pending.</div>
+                            </span>
+                        </label>
+                        <label className="flex items-start gap-2 text-sm">
+                            <input type="radio" checked={recycleMode === 'reset'} onChange={() => setRecycleMode('reset')} />
+                            <span>
+                                <span className="font-medium">Reset completely</span>
+                                <div className="text-xs text-muted-foreground">Delete attempts for this lead and reset counters; then re-queue.</div>
+                            </span>
+                        </label>
+                        <div className="flex justify-end gap-2">
+                            <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setRecycleLeadRow(null)}>
                                 Cancel
                             </button>
-	                            <button
-	                                className="px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
-	                                onClick={saveEdit}
-	                                disabled={!editForm.name.trim() || !isTimezoneValid(editForm.timezone)}
-	                            >
-	                                Save
-	                            </button>
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-3">
-                            Edits are disabled while a campaign is running. Pause first, then edit and resume.
+                            <button
+                                className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                                onClick={async () => {
+                                    const leadId = recycleLeadRow.id;
+                                    setRecycleLeadRow(null);
+                                    await recycleLead(leadId, recycleMode);
+                                }}
+                            >
+                                Confirm
+                            </button>
                         </div>
                     </div>
-                </div>
+                </Modal>
+            )}
+
+            {/* Call history inline modal */}
+            {callHistoryModalId && (
+                <Modal
+                    isOpen={true}
+                    title="Call History"
+                    onClose={() => {
+                        setCallHistoryModalId(null);
+                        setCallHistoryRecord(null);
+                        setCallHistoryError(null);
+                    }}
+                >
+                    {callHistoryLoading ? (
+                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                            <RefreshCw className="w-4 h-4 animate-spin" /> Loading…
+                        </div>
+                    ) : callHistoryError ? (
+                        <div className="text-sm text-red-600">{callHistoryError}</div>
+                    ) : callHistoryRecord ? (
+                        <div className="space-y-3">
+                            <div className="text-sm">
+                                <div className="text-xs text-muted-foreground">Call ID</div>
+                                <div className="font-mono">{callHistoryRecord.call_id}</div>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div>
+                                    <div className="text-xs text-muted-foreground">Number</div>
+                                    <div className="font-mono">{callHistoryRecord.caller_number || '-'}</div>
+                                </div>
+                                <div>
+                                    <div className="text-xs text-muted-foreground">Name</div>
+                                    <div>{callHistoryRecord.caller_name || '-'}</div>
+                                </div>
+                                <div>
+                                    <div className="text-xs text-muted-foreground">Outcome</div>
+                                    <div className="font-medium">{callHistoryRecord.outcome || '-'}</div>
+                                </div>
+                                <div>
+                                    <div className="text-xs text-muted-foreground">Duration</div>
+                                    <div className="font-medium">{Math.round(callHistoryRecord.duration_seconds || 0)}s</div>
+                                </div>
+                            </div>
+                            {callHistoryRecord.error_message && (
+                                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700">{callHistoryRecord.error_message}</div>
+                            )}
+                            <div>
+                                <div className="font-medium text-sm mb-1">Transcript</div>
+                                <div className="bg-muted/30 rounded-lg p-3 max-h-64 overflow-y-auto text-sm space-y-2">
+                                    {(callHistoryRecord.conversation_history || []).length ? (
+                                        callHistoryRecord.conversation_history.map((m: any, idx: number) => (
+                                            <div key={idx}>
+                                                <div className="text-xs text-muted-foreground">{m.role}</div>
+                                                <div>{m.content}</div>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div className="text-muted-foreground">No transcript available.</div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="text-sm text-muted-foreground">No record loaded.</div>
+                    )}
+                </Modal>
             )}
         </div>
     );
 };
-
-interface LeadImportResponse {
-    accepted: number;
-    rejected: number;
-    duplicates: number;
-    errors: Array<{ row_number: number; phone_number: string; error_reason: string }>;
-    error_csv: string;
-    error_csv_truncated: boolean;
-}
 
 export default CallSchedulingPage;

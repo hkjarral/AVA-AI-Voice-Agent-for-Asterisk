@@ -4,9 +4,10 @@ Outbound Campaign Dialer API endpoints (Milestone 22).
 MVP scope:
 - Campaign CRUD + status transitions (running/paused/stopped)
 - CSV lead import (skip_existing default)
-- Leads list + cancel
+- Leads list + ignore/recycle/delete
 - Attempts list + basic stats
 - Voicemail drop media upload + WAV preview (for browser playback)
+- Optional consent media upload + WAV preview (for browser playback)
 """
 
 import io
@@ -134,15 +135,22 @@ class CampaignCreateRequest(BaseModel):
     max_concurrent: int = Field(1, ge=1, le=5)
     min_interval_seconds_between_calls: int = Field(5, ge=0, le=3600)
     default_context: str = "default"
+    voicemail_drop_enabled: bool = True
     voicemail_drop_mode: str = "upload"  # upload|tts
     voicemail_drop_text: Optional[str] = None
     voicemail_drop_media_uri: Optional[str] = None
+    consent_enabled: bool = False
+    consent_media_uri: Optional[str] = None
+    consent_timeout_seconds: int = Field(5, ge=1, le=30)
     amd_options: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CampaignStatusRequest(BaseModel):
     status: str  # running|paused|stopped|draft|archived|completed
     cancel_pending: bool = False
+
+class LeadRecycleRequest(BaseModel):
+    mode: str = Field("redial", pattern="^(redial|reset)$")  # redial|reset
 
 
 class LeadImportResponse(BaseModel):
@@ -159,7 +167,8 @@ async def download_sample_csv():
     """
     Download a sample CSV for lead import.
 
-    Columns supported by the importer:
+    Columns supported by the importer (full format):
+      - name (optional)
       - phone_number (required)
         - Can be E.164 (+15551234567) or an internal extension (e.g., 2765)
       - context (optional)
@@ -168,13 +177,10 @@ async def download_sample_csv():
       - custom_vars (optional JSON object)
     """
     csv_text = (
-        "phone_number,context,timezone,caller_id,custom_vars\n"
-        # Internal extension example (useful for PBX-to-PBX / lab testing).
-        "2765,,,6789,\"{\"\"name\"\":\"\"Extension Test\"\",\"\"note\"\":\"\"Call internal extension\"\"}\"\n"
-        # Leave context/timezone blank to use campaign defaults.
-        "+15551234567,,,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1001\"\"}\"\n"
-        # Example override: per-lead context + timezone.
-        "+15557654321,demo_google_live,America/New_York,6789,\"{\"\"name\"\":\"\"Bob Example\"\",\"\"note\"\":\"\"Follow up from web form\"\"}\"\n"
+        "name,phone_number,context,timezone,caller_id,custom_vars\n"
+        "Extension Test,2765,,,6789,\"{\"\"account_id\"\":\"\"A-1001\"\",\"\"note\"\":\"\"Call internal extension\"\"}\"\n"
+        "Alice Example,+15551234567,,,6789,\"{\"\"account_id\"\":\"\"A-1002\"\",\"\"note\"\":\"\"Follow up from web form\"\"}\"\n"
+        "Bob Example,+15557654321,demo_outbound,America/New_York,6789,\"{\"\"account_id\"\":\"\"A-1003\"\",\"\"note\"\":\"\"Interested in outbound dialer\"\"}\"\n"
     )
     return Response(
         content=csv_text,
@@ -253,15 +259,23 @@ async def delete_campaign(campaign_id: str):
 async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
     store = _get_outbound_store()
     try:
-        # Guardrails: require voicemail media before running.
+        # Guardrails: require enabled recordings before running.
         if req.status.strip().lower() == "running":
             campaign = await store.get_campaign(campaign_id)
-            media_uri = (campaign.get("voicemail_drop_media_uri") or "").strip()
-            if not media_uri:
-                raise HTTPException(
-                    status_code=400,
-                    detail="voicemail_drop_media_uri is required before starting a campaign (upload/generate voicemail first)",
-                )
+            if bool(int(campaign.get("voicemail_drop_enabled") or 1)):
+                media_uri = (campaign.get("voicemail_drop_media_uri") or "").strip()
+                if not media_uri:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Voicemail drop is enabled but no voicemail recording is set. Upload/generate voicemail before starting.",
+                    )
+            if bool(int(campaign.get("consent_enabled") or 0)):
+                consent_uri = (campaign.get("consent_media_uri") or "").strip()
+                if not consent_uri:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Consent gate is enabled but no consent recording is set. Upload consent before starting.",
+                    )
             tz_name = (campaign.get("timezone") or "").strip() or "UTC"
             if ZoneInfo is not None and tz_name.upper() != "UTC":
                 try:
@@ -327,13 +341,32 @@ async def cancel_lead(lead_id: str):
         raise HTTPException(status_code=400, detail="Lead cannot be canceled in its current state")
     return {"ok": True}
 
-@router.post("/leads/{lead_id}/recycle")
-async def recycle_lead(lead_id: str):
+@router.post("/leads/{lead_id}/ignore")
+async def ignore_lead(lead_id: str):
     store = _get_outbound_store()
-    ok = await store.recycle_lead(lead_id)
+    ok = await store.ignore_lead(lead_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Lead cannot be ignored in its current state")
+    return {"ok": True}
+
+@router.post("/leads/{lead_id}/recycle")
+async def recycle_lead(lead_id: str, req: LeadRecycleRequest):
+    store = _get_outbound_store()
+    ok = await store.recycle_lead(lead_id, mode=req.mode)
     if not ok:
         raise HTTPException(status_code=400, detail="Lead cannot be recycled in its current state")
     return {"ok": True}
+
+@router.delete("/leads/{lead_id}")
+async def delete_lead(lead_id: str):
+    store = _get_outbound_store()
+    try:
+        await store.delete_lead(lead_id)
+        return {"ok": True}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/campaigns/{campaign_id}/attempts")
@@ -415,6 +448,69 @@ async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...))
         raise HTTPException(status_code=404, detail="Campaign not found")
     return {"media_uri": media_uri, "campaign": campaign}
 
+@router.post("/campaigns/{campaign_id}/consent/upload")
+async def upload_consent_media(campaign_id: str, file: UploadFile = File(...)):
+    store = _get_outbound_store()
+    filename = (file.filename or "").strip() or "consent.ulaw"
+    ext = os.path.splitext(filename)[1].lower().strip()
+    if ext not in (".ulaw", ".wav"):
+        raise HTTPException(status_code=400, detail="Upload must be .ulaw (8kHz μ-law) or .wav (PCM) audio")
+
+    raw_name = os.path.basename(filename)
+    if not _SAFE_NAME_RE.match(raw_name):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    media_dir = _media_dir()
+    os.makedirs(media_dir, exist_ok=True)
+    unique = f"outbound-consent-{campaign_id[:8]}-{uuid.uuid4().hex[:8]}.ulaw"
+    path = os.path.join(media_dir, unique)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    max_bytes = _vm_upload_max_bytes()
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=400, detail=f"Upload too large (max {max_bytes} bytes)")
+
+    if ext == ".ulaw":
+        ulaw_data = data
+    else:
+        try:
+            with wave.open(io.BytesIO(data), "rb") as wavf:
+                nch = wavf.getnchannels()
+                sampwidth = wavf.getsampwidth()
+                fr = wavf.getframerate()
+                nframes = wavf.getnframes()
+                frames = wavf.readframes(nframes)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid WAV file: {e}")
+
+        if nch not in (1, 2):
+            raise HTTPException(status_code=400, detail="WAV must be mono or stereo (1–2 channels)")
+        if sampwidth not in (1, 2, 3, 4):
+            raise HTTPException(status_code=400, detail="Unsupported WAV sample width")
+
+        if sampwidth != 2:
+            frames = audioop.lin2lin(frames, sampwidth, 2)
+        if nch == 2:
+            frames = audioop.tomono(frames, 2, 0.5, 0.5)
+        if fr != 8000:
+            frames, _ = audioop.ratecv(frames, 2, 1, fr, 8000, None)
+        ulaw_data = audioop.lin2ulaw(frames, 2)
+
+    with open(path, "wb") as f:
+        f.write(ulaw_data)
+    try:
+        os.chmod(path, 0o664)
+    except Exception:
+        pass
+
+    media_uri = f"sound:ai-generated/{unique[:-5]}"
+    try:
+        campaign = await store.update_campaign(campaign_id, {"consent_media_uri": media_uri})
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return {"media_uri": media_uri, "campaign": campaign}
+
 
 @router.get("/campaigns/{campaign_id}/voicemail/preview.wav")
 async def preview_voicemail_wav(campaign_id: str):
@@ -434,6 +530,38 @@ async def preview_voicemail_wav(campaign_id: str):
     ulaw_path = os.path.join(_media_dir(), f"{base}.ulaw")
     if not os.path.exists(ulaw_path):
         raise HTTPException(status_code=404, detail="Voicemail media file not found on server")
+    with open(ulaw_path, "rb") as f:
+        ulaw_data = f.read()
+
+    pcm16 = audioop.ulaw2lin(ulaw_data, 2)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wavf:
+        wavf.setnchannels(1)
+        wavf.setsampwidth(2)
+        wavf.setframerate(8000)
+        wavf.writeframes(pcm16)
+    wav_bytes = buf.getvalue()
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+@router.get("/campaigns/{campaign_id}/consent/preview.wav")
+async def preview_consent_wav(campaign_id: str):
+    store = _get_outbound_store()
+    try:
+        campaign = await store.get_campaign(campaign_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    media_uri = (campaign.get("consent_media_uri") or "").strip()
+    if not media_uri.startswith("sound:ai-generated/"):
+        raise HTTPException(status_code=400, detail="Campaign consent media is not in ai-generated")
+    base = media_uri.split("sound:ai-generated/", 1)[1].strip()
+    if not base:
+        raise HTTPException(status_code=400, detail="Invalid media_uri")
+
+    ulaw_path = os.path.join(_media_dir(), f"{base}.ulaw")
+    if not os.path.exists(ulaw_path):
+        raise HTTPException(status_code=404, detail="Consent media file not found on server")
     with open(ulaw_path, "rb") as f:
         ulaw_data = f.read()
 
