@@ -10,7 +10,7 @@ This directory tracks major project milestones and implementation achievements.
 - **Impact**: Admin UI-managed outbound campaigns with AMD + voicemail drop + optional consent gate, using ARI-first architecture
 
 ### **Milestone 15: Groq STT + TTS (Modular Pipelines)** 🧩
-- [View Details →](milestone-22-groq-tts-stt.md)
+- [View Details →](milestone-15-groq-speech-pipelines.md)
 - **Date**: January 1, 2026
 - **Status**: ✅ Complete
 - **Impact**: Cloud-only Groq pipeline (STT+LLM+TTS) for modular pipelines
