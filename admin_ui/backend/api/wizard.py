@@ -758,13 +758,21 @@ async def get_available_models(language: Optional[str] = None):
     ram_gb = psutil.virtual_memory().total // (1024**3)
     cpu_cores = psutil.cpu_count() or 1
 
-    # Best-effort GPU detection (works when tooling is available in the container)
+    # GPU detection: prefer GPU_AVAILABLE from .env (set by preflight.sh), fallback to nvidia-smi
+    # AAVA-140: preflight.sh detects GPU on host and writes to .env
     gpu_detected = False
-    try:
-        result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=2)
-        gpu_detected = result.returncode == 0
-    except Exception:
+    gpu_env = os.environ.get("GPU_AVAILABLE", "").lower()
+    if gpu_env == "true":
+        gpu_detected = True
+    elif gpu_env == "false":
         gpu_detected = False
+    else:
+        # Fallback: try nvidia-smi in container (works if GPU passthrough enabled)
+        try:
+            result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=2)
+            gpu_detected = result.returncode == 0
+        except Exception:
+            gpu_detected = False
     
     # Get the full catalog or filtered by language
     if language:
@@ -839,14 +847,22 @@ async def detect_local_tier():
         cpu_count = psutil.cpu_count()
         ram_gb = psutil.virtual_memory().total // (1024**3)
         
-        # Check for GPU
+        # GPU detection: prefer GPU_AVAILABLE from .env (set by preflight.sh)
+        # AAVA-140: preflight.sh detects GPU on host and writes to .env
         gpu_detected = False
-        try:
-            result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=5)
-            if result.returncode == 0:
-                gpu_detected = True
-        except:
-            pass
+        gpu_env = os.environ.get("GPU_AVAILABLE", "").lower()
+        if gpu_env == "true":
+            gpu_detected = True
+        elif gpu_env == "false":
+            gpu_detected = False
+        else:
+            # Fallback: try nvidia-smi in container (works if GPU passthrough enabled)
+            try:
+                result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    gpu_detected = True
+            except:
+                pass
         
         # Determine tier
         if gpu_detected:
@@ -1796,8 +1812,15 @@ async def start_local_ai_server():
         print(f"DEBUG: Could not check container status: {e}")
     
     try:
-        # Use --force-recreate if already running to ensure fresh start
-        cmd = ["docker", "compose", "up", "-d"]
+        # AAVA-140: Check if GPU is available (set by preflight.sh)
+        gpu_available = os.environ.get("GPU_AVAILABLE", "").lower() == "true"
+        
+        # Build docker compose command - use GPU override file if GPU detected
+        if gpu_available:
+            print("DEBUG: GPU detected (GPU_AVAILABLE=true), using docker-compose.gpu.yml")
+            cmd = ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.gpu.yml", "up", "-d"]
+        else:
+            cmd = ["docker", "compose", "up", "-d"]
         
         # Explicitly remove container if it exists to avoid "Conflict" errors
         try:
@@ -2481,15 +2504,14 @@ async def save_setup_config(config: SetupConfig):
                     })
                 providers["local"]["greeting"] = config.greeting
                 providers["local"]["instructions"] = f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise."
-                # Start local-ai-server container
+                # Start local-ai-server container with GPU support if available (AAVA-140)
                 try:
-                    client = docker.from_env()
-                    try:
-                        container = client.containers.get("local_ai_server")
-                        if container.status != "running":
-                            container.start()
-                    except docker.errors.NotFound:
-                        print("Warning: local_ai_server container not found")
+                    gpu_available = os.environ.get("GPU_AVAILABLE", "").lower() == "true"
+                    if gpu_available:
+                        cmd = ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.gpu.yml", "up", "-d", "local-ai-server"]
+                    else:
+                        cmd = ["docker", "compose", "up", "-d", "local-ai-server"]
+                    subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=120)
                 except Exception as e:
                     print(f"Error starting local_ai_server: {e}")
 
@@ -2571,15 +2593,14 @@ async def save_setup_config(config: SetupConfig):
                     "tts": "local_tts"
                 }
                 
-                # Start local-ai-server container
+                # Start local-ai-server container with GPU support if available (AAVA-140)
                 try:
-                    client = docker.from_env()
-                    try:
-                        container = client.containers.get("local_ai_server")
-                        if container.status != "running":
-                            container.start()
-                    except docker.errors.NotFound:
-                        print("Warning: local_ai_server container not found")
+                    gpu_available = os.environ.get("GPU_AVAILABLE", "").lower() == "true"
+                    if gpu_available:
+                        cmd = ["docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.gpu.yml", "up", "-d", "local-ai-server"]
+                    else:
+                        cmd = ["docker", "compose", "up", "-d", "local-ai-server"]
+                    subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, timeout=120)
                 except Exception as e:
                     print(f"Error starting local_ai_server: {e}")
 
