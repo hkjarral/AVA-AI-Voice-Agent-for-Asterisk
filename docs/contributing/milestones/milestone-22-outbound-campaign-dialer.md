@@ -30,6 +30,13 @@ Validated end-to-end on the development server (single-node, FreePBX-friendly):
 - ✅ MACHINE/NOTSURE path leaves voicemail drop media and hangs up.
 - ✅ Campaign auto-transitions `running → completed` when the queue is empty and no in-flight/active calls remain.
 
+Validated operator test scenarios (reference):
+
+- ✅ Internal extension lead (e.g. `2765`): consent prompt plays, AI conversation works, `hangup_call` ends call.
+- ✅ Internal extension lead: consent denied (`DTMF=2`) drops call; UI records `consent_denied`; lead remains recyclable.
+- ✅ Internal extension lead: no answer/voicemail path leaves voicemail drop media correctly.
+- ✅ E.164 lead (cell): consent prompt plays, AI conversation works, `hangup_call` ends call.
+
 Notable fixes/hardening already applied during validation:
 
 - SQLite WAL/SHM permission hardening so `ai-engine` can write even after Admin UI touches the DB (prevents `sqlite3.OperationalError: attempt to write a readonly database`).
