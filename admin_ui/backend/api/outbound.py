@@ -122,6 +122,12 @@ async def outbound_meta():
         "server_timezone": tz,
         "iana_timezones": tzs,
         "server_now_iso": datetime.now(timezone.utc).isoformat(),
+        "default_amd_options": {
+            "initial_silence_ms": 2000,
+            "greeting_ms": 2000,
+            "after_greeting_silence_ms": 1000,
+            "total_analysis_time_ms": 5000,
+        },
     }
 
 
@@ -262,6 +268,16 @@ async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
         # Guardrails: require enabled recordings before running.
         if req.status.strip().lower() == "running":
             campaign = await store.get_campaign(campaign_id)
+            stats = await store.campaign_stats(campaign_id)
+            lead_states = (stats or {}).get("lead_states") or {}
+            pending = int(lead_states.get("pending") or 0)
+            if pending <= 0:
+                canceled = int(lead_states.get("canceled") or 0)
+                completed = int(lead_states.get("completed") or 0)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No pending leads to dial (canceled={canceled}, completed={completed}). Recycle leads back to pending, then Start again.",
+                )
             if bool(int(campaign.get("voicemail_drop_enabled") or 1)):
                 media_uri = (campaign.get("voicemail_drop_media_uri") or "").strip()
                 if not media_uri:

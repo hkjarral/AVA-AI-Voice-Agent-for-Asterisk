@@ -30,6 +30,7 @@ type OutboundMeta = {
     server_timezone: string;
     iana_timezones: string[];
     server_now_iso?: string;
+    default_amd_options?: Record<string, any>;
 };
 
 interface OutboundCampaign {
@@ -76,6 +77,13 @@ interface LeadRow {
     last_call_history_call_id?: string | null;
     last_error_message?: string | null;
 }
+
+const DEFAULT_AMD_OPTIONS = {
+    initial_silence_ms: 2000,
+    greeting_ms: 2000,
+    after_greeting_silence_ms: 1000,
+    total_analysis_time_ms: 5000
+};
 
 const DIALPLAN_SNIPPET = [
     '[aava-outbound-amd]',
@@ -175,6 +183,11 @@ const CallSchedulingPage = () => {
     );
 
     const ianaTimezones = useMemo(() => meta?.iana_timezones || [], [meta]);
+    const defaultAmdOptions = useMemo(() => {
+        const raw = meta?.default_amd_options;
+        if (raw && typeof raw === 'object') return { ...DEFAULT_AMD_OPTIONS, ...raw };
+        return { ...DEFAULT_AMD_OPTIONS };
+    }, [meta?.default_amd_options]);
     const isTimezoneValid = (tz: string) => {
         const t = (tz || '').trim();
         if (!t) return false;
@@ -215,6 +228,9 @@ const CallSchedulingPage = () => {
         const missing: string[] = [];
         if (selectedVoicemailEnabled && !(selectedCampaign.voicemail_drop_media_uri || '').trim()) missing.push('Voicemail recording missing');
         if (selectedConsentEnabled && !(((selectedCampaign as any).consent_media_uri || '') as string).trim()) missing.push('Consent recording missing');
+        const pending = stats?.lead_states?.pending || 0;
+        const canceled = stats?.lead_states?.canceled || 0;
+        if (pending <= 0) missing.push(`No pending leads${canceled ? ` (canceled: ${canceled})` : ''}`);
         return { within, missing };
     }, [selectedCampaign, windowInfo?.within, selectedVoicemailEnabled, selectedConsentEnabled]);
 
@@ -229,7 +245,7 @@ const CallSchedulingPage = () => {
         voicemail_drop_enabled: true,
         consent_enabled: false,
         consent_timeout_seconds: 5,
-        amd_options: {} as Record<string, any>
+        amd_options: { ...DEFAULT_AMD_OPTIONS } as Record<string, any>
     });
 
     const [editForm, setEditForm] = useState({ ...createForm });
@@ -258,6 +274,14 @@ const CallSchedulingPage = () => {
         const serverTzName = (res.data?.server_timezone || '').trim();
         if (serverTzName) {
             setCreateForm(prev => ((prev.timezone || '').trim() && prev.timezone !== 'UTC' ? prev : { ...prev, timezone: serverTzName }));
+        }
+        const amdDefaults = res.data?.default_amd_options;
+        if (amdDefaults && typeof amdDefaults === 'object') {
+            setCreateForm(prev => {
+                const keys = Object.keys(prev.amd_options || {});
+                if (keys.length) return prev;
+                return { ...prev, amd_options: { ...DEFAULT_AMD_OPTIONS, ...amdDefaults } };
+            });
         }
     };
 
@@ -360,7 +384,10 @@ const CallSchedulingPage = () => {
             voicemail_drop_enabled: Boolean((selectedCampaign as any).voicemail_drop_enabled ?? true),
             consent_enabled: Boolean((selectedCampaign as any).consent_enabled ?? false),
             consent_timeout_seconds: Number((selectedCampaign as any).consent_timeout_seconds ?? 5),
-            amd_options: (selectedCampaign as any).amd_options || {}
+            amd_options:
+                Object.keys(((selectedCampaign as any).amd_options || {}) as Record<string, any>).length > 0
+                    ? ((selectedCampaign as any).amd_options || {})
+                    : { ...defaultAmdOptions }
         });
         setShowCampaignModal(true);
     };
@@ -413,6 +440,8 @@ const CallSchedulingPage = () => {
             await refreshCampaigns();
             await refreshCampaignDetails(selectedCampaign.id);
             setNotice({ type: 'success', message: 'Campaign updated' });
+            setShowCampaignModal(false);
+            setCampaignModalStep('settings');
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to update campaign' });
         }
@@ -786,6 +815,12 @@ const CallSchedulingPage = () => {
                                     {selectedCampaign.status !== 'running' ? (
                                         <button
                                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
+                                            disabled={(stats?.lead_states?.pending || 0) <= 0}
+                                            title={
+                                                (stats?.lead_states?.pending || 0) <= 0
+                                                    ? 'No pending leads to dial. Recycle/uncancel leads first.'
+                                                    : ''
+                                            }
                                             onClick={() => setStatus(selectedCampaign.id, 'running')}
                                         >
                                             <Play className="w-4 h-4" /> Start
@@ -1055,6 +1090,31 @@ const CallSchedulingPage = () => {
                         setPendingVoicemailFile(null);
                         setPendingConsentFile(null);
                     }}
+                    footer={
+                        <>
+                            <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setShowCampaignModal(false)}>
+                                Close
+                            </button>
+                            {campaignModalMode === 'create' ? (
+                                <button
+                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                    onClick={createCampaign}
+                                    disabled={!createForm.name.trim() || !modalTimezoneValid}
+                                >
+                                    Create
+                                </button>
+                            ) : (
+                                <button
+                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                    onClick={saveEdit}
+                                    disabled={!modalTimezoneValid}
+                                >
+                                    Save
+                                </button>
+                            )}
+                        </>
+                    }
+                    size="xl"
                 >
                     <div className="space-y-4">
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -1472,28 +1532,6 @@ const CallSchedulingPage = () => {
                             </div>
                         )}
 
-                        <div className="flex justify-end gap-2 pt-2">
-                            <button className="px-3 py-2 rounded-lg border hover:bg-muted text-sm" onClick={() => setShowCampaignModal(false)}>
-                                Close
-                            </button>
-                            {campaignModalMode === 'create' ? (
-                                <button
-                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
-                                    onClick={createCampaign}
-                                    disabled={!createForm.name.trim() || !modalTimezoneValid}
-                                >
-                                    Create
-                                </button>
-                            ) : (
-                                <button
-                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
-                                    onClick={saveEdit}
-                                    disabled={!modalTimezoneValid}
-                                >
-                                    Save
-                                </button>
-                            )}
-                        </div>
                     </div>
                 </Modal>
             )}
