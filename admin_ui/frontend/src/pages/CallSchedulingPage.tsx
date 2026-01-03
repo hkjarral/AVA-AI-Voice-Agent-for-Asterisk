@@ -146,79 +146,58 @@ const buildDialplanSnippet = (opts: {
     return lines.join('\n');
 };
 
-const buildDialplanHardDisableSnippet = (opts: {
-    stasisAppName: string;
-    voicemailEnabled: boolean;
-    consentEnabled: boolean;
-}): string => {
-    const stasis = opts.stasisAppName || 'asterisk-ai-voice-agent';
-    const attemptVar = '${AAVA_ATTEMPT_ID}';
-    const amdCauseVar = '${AMDCAUSE}';
-
-    const lines: string[] = [
-        '[aava-outbound-amd]',
-        `; HARD-DISABLE TEMPLATE (global): consent_enabled=${opts.consentEnabled ? 'true' : 'false'} voicemail_drop_enabled=${opts.voicemailEnabled ? 'true' : 'false'}`,
-        '; This variant bakes the feature choices into the dialplan (no runtime toggles).',
-        '; Use only if you want the same behavior for ALL outbound campaigns.',
-        'exten => s,1,NoOp(AAVA Outbound AMD hop)',
-        ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
-        ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))',
-        ' same => n,AMD(${AAVA_AMD_OPTS})',
-        ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
-        ' ; Guardrails to reduce false MACHINE on silent humans',
-        ' same => n,GotoIf($["${AMDCAUSE:0:7}" = "TOOLONG"]?human)',
-        ' same => n,GotoIf($["${AMDCAUSE:0:14}" = "INITIALSILENCE"]?human)',
-        ' same => n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?human)',
-        ' same => n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?machine)',
-    ];
-
-    if (opts.voicemailEnabled) {
-        lines.push(
-            ' same => n(machine),WaitForSilence(1500,3,10)',
-            ` same => n,Stasis(${stasis},outbound_amd,${attemptVar},MACHINE,${amdCauseVar},,)`,
-            ' same => n,Hangup()',
-        );
-    } else {
-        lines.push(
-            ` same => n(machine),Stasis(${stasis},outbound_amd,${attemptVar},MACHINE,${amdCauseVar},,)`,
-            ' same => n,Hangup()',
-        );
-    }
-
-    if (opts.consentEnabled) {
-        lines.push(
-            ' ; HUMAN path: consent gate (DTMF 1 accept / 2 deny)',
-            ' same => n(human),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})',
-            ' same => n,NoOp(AAVA CONSENT enabled=${AAVA_CONSENT_ENABLED} timeout=${AAVA_CONSENT_TIMEOUT} playback=${AAVA_CONSENT_PLAYBACK})',
-            ' same => n,Read(AAVA_CONSENT_DTMF,${AAVA_CONSENT_PLAYBACK},1)',
-            ' same => n,NoOp(AAVA CONSENT dtmf=${AAVA_CONSENT_DTMF})',
-            ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)',
-            ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)',
-            ` same => n(human_timeout),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},,timeout)`,
-            ' same => n,Hangup()',
-            ` same => n(human_denied),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},2,denied)`,
-            ' same => n,Hangup()',
-            ` same => n(human_ok),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},1,accepted)`,
-            ' same => n,Hangup()',
-        );
-    } else {
-        lines.push(
-            ` same => n(human),Stasis(${stasis},outbound_amd,${attemptVar},HUMAN,${amdCauseVar},,skipped)`,
-            ' same => n,Hangup()',
-        );
-    }
-
-    return lines.join('\n');
-};
-
 type DialplanLineGroup = 'consent' | 'voicemail' | 'meta';
 
 const classifyDialplanLine = (line: string): DialplanLineGroup | null => {
     const l = line || '';
     if (l.includes('HARD-DISABLE TEMPLATE') || l.includes('Campaign:') || l.includes('; NOTE:')) return 'meta';
-    if (l.includes('AAVA_CONSENT') || l.includes('(consent)') || l.includes('CONSENT')) return 'consent';
+    if (
+        l.includes('AAVA_CONSENT') ||
+        l.includes('(consent)') ||
+        l.includes('CONSENT') ||
+        l.includes('(human_timeout)') ||
+        l.includes('(human_denied)') ||
+        l.includes('(human_ok)') ||
+        l.includes('(human_done)')
+    )
+        return 'consent';
     if (l.includes('AAVA_VM') || l.includes('(vm)') || l.includes('WaitForSilence')) return 'voicemail';
     return null;
+};
+
+const _isCommented = (line: string): boolean => /^\s*;/.test(line || '');
+
+const _commentOutLine = (line: string): string => {
+    if (!line) return ';';
+    if (_isCommented(line)) return line;
+    if (/^\s*\[/.test(line)) return line;
+    return `; ${line}`;
+};
+
+const copyTextToClipboard = async (text: string): Promise<boolean> => {
+    try {
+        if (navigator?.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch {
+        // ignore and try fallback
+    }
+    try {
+        const el = document.createElement('textarea');
+        el.value = text;
+        el.setAttribute('readonly', 'true');
+        el.style.position = 'fixed';
+        el.style.left = '-9999px';
+        el.style.top = '0';
+        document.body.appendChild(el);
+        el.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(el);
+        return ok;
+    } catch {
+        return false;
+    }
 };
 
 const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
@@ -365,11 +344,18 @@ const CallSchedulingPage = () => {
         consentEnabled: modalConsentEnabled,
         voicemailEnabled: modalVoicemailEnabled,
     });
-    const modalDialplanHardDisableSnippet = buildDialplanHardDisableSnippet({
-        stasisAppName: 'asterisk-ai-voice-agent',
-        consentEnabled: modalConsentEnabled,
-        voicemailEnabled: modalVoicemailEnabled,
-    });
+    const modalDialplanSnippetForDisplayAndCopy = useMemo(() => {
+        const lines = modalDialplanSnippet.split('\n');
+        return lines
+            .map(line => {
+                const group = classifyDialplanLine(line);
+                const isInactive =
+                    (group === 'consent' && !modalConsentEnabled) || (group === 'voicemail' && !modalVoicemailEnabled);
+                if (!isInactive) return line;
+                return _commentOutLine(line);
+            })
+            .join('\n');
+    }, [modalDialplanSnippet, modalConsentEnabled, modalVoicemailEnabled]);
 
     useEffect(() => {
         const id = setInterval(() => setClockTick(t => t + 1), 1000);
@@ -1650,11 +1636,14 @@ const CallSchedulingPage = () => {
                                 <div className="rounded-lg border bg-muted/10 p-3 text-xs text-muted-foreground">
                                     <div className="font-medium text-foreground">Legend</div>
                                     <div className="mt-1">
-                                        <span className="text-red-700 font-medium">Red</span> lines are inactive for this campaign (disabled feature). The dialplan is global; per-campaign behavior is controlled at runtime via channel variables.
+                                        <span className="text-red-700 font-medium">Red</span> lines are commented out (prefixed with <span className="font-mono">;</span>) to match the current campaign settings.
+                                    </div>
+                                    <div className="mt-1">
+                                        If you later enable the feature again, re-copy this snippet so those lines are uncommented.
                                     </div>
                                 </div>
                                 <pre className="bg-muted/30 rounded-lg p-3 overflow-x-auto text-xs">
-                                    {modalDialplanSnippet.split('\n').map((line, idx) => {
+                                    {modalDialplanSnippetForDisplayAndCopy.split('\n').map((line, idx) => {
                                         const group = classifyDialplanLine(line);
                                         const isInactive =
                                             (group === 'consent' && !modalConsentEnabled) ||
@@ -1671,20 +1660,18 @@ const CallSchedulingPage = () => {
                                 <div className="flex items-center gap-2">
                                     <button
                                         className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
-                                        onClick={() => navigator.clipboard.writeText(modalDialplanSnippet)}
+                                        onClick={async () => {
+                                            const ok = await copyTextToClipboard(modalDialplanSnippetForDisplayAndCopy);
+                                            if (ok) setNotice({ type: 'success', message: 'Dialplan copied to clipboard' });
+                                            else setNotice({ type: 'error', message: 'Clipboard copy failed (try selecting the text manually)' });
+                                        }}
                                     >
-                                        <Copy className="w-4 h-4" /> Copy (recommended)
-                                    </button>
-                                    <button
-                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-muted text-sm"
-                                        onClick={() => navigator.clipboard.writeText(modalDialplanHardDisableSnippet)}
-                                    >
-                                        <Copy className="w-4 h-4" /> Copy (hard-disable)
+                                        <Copy className="w-4 h-4" /> Copy
                                     </button>
                                 </div>
                                 {(modalConsentEnabled || modalVoicemailEnabled) && (
                                     <div className="text-xs text-muted-foreground">
-                                        If you change consent/voicemail settings later, re-check this tab. The dialplan itself usually does not need to change unless you choose the hard-disable variant.
+                                        If you change consent/voicemail settings later, re-check this tab and update the dialplan if needed.
                                     </div>
                                 )}
                             </div>
