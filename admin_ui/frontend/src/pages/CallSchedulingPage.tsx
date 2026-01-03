@@ -143,7 +143,7 @@ const buildDialplanSnippet = (opts: {
         ' same => n,Hangup()',
     );
 
-    return lines.join('\\n');
+    return lines.join('\n');
 };
 
 const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {
