@@ -124,8 +124,9 @@ exten => s,1,NoOp(AAVA Outbound AMD hop)
  same => n(human),GotoIf($["${AAVA_CONSENT_ENABLED}" = "1"]?consent:human_done)
  same => n(consent),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})
  same => n,NoOp(AAVA CONSENT enabled=${AAVA_CONSENT_ENABLED} timeout=${AAVA_CONSENT_TIMEOUT} playback=${AAVA_CONSENT_PLAYBACK})
- same => n,Playback(${AAVA_CONSENT_PLAYBACK})
- same => n,Read(AAVA_CONSENT_DTMF,,1)
+ ; IMPORTANT: Use Read() with a prompt so DTMF is captured while the consent message plays.
+ ; If we Playback() then Read(), DTMF pressed during Playback is consumed and Read() times out.
+ same => n,Read(AAVA_CONSENT_DTMF,${AAVA_CONSENT_PLAYBACK},1)
  same => n,NoOp(AAVA CONSENT dtmf=${AAVA_CONSENT_DTMF})
  same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)
  same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)
@@ -358,6 +359,26 @@ Expected:
 - Stop campaign (choose “stop dialing only”) and confirm pending leads remain `pending`.
 - Stop campaign (choose “stop and cancel pending”) and confirm pending leads become `canceled`.
 - While an outbound campaign is running, place an inbound test call and confirm inbound audio quality is unaffected.
+
+### 7) Additional sanity checks (recommended)
+
+- Consent timeout: enable consent gate, answer, press nothing → expect `consent_timeout` and hangup.
+- Consent denied: enable consent gate, answer, press `2` → expect `consent_denied`, hangup, lead remains recyclable.
+- Consent disabled: disable consent gate, answer → expect immediate AI attach.
+- Voicemail drop disabled: disable voicemail drop, let call hit voicemail → expect `machine_detected` (no playback), hangup.
+- Campaign pacing:
+  - set `max_concurrent=2` and `min_interval=5s` with 4+ internal-extension leads
+  - confirm at most 2 calls are “in progress” and origination does not exceed min interval.
+- Campaign window/timezone:
+  - set a window that is currently outside local time → status card should show “Outside window” and no calls originate.
+  - set a window that crosses midnight → confirm “within” logic behaves as expected.
+- Restart resilience: restart `ai-engine` mid-campaign and confirm:
+  - stale `leased`/`dialing` leads are re-queued after TTL
+  - campaign resumes dialing if still `running` and within window.
+
+### 8) Automated tests
+
+- Run `pytest -q` and confirm green before shipping changes.
 
 ## Operational Notes (Dev)
 

@@ -81,6 +81,9 @@ class _FakeResponse:
     async def text(self):
         return self._body.decode("utf-8", errors="ignore")
 
+    async def json(self):
+        return json.loads(self._body.decode("utf-8"))
+
 
 class _FakeSession:
     def __init__(self, body: bytes, status: int = 200):
@@ -89,8 +92,10 @@ class _FakeSession:
         self.requests = []
         self.closed = False
 
-    def post(self, url, json=None, params=None, headers=None):
-        self.requests.append({"url": url, "json": json, "params": params, "headers": headers})
+    def post(self, url, json=None, params=None, headers=None, data=None, timeout=None):
+        self.requests.append(
+            {"url": url, "json": json, "params": params, "headers": headers, "data": data, "timeout": timeout}
+        )
         return _FakeResponse(self._body, status=self._status)
 
     async def close(self):
@@ -103,29 +108,24 @@ async def test_deepgram_stt_adapter_transcribes(monkeypatch):
     provider_config = DeepgramProviderConfig(**app_config.providers["deepgram"])
     adapter = DeepgramSTTAdapter("deepgram_stt", app_config, provider_config, {"language": "en-US"})
 
-    mock_ws = _MockWebSocket()
+    # Adapter uses the Deepgram REST API (pre-recorded "listen") for each transcribe() call.
+    fake_body = json.dumps(
+        {"results": {"channels": [{"alternatives": [{"transcript": "hello world", "confidence": 0.92}]}]}}
+    ).encode("utf-8")
+    fake_session = _FakeSession(fake_body)
 
-    async def fake_connect(*args, **kwargs):
-        return mock_ws
+    def fake_client_session(*args, **kwargs):
+        return fake_session
 
-    monkeypatch.setattr("src.pipelines.deepgram.websockets.connect", fake_connect)
+    monkeypatch.setattr("src.pipelines.deepgram.aiohttp.ClientSession", fake_client_session)
 
     await adapter.start()
     await adapter.open_call("call-1", {"model": "nova-2-general"})
-    mock_ws.push(
-        json.dumps(
-            {
-                "channel": {"alternatives": [{"transcript": "hello world", "confidence": 0.92}]},
-                "is_final": True,
-            }
-        )
-    )
 
     audio_buffer = b"\x00\x00" * 160
     transcript = await adapter.transcribe("call-1", audio_buffer, 8000, {})
     assert transcript == "hello world"
-    assert mock_ws.sent[0] == audio_buffer
-    assert json.loads(mock_ws.sent[1])["type"] == "flush"
+    assert fake_session.requests
 
 
 @pytest.mark.asyncio

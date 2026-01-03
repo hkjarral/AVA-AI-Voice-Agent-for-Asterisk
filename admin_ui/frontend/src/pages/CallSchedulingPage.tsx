@@ -102,8 +102,9 @@ const DIALPLAN_SNIPPET = [
     ' same => n,Hangup()',
     ' same => n(human),GotoIf($["${AAVA_CONSENT_ENABLED}" = "1"]?consent:human_done)',
     ' same => n(consent),Set(TIMEOUT(response)=${IF($["${AAVA_CONSENT_TIMEOUT}"=""]?5:${AAVA_CONSENT_TIMEOUT})})',
-    ' same => n,Playback(${AAVA_CONSENT_PLAYBACK})',
-    ' same => n,Read(AAVA_CONSENT_DTMF,,1)',
+    // Use Read() with a prompt so DTMF is captured while the consent message plays.
+    // If we Playback() then Read(), DTMF pressed during Playback is consumed and Read() times out.
+    ' same => n,Read(AAVA_CONSENT_DTMF,${AAVA_CONSENT_PLAYBACK},1)',
     ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "1"]?human_ok)',
     ' same => n,GotoIf($["${AAVA_CONSENT_DTMF}" = "2"]?human_denied)',
     ' same => n(human_timeout),Stasis(asterisk-ai-voice-agent,outbound_amd,${AAVA_ATTEMPT_ID},HUMAN,${AMDCAUSE},,timeout)',
