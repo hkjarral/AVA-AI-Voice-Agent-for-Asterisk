@@ -176,7 +176,7 @@ const _commentOutLine = (line: string): string => {
 
 const copyTextToClipboard = async (text: string): Promise<boolean> => {
     try {
-        if (navigator?.clipboard?.writeText) {
+        if (window.isSecureContext && navigator?.clipboard?.writeText) {
             await navigator.clipboard.writeText(text);
             return true;
         }
@@ -191,7 +191,9 @@ const copyTextToClipboard = async (text: string): Promise<boolean> => {
         el.style.left = '-9999px';
         el.style.top = '0';
         document.body.appendChild(el);
+        el.focus();
         el.select();
+        el.setSelectionRange(0, el.value.length);
         const ok = document.execCommand('copy');
         document.body.removeChild(el);
         return ok;
@@ -352,6 +354,16 @@ const CallSchedulingPage = () => {
                 const isInactive =
                     (group === 'consent' && !modalConsentEnabled) || (group === 'voicemail' && !modalVoicemailEnabled);
                 if (!isInactive) return line;
+
+                if (group === 'consent' && !modalConsentEnabled) {
+                    if (line.includes(' same => n(human),')) return ' same => n(human),Goto(human_done)';
+                    if (line.includes(' same => n(human_done),')) return line;
+                }
+
+                if (group === 'voicemail' && !modalVoicemailEnabled) {
+                    if (line.includes(' same => n(machine),')) return ' same => n(machine),Goto(machine_done)';
+                }
+
                 return _commentOutLine(line);
             })
             .join('\n');
@@ -1648,7 +1660,7 @@ const CallSchedulingPage = () => {
                                         const isInactive =
                                             (group === 'consent' && !modalConsentEnabled) ||
                                             (group === 'voicemail' && !modalVoicemailEnabled);
-                                        const cls = isInactive ? 'text-red-700' : 'text-foreground';
+                                        const cls = isInactive && _isCommented(line) ? 'text-red-700' : 'text-foreground';
                                         return (
                                             <span key={idx} className={cls}>
                                                 {line}
