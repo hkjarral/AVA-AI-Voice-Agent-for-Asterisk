@@ -30,7 +30,7 @@ class TestApplyTransportDefaults:
         apply_transport_defaults(config_data)
         
         assert config_data['audio_transport'] == 'externalmedia'
-        assert config_data['downstream_mode'] == 'file'
+        assert config_data['downstream_mode'] == 'stream'
     
     def test_env_overrides_audio_transport(self, monkeypatch):
         """Should override audio_transport from environment."""

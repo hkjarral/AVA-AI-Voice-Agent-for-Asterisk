@@ -18,6 +18,7 @@ def _parse_bool(raw: Optional[str], default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class LocalAIConfig:
+    runtime_mode: str = "full"
     ws_host: str = "127.0.0.1"
     ws_port: int = 8765
     ws_auth_token: str = ""
@@ -92,6 +93,7 @@ class LocalAIConfig:
         ] or ["<|user|>", "<|assistant|>", "<|end|>"]
 
         return cls(
+            runtime_mode=(os.getenv("LOCAL_AI_MODE", "full") or "full").strip().lower(),
             ws_host=os.getenv("LOCAL_WS_HOST", "127.0.0.1"),
             ws_port=int(os.getenv("LOCAL_WS_PORT", "8765")),
             ws_auth_token=(os.getenv("LOCAL_WS_AUTH_TOKEN", "") or "").strip(),

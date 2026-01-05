@@ -728,6 +728,12 @@ class LocalAIServer:
 
         # Runtime backend instances (loaded/unloaded over time)
         self.kroko_backend: Optional[KrokoSTTBackend] = None
+
+        # Runtime mode: full|minimal. In minimal mode we skip LLM preload to reduce startup time/memory.
+        try:
+            self.runtime_mode = (getattr(self.config, "runtime_mode", "full") or "full").strip().lower()
+        except Exception:
+            self.runtime_mode = "full"
         self.sherpa_backend: Optional[SherpaONNXSTTBackend] = None
         self.faster_whisper_backend: Optional["FasterWhisperSTTBackend"] = None
         self.whisper_cpp_backend: Optional["WhisperCppSTTBackend"] = None
@@ -837,8 +843,14 @@ class LocalAIServer:
             return
 
         await self._load_stt_model()
-        await self._load_llm_model()
-        await self.run_startup_latency_check()
+        if self.runtime_mode == "minimal":
+            logging.info(
+                "🤖 Local AI runtime_mode=minimal: skipping LLM preload (set LOCAL_AI_MODE=full to enable)"
+            )
+            self.llm_model = None
+        else:
+            await self._load_llm_model()
+            await self.run_startup_latency_check()
         await self._load_tts_model()
 
         if self.startup_errors:

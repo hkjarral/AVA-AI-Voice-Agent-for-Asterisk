@@ -71,6 +71,10 @@ def build_status_response(server) -> Dict[str, Any]:
     stt_loaded, stt_path, stt_display = _stt_status(server)
     tts_loaded, tts_path, tts_display = _tts_status(server)
     llm_display = os.path.basename(server.llm_model_path)
+    runtime_mode = (getattr(server, "runtime_mode", None) or "full").strip().lower()
+    llm_loaded = server.mock_models or server.llm_model is not None
+    if runtime_mode == "minimal":
+        llm_loaded = False
 
     return {
         "type": "status_response",
@@ -85,7 +89,7 @@ def build_status_response(server) -> Dict[str, Any]:
                 "display": stt_display,
             },
             "llm": {
-                "loaded": server.mock_models or server.llm_model is not None,
+                "loaded": llm_loaded,
                 "path": server.llm_model_path,
                 "display": llm_display,
                 "config": {
@@ -119,6 +123,7 @@ def build_status_response(server) -> Dict[str, Any]:
             "log_level": _level_name,
             "debug_audio": DEBUG_AUDIO_FLOW,
             "mock_models": server.mock_models,
+            "runtime_mode": runtime_mode,
             "degraded": bool(server.startup_errors),
             "startup_errors": dict(server.startup_errors) if server.startup_errors else {},
         },

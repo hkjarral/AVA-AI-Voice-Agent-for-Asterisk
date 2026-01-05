@@ -351,6 +351,9 @@ class Engine:
         # Per-call provider streaming queues (AgentAudio -> streaming playback)
         self._provider_stream_queues: Dict[str, asyncio.Queue] = {}
         self._provider_stream_formats: Dict[str, Dict[str, Any]] = {}
+        # Guardrail: if downstream_mode=file ever sees streaming provider chunks, log once per call.
+        self._downstream_file_audio_events: Dict[str, int] = {}
+        self._downstream_file_streaming_logged: Set[str] = set()
         # Prevent duplicate runtime warnings per call when misalignment persists
         self._runtime_alignment_logged: Set[str] = set()
         # Per-call downstream audio preferences (format/sample-rate)
@@ -6892,8 +6895,8 @@ class Engine:
     async def on_provider_event(self, event: Dict[str, Any]):
         """Handle async events from the active provider (Deepgram/OpenAI/local).
 
-        For file-based downstream (current default), buffer AgentAudio bytes until
-        AgentAudioDone, then play the accumulated audio via PlaybackManager.
+        Provider events include transcripts, barge-in signals, and AgentAudio (TTS).
+        AgentAudio is normally streamed downstream via StreamingPlaybackManager.
         """
         try:
             etype = event.get("type")
@@ -7171,6 +7174,48 @@ class Engine:
                         logger.debug("Provider chunk resample failed; passing original", call_id=call_id, exc_info=True)
                 # Do not slice μ-law in engine; StreamingPlaybackManager handles segmentation/pacing
 
+                # Guardrail: downstream_mode=file is not compatible with streaming/chunked AgentAudio.
+                # If someone forces file playback while the provider is emitting chunks, we log an error
+                # (once per call) and avoid creating/enqueuing streaming queues that would leak memory.
+                try:
+                    if getattr(self.config, "downstream_mode", "stream") == "file":
+                        count = int(self._downstream_file_audio_events.get(call_id, 0)) + 1
+                        self._downstream_file_audio_events[call_id] = count
+
+                        leaked = self._provider_stream_queues.pop(call_id, None)
+                        if leaked is not None:
+                            try:
+                                self._provider_coalesce_buf.pop(call_id, None)
+                            except Exception:
+                                pass
+
+                        if count >= 2 and call_id not in self._downstream_file_streaming_logged:
+                            self._downstream_file_streaming_logged.add(call_id)
+                            logger.error(
+                                "downstream_mode=file received streaming provider audio; playback may be incomplete/unstable",
+                                call_id=call_id,
+                                provider=getattr(session, "provider_name", None),
+                                hint="Set DOWNSTREAM_MODE=stream (recommended) or switch to a pipeline with streaming playback",
+                            )
+
+                        # Best-effort: play this chunk via file playback and return.
+                        # NOTE: file playback assumes Asterisk-compatible ulaw; streaming providers may emit PCM.
+                        try:
+                            await self.playback_manager.play_audio(
+                                call_id,
+                                out_chunk,
+                                "streaming-response",
+                            )
+                        except Exception:
+                            logger.error(
+                                "File playback failed in downstream_mode=file",
+                                call_id=call_id,
+                                exc_info=True,
+                            )
+                        return
+                except Exception:
+                    logger.debug("downstream_mode=file guardrail failed", call_id=call_id, exc_info=True)
+
                 # Coalescing settings
                 coalesce_enabled = bool(getattr(getattr(self.config, 'streaming', {}), 'coalesce_enabled', False))
                 try:
@@ -7233,7 +7278,7 @@ class Engine:
                         if not source_sample_rate:
                             # Fallback: use provider's configured output rate (prevents 8kHz default)
                             try:
-                                provider = self._call_providers.get(call_id) or self.providers.get(session.provider_name)
+                                provider = getattr(self, "_call_providers", {}).get(call_id) or self.providers.get(session.provider_name)
                                 if provider and hasattr(provider, '_dg_output_rate'):
                                     source_sample_rate = provider._dg_output_rate
                                     logger.debug(
@@ -7319,7 +7364,7 @@ class Engine:
                             if remediation:
                                 session.audio_diagnostics["codec_remediation"] = remediation
                             src_encoding = fmt_info.get("encoding") or encoding
-                            provider_obj = self._call_providers.get(call_id) or self.providers.get(session.provider_name)
+                            provider_obj = getattr(self, "_call_providers", {}).get(call_id) if provider_name else None
                             src_rate = fmt_info.get("sample_rate") or sample_rate_int or (
                                 getattr(provider_obj, "_dg_output_rate", None) if provider_obj else None
                             )
@@ -7456,19 +7501,30 @@ class Engine:
                         ratio = 0.0 if prov <= 0 else (enq / float(prov))
                     except Exception:
                         ratio = 0.0
-                    logger.info("PROVIDER SEGMENT BYTES",
-                                call_id=call_id,
-                                provider_bytes=prov,
-                                enqueued_bytes=enq,
-                                enqueued_ratio=round(ratio, 3))
+                    logger.info(
+                        "PROVIDER SEGMENT BYTES",
+                        call_id=call_id,
+                        provider_bytes=prov,
+                        enqueued_bytes=enq,
+                        enqueued_ratio=round(ratio, 3),
+                    )
                     try:
                         if hasattr(self, 'streaming_playback_manager') and self.streaming_playback_manager:
                             self.streaming_playback_manager.record_provider_bytes(call_id, int(prov))
                     except Exception:
-                        logger.debug("Failed to propagate provider_bytes to streaming manager",
-                                     call_id=call_id, exc_info=True)
+                        logger.debug(
+                            "Failed to propagate provider_bytes to streaming manager",
+                            call_id=call_id,
+                            exc_info=True,
+                        )
                     # Reset chunk sequence at segment end
                     self._provider_chunk_seq.pop(call_id, None)
+                    # Clear downstream_mode=file guardrail state
+                    self._downstream_file_audio_events.pop(call_id, None)
+                    try:
+                        self._downstream_file_streaming_logged.discard(call_id)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 # Experimental: if coalescing buffer exists but stream never started, play or stream it now
@@ -7698,7 +7754,7 @@ class Engine:
                             # For local provider, we need to synthesize farewell via TTS
                             farewell = "Goodbye"  # Keep it simple and short
                             provider_name = getattr(session, 'provider_name', None)
-                            local_provider = self._call_providers.get(call_id) if provider_name else None
+                            local_provider = getattr(self, "_call_providers", {}).get(call_id) if provider_name else None
                             
                             logger.info(
                                 "🎤 Preparing farewell TTS",
@@ -8067,26 +8123,77 @@ class Engine:
                 max_attempts = 2
                 for attempt in range(1, max_attempts + 1):
                     try:
-                        tts_bytes = bytearray()
-                        async for chunk in pipeline.tts_adapter.synthesize(call_id, greeting, pipeline.tts_options):
-                            if chunk:
-                                tts_bytes.extend(chunk)
-                        if not tts_bytes:
-                            logger.warning(
-                                "Pipeline greeting produced no audio",
-                                call_id=call_id,
-                                attempt=attempt,
+                        use_streaming_playback = self.config.downstream_mode != "file"
+                        tts_format = (pipeline.tts_options or {}).get("format")
+                        if not isinstance(tts_format, dict):
+                            tts_format = (pipeline.tts_options or {}).get("target_format")
+                        if not isinstance(tts_format, dict):
+                            tts_format = {}
+                        tts_encoding = str(tts_format.get("encoding") or tts_format.get("format") or "mulaw")
+                        try:
+                            tts_rate = int(tts_format.get("sample_rate") or tts_format.get("sample_rate_hz") or 8000)
+                        except Exception:
+                            tts_rate = 8000
+
+                        if use_streaming_playback:
+                            q: asyncio.Queue = asyncio.Queue(maxsize=256)
+                            stream_id = await self.streaming_playback_manager.start_streaming_playback(
+                                call_id,
+                                q,
+                                playback_type="pipeline-tts-greeting",
+                                source_encoding=tts_encoding,
+                                source_sample_rate=tts_rate,
                             )
-                        else:
-                            await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts-greeting")
-                            
-                            # AAVA-85: Persist greeting to session history so it appears in email summary
+                            if not stream_id:
+                                raise RuntimeError("start_streaming_playback returned no stream_id")
+                            any_audio = False
+                            async for chunk in pipeline.tts_adapter.synthesize(call_id, greeting, pipeline.tts_options):
+                                if not chunk:
+                                    continue
+                                any_audio = True
+                                try:
+                                    q.put_nowait(chunk)
+                                except asyncio.QueueFull:
+                                    logger.debug("Pipeline greeting streaming queue full; dropping chunk", call_id=call_id)
                             try:
-                                session.conversation_history.append({"role": "assistant", "content": greeting})
-                                await self.session_store.upsert_call(session)
-                                logger.info("Persisted initial greeting to session history", call_id=call_id)
-                            except Exception as e:
-                                logger.warning("Failed to persist greeting history", call_id=call_id, error=str(e))
+                                q.put_nowait(None)
+                            except asyncio.QueueFull:
+                                asyncio.create_task(q.put(None))
+                            if not any_audio:
+                                logger.warning(
+                                    "Pipeline greeting produced no audio",
+                                    call_id=call_id,
+                                    attempt=attempt,
+                                )
+                            else:
+                                # AAVA-85: Persist greeting to session history so it appears in email summary
+                                try:
+                                    session.conversation_history.append({"role": "assistant", "content": greeting})
+                                    await self.session_store.upsert_call(session)
+                                    logger.info("Persisted initial greeting to session history", call_id=call_id)
+                                except Exception as e:
+                                    logger.warning("Failed to persist greeting history", call_id=call_id, error=str(e))
+                        else:
+                            tts_bytes = bytearray()
+                            async for chunk in pipeline.tts_adapter.synthesize(call_id, greeting, pipeline.tts_options):
+                                if chunk:
+                                    tts_bytes.extend(chunk)
+                            if not tts_bytes:
+                                logger.warning(
+                                    "Pipeline greeting produced no audio",
+                                    call_id=call_id,
+                                    attempt=attempt,
+                                )
+                            else:
+                                await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts-greeting")
+                                
+                                # AAVA-85: Persist greeting to session history so it appears in email summary
+                                try:
+                                    session.conversation_history.append({"role": "assistant", "content": greeting})
+                                    await self.session_store.upsert_call(session)
+                                    logger.info("Persisted initial greeting to session history", call_id=call_id)
+                                except Exception as e:
+                                    logger.warning("Failed to persist greeting history", call_id=call_id, error=str(e))
                                 
                         break
                     except RuntimeError as exc:
@@ -8161,7 +8268,7 @@ class Engine:
             buffer_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=200)
             transcript_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=8)
 
-            use_streaming = bool(stt_options.get("streaming", False))
+            use_streaming = bool(stt_options.get("streaming", True))
             if use_streaming:
                 streaming_supported = all(
                     hasattr(pipeline.stt_adapter, attr)
@@ -8432,18 +8539,46 @@ class Engine:
                     
                     # 1. Synthesize and Play Text (if any)
                     if response_text:
-                        tts_bytes = bytearray()
-                        first_tts_ts: Optional[float] = None
-                        try:
-                            async for tts_chunk in pipeline.tts_adapter.synthesize(
-                                call_id,
-                                response_text,
-                                pipeline.tts_options,
-                            ):
-                                if tts_chunk:
+                        use_streaming_playback = self.config.downstream_mode != "file"
+                        if use_streaming_playback:
+                            stream_q: asyncio.Queue = asyncio.Queue(maxsize=256)
+                            stream_id: Optional[str] = None
+                            old_provider_name = getattr(session, "provider_name", None)
+                            try:
+                                # Provide a stable provider label for adaptive streaming + metrics
+                                session.provider_name = "pipeline"
+                                await self.session_store.upsert_call(session)
+                            except Exception:
+                                pass
+                            try:
+                                tts_format = (pipeline.tts_options or {}).get("format")
+                                if not isinstance(tts_format, dict):
+                                    tts_format = (pipeline.tts_options or {}).get("target_format")
+                                if not isinstance(tts_format, dict):
+                                    tts_format = {}
+                                tts_encoding = str(tts_format.get("encoding") or tts_format.get("format") or "mulaw")
+                                try:
+                                    tts_rate = int(tts_format.get("sample_rate") or tts_format.get("sample_rate_hz") or 8000)
+                                except Exception:
+                                    tts_rate = 8000
+
+                                stream_id = await self.streaming_playback_manager.start_streaming_playback(
+                                    call_id,
+                                    stream_q,
+                                    playback_type="pipeline-tts",
+                                    source_encoding=tts_encoding,
+                                    source_sample_rate=tts_rate,
+                                )
+                                if not stream_id:
+                                    raise RuntimeError("start_streaming_playback returned no stream_id")
+                                playback_id = stream_id
+                                first_tts_ts: Optional[float] = None
+
+                                async for tts_chunk in pipeline.tts_adapter.synthesize(call_id, response_text, pipeline.tts_options):
+                                    if not tts_chunk:
+                                        continue
                                     if first_tts_ts is None:
                                         first_tts_ts = time.time()
-                                        # Track turn latency for call history (Milestone 21)
                                         turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
                                         session.turn_latencies_ms.append(turn_latency_ms)
                                         try:
@@ -8451,33 +8586,105 @@ class Engine:
                                                 _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(max(0.0, first_tts_ts - t_start))
                                         except Exception:
                                             pass
-                                    tts_bytes.extend(tts_chunk)
-                        except Exception:
-                            logger.debug("TTS synth failed", call_id=call_id, exc_info=True)
-                            # If TTS fails but we have tools, continue to tools
-                            if not tool_calls:
-                                return
-                        
-                        if tts_bytes:
-                            try:
-                                playback_id = await self.playback_manager.play_audio(
-                                    call_id,
-                                    bytes(tts_bytes),
-                                    "pipeline-tts",
-                                )
+                                    try:
+                                        stream_q.put_nowait(tts_chunk)
+                                    except asyncio.QueueFull:
+                                        # Streaming is real-time; drop if we're falling behind.
+                                        logger.debug("Pipeline streaming queue full; dropping TTS chunk", call_id=call_id)
+
+                                # End-of-segment sentinel
+                                try:
+                                    stream_q.put_nowait(None)
+                                except asyncio.QueueFull:
+                                    asyncio.create_task(stream_q.put(None))
                                 try:
                                     if playback_id and t_start is not None:
                                         _TURN_RESPONSE_SECONDS.labels(pipeline_label, provider_label).observe(max(0.0, time.time() - t_start))
                                 except Exception:
                                     pass
-                                if not playback_id:
-                                    logger.error(
-                                        "Pipeline playback failed",
-                                        call_id=call_id,
-                                        size=len(tts_bytes),
-                                    )
                             except Exception:
-                                logger.error("Pipeline playback exception", call_id=call_id, exc_info=True)
+                                logger.error("Pipeline streaming playback failed; falling back to file playback", call_id=call_id, exc_info=True)
+                                try:
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                except Exception:
+                                    logger.debug("Pipeline stop_streaming_playback failed", call_id=call_id, exc_info=True)
+                                # Fall back to file-based playback using existing behavior
+                                try:
+                                    tts_bytes = bytearray()
+                                    first_tts_ts = None
+                                    async for tts_chunk in pipeline.tts_adapter.synthesize(call_id, response_text, pipeline.tts_options):
+                                        if tts_chunk:
+                                            if first_tts_ts is None:
+                                                first_tts_ts = time.time()
+                                                turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                                session.turn_latencies_ms.append(turn_latency_ms)
+                                                try:
+                                                    if t_start is not None:
+                                                        _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(max(0.0, first_tts_ts - t_start))
+                                                except Exception:
+                                                    pass
+                                            tts_bytes.extend(tts_chunk)
+                                    if tts_bytes:
+                                        playback_id = await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts")
+                                except Exception:
+                                    logger.debug("Pipeline file-playback fallback failed", call_id=call_id, exc_info=True)
+                                    if not tool_calls:
+                                        return
+                            finally:
+                                try:
+                                    if old_provider_name is not None:
+                                        session.provider_name = old_provider_name
+                                        await self.session_store.upsert_call(session)
+                                except Exception:
+                                    pass
+                        else:
+                            # downstream_mode=file: keep existing pipeline file playback behavior
+                            tts_bytes = bytearray()
+                            first_tts_ts: Optional[float] = None
+                            try:
+                                async for tts_chunk in pipeline.tts_adapter.synthesize(
+                                    call_id,
+                                    response_text,
+                                    pipeline.tts_options,
+                                ):
+                                    if tts_chunk:
+                                        if first_tts_ts is None:
+                                            first_tts_ts = time.time()
+                                            # Track turn latency for call history (Milestone 21)
+                                            turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                            session.turn_latencies_ms.append(turn_latency_ms)
+                                            try:
+                                                if t_start is not None:
+                                                    _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(max(0.0, first_tts_ts - t_start))
+                                            except Exception:
+                                                pass
+                                        tts_bytes.extend(tts_chunk)
+                            except Exception:
+                                logger.debug("TTS synth failed", call_id=call_id, exc_info=True)
+                                # If TTS fails but we have tools, continue to tools
+                                if not tool_calls:
+                                    return
+                            
+                            if tts_bytes:
+                                try:
+                                    playback_id = await self.playback_manager.play_audio(
+                                        call_id,
+                                        bytes(tts_bytes),
+                                        "pipeline-tts",
+                                    )
+                                    try:
+                                        if playback_id and t_start is not None:
+                                            _TURN_RESPONSE_SECONDS.labels(pipeline_label, provider_label).observe(max(0.0, time.time() - t_start))
+                                    except Exception:
+                                        pass
+                                    if not playback_id:
+                                        logger.error(
+                                            "Pipeline playback failed",
+                                            call_id=call_id,
+                                            size=len(tts_bytes),
+                                        )
+                                except Exception:
+                                    logger.error("Pipeline playback exception", call_id=call_id, exc_info=True)
 
                     # 2. Execute Tools (if any)
                     if tool_calls:
@@ -8566,7 +8773,8 @@ class Engine:
                                                             pid,
                                                             timeout_sec=(duration_sec + 3.0),
                                                         )
-                                                    logger.info("Farewell playback completed", duration_sec=duration_sec, call_id=call_id)
+                                                
+                                                logger.info("Farewell playback completed", duration_sec=duration_sec, call_id=call_id)
                                             except Exception as e:
                                                 logger.error("Farewell TTS failed", error=str(e))
                                         
@@ -9091,7 +9299,7 @@ class Engine:
             )
         
         # Get provider instance
-        provider = self._call_providers.get(session.call_id) or self.providers.get(provider_name)
+        provider = getattr(self, "_call_providers", {}).get(session.call_id) or self.providers.get(provider_name)
         if not provider:
             logger.warning(
                 "Provider not found for audio profile resolution (pipeline mode will use context_name)",
@@ -9848,7 +10056,16 @@ class Engine:
         target_encoding: Optional[Any],
         target_sample_rate: Optional[Any],
     ) -> None:
-        if not call_id or call_id in self._transport_card_logged:
+        if not call_id:
+            return
+        logged = getattr(self, "_transport_card_logged", None)
+        if logged is None:
+            try:
+                logged = set()
+                self._transport_card_logged = logged
+            except Exception:
+                logged = set()
+        if call_id in logged:
             return
 
         spm = getattr(self, "streaming_playback_manager", None)
@@ -9935,7 +10152,10 @@ class Engine:
                 "TransportCard",
                 **{k: v for k, v in payload.items() if v is not None},
             )
-            self._transport_card_logged.add(call_id)
+            try:
+                logged.add(call_id)
+            except Exception:
+                pass
         except Exception:
             logger.debug("TransportCard logging failed", call_id=call_id, exc_info=True)
 
@@ -9968,7 +10188,8 @@ class Engine:
             "sample_rate": transport_rate,
         }
 
-        provider = self._call_providers.get(session.call_id) or self.providers.get(provider_name)
+        call_providers = getattr(self, "_call_providers", None) or {}
+        provider = call_providers.get(session.call_id) or self.providers.get(provider_name)
         
         # CRITICAL FIX: Read provider INPUT format (what provider receives)
         # NOT target format (what provider outputs)

@@ -330,36 +330,32 @@ class OllamaLLMAdapter(LLMComponent):
         base_url = merged.get("base_url", _DEFAULT_BASE_URL)
         
         try:
-            await self._ensure_session()
-            assert self._session
-            
             # Check connectivity by listing available models
             url = f"{base_url.rstrip('/')}/api/tags"
             timeout = aiohttp.ClientTimeout(total=10)
-            
-            async with self._session.get(url, timeout=timeout) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    models = data.get("models", [])
-                    model_names = [m.get("name", "") for m in models]
-                    configured_model = merged.get("model", _DEFAULT_MODEL)
-                    model_available = any(
-                        configured_model in name or name.startswith(configured_model.split(":")[0])
-                        for name in model_names
-                    )
-                    
-                    return {
-                        "healthy": True,
-                        "error": None,
-                        "details": {
-                            "endpoint": base_url,
-                            "configured_model": configured_model,
-                            "model_available": model_available,
-                            "available_models": model_names[:10],  # First 10 models
-                            "tools_capable": self._model_supports_tools(configured_model),
-                        },
-                    }
-                else:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        models = data.get("models", [])
+                        model_names = [m.get("name", "") for m in models]
+                        configured_model = merged.get("model", _DEFAULT_MODEL)
+                        model_available = any(
+                            configured_model in name or name.startswith(configured_model.split(":")[0])
+                            for name in model_names
+                        )
+                        
+                        return {
+                            "healthy": True,
+                            "error": None,
+                            "details": {
+                                "endpoint": base_url,
+                                "configured_model": configured_model,
+                                "model_available": model_available,
+                                "available_models": model_names[:10],  # First 10 models
+                                "tools_capable": self._model_supports_tools(configured_model),
+                            },
+                        }
                     body = await response.text()
                     return {
                         "healthy": False,
@@ -393,34 +389,30 @@ class OllamaLLMAdapter(LLMComponent):
         url_to_use = base_url or self._pipeline_defaults.get("base_url", _DEFAULT_BASE_URL)
         
         try:
-            await self._ensure_session()
-            assert self._session
-            
             url = f"{url_to_use.rstrip('/')}/api/tags"
             timeout = aiohttp.ClientTimeout(total=10)
-            
-            async with self._session.get(url, timeout=timeout) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    models = data.get("models", [])
-                    
-                    # Enrich with tool capability info
-                    enriched_models = []
-                    for model in models:
-                        name = model.get("name", "")
-                        enriched_models.append({
-                            "name": name,
-                            "size": model.get("size", 0),
-                            "modified_at": model.get("modified_at", ""),
-                            "tools_capable": self._model_supports_tools(name),
-                        })
-                    
-                    return {
-                        "success": True,
-                        "models": enriched_models,
-                        "error": None,
-                    }
-                else:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        models = data.get("models", [])
+                        
+                        # Enrich with tool capability info
+                        enriched_models = []
+                        for model in models:
+                            name = model.get("name", "")
+                            enriched_models.append({
+                                "name": name,
+                                "size": model.get("size", 0),
+                                "modified_at": model.get("modified_at", ""),
+                                "tools_capable": self._model_supports_tools(name),
+                            })
+                        
+                        return {
+                            "success": True,
+                            "models": enriched_models,
+                            "error": None,
+                        }
                     return {
                         "success": False,
                         "models": [],

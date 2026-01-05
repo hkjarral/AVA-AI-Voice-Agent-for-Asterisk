@@ -135,9 +135,13 @@ print_fix_and_docs() {
 }
 
 # Parse args
+LOCAL_AI_MODE_OVERRIDE=""
 for arg in "$@"; do
     case $arg in
         --apply-fixes) APPLY_FIXES=true ;;
+        --local-ai-mode=*) LOCAL_AI_MODE_OVERRIDE="${arg#*=}" ;;
+        --local-ai-minimal) LOCAL_AI_MODE_OVERRIDE="minimal" ;;
+        --local-ai-full) LOCAL_AI_MODE_OVERRIDE="full" ;;
         --help|-h) 
             echo "AAVA Pre-flight Check"
             echo ""
@@ -145,6 +149,9 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --apply-fixes  Apply fixes automatically (requires root/sudo)"
+            echo "  --local-ai-mode=MODE  Set LOCAL_AI_MODE in .env (MODE=full|minimal)"
+            echo "  --local-ai-minimal    Shortcut for --local-ai-mode=minimal"
+            echo "  --local-ai-full       Shortcut for --local-ai-mode=full"
             echo "  --help         Show this help message"
             echo ""
             echo "Exit codes:"
@@ -899,6 +906,25 @@ check_env() {
         log_info "  For cloud providers, edit .env to add your API keys"
     else
         log_warn ".env.example not found"
+    fi
+
+    if [ -n "$LOCAL_AI_MODE_OVERRIDE" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+        local mode
+        mode="$(echo "$LOCAL_AI_MODE_OVERRIDE" | tr '[:upper:]' '[:lower:]' | tr -d '\r' | xargs 2>/dev/null || echo "$LOCAL_AI_MODE_OVERRIDE")"
+        if [ "$mode" != "full" ] && [ "$mode" != "minimal" ]; then
+            log_warn "Invalid --local-ai-mode value: $LOCAL_AI_MODE_OVERRIDE (expected full|minimal)"
+        else
+            if grep -qE '^[# ]*LOCAL_AI_MODE=' "$SCRIPT_DIR/.env"; then
+                sed -i.bak "s/^[# ]*LOCAL_AI_MODE=.*/LOCAL_AI_MODE=${mode}/" "$SCRIPT_DIR/.env" 2>/dev/null || \
+                    sed -i '' "s/^[# ]*LOCAL_AI_MODE=.*/LOCAL_AI_MODE=${mode}/" "$SCRIPT_DIR/.env"
+            else
+                echo "" >> "$SCRIPT_DIR/.env"
+                echo "LOCAL_AI_MODE=${mode}" >> "$SCRIPT_DIR/.env"
+            fi
+            rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null || true
+            log_ok "Set LOCAL_AI_MODE=${mode} in .env"
+            log_info "  Recreate local-ai-server container to apply .env changes"
+        fi
     fi
 
     # Ensure JWT_SECRET is non-empty when Admin UI is remotely accessible by default.

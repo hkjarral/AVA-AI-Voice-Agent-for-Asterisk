@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FormInput, FormLabel } from '../ui/FormComponents';
+import { FormInput, FormLabel, FormSwitch } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -23,6 +23,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const [localConfig, setLocalConfig] = useState<any>({ ...config });
     const [localAIStatus, setLocalAIStatus] = useState<LocalAIStatus | null>(null);
     const [statusLoading, setStatusLoading] = useState(false);
+    const [showAdvancedSTT, setShowAdvancedSTT] = useState(false);
 
     // Fetch local AI server status for backend info (AAVA-116)
     useEffect(() => {
@@ -51,6 +52,13 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         const newConfig = { ...localConfig, ...updates };
         setLocalConfig(newConfig);
         onChange(newConfig);
+    };
+
+    const updateSTTOptions = (updates: any) => {
+        const existingOptions = localConfig.options || {};
+        const existingSTT = existingOptions.stt || {};
+        const nextSTT = { ...existingSTT, ...updates };
+        updateConfig({ options: { ...existingOptions, stt: nextSTT } });
     };
 
     // Helper to filter providers by capability
@@ -163,6 +171,48 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                     )}
                     {sttProviders.length === 0 && (
                         <p className="text-xs text-destructive">No STT providers available. Create a modular STT provider first.</p>
+                    )}
+                </div>
+
+                <div className="space-y-3">
+                    <FormSwitch
+                        id="pipeline-stt-streaming"
+                        label="Streaming STT"
+                        checked={localConfig.options?.stt?.streaming ?? true}
+                        onChange={(e) => updateSTTOptions({ streaming: e.target.checked })}
+                        description="Recommended. Enables low-latency, two-way conversation."
+                        tooltip="When enabled, supported STT adapters stream audio continuously. When disabled, STT runs in buffered chunk mode."
+                    />
+
+                    <div className="flex items-center justify-between">
+                        <button
+                            type="button"
+                            className="text-xs text-primary hover:underline"
+                            onClick={() => setShowAdvancedSTT((v) => !v)}
+                        >
+                            {showAdvancedSTT ? 'Hide Advanced' : 'Show Advanced'}
+                        </button>
+                        <div className="text-xs text-muted-foreground">
+                            Defaults: chunk_ms=160, stream_format=pcm16_16k
+                        </div>
+                    </div>
+
+                    {showAdvancedSTT && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormInput
+                                label="chunk_ms"
+                                type="number"
+                                value={localConfig.options?.stt?.chunk_ms ?? 160}
+                                onChange={(e) => updateSTTOptions({ chunk_ms: parseInt(e.target.value || '160', 10) })}
+                                tooltip="How often we flush accumulated audio frames to the STT streaming sender. 160ms is a good default."
+                            />
+                            <FormInput
+                                label="stream_format"
+                                value={localConfig.options?.stt?.stream_format ?? 'pcm16_16k'}
+                                onChange={(e) => updateSTTOptions({ stream_format: e.target.value })}
+                                tooltip="Input audio format for streaming STT. For Local STT this should usually be pcm16_16k."
+                            />
+                        </div>
                     )}
                 </div>
 

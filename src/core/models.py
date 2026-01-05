@@ -140,7 +140,7 @@ class CallSession:
     last_streaming_error: Optional[str] = None
     caller_audio_format: str = "ulaw"
     caller_sample_rate: int = 8000
-    transport_profile: Optional[Any] = None  # OrchestratorTransportProfile from transport_orchestrator.py
+    transport_profile: Any = field(default_factory=LegacyTransportProfile)  # OrchestratorTransportProfile compatible
     codec_alignment_ok: bool = True
     codec_alignment_message: Optional[str] = None
     audio_diagnostics: Dict[str, Any] = field(default_factory=dict)

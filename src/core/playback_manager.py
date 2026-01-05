@@ -56,6 +56,25 @@ class PlaybackManager:
                 os.chmod(media_dir, 0o775)
             except Exception:
                 pass
+
+            try:
+                mount_root = "/mnt/asterisk_media"
+                if str(media_dir).startswith(mount_root):
+                    if not os.path.ismount(mount_root):
+                        logger.warning(
+                            "Asterisk sounds volume does not appear to be mounted; file-based playback may fail",
+                            mount_root=mount_root,
+                            media_dir=media_dir,
+                            hint="Run: ./preflight.sh --apply-fixes  (then restart containers)",
+                        )
+                    elif not os.access(media_dir, os.W_OK):
+                        logger.warning(
+                            "Asterisk media directory is not writable; file-based playback may fail",
+                            media_dir=media_dir,
+                            hint="Run: ./preflight.sh --apply-fixes  (then restart containers)",
+                        )
+            except Exception:
+                pass
         except (PermissionError, OSError):
             # Fallback to a writable temp directory on CI/containers (handles read-only FS too)
             fallback = os.getenv("AST_MEDIA_DIR", "/tmp/asterisk_media/ai-generated")

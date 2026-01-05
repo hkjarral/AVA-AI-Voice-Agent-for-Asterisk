@@ -541,7 +541,7 @@ class AppConfig(BaseModel):
     asterisk: AsteriskConfig
     llm: LLMConfig
     audio_transport: str = Field(default="externalmedia")  # 'externalmedia' | 'legacy'
-    downstream_mode: str = Field(default="file")  # 'file' | 'stream'
+    downstream_mode: str = Field(default="stream")  # 'file' | 'stream'
     external_media: Optional[ExternalMediaConfig] = Field(default_factory=ExternalMediaConfig)
     audiosocket: Optional[AudioSocketConfig] = Field(default_factory=AudioSocketConfig)
     vad: Optional[VADConfig] = Field(default_factory=VADConfig)
@@ -903,8 +903,8 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
                     downstream_mode = getattr(config, "downstream_mode", "file")
                     if downstream_mode != "file":
                         warnings.append(
-                            f"ExternalMedia + pipelines typically use downstream_mode='file'; "
-                            f"current downstream_mode='{downstream_mode}' (note: pipelines ignore this setting)"
+                            f"ExternalMedia + pipelines: downstream_mode='{downstream_mode}' enabled; "
+                            "pipelines will stream playback when possible and fall back to file playback on errors"
                         )
 
             # default_provider-specific key hints (warnings only)

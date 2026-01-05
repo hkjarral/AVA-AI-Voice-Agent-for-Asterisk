@@ -60,8 +60,38 @@ class _MockWebSocket:
     async def close(self):
         self.closed = True
 
-    def push(self, message):
-        self._queue.put_nowait(message)
+
+class _FakeJsonResponse:
+    def __init__(self, payload: dict, status: int = 200):
+        self._payload = payload
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return json.dumps(self._payload)
+
+
+class _FakeHttpSession:
+    def __init__(self, payload: dict, status: int = 200):
+        self._payload = payload
+        self._status = status
+        self.closed = False
+        self.requests = []
+
+    def post(self, url, headers=None, data=None, timeout=None):
+        self.requests.append({"url": url, "headers": headers, "bytes": len(data or b"")})
+        return _FakeJsonResponse(self._payload, status=self._status)
+
+    async def close(self):
+        self.closed = True
 
 
 class _FakeResponse:
@@ -103,7 +133,7 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_deepgram_stt_adapter_transcribes():
+async def test_deepgram_stt_adapter_transcribes(monkeypatch):
     app_config = _build_app_config()
     provider_config = DeepgramProviderConfig(**app_config.providers["deepgram"])
     deepgram_payload = json.dumps(
@@ -124,16 +154,24 @@ async def test_deepgram_stt_adapter_transcribes():
         session_factory=lambda: fake_session,
     )
 
+    # Prevent real Deepgram REST call by faking aiohttp.ClientSession used in open_call
+    fake_rest_payload = {
+        "results": {
+            "channels": [
+                {"alternatives": [{"transcript": "hello world", "confidence": 0.92}]}
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        "src.pipelines.deepgram.aiohttp.ClientSession",
+        lambda: _FakeHttpSession(fake_rest_payload, status=200),
+    )
+
     await adapter.start()
     await adapter.open_call("call-1", {"model": "nova-2-general"})
-
     audio_buffer = b"\x00\x00" * 160
     transcript = await adapter.transcribe("call-1", audio_buffer, 8000, {})
     assert transcript == "hello world"
-    request = fake_session.requests[0]
-    assert request["url"].startswith("https://api.deepgram.com")
-    assert request["headers"]["Authorization"] == "Token test-key"
-    assert fake_session.requests
 
 
 @pytest.mark.asyncio

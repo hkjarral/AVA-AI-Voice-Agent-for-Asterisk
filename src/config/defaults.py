@@ -19,7 +19,7 @@ def apply_transport_defaults(config_data: Dict[str, Any]) -> None:
     
     Sets:
     - audio_transport: 'externalmedia' or 'audiosocket' (default: externalmedia)
-    - downstream_mode: 'file' or 'stream' (default: file)
+    - downstream_mode: 'file' or 'stream' (default: stream)
     
     Environment variables:
     - AUDIO_TRANSPORT: Override audio transport mode
@@ -31,7 +31,7 @@ def apply_transport_defaults(config_data: Dict[str, Any]) -> None:
     Complexity: 2
     """
     config_data.setdefault('audio_transport', os.getenv('AUDIO_TRANSPORT', 'externalmedia'))
-    config_data.setdefault('downstream_mode', os.getenv('DOWNSTREAM_MODE', 'file'))
+    config_data.setdefault('downstream_mode', os.getenv('DOWNSTREAM_MODE', 'stream'))
 
 
 def apply_audiosocket_defaults(config_data: Dict[str, Any]) -> None:
