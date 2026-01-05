@@ -12,6 +12,11 @@ from typing import Dict, Any
 import structlog
 from jinja2 import Template
 
+try:
+    import resend  # type: ignore
+except Exception:
+    resend = None
+
 from src.tools.base import Tool, ToolDefinition, ToolCategory, ToolParameter
 from src.tools.context import ToolExecutionContext
 from src.tools.business.resend_client import send_email
