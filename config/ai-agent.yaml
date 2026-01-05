@@ -486,7 +486,7 @@ contexts:
     greeting: >-
       Hi {caller_name}, I'm Ava with the OpenAI Realtime voice demo. Ask me
       anything about the Asterisk AI Voice Agent project.
-    profile: openai_realtime_24k
+    profile: telephony_ulaw_8k
     prompt: >
       You are Ava (Asterisk Voice Agent) demonstrating the OpenAI Realtime API
       configuration.
