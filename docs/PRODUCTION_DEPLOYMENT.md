@@ -392,6 +392,8 @@ To allow remote Asterisk servers:
 ```bash
 # .env file
 EXTERNAL_MEDIA_RTP_HOST=0.0.0.0
+EXTERNAL_MEDIA_ADVERTISE_HOST=<routable-ip>
+AUDIOSOCKET_ADVERTISE_HOST=<routable-ip>
 HEALTH_BIND_HOST=0.0.0.0
 ```
 

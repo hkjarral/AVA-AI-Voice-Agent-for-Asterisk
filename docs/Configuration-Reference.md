@@ -144,12 +144,14 @@ See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for 
 ## AudioSocket
 
 - audiosocket.host: Bind address for AudioSocket listener.
+- audiosocket.advertise_host: Address Asterisk connects to (optional; defaults to `audiosocket.host`). Use for NAT/VPN.
 - audiosocket.port: TCP port.
 - audiosocket.format: `ulaw` | `slin16` (8 kHz). Use `ulaw` to match telephony trunks directly.
 
 ## ExternalMedia
 
 - external_media.rtp_host: Bind address for RTP server.
+- external_media.advertise_host: Address Asterisk sends RTP to (optional; defaults to `external_media.rtp_host`). Use for NAT/VPN.
 - external_media.rtp_port: Port for inbound RTP.
 - external_media.port_range: Optional range (`start:end`) for dynamic per-call RTP allocation; defaults to `rtp_port`.
 - external_media.codec: `ulaw` | `slin16` (8 kHz).

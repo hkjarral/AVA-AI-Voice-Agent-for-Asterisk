@@ -137,6 +137,7 @@ When using ExternalMedia RTP across hosts, configure a stable RTP source policy 
 ```yaml
 external_media:
   rtp_host: "0.0.0.0"
+  # advertise_host: "10.8.0.5"  # IP Asterisk sends RTP to (set for NAT/VPN)
   rtp_port: 18080
   # Optional: allocate per-call RTP ports
   # port_range: "18080:18099"
