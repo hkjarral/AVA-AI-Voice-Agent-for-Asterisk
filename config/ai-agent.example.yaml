@@ -69,18 +69,28 @@ pipelines:
 active_pipeline: cloud_openai
 
 # Transport modes
+# NOTE: For remote Asterisk deployments (AI engine on different machine than Asterisk):
+#   - AudioSocket is RECOMMENDED: works without shared storage
+#   - ExternalMedia requires shared storage (NFS mount) for file-based playback
 audio_transport: "audiosocket"   # audiosocket | externalmedia
 downstream_mode: "stream"        # stream | file
 
 # AudioSocket listener (when audio_transport=audiosocket)
 audiosocket:
-  host: "127.0.0.1"
+  host: "127.0.0.1"         # Bind host: IP the server listens on (use 0.0.0.0 for all interfaces)
+  # advertise_host: ""      # Advertise host: IP Asterisk connects to (optional, defaults to host)
+                            # Set this when AI engine is behind NAT/VPN:
+                            #   - VPN: your VPN IP (e.g., 10.8.0.5)
+                            #   - Port forward: your public IP or DDNS hostname
+                            #   - Same LAN: your LAN IP (e.g., 192.168.1.50)
   port: 8090
   format: "ulaw"            # ulaw (8 kHz) | slin (8 kHz PCM16) | slin16 (16 kHz PCM16)
 
 # ExternalMedia RTP (when audio_transport=externalmedia)
 external_media:
-  rtp_host: "127.0.0.1"
+  rtp_host: "127.0.0.1"     # Bind host: IP the RTP server listens on (use 0.0.0.0 for all interfaces)
+  # advertise_host: ""      # Advertise host: IP Asterisk sends RTP to (optional, defaults to rtp_host)
+                            # Set this when AI engine is behind NAT/VPN (same options as AudioSocket above)
   rtp_port: 18080
   port_range: "18080:18099"
   codec: "ulaw"

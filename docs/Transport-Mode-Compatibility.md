@@ -273,6 +273,58 @@ else:
 
 ---
 
+## Remote Host Deployments (NAT/VPN)
+
+> **⚠️ Important: When AI Engine and Asterisk are on different machines**
+
+### AudioSocket Transport ✅ Recommended for Remote Deployments
+
+AudioSocket works seamlessly with remote Asterisk because:
+- Audio is streamed bidirectionally over TCP
+- No file-based playback required for full agent providers
+- Streaming playback sends audio directly through the socket
+
+### ExternalMedia (RTP) Transport ⚠️ Requires Shared Storage
+
+ExternalMedia with pipeline providers uses **file-based playback** via ARI, which requires:
+- AI engine generates audio files in `audio/ai-generated/`
+- Asterisk must access these files for playback via Announcer channel
+- **Without shared storage, Asterisk returns "File does not exist" errors**
+
+**Solutions for ExternalMedia with remote Asterisk:**
+1. **NFS/Shared mount**: Mount AI engine's `audio/` directory on Asterisk server at the same path
+2. **Same machine**: Run AI engine on the same server as Asterisk
+3. **Use AudioSocket instead**: Switch to AudioSocket transport for remote deployments
+
+### Transport Selection Guide for Remote Hosts
+
+| Scenario | Recommended Transport |
+|----------|----------------------|
+| AI engine & Asterisk same machine | Either works |
+| AI engine remote, full agent provider | AudioSocket ✅ |
+| AI engine remote, pipeline provider | AudioSocket ✅ or ExternalMedia + shared storage |
+| Lowest latency priority | ExternalMedia (if shared storage available) |
+
+### NAT Configuration
+
+For NAT/VPN scenarios, configure `advertise_host` to tell Asterisk where to connect:
+
+```yaml
+audiosocket:
+  host: "0.0.0.0"              # Bind address
+  advertise_host: "10.10.10.3" # Address Asterisk connects to
+  port: 8090
+
+external_media:
+  rtp_host: "0.0.0.0"
+  advertise_host: "10.10.10.3"
+  rtp_port: 18080
+```
+
+See [Milestone 23: NAT/Hybrid Network Support](./contributing/milestones/milestone-23-nat-advertise-host.md) for details.
+
+---
+
 ## Related Issues
 
 - **Linear AAVA-28**: Pipeline STT streaming implementation & gating fixes

@@ -2156,10 +2156,16 @@ class Engine:
                          exc_info=True)
             return None
 
-        host = self.config.external_media.rtp_host
+        bind_host = self.config.external_media.rtp_host
+        # Use advertise_host for the address Asterisk sends RTP to (NAT/VPN support)
+        # Fall back to bind_host if advertise_host is not set
+        advertise_host = getattr(self.config.external_media, 'advertise_host', None) or bind_host
+        # Prevent Asterisk from trying to send RTP to 0.0.0.0 (invalid destination)
+        if advertise_host in ("0.0.0.0", "::"):
+            advertise_host = "127.0.0.1"
         codec = getattr(self.config.external_media, "codec", "ulaw")
         direction = getattr(self.config.external_media, "direction", "both")
-        external_host = f"{host}:{port}"
+        external_host = f"{advertise_host}:{port}"
 
         try:
             response = await self.ari_client.create_external_media_channel(
@@ -2216,7 +2222,8 @@ class Engine:
         logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel originated",
                     caller_channel_id=caller_channel_id,
                     external_media_id=channel_id,
-                    rtp_host=host,
+                    bind_host=bind_host,
+                    advertise_host=advertise_host,
                     rtp_port=port,
                     codec=codec,
                     direction=direction)
@@ -3638,11 +3645,14 @@ class Engine:
             raise RuntimeError("AudioSocket configuration missing")
 
         audio_uuid = str(uuid.uuid4())
-        host = self.config.audiosocket.host or "127.0.0.1"
-        # Only rewrite bind-all addresses if no explicit host was configured
-        # This allows remote Asterisk deployments to specify the actual AI engine host
-        if host in ("0.0.0.0", "::") and not self.config.audiosocket.host:
-            host = "127.0.0.1"
+        bind_host = self.config.audiosocket.host or "127.0.0.1"
+        # Use advertise_host for the endpoint Asterisk connects to (NAT/VPN support)
+        # Fall back to bind_host if advertise_host is not set
+        advertise_host = getattr(self.config.audiosocket, 'advertise_host', None) or bind_host
+        # Only rewrite bind-all addresses if no explicit advertise_host was configured
+        # This prevents Asterisk from trying to connect to 0.0.0.0 (invalid destination)
+        if advertise_host in ("0.0.0.0", "::"):
+            advertise_host = "127.0.0.1"
         port = self.config.audiosocket.port
         # Match channel interface codec to YAML audiosocket.format
         codec = "slin"
@@ -3657,7 +3667,7 @@ class Engine:
                 codec = "slin"
         except Exception:
             codec = "slin"
-        endpoint = f"AudioSocket/{host}:{port}/{audio_uuid}/c({codec})"
+        endpoint = f"AudioSocket/{advertise_host}:{port}/{audio_uuid}/c({codec})"
 
         orig_params = {
             "endpoint": endpoint,
@@ -10959,6 +10969,44 @@ class Engine:
         
         return result
 
+    def _compute_nat_warnings(self) -> list:
+        """Compute NAT/network configuration warnings for /health endpoint."""
+        warnings = []
+        try:
+            asterisk_host = getattr(self.config.asterisk, 'host', None) if self.config.asterisk else None
+            asterisk_is_remote = asterisk_host not in (None, '127.0.0.1', 'localhost', '::1')
+            
+            if self.config.audio_transport == 'audiosocket' and self.config.audiosocket:
+                bind_host = getattr(self.config.audiosocket, 'host', None)
+                advertise = getattr(self.config.audiosocket, 'advertise_host', None) or bind_host
+                if asterisk_is_remote and advertise in ('127.0.0.1', 'localhost', '::1'):
+                    warnings.append(
+                        f"AudioSocket advertise_host is '{advertise}' but Asterisk is remote ({asterisk_host}). "
+                        "Asterisk won't be able to connect. Set advertise_host to a routable IP."
+                    )
+                if advertise in ('0.0.0.0', '::'):
+                    warnings.append(
+                        "AudioSocket advertise_host is a wildcard address. Asterisk cannot connect to 0.0.0.0. "
+                        "Set advertise_host to a specific routable IP."
+                    )
+            
+            if self.config.audio_transport == 'externalmedia' and self.config.external_media:
+                bind_host = getattr(self.config.external_media, 'rtp_host', None)
+                advertise = getattr(self.config.external_media, 'advertise_host', None) or bind_host
+                if asterisk_is_remote and advertise in ('127.0.0.1', 'localhost', '::1'):
+                    warnings.append(
+                        f"ExternalMedia advertise_host is '{advertise}' but Asterisk is remote ({asterisk_host}). "
+                        "Asterisk won't be able to send RTP. Set advertise_host to a routable IP."
+                    )
+                if advertise in ('0.0.0.0', '::'):
+                    warnings.append(
+                        "ExternalMedia advertise_host is a wildcard address. Asterisk cannot send RTP to 0.0.0.0. "
+                        "Set advertise_host to a specific routable IP."
+                    )
+        except Exception:
+            pass  # Don't fail health endpoint if warning computation fails
+        return warnings
+
     async def _health_handler(self, request):
         """Return JSON with engine/provider status."""
         try:
@@ -11035,10 +11083,20 @@ class Engine:
                 "rtp_server": {},
                 "audiosocket": {
                     "listening": audiosocket_listening,
-                    "host": getattr(self.config.audiosocket, 'host', None) if self.config.audiosocket else None,
+                    "bind_host": getattr(self.config.audiosocket, 'host', None) if self.config.audiosocket else None,
+                    "advertise_host": (getattr(self.config.audiosocket, 'advertise_host', None) 
+                                       or getattr(self.config.audiosocket, 'host', None)) if self.config.audiosocket else None,
                     "port": getattr(self.config.audiosocket, 'port', None) if self.config.audiosocket else None,
                     "active_connections": (self.audio_socket_server.get_connection_count() if self.audio_socket_server else 0),
                 },
+                "external_media": {
+                    "bind_host": getattr(self.config.external_media, 'rtp_host', None) if self.config.external_media else None,
+                    "advertise_host": (getattr(self.config.external_media, 'advertise_host', None)
+                                       or getattr(self.config.external_media, 'rtp_host', None)) if self.config.external_media else None,
+                    "rtp_port": getattr(self.config.external_media, 'rtp_port', None) if self.config.external_media else None,
+                    "port_range": getattr(self.config.external_media, 'port_range', None) if self.config.external_media else None,
+                },
+                "config_warnings": self._compute_nat_warnings(),
                 "audiosocket_listening": audiosocket_listening,
                 "conversation": {
                     "gating_active": conversation_summary.get("gating_active", 0),

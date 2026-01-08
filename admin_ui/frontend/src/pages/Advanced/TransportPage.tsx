@@ -210,26 +210,35 @@ const TransportPage = () => {
             {transportType === 'audiosocket' && (
                 <ConfigSection title="AudioSocket Settings" description="Configuration for the AudioSocket server.">
                     <ConfigCard>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <FormInput
-                                label="Host"
-                                value={audiosocketConfig.host || '127.0.0.1'}
-                                onChange={(e) => updateSectionConfig('audiosocket', 'host', e.target.value)}
-                                tooltip="IP address the AudioSocket server listens on (default: 127.0.0.1)."
-                            />
-                            <FormInput
-                                label="Port"
-                                type="number"
-                                value={audiosocketConfig.port || 8090}
-                                onChange={(e) => updateSectionConfig('audiosocket', 'port', parseInt(e.target.value))}
-                                tooltip="TCP port for AudioSocket connections (default: 8090)."
-                            />
-                            <FormInput
-                                label="Format"
-                                value={audiosocketConfig.format || 'slin'}
-                                onChange={(e) => updateSectionConfig('audiosocket', 'format', e.target.value)}
-                                tooltip="Audio format (e.g., slin)"
-                            />
+                        <div className="space-y-6">
+                            <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Network Configuration</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <FormInput
+                                    label="Bind Host"
+                                    value={audiosocketConfig.host || '127.0.0.1'}
+                                    onChange={(e) => updateSectionConfig('audiosocket', 'host', e.target.value)}
+                                    tooltip="IP address the AudioSocket server listens on. Use 0.0.0.0 to listen on all interfaces."
+                                />
+                                <FormInput
+                                    label="Advertise Host"
+                                    value={audiosocketConfig.advertise_host || audiosocketConfig.host || '127.0.0.1'}
+                                    onChange={(e) => updateSectionConfig('audiosocket', 'advertise_host', e.target.value)}
+                                    tooltip="IP address Asterisk connects to. For NAT/VPN deployments, set this to your routable IP (VPN IP, public IP, or LAN IP). Leave as Bind Host for same-host deployments."
+                                />
+                                <FormInput
+                                    label="Port"
+                                    type="number"
+                                    value={audiosocketConfig.port || 8090}
+                                    onChange={(e) => updateSectionConfig('audiosocket', 'port', parseInt(e.target.value))}
+                                    tooltip="TCP port for AudioSocket connections (default: 8090)."
+                                />
+                                <FormInput
+                                    label="Format"
+                                    value={audiosocketConfig.format || 'slin'}
+                                    onChange={(e) => updateSectionConfig('audiosocket', 'format', e.target.value)}
+                                    tooltip="Audio format (e.g., slin, ulaw)"
+                                />
+                            </div>
                         </div>
                     </ConfigCard>
                 </ConfigSection>
@@ -242,10 +251,16 @@ const TransportPage = () => {
                             <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Network Configuration</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <FormInput
-                                    label="RTP Host"
+                                    label="RTP Bind Host"
                                     value={externalMediaConfig.rtp_host || '127.0.0.1'}
                                     onChange={(e) => updateSectionConfig('external_media', 'rtp_host', e.target.value)}
-                                    tooltip="IP address for RTP media (default: 127.0.0.1 for localhost)."
+                                    tooltip="IP address the RTP server listens on. Use 0.0.0.0 to listen on all interfaces."
+                                />
+                                <FormInput
+                                    label="Advertise Host"
+                                    value={externalMediaConfig.advertise_host || externalMediaConfig.rtp_host || '127.0.0.1'}
+                                    onChange={(e) => updateSectionConfig('external_media', 'advertise_host', e.target.value)}
+                                    tooltip="IP address Asterisk sends RTP to. For NAT/VPN deployments, set this to your routable IP (VPN IP, public IP, or LAN IP). Leave as Bind Host for same-host deployments."
                                 />
                                 <FormInput
                                     label="RTP Port"
