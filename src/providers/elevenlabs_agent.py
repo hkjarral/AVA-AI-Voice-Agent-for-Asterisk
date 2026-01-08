@@ -233,20 +233,50 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Build conversation initiation data
         init_data = {}
         
-        # Add custom system prompt if provided
-        if context.get("instructions"):
-            init_data["custom_llm_extra_body"] = {
-                "system": context["instructions"]
-            }
+        # Get caller info for personalization
+        caller_name = context.get("caller_name", "there")
+        caller_id = context.get("caller_id", "")
         
-        # Add dynamic variables for personalization
-        # Always pass these - ElevenLabs requires them if used in first message/prompt
+        # Add dynamic variables for personalization (used in system prompt)
         dynamic_vars = {
-            "caller_name": context.get("caller_name", "there"),
-            "caller_id": context.get("caller_id", ""),
+            "caller_name": caller_name,
+            "caller_id": caller_id,
         }
         init_data["dynamic_variables"] = dynamic_vars
         logger.info(f"[elevenlabs] [{self._call_id}] Dynamic variables: {dynamic_vars}")
+        
+        # Build conversation config override
+        # This sends the first message with variables already substituted
+        # NOTE: Requires "First message" override enabled in ElevenLabs Security settings
+        conversation_override = {
+            "agent": {}
+        }
+        
+        # Override first message with caller_name substituted
+        # This bypasses ElevenLabs template rendering which fails if variable is in first message
+        if context.get("greeting"):
+            # Substitute variables in greeting
+            greeting = context["greeting"]
+            try:
+                greeting = greeting.format(caller_name=caller_name, caller_id=caller_id)
+            except (KeyError, ValueError):
+                pass  # Use greeting as-is if formatting fails
+            conversation_override["agent"]["first_message"] = greeting
+            logger.info(f"[elevenlabs] [{self._call_id}] Override first_message: {greeting[:50]}...")
+        
+        # Add custom system prompt if provided
+        if context.get("instructions"):
+            # Substitute variables in system prompt too
+            prompt = context["instructions"]
+            try:
+                prompt = prompt.format(caller_name=caller_name, caller_id=caller_id)
+            except (KeyError, ValueError):
+                pass
+            conversation_override["agent"]["prompt"] = {"prompt": prompt}
+        
+        # Only add override if we have something to override
+        if conversation_override["agent"]:
+            init_data["conversation_config_override"] = conversation_override
         
         # Note: Tools are configured in ElevenLabs dashboard, not sent via WebSocket
         # See docs/Provider-ElevenLabs-Setup.md for tool configuration instructions
