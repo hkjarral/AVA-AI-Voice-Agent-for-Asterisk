@@ -282,13 +282,13 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # See docs/Provider-ElevenLabs-Setup.md for tool configuration instructions
         
         # Send initialization message if we have config
+        # NOTE: Per ElevenLabs AsyncAPI spec, properties must be at root level (flat structure)
+        # NOT nested inside a "conversation_initiation_client_data" key
         if init_data:
-            message = {
-                "type": "conversation_initiation_client_data",
-                "conversation_initiation_client_data": init_data,
-            }
+            message = {"type": "conversation_initiation_client_data"}
+            message.update(init_data)  # Flatten: dynamic_variables, conversation_config_override at root
             await self._ws.send(json.dumps(message))
-            logger.debug(f"[elevenlabs] [{self._call_id}] Sent session config")
+            logger.debug(f"[elevenlabs] [{self._call_id}] Sent session config: {list(message.keys())}")
     
     async def send_audio(
         self,
