@@ -134,6 +134,15 @@ class TestApplyAudiosocketDefaults:
         apply_audiosocket_defaults(config_data)
         
         assert config_data['audiosocket']['advertise_host'] == '10.8.0.5'
+
+    def test_advertise_host_env_empty_ignored(self, monkeypatch):
+        """Empty advertise_host env var should be ignored."""
+        monkeypatch.setenv('AUDIOSOCKET_ADVERTISE_HOST', '   ')
+        
+        config_data = {}
+        apply_audiosocket_defaults(config_data)
+        
+        assert 'advertise_host' not in config_data['audiosocket']
     
     def test_advertise_host_not_set_by_default(self):
         """advertise_host should not be set when env var is absent (engine falls back to host)."""
@@ -210,6 +219,15 @@ class TestApplyExternalmediaDefaults:
         apply_externalmedia_defaults(config_data)
         
         assert config_data['external_media']['advertise_host'] == '10.8.0.5'
+
+    def test_advertise_host_env_empty_ignored(self, monkeypatch):
+        """Empty advertise_host env var should be ignored."""
+        monkeypatch.setenv('EXTERNAL_MEDIA_ADVERTISE_HOST', '   ')
+        
+        config_data = {}
+        apply_externalmedia_defaults(config_data)
+        
+        assert 'advertise_host' not in config_data['external_media']
     
     def test_advertise_host_not_set_by_default(self):
         """advertise_host should not be set when env var is absent (engine falls back to rtp_host)."""

@@ -61,9 +61,10 @@ def apply_audiosocket_defaults(config_data: Dict[str, Any]) -> None:
     audiosocket_cfg.setdefault('host', os.getenv('AUDIOSOCKET_HOST', '127.0.0.1'))
     
     # Advertise host (for NAT/VPN - IP Asterisk connects to)
-    # Only set if env var is present; otherwise leave as None (engine will fall back to host)
-    if 'AUDIOSOCKET_ADVERTISE_HOST' in os.environ:
-        audiosocket_cfg['advertise_host'] = os.environ['AUDIOSOCKET_ADVERTISE_HOST']
+    # Only set if env var is present and non-empty; otherwise leave as None (engine will fall back to host)
+    advertise_host = os.getenv('AUDIOSOCKET_ADVERTISE_HOST', '').strip()
+    if advertise_host:
+        audiosocket_cfg['advertise_host'] = advertise_host
     
     # Port default with type conversion
     try:
@@ -99,9 +100,10 @@ def apply_externalmedia_defaults(config_data: Dict[str, Any]) -> None:
     external_cfg.setdefault('rtp_host', os.getenv('EXTERNAL_MEDIA_RTP_HOST', external_cfg.get('rtp_host', '127.0.0.1')))
     
     # Advertise host (for NAT/VPN - IP Asterisk sends RTP to)
-    # Only set if env var is present; otherwise leave as None (engine will fall back to rtp_host)
-    if 'EXTERNAL_MEDIA_ADVERTISE_HOST' in os.environ:
-        external_cfg['advertise_host'] = os.environ['EXTERNAL_MEDIA_ADVERTISE_HOST']
+    # Only set if env var is present and non-empty; otherwise leave as None (engine will fall back to rtp_host)
+    advertise_host = os.getenv('EXTERNAL_MEDIA_ADVERTISE_HOST', '').strip()
+    if advertise_host:
+        external_cfg['advertise_host'] = advertise_host
     
     config_data['external_media'] = external_cfg
 
