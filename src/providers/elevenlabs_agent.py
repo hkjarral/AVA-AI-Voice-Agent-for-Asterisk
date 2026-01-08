@@ -240,14 +240,13 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             }
         
         # Add dynamic variables for personalization
-        dynamic_vars = {}
-        if context.get("caller_name"):
-            dynamic_vars["caller_name"] = context["caller_name"]
-        if context.get("caller_id"):
-            dynamic_vars["caller_id"] = context["caller_id"]
-        if dynamic_vars:
-            init_data["dynamic_variables"] = dynamic_vars
-            logger.debug(f"[elevenlabs] [{self._call_id}] Dynamic variables: {list(dynamic_vars.keys())}")
+        # Always pass these - ElevenLabs requires them if used in first message/prompt
+        dynamic_vars = {
+            "caller_name": context.get("caller_name", "there"),
+            "caller_id": context.get("caller_id", ""),
+        }
+        init_data["dynamic_variables"] = dynamic_vars
+        logger.info(f"[elevenlabs] [{self._call_id}] Dynamic variables: {dynamic_vars}")
         
         # Note: Tools are configured in ElevenLabs dashboard, not sent via WebSocket
         # See docs/Provider-ElevenLabs-Setup.md for tool configuration instructions

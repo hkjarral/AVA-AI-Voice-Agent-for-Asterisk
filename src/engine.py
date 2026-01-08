@@ -10605,10 +10605,9 @@ class Engine:
                 logger.warning(f"Failed to build provider context: {e}", call_id=call_id, exc_info=True)
             
             # Add caller info for personalization (ElevenLabs dynamic variables)
-            if session.caller_name:
-                provider_context["caller_name"] = session.caller_name
-            if session.caller_number:
-                provider_context["caller_id"] = session.caller_number
+            # Always pass these with defaults - ElevenLabs requires them if used in first message
+            provider_context["caller_name"] = session.caller_name or "there"
+            provider_context["caller_id"] = session.caller_number or ""
             
             # Inject tool execution context into provider if it supports tools (Deepgram, Google Live)
             if hasattr(provider, 'tool_adapter') or hasattr(provider, '_tool_adapter'):
