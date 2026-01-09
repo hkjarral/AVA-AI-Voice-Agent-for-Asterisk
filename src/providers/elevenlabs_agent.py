@@ -259,8 +259,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             greeting = context["greeting"]
             try:
                 greeting = greeting.format(caller_name=caller_name, caller_id=caller_id)
-            except (KeyError, ValueError):
-                pass  # Use greeting as-is if formatting fails
+            except (KeyError, ValueError) as e:
+                logger.warning(f"[elevenlabs] [{self._call_id}] Greeting format failed: {e}. Using as-is.")
             conversation_override["agent"]["first_message"] = greeting
             logger.info(f"[elevenlabs] [{self._call_id}] Override first_message: {greeting[:50]}...")
         
@@ -270,8 +270,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             prompt = context["instructions"]
             try:
                 prompt = prompt.format(caller_name=caller_name, caller_id=caller_id)
-            except (KeyError, ValueError):
-                pass
+            except (KeyError, ValueError) as e:
+                logger.warning(f"[elevenlabs] [{self._call_id}] System prompt format failed: {e}. Using as-is.")
             conversation_override["agent"]["prompt"] = {"prompt": prompt}
             logger.info(f"[elevenlabs] [{self._call_id}] Override system_prompt: {len(prompt)} chars")
         

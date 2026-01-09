@@ -335,13 +335,15 @@ contexts:
       Always offer to email a transcript before ending the call.
     tools:
       - hangup_call
-      - transfer_call
+      - transfer
       - leave_voicemail
       - cancel_transfer
       - request_transcript
 ```
 
 **Context fields override ElevenLabs dashboard settings** when the corresponding toggles are enabled in Security → Overrides.
+
+> **Tool Names**: The context `tools:` list uses canonical names (`transfer`) for compatibility with other providers (Deepgram, OpenAI). ElevenLabs dashboard uses `transfer_call` - the system handles this mapping via `TOOL_ALIASES`.
 
 ## Dynamic Variables & Overrides
 
@@ -353,10 +355,10 @@ ElevenLabs supports runtime personalization through dynamic variables and config
 
 You **MUST** enable these toggles in ElevenLabs Dashboard → Agent → **Security** tab → **Overrides**:
 
-| Toggle | Required | Effect |
-|--------|----------|--------|
-| **First message** | ✅ Yes | Context `greeting` overrides dashboard first message |
-| **System prompt** | ✅ Yes | Context `prompt` overrides dashboard system prompt |
+| Dashboard Toggle | Context Field | Effect |
+|------------------|---------------|--------|
+| **First message** | `greeting` | Context greeting overrides dashboard first message |
+| **System prompt** | `prompt` | Context prompt overrides dashboard system prompt |
 
 > **Without enabling these toggles**, the dashboard values will be used and your context settings will be ignored.
 

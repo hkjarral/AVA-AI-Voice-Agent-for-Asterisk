@@ -118,7 +118,7 @@ contexts:
       - Then confirm if there is anything else, and use hangup_call tool with a warm farewell
     provider: deepgram
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
@@ -233,7 +233,7 @@ contexts:
 
       - Then confirm if there is anything else, and use hangup_call tool with a warm farewell
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
@@ -311,7 +311,7 @@ contexts:
 
       - When they say goodbye, confirm next step and use hangup_call
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
@@ -417,7 +417,7 @@ contexts:
 
       - Then confirm if there is anything else, and use hangup_call tool with a warm farewell
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
@@ -583,7 +583,7 @@ contexts:
       - Then confirm if there is anything else, and use hangup_call tool with a warm farewell
     provider: openai_realtime
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
@@ -688,7 +688,7 @@ contexts:
       - Then confirm if there is anything else, and use hangup_call tool with a warm farewell
     provider: elevenlabs_agent
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
@@ -845,7 +845,7 @@ pipelines:
           sample_rate: 8000
     stt: local_stt
     tools:
-      - transfer_call
+      - transfer
       - cancel_transfer
       - hangup_call
       - leave_voicemail
