@@ -10670,8 +10670,17 @@ class Engine:
                         # Include prompt for reference (though config.instructions should already be set)
                         if hasattr(context_config, 'prompt') and context_config.prompt:
                             provider_context['prompt'] = context_config.prompt
+                            provider_context['instructions'] = context_config.prompt  # Alias for ElevenLabs
+                        # Include greeting for ElevenLabs first message override
+                        if hasattr(context_config, 'greeting') and context_config.greeting:
+                            provider_context['greeting'] = context_config.greeting
             except Exception as e:
                 logger.warning(f"Failed to build provider context: {e}", call_id=call_id, exc_info=True)
+            
+            # Add caller info for personalization (ElevenLabs dynamic variables)
+            # Always pass these with defaults - ElevenLabs requires them if used in first message
+            provider_context["caller_name"] = session.caller_name or "there"
+            provider_context["caller_id"] = session.caller_number or ""
             
             # Inject tool execution context into provider if it supports tools (Deepgram, Google Live)
             if hasattr(provider, 'tool_adapter') or hasattr(provider, '_tool_adapter'):
