@@ -142,15 +142,30 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
   "type": "client",
   "name": "hangup_call",
   "description": "You MUST call this tool to properly end the conversation when the user says goodbye, thanks for your help, that's all I need, or any farewell phrase. Without calling this tool, the call will not end.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 5,
   "parameters": [
     {
       "id": "farewell_message",
       "type": "string",
       "value_type": "llm_prompt",
       "description": "A warm farewell message to say before ending the call",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
       "required": false
     }
-  ]
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
 }
 ```
 
@@ -163,6 +178,13 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
   "type": "client",
   "name": "transfer_call",
   "description": "Transfer the caller to another extension or department. Use when the caller asks to speak with a live person, agent, or specific department like sales or support.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
   "response_timeout_secs": 45,
   "parameters": [
     {
@@ -170,9 +192,16 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
       "type": "string",
       "value_type": "llm_prompt",
       "description": "Extension number or department name (e.g., '2765', 'sales', 'support', 'live agent')",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
       "required": true
     }
-  ]
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
 }
 ```
 
@@ -183,7 +212,18 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
   "type": "client",
   "name": "leave_voicemail",
   "description": "Send the caller to voicemail so they can leave a message. Use when caller wants to leave a message or when transfer fails.",
-  "parameters": []
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 15,
+  "parameters": [],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
 }
 ```
 
@@ -194,7 +234,18 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
   "type": "client",
   "name": "cancel_transfer",
   "description": "Cancel the current transfer if it hasn't been answered yet. Use when caller changes their mind during a transfer.",
-  "parameters": []
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 5,
+  "parameters": [],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
 }
 ```
 
@@ -205,15 +256,30 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
   "type": "client",
   "name": "send_email_summary",
   "description": "Send an email summary of the call to a specified email address.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 10,
   "parameters": [
     {
       "id": "recipient_email",
       "type": "string",
       "value_type": "llm_prompt",
       "description": "Email address to send the call summary to",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
       "required": true
     }
-  ]
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
 }
 ```
 
@@ -226,15 +292,30 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
   "type": "client",
   "name": "request_transcript",
   "description": "Send call transcript to caller's email address. Use this when caller says yes to the transcript offer, or when they explicitly request a transcript. IMPORTANT: Before calling this tool, you MUST ask for the email, read it back clearly (spell it out), and get confirmation that it's correct.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 10,
   "parameters": [
     {
       "id": "caller_email",
       "type": "string",
       "value_type": "llm_prompt",
       "description": "Caller's email address. Parse from speech: 'john dot smith at gmail dot com' becomes 'john.smith@gmail.com'",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
       "required": true
     }
-  ]
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
 }
 ```
 
@@ -264,16 +345,20 @@ contexts:
 
 ## Dynamic Variables & Overrides
 
-ElevenLabs supports runtime personalization through dynamic variables and configuration overrides.
+ElevenLabs supports runtime personalization through dynamic variables and configuration overrides. **This aligns ElevenLabs with other full providers** - your context's `greeting` and `prompt` control the agent behavior, not the dashboard settings.
 
-### Enabling Overrides
+> **Important**: Unlike other providers where tools are sent via API, **ElevenLabs tools must be configured in the dashboard**. Only greeting and system prompt can be overridden from context YAML.
 
-In ElevenLabs Dashboard → Agent → **Security** tab → **Overrides**:
+### Enabling Overrides (Required)
 
-| Toggle | Effect |
-|--------|--------|
-| **First message** | Context `greeting` overrides dashboard first message |
-| **System prompt** | Context `prompt` overrides dashboard system prompt |
+You **MUST** enable these toggles in ElevenLabs Dashboard → Agent → **Security** tab → **Overrides**:
+
+| Toggle | Required | Effect |
+|--------|----------|--------|
+| **First message** | ✅ Yes | Context `greeting` overrides dashboard first message |
+| **System prompt** | ✅ Yes | Context `prompt` overrides dashboard system prompt |
+
+> **Without enabling these toggles**, the dashboard values will be used and your context settings will be ignored.
 
 ### Available Dynamic Variables
 
@@ -304,6 +389,19 @@ contexts:
 4. ElevenLabs uses these instead of dashboard defaults
 
 **Note**: Tools are NOT overridable - they must be configured in ElevenLabs dashboard.
+
+### Architecture Alignment
+
+With overrides enabled, ElevenLabs now works like other full providers in this project:
+
+| Component | Deepgram/OpenAI Realtime | ElevenLabs |
+|-----------|--------------------------|------------|
+| **Greeting** | Context YAML → API | Context YAML → Override |
+| **System Prompt** | Context YAML → API | Context YAML → Override |
+| **Tools** | Context YAML → API | **Dashboard only** |
+| **Voice/Model** | API or Dashboard | Dashboard only |
+
+This means you can use the same context configuration across providers - just switch the `provider:` field and your greeting/prompt will work consistently.
 
 ### System Prompt Best Practice
 
@@ -345,13 +443,24 @@ When the caller indicates they're done (goodbye, thanks, that's all, etc.):
 2. Verify agent ID matches dashboard URL
 3. Check network connectivity to elevenlabs.io
 
+### Issue: "Greeting/Prompt Override Not Working"
+
+**Cause**: Override toggles not enabled in ElevenLabs dashboard
+
+**Fix**:
+1. Go to ElevenLabs Dashboard → Agent → **Security** tab
+2. Enable **First message** toggle (for greeting override)
+3. Enable **System prompt** toggle (for prompt override)
+4. Save and wait 30 seconds for changes to propagate
+5. Check logs for `Override first_message` and `Override system_prompt` entries
+
 ### Issue: "Tools Not Working"
 
 **Cause**: Tools not configured in ElevenLabs dashboard or names don't match
 
 **Fix**:
 1. Verify tool schemas are added in ElevenLabs Agent → Tools tab
-2. Ensure tool names match exactly (e.g., `hangup_call` not `hangup`)
+2. Ensure tool names match exactly: `hangup_call`, `transfer_call`, `leave_voicemail`, `cancel_transfer`, `request_transcript`
 3. Check tools are linked to your agent ("Dependent agents")
 4. Check logs for `client_tool_call` events
 
