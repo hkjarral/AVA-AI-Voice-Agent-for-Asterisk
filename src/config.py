@@ -45,7 +45,8 @@ class AsteriskConfig(BaseModel):
 
 class ExternalMediaConfig(BaseModel):
     # Network configuration
-    rtp_host: str = Field(default="127.0.0.1")
+    rtp_host: str = Field(default="127.0.0.1")  # Bind host: IP the RTP server listens on
+    advertise_host: Optional[str] = Field(default=None)  # Advertise host: IP Asterisk sends RTP to (defaults to rtp_host if not set)
     rtp_port: int = Field(default=18080)
     port_range: Optional[str] = Field(default=None)
     
@@ -69,7 +70,8 @@ class ExternalMediaConfig(BaseModel):
 
 
 class AudioSocketConfig(BaseModel):
-    host: str = Field(default="127.0.0.1")
+    host: str = Field(default="127.0.0.1")  # Bind host: IP the AudioSocket server listens on
+    advertise_host: Optional[str] = Field(default=None)  # Advertise host: IP Asterisk connects to (defaults to host if not set)
     port: int = Field(default=8090)
     format: str = Field(default="ulaw")  # 'ulaw' or 'slin16'
 

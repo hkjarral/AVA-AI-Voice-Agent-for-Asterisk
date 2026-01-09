@@ -125,6 +125,60 @@ class TestApplyAudiosocketDefaults:
         apply_audiosocket_defaults(config_data)
         
         assert config_data['audiosocket']['port'] == 8090
+    
+    def test_advertise_host_env_override(self, monkeypatch):
+        """Should override advertise_host from environment (NAT support)."""
+        monkeypatch.setenv('AUDIOSOCKET_ADVERTISE_HOST', '10.8.0.5')
+        
+        config_data = {}
+        apply_audiosocket_defaults(config_data)
+        
+        assert config_data['audiosocket']['advertise_host'] == '10.8.0.5'
+
+    def test_advertise_host_env_empty_ignored(self, monkeypatch):
+        """Empty advertise_host env var should be ignored."""
+        monkeypatch.setenv('AUDIOSOCKET_ADVERTISE_HOST', '   ')
+        
+        config_data = {}
+        apply_audiosocket_defaults(config_data)
+        
+        assert 'advertise_host' not in config_data['audiosocket']
+    
+    def test_advertise_host_not_set_by_default(self):
+        """advertise_host should not be set when env var is absent (engine falls back to host)."""
+        config_data = {}
+        apply_audiosocket_defaults(config_data)
+        
+        # advertise_host should not be in the config unless explicitly set
+        assert 'advertise_host' not in config_data['audiosocket']
+    
+    def test_advertise_host_preserved_from_yaml(self, monkeypatch):
+        """Should preserve YAML advertise_host value when env var not set."""
+        config_data = {
+            'audiosocket': {
+                'host': '0.0.0.0',
+                'advertise_host': '192.168.1.50'
+            }
+        }
+        apply_audiosocket_defaults(config_data)
+        
+        # YAML value should be preserved
+        assert config_data['audiosocket']['advertise_host'] == '192.168.1.50'
+    
+    def test_advertise_host_env_overrides_yaml(self, monkeypatch):
+        """Environment variable should override YAML advertise_host value."""
+        monkeypatch.setenv('AUDIOSOCKET_ADVERTISE_HOST', '10.8.0.5')
+        
+        config_data = {
+            'audiosocket': {
+                'host': '0.0.0.0',
+                'advertise_host': '192.168.1.50'
+            }
+        }
+        apply_audiosocket_defaults(config_data)
+        
+        # Env var should override YAML
+        assert config_data['audiosocket']['advertise_host'] == '10.8.0.5'
 
 
 class TestApplyExternalmediaDefaults:
@@ -156,6 +210,60 @@ class TestApplyExternalmediaDefaults:
         apply_externalmedia_defaults(config_data)
         
         assert config_data['external_media']['rtp_host'] == 'yaml_host'
+    
+    def test_advertise_host_env_override(self, monkeypatch):
+        """Should override advertise_host from environment (NAT support)."""
+        monkeypatch.setenv('EXTERNAL_MEDIA_ADVERTISE_HOST', '10.8.0.5')
+        
+        config_data = {}
+        apply_externalmedia_defaults(config_data)
+        
+        assert config_data['external_media']['advertise_host'] == '10.8.0.5'
+
+    def test_advertise_host_env_empty_ignored(self, monkeypatch):
+        """Empty advertise_host env var should be ignored."""
+        monkeypatch.setenv('EXTERNAL_MEDIA_ADVERTISE_HOST', '   ')
+        
+        config_data = {}
+        apply_externalmedia_defaults(config_data)
+        
+        assert 'advertise_host' not in config_data['external_media']
+    
+    def test_advertise_host_not_set_by_default(self):
+        """advertise_host should not be set when env var is absent (engine falls back to rtp_host)."""
+        config_data = {}
+        apply_externalmedia_defaults(config_data)
+        
+        # advertise_host should not be in the config unless explicitly set
+        assert 'advertise_host' not in config_data['external_media']
+    
+    def test_advertise_host_preserved_from_yaml(self):
+        """Should preserve YAML advertise_host value when env var not set."""
+        config_data = {
+            'external_media': {
+                'rtp_host': '0.0.0.0',
+                'advertise_host': '192.168.1.50'
+            }
+        }
+        apply_externalmedia_defaults(config_data)
+        
+        # YAML value should be preserved
+        assert config_data['external_media']['advertise_host'] == '192.168.1.50'
+    
+    def test_advertise_host_env_overrides_yaml(self, monkeypatch):
+        """Environment variable should override YAML advertise_host value."""
+        monkeypatch.setenv('EXTERNAL_MEDIA_ADVERTISE_HOST', '10.8.0.5')
+        
+        config_data = {
+            'external_media': {
+                'rtp_host': '0.0.0.0',
+                'advertise_host': '192.168.1.50'
+            }
+        }
+        apply_externalmedia_defaults(config_data)
+        
+        # Env var should override YAML
+        assert config_data['external_media']['advertise_host'] == '10.8.0.5'
 
 
 class TestApplyDiagnosticDefaults:

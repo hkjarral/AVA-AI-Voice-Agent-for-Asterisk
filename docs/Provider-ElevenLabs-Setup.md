@@ -79,8 +79,8 @@ providers:
 
 **Key Settings**:
 - Audio format is fixed at PCM16 @ 16kHz (engine handles resampling from telephony)
-- Voice, prompt, and LLM model are configured in the ElevenLabs dashboard
-- Greeting is configured in the ElevenLabs dashboard (not YAML)
+- Voice and LLM model are configured in the ElevenLabs dashboard
+- Greeting and prompt can be overridden from context YAML (see Dynamic Variables section)
 
 ### 6. Configure Asterisk Dialplan
 
@@ -139,74 +139,182 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
 
 ```json
 {
+  "type": "client",
   "name": "hangup_call",
-  "description": "Use this tool when the caller wants to end the call, says goodbye, or there's nothing more to discuss. Always use a polite farewell message.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "farewell_message": {
-        "type": "string",
-        "description": "A polite goodbye message to say before hanging up"
-      }
-    },
-    "required": []
+  "description": "You MUST call this tool to properly end the conversation when the user says goodbye, thanks for your help, that's all I need, or any farewell phrase. Without calling this tool, the call will not end.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 5,
+  "parameters": [
+    {
+      "id": "farewell_message",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "A warm farewell message to say before ending the call",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    }
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
   }
 }
 ```
+
+> **Important**: The description must be imperative - simply saying "goodbye" does NOT end the call. The LLM must invoke this tool.
 
 ### transfer_call
 
 ```json
 {
+  "type": "client",
   "name": "transfer_call",
-  "description": "Transfer the call to another person, department, or extension. Use when caller requests to speak with someone specific.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "target": {
-        "type": "string",
-        "description": "The transfer destination - extension number, queue name, or department"
-      }
-    },
-    "required": ["target"]
+  "description": "Transfer the caller to another extension or department. Use when the caller asks to speak with a live person, agent, or specific department like sales or support.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 45,
+  "parameters": [
+    {
+      "id": "target",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Extension number or department name (e.g., '2765', 'sales', 'support', 'live agent')",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": true
+    }
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
   }
 }
 ```
 
-### send_email_summary
+### leave_voicemail
 
 ```json
 {
-  "name": "send_email_summary",
-  "description": "Send an email summary of the call to the caller. Use when they request a summary or confirmation.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "recipient_email": {
-        "type": "string",
-        "description": "Email address to send the summary to"
-      }
-    },
-    "required": ["recipient_email"]
+  "type": "client",
+  "name": "leave_voicemail",
+  "description": "Send the caller to voicemail so they can leave a message. Use when caller wants to leave a message or when transfer fails.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 15,
+  "parameters": [],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
   }
 }
 ```
+
+### cancel_transfer
+
+```json
+{
+  "type": "client",
+  "name": "cancel_transfer",
+  "description": "Cancel the current transfer if it hasn't been answered yet. Use when caller changes their mind during a transfer.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 5,
+  "parameters": [],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
+}
+```
+
+### send_email_summary (Optional)
+
+```json
+{
+  "type": "client",
+  "name": "send_email_summary",
+  "description": "Send an email summary of the call to a specified email address.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 10,
+  "parameters": [
+    {
+      "id": "recipient_email",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Email address to send the call summary to",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": true
+    }
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
+}
+```
+
+> **Note**: This tool is typically triggered automatically at call end. Only add if you want the AI to explicitly offer summaries.
 
 ### request_transcript
 
 ```json
 {
+  "type": "client",
   "name": "request_transcript",
-  "description": "Send the full call transcript to the caller via email.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "recipient_email": {
-        "type": "string",
-        "description": "Email address to send the transcript to"
-      }
-    },
-    "required": ["recipient_email"]
+  "description": "Send call transcript to caller's email address. Use this when caller says yes to the transcript offer, or when they explicitly request a transcript. IMPORTANT: Before calling this tool, you MUST ask for the email, read it back clearly (spell it out), and get confirmation that it's correct.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "expects_response": true,
+  "response_timeout_secs": 10,
+  "parameters": [
+    {
+      "id": "caller_email",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Caller's email address. Parse from speech: 'john dot smith at gmail dot com' becomes 'john.smith@gmail.com'",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": true
+    }
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
   }
 }
 ```
@@ -220,21 +328,88 @@ contexts:
   demo_elevenlabs:
     provider: elevenlabs_agent
     profile: telephony_ulaw_8k
-    # Note: greeting and prompt are managed in ElevenLabs dashboard
+    greeting: "Hi {caller_name}, I'm your AI assistant. How can I help you today?"
+    prompt: |
+      You are a helpful voice assistant.
+      Keep responses short (1-3 sentences).
+      Always offer to email a transcript before ending the call.
     tools:
       - hangup_call
-      - transfer_call
-      - send_email_summary
+      - transfer
+      - leave_voicemail
+      - cancel_transfer
       - request_transcript
 ```
 
-**Important**: Unlike other providers, the greeting and system prompt are configured in the ElevenLabs dashboard, not in YAML.
+**Context fields override ElevenLabs dashboard settings** when the corresponding toggles are enabled in Security → Overrides.
+
+> **Tool Names**: The context `tools:` list uses canonical names (`transfer`) for compatibility with other providers (Deepgram, OpenAI). ElevenLabs dashboard uses `transfer_call` - the system handles this mapping via `TOOL_ALIASES`.
+
+## Dynamic Variables & Overrides
+
+ElevenLabs supports runtime personalization through dynamic variables and configuration overrides. **This aligns ElevenLabs with other full providers** - your context's `greeting` and `prompt` control the agent behavior, not the dashboard settings.
+
+> **Important**: Unlike other providers where tools are sent via API, **ElevenLabs tools must be configured in the dashboard**. Only greeting and system prompt can be overridden from context YAML.
+
+### Enabling Overrides (Required)
+
+You **MUST** enable these toggles in ElevenLabs Dashboard → Agent → **Security** tab → **Overrides**:
+
+| Dashboard Toggle | Context Field | Effect |
+|------------------|---------------|--------|
+| **First message** | `greeting` | Context greeting overrides dashboard first message |
+| **System prompt** | `prompt` | Context prompt overrides dashboard system prompt |
+
+> **Without enabling these toggles**, the dashboard values will be used and your context settings will be ignored.
+
+### Available Dynamic Variables
+
+The following variables are automatically passed and can be used in your greeting or prompt:
+
+| Variable | Description | Example Value |
+|----------|-------------|---------------|
+| `{caller_name}` | Caller's name from CID | "JOHN SMITH" |
+| `{caller_id}` | Caller's phone number | "13165551234" |
+
+### Usage Example
+
+```yaml
+contexts:
+  personalized_support:
+    provider: elevenlabs_agent
+    greeting: "Hi {caller_name}, thank you for calling! How can I help?"
+    prompt: |
+      You are speaking with {caller_name} (phone: {caller_id}).
+      Personalize responses using their name.
+```
+
+### How It Works
+
+1. Engine extracts `caller_name` and `caller_id` from the call session
+2. Variables are substituted into `greeting` and `prompt` before sending
+3. Substituted values are sent via `conversation_config_override`
+4. ElevenLabs uses these instead of dashboard defaults
+
+**Note**: Tools are NOT overridable - they must be configured in ElevenLabs dashboard.
+
+### Architecture Alignment
+
+With overrides enabled, ElevenLabs now works like other full providers in this project:
+
+| Component | Deepgram/OpenAI Realtime | ElevenLabs |
+|-----------|--------------------------|------------|
+| **Greeting** | Context YAML → API | Context YAML → Override |
+| **System Prompt** | Context YAML → API | Context YAML → Override |
+| **Tools** | Context YAML → API | **Dashboard only** |
+| **Voice/Model** | API or Dashboard | Dashboard only |
+
+This means you can use the same context configuration across providers - just switch the `provider:` field and your greeting/prompt will work consistently.
 
 ### System Prompt Best Practice
 
 Add a **CALL ENDING PROTOCOL** at the TOP of your system prompt to ensure transcript is offered before hangup:
 
-```
+```text
 CALL ENDING PROTOCOL (MUST FOLLOW EXACTLY):
 When the caller indicates they're done (goodbye, thanks, that's all, etc.):
 1. FIRST ask: "Before you go, would you like me to email you a transcript of our conversation?"
@@ -270,13 +445,24 @@ When the caller indicates they're done (goodbye, thanks, that's all, etc.):
 2. Verify agent ID matches dashboard URL
 3. Check network connectivity to elevenlabs.io
 
+### Issue: "Greeting/Prompt Override Not Working"
+
+**Cause**: Override toggles not enabled in ElevenLabs dashboard
+
+**Fix**:
+1. Go to ElevenLabs Dashboard → Agent → **Security** tab
+2. Enable **First message** toggle (for greeting override)
+3. Enable **System prompt** toggle (for prompt override)
+4. Save and wait 30 seconds for changes to propagate
+5. Check logs for `Override first_message` and `Override system_prompt` entries
+
 ### Issue: "Tools Not Working"
 
 **Cause**: Tools not configured in ElevenLabs dashboard or names don't match
 
 **Fix**:
 1. Verify tool schemas are added in ElevenLabs Agent → Tools tab
-2. Ensure tool names match exactly (e.g., `hangup_call` not `hangup`)
+2. Ensure tool names match exactly: `hangup_call`, `transfer_call`, `leave_voicemail`, `cancel_transfer`, `request_transcript`
 3. Check tools are linked to your agent ("Dependent agents")
 4. Check logs for `client_tool_call` events
 
