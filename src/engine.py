@@ -3149,27 +3149,29 @@ class Engine:
         - {lead_id}: Outbound lead/contact ID (default: "")
         
         Unknown placeholders are left as-is (safe fallback).
+        Uses regex-based substitution to handle partial matches correctly.
         """
         if not text:
             return text
+        
+        import re
+        
+        substitutions = {
+            "caller_name": getattr(session, 'caller_name', None) or "there",
+            "caller_number": getattr(session, 'caller_number', None) or "unknown",
+            "call_id": session.call_id,
+            "context_name": getattr(session, 'context_name', None) or "",
+            "call_direction": "outbound" if getattr(session, 'is_outbound', False) else "inbound",
+            "campaign_id": getattr(session, 'outbound_campaign_id', None) or "",
+            "lead_id": getattr(session, 'outbound_lead_id', None) or "",
+        }
+        
+        def replace_match(match):
+            key = match.group(1)
+            return substitutions.get(key, match.group(0))  # Leave unknown as-is
+        
         try:
-            return text.format(
-                caller_name=getattr(session, 'caller_name', None) or "there",
-                caller_number=getattr(session, 'caller_number', None) or "unknown",
-                call_id=session.call_id,
-                context_name=getattr(session, 'context_name', None) or "",
-                call_direction="outbound" if getattr(session, 'is_outbound', False) else "inbound",
-                campaign_id=getattr(session, 'outbound_campaign_id', None) or "",
-                lead_id=getattr(session, 'outbound_lead_id', None) or "",
-            )
-        except KeyError as e:
-            # Unknown placeholder - leave original text unchanged
-            logger.debug(
-                "Prompt template has unknown placeholder, leaving unchanged",
-                call_id=session.call_id,
-                placeholder=str(e),
-            )
-            return text
+            return re.sub(r'\{(\w+)\}', replace_match, text)
         except Exception as e:
             logger.debug(
                 "Prompt template substitution failed, leaving unchanged",
