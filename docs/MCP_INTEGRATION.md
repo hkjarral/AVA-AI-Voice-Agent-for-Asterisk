@@ -169,6 +169,76 @@ Rule:
 
 - `contexts.<name>.tools` must list the **exposed tool names** (the provider-safe names).
 
+## Template Variables for Prompts
+
+Context prompts and greetings support template variable substitution for call-specific data. This is essential for MCP tools that need caller information (e.g., customer lookup by phone number).
+
+### Available Variables
+
+| Variable | Description | Default | Source |
+|----------|-------------|---------|--------|
+| `{caller_name}` | Caller ID name | `"there"` | `CALLERID(name)` from Asterisk |
+| `{caller_number}` | Caller phone number (ANI) | `"unknown"` | `CALLERID(num)` from Asterisk |
+| `{call_id}` | Unique call identifier | (always set) | Internal call ID |
+| `{context_name}` | AI_CONTEXT from dialplan | `""` | `Set(AI_CONTEXT=...)` |
+| `{call_direction}` | Call direction | `"inbound"` | `"inbound"` or `"outbound"` |
+| `{campaign_id}` | Outbound campaign ID | `""` | Outbound dialer only |
+| `{lead_id}` | Outbound lead/contact ID | `""` | Outbound dialer only |
+
+### Example: Auto-Lookup Customer by Caller ID
+
+```yaml
+contexts:
+  customer_support:
+    provider: openai_realtime
+    greeting: "Hi {caller_name}, thanks for calling support!"
+    prompt: |
+      You are a customer support agent.
+      
+      ## Caller Information
+      - Phone: {caller_number}
+      - Name: {caller_name}
+      - Call ID: {call_id}
+      
+      ## Instructions
+      1. Use the lookup_customer tool with phone number {caller_number} to find their account
+      2. If no account found, ask for their account number or service address
+      3. Be helpful and professional
+    tools:
+      - mcp_uisp_server_lookup_customer
+      - transfer
+      - hangup_call
+```
+
+### How It Works
+
+1. When a call arrives, Asterisk passes `CALLERID(name)` and `CALLERID(num)` to the AI engine
+2. The engine substitutes `{caller_number}` and other variables in your prompt **before** sending to the LLM
+3. The LLM sees the actual phone number and can pass it to your MCP tool
+4. Your MCP tool receives the real data, not template placeholders
+
+### For MCP Tool Builders
+
+Your MCP tool will receive **actual substituted values**, not template placeholders:
+
+```python
+# ✅ Correct - tool receives actual data:
+{'phone': '15551234567'}
+
+# ❌ Wrong - means substitution didn't happen (check prompt syntax):
+{'phone': '{caller_number}'}
+```
+
+### Safe Fallback Behavior
+
+- **Unknown placeholders** are left unchanged (e.g., `{unknown_var}` stays as-is)
+- **Missing data** uses defaults (e.g., no caller name → `"there"`)
+- **Invalid syntax** doesn't break prompts (graceful fallback to original text)
+
+### Defaults Configuration
+
+Default values are defined in `src/engine.py` method `_apply_prompt_template_substitution()`. To customize defaults, modify this method or use conditional logic in your prompts.
+
 ## Execution & Security Model
 
 ### Allowlisting (required)

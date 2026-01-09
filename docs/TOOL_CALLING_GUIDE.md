@@ -525,6 +525,34 @@ exten => s,1,NoOp(AI Agent - Sales Line)
 
 See [FreePBX Integration Guide](FreePBX-Integration-Guide.md) for complete dialplan documentation.
 
+### 6. Template Variables in Prompts
+
+Context prompts support template variables for call-specific data. This is especially useful for MCP tools that need caller information.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `{caller_name}` | Caller ID name | `"there"` |
+| `{caller_number}` | Caller phone number (ANI) | `"unknown"` |
+| `{call_id}` | Unique call identifier | (always set) |
+| `{context_name}` | AI_CONTEXT from dialplan | `""` |
+| `{call_direction}` | `"inbound"` or `"outbound"` | `"inbound"` |
+| `{campaign_id}` | Outbound campaign ID | `""` |
+| `{lead_id}` | Outbound lead/contact ID | `""` |
+
+**Example**:
+```yaml
+contexts:
+  customer_support:
+    prompt: |
+      The caller's phone number is {caller_number}.
+      Use the lookup_customer tool with this number to find their account.
+    tools:
+      - mcp_crm_lookup_customer
+      - hangup_call
+```
+
+See [MCP Integration Guide](MCP_INTEGRATION.md#template-variables-for-prompts) for detailed documentation.
+
 ---
 
 ## Testing

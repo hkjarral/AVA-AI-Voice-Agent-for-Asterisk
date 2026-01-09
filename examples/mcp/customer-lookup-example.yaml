@@ -1,0 +1,100 @@
+# Example: Customer Lookup by Caller ID using MCP Tool
+#
+# This example demonstrates how to use template variables in prompts
+# to automatically look up customer information based on the caller's phone number.
+#
+# Template Variables Available:
+#   {caller_name}     - Caller ID name (default: "there")
+#   {caller_number}   - Caller phone number/ANI (default: "unknown")
+#   {call_id}         - Unique call identifier
+#   {context_name}    - AI_CONTEXT from dialplan
+#   {call_direction}  - "inbound" or "outbound"
+#   {campaign_id}     - Outbound campaign ID (outbound calls only)
+#   {lead_id}         - Outbound lead/contact ID (outbound calls only)
+#
+# Usage:
+#   1. Configure your MCP server under the `mcp:` section
+#   2. Create a context that uses the template variables
+#   3. Set AI_CONTEXT in your dialplan: Set(AI_CONTEXT=customer_support)
+#
+# See docs/MCP_INTEGRATION.md for full documentation.
+
+mcp:
+  enabled: true
+  servers:
+    # Example: UISP CRM integration for ISP customer lookup
+    uisp_server:
+      transport: stdio
+      command: ["python3", "/path/to/your/uisp_mcp_server.py"]
+      env:
+        UISP_API_URL: "${UISP_API_URL}"
+        UISP_API_KEY: "${UISP_API_KEY}"
+      defaults:
+        timeout_ms: 10000
+        slow_response_threshold_ms: 3000
+        slow_response_message: "Let me look up your account, one moment..."
+      tools:
+        - name: lookup_customer
+          expose_as: mcp_uisp_server_lookup_customer
+          description: "Look up customer account by phone number or service address"
+          speech_field: message
+
+contexts:
+  # Customer support context with automatic caller lookup
+  customer_support:
+    provider: openai_realtime
+    greeting: "Hi {caller_name}, thanks for calling support! Let me pull up your account."
+    prompt: |
+      You are a friendly customer support agent for an ISP.
+      
+      ## Caller Information
+      - Phone Number: {caller_number}
+      - Caller Name: {caller_name}
+      - Call ID: {call_id}
+      - Direction: {call_direction}
+      
+      ## Your First Task
+      Immediately use the lookup_customer tool with phone number {caller_number} to find 
+      the caller's account. This happens automatically when the call starts.
+      
+      ## After Account Lookup
+      - If account found: Greet them by name and ask how you can help
+      - If no account: Ask for their service address or account number
+      
+      ## Available Actions
+      - Look up customer accounts
+      - Transfer to billing, sales, or technical support
+      - Schedule service appointments
+      - End calls politely
+      
+      Be helpful, professional, and efficient.
+    tools:
+      - mcp_uisp_server_lookup_customer
+      - transfer
+      - hangup_call
+
+  # Outbound campaign example showing campaign-specific variables
+  outbound_collections:
+    provider: openai_realtime
+    greeting: "Hi {caller_name}, this is Sarah from ABC Services calling about your account."
+    prompt: |
+      You are a professional collections agent for ABC Services.
+      
+      ## Call Context
+      - Customer Phone: {caller_number}
+      - Customer Name: {caller_name}
+      - Campaign: {campaign_id}
+      - Lead ID: {lead_id}
+      - Direction: {call_direction}
+      
+      ## Instructions
+      1. Confirm you're speaking with the account holder
+      2. Use lookup_customer with {caller_number} to get account details
+      3. Discuss the outstanding balance professionally
+      4. Offer payment options
+      5. If they can't pay now, schedule a callback
+      
+      Be respectful and follow FDCPA guidelines.
+    tools:
+      - mcp_uisp_server_lookup_customer
+      - hangup_call
