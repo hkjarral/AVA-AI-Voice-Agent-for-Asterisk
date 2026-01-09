@@ -107,7 +107,7 @@ TRANSCRIPT_EMAIL_TEMPLATE = """
     
     <div class="footer">
       <p>If you have any questions or need assistance, please don't hesitate to contact us.</p>
-      <p><em>Powered by AI Voice Agent v4.4</em></p>
+      <p><em>Powered by AI Voice Agent v5.0</em></p>
     </div>
   </div>
 </body>

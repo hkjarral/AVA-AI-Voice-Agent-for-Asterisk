@@ -115,7 +115,7 @@ EMAIL_TEMPLATE = """
     {% endif %}
     
     <div class="footer">
-      <p><em>Powered by AI Voice Agent v4.4</em></p>
+      <p><em>Powered by AI Voice Agent v5.0</em></p>
     </div>
   </div>
 </body>
@@ -244,10 +244,8 @@ class SendEmailSummaryTool(Tool):
         if hasattr(session, "conversation_history") and session.conversation_history:
             transcript = self._format_conversation(session.conversation_history)
             
-            # Check if we only have AI responses (OpenAI Realtime limitation)
-            roles = [msg.get("role") for msg in session.conversation_history if isinstance(msg, dict)]
-            if roles and all(role == "assistant" for role in roles):
-                transcript_note = "Note: Caller messages are not captured when using OpenAI Realtime with server-side voice activity detection. Only AI responses are included above."
+            # Note: With input_audio_transcription enabled, user transcripts are now captured
+            # for all providers including OpenAI Realtime with server_vad
         
         # Get outcome/status
         outcome = getattr(session, "call_outcome", "Completed")
