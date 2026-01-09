@@ -264,7 +264,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             conversation_override["agent"]["first_message"] = greeting
             logger.info(f"[elevenlabs] [{self._call_id}] Override first_message: {greeting[:50]}...")
         
-        # Add custom system prompt if provided
+        # Add custom system prompt if provided (overrides ElevenLabs dashboard prompt)
         if context.get("instructions"):
             # Substitute variables in system prompt too
             prompt = context["instructions"]
@@ -273,6 +273,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             except (KeyError, ValueError):
                 pass
             conversation_override["agent"]["prompt"] = {"prompt": prompt}
+            logger.info(f"[elevenlabs] [{self._call_id}] Override system_prompt: {len(prompt)} chars")
         
         # Only add override if we have something to override
         if conversation_override["agent"]:
