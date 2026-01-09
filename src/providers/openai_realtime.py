@@ -761,9 +761,11 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             "input_audio_format": in_fmt,
             "output_audio_format": out_fmt,
             "voice": self.config.voice,
-            # Note: input_audio_transcription is NOT compatible with server_vad
-            # When turn_detection is enabled, OpenAI does not send transcription events
-            # This is an API limitation - email summaries will only include AI responses
+            # Enable user speech transcription for full call transcripts
+            # This works with server_vad - transcription runs asynchronously
+            "input_audio_transcription": {
+                "model": "whisper-1"
+            },
         }
         
         # Optional: Add temperature control (affects response creativity and consistency)
@@ -1585,14 +1587,29 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 await self._emit_transcript("", is_final=True)
             return
 
-        if event_type == "input_transcription.completed":
-            # Note: This event is NOT sent when server_vad is enabled
-            # OpenAI API limitation: transcription incompatible with turn_detection
-            transcript = event.get("transcript")
+        if event_type == "conversation.item.input_audio_transcription.completed":
+            # User speech transcription completed - works with server_vad
+            transcript = event.get("transcript", "")
             if transcript:
+                logger.info(
+                    "📝 User transcript received",
+                    call_id=self._call_id,
+                    transcript_preview=transcript[:100] if len(transcript) > 100 else transcript
+                )
                 await self._emit_transcript(transcript, is_final=True)
-                # Track user conversation for email tools
+                # Track user conversation for email tools and call history
                 await self._track_conversation("user", transcript)
+            return
+        
+        if event_type == "conversation.item.input_audio_transcription.failed":
+            # Transcription failed - log but don't crash
+            error = event.get("error", {})
+            logger.warning(
+                "⚠️ User transcription failed",
+                call_id=self._call_id,
+                error_type=error.get("type"),
+                error_message=error.get("message"),
+            )
             return
 
         if event_type == "response.output_text.delta":
