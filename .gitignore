@@ -267,6 +267,7 @@ Gemini.md
 
 # Development-only documentation (Linear integration for contributors)
 docs/LINEAR_MCP_SETUP.md
+docs/linear-issues-community-features.md
 
 # AI Persona and IDE rule files (keep local with dev server URLs, don't commit changes)
 AVA.mdc
