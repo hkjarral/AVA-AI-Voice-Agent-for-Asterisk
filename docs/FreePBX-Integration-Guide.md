@@ -428,14 +428,14 @@ docker compose up -d local_ai_server
 # Wait for health (first start may take 5-10 min to load models)
 docker compose logs -f local_ai_server
 
-# Once healthy, start ai-engine
+# Once healthy, start ai_engine
 docker compose up -d --build ai_engine
 ```
 
 ### 4.2 Monitor Startup
 
 ```bash
-# Watch ai-engine logs
+# Watch ai_engine logs
 docker compose logs -f ai_engine
 
 # Look for these key messages:
@@ -534,7 +534,7 @@ curl http://127.0.0.1:15000/metrics | grep ai_agent
 
 **Solution**:
 ```bash
-# Check ai-engine logs
+# Check ai_engine logs
 docker compose logs ai_engine | tail -50
 
 # Look for:
