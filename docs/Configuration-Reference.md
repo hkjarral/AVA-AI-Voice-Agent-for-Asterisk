@@ -82,6 +82,7 @@ Highest priority first:
 If the selected provider path is a pipeline-based configuration, the engine uses:
 
 - `active_pipeline` to determine which pipeline to run.
+- If `active_pipeline` is unset/null, the engine falls back to the first available pipeline in `pipelines:`.
 
 ### Recommended approach
 
