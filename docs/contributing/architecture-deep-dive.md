@@ -1,26 +1,26 @@
 ---
 trigger: always_on
-description: Architecture Details for Asterisk AI Voice Agent v4.0 project
+description: Architecture Details for Asterisk AI Voice Agent v5.0 project
 globs: src/**/*.py, *.py, docker-compose.yml, Dockerfile, config/ai-agent.yaml
 ---
 
-# Asterisk AI Voice Agent - Architecture Documentation (v4.0)
+# Asterisk AI Voice Agent - Architecture Documentation (v5.0)
 
 ## System Overview
 
-The Asterisk AI Voice Agent v4.0 is a **production-ready, modular conversational AI system** that enables **real-time, two-way voice conversations** through Asterisk/FreePBX systems. It features a **modular pipeline architecture** that allows mixing and matching STT, LLM, and TTS providers, alongside support for **monolithic providers** like OpenAI Realtime and Deepgram Voice Agent.
+The Asterisk AI Voice Agent v5.0 is a **production-ready, modular conversational AI system** that enables **real-time, two-way voice conversations** through Asterisk/FreePBX systems. It features a **modular pipeline architecture** that allows mixing and matching STT, LLM, and TTS providers, alongside support for **monolithic providers** like OpenAI Realtime, Deepgram, Google Live, and ElevenLabs.
 
 ### Key Architecture Components
 
-- **Dual Transport Support** – AudioSocket (TCP, modern) for full agents and ExternalMedia RTP (UDP, legacy) for hybrid pipelines
+- **Dual Transport Support** – ExternalMedia RTP (UDP) and AudioSocket (TCP). The shipped default config uses ExternalMedia; AudioSocket is supported and currently validated with `slin`.
 - **Adaptive Streaming** – Downstream audio with automatic jitter buffering and file playback fallback
 - **Modular Pipelines** – Independent STT, LLM, and TTS provider selection via YAML configuration
-- **Production Monitoring** – Prometheus + Grafana stack with 50+ metrics and 5 dashboards
+- **Production Monitoring** – Bring-your-own Prometheus/Grafana; metrics are intentionally low-cardinality. Use Call History for per-call debugging.
 - **State Management** – Centralized SessionStore with type-safe call state tracking
 
-### Golden Baselines (v4.0)
+### Golden Baselines (v5.0)
 
-Three validated configurations ship production-ready:
+Five validated configurations ship production-ready:
 
 1. **OpenAI Realtime** (`config/ai-agent.golden-openai.yaml`)
    - Monolithic provider (STT+LLM+TTS integrated)
@@ -32,10 +32,20 @@ Three validated configurations ship production-ready:
    - Response time: 1-2 seconds
    - Enterprise-grade quality
 
-3. **Local Hybrid** (`config/ai-agent.golden-local-hybrid.yaml`)
+3. **Google Live** (`config/ai-agent.golden-google-live.yaml`)
+   - Monolithic provider (native audio duplex)
+   - Response time: typically <1 second
+
+4. **ElevenLabs Agent** (`config/ai-agent.golden-elevenlabs.yaml`)
+   - Monolithic provider (premium voice quality)
+   - Response time: model-dependent, typically <2 seconds
+
+5. **Local Hybrid** (`config/ai-agent.golden-local-hybrid.yaml`)
    - Pipeline: Vosk (STT) + OpenAI (LLM) + Piper (TTS)
    - Response time: 3-7 seconds
    - Privacy-focused (audio stays local)
+
+**Fully Local (optional)** is also supported (no cloud APIs), but performance depends heavily on your hardware (especially local LLM inference). See `docs/LOCAL_ONLY_SETUP.md` and `docs/HARDWARE_REQUIREMENTS.md`.
 
 For deployment guidance, see [docs/PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md).
 
@@ -209,7 +219,7 @@ The legacy bundled Prometheus/Grafana compose + dashboards were removed from the
   
 Configure via env:
 
-- `HEALTH_HOST` (default `0.0.0.0`), `HEALTH_PORT` (default `15000`).
+- `HEALTH_BIND_HOST` (default `0.0.0.0` in `docker-compose.yml`), `HEALTH_BIND_PORT` (default `15000`).
 
 ### Known Constraints
 

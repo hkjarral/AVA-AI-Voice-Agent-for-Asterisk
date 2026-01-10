@@ -1057,7 +1057,7 @@ User opens Admin UI → System Status card:
 - [ ] Manual test on Sangoma FreePBX 16/17
 - [ ] Manual test on Fedora 40 (rootless)
 - [ ] Update README quick start section
-- [ ] Create `docs/TROUBLESHOOTING.md` with common issues
+- [x] Create `docs/TROUBLESHOOTING.md` with common issues (redirects to `docs/TROUBLESHOOTING_GUIDE.md`)
 - [ ] Add platform-specific FAQ sections
 - [ ] Document version matrix and EOL policy
 

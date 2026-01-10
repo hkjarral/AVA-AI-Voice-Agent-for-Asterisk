@@ -1,6 +1,6 @@
 # Production Deployment Guide
 
-Best practices and recommendations for deploying Asterisk AI Voice Agent `v4.6+` in production environments.
+Best practices and recommendations for deploying Asterisk AI Voice Agent `v5.0+` in production environments.
 
 ## Overview
 
@@ -252,9 +252,9 @@ external_media:
    - Different hosts: <10ms recommended
    - Monitor network quality with `ping` and `mtr`
 
-5. **Provider Compatibility**: 
-   - **Local Hybrid**: Requires ExternalMedia RTP + file playback
-   - **OpenAI/Deepgram**: Can use AudioSocket (streaming) instead
+5. **Provider Compatibility**:
+   - **Local Hybrid / pipelines**: ExternalMedia RTP is the shipped default and is a strong production choice. File playback is the most robust option; streaming-first is supported with automatic fallback to file.
+   - **Full agents (OpenAI Realtime / Deepgram / Google Live / ElevenLabs)**: AudioSocket + streaming playback is validated for low-latency, real-time UX.
 
 **When to Use ExternalMedia:**
 - Modular pipelines (local_hybrid, custom pipelines)

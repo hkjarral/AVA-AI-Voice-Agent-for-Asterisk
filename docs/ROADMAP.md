@@ -49,7 +49,7 @@ Each milestone includes scope, implementation details, and verification criteria
   - Configurable streaming defaults in `config/ai-agent.yaml` (`min_start_ms`, `low_watermark_ms`, `fallback_timeout_ms`, `provider_grace_ms`, `jitter_buffer_ms`).
   - Post‑TTS end protection window (`barge_in.post_tts_end_protection_ms`) to prevent agent self‑echo when capture resumes.
   - Deepgram input alignment to 8 kHz (`providers.deepgram.input_sample_rate_hz: 8000`) to match AudioSocket frames.
-  - AudioSocket default format set to μ-law with provider guardrails (`audiosocket.format=ulaw`, Deepgram/OpenAI `input_encoding=ulaw`) so inbound frames are decoded correctly.
+  - AudioSocket wire format validated as `slin` with provider guardrails (keep provider input/target encodings aligned with the configured AudioSocket format).
   - Expanded YAML comments with tuning guidance for operators.
   - Regression docs updated with findings and resolutions.
 - **Verification (2025‑09‑24 13:17 PDT)**:

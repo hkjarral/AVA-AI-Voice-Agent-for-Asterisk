@@ -9,6 +9,8 @@ This document defines the **validated and supported** combinations of audio tran
 
 For **v5.0.0+**: both **AudioSocket** and **ExternalMedia RTP** are validated options for pipeline deployments and full-agent deployments. Choose based on what fits your Asterisk environment and network constraints (TCP `8090` for AudioSocket vs UDP `18080` for ExternalMedia RTP), and confirm the combination you’re running matches the matrix below.
 
+Note: AudioSocket is currently validated with `audiosocket.format: slin`.
+
 ---
 
 ## Key Concepts

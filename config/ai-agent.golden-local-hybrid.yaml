@@ -42,7 +42,7 @@ external_media:
   rtp_host: 0.0.0.0
   rtp_port: 18080
 
-# Playback Mode - File mode required for pipelines
+# Playback Mode - File mode is the most validated/robust option for pipelines (streaming-first is supported with fallback)
 downstream_mode: file
 
 # Contexts

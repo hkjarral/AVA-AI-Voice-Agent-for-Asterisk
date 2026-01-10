@@ -29,6 +29,7 @@
 ## 💻 Developer Documentation
 
 - **[Contributing Guide](contributing/README.md)** - Start here for development
+- **[Developer Onboarding](DEVELOPER_ONBOARDING.md)** - Repo orientation and recommended dev flow
 - **[Quick Start for Devs](contributing/quickstart.md)** - Dev environment setup
 - **[Architecture Overview](contributing/architecture-quickstart.md)** - System design (10-minute read)
 - **[Architecture Deep Dive](contributing/architecture-deep-dive.md)** - Complete technical architecture

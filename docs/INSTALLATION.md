@@ -155,7 +155,7 @@ cd Asterisk-AI-Voice-Agent
 ```
 
 The installer will:
-1. Guide you through **3 baseline choices**:
+1. Guide you through **3 baseline choices** (a fast-path subset):
    - **OpenAI Realtime** - Fastest (0.5-1.5s), requires OPENAI_API_KEY
    - **Deepgram Voice Agent** - Enterprise (1-2s), requires DEEPGRAM_API_KEY + OPENAI_API_KEY
    - **Local Hybrid** - Privacy-focused (3-7s), requires OPENAI_API_KEY + 8GB RAM
@@ -167,6 +167,10 @@ The installer will:
 **Best for:** Advanced users, custom configurations, specific requirements
 
 If you want to use additional providers (e.g., Google Live, ElevenLabs) or switch between multiple golden configs, use the Admin UI Setup Wizard (Path A) or edit `config/ai-agent.yaml` directly.
+
+Notes:
+- The project ships **5 golden baseline configs** under `config/ai-agent.golden-*.yaml`.
+- A **Fully Local** mode is also supported (100% on-premises), but requires stronger hardware for local LLM inference; see `docs/LOCAL_ONLY_SETUP.md` and `docs/HARDWARE_REQUIREMENTS.md`.
 
 **Local note:** This project does **not** bundle models in images. For recommended local build/run profiles (including a smaller `local-core` build), see `docs/LOCAL_PROFILES.md`.
 

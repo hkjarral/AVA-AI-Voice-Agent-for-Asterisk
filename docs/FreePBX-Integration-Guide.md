@@ -188,7 +188,7 @@ asterisk-host:/mnt/asterisk_media  /mnt/asterisk_media  nfs  defaults  0  0
 **Option 2: Docker Named Volume** (for containerized Asterisk)
 
 ```yaml
-# In docker-compose.yml for both Asterisk and ai-engine:
+# In docker-compose.yml for both Asterisk and ai_engine:
 volumes:
   asterisk_media:
     driver: local
@@ -202,7 +202,7 @@ services:
     volumes:
       - asterisk_media:/mnt/asterisk_media
   
-  ai-engine:
+  ai_engine:
     volumes:
       - asterisk_media:/mnt/asterisk_media
 ```

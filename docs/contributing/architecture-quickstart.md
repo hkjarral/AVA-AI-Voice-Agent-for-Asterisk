@@ -36,19 +36,19 @@ exten => _X.,1,NoOp(AI Voice Agent)
 
 **Two Options**:
 
-**ExternalMedia RTP** (Default):
+**ExternalMedia RTP** (Shipped default config):
 - RTP streams on port 18080
 - Configurable codecs (μ-law, PCM16)
 - Best for: Production, distributed deployments, clusters
 
 **AudioSocket** (Simpler alternative):
 - TCP connection on port 8090
-- PCM16 @ 16kHz (slin format)
+- **Validated wire format**: `slin` (16-bit signed linear @ 8 kHz)
 - Best for: Getting started, simple setups, debugging
 
 **Format Flow**:
 ```
-Caller (μ-law/various) → Asterisk → Transport (PCM16@16kHz) → Engine
+Caller (μ-law/various) → Asterisk → Transport (e.g., `slin`) → Engine
 ```
 
 ### 3. Engine Core (`src/engine.py`)
@@ -145,32 +145,27 @@ vad:
 
 ```yaml
 # config/ai-agent.yaml
-provider_name: openai  # or deepgram, google, custom_pipeline
+default_provider: openai_realtime
+active_pipeline: local_hybrid
 
-# If custom_pipeline:
-pipeline: local_hybrid  # or hybrid_support, local_only
-
-pipelines:
-  local_hybrid:
-    stt: vosk_local
-    llm: openai
-    tts: piper_local
-    tools:
-      - transfer
-      - hangup_call
+contexts:
+  default:
+    provider: openai_realtime
+    profile: telephony_ulaw_8k
 ```
 
 **Lookup Order**:
-1. Check `provider_name`
-2. If `custom_pipeline` → Look up `pipelines[pipeline]`
-3. Load adapters for each component
-4. Initialize with API keys/models
+1. Dialplan override: `AI_PROVIDER` (if set)
+2. Context override: `contexts.<name>.provider` (if set for the selected context)
+3. Global default: `default_provider`
+
+If the selected provider path is a pipeline-based configuration, the engine uses `active_pipeline`.
 
 ## Data Flow Example (Pipeline)
 
 **User says "Hello"**:
 
-1. **Audio In**: Caller → Asterisk → AudioSocket → Engine (PCM16@16kHz)
+1. **Audio In**: Caller → Asterisk → AudioSocket → Engine (`slin`, 16-bit PCM @ 8 kHz)
 2. **STT**: Engine → Vosk → "Hello" (text)
 3. **LLM**: Text + history → OpenAI API → "Hi! How can I help you?"
 4. **TTS**: Text → Piper → audio bytes (PCM16)

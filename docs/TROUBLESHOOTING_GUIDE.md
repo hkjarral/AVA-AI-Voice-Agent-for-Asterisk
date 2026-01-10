@@ -75,10 +75,12 @@ agent version
 You should see:
 ```
 Asterisk AI Voice Agent CLI
-Version:    v4.1.0
-Built:      2025-11-07T19:00:00Z
+Version:    vX.Y.Z
+Built:      YYYY-MM-DDTHH:MM:SSZ
 Repository: https://github.com/hkjarral/Asterisk-AI-Voice-Agent
 ```
+
+Note: The CLI binary and the Python engine may have different version strings depending on how the release was built.
 
 ### Available Tools
 

@@ -1,10 +1,10 @@
 # Hardware Requirements
 
-System specifications and performance characteristics for Asterisk AI Voice Agent v4.4.
+System specifications and performance characteristics for Asterisk AI Voice Agent v5.0.
 
 ## Overview
 
-Hardware requirements vary significantly based on your chosen configuration. This guide provides validated specifications for each of the 3 golden baseline configurations.
+Hardware requirements vary significantly based on your chosen configuration. This guide provides guidance for the **5 golden baseline configurations**, plus the **Fully Local** option.
 
 > **Note**: For fully local deployment (no cloud APIs), see [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for detailed requirements including Sherpa-ONNX STT, Kokoro TTS, and local LLM options.
 
@@ -14,7 +14,10 @@ Hardware requirements vary significantly based on your chosen configuration. Thi
 |---------------|-----|-----|------|---------|----------|
 | **OpenAI Realtime** | 2+ cores | 4GB | 1GB | Stable internet | ~$0.06 |
 | **Deepgram Voice Agent** | 2+ cores | 4GB | 1GB | Stable internet | ~$0.03 |
+| **Google Live** | 2+ cores | 4GB | 1GB | Stable internet | Varies |
+| **ElevenLabs Agent** | 2+ cores | 4GB | 1GB | Stable internet | Varies |
 | **Local Hybrid** | 4+ cores (2020+) | 8-16GB | 2GB | Stable internet | ~$0.002 |
+| **Fully Local** (optional) | 8+ cores recommended (or GPU) | 16GB+ recommended | 10GB+ | No internet required | $0 |
 
 ## Configuration-Specific Requirements
 
@@ -75,7 +78,33 @@ Hardware requirements vary significantly based on your chosen configuration. Thi
 
 ---
 
-### 3. Local Hybrid (Privacy-Focused Pipeline)
+### 3. Google Live (Cloud Monolithic)
+
+**Minimum Specifications**:
+- **CPU**: 2 cores @ 2.0GHz+
+- **RAM**: 4GB
+- **Disk**: 1GB
+- **Network**: Stable internet (bidirectional streaming)
+
+**Notes**:
+- Typically the lowest-latency cloud baseline (<1s), but depends on network path and model selection.
+
+---
+
+### 4. ElevenLabs Agent (Cloud Monolithic)
+
+**Minimum Specifications**:
+- **CPU**: 2 cores @ 2.0GHz+
+- **RAM**: 4GB
+- **Disk**: 1GB
+- **Network**: Stable internet (bidirectional streaming)
+
+**Notes**:
+- Premium voice quality; model/agent configuration impacts latency and cost.
+
+---
+
+### 5. Local Hybrid (Privacy-Focused Pipeline)
 
 **Minimum Specifications**:
 - **CPU**: 4 cores @ 2.5GHz+ (Intel i5-10400, AMD Ryzen 5 5600X or newer)
@@ -122,6 +151,13 @@ Total:                     ~600MB
 - **Horizontal**: Run multiple local-ai-server instances (complex)
 
 ---
+
+## Fully Local (100% On-Premises) (Optional)
+
+Fully Local mode runs **STT + LLM + TTS** on your own hardware with **no cloud APIs**.
+
+- The **local LLM** is the bottleneck: CPU-only inference requires a modern CPU and enough RAM; for best UX and higher concurrency, use a GPU-backed local LLM where possible.
+- Setup guide: `docs/LOCAL_ONLY_SETUP.md`
 
 ## GPU Acceleration (Optional)
 

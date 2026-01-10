@@ -254,6 +254,13 @@ docker compose logs -f ai_engine
    - Config: `config/ai-agent.golden-local-hybrid.yaml`
    - *Best for: Audio privacy, cost control, compliance.*
 
+### Fully Local (Optional)
+
+AVA also supports a **Fully Local** mode (100% on-premises, no cloud APIs). This is **not** one of the golden baselines because performance depends heavily on your hardware (especially the local LLM).
+
+- See: `docs/LOCAL_ONLY_SETUP.md`
+- Hardware guidance: `docs/HARDWARE_REQUIREMENTS.md`
+
 ### 🏠 Self-Hosted LLM with Ollama (No API Key Required)
 
 Run your own local LLM using [Ollama](https://ollama.ai) - perfect for privacy-focused deployments:
@@ -289,7 +296,8 @@ active_pipeline: local_ollama
 - **Tool Calling System**: AI-powered actions (transfers, emails) work with any provider.
 - **Agent CLI Tools**: `doctor`, `troubleshoot`, `demo`, `init` commands.
 - **Modular Pipeline System**: Independent STT, LLM, and TTS provider selection.
-- **Dual Transport Support**: AudioSocket and ExternalMedia RTP (see Transport Compatibility matrix).
+- **Dual Transport Support**: AudioSocket and ExternalMedia RTP (the shipped default config uses ExternalMedia; both are supported — see the transport matrix).
+- **Streaming-First Downstream**: Streaming playback when possible, with automatic fallback to file playback for robustness.
 - **High-Performance Architecture**: Separate `ai_engine` and `local_ai_server` containers.
 - **Observability**: Built-in **Call History** for per-call debugging + optional `/metrics` scraping.
 - **State Management**: SessionStore for centralized, typed call state.

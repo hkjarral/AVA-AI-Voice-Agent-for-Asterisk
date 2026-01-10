@@ -41,7 +41,7 @@ The `ARIClient` implements automatic reconnection with exponential backoff:
 
 ## 3. Health Checks
 
-The `ai-engine` exposes health endpoints on port 15000 (localhost by default).
+The `ai-engine` exposes health endpoints on port 15000 (binds to `0.0.0.0` by default in `docker-compose.yml` so `admin_ui` can reach it). For production hardening, restrict access via firewall/VPN/reverse proxy, or bind it to localhost using `HEALTH_BIND_HOST=127.0.0.1`.
 
 ### 3.1 Endpoints
 
@@ -92,4 +92,4 @@ The `ai-engine` exposes health endpoints on port 15000 (localhost by default).
 - **Reconnection**: Exponential backoff on provider reconnects; fail fast on repeated errors.
 - **Graceful Shutdown**: Ensure per‑call resources are cleaned up when the channel ends.
 
-Note: In the current release, downstream audio uses file‑based playback for robustness. Streaming TTS (full‑duplex) will add jitter buffers, downstream backpressure, and barge‑in handling in the next phase.
+Note: In the current release, downstream audio is **streaming-first** where enabled, with automatic **fallback to file playback** for robustness. Many pipeline deployments still prefer `downstream_mode: file` as the most validated/robust option.

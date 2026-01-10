@@ -2,7 +2,7 @@
 
 This document explains every major option in `config/ai-agent.yaml`, the precedence model for greeting/persona, and the impact of fine‑tuning parameters across AudioSocket/ExternalMedia, VAD, Barge‑In, Streaming, and Providers.
 
-## Configuration Architecture (v4.6)
+## Configuration Architecture (v5.0)
 
 Starting in v4.0, the project added a **modular pipeline architecture** alongside monolithic provider support:
 
@@ -139,14 +139,14 @@ See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for 
   - **Selection**: Use the validated combinations in **[Transport & Playback Mode Compatibility Guide](Transport-Mode-Compatibility.md)**. Transport selection depends on provider mode and playback method (not a single strict rule).
 - downstream_mode: `stream` | `file`
   - **stream**: Real-time streaming (20ms frames). Best UX. Works with full agents.
-  - **file**: File-based playback via bridge. More robust to jitter. Automatically used by pipelines.
+  - **file**: File-based playback via bridge. Most robust for pipelines; streaming-first is supported with automatic fallback to file when enabled.
 
 ## AudioSocket
 
 - audiosocket.host: Bind address for AudioSocket listener.
 - audiosocket.advertise_host: Address Asterisk connects to (optional; defaults to `audiosocket.host`). Use for NAT/VPN.
 - audiosocket.port: TCP port.
-- audiosocket.format: `ulaw` | `slin16` (8 kHz). Use `ulaw` to match telephony trunks directly.
+- audiosocket.format: `slin` (**validated**, 16-bit signed linear @ 8 kHz). Other values may exist in code/config, but only `slin` is currently tested and documented as stable.
 
 ## ExternalMedia
 

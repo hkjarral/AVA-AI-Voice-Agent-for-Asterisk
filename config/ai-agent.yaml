@@ -17,7 +17,7 @@ contexts:
   default:
     greeting: Hello
     profile: telephony_ulaw_8k
-    prompt: You are Asterisk, a Assistant. Be helpful and concise.
+    prompt: You are Asterisk, an AI Assistant. Be helpful and concise.
     provider: local
   demo_deepgram:
     greeting: >-
@@ -29,7 +29,7 @@ contexts:
       configuration.
 
 
-      ABOUT ASTERISK AI VOICE AGENT v4.5.2:
+      ABOUT ASTERISK AI VOICE AGENT v5.0:
 
       - Open-source (MIT), production-ready AI voice agent for Asterisk/FreePBX
 
@@ -42,7 +42,7 @@ contexts:
       - Full Demo Video: youtube.com/watch?v=ZGrr9-Q85xA
 
 
-      6 PRODUCTION CONFIGURATIONS WITH PRICING:
+      5 GOLDEN BASELINES + FULLY LOCAL OPTION:
 
       1. Google Gemini Live - Fastest response under 1 second, multilingual, about 2.5 cents per minute
 
@@ -143,7 +143,7 @@ contexts:
       - If the caller switches languages, switch with them naturally
 
 
-      ABOUT ASTERISK AI VOICE AGENT v4.5.2:
+      ABOUT ASTERISK AI VOICE AGENT v5.0:
 
       - Open-source (MIT), production-ready AI voice agent for Asterisk/FreePBX
 
@@ -156,7 +156,7 @@ contexts:
       - Full Demo Video: youtube.com/watch?v=ZGrr9-Q85xA
 
 
-      6 PRODUCTION CONFIGURATIONS WITH PRICING:
+      5 GOLDEN BASELINES + FULLY LOCAL OPTION:
 
       1. Google Gemini Live - Fastest response under 1 second, multilingual, about 2.5 cents per minute
 
@@ -327,7 +327,7 @@ contexts:
       configuration.
 
 
-      ABOUT ASTERISK AI VOICE AGENT v4.5.2:
+      ABOUT ASTERISK AI VOICE AGENT v5.0:
 
       - Open-source (MIT), production-ready AI voice agent for Asterisk/FreePBX
 
@@ -340,7 +340,7 @@ contexts:
       - Full Demo Video: youtube.com/watch?v=ZGrr9-Q85xA
 
 
-      6 PRODUCTION CONFIGURATIONS WITH PRICING:
+      5 GOLDEN BASELINES + FULLY LOCAL OPTION:
 
       1. Google Gemini Live - Fastest response under 1 second, multilingual, about 2.5 cents per minute
 
@@ -492,7 +492,7 @@ contexts:
       configuration.
 
 
-      ABOUT ASTERISK AI VOICE AGENT v4.5.2:
+      ABOUT ASTERISK AI VOICE AGENT v5.0:
 
       - Open-source (MIT), production-ready AI voice agent for Asterisk/FreePBX
 
@@ -505,7 +505,7 @@ contexts:
       - Full Demo Video: youtube.com/watch?v=ZGrr9-Q85xA
 
 
-      6 PRODUCTION CONFIGURATIONS WITH PRICING:
+      5 GOLDEN BASELINES + FULLY LOCAL OPTION:
 
       1. Google Gemini Live - Fastest response under 1 second, multilingual, about 2.5 cents per minute
 
@@ -599,7 +599,7 @@ contexts:
       premium voice quality.
 
 
-      ABOUT ASTERISK AI VOICE AGENT v4.5.2:
+      ABOUT ASTERISK AI VOICE AGENT v5.0:
 
       - Open-source (MIT), production-ready AI voice agent for Asterisk/FreePBX
 
@@ -612,7 +612,7 @@ contexts:
       - Full Demo Video: youtube.com/watch?v=ZGrr9-Q85xA
 
 
-      6 PRODUCTION CONFIGURATIONS WITH PRICING:
+      5 GOLDEN BASELINES + FULLY LOCAL OPTION:
 
       1. Google Gemini Live - Fastest response under 1 second, multilingual, about 2.5 cents per minute
 
