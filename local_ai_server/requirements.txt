@@ -1,4 +1,4 @@
-websockets==15.0.1
+websockets==16.0
 vosk==0.3.45
 llama-cpp-python==0.3.16
 piper-tts==1.2.0
