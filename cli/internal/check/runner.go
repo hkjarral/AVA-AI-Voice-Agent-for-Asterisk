@@ -228,9 +228,12 @@ func (r *Runner) checkNetworkMode(ci *containerInspect) Item {
 	if mode == "host" {
 		return Item{Name: "Network Mode", Status: StatusPass, Message: "host networking", Details: "NetworkMode=host"}
 	}
+	// FYI: Non-host networking can be valid, but it requires correct port publishing and
+	// an ASTERISK_HOST that is reachable from inside the container. Treat as skip (not warn)
+	// and rely on ARI probe + mount checks for actionable failures.
 	return Item{
 		Name:        "Network Mode",
-		Status:      StatusWarn,
+		Status:      StatusSkip,
 		Message:     "non-host networking detected",
 		Details:     "NetworkMode=" + mode,
 		Remediation: "If using bridge networking, ensure required ports are published and ASTERISK_HOST is reachable from the container.",
@@ -543,17 +546,36 @@ func (r *Runner) checkTransportCompatibility(cfg *configSummary) Item {
 	downstream := strings.ToLower(strings.TrimSpace(cfg.DownstreamMode))
 
 	var warnings []string
+	var fyi []string
 	if pipeline != "" && pipeline != "null" && downstream == "stream" {
-		warnings = append(warnings, "pipelines + downstream_mode=stream is supported but not most validated (prefer downstream_mode=file for GA stability)")
+		fyi = append(fyi, "pipelines + downstream_mode=stream is supported but not most validated (prefer downstream_mode=file for GA stability)")
 	}
 	if strings.TrimSpace(cfg.AudioSocket.Format) != "" && strings.ToLower(strings.TrimSpace(cfg.AudioSocket.Format)) != "slin" {
 		warnings = append(warnings, fmt.Sprintf("audiosocket.format=%q (validated baseline is slin)", cfg.AudioSocket.Format))
 	}
 	if transport != "" && transport != "audiosocket" && transport != "externalmedia" {
-		warnings = append(warnings, fmt.Sprintf("audio_transport=%q is unusual (expected audiosocket or externalmedia)", cfg.AudioTransport))
+		return Item{
+			Name:        "Transport Compatibility",
+			Status:      StatusFail,
+			Message:     "invalid audio_transport",
+			Details:     fmt.Sprintf("audio_transport=%q", cfg.AudioTransport),
+			Remediation: "Set audio_transport to audiosocket or externalmedia (see docs/Transport-Mode-Compatibility.md).",
+		}
 	}
 
+	if len(warnings) == 0 && len(fyi) > 0 {
+		return Item{
+			Name:        "Transport Compatibility",
+			Status:      StatusSkip,
+			Message:     "FYI recommendations",
+			Details:     strings.Join(fyi, "\n"),
+			Remediation: "See docs/Transport-Mode-Compatibility.md",
+		}
+	}
 	if len(warnings) > 0 {
+		if len(fyi) > 0 {
+			warnings = append(warnings, fyi...)
+		}
 		return Item{
 			Name:        "Transport Compatibility",
 			Status:      StatusWarn,
@@ -825,9 +847,10 @@ print(json.dumps({"targets": results}))
 	if allOK {
 		return Item{Name: "Internet/DNS", Status: StatusPass, Message: "reachable (best-effort)", Details: strings.Join(lines, "\n")}
 	}
+	// FYI only: never block or warn on internet reachability.
 	return Item{
 		Name:        "Internet/DNS",
-		Status:      StatusWarn,
+		Status:      StatusSkip,
 		Message:     "some endpoints unreachable (best-effort)",
 		Details:     strings.Join(lines, "\n"),
 		Remediation: "If docker builds fail with DNS errors, see docs/TROUBLESHOOTING_GUIDE.md#0-docker-build-fails-apt-get--dns",
