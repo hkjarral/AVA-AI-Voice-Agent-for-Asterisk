@@ -75,6 +75,12 @@ func (r *Runner) Run() error {
 			return fmt.Errorf("failed to get recent calls: %w", err)
 		}
 		if len(calls) == 0 {
+			if r.jsonOutput {
+				return r.outputJSON(&RCAReport{
+					CallID: r.callID,
+					Error:  "no recent calls found (make a test call and re-run)",
+				})
+			}
 			errorColor.Println("❌ No recent calls found")
 			fmt.Println()
 			fmt.Println("Tips:")
@@ -87,8 +93,10 @@ func (r *Runner) Run() error {
 		// If --last flag or "last", use most recent
 		if r.callID == "last" {
 			r.callID = calls[0].ID
-			infoColor.Printf("Analyzing most recent call: %s\n", r.callID)
-			fmt.Println()
+			if !r.jsonOutput {
+				infoColor.Printf("Analyzing most recent call: %s\n", r.callID)
+				fmt.Println()
+			}
 		} else {
 			// No call ID and no --last flag: interactive selection
 			selectedID, err := SelectCallInteractive(calls)
@@ -96,8 +104,10 @@ func (r *Runner) Run() error {
 				return err
 			}
 			r.callID = selectedID
-			infoColor.Printf("Analyzing call: %s\n", r.callID)
-			fmt.Println()
+			if !r.jsonOutput {
+				infoColor.Printf("Analyzing call: %s\n", r.callID)
+				fmt.Println()
+			}
 		}
 	}
 
@@ -309,7 +319,7 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 	lines := strings.Split(cleanOutput, "\n")
 
 	if r.verbose {
-		fmt.Printf("[DEBUG] Read %d lines from Docker logs\n", len(lines))
+		fmt.Fprintf(os.Stderr, "[DEBUG] Read %d lines from Docker logs\n", len(lines))
 	}
 
 	for _, line := range lines {
@@ -317,7 +327,7 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 		if len(matches) > 1 {
 			audioSocketChannels[matches[1]] = true
 			if r.verbose {
-				fmt.Printf("[DEBUG] Found AudioSocket channel: %s\n", matches[1])
+				fmt.Fprintf(os.Stderr, "[DEBUG] Found AudioSocket channel: %s\n", matches[1])
 			}
 		}
 	}
