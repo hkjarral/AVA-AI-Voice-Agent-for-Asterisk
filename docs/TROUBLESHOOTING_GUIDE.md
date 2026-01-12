@@ -84,10 +84,14 @@ Note: The CLI binary and the Python engine may have different version strings de
 
 ### Available Tools
 
-- **`agent doctor`** - System health check and diagnostics
-- **`agent troubleshoot`** - Post-call analysis and RCA
-- **`agent demo`** - Audio pipeline validation
-- **`agent init`** - Interactive setup wizard
+- **`agent setup`** - Interactive setup wizard (v5.0)
+- **`agent check`** - Standard diagnostics report (v5.0)
+- **`agent rca`** - Post-call root cause analysis (v5.0)
+
+Legacy aliases (v5.0; hidden from `--help`):
+- `agent init` → `agent setup`
+- `agent doctor` → `agent check`
+- `agent troubleshoot` → `agent rca`
 
 ---
 
@@ -96,7 +100,7 @@ Note: The CLI binary and the Python engine may have different version strings de
 ### Step 1: Run Health Check
 
 ```bash
-agent doctor
+agent check
 ```
 
 This performs comprehensive system checks:
@@ -162,7 +166,7 @@ Notes:
 ### Step 2: Analyze Recent Call
 
 ```bash
-agent troubleshoot --last
+agent rca
 ```
 
 Automatically analyzes your most recent call with:

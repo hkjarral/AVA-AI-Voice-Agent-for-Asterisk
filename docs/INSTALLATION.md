@@ -41,7 +41,7 @@ sudo ./preflight.sh --apply-fixes
 If preflight reports warnings or failures, resolve them first, then re-run preflight until it returns clean:
 - Troubleshooting: `docs/TROUBLESHOOTING_GUIDE.md`
 - Re-run: `sudo ./preflight.sh --apply-fixes`
-- Verify: `agent doctor`
+- Verify: `agent check`
 
 ### 3) Upgrade checklist (4.5.3 → 4.6.0)
 
@@ -69,7 +69,7 @@ docker compose up -d --build --force-recreate local_ai_server
 
 ```bash
 curl -sS http://localhost:15000/health
-agent doctor
+agent check
 ```
 
 > ⚠️ **Operator note (production hardening):** `ai_engine` exposes a health/metrics server on port `15000`.
@@ -97,7 +97,7 @@ docker compose up -d ai_engine
 ```
 
 If you hit permission/container/health issues during setup, start with:
-- `agent doctor`
+- `agent check`
 - `sudo ./preflight.sh --apply-fixes`
 - `docs/TROUBLESHOOTING_GUIDE.md`
 

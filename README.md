@@ -107,10 +107,10 @@ For users who prefer the command line or need headless setup.
 ### Option A: Interactive CLI
 ```bash
 ./install.sh
-agent init
+agent setup
 ```
 
-> Note: `agent quickstart` is still available for backward compatibility, but `agent init` is the recommended CLI wizard for v5+.
+> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.0.
 
 ### Option B: Manual Setup
 ```bash
@@ -143,7 +143,7 @@ Notes:
 ### Test Your Agent
 **Health check:**
 ```bash
-agent doctor
+agent check
 ```
 
 **View logs:**

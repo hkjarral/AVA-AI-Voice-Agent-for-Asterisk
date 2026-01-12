@@ -6,15 +6,19 @@ Go-based command-line interface for Asterisk AI Voice Agent operations.
 
 The `agent` CLI provides a comprehensive set of tools for setup, diagnostics, and troubleshooting. All commands are built as a single Go binary for easy distribution.
 
-**Current Status**: ✅ Binary builds available for v4.1+
+**Current Status**: ✅ CLI v5.0 (simplified surface)
 
 ## Available Commands
 
-- **`agent init`** - Interactive setup wizard
-- **`agent doctor`** - System health check and diagnostics
-- **`agent demo`** - Audio pipeline validation
-- **`agent troubleshoot`** - Post-call analysis and RCA
+- **`agent setup`** - Interactive setup wizard
+- **`agent check`** - Standard diagnostics report
+- **`agent rca`** - Post-call root cause analysis
 - **`agent version`** - Show version information
+
+Legacy aliases (hidden from `--help` in v5.0):
+- `agent init` → `agent setup`
+- `agent doctor` → `agent check`
+- `agent troubleshoot` → `agent rca`
 
 ## Installation
 
@@ -104,13 +108,13 @@ make cli-release
 
 ## Command Reference
 
-### `agent init` - Interactive Setup Wizard
+### `agent setup` - Interactive Setup Wizard
 
 Guided setup wizard to configure Asterisk AI Voice Agent from scratch.
 
 **Usage:**
 ```bash
-agent init
+agent setup
 ```
 
 **Steps:**
@@ -150,13 +154,13 @@ Setup complete! 🎉
 
 ---
 
-### `agent doctor` - System Health Check
+### `agent check` - Standard Diagnostics Report
 
 Comprehensive health check and diagnostics tool.
 
 **Usage:**
 ```bash
-agent doctor [flags]
+agent check [--json] [-v] [--no-color]
 ```
 
 **Flags:**
@@ -181,7 +185,7 @@ agent doctor [flags]
 
 **Example:**
 ```bash
-$ agent doctor
+$ agent check
 
 [1/11] Docker Daemon...     ✅ Docker running (v26.1.4)
 [2/11] Containers...        ✅ ai_engine running (healthy)
@@ -197,7 +201,7 @@ Summary: 10 passed, 0 warnings, 0 failures
 
 **Use in Scripts:**
 ```bash
-if ! agent doctor; then
+if ! agent check; then
     echo "Health check failed"
     exit 1
 fi
@@ -240,20 +244,20 @@ Pipeline validated successfully!
 
 ---
 
-### `agent troubleshoot` - Post-Call Analysis
+### `agent rca` - Post-Call Analysis
 
 Analyze call issues with root cause analysis.
 
 **Usage:**
 ```bash
 # Analyze most recent call
-agent troubleshoot
+agent rca
 
 # Analyze specific call
-agent troubleshoot <call_id>
+agent rca --call <call_id>
 
 # With verbose output
-agent troubleshoot --verbose <call_id>
+agent rca --call <call_id> --verbose
 ```
 
 **Analysis Includes:**
@@ -266,7 +270,7 @@ agent troubleshoot --verbose <call_id>
 
 **Example:**
 ```bash
-$ agent troubleshoot 1763582071.6214
+$ agent rca --call 1763582071.6214
 
 Analyzing call 1763582071.6214...
 
@@ -381,30 +385,21 @@ Go: 1.21.0
 ### First-Time Setup
 ```bash
 # 1. Run interactive setup
-agent init
+agent setup
 
-# 2. Validate installation
-agent doctor
+# 2. Run standard diagnostics report
+agent check
 
-# 3. Test audio pipeline
-agent demo
-
-# 4. Generate dialplan snippet
-agent dialplan
-
-# 5. Make a test call
+# 3. Make a test call
 ```
 
 ### Troubleshooting Issues
 ```bash
-# 1. Run health check
-agent doctor
+# 1. Run standard diagnostics report (attach output to issues)
+agent check
 
-# 2. Analyze recent call
-agent troubleshoot
-
-# 3. Validate configuration
-agent config validate
+# 2. Analyze most recent call
+agent rca
 ```
 
 ### CI/CD Integration
@@ -412,8 +407,7 @@ agent config validate
 #!/bin/bash
 # Pre-deployment validation
 
-agent config validate --strict || exit 1
-agent doctor || exit 1
+agent check --json || exit 1
 
 echo "✅ Validation passed - deploying..."
 ```
