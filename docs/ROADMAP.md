@@ -173,7 +173,7 @@ Each milestone includes scope, implementation details, and verification criteria
 
 - **Goal**: Automated post-call RCA with AI-powered diagnosis matching manual analysis quality. ROADMAPv4 P2.1 deliverable.
 - **What We Shipped**:
-  - `agent troubleshoot` CLI command for instant post-call analysis.
+  - `agent rca` CLI command for instant post-call analysis (CLI v5.0; legacy alias: `agent troubleshoot`).
   - RCA-level metrics extraction from Docker logs (provider bytes, drift, underflows, VAD, transport alignment).
   - Golden baseline comparison (OpenAI Realtime, Deepgram, streaming performance).
   - Format/sampling alignment detection (config vs runtime validation; catches AudioSocket format mismatches).
@@ -183,14 +183,14 @@ Each milestone includes scope, implementation details, and verification criteria
 - **Usage Examples**:
 
   ```bash
-  ./bin/agent troubleshoot --last              # Analyze most recent call
-  ./bin/agent troubleshoot --call 1761523231.2199
-  ./bin/agent troubleshoot --last --provider anthropic
-  ./bin/agent troubleshoot --last --no-llm     # Skip AI diagnosis
+  agent rca                                    # Analyze most recent call
+  agent rca --call 1761523231.2199
+  agent rca --json                             # JSON-only output
+  agent troubleshoot --last --no-llm            # Legacy (hidden) advanced flag
   ```
 
 - **Verification (2025-10-26)**:
-  - Call 2199 alignment test: Manual RCA "GOOD - SNR 67.3 dB" matched `agent troubleshoot` "EXCELLENT - 100/100" ✅
+  - Call 2199 alignment test: Manual RCA "GOOD - SNR 67.3 dB" matched `agent rca` "EXCELLENT - 100/100" ✅
   - Format detection validated; catches slin vs ulaw mismatches, frame size alignment errors.
 - **Acceptance**:
   - Accurate call detection (filters AudioSocket infrastructure channels).
@@ -200,19 +200,18 @@ Each milestone includes scope, implementation details, and verification criteria
 
 - **Goal**: Complete operator workflow from zero to production; minimize time to first call. ROADMAPv4 P2.2 milestone.
 - **What We Shipped**:
-  - `agent init` — Interactive setup wizard with provider selection, credential management, template support (local|cloud|hybrid|openai-agent|deepgram-agent).
-  - `agent doctor` — 11-point environment validation (Docker, ARI, AudioSocket, config, provider keys, logs, network, media directory).
-  - `agent demo` — Audio pipeline validation without making real calls; validates before production.
-  - `agent troubleshoot` — Post-call RCA (from Milestone 11).
+  - `agent setup` — Interactive setup wizard (CLI v5.0; legacy aliases: `agent init`, `agent quickstart`).
+  - `agent check` — Standard diagnostics report (CLI v5.0; legacy alias: `agent doctor`).
+  - `agent rca` — Post-call RCA (CLI v5.0; legacy alias: `agent troubleshoot`).
+  - Hidden advanced commands retained for compatibility: `agent demo`, `agent dialplan`, `agent config validate`.
   - Health checks with exit codes for CI/CD integration; JSON output for programmatic use.
 - **Verification (2025-10-26)**:
-  - `agent doctor` output: `✅ PASS: 9/11 checks — System is healthy and ready for calls!`
+  - `agent check` output: `PASS ... Overall: PASS (system looks healthy)`
   - All tools validated on production server; work without user configuration changes.
 - **Acceptance**:
-  - `agent init` completes setup in < 5 minutes.
-  - `agent doctor` validates environment before first call; clear error messages with remediation.
-  - `agent demo` tests pipeline without real calls.
-- **Impact**:
+  - `agent setup` completes setup in < 5 minutes.
+  - `agent check` validates environment before first call; clear error messages with remediation.
+  - **Impact**:
   - New operator to first call: **<30 minutes** (vs hours previously).
   - Self-service debugging without developer intervention.
 
@@ -231,7 +230,7 @@ Each milestone includes scope, implementation details, and verification criteria
   - Safer production defaults (diagnostics opt-in only).
 - **Verification (2025-10-26)**:
   - Migration script tested on production config; container rebuilt successfully.
-  - Health checks pass (`agent doctor: 9/11 PASS`); no deprecation warnings with env vars.
+  - Health checks pass (`agent check: PASS`); no deprecation warnings with env vars.
 - **Acceptance**:
   - Deprecated knobs removed from YAML schema; warnings logged if env var override set.
   - Config version field validated on load; migration instructions clear.
@@ -536,7 +535,7 @@ Keep this roadmap updated after each milestone to help any collaborator—or fut
 
 **Reality Check (Current State)**:
 
-- **Primary operator workflow**: Admin UI → Call History + Troubleshoot; CLI parity via `agent doctor`, `agent demo`, `agent troubleshoot`.
+- **Primary operator workflow**: Admin UI → Call History + Troubleshoot; CLI parity via `agent check` + `agent rca` (legacy aliases: `agent doctor`, `agent troubleshoot`; `agent demo` hidden).
 - **Observability stance**: Call History–first; `/metrics` is supported but must remain low-cardinality (BYO dashboards; no repo-shipped Prometheus/Grafana stack).
 - **Core runtime**: Asterisk 18+ ARI + Stasis app (`asterisk-ai-voice-agent`), ExternalMedia RTP default; AudioSocket supported; per-call overrides via `AI_PROVIDER` / `AI_AUDIO_PROFILE` / `AI_CONTEXT`.
 - **Providers/pipelines in GA**: full-agent providers (`deepgram`, `openai_realtime`, `google_live`, `elevenlabs_agent`) + modular pipelines (including `local_hybrid`; adapters include Google STT/TTS and ElevenLabs TTS for pipelines).
@@ -688,8 +687,8 @@ Keep this roadmap updated after each milestone to help any collaborator—or fut
 - Transport stabilization (fixed AudioSocket format override bug)
 - Audio gating & echo prevention (VAD-based, zero self-interruption)
 - Transport orchestrator & audio profiles (provider-agnostic architecture)
-- Post-call diagnostics (`agent troubleshoot` with AI-powered RCA)
-- Setup & validation tools (`agent init/doctor/demo`)
+- Post-call diagnostics (`agent rca` with AI-powered RCA; legacy alias: `agent troubleshoot`)
+- Setup & validation tools (`agent setup/check`; advanced hidden: `agent demo`; legacy aliases: `agent init/doctor`)
 - Config cleanup & migration (49% smaller configs)
 
 **3 Golden Baselines Validated**:

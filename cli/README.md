@@ -164,8 +164,7 @@ agent check [--json] [-v] [--no-color]
 ```
 
 **Flags:**
-- `--fix` - Attempt to auto-fix issues (future)
-- `--json` - Output as JSON
+- `--json` - Output as JSON (JSON only)
 - `--verbose` - Show detailed check output
 
 **Exit Codes:**
@@ -173,15 +172,12 @@ agent check [--json] [-v] [--no-color]
 - `1` - Warnings detected (non-critical) ⚠️
 - `2` - Failures detected (critical) ❌
 
-**Checks Performed:**
-- Docker daemon and containers running
-- Asterisk ARI connectivity
-- AudioSocket/RTP ports available
-- Configuration file validity
-- API keys present
-- Provider API connectivity
-- Recent call history
-- Disk space availability
+**What it includes (high-level):**
+- Docker + Compose environment details
+- `ai_engine` container status, mounts, and network mode
+- Container-side ARI probes + app registration check
+- Transport compatibility + advertise host alignment
+- Best-effort internet/DNS reachability (FYI / skip on failure)
 
 **Example:**
 ```bash
@@ -209,44 +205,9 @@ fi
 
 ---
 
-### `agent demo` - Audio Pipeline Validation
-
-Tests audio pipeline without making real calls.
-
-**Usage:**
-```bash
-agent demo [flags]
-```
-
-**Flags:**
-- `--provider <name>` - Test specific provider
-- `--duration <seconds>` - Test duration (default: 10)
-- `--verbose` - Show detailed test output
-
-**What It Tests:**
-1. Audio capture and VAD
-2. Provider STT/LLM/TTS integration
-3. Audio quality and latency
-4. Playback path
-
-**Example:**
-```bash
-$ agent demo
-
-Testing Audio Pipeline (OpenAI Realtime)
-✓ Audio capture initialized
-✓ Provider connection established
-✓ Test audio processed (latency: 245ms)
-✓ Playback successful
-
-Pipeline validated successfully!
-```
-
----
-
 ### `agent rca` - Post-Call Analysis
 
-Analyze call issues with root cause analysis.
+Analyze the most recent call (or a specific call ID) and print an RCA report.
 
 **Usage:**
 ```bash
@@ -256,112 +217,27 @@ agent rca
 # Analyze specific call
 agent rca --call <call_id>
 
-# With verbose output
-agent rca --call <call_id> --verbose
+# JSON-only output
+agent rca --json
+
+# Verbose output
+agent rca -v
 ```
 
-**Analysis Includes:**
-- Call duration and timeline
-- Audio transport issues
-- Provider errors and latency
-- Tool execution problems
-- Configuration mismatches
-- Suggested fixes
-
-**Example:**
+Advanced (legacy alias; hidden from `agent --help`):
 ```bash
-$ agent rca --call 1763582071.6214
-
-Analyzing call 1763582071.6214...
-
-Call Summary:
-  Duration: 43.2s
-  Provider: local_hybrid
-  Transport: ExternalMedia RTP
-  Tools Used: transfer
-
-Issues Found:
-  ✅ No critical issues
-  ⚠️  High latency detected (3.2s avg)
-
-Recommendations:
-  - Consider OpenAI Realtime for lower latency
-  - Check network connectivity to cloud LLM
-
-Detailed logs: /var/log/ai_engine/call-1763582071.6214.log
+agent troubleshoot --list
+agent troubleshoot --last --symptom <no-audio|garbled|echo|interruption|one-way>
 ```
 
 ---
 
-### `agent dialplan` - Generate Dialplan Snippets
+## Hidden (Legacy) Commands
 
-Generate Asterisk dialplan configuration for a provider.
+CLI v5.0 intentionally keeps a small visible surface (`agent setup/check/rca/version`). For backwards compatibility and advanced workflows, these commands still exist but are hidden from `agent --help`:
 
-**Usage:**
-```bash
-agent dialplan [--provider <name>]
-```
-
-**Flags:**
-- `--provider` - Provider name (openai_realtime, deepgram, local_hybrid, google_live)
-
-**Example:**
-```bash
-$ agent dialplan --provider openai_realtime
-
-Add this snippet to: /etc/asterisk/extensions_custom.conf
-
-[from-ai-agent-openai]
-exten => s,1,NoOp(AI Agent - OpenAI Realtime)
- same => n,Set(AI_PROVIDER=openai_realtime)
- same => n,Stasis(asterisk-ai-voice-agent)
- same => n,Hangup()
-
-FreePBX Setup:
-  1. Admin → Config Edit → extensions_custom.conf
-  2. Paste snippet above
-  3. Save and Apply Config
-  4. Create Custom Destination: from-ai-agent-openai,s,1
-```
-
----
-
-### `agent config validate` - Configuration Validation
-
-Validate `config/ai-agent.yaml` for errors.
-
-**Usage:**
-```bash
-agent config validate [--file <path>] [--fix] [--strict]
-```
-
-**Flags:**
-- `--file` - Path to config file (default: config/ai-agent.yaml)
-- `--fix` - Attempt to auto-fix issues
-- `--strict` - Treat warnings as errors
-
-**Checks:**
-- YAML syntax
-- Required fields present
-- Provider configurations valid
-- Sample rate alignment
-- Transport compatibility
-
-**Example:**
-```bash
-$ agent config validate
-
-Validating config/ai-agent.yaml...
-✓ YAML syntax valid
-✓ Required fields present
-✓ Provider 'openai_realtime' enabled
-✓ Sample rates aligned (24000 Hz)
-
-Summary: 4 passed, 0 warnings, 0 errors
-✅ Configuration valid
-```
-
----
+- Compatibility aliases: `agent init`, `agent doctor`, `agent troubleshoot`
+- Advanced tools: `agent demo`, `agent dialplan`, `agent config validate`
 
 ### `agent version` - Show Version
 
@@ -373,9 +249,9 @@ agent version
 **Output:**
 ```
 Asterisk AI Voice Agent CLI
-Version: 4.1.0
-Build: 2025-11-19
-Go: 1.21.0
+Version: vX.Y.Z
+Built: YYYY-MM-DDTHH:MM:SSZ
+Repository: https://github.com/hkjarral/Asterisk-AI-Voice-Agent
 ```
 
 ---

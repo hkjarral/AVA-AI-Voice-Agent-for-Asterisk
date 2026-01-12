@@ -1,5 +1,7 @@
 # Milestone 14 — Monitoring, Feedback & Guided Setup (Call History–First)
 
+Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, and `agent rca`. Legacy command names used below (`agent troubleshoot`, etc.) remain available as hidden aliases for compatibility.
+
 This milestone is now implemented via **Call History** + **Troubleshoot** (Admin UI + `agent troubleshoot`), with Prometheus kept **optional** and **low-cardinality only**.
 
 ---

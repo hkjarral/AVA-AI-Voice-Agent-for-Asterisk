@@ -1672,7 +1672,7 @@ print_summary() {
         echo ""
         echo "After fixing failures:"
         echo "  1. Re-run: ./preflight.sh"
-        echo "  2. Then run: agent doctor"
+        echo "  2. Then run: agent check"
     fi
 }
 

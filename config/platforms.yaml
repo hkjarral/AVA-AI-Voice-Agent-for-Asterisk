@@ -3,7 +3,7 @@
 #
 # This file defines platform-specific commands and paths used by:
 # - preflight.sh (bash script)
-# - CLI agent doctor command (Go)
+# - CLI agent check command (Go)
 # - Admin UI backend (Python)
 #
 # To add a new distro: copy an existing section and modify

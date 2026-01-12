@@ -353,7 +353,7 @@ allow_origins=[
 
 ## 🔄 Upgrading from CLI Setup
 
-If you've been using `install.sh` and `agent quickstart`, the Admin UI works alongside your existing setup.
+If you've been using `install.sh` and the Agent CLI, the Admin UI works alongside your existing setup.
 
 ### Migration Steps
 
@@ -379,11 +379,11 @@ If you've been using `install.sh` and `agent quickstart`, the Admin UI works alo
 
 ### CLI Tools Still Work
 
-The CLI tools (`agent` command) continue to work:
+The recommended v5.0 CLI commands are:
 ```bash
-agent config show
-agent config validate
-agent troubleshoot
+agent setup
+agent check
+agent rca
 ```
 
 Both CLI and UI read/write the same files:

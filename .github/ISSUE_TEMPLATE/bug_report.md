@@ -51,16 +51,22 @@ agent version
 
 Then attach diagnostics:
 ```bash
-agent check --json
+agent check
 ```
 
 If this is a call-specific issue, also attach:
 ```bash
 # Most recent call
-agent rca --json
+agent rca
 
 # Or a specific call_id (preferred)
-agent rca --call <call_id> --json
+agent rca --call <call_id>
+```
+
+Optional (for automation / parsing):
+```bash
+agent check --json
+agent rca --json
 ```
 
 ## Configuration

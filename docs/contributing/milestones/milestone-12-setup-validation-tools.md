@@ -1,5 +1,7 @@
 # Milestone 12 — Setup & Validation Tools
 
+Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, and `agent rca`. Legacy command names used below (`agent init`, `agent doctor`, etc.) remain available as hidden aliases for compatibility.
+
 ## Objective
 
 Complete operator workflow from zero to production; minimize time to first successful call. Provide comprehensive tooling for setup (`agent init`), validation (`agent doctor`), and testing (`agent demo`) without requiring deep technical expertise.

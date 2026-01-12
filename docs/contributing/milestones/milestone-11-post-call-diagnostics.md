@@ -1,5 +1,7 @@
 # Milestone 11 — Post-Call Diagnostics & Troubleshooting
 
+Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, and `agent rca`. Legacy command names used below (`agent troubleshoot`, etc.) remain available as hidden aliases for compatibility.
+
 ## Objective
 
 Automated post-call RCA (root cause analysis) with AI-powered diagnosis matching manual analysis quality. Provide operators with instant, actionable insights without deep technical expertise required.

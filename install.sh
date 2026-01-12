@@ -1585,7 +1585,7 @@ print_final_summary() {
     echo ""
     print_info "🔍 Next steps:"
     print_info "  1. Access Admin UI: http://<server-ip>:3003"
-    print_info "  2. Configure dialplan (see snippet above or run: agent dialplan)"
+    print_info "  2. Configure dialplan (see snippet above or run: agent setup)"
     print_info "  3. Make a test call to verify everything works"
     print_info "  4. Check logs: docker compose -p asterisk-ai-voice-agent logs -f ai_engine"
     print_info "  5. Switch pipelines: Edit config/ai-agent.yaml (change default_provider)"

@@ -64,7 +64,7 @@ docker compose up -d
 
 - Docker Compose deployment on Ubuntu/Debian
 - Manual configuration via YAML files
-- CLI tools (agent init, agent doctor, agent troubleshoot)
+- CLI tools (v5.0: `agent setup`, `agent check`, `agent rca`; legacy aliases: `agent init/doctor/troubleshoot`)
 - Admin UI for configuration (limited)
 - AudioSocket and ExternalMedia transports
 
@@ -956,11 +956,15 @@ action:
 ### CLI Commands (Advanced Users)
 
 ```bash
-agent doctor             # Run all checks, show summary
-agent doctor --json      # Output for scripting
-agent doctor --fix       # Apply fixes (requires sudo)
-agent platform           # Show detected platform info
-agent platform --json    # Machine-readable output
+agent check              # Run all checks, show summary
+agent check --json       # Output for scripting (JSON only)
+
+# Apply fixes (host-side)
+sudo ./preflight.sh --apply-fixes
+
+# (Planned) platform detection output
+# agent platform
+# agent platform --json
 ```
 
 ---
@@ -1013,7 +1017,7 @@ agent platform --json    # Machine-readable output
 - [ ] Include: docker install, start, compose, firewall, SELinux
 - [ ] Fedora-specific rootless defaults
 - [ ] Update `preflight.sh` to read from YAML (optional, can remain bash)
-- [ ] Update CLI `agent doctor` to use same data
+- [ ] Update CLI `agent check` to use same data
 - [ ] Document how to add new distro support
 
 **Success Criteria:**
