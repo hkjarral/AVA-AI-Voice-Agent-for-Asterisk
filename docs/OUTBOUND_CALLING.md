@@ -67,7 +67,7 @@ Use a local extension (e.g., `2765`) and an external number (E.164) to validate:
   - `asterisk -rvvvvv`
 - First-line setup fixes:
   - `sudo ./preflight.sh --apply-fixes`
-  - `agent doctor`
+  - `agent check`
   - `docs/TROUBLESHOOTING_GUIDE.md`
 
 ## Reference Implementation Notes

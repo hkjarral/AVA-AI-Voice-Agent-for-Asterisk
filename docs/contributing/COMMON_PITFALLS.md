@@ -343,7 +343,7 @@ vad:
 2. **Verify tool registration** in logs
 3. **Check provider-specific requirements** (naming, event types)
 4. **Test with known-good config** to isolate issue
-5. **Use `agent troubleshoot --last`** for detailed analysis
+5. **Use `agent rca`** for detailed analysis
 
 ### State Management Rules
 

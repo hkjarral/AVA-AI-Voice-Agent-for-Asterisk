@@ -125,7 +125,7 @@ agent setup
 
 **Example:**
 ```bash
-$ agent init
+$ agent setup
 
 Step 1/4: Asterisk ARI Connection
 Enter Asterisk host [127.0.0.1]: 
@@ -459,14 +459,9 @@ go test ./...
 go test -cover ./...
 ```
 
-## Planned Features (v4.1)
+## Roadmap
 
-- [ ] Automated binary builds (Makefile target)
-- [ ] `agent config validate` - Pre-flight config validation
-- [ ] `agent test` - Automated test call execution
-- [ ] Windows support
-- [ ] Shell completion (bash, zsh, fish)
-- [ ] Package managers (apt, yum, brew)
+See `docs/ROADMAP.md`.
 
 ## Exit Codes
 
@@ -480,7 +475,7 @@ Use in scripts:
 
 ```bash
 #!/bin/bash
-if ! ./bin/agent doctor; then
+if ! ./bin/agent check; then
     echo "Health check failed - see output above"
     exit 1
 fi

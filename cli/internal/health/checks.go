@@ -288,14 +288,14 @@ func (c *Checker) checkConfiguration() Check {
 		}
 	}
 	
-	if configPath == "" {
-		return Check{
-			Name:        "Configuration",
-			Status:      StatusFail,
-			Message:     "config/ai-agent.yaml not found",
-			Remediation: "Run: agent init",
+		if configPath == "" {
+			return Check{
+				Name:        "Configuration",
+				Status:      StatusFail,
+				Message:     "config/ai-agent.yaml not found",
+				Remediation: "Run: agent setup",
+			}
 		}
-	}
 	
 	// Check if file is readable
 	raw, err := os.ReadFile(configPath)
@@ -313,15 +313,15 @@ func (c *Checker) checkConfiguration() Check {
 
 	// Parse YAML to catch obvious issues early.
 	var root map[string]interface{}
-	if err := yaml.Unmarshal(raw, &root); err != nil {
-		return Check{
-			Name:        "Configuration",
-			Status:      StatusFail,
-			Message:     "Invalid YAML in config/ai-agent.yaml",
-			Details:     err.Error(),
-			Remediation: "Fix YAML syntax (see docs/Configuration-Reference.md) and re-run: agent doctor",
+		if err := yaml.Unmarshal(raw, &root); err != nil {
+			return Check{
+				Name:        "Configuration",
+				Status:      StatusFail,
+				Message:     "Invalid YAML in config/ai-agent.yaml",
+				Details:     err.Error(),
+				Remediation: "Fix YAML syntax (see docs/Configuration-Reference.md) and re-run: agent check",
+			}
 		}
-	}
 
 	// Minimal schema checks. Credentials are injected from .env at runtime, so we warn
 	// when blocks are missing rather than failing hard.
@@ -622,15 +622,15 @@ func (c *Checker) checkLogs() Check {
 	errorCount := strings.Count(strings.ToUpper(logs), "ERROR")
 	warnCount := strings.Count(strings.ToUpper(logs), "WARN")
 	
-	if errorCount > 10 {
-		return Check{
-				Name:    "Logs",
-				Status:  StatusFail,
-				Message: fmt.Sprintf("%d errors in last 100 lines", errorCount),
-				Details: "Check logs: docker logs ai_engine",
-				Remediation: "Run: agent troubleshoot",
+		if errorCount > 10 {
+			return Check{
+					Name:    "Logs",
+					Status:  StatusFail,
+					Message: fmt.Sprintf("%d errors in last 100 lines", errorCount),
+					Details: "Check logs: docker logs ai_engine",
+					Remediation: "Run: agent rca",
+				}
 			}
-		}
 	
 	if errorCount > 0 || warnCount > 5 {
 		return Check{

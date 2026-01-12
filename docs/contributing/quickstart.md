@@ -123,7 +123,7 @@ At minimum, you will add a context like:
 
 ```asterisk
 [from-ai-agent]
-exten => s,1,NoOp(Asterisk AI Voice Agent v4.x)
+exten => s,1,NoOp(Asterisk AI Voice Agent v5.0)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
@@ -143,16 +143,13 @@ Typical flow:
 agent version
 
 # Run interactive setup (configures ARI, provider, transport)
-agent init
+agent setup
 
 # Run system health checks
-agent doctor
-
-# Optionally run a demo without real calls
-agent demo
+agent check
 ```
 
-Use `agent init` to plug in your Asterisk ARI host/port/user/pass and provider settings if the installer didn’t already capture them.
+Use `agent setup` to plug in your Asterisk ARI host/port/user/pass and provider settings if the installer didn’t already capture them.
 
 ---
 
@@ -226,7 +223,7 @@ For telephony-facing changes (providers, pipelines, tools):
 - Use:
 
   ```bash
-  agent troubleshoot --last
+  agent rca
   ```
 
   and, if needed:
@@ -257,7 +254,7 @@ Before you open a PR:
   - Reference any Linear issue IDs (e.g., `AAVA-63`) if applicable.
   - Include a brief test summary:
     - Calls placed (IDs).
-    - `agent doctor` / `agent troubleshoot` results.
+    - `agent check` / `agent rca` results.
 
 For branching and PR details, also see `CONTRIBUTING.md`.
 

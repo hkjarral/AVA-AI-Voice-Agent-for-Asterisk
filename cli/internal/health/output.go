@@ -98,15 +98,15 @@ func (r *HealthResult) OutputText(w io.Writer) {
 	
 	fmt.Fprintln(w)
 	
-	// Next steps
-	if r.CriticalCount > 0 || r.WarnCount > 0 {
-		fmt.Fprintln(w, gray("Next steps:"))
-		if r.CriticalCount > 0 {
-			fmt.Fprintln(w, gray("  • Fix critical issues before making calls"))
-			fmt.Fprintln(w, gray("  • Run: agent doctor --fix (to attempt auto-fix)"))
+		// Next steps
+		if r.CriticalCount > 0 || r.WarnCount > 0 {
+			fmt.Fprintln(w, gray("Next steps:"))
+			if r.CriticalCount > 0 {
+				fmt.Fprintln(w, gray("  • Fix critical issues before making calls"))
+				fmt.Fprintln(w, gray("  • Run: sudo ./preflight.sh --apply-fixes (to attempt auto-fix)"))
+			}
+			fmt.Fprintln(w, gray("  • Re-run: agent check"))
 		}
-		fmt.Fprintln(w, gray("  • Run: agent demo (to test audio pipeline)"))
-	}
 	
 	fmt.Fprintln(w)
 }

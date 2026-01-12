@@ -7,8 +7,8 @@ For operator and developer debugging workflows, start with:
 
 ## Useful Tools
 
-- `agent doctor`
-- `agent troubleshoot --last`
+- `agent check`
+- `agent rca`
 
 ## Logs & Data
 

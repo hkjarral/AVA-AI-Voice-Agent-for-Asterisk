@@ -294,7 +294,7 @@ func (r *Runner) listCalls() error {
 		fmt.Println()
 	}
 	fmt.Println()
-	fmt.Println("Usage: agent troubleshoot --call <id>")
+	fmt.Println("Usage: agent rca --call <id>")
 	return nil
 }
 
@@ -590,7 +590,7 @@ func (r *Runner) displayRecommendations(analysis *Analysis) {
 	}
 
 	if len(analysis.AudioIssues) > 0 {
-		fmt.Println("  • Run: agent doctor (for detailed diagnostics)")
+		fmt.Println("  • Run: agent check (for detailed diagnostics)")
 		fmt.Println("  • Check jitter_buffer_ms settings")
 		fmt.Println("  • Verify network stability")
 	}

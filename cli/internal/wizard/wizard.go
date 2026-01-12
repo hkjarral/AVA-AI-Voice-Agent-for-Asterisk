@@ -383,9 +383,9 @@ func (w *Wizard) stepReviewAndApply() error {
 	fmt.Println("═══════════════════════════════════════════")
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  • agent doctor     (verify health)")
-	fmt.Println("  • agent demo       (test pipeline)")
+	fmt.Println("  • agent check      (verify health)")
 	fmt.Println("  • Make a test call")
+	fmt.Println("  • agent rca        (analyze the most recent call)")
 	fmt.Println()
 	
 	return nil

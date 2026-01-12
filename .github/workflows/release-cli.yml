@@ -120,10 +120,10 @@ jobs:
             
             ### Tools Included
             
-            - `agent doctor` - System health check
-            - `agent troubleshoot` - Post-call analysis and RCA
-            - `agent demo` - Audio pipeline validation
-            - `agent init` - Interactive setup wizard
+            - `agent setup` - Interactive setup wizard
+            - `agent check` - Standard diagnostics report
+            - `agent rca` - Post-call root cause analysis
+            - `agent version` - Version information
             
             See [TROUBLESHOOTING_GUIDE.md](https://github.com/${{ github.repository }}/blob/main/docs/TROUBLESHOOTING_GUIDE.md) for complete documentation.
           draft: false

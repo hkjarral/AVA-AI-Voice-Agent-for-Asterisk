@@ -50,7 +50,7 @@ Tier 3 environments are welcome, but we optimize for failures that are **explain
 When reporting “works on X”, include:
 
 - `./preflight.sh` output (and `./preflight.sh --apply-fixes` if used)
-- `agent doctor --json` output
+- `agent check --json` output
 - One confirmed baseline call flow:
   - Provider: Deepgram/OpenAI Realtime/Google Live/ElevenLabs/local
   - Transport: AudioSocket or ExternalMedia RTP

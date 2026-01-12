@@ -106,7 +106,7 @@ func (r *Runner) Run() error {
 	fmt.Println()
 	
 	fmt.Println("Next steps:")
-	fmt.Println("  • agent doctor     (detailed health check)")
+	fmt.Println("  • agent check      (standard diagnostics report)")
 	fmt.Println("  • Make a test call")
 	fmt.Println()
 	

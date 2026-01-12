@@ -22,9 +22,8 @@ List the tests and checks you performed:
 
 - [ ] Unit tests (specify commands)
 - [ ] Integration / manual tests
-- [ ] `agent doctor`
-- [ ] `agent demo`
-- [ ] `agent troubleshoot --last`
+- [ ] `agent check`
+- [ ] `agent rca`
 - [ ] `./scripts/rca_collect.sh` (if applicable)
 
 For telephony changes, include:
@@ -47,4 +46,3 @@ Which docs were updated (if any)?
 - [ ] `docs/DEVELOPER_ONBOARDING.md` / other onboarding content
 
 If no docs were needed, explain why.
-

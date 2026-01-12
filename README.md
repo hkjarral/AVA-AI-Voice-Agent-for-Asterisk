@@ -391,13 +391,10 @@ curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/mai
 
 **Commands:**
 ```bash
-agent init               # Interactive setup wizard (recommended)
-# agent quickstart        # Backward-compatible legacy wizard
-agent dialplan            # Generate dialplan snippets
-agent config validate     # Validate configuration
-agent doctor --fix        # System health check
-agent troubleshoot        # Analyze specific call
-agent demo                # Demo features
+agent setup               # Interactive setup wizard (recommended)
+agent check               # Standard diagnostics report (share this output when asking for help)
+agent rca --call <call_id> # Post-call RCA (use Call History to find call_id)
+agent version             # Version information
 ```
 
 ---

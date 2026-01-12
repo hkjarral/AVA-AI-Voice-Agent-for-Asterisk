@@ -22,7 +22,7 @@ assignees: ''
 <!-- What actually happened -->
 
 ## Environment
-- **Version**: <!-- e.g., v4.0.1 -->
+- **Version**: <!-- e.g., v5.0.0 -->
 - **OS**: <!-- e.g., Ubuntu 22.04 -->
 - **Docker Version**: <!-- e.g., 24.0.7 -->
 - **Asterisk Version**: <!-- e.g., 18.20.0 -->
@@ -41,7 +41,26 @@ These make issues actionable and help us update the Supported Platforms matrix:
 
 ```bash
 ./preflight.sh
-agent doctor --json
+```
+
+If the `agent` CLI is not installed:
+```bash
+curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/main/scripts/install-cli.sh | bash
+agent version
+```
+
+Then attach diagnostics:
+```bash
+agent check --json
+```
+
+If this is a call-specific issue, also attach:
+```bash
+# Most recent call
+agent rca --json
+
+# Or a specific call_id (preferred)
+agent rca --call <call_id> --json
 ```
 
 ## Configuration

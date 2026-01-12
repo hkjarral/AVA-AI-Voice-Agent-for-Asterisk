@@ -246,7 +246,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	fmt.Println("  2. Start Docker containers:")
 	fmt.Println("     docker compose up -d")
 	fmt.Println("  3. Check health:")
-	fmt.Println("     agent doctor")
+	fmt.Println("     agent check")
 	fmt.Println("  4. Make a test call!")
 	fmt.Println("")
 	fmt.Println("For detailed setup instructions, see:")
