@@ -49,6 +49,8 @@ curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/mai
 agent version
 ```
 
+Note for forks: replace `hkjarral/Asterisk-AI-Voice-Agent` in the URL above with your fork owner/repo.
+
 Then attach diagnostics:
 ```bash
 agent check

@@ -25,6 +25,10 @@
 
 ## Command Surface (v5.0)
 
+### `agent version`
+
+**Purpose**: show version/build info (useful in support requests and issue templates).
+
 ### 1) `agent setup`
 
 **Purpose**: interactive setup and validation entrypoint.

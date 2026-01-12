@@ -76,10 +76,11 @@ func (r *Runner) Run() error {
 		}
 		if len(calls) == 0 {
 			if r.jsonOutput {
-				return r.outputJSON(&RCAReport{
+				_ = r.outputJSON(&RCAReport{
 					CallID: r.callID,
 					Error:  "no recent calls found (make a test call and re-run)",
 				})
+				return fmt.Errorf("no recent calls found")
 			}
 			errorColor.Println("❌ No recent calls found")
 			fmt.Println()
@@ -119,10 +120,11 @@ func (r *Runner) Run() error {
 
 	if r.collectOnly {
 		if r.jsonOutput {
-			return r.outputJSON(&RCAReport{
+			_ = r.outputJSON(&RCAReport{
 				CallID: r.callID,
 				Error:  "collect-only mode does not produce a report in v5.0",
 			})
+			return fmt.Errorf("collect-only mode does not produce a report in v5.0")
 		}
 		fmt.Println("Data collection complete.")
 		return nil
@@ -144,7 +146,7 @@ func (r *Runner) Run() error {
 	if baselineName != "" {
 		comparison := CompareToBaseline(metrics, baselineName)
 		analysis.BaselineComparison = comparison
-		if r.verbose && comparison != nil {
+		if r.verbose && !r.jsonOutput && comparison != nil {
 			infoColor.Printf("  Using baseline: %s\n", comparison.BaselineName)
 		}
 	}
@@ -349,7 +351,7 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 				// Skip AudioSocket channels
 				if audioSocketChannels[callID] {
 					if r.verbose {
-						fmt.Printf("[DEBUG] Skipping AudioSocket channel: %s\n", callID)
+						fmt.Fprintf(os.Stderr, "[DEBUG] Skipping AudioSocket channel: %s\n", callID)
 					}
 					continue
 				}
@@ -359,7 +361,7 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 						Timestamp: time.Now(), // Will be refined from log timestamp
 					}
 					if r.verbose {
-						fmt.Printf("[DEBUG] Found call ID: %s\n", callID)
+						fmt.Fprintf(os.Stderr, "[DEBUG] Found call ID: %s\n", callID)
 					}
 				}
 				break // Found a match, no need to try other patterns
@@ -368,7 +370,7 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 	}
 
 	if r.verbose {
-		fmt.Printf("[DEBUG] Total pattern matches: %d, Unique calls: %d\n", matchCount, len(callMap))
+		fmt.Fprintf(os.Stderr, "[DEBUG] Total pattern matches: %d, Unique calls: %d\n", matchCount, len(callMap))
 	}
 
 	// Convert to slice and sort by ID (descending, newer first)

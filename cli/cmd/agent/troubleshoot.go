@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	"github.com/hkjarral/asterisk-ai-voice-agent/cli/internal/troubleshoot"
 	"github.com/spf13/cobra"
 )
@@ -63,7 +65,11 @@ Features:
 			troubleshootJSON,
 			verbose,
 		)
-		return runner.Run()
+		err := runner.Run()
+		if troubleshootJSON && err != nil {
+			os.Exit(1)
+		}
+		return err
 	},
 }
 

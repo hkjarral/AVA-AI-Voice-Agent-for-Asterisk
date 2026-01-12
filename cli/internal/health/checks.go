@@ -31,7 +31,7 @@ func (c *Checker) checkDocker() Check {
 			Remediation: fmt.Sprintf("Run:\n%s\nDocs: %s", installCmd, aavaDocs),
 		}
 	}
-	
+
 	// Check if docker daemon is running
 	cmd := exec.Command("docker", "ps")
 	if err := cmd.Run(); err != nil {
@@ -65,12 +65,12 @@ func (c *Checker) checkDocker() Check {
 			Remediation: remediation,
 		}
 	}
-	
+
 	// Get Docker version
 	cmd = exec.Command("docker", "version", "--format", "{{.Server.Version}}")
 	output, _ := cmd.Output()
 	version := strings.TrimSpace(string(output))
-	
+
 	return Check{
 		Name:    "Docker",
 		Status:  StatusPass,
@@ -91,7 +91,7 @@ func (c *Checker) checkContainers() Check {
 			Remediation: "Run: docker compose ps (docs: " + docsURL("docs/INSTALLATION.md") + ")",
 		}
 	}
-	
+
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(lines) == 0 || lines[0] == "" {
 		return Check{
@@ -101,14 +101,14 @@ func (c *Checker) checkContainers() Check {
 			Remediation: "Run: docker compose up -d (docs: " + docsURL("docs/INSTALLATION.md") + ")",
 		}
 	}
-	
+
 	running := 0
 	for _, line := range lines {
 		if strings.Contains(line, "Up") {
 			running++
 		}
 	}
-	
+
 	if running == 0 {
 		return Check{
 			Name:        "Containers",
@@ -117,7 +117,7 @@ func (c *Checker) checkContainers() Check {
 			Remediation: "Run: docker compose up -d (docs: " + docsURL("docs/INSTALLATION.md") + ")",
 		}
 	}
-	
+
 	return Check{
 		Name:    "Containers",
 		Status:  StatusPass,
@@ -205,11 +205,11 @@ func (c *Checker) checkAsteriskARI() Check {
 	ariHost := GetEnv("ASTERISK_HOST", c.envMap)
 	ariUsername := GetEnv("ASTERISK_ARI_USERNAME", c.envMap)
 	ariPassword := GetEnv("ASTERISK_ARI_PASSWORD", c.envMap)
-	
+
 	if ariHost == "" {
-		ariHost = "127.0.0.1"  // Default
+		ariHost = "127.0.0.1" // Default
 	}
-	
+
 	if ariUsername == "" || ariPassword == "" {
 		return Check{
 			Name:        "Asterisk ARI",
@@ -219,12 +219,12 @@ func (c *Checker) checkAsteriskARI() Check {
 			Remediation: "Set ASTERISK_ARI_USERNAME and ASTERISK_ARI_PASSWORD in .env file",
 		}
 	}
-	
+
 	// Try to connect to ARI HTTP endpoint
 	cmd := exec.Command("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
 		"-u", fmt.Sprintf("%s:%s", ariUsername, ariPassword),
 		fmt.Sprintf("http://%s:8088/ari/asterisk/info", ariHost))
-	
+
 	output, err := cmd.Output()
 	if err != nil {
 		return Check{
@@ -235,7 +235,7 @@ func (c *Checker) checkAsteriskARI() Check {
 			Remediation: "Check if Asterisk is running and ARI is enabled",
 		}
 	}
-	
+
 	httpCode := strings.TrimSpace(string(output))
 	if httpCode == "200" {
 		return Check{
@@ -244,7 +244,7 @@ func (c *Checker) checkAsteriskARI() Check {
 			Message: fmt.Sprintf("ARI accessible at %s:8088", ariHost),
 		}
 	}
-	
+
 	return Check{
 		Name:    "Asterisk ARI",
 		Status:  StatusWarn,
@@ -264,7 +264,7 @@ func (c *Checker) checkAudioSocket() Check {
 			Details: "This is normal when idle (no active calls)",
 		}
 	}
-	
+
 	return Check{
 		Name:    "AudioSocket",
 		Status:  StatusPass,
@@ -279,7 +279,7 @@ func (c *Checker) checkConfiguration() Check {
 		"/app/config/ai-agent.yaml",
 		"../config/ai-agent.yaml",
 	}
-	
+
 	var configPath string
 	for _, path := range configPaths {
 		if _, err := os.Stat(path); err == nil {
@@ -287,16 +287,16 @@ func (c *Checker) checkConfiguration() Check {
 			break
 		}
 	}
-	
-		if configPath == "" {
-			return Check{
-				Name:        "Configuration",
-				Status:      StatusFail,
-				Message:     "config/ai-agent.yaml not found",
-				Remediation: "Run: agent setup",
-			}
+
+	if configPath == "" {
+		return Check{
+			Name:        "Configuration",
+			Status:      StatusFail,
+			Message:     "config/ai-agent.yaml not found",
+			Remediation: "Run: agent setup",
 		}
-	
+	}
+
 	// Check if file is readable
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
@@ -308,20 +308,20 @@ func (c *Checker) checkConfiguration() Check {
 			Remediation: "Check file permissions",
 		}
 	}
-	
+
 	absPath, _ := filepath.Abs(configPath)
 
 	// Parse YAML to catch obvious issues early.
 	var root map[string]interface{}
-		if err := yaml.Unmarshal(raw, &root); err != nil {
-			return Check{
-				Name:        "Configuration",
-				Status:      StatusFail,
-				Message:     "Invalid YAML in config/ai-agent.yaml",
-				Details:     err.Error(),
-				Remediation: "Fix YAML syntax (see docs/Configuration-Reference.md) and re-run: agent check",
-			}
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return Check{
+			Name:        "Configuration",
+			Status:      StatusFail,
+			Message:     "Invalid YAML in config/ai-agent.yaml",
+			Details:     err.Error(),
+			Remediation: "Fix YAML syntax (see docs/Configuration-Reference.md) and re-run: agent check",
 		}
+	}
 
 	// Minimal schema checks. Credentials are injected from .env at runtime, so we warn
 	// when blocks are missing rather than failing hard.
@@ -445,14 +445,14 @@ func (c *Checker) checkConfiguration() Check {
 func (c *Checker) checkProviderKeys() Check {
 	// Check for common provider API keys in environment or .env file
 	keys := map[string]string{
-		"OPENAI_API_KEY":   "OpenAI",
-		"DEEPGRAM_API_KEY": "Deepgram",
+		"OPENAI_API_KEY":    "OpenAI",
+		"DEEPGRAM_API_KEY":  "Deepgram",
 		"ANTHROPIC_API_KEY": "Anthropic",
 	}
-	
+
 	found := []string{}
 	missing := []string{}
-	
+
 	for env, name := range keys {
 		// Check both OS env and .env file
 		if val := GetEnv(env, c.envMap); val != "" {
@@ -461,7 +461,7 @@ func (c *Checker) checkProviderKeys() Check {
 			missing = append(missing, name)
 		}
 	}
-	
+
 	if len(found) == 0 {
 		return Check{
 			Name:        "Provider Keys",
@@ -470,12 +470,12 @@ func (c *Checker) checkProviderKeys() Check {
 			Remediation: "Set API keys in .env file",
 		}
 	}
-	
+
 	status := StatusPass
 	if len(missing) > 0 {
 		status = StatusInfo
 	}
-	
+
 	return Check{
 		Name:    "Provider Keys",
 		Status:  status,
@@ -488,7 +488,7 @@ func (c *Checker) checkAudioPipeline() Check {
 	// Check if we can find recent audio pipeline logs (note: ai_engine with underscore)
 	cmd := exec.Command("docker", "logs", "--tail", "100", "ai_engine")
 	output, err := cmd.Output()
-	
+
 	if err != nil {
 		return Check{
 			Name:    "Audio Pipeline",
@@ -497,23 +497,23 @@ func (c *Checker) checkAudioPipeline() Check {
 			Details: err.Error(),
 		}
 	}
-	
+
 	logs := string(output)
-	
+
 	// Look for key indicators
 	indicators := map[string]string{
 		"StreamingPlaybackManager initialized": "Streaming manager active",
 		"AudioSocket server listening":         "AudioSocket ready",
-		"VAD":                                   "VAD configured",
+		"VAD":                                  "VAD configured",
 	}
-	
+
 	found := []string{}
 	for pattern, desc := range indicators {
 		if strings.Contains(logs, pattern) {
 			found = append(found, desc)
 		}
 	}
-	
+
 	if len(found) == 0 {
 		return Check{
 			Name:    "Audio Pipeline",
@@ -522,7 +522,7 @@ func (c *Checker) checkAudioPipeline() Check {
 			Details: "This may be normal if engine just started",
 		}
 	}
-	
+
 	return Check{
 		Name:    "Audio Pipeline",
 		Status:  StatusPass,
@@ -535,7 +535,7 @@ func (c *Checker) checkNetwork() Check {
 	// Check Docker network and ARI connectivity
 	cmd := exec.Command("docker", "network", "ls", "--format", "{{.Name}}")
 	output, err := cmd.Output()
-	
+
 	if err != nil {
 		return Check{
 			Name:    "Network",
@@ -544,15 +544,15 @@ func (c *Checker) checkNetwork() Check {
 			Details: err.Error(),
 		}
 	}
-	
+
 	networks := strings.Split(strings.TrimSpace(string(output)), "\n")
-	
+
 	// Check if using bridge, host, or custom network
 	ariHost := GetEnv("ASTERISK_HOST", c.envMap)
 	if ariHost == "" {
 		ariHost = "127.0.0.1"
 	}
-	
+
 	var networkMode string
 	if ariHost == "127.0.0.1" || ariHost == "localhost" {
 		networkMode = "host network (localhost)"
@@ -561,7 +561,7 @@ func (c *Checker) checkNetwork() Check {
 	} else {
 		networkMode = fmt.Sprintf("container name (%s)", ariHost)
 	}
-	
+
 	return Check{
 		Name:    "Network",
 		Status:  StatusPass,
@@ -577,7 +577,7 @@ func (c *Checker) checkMediaDirectory() Check {
 		"/var/spool/asterisk/monitor",
 		"./media",
 	}
-	
+
 	for _, dir := range dirs {
 		if stat, err := os.Stat(dir); err == nil && stat.IsDir() {
 			// Check if writable
@@ -593,7 +593,7 @@ func (c *Checker) checkMediaDirectory() Check {
 			}
 		}
 	}
-	
+
 	return Check{
 		Name:    "Media Directory",
 		Status:  StatusWarn,
@@ -606,7 +606,7 @@ func (c *Checker) checkLogs() Check {
 	// Check for recent errors in ai_engine logs (note: underscore)
 	cmd := exec.Command("docker", "logs", "--tail", "100", "ai_engine")
 	output, err := cmd.Output()
-	
+
 	if err != nil {
 		return Check{
 			Name:    "Logs",
@@ -615,23 +615,23 @@ func (c *Checker) checkLogs() Check {
 			Details: err.Error(),
 		}
 	}
-	
+
 	logs := string(output)
-	
+
 	// Count errors and warnings
 	errorCount := strings.Count(strings.ToUpper(logs), "ERROR")
 	warnCount := strings.Count(strings.ToUpper(logs), "WARN")
-	
-		if errorCount > 10 {
-			return Check{
-					Name:    "Logs",
-					Status:  StatusFail,
-					Message: fmt.Sprintf("%d errors in last 100 lines", errorCount),
-					Details: "Check logs: docker logs ai_engine",
-					Remediation: "Run: agent rca",
-				}
-			}
-	
+
+	if errorCount > 10 {
+		return Check{
+			Name:        "Logs",
+			Status:      StatusFail,
+			Message:     fmt.Sprintf("%d errors in last 100 lines", errorCount),
+			Details:     "Check logs: docker logs ai_engine",
+			Remediation: "Run: agent rca",
+		}
+	}
+
 	if errorCount > 0 || warnCount > 5 {
 		return Check{
 			Name:    "Logs",
@@ -640,7 +640,7 @@ func (c *Checker) checkLogs() Check {
 			Details: "May indicate recent issues",
 		}
 	}
-	
+
 	return Check{
 		Name:    "Logs",
 		Status:  StatusPass,
@@ -652,7 +652,7 @@ func (c *Checker) checkRecentCalls() Check {
 	// Try to find recent call info from logs (note: ai_engine with underscore)
 	cmd := exec.Command("docker", "logs", "--tail", "500", "ai_engine")
 	output, err := cmd.Output()
-	
+
 	if err != nil {
 		return Check{
 			Name:    "Recent Calls",
@@ -661,16 +661,16 @@ func (c *Checker) checkRecentCalls() Check {
 			Details: err.Error(),
 		}
 	}
-	
+
 	logs := string(output)
-	
+
 	// Look for call indicators
 	callIndicators := []string{
 		"call_id",
 		"Stasis start",
 		"Channel answered",
 	}
-	
+
 	found := false
 	for _, indicator := range callIndicators {
 		if strings.Contains(logs, indicator) {
@@ -678,7 +678,7 @@ func (c *Checker) checkRecentCalls() Check {
 			break
 		}
 	}
-	
+
 	if !found {
 		return Check{
 			Name:    "Recent Calls",
@@ -687,7 +687,7 @@ func (c *Checker) checkRecentCalls() Check {
 			Details: "This is normal if no calls have been placed recently",
 		}
 	}
-	
+
 	return Check{
 		Name:    "Recent Calls",
 		Status:  StatusInfo,

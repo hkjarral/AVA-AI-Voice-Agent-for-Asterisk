@@ -302,16 +302,29 @@ echo "✅ Validation passed - deploying..."
 cli/
 ├── cmd/agent/           # Main CLI commands
 │   ├── main.go          # Root command and app entry
-│   ├── init.go          # Setup wizard
-│   ├── doctor.go        # Health checks
-│   ├── demo.go          # Audio validation
-│   ├── troubleshoot.go  # Post-call analysis
+│   ├── setup.go         # Interactive setup wizard (v5.0)
+│   ├── check.go         # Standard diagnostics report (v5.0)
+│   ├── rca.go           # Post-call RCA (v5.0)
 │   └── version.go       # Version command
+│
+│   # Hidden (legacy / advanced)
+│   ├── init.go          # Legacy alias of setup
+│   ├── doctor_alias.go  # Legacy alias of check
+│   ├── troubleshoot.go  # Legacy alias of rca (advanced flags)
+│   ├── quickstart.go    # Legacy setup wizard
+│   ├── demo.go          # Pipeline demo tool
+│   ├── dialplan.go      # Dialplan generator
+│   ├── config.go        # Config validate, etc.
+│   └── helpers.go       # Shared helpers
 └── internal/            # Internal packages
-    ├── wizard/          # Interactive setup wizard
-    ├── health/          # Health check system
-    ├── audio/           # Audio test utilities
-    └── rca/             # Root cause analysis
+    ├── check/           # agent check implementation
+    ├── troubleshoot/    # RCA engine (used by agent rca / troubleshoot)
+    ├── wizard/          # Interactive setup wizard implementation
+    ├── demo/            # Demo runner
+    ├── dialplan/        # Dialplan snippets
+    ├── config/          # Config validation
+    ├── validator/       # API key + input validation helpers
+    └── health/          # Legacy health checks (kept for compatibility)
 ```
 
 ### Dependencies

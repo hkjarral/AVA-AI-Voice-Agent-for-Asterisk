@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	"github.com/hkjarral/asterisk-ai-voice-agent/cli/internal/troubleshoot"
 	"github.com/spf13/cobra"
 )
@@ -32,7 +34,11 @@ This is the recommended post-call troubleshooting command in CLI v5.0.`,
 			rcaJSON,
 			verbose,
 		)
-		return runner.Run()
+		err := runner.Run()
+		if rcaJSON && err != nil {
+			os.Exit(1)
+		}
+		return err
 	},
 }
 

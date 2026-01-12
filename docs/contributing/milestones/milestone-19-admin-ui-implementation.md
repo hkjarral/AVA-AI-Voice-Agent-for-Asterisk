@@ -1,6 +1,6 @@
 # Milestone 19: Admin UI Implementation
 
-Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, and `agent rca`. Legacy command names used below (`agent quickstart`, etc.) remain available as hidden aliases for compatibility.
+Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, `agent rca`, and `agent version`. Legacy command names used below (`agent quickstart`, etc.) remain available as hidden aliases for compatibility.
 
 **Version**: v4.4.1  
 **Date**: November 30, 2025  

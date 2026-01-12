@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/hkjarral/asterisk-ai-voice-agent/cli/internal/check"
 	"github.com/spf13/cobra"
@@ -35,19 +36,43 @@ Exit codes:
 		runner := check.NewRunner(verbose, version, buildTime)
 		report, err := runner.Run()
 
+		if report == nil {
+			report = &check.Report{
+				Version:   version,
+				BuildTime: buildTime,
+				Timestamp: time.Now(),
+				Items: []check.Item{
+					{
+						Name:    "agent check",
+						Status:  check.StatusFail,
+						Message: "failed to generate diagnostics report",
+						Details: func() string {
+							if err != nil {
+								return err.Error()
+							}
+							return "unknown error"
+						}(),
+					},
+				},
+			}
+		}
+
 		if checkJSON {
 			_ = report.OutputJSON(os.Stdout)
 		} else {
 			report.OutputText(os.Stdout)
 		}
 
-		if report.FailCount > 0 {
-			os.Exit(2)
+		exitCode := 0
+		if err != nil || report.FailCount > 0 {
+			exitCode = 2
+		} else if report.WarnCount > 0 {
+			exitCode = 1
 		}
-		if report.WarnCount > 0 {
-			os.Exit(1)
+		if exitCode != 0 {
+			os.Exit(exitCode)
 		}
-		return err
+		return nil
 	},
 }
 

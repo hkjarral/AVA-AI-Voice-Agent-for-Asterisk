@@ -130,7 +130,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 			fmt.Println("  • Internet connection is working")
 			fmt.Println("  • Provider service is accessible")
 			fmt.Println("")
-			fmt.Println("Re-run 'agent quickstart' to try again")
+			fmt.Println("Re-run 'agent setup' to try again")
 			return fmt.Errorf("API key validation failed")
 		}
 
@@ -327,8 +327,8 @@ func writeConfiguration(provider, apiKey, ariHost, ariUser, ariPassword string) 
 		replaceKey("GOOGLE_API_KEY", apiKey)
 	}
 
-	// Write .env
-	if err := os.WriteFile(".env", []byte(envStr), 0644); err != nil {
+	// Write .env (restrict access; contains secrets)
+	if err := os.WriteFile(".env", []byte(envStr), 0600); err != nil {
 		return fmt.Errorf("failed to write .env: %w", err)
 	}
 
@@ -355,7 +355,7 @@ ASTERISK_ARI_PASSWORD=%s
 		envContent += fmt.Sprintf("GOOGLE_API_KEY=%s\n", apiKey)
 	}
 
-	return os.WriteFile(".env", []byte(envContent), 0644)
+	return os.WriteFile(".env", []byte(envContent), 0600)
 }
 
 func updateYAMLConfig(activeProvider string) error {

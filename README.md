@@ -294,7 +294,7 @@ active_pipeline: local_ollama
 ### Technical Features
 
 - **Tool Calling System**: AI-powered actions (transfers, emails) work with any provider.
-- **Agent CLI Tools**: `doctor`, `troubleshoot`, `demo`, `init` commands.
+- **Agent CLI Tools**: `setup`, `check`, `rca`, `version` commands (legacy aliases: `init`, `doctor`, `troubleshoot`).
 - **Modular Pipeline System**: Independent STT, LLM, and TTS provider selection.
 - **Dual Transport Support**: AudioSocket and ExternalMedia RTP (the shipped default config uses ExternalMedia; both are supported — see the transport matrix).
 - **Streaming-First Downstream**: Streaming playback when possible, with automatic fallback to file playback for robustness.

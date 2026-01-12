@@ -1,6 +1,6 @@
 # Milestone 12 — Setup & Validation Tools
 
-Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, and `agent rca`. Legacy command names used below (`agent init`, `agent doctor`, etc.) remain available as hidden aliases for compatibility.
+Note (CLI v5.0): The public CLI surface is now `agent setup`, `agent check`, `agent rca`, and `agent version`. Legacy command names used below (`agent init`, `agent doctor`, etc.) remain available as hidden aliases for compatibility.
 
 ## Objective
 
