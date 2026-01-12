@@ -428,11 +428,11 @@ check-python:
 	fi
 
 # ==============================================================================
-# CLI TOOLS (v4.1)
+# CLI TOOLS (v5.0)
 # ==============================================================================
 
 # Version management (uses git tags or fallback)
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "4.1.0-dev")
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "5.0.0-dev")
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)
 
@@ -440,7 +440,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)
 cli-build:
 	@echo "Building agent CLI (version: $(VERSION))..."
 	@mkdir -p bin
-	@cd cli && go build -ldflags="$(LDFLAGS)" -o ../bin/agent ./cmd/agent
+	@cd cli && CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o ../bin/agent ./cmd/agent
 	@echo "✅ Binary created: bin/agent"
 	@./bin/agent version
 
