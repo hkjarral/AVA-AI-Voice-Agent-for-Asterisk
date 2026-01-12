@@ -19,11 +19,11 @@ func GetGoldenBaselines() map[string]*GoldenBaseline {
 			Description: "Validated OpenAI Realtime API configuration (Oct 26, 2025)",
 			Config: map[string]interface{}{
 				"vad": map[string]interface{}{
-					"webrtc_aggressiveness":   1, // CRITICAL: Level 0 = too sensitive, causes echo
-					"enhanced_enabled":        true,
-					"confidence_threshold":    0.6,
-					"energy_threshold":        1500,
-					"webrtc_start_frames":     2,
+					"webrtc_aggressiveness":     1, // CRITICAL: Level 0 = too sensitive, causes echo
+					"enhanced_enabled":          true,
+					"confidence_threshold":      0.6,
+					"energy_threshold":          1500,
+					"webrtc_start_frames":       2,
 					"webrtc_end_silence_frames": 15,
 				},
 				"barge_in": map[string]interface{}{
@@ -42,7 +42,7 @@ func GetGoldenBaselines() map[string]*GoldenBaseline {
 			},
 			Reference: "Call 1761449250.2163 - Duration: 45.9s, SNR: 64.7 dB",
 		},
-		
+
 		"deepgram_standard": {
 			Name:        "Deepgram Standard",
 			Description: "Validated Deepgram configuration with AudioSocket",
@@ -50,26 +50,26 @@ func GetGoldenBaselines() map[string]*GoldenBaseline {
 				"deepgram": map[string]interface{}{
 					"model":           "nova-2-general",
 					"language":        "en",
-					"encoding":        "mulaw",      // Deepgram expects mulaw
-					"sample_rate":     8000,         // 8kHz for telephony
+					"encoding":        "mulaw", // Deepgram expects mulaw
+					"sample_rate":     8000,    // 8kHz for telephony
 					"channels":        1,
 					"interim_results": true,
 					"vad_events":      true,
 					"smart_format":    true,
 				},
 				"transport": map[string]interface{}{
-					"audiosocket_format": "slin",     // AudioSocket wire = slin
+					"audiosocket_format": "slin",       // AudioSocket wire = slin
 					"transcoding":        "slin→mulaw", // Transcode to Deepgram format
 				},
 			},
 			Metrics: map[string]interface{}{
-				"provider_bytes_ratio": 1.0,    // Must be 1.0
+				"provider_bytes_ratio": 1.0, // Must be 1.0
 				"drift_pct":            "<10%",
-				"underflow_count":      0,      // Should be 0
+				"underflow_count":      0, // Should be 0
 			},
 			Reference: "Production baseline - AudioSocket=slin, provider=mulaw@8k",
 		},
-		
+
 		"streaming_performance": {
 			Name:        "Streaming Performance",
 			Description: "Validated streaming playback configuration",
@@ -83,10 +83,10 @@ func GetGoldenBaselines() map[string]*GoldenBaseline {
 				},
 			},
 			Metrics: map[string]interface{}{
-				"drift_pct":            "<10%",  // Critical threshold
-				"underflow_count":      0,       // Should be 0
-				"provider_bytes_ratio": 1.0,     // Must be 1.0
-				"bytes_sent":           ">50000", // Reasonable for 10s segment
+				"drift_pct":            "<10%",                   // Critical threshold
+				"underflow_count":      0,                        // Should be 0
+				"provider_bytes_ratio": 1.0,                      // Must be 1.0
+				"bytes_sent":           ">50000",                 // Reasonable for 10s segment
 				"effective_seconds":    "wall_seconds * 0.9-1.1", // Within 10%
 			},
 			Reference: "Golden baseline metrics from clean audio calls",
@@ -101,13 +101,13 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 	if !exists {
 		return nil
 	}
-	
+
 	comparison := &BaselineComparison{
 		BaselineName: baseline.Name,
 		Deviations:   []Deviation{},
 		Compliant:    []string{},
 	}
-	
+
 	// Check VAD aggressiveness (OpenAI Realtime)
 	if baselineName == "openai_realtime" && metrics.VADSettings != nil {
 		expectedAgg := 1
@@ -124,7 +124,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 			comparison.Compliant = append(comparison.Compliant, "VAD aggressiveness: 1 ✅")
 		}
 	}
-	
+
 	// Check gate closures
 	if baselineName == "openai_realtime" && metrics.GateClosures > 0 {
 		if metrics.GateFlutterDetected {
@@ -140,7 +140,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 			comparison.Compliant = append(comparison.Compliant, fmt.Sprintf("Gate closures: %d (normal) ✅", metrics.GateClosures))
 		}
 	}
-	
+
 	// Check provider bytes ratio (all baselines)
 	if len(metrics.ProviderSegments) > 0 {
 		actualRatio := float64(metrics.EnqueuedBytesTotal) / float64(metrics.ProviderBytesTotal)
@@ -157,7 +157,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 			comparison.Compliant = append(comparison.Compliant, fmt.Sprintf("Provider bytes ratio: %.3f ✅", actualRatio))
 		}
 	}
-	
+
 	// Check drift percentage (all baselines)
 	if metrics.WorstDriftPct != 0.0 {
 		if absFloat(metrics.WorstDriftPct) > 10.0 {
@@ -173,7 +173,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 			comparison.Compliant = append(comparison.Compliant, fmt.Sprintf("Drift: %.1f%% ✅", metrics.WorstDriftPct))
 		}
 	}
-	
+
 	// Check underflows (streaming baseline)
 	if metrics.UnderflowCount > 0 {
 		comparison.Deviations = append(comparison.Deviations, Deviation{
@@ -187,7 +187,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 	} else if len(metrics.StreamingSummaries) > 0 {
 		comparison.Compliant = append(comparison.Compliant, "No underflows ✅")
 	}
-	
+
 	// Check AudioSocket format
 	if metrics.AudioSocketFormat != "" {
 		if metrics.AudioSocketFormat != "slin" {
@@ -203,7 +203,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 			comparison.Compliant = append(comparison.Compliant, "AudioSocket format: slin ✅")
 		}
 	}
-	
+
 	// Check Deepgram format (if applicable)
 	if baselineName == "deepgram_standard" {
 		if metrics.ProviderInputFormat != "" && metrics.ProviderInputFormat != "mulaw" {
@@ -217,7 +217,7 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 			})
 		}
 	}
-	
+
 	return comparison
 }
 
@@ -250,11 +250,11 @@ func (bc *BaselineComparison) FormatForLLM() string {
 	if bc == nil {
 		return ""
 	}
-	
+
 	var out string
 	out += "\n=== GOLDEN BASELINE COMPARISON ===\n"
 	out += fmt.Sprintf("Reference: %s\n\n", bc.BaselineName)
-	
+
 	if len(bc.Compliant) > 0 {
 		out += "✅ Compliant with Baseline:\n"
 		for _, item := range bc.Compliant {
@@ -262,7 +262,7 @@ func (bc *BaselineComparison) FormatForLLM() string {
 		}
 		out += "\n"
 	}
-	
+
 	if len(bc.Deviations) > 0 {
 		out += "⚠️  DEVIATIONS FROM GOLDEN BASELINE:\n\n"
 		for i, dev := range bc.Deviations {
@@ -274,6 +274,6 @@ func (bc *BaselineComparison) FormatForLLM() string {
 			out += "\n"
 		}
 	}
-	
+
 	return out
 }

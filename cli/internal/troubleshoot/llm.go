@@ -59,7 +59,7 @@ func NewLLMAnalyzer() (*LLMAnalyzer, error) {
 // AnalyzeWithLLM performs AI-powered analysis
 func (llm *LLMAnalyzer) AnalyzeWithLLM(analysis *Analysis, logData string) (*LLMDiagnosis, error) {
 	prompt := llm.buildPrompt(analysis, logData)
-	
+
 	var response string
 	var err error
 
@@ -86,19 +86,19 @@ func (llm *LLMAnalyzer) AnalyzeWithLLM(analysis *Analysis, logData string) (*LLM
 // buildPrompt constructs the LLM prompt
 func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 	var prompt strings.Builder
-	
+
 	prompt.WriteString("You are an expert in diagnosing Asterisk AI voice agent issues. ")
 	prompt.WriteString("Analyze the following call logs and provide a concise diagnosis.\n\n")
-	
+
 	prompt.WriteString("Call ID: " + analysis.CallID + "\n\n")
-	
+
 	// Pipeline status
 	prompt.WriteString("Pipeline Status:\n")
 	prompt.WriteString(fmt.Sprintf("- AudioSocket: %v\n", analysis.HasAudioSocket))
 	prompt.WriteString(fmt.Sprintf("- Transcription: %v\n", analysis.HasTranscription))
 	prompt.WriteString(fmt.Sprintf("- Playback: %v\n", analysis.HasPlayback))
 	prompt.WriteString("\n")
-	
+
 	// Issues found
 	if len(analysis.Errors) > 0 {
 		prompt.WriteString(fmt.Sprintf("Errors found: %d\n", len(analysis.Errors)))
@@ -111,7 +111,7 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 		}
 		prompt.WriteString("\n")
 	}
-	
+
 	if len(analysis.AudioIssues) > 0 {
 		prompt.WriteString("Audio Issues:\n")
 		for _, issue := range analysis.AudioIssues {
@@ -119,31 +119,31 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 		}
 		prompt.WriteString("\n")
 	}
-	
+
 	// Symptom if specified
 	if analysis.Symptom != "" {
 		prompt.WriteString(fmt.Sprintf("Reported Symptom: %s\n\n", analysis.Symptom))
 	}
-	
+
 	// Extracted metrics (CRITICAL for diagnosis)
 	if analysis.Metrics != nil {
 		prompt.WriteString(analysis.Metrics.FormatForLLM())
 	}
-	
+
 	// Golden baseline comparison (PROVIDES EXACT FIXES)
 	if analysis.BaselineComparison != nil {
 		prompt.WriteString(analysis.BaselineComparison.FormatForLLM())
 		prompt.WriteString("IMPORTANT: Use the exact configuration values from the golden baseline deviations above.\n")
 		prompt.WriteString("These are VALIDATED production values that are known to work.\n\n")
 	}
-	
+
 	// Format/Sampling alignment (CRITICAL FOR AUDIO QUALITY)
 	if analysis.Metrics != nil && analysis.Metrics.FormatAlignment != nil {
 		prompt.WriteString(analysis.Metrics.FormatAlignment.FormatForLLM())
 		prompt.WriteString("CRITICAL: Format mismatches cause garbled audio, distortion, or complete audio failure.\n")
 		prompt.WriteString("Golden baseline: audiosocket.format=slin, provider transcodes as needed.\n\n")
 	}
-	
+
 	// Sample logs (truncated)
 	prompt.WriteString("Sample Log Lines:\n")
 	lines := strings.Split(logData, "\n")
@@ -157,7 +157,7 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 		}
 	}
 	prompt.WriteString("\n")
-	
+
 	prompt.WriteString("Please provide:\n")
 	prompt.WriteString("1. Root Cause: Identify the root cause based on golden baseline deviations\n")
 	prompt.WriteString("   - Prioritize CRITICAL severity deviations first\n")
@@ -183,14 +183,14 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 	prompt.WriteString("\nIMPORTANT: Your fixes MUST use the exact values from the golden baseline comparison.\n")
 	prompt.WriteString("Do NOT suggest generic fixes. Use the concrete values provided.\n")
 	prompt.WriteString("\nKeep your response concise and actionable (under 400 words).")
-	
+
 	return prompt.String()
 }
 
 // callOpenAI makes OpenAI API request
 func (llm *LLMAnalyzer) callOpenAI(prompt string) (string, error) {
 	url := "https://api.openai.com/v1/chat/completions"
-	
+
 	requestBody := map[string]interface{}{
 		"model": llm.model,
 		"messages": []map[string]string{
@@ -202,63 +202,63 @@ func (llm *LLMAnalyzer) callOpenAI(prompt string) (string, error) {
 		"max_tokens":  800,
 		"temperature": 0.3,
 	}
-	
+
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return "", err
 	}
-	
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+llm.apiKey)
-	
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("OpenAI request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	
+
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("OpenAI API error %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", err
 	}
-	
+
 	choices, ok := result["choices"].([]interface{})
 	if !ok || len(choices) == 0 {
 		return "", fmt.Errorf("no response from OpenAI")
 	}
-	
+
 	message, ok := choices[0].(map[string]interface{})["message"].(map[string]interface{})
 	if !ok {
 		return "", fmt.Errorf("invalid response format")
 	}
-	
+
 	content, ok := message["content"].(string)
 	if !ok {
 		return "", fmt.Errorf("no content in response")
 	}
-	
+
 	return content, nil
 }
 
 // callAnthropic makes Anthropic API request
 func (llm *LLMAnalyzer) callAnthropic(prompt string) (string, error) {
 	url := "https://api.anthropic.com/v1/messages"
-	
+
 	requestBody := map[string]interface{}{
 		"model": llm.model,
 		"messages": []map[string]string{
@@ -269,58 +269,58 @@ func (llm *LLMAnalyzer) callAnthropic(prompt string) (string, error) {
 		},
 		"max_tokens": 800,
 	}
-	
+
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return "", err
 	}
-	
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", llm.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("Anthropic request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	
+
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("Anthropic API error %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", err
 	}
-	
+
 	content, ok := result["content"].([]interface{})
 	if !ok || len(content) == 0 {
 		return "", fmt.Errorf("no content in response")
 	}
-	
+
 	text, ok := content[0].(map[string]interface{})["text"].(string)
 	if !ok {
 		return "", fmt.Errorf("invalid response format")
 	}
-	
+
 	return text, nil
 }
 
 // LLMDiagnosis holds LLM analysis results
 type LLMDiagnosis struct {
-	Provider string
-	Model    string
-	Analysis string
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Analysis string `json:"analysis"`
 }

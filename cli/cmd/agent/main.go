@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
 var (
-	version   = "4.1.0-dev"  // Overridden at build time via -ldflags
-	buildTime = "unknown"     // Overridden at build time via -ldflags
+	version   = "5.0.0-dev" // Overridden at build time via -ldflags
+	buildTime = "unknown"   // Overridden at build time via -ldflags
 	verbose   bool
+	noColor   bool
 )
 
 func main() {
@@ -23,18 +25,28 @@ func main() {
 var rootCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Asterisk AI Voice Agent CLI",
-	Long: `Asterisk AI Voice Agent CLI - Tools for setup, health checks, and troubleshooting
+	Long: `Asterisk AI Voice Agent CLI (v5.0) - Setup, diagnostics, and RCA
 
 Available commands:
-  init        Interactive setup wizard
-  doctor      System health check and diagnostics
-  demo        Audio pipeline validation
-  troubleshoot Post-call analysis and RCA
+  setup       Interactive setup wizard
+  check       Standard diagnostics report
+  rca         Post-call root cause analysis
   version     Show version information`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Auto-disable color when stdout isn't a TTY; allow explicit opt-out as well.
+		isTTY := false
+		if fi, err := os.Stdout.Stat(); err == nil {
+			isTTY = (fi.Mode() & os.ModeCharDevice) != 0
+		}
+		if noColor || !isTTY {
+			color.NoColor = true
+		}
+	},
 }
 
 func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable color output")
 }

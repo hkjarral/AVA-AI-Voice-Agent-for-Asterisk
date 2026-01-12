@@ -11,8 +11,9 @@ import (
 )
 
 var dialplanCmd = &cobra.Command{
-	Use:   "dialplan",
-	Short: "Generate dialplan configuration for AI agent",
+	Use:    "dialplan",
+	Short:  "Generate dialplan configuration for AI agent",
+	Hidden: true, // v5.0: prefer `agent setup`
 	Long: `Generate Asterisk dialplan snippets for the chosen provider.
 
 This command prints the dialplan configuration that you need to add
@@ -28,7 +29,7 @@ var (
 func init() {
 	dialplanCmd.Flags().StringVar(&dialplanProvider, "provider", "", "Provider to generate dialplan for (openai_realtime, deepgram, local_hybrid, google_live)")
 	dialplanCmd.Flags().StringVar(&dialplanFile, "file", "/etc/asterisk/extensions_custom.conf", "Target dialplan file location")
-	
+
 	rootCmd.AddCommand(dialplanCmd)
 }
 
@@ -41,7 +42,7 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 		}
 		dialplanProvider = provider
 	}
-	
+
 	// Validate provider
 	validProviders := map[string]bool{
 		"openai_realtime": true,
@@ -49,35 +50,35 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 		"local_hybrid":    true,
 		"google_live":     true,
 	}
-	
+
 	if !validProviders[dialplanProvider] {
 		return fmt.Errorf("invalid provider: %s (must be one of: openai_realtime, deepgram, local_hybrid, google_live)", dialplanProvider)
 	}
-	
+
 	// Generate snippet
 	snippet := dialplan.GenerateSnippet(dialplanProvider)
 	providerName := dialplan.GetProviderDisplayName(dialplanProvider)
-	
+
 	// Print header
 	fmt.Println("")
 	fmt.Println("╔══════════════════════════════════════════════════════════╗")
 	fmt.Printf("║   Dialplan Configuration - %-30s║\n", providerName)
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println("")
-	
+
 	// Ask for file location
 	fmt.Printf("Where should this dialplan be added?\n")
 	fmt.Printf("Default location: %s\n\n", dialplanFile)
-	
+
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("File path [press Enter for default]: ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
-	
+
 	if input != "" {
 		dialplanFile = input
 	}
-	
+
 	// Print instructions
 	fmt.Println("")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -87,7 +88,7 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 	fmt.Println(snippet)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("")
-	
+
 	// Print FreePBX instructions
 	fmt.Println("FreePBX Setup:")
 	fmt.Println("  1. Navigate to: Admin → Config Edit")
@@ -104,7 +105,7 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 	fmt.Println("  6. Use in IVR/Inbound Route:")
 	fmt.Println("     Select your new Custom Destination as call target")
 	fmt.Println("")
-	
+
 	// Print context override notes
 	fmt.Println("Per-Call Overrides:")
 	fmt.Println("  You can override the provider or context per-call using channel variables:")
@@ -114,7 +115,7 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 	fmt.Println("For more details, see:")
 	fmt.Println("  docs/FreePBX-Integration-Guide.md")
 	fmt.Println("")
-	
+
 	return nil
 }
 
@@ -126,22 +127,22 @@ func promptProvider() (string, error) {
 	fmt.Println("  3) Local Hybrid")
 	fmt.Println("  4) Google Live API")
 	fmt.Println("")
-	
+
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Your choice [1-4]: ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
-	
+
 	providers := map[string]string{
 		"1": "openai_realtime",
 		"2": "deepgram",
 		"3": "local_hybrid",
 		"4": "google_live",
 	}
-	
+
 	if provider, ok := providers[input]; ok {
 		return provider, nil
 	}
-	
+
 	return "", fmt.Errorf("invalid selection: %s", input)
 }

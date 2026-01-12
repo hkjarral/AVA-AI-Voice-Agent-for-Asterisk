@@ -203,7 +203,8 @@ config/users.json
 
 # Logs and archived folders (development artifacts, not for main)
 logs/
-archived/
+archived/*
+!archived/agent-cli-5.0.md
 
 # IDE specific
 *.swp
@@ -246,7 +247,7 @@ OPENAI_*RCA*.md
 logs/remote/
 
 # Archived development documentation (GA v4.0 cleanup)
-archived/
+# (kept ignored by default; allow explicit tracked docs via negation rules above)
 
 # CLI binaries (built locally, not committed)
 bin/agent

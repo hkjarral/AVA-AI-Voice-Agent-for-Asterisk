@@ -180,9 +180,9 @@ main() {
         agent version
         echo ""
         info "Get started with:"
-        echo "  agent doctor         # Check system health"
-        echo "  agent troubleshoot   # Analyze recent calls"
-        echo "  agent init           # Setup wizard"
+        echo "  agent setup          # Setup wizard"
+        echo "  agent check          # Standard diagnostics report"
+        echo "  agent rca            # Post-call root cause analysis"
         echo "  agent --help         # Show all commands"
     else
         warning "Installation succeeded but 'agent' is not in PATH"

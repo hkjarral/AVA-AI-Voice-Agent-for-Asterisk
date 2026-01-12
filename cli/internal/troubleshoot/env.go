@@ -33,7 +33,7 @@ func LoadEnvFile() {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
 			value = strings.Trim(value, "\"'")
-			
+
 			// Only set if not already in environment
 			if os.Getenv(key) == "" {
 				os.Setenv(key, value)

@@ -8,7 +8,7 @@ func getContextName(provider string) string {
 		"local_hybrid":    "from-ai-agent-hybrid",
 		"google_live":     "from-ai-agent-google",
 	}
-	
+
 	if ctx, ok := contexts[provider]; ok {
 		return ctx
 	}

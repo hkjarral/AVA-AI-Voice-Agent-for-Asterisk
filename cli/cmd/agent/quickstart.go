@@ -17,8 +17,9 @@ import (
 )
 
 var quickstartCmd = &cobra.Command{
-	Use:   "quickstart",
-	Short: "Interactive setup wizard for first-time users",
+	Use:    "quickstart",
+	Short:  "Interactive setup wizard for first-time users",
+	Hidden: true, // v5.0: prefer `agent setup`
 	Long: `Interactive wizard that guides you through:
   1. Provider selection
   2. API key validation
@@ -49,9 +50,9 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	fmt.Println("  • Generate dialplan configuration")
 	fmt.Println("  • Start Docker containers")
 	fmt.Println("")
-	
+
 	reader := bufio.NewReader(os.Stdin)
-	
+
 	// Step 1: Provider Selection
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("Step 1: Provider Selection")
@@ -63,14 +64,14 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	fmt.Println("  3) Google Live API    - Multimodal capabilities (requires API key)")
 	fmt.Println("  4) Local Hybrid       - Runs entirely on-premise (no API key needed)")
 	fmt.Println("")
-	
+
 	fmt.Print("Select provider [1-4]: ")
 	choice, _ := reader.ReadString('\n')
 	choice = strings.TrimSpace(choice)
-	
+
 	provider := ""
 	needsAPIKey := true
-	
+
 	switch choice {
 	case "1":
 		provider = "openai_realtime"
@@ -88,9 +89,9 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("invalid selection: %s", choice)
 	}
-	
+
 	fmt.Println("")
-	
+
 	// Step 2: API Key Validation (if needed)
 	var apiKey string
 	if needsAPIKey {
@@ -98,7 +99,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 		fmt.Println("Step 2: API Key Validation")
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		fmt.Println("")
-		
+
 		switch provider {
 		case "openai_realtime":
 			fmt.Println("Get your API key from: https://platform.openai.com/api-keys")
@@ -107,16 +108,16 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 		case "google_live":
 			fmt.Println("Get your API key from: https://console.cloud.google.com/")
 		}
-		
+
 		fmt.Println("")
 		fmt.Print("Enter API key: ")
 		apiKey, _ = reader.ReadString('\n')
 		apiKey = strings.TrimSpace(apiKey)
-		
+
 		if apiKey == "" {
 			return fmt.Errorf("API key cannot be empty")
 		}
-		
+
 		// Validate API key
 		fmt.Print("Validating API key... ")
 		if err := validator.ValidateAPIKey(provider, apiKey); err != nil {
@@ -132,38 +133,38 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 			fmt.Println("Re-run 'agent quickstart' to try again")
 			return fmt.Errorf("API key validation failed")
 		}
-		
+
 		fmt.Println("✓")
 		fmt.Println("")
 	}
-	
+
 	// Step 3: ARI Connection
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("Step 3: Asterisk ARI Connection")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("")
-	
+
 	fmt.Print("Asterisk host [localhost]: ")
 	asteriskHost, _ := reader.ReadString('\n')
 	asteriskHost = strings.TrimSpace(asteriskHost)
 	if asteriskHost == "" {
 		asteriskHost = "localhost"
 	}
-	
+
 	fmt.Print("ARI username [asterisk]: ")
 	ariUser, _ := reader.ReadString('\n')
 	ariUser = strings.TrimSpace(ariUser)
 	if ariUser == "" {
 		ariUser = "asterisk"
 	}
-	
+
 	fmt.Print("ARI password: ")
 	ariPassword, _ := reader.ReadString('\n')
 	ariPassword = strings.TrimSpace(ariPassword)
-	
+
 	fmt.Println("")
 	fmt.Printf("Testing ARI connection to %s...\n", asteriskHost)
-	
+
 	if err := validateARIConnection(asteriskHost, ariUser, ariPassword); err != nil {
 		fmt.Printf("❌ Connection failed: %v\n", err)
 		fmt.Println("")
@@ -181,27 +182,27 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 		fmt.Println("✓ ARI connection successful")
 	}
 	fmt.Println("")
-	
+
 	// Step 4: Generate Configuration
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("Step 4: Configuration")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("")
-	
+
 	fmt.Println("Configuration will be saved to:")
 	fmt.Println("  • .env (credentials)")
 	fmt.Println("  • config/ai-agent.yaml (AI settings)")
 	fmt.Println("")
-	
+
 	fmt.Print("Continue? [Y/n]: ")
 	confirm, _ := reader.ReadString('\n')
 	confirm = strings.TrimSpace(confirm)
-	
+
 	if strings.ToLower(confirm) == "n" {
 		fmt.Println("Quickstart cancelled")
 		return nil
 	}
-	
+
 	// Save configuration
 	fmt.Print("Writing configuration... ")
 	if err := writeConfiguration(provider, apiKey, asteriskHost, ariUser, ariPassword); err != nil {
@@ -210,16 +211,16 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("✓")
 	fmt.Println("")
-	
+
 	// Step 5: Dialplan Generation
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("Step 5: Dialplan Configuration")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("")
-	
+
 	snippet := dialplan.GenerateSnippet(provider)
 	providerName := dialplan.GetProviderDisplayName(provider)
-	
+
 	fmt.Printf("Add this dialplan snippet to /etc/asterisk/extensions_custom.conf:\n")
 	fmt.Println("")
 	fmt.Println("────────────────────────────────────────────────────────────")
@@ -234,7 +235,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	fmt.Printf("     Target: %s,s,1\n", contextName)
 	fmt.Printf("     Description: AI Voice Agent - %s\n", providerName)
 	fmt.Println("")
-	
+
 	// Step 6: Summary
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("Setup Complete!")
@@ -252,7 +253,7 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	fmt.Println("  docs/CLI_TOOLS_GUIDE.md")
 	fmt.Println("  docs/FreePBX-Integration-Guide.md")
 	fmt.Println("")
-	
+
 	return nil
 }
 
@@ -260,32 +261,32 @@ func validateARIConnection(host, user, password string) error {
 	if host == "" {
 		host = "localhost"
 	}
-	
+
 	// Use curl-like behavior to check ARI endpoint
 	url := fmt.Sprintf("http://%s:8088/ari/asterisk/info", host)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.SetBasicAuth(user, password)
-	
+
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("connection error: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode == 401 {
 		return fmt.Errorf("authentication failed (check username/password)")
 	}
-	
+
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("ARI returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	return nil
 }
 
@@ -330,7 +331,7 @@ func writeConfiguration(provider, apiKey, ariHost, ariUser, ariPassword string) 
 	if err := os.WriteFile(".env", []byte(envStr), 0644); err != nil {
 		return fmt.Errorf("failed to write .env: %w", err)
 	}
-	
+
 	// 2. Update ai-agent.yaml
 	return updateYAMLConfig(provider)
 }
@@ -362,19 +363,19 @@ func updateYAMLConfig(activeProvider string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read config/ai-agent.yaml: %w", err)
 	}
-	
+
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
-	
+
 	// Helper to traverse and update value
 	updateKey := func(path []string, value string) bool {
 		node := &root
 		if len(node.Content) > 0 {
 			node = node.Content[0] // Access document root
 		}
-		
+
 		for _, key := range path[:len(path)-1] {
 			found := false
 			for i := 0; i < len(node.Content); i += 2 {
@@ -388,7 +389,7 @@ func updateYAMLConfig(activeProvider string) error {
 				return false
 			}
 		}
-		
+
 		targetKey := path[len(path)-1]
 		for i := 0; i < len(node.Content); i += 2 {
 			if node.Content[i].Value == targetKey {
@@ -403,10 +404,10 @@ func updateYAMLConfig(activeProvider string) error {
 		}
 		return false
 	}
-	
+
 	// Update default_provider
 	updateKey([]string{"default_provider"}, activeProvider)
-	
+
 	// Update enabled flags for all providers
 	providers := []string{"openai_realtime", "deepgram", "google_live", "local"}
 	for _, p := range providers {
@@ -416,20 +417,20 @@ func updateYAMLConfig(activeProvider string) error {
 		}
 		updateKey([]string{"providers", p, "enabled"}, enabled)
 	}
-	
+
 	// Special handling for local_hybrid pipeline
 	if activeProvider == "local_hybrid" {
 		updateKey([]string{"active_pipeline"}, "local_hybrid")
 		updateKey([]string{"default_provider"}, "local_hybrid")
 	}
-	
+
 	// Write back
 	f, err := os.Create("config/ai-agent.yaml")
 	if err != nil {
 		return fmt.Errorf("failed to open config for writing: %w", err)
 	}
 	defer f.Close()
-	
+
 	encoder := yaml.NewEncoder(f)
 	encoder.SetIndent(2)
 	return encoder.Encode(&root)
