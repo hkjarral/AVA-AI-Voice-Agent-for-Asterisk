@@ -204,7 +204,6 @@ config/users.json
 # Logs and archived folders (development artifacts, not for main)
 logs/
 archived/*
-!archived/agent-cli-5.0.md
 
 # IDE specific
 *.swp
