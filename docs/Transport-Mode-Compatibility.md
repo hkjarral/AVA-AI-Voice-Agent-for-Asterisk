@@ -7,7 +7,7 @@
 
 This document defines the **validated and supported** combinations of audio transport, provider mode, and playback methods.
 
-For **v5.0.0+**: both **AudioSocket** and **ExternalMedia RTP** are validated options for pipeline deployments and full-agent deployments. Choose based on what fits your Asterisk environment and network constraints (TCP `8090` for AudioSocket vs UDP `18080` for ExternalMedia RTP), and confirm the combination you’re running matches the matrix below.
+For **v5.1.4+**: both **AudioSocket** and **ExternalMedia RTP** are validated options for pipeline deployments and full-agent deployments. Choose based on what fits your Asterisk environment and network constraints (TCP `8090` for AudioSocket vs UDP `18080` for ExternalMedia RTP), and confirm the combination you’re running matches the matrix below.
 
 Note: AudioSocket is currently validated with `audiosocket.format: slin`.
 
@@ -15,7 +15,7 @@ Note: AudioSocket is currently validated with `audiosocket.format: slin`.
 
 ## Key Concepts
 
-### `downstream_mode` (v5.0.0+)
+### `downstream_mode` (v5.1.4+)
 
 `downstream_mode` controls how the **ai-engine** delivers TTS back to the caller:
 
@@ -58,7 +58,7 @@ downstream_mode: file  # recommended + most validated for pipelines
 - File playback uses Announcer channel in bridge
 - No routing conflict between ingestion and playback
 
-**Optional (v5.0.0+)**: If you set `downstream_mode: stream`, the pipeline runner will attempt streaming playback first and fall back to file playback on errors. For GA stability, keep `file` unless you specifically want to test streaming behavior.
+**Optional (v5.1.4+)**: If you set `downstream_mode: stream`, the pipeline runner will attempt streaming playback first and fall back to file playback on errors. For GA stability, keep `file` unless you specifically want to test streaming behavior.
 
 ---
 
@@ -149,8 +149,8 @@ downstream_mode: file  # recommended + most validated for pipelines
 | **ExternalMedia RTP** | Pipeline | File (PlaybackManager) | ✅ Working | ✅ **VALIDATED** |
 | **AudioSocket** | Full Agent | Streaming (StreamingPlaybackManager) | ✅ Working | ✅ **VALIDATED** |
 | **AudioSocket** | Pipeline | File (PlaybackManager) | ✅ Working | ✅ **VALIDATED** (v4.0+) |
-| **ExternalMedia RTP** | Pipeline | Streaming-first (fallback to file) | ✅ Working | ⚠️ **SUPPORTED (v5.0.0+)** |
-| **AudioSocket** | Pipeline | Streaming-first (fallback to file) | ✅ Working | ⚠️ **SUPPORTED (v5.0.0+)** |
+| **ExternalMedia RTP** | Pipeline | Streaming-first (fallback to file) | ✅ Working | ⚠️ **SUPPORTED (v5.1.4+)** |
+| **AudioSocket** | Pipeline | Streaming-first (fallback to file) | ✅ Working | ⚠️ **SUPPORTED (v5.1.4+)** |
 
 ---
 
@@ -244,7 +244,7 @@ providers:
 
 ## Implementation Notes
 
-### Pipeline Playback Behavior (v5.0.0+)
+### Pipeline Playback Behavior (v5.1.4+)
 
 Pipelines can use:
 - **File playback** when `downstream_mode: file` (always file)

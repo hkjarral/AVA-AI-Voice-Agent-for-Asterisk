@@ -13,7 +13,7 @@ var (
 
 var doctorCmd = &cobra.Command{
 	Use:    "doctor",
-	Short:  "Alias of `agent check` (v5.0)",
+	Short:  "Alias of `agent check`",
 	Hidden: true,
 	Long:   "Alias of `agent check` retained for backwards compatibility.",
 	RunE: func(cmd *cobra.Command, args []string) error {

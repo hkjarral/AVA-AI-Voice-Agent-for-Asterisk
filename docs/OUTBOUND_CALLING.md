@@ -1,6 +1,6 @@
 # Outbound Calling (Alpha) — Outbound Campaign Dialer
 
-Outbound calling is available as an **alpha feature** in **v5.0.0**.
+Outbound calling is available as an **alpha feature** in **v5.1.4**.
 
 This feature adds a simple, AI-native outbound dialer inspired by Vicidial-style campaigns, but designed to stay aligned with AAVA’s **ARI-first** architecture and Admin UI model.
 
@@ -37,7 +37,7 @@ See `docs/Configuration-Reference.md` for the full list and semantics. The most 
 
 ## Setup Steps (FreePBX-friendly)
 
-1. Update to AAVA `v5.0.0` (or `develop`) and start `admin_ui` + `ai_engine`.
+1. Update to AAVA `v5.1.4` (or `main`) and start `admin_ui` + `ai_engine`.
 2. In Admin UI, open **Call Scheduling** and create a campaign.
 3. Configure (optional):
    - Consent gate

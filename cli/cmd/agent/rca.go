@@ -17,7 +17,7 @@ var rcaCmd = &cobra.Command{
 	Short: "Post-call root cause analysis",
 	Long: `Analyze the most recent call (or a specific call ID) and print an RCA report.
 
-This is the recommended post-call troubleshooting command in CLI v5.0.`,
+This is the recommended post-call troubleshooting command.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		callID := rcaCallID
 		if callID == "" {

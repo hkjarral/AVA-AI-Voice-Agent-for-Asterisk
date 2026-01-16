@@ -6,7 +6,7 @@ Go-based command-line interface for Asterisk AI Voice Agent operations.
 
 The `agent` CLI provides a comprehensive set of tools for setup, diagnostics, and troubleshooting. All commands are built as a single Go binary for easy distribution.
 
-**Current Status**: ✅ CLI v5.0 (simplified surface)
+**Current Status**: ✅ CLI v5.1.4 (simplified surface)
 
 ## Available Commands
 
@@ -16,7 +16,7 @@ The `agent` CLI provides a comprehensive set of tools for setup, diagnostics, an
 - **`agent update`** - Pull latest code + rebuild/restart as needed
 - **`agent version`** - Show version information
 
-Legacy aliases (hidden from `--help` in v5.0):
+Legacy aliases (hidden from `--help` in v5.1.4):
 - `agent init` → `agent setup`
 - `agent doctor` → `agent check`
 - `agent troubleshoot` → `agent rca`
@@ -235,7 +235,7 @@ agent troubleshoot --last --symptom <no-audio|garbled|echo|interruption|one-way>
 
 ## Hidden (Legacy) Commands
 
-CLI v5.0 intentionally keeps a small visible surface (`agent setup/check/rca/update/version`). For backwards compatibility and advanced workflows, these commands still exist but are hidden from `agent --help`:
+CLI v5.1.4 intentionally keeps a small visible surface (`agent setup/check/rca/update/version`). For backwards compatibility and advanced workflows, these commands still exist but are hidden from `agent --help`:
 
 - Compatibility aliases: `agent init`, `agent doctor`, `agent troubleshoot`
 - Advanced tools: `agent demo`, `agent dialplan`, `agent config validate`
@@ -318,9 +318,9 @@ echo "✅ Validation passed - deploying..."
 cli/
 ├── cmd/agent/           # Main CLI commands
 │   ├── main.go          # Root command and app entry
-│   ├── setup.go         # Interactive setup wizard (v5.0)
-│   ├── check.go         # Standard diagnostics report (v5.0)
-│   ├── rca.go           # Post-call RCA (v5.0)
+│   ├── setup.go         # Interactive setup wizard (v5.1.4)
+│   ├── check.go         # Standard diagnostics report (v5.1.4)
+│   ├── rca.go           # Post-call RCA (v5.1.4)
 │   └── version.go       # Version command
 │
 │   # Hidden (legacy / advanced)

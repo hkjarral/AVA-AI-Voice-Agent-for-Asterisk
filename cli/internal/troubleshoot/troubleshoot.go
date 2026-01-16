@@ -122,9 +122,9 @@ func (r *Runner) Run() error {
 		if r.jsonOutput {
 			_ = r.outputJSON(&RCAReport{
 				CallID: r.callID,
-				Error:  "collect-only mode does not produce a report in v5.0",
+				Error:  "collect-only mode does not produce a report",
 			})
-			return fmt.Errorf("collect-only mode does not produce a report in v5.0")
+			return fmt.Errorf("collect-only mode does not produce a report")
 		}
 		fmt.Println("Data collection complete.")
 		return nil

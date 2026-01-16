@@ -10,7 +10,7 @@ import (
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Interactive setup wizard",
-	Long: `Interactive setup wizard for Asterisk AI Voice Agent (v5.0).
+	Long: fmt.Sprintf(`Interactive setup wizard for Asterisk AI Voice Agent (%s).
 
 Guides you through configuration and then runs:
   agent check
@@ -18,6 +18,7 @@ Guides you through configuration and then runs:
 Notes:
   - Writes .env (secrets) and config/ai-agent.yaml (behavior)
   - Prints the expected Stasis app name and dialplan snippet`,
+		version),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		w, err := wizard.NewWizard()
 		if err != nil {

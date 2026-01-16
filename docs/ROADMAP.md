@@ -173,7 +173,7 @@ Each milestone includes scope, implementation details, and verification criteria
 
 - **Goal**: Automated post-call RCA with AI-powered diagnosis matching manual analysis quality. ROADMAPv4 P2.1 deliverable.
 - **What We Shipped**:
-  - `agent rca` CLI command for instant post-call analysis (CLI v5.0; legacy alias: `agent troubleshoot`).
+  - `agent rca` CLI command for instant post-call analysis (CLI v5.1.4; legacy alias: `agent troubleshoot`).
   - RCA-level metrics extraction from Docker logs (provider bytes, drift, underflows, VAD, transport alignment).
   - Golden baseline comparison (OpenAI Realtime, Deepgram, streaming performance).
   - Format/sampling alignment detection (config vs runtime validation; catches AudioSocket format mismatches).
@@ -200,9 +200,9 @@ Each milestone includes scope, implementation details, and verification criteria
 
 - **Goal**: Complete operator workflow from zero to production; minimize time to first call. ROADMAPv4 P2.2 milestone.
 - **What We Shipped**:
-  - `agent setup` — Interactive setup wizard (CLI v5.0; legacy aliases: `agent init`, `agent quickstart`).
-  - `agent check` — Standard diagnostics report (CLI v5.0; legacy alias: `agent doctor`).
-  - `agent rca` — Post-call RCA (CLI v5.0; legacy alias: `agent troubleshoot`).
+  - `agent setup` — Interactive setup wizard (CLI v5.1.4; legacy aliases: `agent init`, `agent quickstart`).
+  - `agent check` — Standard diagnostics report (CLI v5.1.4; legacy alias: `agent doctor`).
+  - `agent rca` — Post-call RCA (CLI v5.1.4; legacy alias: `agent troubleshoot`).
   - `agent update` — Safe updater for repo checkouts (CLI v5.1+).
   - Hidden advanced commands retained for compatibility: `agent demo`, `agent dialplan`, `agent config validate`.
   - Health checks with exit codes for CI/CD integration; JSON output for programmatic use.

@@ -1,8 +1,8 @@
 # Monitoring Guide
 
-Production observability guide for Asterisk AI Voice Agent `v5.0+` using Prometheus and Grafana.
+Production observability guide for Asterisk AI Voice Agent `v5.1.4+` using Prometheus and Grafana.
 
-> **Important (v4.5.3+, including v5.0.0)**: Prometheus metrics are intentionally **low-cardinality** and **do not include per-call labels** (e.g., no `call_id`).  
+> **Important (v4.5.3+, including v5.1.4)**: Prometheus metrics are intentionally **low-cardinality** and **do not include per-call labels** (e.g., no `call_id`).  
 > Use **Admin UI → Call History** for per-call debugging, and use Prometheus/Grafana for aggregate health/latency/quality trends and alerting.
 
 ## Overview

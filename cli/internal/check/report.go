@@ -74,7 +74,11 @@ func (r *Report) OutputText(w io.Writer) {
 	gray := color.New(color.FgHiBlack).SprintFunc()
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, blue("Asterisk AI Voice Agent - agent check (v5.0)"))
+	headerVersion := r.Version
+	if headerVersion == "" {
+		headerVersion = "unknown"
+	}
+	fmt.Fprintln(w, blue(fmt.Sprintf("Asterisk AI Voice Agent - agent check (%s)", headerVersion)))
 	fmt.Fprintln(w, gray("══════════════════════════════════════════"))
 	fmt.Fprintf(w, "%s %s\n", gray("Timestamp:"), r.Timestamp.Format(time.RFC3339))
 	if r.Version != "" {

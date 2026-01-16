@@ -25,7 +25,7 @@ func main() {
 var rootCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Asterisk AI Voice Agent CLI",
-	Long: `Asterisk AI Voice Agent CLI (v5.0) - Setup, diagnostics, and RCA
+	Long: fmt.Sprintf(`Asterisk AI Voice Agent CLI (%s) - Setup, diagnostics, and RCA
 
 Available commands:
   setup       Interactive setup wizard
@@ -33,6 +33,7 @@ Available commands:
   rca         Post-call root cause analysis
   update      Pull latest code and apply updates
   version     Show version information`,
+		version),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {

@@ -1,12 +1,12 @@
-# Asterisk AI Voice Agent - Installation Guide (v5.0.0)
+# Asterisk AI Voice Agent - Installation Guide (v5.1.4)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.0.0 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.1.4 on your server.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade from v4.6.0 → v5.0.0 (Existing Checkout)
+## Upgrade from v4.6.0 → v5.1.4 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -18,11 +18,11 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 
 ### 1) Pull the new release
 
-Once `v5.0.0` is published:
+Once `v5.1.4` is published:
 
 ```bash
 git fetch --tags
-git checkout v5.0.0
+git checkout v5.1.4
 ```
 
 If you track branches instead of tags:
@@ -443,7 +443,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 
 ```asterisk
 [from-ai-agent]
-exten => s,1,NoOp(Asterisk AI Voice Agent v5.0.0)
+exten => s,1,NoOp(Asterisk AI Voice Agent v5.1.4)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
