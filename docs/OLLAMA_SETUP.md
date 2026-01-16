@@ -95,6 +95,7 @@ pipelines:
         base_url: http://192.168.1.100:11434  # Your IP address
         model: llama3.2
         temperature: 0.7
+        num_ctx: 8192  # Optional: match your model's context window
         timeout_sec: 60
         tools_enabled: true
 ```
@@ -176,6 +177,14 @@ ollama pull llama3.2
 1. Check model supports tools (see table above)
 2. Ensure `tools_enabled: true` in config
 3. Check logs for "Ollama tool calls detected"
+
+### Agent hangs up unexpectedly (tool calling)
+
+Some models may over-eagerly emit `hangup_call` tool calls even when the caller did not say goodbye.
+
+Quick mitigations:
+- Disable tools for Ollama: set `tools_enabled: false`, or
+- Remove `hangup_call` from your context’s `tools:` list.
 
 ### Docker networking issues
 

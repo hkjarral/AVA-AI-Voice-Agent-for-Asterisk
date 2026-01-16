@@ -89,6 +89,7 @@ class OllamaLLMAdapter(LLMComponent):
         merged.setdefault("timeout_sec", 60)  # Local models may be slower
         merged.setdefault("stream", False)
         merged.setdefault("max_tokens", 200)
+        merged.setdefault("tools_enabled", True)
 
         # Guardrail: a common misconfiguration is leaving OpenAI-style pipeline options in place
         # while selecting the Ollama adapter (which uses /api/* endpoints). That yields nginx 404s.
@@ -260,17 +261,28 @@ class OllamaLLMAdapter(LLMComponent):
             "model": model,
             "messages": messages[-10:],  # Keep last 10 messages for context
             "stream": False,
-            "options": {
-                "temperature": merged.get("temperature", 0.7),
-                "num_predict": merged.get("max_tokens", 200),
-            },
+            "options": {},
         }
-        
+        payload["options"]["temperature"] = merged.get("temperature", 0.7)
+        payload["options"]["num_predict"] = merged.get("max_tokens", 200)
+
+        # Optional Ollama generation/runtime controls (pass-through)
+        # - Context window: num_ctx (tokens)
+        # - Some users may supply OpenAI-ish names; accept a couple common aliases.
+        num_ctx = merged.get("num_ctx") or merged.get("context_window") or merged.get("context_length")
+        if num_ctx is not None:
+            try:
+                payload["options"]["num_ctx"] = int(num_ctx)
+            except Exception:
+                logger.debug("Invalid num_ctx for Ollama (ignoring)", call_id=call_id, num_ctx=num_ctx)
+
         # Add tools if model supports them.
         # Tool availability is resolved per-context by the engine (contexts are the source of truth).
         tool_names = merged.get("tools", [])
+        tools_enabled = bool(merged.get("tools_enabled", True))
         use_tools = (
             tool_names
+            and tools_enabled
             and self._model_supports_tools(model)
             and not session_state.get("tools_failed", False)
         )

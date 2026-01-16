@@ -35,8 +35,9 @@ class HangupCallTool(Tool):
                 "- User thanks you after receiving help: 'thanks', 'thank you', 'appreciate it'\n"
                 "- Conversation naturally concludes after completing user's request\n"
                 "- User explicitly requests to end the call\n"
-                "IMPORTANT: Always politely confirm the user is ready to end before using this tool. "
-                "Ask 'Is there anything else I can help with?' if uncertain."
+                "IMPORTANT: Only use this tool when you are confident the caller wants to end the call.\n"
+                "If you are uncertain, ask 'Is there anything else I can help with?' as a normal response "
+                "(do NOT call this tool)."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,

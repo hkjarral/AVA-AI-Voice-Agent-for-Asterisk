@@ -8597,6 +8597,82 @@ class Engine:
                                     dropped=dropped,
                                 )
 
+                    # Guardrail: some local LLMs (notably Ollama llama3.x) are overly eager to emit terminal tool
+                    # calls (especially hangup_call) when any tools are supplied. Require explicit end-of-call intent
+                    # in the user's transcript before honoring hangup_call; otherwise retry once without tools to get
+                    # a normal text response.
+                    #
+                    # Default behavior:
+                    # - Enabled for Ollama adapter (component_key == "ollama_llm")
+                    # - Disabled for other pipeline LLM adapters unless explicitly enabled via llm_options
+                    #   (set `hangup_call_guardrail: true` in pipeline llm options).
+                    llm_adapter_key = getattr(getattr(pipeline, "llm_adapter", None), "component_key", None)
+                    guardrail_cfg = (llm_options or {}).get("hangup_call_guardrail")
+                    if guardrail_cfg is None:
+                        hangup_guardrail_enabled = llm_adapter_key == "ollama_llm"
+                    else:
+                        hangup_guardrail_enabled = bool(guardrail_cfg)
+
+                    if hangup_guardrail_enabled and tool_calls and any(tc.get("name") == "hangup_call" for tc in tool_calls):
+                        normalized_user_text = re.sub(r"\s+", " ", (transcript_text or "").strip().lower())
+                        end_markers = (
+                            "that's all",
+                            "that is all",
+                            "that's it",
+                            "that is it",
+                            "nothing else",
+                            "all set",
+                            "all good",
+                            "end the call",
+                            "end call",
+                            "hang up",
+                            "hangup",
+                            "goodbye",
+                            "bye",
+                        )
+                        has_end_intent = any(m in normalized_user_text for m in end_markers)
+                        if not has_end_intent:
+                            before_count = len(tool_calls)
+                            tool_calls = [tc for tc in tool_calls if tc.get("name") != "hangup_call"]
+                            dropped = before_count - len(tool_calls)
+                            if dropped:
+                                logger.warning(
+                                    "Dropping hangup_call tool call (no end-of-call intent detected)",
+                                    call_id=call_id,
+                                    transcript_preview=normalized_user_text[:120],
+                                )
+                            if not response_text and not tool_calls:
+                                try:
+                                    llm_options_no_tools = dict(llm_options or {})
+                                    llm_options_no_tools["tools"] = []
+                                    llm_options_no_tools["tools_enabled"] = False
+                                    llm_result_retry = await pipeline.llm_adapter.generate(
+                                        call_id,
+                                        transcript_text,
+                                        context_for_llm,
+                                        llm_options_no_tools,
+                                    )
+                                    if isinstance(llm_result_retry, LLMResponse):
+                                        response_text = (llm_result_retry.text or "").strip()
+                                        tool_calls = llm_result_retry.tool_calls or []
+                                    else:
+                                        response_text = (str(llm_result_retry) or "").strip()
+                                        tool_calls = []
+                                    if tool_calls:
+                                        logger.info(
+                                            "Dropping tool calls from retry (tools disabled)",
+                                            call_id=call_id,
+                                            tool_count=len(tool_calls),
+                                        )
+                                        tool_calls = []
+                                except Exception:
+                                    logger.debug(
+                                        "LLM retry without tools failed",
+                                        call_id=call_id,
+                                        exc_info=True,
+                                    )
+                                    return
+
                     if not response_text and not tool_calls:
                         return
                     
