@@ -321,6 +321,12 @@ class TestEmailSummaryTool:
         formatted = email_summary_tool._format_conversation([])
         
         assert "no conversation" in formatted.lower()
+
+    def test_transcript_html_preserves_newlines_and_escapes(self, email_summary_tool):
+        transcript = "AI: Hello\nCaller: 1 < 2\nAI: Bye"
+        html_out = email_summary_tool._format_pretty_html(transcript)
+        assert "<br" in html_out
+        assert "1 &lt; 2" in html_out
     
     # ==================== Error Handling Tests ====================
     

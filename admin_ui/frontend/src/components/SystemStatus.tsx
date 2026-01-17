@@ -10,7 +10,8 @@ import {
   HardDrive,
   Shield,
   Box,
-  Globe
+  Globe,
+  Tag
 } from 'lucide-react';
 import { ConfigCard } from './ui/ConfigCard';
 import axios from 'axios';
@@ -33,6 +34,10 @@ interface PlatformCheck {
 }
 
 interface PlatformInfo {
+  project?: {
+    version: string;
+    source?: string;
+  };
   os: {
     id: string;
     version: string;
@@ -322,6 +327,15 @@ export const SystemStatus = () => {
             <div className="text-sm text-foreground">
               {platform.os.id} {platform.os.version}
               {platform.os.is_eol && <span className="ml-1 text-yellow-500">(EOL)</span>}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Tag className="w-4 h-4 text-muted-foreground" />
+          <div>
+            <div className="text-xs text-muted-foreground">AAVA</div>
+            <div className="text-sm text-foreground" title={platform.project?.source ? `source: ${platform.project.source}` : undefined}>
+              {platform.project?.version || 'Unknown'}
             </div>
           </div>
         </div>

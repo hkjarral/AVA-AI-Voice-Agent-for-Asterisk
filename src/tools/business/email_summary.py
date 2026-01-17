@@ -9,6 +9,7 @@ import os
 import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any
+import html
 import structlog
 from jinja2 import Template
 
@@ -67,7 +68,6 @@ EMAIL_TEMPLATE = """
       border-left: 3px solid #4F46E5;
       margin-top: 20px;
       font-family: monospace;
-      white-space: pre-wrap;
       word-wrap: break-word;
     }
     .footer {
@@ -106,7 +106,7 @@ EMAIL_TEMPLATE = """
     
     {% if include_transcript and transcript %}
     <h3>Conversation Transcript</h3>
-    <div class="transcript">{{ transcript }}</div>
+    <div class="transcript">{{ transcript_html }}</div>
     {% if transcript_note %}
     <p style="color: #6b7280; font-size: 12px; margin-top: 10px;">
       <em>{{ transcript_note }}</em>
@@ -115,7 +115,7 @@ EMAIL_TEMPLATE = """
     {% endif %}
     
     <div class="footer">
-      <p><em>Powered by AI Voice Agent v5.0</em></p>
+      <p><em>Powered by AI Voice Agent</em></p>
     </div>
   </div>
 </body>
@@ -240,9 +240,11 @@ class SendEmailSummaryTool(Tool):
         
         # Get transcript from conversation_history
         transcript = ""
+        transcript_html = ""
         transcript_note = None
         if hasattr(session, "conversation_history") and session.conversation_history:
             transcript = self._format_conversation(session.conversation_history)
+            transcript_html = self._format_pretty_html(transcript)
             
             # Note: With input_audio_transcription enabled, user transcripts are now captured
             # for all providers including OpenAI Realtime with server_vad
@@ -259,6 +261,7 @@ class SendEmailSummaryTool(Tool):
             outcome=outcome,
             include_transcript=config.get("include_transcript", True),
             transcript=transcript,
+            transcript_html=transcript_html,
             transcript_note=transcript_note
         )
         
@@ -273,6 +276,17 @@ class SendEmailSummaryTool(Tool):
             "subject": f"Call Summary - {caller_number if caller_number != 'Unknown' else 'Call'} - {start_time.strftime('%Y-%m-%d %H:%M')}",
             "html": html_content
         }
+
+    def _format_pretty_html(self, text: str) -> str:
+        """
+        Convert plain text into HTML that preserves newlines in Outlook.
+
+        Outlook desktop often ignores CSS `white-space: pre-wrap`, so we must render
+        newlines as explicit `<br/>` tags.
+        """
+        safe = html.escape(text or "")
+        safe = safe.replace("\r\n", "\n").replace("\r", "\n")
+        return safe.replace("\n", "<br/>\n")
     
     async def _send_email_async(self, email_data: Dict[str, Any], call_id: str):
         """Send email asynchronously via Resend API."""

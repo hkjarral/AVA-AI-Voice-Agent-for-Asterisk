@@ -9,6 +9,7 @@ import os
 import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+import html
 import structlog
 from jinja2 import Template
 
@@ -68,7 +69,6 @@ TRANSCRIPT_EMAIL_TEMPLATE = """
       border-left: 3px solid #10B981;
       margin-top: 20px;
       font-family: monospace;
-      white-space: pre-wrap;
       word-wrap: break-word;
     }
     .footer {
@@ -103,11 +103,11 @@ TRANSCRIPT_EMAIL_TEMPLATE = """
     </div>
     
     <h3>Conversation Transcript</h3>
-    <div class="transcript">{{ transcript }}</div>
+    <div class="transcript">{{ transcript_html }}</div>
     
     <div class="footer">
       <p>If you have any questions or need assistance, please don't hesitate to contact us.</p>
-      <p><em>Powered by AI Voice Agent v5.0</em></p>
+      <p><em>Powered by AI Voice Agent</em></p>
     </div>
   </div>
 </body>
@@ -363,10 +363,13 @@ class RequestTranscriptTool(Tool):
         
         # Get transcript from conversation_history
         transcript = ""
+        transcript_html = ""
         if hasattr(session, "conversation_history") and session.conversation_history:
             transcript = self._format_conversation(session.conversation_history)
+            transcript_html = self._format_pretty_html(transcript)
         else:
             transcript = "Transcript not available for this call."
+            transcript_html = self._format_pretty_html(transcript)
         
         # Render email HTML
         html_content = self._template.render(
@@ -374,7 +377,8 @@ class RequestTranscriptTool(Tool):
             duration=duration_str,
             caller_name=caller_name,
             caller_number=caller_number,
-            transcript=transcript
+            transcript=transcript,
+            transcript_html=transcript_html,
         )
         
         # Build email data
@@ -394,6 +398,17 @@ class RequestTranscriptTool(Tool):
             email_data["bcc"] = admin_email
         
         return email_data
+
+    def _format_pretty_html(self, text: str) -> str:
+        """
+        Convert plain text into HTML that preserves newlines in Outlook.
+
+        Outlook desktop often ignores CSS `white-space: pre-wrap`, so we must render
+        newlines as explicit `<br/>` tags.
+        """
+        safe = html.escape(text or "")
+        safe = safe.replace("\r\n", "\n").replace("\r", "\n")
+        return safe.replace("\n", "<br/>\n")
     
     async def _send_transcript_async(self, email_data: Dict[str, Any], call_id: str):
         """Send transcript email asynchronously via Resend API."""

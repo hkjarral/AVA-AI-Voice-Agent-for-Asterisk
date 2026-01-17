@@ -53,6 +53,12 @@ class TestRequestTranscriptTool:
         # Should emphasize confirmation workflow
         assert "confirm" in description.lower() or "correct" in description.lower()
         assert "read back" in description.lower() or "repeat" in description.lower()
+
+    def test_transcript_html_preserves_newlines_and_escapes(self, transcript_tool):
+        transcript = "AI: Hello\nCaller: 1 < 2\nAI: Bye"
+        html_out = transcript_tool._format_pretty_html(transcript)
+        assert "<br" in html_out
+        assert "1 &lt; 2" in html_out
     
     # ==================== Email Parsing Tests ====================
     

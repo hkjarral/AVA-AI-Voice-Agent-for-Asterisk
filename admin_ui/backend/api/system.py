@@ -6,6 +6,8 @@ import psutil
 import os
 import shutil
 import logging
+import re
+import subprocess
 import yaml
 from services.fs import upsert_env_vars
 
@@ -1521,6 +1523,7 @@ class PlatformInfo(BaseModel):
     os: dict
     docker: dict
     compose: dict
+    project: dict = None
     selinux: dict = None
     directories: dict
     asterisk: dict = None
@@ -1533,6 +1536,59 @@ class PlatformResponse(BaseModel):
 
 _PLATFORMS_CACHE = None
 _PLATFORMS_CACHE_MTIME = None
+
+
+def _detect_project_version(project_root: str) -> dict:
+    """
+    Best-effort project version detection for Admin UI.
+
+    Preference order:
+      1) AAVA_PROJECT_VERSION env var (operator override)
+      2) git describe (when repo checkout is present)
+      3) Parse README.md for a `vX.Y.Z` token
+      4) unknown
+    """
+    override = (os.getenv("AAVA_PROJECT_VERSION") or "").strip()
+    if override:
+        return {"version": override, "source": "env"}
+
+    try:
+        # Use -c safe.directory to avoid "dubious ownership" failures on some hosts.
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={project_root}",
+                "-C",
+                project_root,
+                "describe",
+                "--tags",
+                "--always",
+                "--dirty",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if proc.returncode == 0:
+            version = (proc.stdout or "").strip()
+            if version:
+                return {"version": version, "source": "git"}
+    except Exception:
+        pass
+
+    try:
+        readme_path = os.path.join(project_root, "README.md")
+        if os.path.exists(readme_path):
+            with open(readme_path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+            m = re.search(r"\bv\d+\.\d+\.\d+\b", text)
+            if m:
+                return {"version": m.group(0), "source": "readme"}
+    except Exception:
+        pass
+
+    return {"version": "unknown", "source": "unknown"}
 
 
 def _github_docs_url(path_or_url: Optional[str]) -> Optional[str]:
@@ -2364,6 +2420,8 @@ async def get_platform():
     selinux_info = _detect_selinux()
     dir_info = _detect_directories()
     asterisk_info = _detect_asterisk()
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    project_info = _detect_project_version(project_root)
 
     platforms = _load_platforms_yaml()
     platform_key = _select_platform_key(platforms, os_info.get("id"), os_info.get("family"))
@@ -2384,6 +2442,7 @@ async def get_platform():
             "os": os_info,
             "docker": docker_info,
             "compose": compose_info,
+            "project": project_info,
             "selinux": selinux_info,
             "directories": dir_info,
             "asterisk": asterisk_info,
