@@ -146,7 +146,7 @@ cd Asterisk-AI-Voice-Agent
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-	> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.0.
+	> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.1.4.
 
 ---
 

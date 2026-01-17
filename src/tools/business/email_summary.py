@@ -224,6 +224,15 @@ class SendEmailSummaryTool(Tool):
         # Extract metadata
         caller_name = getattr(session, "caller_name", None)
         caller_number = getattr(session, "caller_number", "Unknown")
+        outcome = getattr(session, "call_outcome", "Completed")
+
+        # Jinja2 Template() does not enable autoescape: sanitize user-provided fields.
+        if caller_name is not None:
+            caller_name = html.escape(str(caller_name))
+        if caller_number is not None:
+            caller_number = html.escape(str(caller_number))
+        if outcome is not None:
+            outcome = html.escape(str(outcome))
         start_time = getattr(session, "start_time", None) or datetime.now(timezone.utc)
         end_time = datetime.now(timezone.utc)
         
@@ -248,9 +257,6 @@ class SendEmailSummaryTool(Tool):
             
             # Note: With input_audio_transcription enabled, user transcripts are now captured
             # for all providers including OpenAI Realtime with server_vad
-        
-        # Get outcome/status
-        outcome = getattr(session, "call_outcome", "Completed")
         
         # Render email HTML
         html_content = self._template.render(

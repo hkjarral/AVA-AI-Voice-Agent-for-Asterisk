@@ -347,6 +347,12 @@ class RequestTranscriptTool(Tool):
         # Extract metadata
         caller_name = getattr(session, "caller_name", None)
         caller_number = getattr(session, "caller_number", "Unknown")
+
+        # Jinja2 Template() does not enable autoescape: sanitize user-provided fields.
+        if caller_name is not None:
+            caller_name = html.escape(str(caller_name))
+        if caller_number is not None:
+            caller_number = html.escape(str(caller_number))
         start_time = getattr(session, "start_time", None) or datetime.now(timezone.utc)
         end_time = datetime.now(timezone.utc)
         

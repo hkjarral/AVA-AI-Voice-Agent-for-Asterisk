@@ -8630,7 +8630,10 @@ class Engine:
                             "goodbye",
                             "bye",
                         )
-                        has_end_intent = any(m in normalized_user_text for m in end_markers)
+                        has_end_intent = any(
+                            re.search(rf"(?:^|\\b){re.escape(m)}(?:\\b|$)", normalized_user_text)
+                            for m in end_markers
+                        )
                         if not has_end_intent:
                             before_count = len(tool_calls)
                             tool_calls = [tc for tc in tool_calls if tc.get("name") != "hangup_call"]
