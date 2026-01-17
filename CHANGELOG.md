@@ -12,9 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+### Added
+
+- Admin UI Dashboard: show current project version in the **System Ready** card (best-effort detection via `git describe` with fallback to README parsing; supports `AAVA_PROJECT_VERSION` override).
+
+### Changed
+
+- Docs/CLI: align operator-facing version references to `v5.1.4` (avoid hardcoded `v5.0` strings in CLI help/output where possible).
+
 ### Fixed
 
 - Docker builds: pin base OS/runtime to avoid upstream tag drift (`admin_ui`/`ai_engine`: Debian 12 `bookworm` + Python 3.11; `local_ai_server`: Debian 13 `trixie` + Python 3.11 for Kroko compatibility).
+- Ollama pipelines: prevent overly-eager `hangup_call` tool calls from ending calls when the caller did not indicate end-of-call intent; support `num_ctx` pass-through and honor `tools_enabled` for tool calling.
+- Email transcripts: improve Outlook compatibility by rendering transcript newlines as `<br/>` (HTML-escaped) so caller/AI lines display correctly across clients.
 
 ## [5.0.1] - 2026-01-14
 
