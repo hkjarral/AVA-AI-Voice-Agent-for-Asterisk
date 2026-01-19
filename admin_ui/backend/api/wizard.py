@@ -149,30 +149,51 @@ echo "models permissions fixed"
 
 
 def _ensure_models_dir_ready(path: str) -> None:
+    def _is_writable_dir(dir_path: str) -> bool:
+        if not os.path.isdir(dir_path):
+            return False
+        try:
+            fd, tmp = tempfile.mkstemp(prefix=".model_write_test_", dir=dir_path)
+            os.close(fd)
+            os.remove(tmp)
+            return True
+        except Exception:
+            return False
+
+    if os.path.exists(path) and not os.path.isdir(path):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Models path exists but is not a directory: {path}. Remove or rename it and retry.",
+        )
+
+    if os.path.isdir(path) and _is_writable_dir(path):
+        return
+
     try:
         os.makedirs(path, exist_ok=True)
-        return
     except PermissionError:
-        fix = _attempt_fix_models_permissions()
-        if not fix.get("success"):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"Permission denied writing models directory ({path}). "
-                    f"Run: sudo ./preflight.sh --apply-fixes"
-                ),
-            )
-        try:
-            os.makedirs(path, exist_ok=True)
-            return
-        except PermissionError:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"Permission denied writing models directory ({path}) after attempted auto-fix. "
-                    f"Run: sudo ./preflight.sh --apply-fixes"
-                ),
-            )
+        pass
+
+    if _is_writable_dir(path):
+        return
+
+    fix = _attempt_fix_models_permissions()
+    if not fix.get("success"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Permission denied writing models directory ({path}). "
+                f"Run: sudo ./preflight.sh --apply-fixes"
+            ),
+        )
+    if not _is_writable_dir(path):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Permission denied writing models directory ({path}) after attempted auto-fix. "
+                f"Run: sudo ./preflight.sh --apply-fixes"
+            ),
+        )
 
 
 def _url_content_length(url: str) -> Optional[int]:

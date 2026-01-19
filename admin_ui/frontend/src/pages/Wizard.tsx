@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
@@ -115,6 +115,11 @@ const Wizard = () => {
     const [startingEngine, setStartingEngine] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
     const [startingLocalServer, setStartingLocalServer] = useState(false);
+    const localServerPollRef = useRef<{ cancelled: boolean; timeouts: number[]; startedAt: number | null }>({
+        cancelled: false,
+        timeouts: [],
+        startedAt: null
+    });
     const [engineProgress, setEngineProgress] = useState<{
         steps: Array<{ name: string; status: string; message: string }>;
         currentStep: string;
@@ -376,6 +381,11 @@ const Wizard = () => {
         setError(null);
         setStartingLocalServer(true);
 
+        localServerPollRef.current.cancelled = false;
+        localServerPollRef.current.timeouts.forEach((id) => clearTimeout(id));
+        localServerPollRef.current.timeouts = [];
+        localServerPollRef.current.startedAt = Date.now();
+
         setLocalAIStatus((prev) => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
 
         try {
@@ -391,22 +401,38 @@ const Wizard = () => {
         }
 
         const pollLogs = async () => {
+            if (localServerPollRef.current.cancelled) return;
+            const startedAt = localServerPollRef.current.startedAt || Date.now();
+            const elapsed = Date.now() - startedAt;
+            if (elapsed >= 120_000) return;
             try {
                 const logRes = await axios.get('/api/wizard/local/server-logs');
-                setLocalAIStatus((prev) => ({
-                    ...prev,
-                    serverLogs: logRes.data.logs || [],
-                    serverReady: logRes.data.ready
-                }));
+                if (!localServerPollRef.current.cancelled) {
+                    setLocalAIStatus((prev) => ({
+                        ...prev,
+                        serverLogs: logRes.data.logs || [],
+                        serverReady: logRes.data.ready
+                    }));
+                }
                 if (!logRes.data.ready) {
-                    setTimeout(pollLogs, 2000);
+                    const id = window.setTimeout(pollLogs, 2000);
+                    localServerPollRef.current.timeouts.push(id);
                 }
             } catch {
-                setTimeout(pollLogs, 3000);
+                const id = window.setTimeout(pollLogs, 3000);
+                localServerPollRef.current.timeouts.push(id);
             }
         };
         pollLogs();
     }, [startingLocalServer]);
+
+    useEffect(() => {
+        return () => {
+            localServerPollRef.current.cancelled = true;
+            localServerPollRef.current.timeouts.forEach((id) => clearTimeout(id));
+            localServerPollRef.current.timeouts = [];
+        };
+    }, []);
 
     // Fully Local: auto-start local_ai_server on completion (after models are present).
     useEffect(() => {

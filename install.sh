@@ -155,6 +155,25 @@ setup_models_directory() {
     $SUDO chown "$CONTAINER_UID:$AST_GID" "$MODELS_DIR" "$MODELS_DIR/stt" "$MODELS_DIR/tts" "$MODELS_DIR/llm" "$MODELS_DIR/kroko" 2>/dev/null || true
     $SUDO chmod 2775 "$MODELS_DIR" "$MODELS_DIR/stt" "$MODELS_DIR/tts" "$MODELS_DIR/llm" "$MODELS_DIR/kroko" 2>/dev/null || true
 
+    # Handle SELinux context on RHEL-family systems (Sangoma/FreePBX)
+    if command -v getenforce &>/dev/null; then
+        SELINUX_MODE=$(getenforce 2>/dev/null || echo "Disabled")
+        if [ "$SELINUX_MODE" = "Enforcing" ]; then
+            print_info "SELinux is Enforcing - setting container context for models directory..."
+            if command -v semanage &>/dev/null; then
+                # Add SELinux context for container access
+                $SUDO semanage fcontext -a -t container_file_t "$MODELS_DIR(/.*)?" 2>/dev/null || true
+                $SUDO restorecon -Rv "$MODELS_DIR" 2>/dev/null || true
+                print_success "SELinux context applied to models directory"
+            else
+                print_warning "semanage not found - SELinux context not set"
+                print_info "  Install with: $SUDO yum install -y policycoreutils-python-utils"
+                print_info "  Then run: $SUDO semanage fcontext -a -t container_file_t '$MODELS_DIR(/.*)?'"
+                print_info "            $SUDO restorecon -Rv '$MODELS_DIR'"
+            fi
+        fi
+    fi
+
     if [ -d "$MODELS_DIR" ]; then
         print_success "Models directory ready: $MODELS_DIR"
     else

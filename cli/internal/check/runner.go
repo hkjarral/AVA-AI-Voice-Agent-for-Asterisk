@@ -338,7 +338,10 @@ func (r *Runner) checkModelsMount(engine *containerInspect, localAI *containerIn
 	details := []string{}
 	warnings := []string{}
 
-	if hostRoot == "" {
+	remoteDocker := dockerHostIsRemote()
+	if remoteDocker {
+		details = append(details, "host_models_validation=skipped (remote docker host)")
+	} else if hostRoot == "" {
 		warnings = append(warnings, "Could not infer host project root from ai_engine mounts")
 	} else {
 		modelsHost := filepath.Join(hostRoot, "models")
@@ -440,6 +443,17 @@ print(json.dumps({"paths": out}))
 	}
 
 	return Item{Name: "Local AI Models", Status: StatusPass, Message: "models mount looks ok", Details: strings.Join(details, "\n")}
+}
+
+func dockerHostIsRemote() bool {
+	host := strings.TrimSpace(os.Getenv("DOCKER_HOST"))
+	if host == "" {
+		return false
+	}
+	if strings.HasPrefix(host, "unix://") {
+		return host != "unix:///var/run/docker.sock"
+	}
+	return true
 }
 
 func (r *Runner) dockerExecPython(script string) ([]byte, error) {
