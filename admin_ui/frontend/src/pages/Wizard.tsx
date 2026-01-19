@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
@@ -114,6 +114,7 @@ const Wizard = () => {
     }>({ running: false, exists: false, checked: false });
     const [startingEngine, setStartingEngine] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
+    const [startingLocalServer, setStartingLocalServer] = useState(false);
     const [engineProgress, setEngineProgress] = useState<{
         steps: Array<{ name: string; status: string; message: string }>;
         currentStep: string;
@@ -337,13 +338,95 @@ const Wizard = () => {
         try {
             const res = await axios.get('/api/system/health');
             const status = res.data?.local_ai_server?.status;
-            if (status !== 'connected') {
-                throw new Error('Local AI Server is not reachable. Please start the local_ai_server container and retry.');
+            if (status === 'connected') return;
+
+            // Best-effort: start local_ai_server automatically for local_hybrid.
+            try {
+                await axios.post('/api/wizard/local/start-server');
+            } catch (startErr: any) {
+                throw new Error(startErr?.response?.data?.message || startErr?.message || 'Failed to start local_ai_server');
+            }
+
+            // Poll logs endpoint until ready (or timeout).
+            const deadlineMs = Date.now() + 120_000;
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+                if (Date.now() > deadlineMs) break;
+                try {
+                    const logRes = await axios.get('/api/wizard/local/server-logs');
+                    if (logRes.data?.ready) break;
+                } catch {
+                    // ignore and retry
+                }
+                await new Promise((r) => setTimeout(r, 2000));
+            }
+
+            const res2 = await axios.get('/api/system/health');
+            const status2 = res2.data?.local_ai_server?.status;
+            if (status2 !== 'connected') {
+                throw new Error(`Local AI Server is not reachable (Status: ${status2}). Please ensure it is running.`);
             }
         } catch (err: any) {
             throw new Error(err?.message || 'Local AI Server health check failed.');
         }
     };
+
+    const startLocalAIServer = useCallback(async () => {
+        if (startingLocalServer) return;
+        setError(null);
+        setStartingLocalServer(true);
+
+        setLocalAIStatus((prev) => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
+
+        try {
+            const res = await axios.post('/api/wizard/local/start-server');
+            if (!res.data.success) {
+                throw new Error(res.data.message || 'Failed to start local_ai_server');
+            }
+        } catch (err: any) {
+            setLocalAIStatus((prev) => ({ ...prev, serverStarted: false, serverReady: false }));
+            throw err;
+        } finally {
+            setStartingLocalServer(false);
+        }
+
+        const pollLogs = async () => {
+            try {
+                const logRes = await axios.get('/api/wizard/local/server-logs');
+                setLocalAIStatus((prev) => ({
+                    ...prev,
+                    serverLogs: logRes.data.logs || [],
+                    serverReady: logRes.data.ready
+                }));
+                if (!logRes.data.ready) {
+                    setTimeout(pollLogs, 2000);
+                }
+            } catch {
+                setTimeout(pollLogs, 3000);
+            }
+        };
+        pollLogs();
+    }, [startingLocalServer]);
+
+    // Fully Local: auto-start local_ai_server on completion (after models are present).
+    useEffect(() => {
+        if (step !== 5) return;
+        if (config.provider !== 'local') return;
+        if (localAIStatus.serverStarted || startingLocalServer) return;
+        if (!localAIStatus.modelsReady && !localAIStatus.downloadCompleted) return;
+
+        startLocalAIServer().catch((err: any) => {
+            setError(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server');
+        });
+    }, [
+        step,
+        config.provider,
+        localAIStatus.serverStarted,
+        localAIStatus.modelsReady,
+        localAIStatus.downloadCompleted,
+        startingLocalServer,
+        startLocalAIServer
+    ]);
 
     const handleNext = async () => {
         setError(null);
@@ -544,15 +627,9 @@ const Wizard = () => {
             if (config.provider === 'local_hybrid') {
                 setLoading(true);
                 try {
-                    // Check if Local AI Server is reachable via backend proxy
-                    const res = await axios.get('/api/system/health');
-                    if (res.data.local_ai_server?.status !== 'connected') {
-                        setError(`Local AI Server is not reachable (Status: ${res.data.local_ai_server?.status}). Please ensure it is running.`);
-                        setLoading(false);
-                        return;
-                    }
-                } catch (err) {
-                    setError('Failed to contact system health endpoint. Please check backend logs.');
+                    await verifyLocalAIHealth();
+                } catch (err: any) {
+                    setError(err?.message || 'Local AI Server health check failed.');
                     setLoading(false);
                     return;
                 }
@@ -1517,7 +1594,7 @@ const Wizard = () => {
                                                         };
                                                         pollProgress();
                                                     } catch (err: any) {
-                                                        setError('Failed to start download: ' + err.message);
+                                                        setError('Failed to start download: ' + (err.response?.data?.detail || err.message));
                                                         setLocalAIStatus(prev => ({ ...prev, downloading: false }));
                                                     }
                                                 }}
@@ -1847,52 +1924,18 @@ const Wizard = () => {
                                     </h3>
 
                                     {!localAIStatus.serverStarted ? (
-                                        <button
+                                    <button
                                             onClick={async () => {
-                                                setLoading(true);
-                                                setError(null);
-                                                // Mark as started immediately to show logs panel
-                                                setLocalAIStatus(prev => ({ ...prev, serverStarted: true, serverLogs: ['Starting container...'] }));
-
                                                 try {
-                                                    const res = await axios.post('/api/wizard/local/start-server');
-                                                    if (!res.data.success) {
-                                                        setError(res.data.message);
-                                                        setLocalAIStatus(prev => ({ ...prev, serverStarted: false }));
-                                                        setLoading(false);
-                                                        return;
-                                                    }
+                                                    await startLocalAIServer();
                                                 } catch (err: any) {
-                                                    setError('Failed to start server: ' + err.message);
-                                                    setLocalAIStatus(prev => ({ ...prev, serverStarted: false }));
-                                                    setLoading(false);
-                                                    return;
+                                                    setError(err?.response?.data?.message || err?.message || 'Failed to start local_ai_server');
                                                 }
-
-                                                setLoading(false);
-
-                                                // Start polling logs
-                                                const pollLogs = async () => {
-                                                    try {
-                                                        const logRes = await axios.get('/api/wizard/local/server-logs');
-                                                        setLocalAIStatus(prev => ({
-                                                            ...prev,
-                                                            serverLogs: logRes.data.logs || [],
-                                                            serverReady: logRes.data.ready
-                                                        }));
-                                                        if (!logRes.data.ready) {
-                                                            setTimeout(pollLogs, 2000);
-                                                        }
-                                                    } catch {
-                                                        setTimeout(pollLogs, 3000);
-                                                    }
-                                                };
-                                                pollLogs();
                                             }}
-                                            disabled={loading}
+                                            disabled={startingLocalServer}
                                             className="w-full px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
                                         >
-                                            {loading ? (
+                                            {startingLocalServer ? (
                                                 <>
                                                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                                                     Starting...

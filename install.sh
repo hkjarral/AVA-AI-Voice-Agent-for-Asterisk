@@ -138,6 +138,31 @@ PY
     fi
 }
 
+setup_models_directory() {
+    print_info "Setting up models directory for local AI..."
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    MODELS_DIR="$SCRIPT_DIR/models"
+    CONTAINER_UID=1000
+
+    # Resolve asterisk group for shared access (best-effort).
+    AST_GID=$(id -g asterisk 2>/dev/null || echo 995)
+
+    # Create expected layout (Admin UI downloads expect these paths).
+    $SUDO mkdir -p "$MODELS_DIR/stt" "$MODELS_DIR/tts" "$MODELS_DIR/llm" "$MODELS_DIR/kroko" || true
+
+    # Ensure the appuser inside containers can write new model files.
+    $SUDO chown "$CONTAINER_UID:$AST_GID" "$MODELS_DIR" "$MODELS_DIR/stt" "$MODELS_DIR/tts" "$MODELS_DIR/llm" "$MODELS_DIR/kroko" 2>/dev/null || true
+    $SUDO chmod 2775 "$MODELS_DIR" "$MODELS_DIR/stt" "$MODELS_DIR/tts" "$MODELS_DIR/llm" "$MODELS_DIR/kroko" 2>/dev/null || true
+
+    if [ -d "$MODELS_DIR" ]; then
+        print_success "Models directory ready: $MODELS_DIR"
+    else
+        print_warning "Models directory missing; local AI setup may fail (expected: $MODELS_DIR)"
+        print_info "  Tip: Run: sudo ./preflight.sh --apply-fixes"
+    fi
+}
+
 print_success() {
     echo -e "${COLOR_GREEN}SUCCESS: $1${COLOR_RESET}"
 }
@@ -1606,6 +1631,7 @@ main() {
     select_config_template
     setup_media_paths
     setup_data_directory
+    setup_models_directory
     start_services
 }
 

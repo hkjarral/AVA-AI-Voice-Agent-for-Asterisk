@@ -900,6 +900,7 @@ check_directories() {
     local MEDIA_DIR_HOST="$SCRIPT_DIR/asterisk_media/ai-generated"
     local MEDIA_DIR_CONTAINER="${AST_MEDIA_DIR:-/mnt/asterisk_media/ai-generated}"
     local DATA_DIR="$SCRIPT_DIR/data"
+    local MODELS_DIR="$SCRIPT_DIR/models"
     local SHARED_GID
     SHARED_GID="$(choose_shared_gid)"
     local CONTAINER_UID="${CONTAINER_UID_DEFAULT}"
@@ -1029,6 +1030,65 @@ PY
             log_info "  ⚠️  Call history will NOT be recorded without this directory!"
             log_info "  Run: ./preflight.sh --apply-fixes to create it automatically"
             FIX_CMDS+=("mkdir -p $DATA_DIR && chmod 2775 $DATA_DIR && touch $DATA_DIR/.gitkeep")
+        fi
+    fi
+
+    # Check models directory (required for local/local_hybrid pipelines and Admin UI model downloads).
+    # The Admin UI runs as UID 1000 and must be able to create models/{stt,tts,llm,kroko}.
+    local MODEL_SUBDIRS=("stt" "tts" "llm" "kroko")
+
+    if [ -d "$MODELS_DIR" ]; then
+        local models_uid models_gid models_mode
+        models_uid="$(stat_uid "$MODELS_DIR")"
+        models_gid="$(stat_gid "$MODELS_DIR")"
+        models_mode="$(stat_mode "$MODELS_DIR")"
+
+        local models_ok=true
+        if [ "$models_uid" != "$CONTAINER_UID" ]; then
+            models_ok=false
+        fi
+        if [[ "$models_mode" =~ ^[0-9]+$ ]]; then
+            local base_mode="${models_mode: -3}"
+            if [[ "$base_mode" =~ ^[0-9]{3}$ ]]; then
+                local base_oct=$((8#$base_mode))
+                if [ $((base_oct & 0020)) -eq 0 ]; then
+                    models_ok=false
+                fi
+            fi
+        fi
+
+        # Ensure expected subdirectories exist (best-effort).
+        local missing_sub=()
+        for sub in "${MODEL_SUBDIRS[@]}"; do
+            if [ ! -d "$MODELS_DIR/$sub" ]; then
+                missing_sub+=("$MODELS_DIR/$sub")
+            fi
+        done
+
+        if [ "$models_ok" = true ] && [ ${#missing_sub[@]} -eq 0 ]; then
+            log_ok "Models directory (host): $MODELS_DIR"
+        else
+            log_warn "Models directory not ready for local AI downloads (host): $MODELS_DIR"
+            log_info "  Expected: owner UID $CONTAINER_UID, group-writable (recommended: 2775), group GID $SHARED_GID"
+            log_info "  Detected: uid=${models_uid:-unknown} gid=${models_gid:-unknown} mode=${models_mode:-unknown}"
+            if [ ${#missing_sub[@]} -gt 0 ]; then
+                log_info "  Missing: ${missing_sub[*]}"
+            fi
+            FIX_CMDS+=("sudo mkdir -p $MODELS_DIR/stt $MODELS_DIR/tts $MODELS_DIR/llm $MODELS_DIR/kroko")
+            FIX_CMDS+=("sudo chown $CONTAINER_UID:$SHARED_GID $MODELS_DIR $MODELS_DIR/stt $MODELS_DIR/tts $MODELS_DIR/llm $MODELS_DIR/kroko")
+            FIX_CMDS+=("sudo chmod 2775 $MODELS_DIR $MODELS_DIR/stt $MODELS_DIR/tts $MODELS_DIR/llm $MODELS_DIR/kroko")
+        fi
+    else
+        if [ "$APPLY_FIXES" = true ]; then
+            mkdir -p "$MODELS_DIR"/stt "$MODELS_DIR"/tts "$MODELS_DIR"/llm "$MODELS_DIR"/kroko
+            chown "$CONTAINER_UID:$SHARED_GID" "$MODELS_DIR" "$MODELS_DIR"/stt "$MODELS_DIR"/tts "$MODELS_DIR"/llm "$MODELS_DIR"/kroko 2>/dev/null || true
+            chmod 2775 "$MODELS_DIR" "$MODELS_DIR"/stt "$MODELS_DIR"/tts "$MODELS_DIR"/llm "$MODELS_DIR"/kroko 2>/dev/null || true
+            log_ok "Created models directories: $MODELS_DIR/{stt,tts,llm,kroko}"
+        else
+            log_warn "Models directory missing: $MODELS_DIR"
+            log_info "  Local AI setup (and Admin UI model downloads) will fail without this directory."
+            log_info "  Run: sudo ./preflight.sh --apply-fixes to create it automatically"
+            FIX_CMDS+=("mkdir -p $MODELS_DIR/stt $MODELS_DIR/tts $MODELS_DIR/llm $MODELS_DIR/kroko && chown $CONTAINER_UID:$SHARED_GID $MODELS_DIR $MODELS_DIR/stt $MODELS_DIR/tts $MODELS_DIR/llm $MODELS_DIR/kroko && chmod 2775 $MODELS_DIR $MODELS_DIR/stt $MODELS_DIR/tts $MODELS_DIR/llm $MODELS_DIR/kroko")
         fi
     fi
 }

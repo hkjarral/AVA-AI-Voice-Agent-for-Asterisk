@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"os"
 	"os/exec"
 	"runtime"
@@ -54,6 +55,11 @@ func (r *Runner) Run() (*Report, error) {
 
 	rep.Items = append(rep.Items, r.checkNetworkMode(inspect))
 	rep.Items = append(rep.Items, r.checkMounts(inspect))
+
+	// Local AI server status (always reported; WARN if not running).
+	localAIInspect, localAIItem := r.inspectOptionalContainer("local_ai_server")
+	rep.Items = append(rep.Items, localAIItem)
+	rep.Items = append(rep.Items, r.checkModelsMount(inspect, localAIInspect))
 
 	// In-container probes (python-only; no curl).
 	rep.Items = append(rep.Items, r.checkInContainerPaths())
@@ -179,16 +185,16 @@ func (r *Runner) inspectContainer(name string) (*containerInspect, Item) {
 	out, err := exec.Command("docker", "inspect", name).CombinedOutput()
 	if err != nil {
 		return nil, Item{
-			Name:        "Container ai_engine",
+			Name:        "Container " + name,
 			Status:      StatusFail,
 			Message:     "not found (is docker compose up running?)",
 			Details:     strings.TrimSpace(string(out)),
-			Remediation: "Run: docker compose up -d ai_engine",
+			Remediation: "Run: docker compose -p asterisk-ai-voice-agent up -d " + name,
 		}
 	}
 	var arr []containerInspect
 	if err := json.Unmarshal(out, &arr); err != nil || len(arr) == 0 {
-		return nil, Item{Name: "Container ai_engine", Status: StatusFail, Message: "inspect parse failed", Details: errString(err)}
+		return nil, Item{Name: "Container " + name, Status: StatusFail, Message: "inspect parse failed", Details: errString(err)}
 	}
 	ci := arr[0]
 	msg := "running"
@@ -213,10 +219,58 @@ func (r *Runner) inspectContainer(name string) (*containerInspect, Item) {
 	}
 
 	return &ci, Item{
-		Name:    "Container ai_engine",
+		Name:    "Container " + name,
 		Status:  st,
 		Message: msg,
 		Details: strings.Join(details, "\n"),
+	}
+}
+
+func (r *Runner) inspectOptionalContainer(name string) (*containerInspect, Item) {
+	out, err := exec.Command("docker", "inspect", name).CombinedOutput()
+	if err != nil {
+		return nil, Item{
+			Name:        "Container " + name,
+			Status:      StatusWarn,
+			Message:     "not found (optional)",
+			Details:     strings.TrimSpace(string(out)),
+			Remediation: "Start it when needed: docker compose -p asterisk-ai-voice-agent up -d " + name,
+		}
+	}
+	var arr []containerInspect
+	if err := json.Unmarshal(out, &arr); err != nil || len(arr) == 0 {
+		return nil, Item{Name: "Container " + name, Status: StatusWarn, Message: "inspect parse failed", Details: errString(err)}
+	}
+	ci := arr[0]
+	msg := "running"
+	st := StatusPass
+	remediation := ""
+	if !ci.State.Running {
+		msg = "not running (optional)"
+		st = StatusWarn
+		remediation = "Start it when needed: docker compose -p asterisk-ai-voice-agent up -d " + name
+	}
+
+	health := ""
+	if ci.State.Health != nil && ci.State.Health.Status != "" {
+		health = ci.State.Health.Status
+	}
+
+	details := []string{
+		fmt.Sprintf("image=%s", ci.Config.Image),
+		fmt.Sprintf("status=%s", ci.State.Status),
+		fmt.Sprintf("network_mode=%s", ci.HostConfig.NetworkMode),
+	}
+	if health != "" {
+		details = append(details, "health="+health)
+	}
+
+	return &ci, Item{
+		Name:        "Container " + name,
+		Status:      st,
+		Message:     msg,
+		Details:     strings.Join(details, "\n"),
+		Remediation: remediation,
 	}
 }
 
@@ -270,6 +324,122 @@ func (r *Runner) checkMounts(ci *containerInspect) Item {
 		}
 	}
 	return Item{Name: "Mounts", Status: StatusPass, Message: "required mounts present", Details: strings.Join(details, "\n")}
+}
+
+func (r *Runner) checkModelsMount(engine *containerInspect, localAI *containerInspect) Item {
+	hostRoot := ""
+	for _, m := range engine.Mounts {
+		if m.Destination == "/app/data" && strings.TrimSpace(m.Source) != "" {
+			hostRoot = filepath.Dir(m.Source)
+			break
+		}
+	}
+
+	details := []string{}
+	warnings := []string{}
+
+	if hostRoot == "" {
+		warnings = append(warnings, "Could not infer host project root from ai_engine mounts")
+	} else {
+		modelsHost := filepath.Join(hostRoot, "models")
+		if fi, err := os.Stat(modelsHost); err != nil || !fi.IsDir() {
+			warnings = append(warnings, "Host models directory missing: "+modelsHost)
+		} else {
+			details = append(details, "host_models="+modelsHost)
+			subDirs := []string{"stt", "tts", "llm", "kroko"}
+			missing := []string{}
+			for _, sub := range subDirs {
+				p := filepath.Join(modelsHost, sub)
+				if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+					missing = append(missing, p)
+				}
+			}
+			if len(missing) > 0 {
+				warnings = append(warnings, "Missing subdirectories: "+strings.Join(missing, ", "))
+			}
+		}
+	}
+
+	engineHas := false
+	engineSrc := ""
+	for _, m := range engine.Mounts {
+		if m.Destination == "/app/models" {
+			engineHas = true
+			engineSrc = m.Source
+			break
+		}
+	}
+	if engineHas {
+		details = append(details, fmt.Sprintf("ai_engine_models=/app/models <- %s", engineSrc))
+	} else {
+		warnings = append(warnings, "ai_engine is missing /app/models mount")
+	}
+
+	if localAI != nil {
+		localHas := false
+		localSrc := ""
+		for _, m := range localAI.Mounts {
+			if m.Destination == "/app/models" {
+				localHas = true
+				localSrc = m.Source
+				break
+			}
+		}
+		if localHas {
+			details = append(details, fmt.Sprintf("local_ai_server_models=/app/models <- %s", localSrc))
+		} else {
+			warnings = append(warnings, "local_ai_server is missing /app/models mount")
+		}
+	} else {
+		details = append(details, "local_ai_server_models=(container not found)")
+	}
+
+	// In-container view: verify /app/models exists for ai_engine (best-effort; WARN on failure).
+	script := `
+import json, os
+paths=["/app/models","/app/models/stt","/app/models/tts","/app/models/llm","/app/models/kroko"]
+out=[]
+for p in paths:
+    out.append({"path": p, "exists": os.path.isdir(p)})
+print(json.dumps({"paths": out}))
+`
+	raw, err := r.dockerExecPython(script)
+	if err != nil {
+		warnings = append(warnings, "ai_engine /app/models probe failed: "+err.Error())
+	} else {
+		var res struct {
+			Paths []struct {
+				Path   string `json:"path"`
+				Exists bool   `json:"exists"`
+			} `json:"paths"`
+		}
+		if e := json.Unmarshal(bytes.TrimSpace(raw), &res); e == nil {
+			for _, p := range res.Paths {
+				details = append(details, fmt.Sprintf("%s exists=%t", p.Path, p.Exists))
+			}
+			for _, p := range res.Paths {
+				if !p.Exists {
+					warnings = append(warnings, "ai_engine missing directory: "+p.Path)
+				}
+			}
+		}
+	}
+
+	if len(warnings) > 0 {
+		all := append([]string{}, warnings...)
+		if len(details) > 0 {
+			all = append(all, details...)
+		}
+		return Item{
+			Name:        "Local AI Models",
+			Status:      StatusWarn,
+			Message:     "models mount has warnings",
+			Details:     strings.Join(all, "\n"),
+			Remediation: "Run: sudo ./preflight.sh --apply-fixes (creates ./models/* and fixes permissions).",
+		}
+	}
+
+	return Item{Name: "Local AI Models", Status: StatusPass, Message: "models mount looks ok", Details: strings.Join(details, "\n")}
 }
 
 func (r *Runner) dockerExecPython(script string) ([]byte, error) {

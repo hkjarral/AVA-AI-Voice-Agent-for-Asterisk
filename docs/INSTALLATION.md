@@ -44,6 +44,10 @@ agent update
 sudo ./preflight.sh --apply-fixes
 ```
 
+Preflight ensures required host directories exist with correct permissions, including:
+- `./data` (Call History SQLite and runtime state)
+- `./models/{stt,tts,llm,kroko}` (mounted into `ai_engine` and `local_ai_server` as `/app/models`)
+
 If preflight reports warnings or failures, resolve them first, then re-run preflight until it returns clean:
 - Troubleshooting: `docs/TROUBLESHOOTING_GUIDE.md`
 - Re-run: `sudo ./preflight.sh --apply-fixes`

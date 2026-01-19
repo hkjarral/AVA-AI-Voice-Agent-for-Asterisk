@@ -128,7 +128,7 @@ docker compose logs ai_engine | grep -i \"call history\" | tail -n 20
 ```
 
 Common fixes:
-- Run `sudo ./preflight.sh --apply-fixes` (creates `./data`, fixes permissions, applies SELinux contexts where applicable).
+- Run `sudo ./preflight.sh --apply-fixes` (creates `./data` and `./models/*`, fixes permissions, applies SELinux contexts where applicable).
 - Avoid non-local filesystems for `./data` (some NFS setups can break SQLite locking).
 
 ### Admin UI Shows “AI Engine/Local AI Server Error” But Containers Are Running (Tier 3 / Best-effort)
@@ -1032,6 +1032,12 @@ ERROR: Model file not found
 **Fix:** Run model setup:
 ```bash
 make model-setup
+```
+
+If you see permission errors (for example `PermissionError: [Errno 13] Permission denied` when the UI tries to download models), fix host mounts/permissions first:
+```bash
+sudo ./preflight.sh --apply-fixes
+docker compose up -d --force-recreate local_ai_server
 ```
 
 Or check specific paths in `.env`:

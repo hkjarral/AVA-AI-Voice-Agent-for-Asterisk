@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -91,6 +92,7 @@ type updateContext struct {
 }
 
 func runUpdate() error {
+	printUpdateStep("Preparing update")
 	if updateSelfUpdate {
 		maybeSelfUpdateAndReexec()
 	}
@@ -114,10 +116,12 @@ func runUpdate() error {
 		return err
 	}
 
+	printUpdateStep("Creating backups")
 	if err := createUpdateBackups(ctx); err != nil {
 		return err
 	}
 
+	printUpdateStep("Checking working tree")
 	dirty, err := gitIsDirty(updateStashUntracked)
 	if err != nil {
 		return err
@@ -126,11 +130,13 @@ func runUpdate() error {
 		if updateNoStash {
 			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
 		}
+		printUpdateInfo("Working tree is dirty; stashing changes")
 		if err := gitStash(ctx, updateStashUntracked); err != nil {
 			return err
 		}
 	}
 
+	printUpdateStep(fmt.Sprintf("Fetching %s/%s", updateRemote, updateRef))
 	if err := gitFetch(updateRemote, updateRef); err != nil {
 		return err
 	}
@@ -140,17 +146,21 @@ func runUpdate() error {
 	}
 
 	if ctx.newSHA == ctx.oldSHA {
+		printUpdateInfo("Already up to date (%s)", shortSHA(ctx.oldSHA))
 		if ctx.stashed {
+			printUpdateStep("Restoring stashed changes")
 			if err := gitStashPop(ctx); err != nil {
 				return err
 			}
 		}
 		if updateSkipCheck {
-			fmt.Printf("Already up to date (%s)\n", shortSHA(ctx.oldSHA))
+			printUpdateSummary(ctx, "", 0, 0)
 			return nil
 		}
 
-		status, warnCount, failCount, err := runPostUpdateCheck()
+		printUpdateStep("Running agent check")
+		report, status, warnCount, failCount, err := runPostUpdateCheck()
+		printPostUpdateCheck(report, warnCount, failCount)
 		printUpdateSummary(ctx, status, warnCount, failCount)
 		if err != nil {
 			return err
@@ -161,11 +171,13 @@ func runUpdate() error {
 		return nil
 	}
 
+	printUpdateStep("Fast-forwarding code")
 	if err := gitMergeFastForward(fmt.Sprintf("%s/%s", updateRemote, updateRef)); err != nil {
 		return err
 	}
 
 	if ctx.stashed {
+		printUpdateStep("Restoring stashed changes")
 		if err := gitStashPop(ctx); err != nil {
 			return err
 		}
@@ -177,6 +189,8 @@ func runUpdate() error {
 	}
 	decideDockerActions(ctx)
 
+	printUpdateStep("Applying Docker changes")
+	printDockerActionsPlanned(ctx)
 	if err := applyDockerActions(ctx); err != nil {
 		return err
 	}
@@ -186,7 +200,9 @@ func runUpdate() error {
 		return nil
 	}
 
-	status, warnCount, failCount, err := runPostUpdateCheck()
+	printUpdateStep("Running agent check")
+	report, status, warnCount, failCount, err := runPostUpdateCheck()
+	printPostUpdateCheck(report, warnCount, failCount)
 	printUpdateSummary(ctx, status, warnCount, failCount)
 	if err != nil {
 		return err
@@ -799,21 +815,21 @@ func applyDockerActions(ctx *updateContext) error {
 	return nil
 }
 
-func runPostUpdateCheck() (status string, warnCount int, failCount int, err error) {
+func runPostUpdateCheck() (report *check.Report, status string, warnCount int, failCount int, err error) {
 	runner := check.NewRunner(verbose, version, buildTime)
 	report, runErr := runner.Run()
 	if report == nil {
-		return "FAIL", 0, 1, fmt.Errorf("agent check failed: %w", runErr)
+		return nil, "FAIL", 0, 1, fmt.Errorf("agent check failed: %w", runErr)
 	}
 	warnCount = report.WarnCount
 	failCount = report.FailCount
 	if runErr != nil || failCount > 0 {
-		return "FAIL", warnCount, failCount, runErr
+		return report, "FAIL", warnCount, failCount, runErr
 	}
 	if warnCount > 0 {
-		return "WARN", warnCount, 0, nil
+		return report, "WARN", warnCount, 0, nil
 	}
-	return "PASS", 0, 0, nil
+	return report, "PASS", 0, 0, nil
 }
 
 func printUpdateSummary(ctx *updateContext, checkStatus string, warnCount int, failCount int) {
@@ -846,6 +862,39 @@ func printUpdateSummary(ctx *updateContext, checkStatus string, warnCount int, f
 	}
 }
 
+func printUpdateStep(title string) {
+	fmt.Printf("\n==> %s\n", title)
+}
+
+func printUpdateInfo(format string, args ...any) {
+	fmt.Printf(" - "+format+"\n", args...)
+}
+
+func printDockerActionsPlanned(ctx *updateContext) {
+	if len(ctx.servicesToRebuild) == 0 && len(ctx.servicesToRestart) == 0 && !ctx.composeChanged {
+		printUpdateInfo("No container rebuild/restart required")
+		return
+	}
+	if ctx.composeChanged {
+		printUpdateInfo("Compose files changed (will run docker compose up --no-build --remove-orphans)")
+	}
+	if len(ctx.servicesToRebuild) > 0 {
+		printUpdateInfo("Will rebuild: %s", strings.Join(sortedKeys(ctx.servicesToRebuild), ", "))
+	}
+	if len(ctx.servicesToRestart) > 0 {
+		printUpdateInfo("Will restart: %s", strings.Join(sortedKeys(ctx.servicesToRestart), ", "))
+	}
+}
+
+func printPostUpdateCheck(report *check.Report, warnCount int, failCount int) {
+	if report == nil {
+		return
+	}
+	if verbose || warnCount > 0 || failCount > 0 {
+		report.OutputText(os.Stdout)
+	}
+}
+
 func sortedKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -866,6 +915,22 @@ func shortSHA(sha string) string {
 func runCmd(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = os.Stdin
+	if verbose {
+		fmt.Printf(" → %s %s\n", name, strings.Join(args, " "))
+		var buf bytes.Buffer
+		cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+		cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+		err := cmd.Run()
+		text := strings.TrimSpace(buf.String())
+		if err != nil {
+			if text != "" {
+				return text, fmt.Errorf("%w", err)
+			}
+			return text, err
+		}
+		return text, nil
+	}
+
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
