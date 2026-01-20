@@ -1476,6 +1476,8 @@ async def fix_directory_issues():
     errors = []
     manual_steps = []
 
+    path_to_fix = "/mnt/asterisk_media/ai-generated" if in_docker else host_media_dir
+    
     # If asterisk_media is a symlink to a missing target (common after reboot with external mounts),
     # auto-fix inside the container cannot repair it.
     try:
@@ -1509,17 +1511,17 @@ async def fix_directory_issues():
     
     # Fix 1: Create directory if missing
     try:
-        os.makedirs(host_media_dir, mode=0o777, exist_ok=True)
-        fixes_applied.append(f"Created directory: {host_media_dir}")
+        os.makedirs(path_to_fix, mode=0o777, exist_ok=True)
+        fixes_applied.append(f"Created directory: {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to create directory: {str(e)}")
     
     # Fix 2: Set permissions
     try:
-        os.chmod(host_media_dir, 0o777)
-        parent_dir = os.path.dirname(host_media_dir)
+        os.chmod(path_to_fix, 0o777)
+        parent_dir = os.path.dirname(path_to_fix)
         os.chmod(parent_dir, 0o777)
-        fixes_applied.append(f"Set permissions 777 on {host_media_dir}")
+        fixes_applied.append(f"Set permissions 777 on {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to set permissions: {str(e)}")
     
