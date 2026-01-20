@@ -188,8 +188,12 @@ func CompareToBaseline(metrics *CallMetrics, baselineName string) *BaselineCompa
 		comparison.Compliant = append(comparison.Compliant, "No underflows ✅")
 	}
 
-	// Check AudioSocket format
-	if metrics.AudioSocketFormat != "" {
+	// Check AudioSocket format (only when transport is actually AudioSocket)
+	transport := ""
+	if metrics.FormatAlignment != nil {
+		transport = metrics.FormatAlignment.ConfigAudioTransport
+	}
+	if transport == "audiosocket" && metrics.AudioSocketFormat != "" {
 		if metrics.AudioSocketFormat != "slin" {
 			comparison.Deviations = append(comparison.Deviations, Deviation{
 				Parameter:     "audiosocket_format",

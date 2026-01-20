@@ -17,6 +17,7 @@ func AnalyzeFormatAlignment(metrics *CallMetrics) *FormatAlignment {
 	// Load config from server
 	config := loadConfigFromServer()
 	if config != nil {
+		alignment.ConfigAudioTransport = strings.ToLower(strings.TrimSpace(getTopString(config, "audio_transport")))
 		alignment.ConfigAudioSocketFormat = getString(config, "audiosocket", "format")
 		alignment.ConfigSampleRate = getInt(config, "streaming", "sample_rate")
 
@@ -66,8 +67,10 @@ func analyzeFrameSizes(alignment *FormatAlignment, metrics *CallMetrics) {
 }
 
 func detectMisalignments(alignment *FormatAlignment) {
+	transport := strings.ToLower(strings.TrimSpace(alignment.ConfigAudioTransport))
+
 	// Check AudioSocket format mismatch
-	if alignment.ConfigAudioSocketFormat != "" && alignment.RuntimeAudioSocketFormat != "" {
+	if transport == "audiosocket" && alignment.ConfigAudioSocketFormat != "" && alignment.RuntimeAudioSocketFormat != "" {
 		if alignment.ConfigAudioSocketFormat != alignment.RuntimeAudioSocketFormat {
 			alignment.AudioSocketMismatch = true
 			alignment.Issues = append(alignment.Issues, fmt.Sprintf(
@@ -89,7 +92,7 @@ func detectMisalignments(alignment *FormatAlignment) {
 	}
 
 	// Check AudioSocket format is correct (golden baseline)
-	if alignment.RuntimeAudioSocketFormat != "" && alignment.RuntimeAudioSocketFormat != "slin" {
+	if transport == "audiosocket" && alignment.RuntimeAudioSocketFormat != "" && alignment.RuntimeAudioSocketFormat != "slin" {
 		alignment.AudioSocketMismatch = true
 		alignment.Issues = append(alignment.Issues, fmt.Sprintf(
 			"AudioSocket format should be 'slin' (golden baseline), got '%s'",
@@ -155,6 +158,13 @@ func getString(config map[string]interface{}, section, key string) string {
 	return ""
 }
 
+func getTopString(config map[string]interface{}, key string) string {
+	if val, ok := config[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
 func getStringDirect(section map[string]interface{}, key string) string {
 	if val, ok := section[key].(string); ok {
 		return val
@@ -185,7 +195,10 @@ func (fa *FormatAlignment) FormatForLLM() string {
 	out.WriteString("\n=== FORMAT/SAMPLING ALIGNMENT ===\n\n")
 
 	out.WriteString("Configuration vs Runtime:\n")
-	if fa.ConfigAudioSocketFormat != "" {
+	if strings.ToLower(strings.TrimSpace(fa.ConfigAudioTransport)) != "" {
+		out.WriteString(fmt.Sprintf("  Transport: %s\n", fa.ConfigAudioTransport))
+	}
+	if strings.ToLower(strings.TrimSpace(fa.ConfigAudioTransport)) == "audiosocket" && fa.ConfigAudioSocketFormat != "" {
 		out.WriteString(fmt.Sprintf("  AudioSocket: config=%s, runtime=%s",
 			fa.ConfigAudioSocketFormat, fa.RuntimeAudioSocketFormat))
 		if fa.AudioSocketMismatch {

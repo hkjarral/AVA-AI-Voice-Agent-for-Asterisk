@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	version   = "5.0.0-dev" // Overridden at build time via -ldflags
+	version   = "5.1.6"     // Overridden at build time via -ldflags
 	buildTime = "unknown"   // Overridden at build time via -ldflags
 	verbose   bool
 	noColor   bool

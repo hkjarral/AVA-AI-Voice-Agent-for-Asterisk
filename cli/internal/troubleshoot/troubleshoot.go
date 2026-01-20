@@ -223,10 +223,13 @@ type RCAReport struct {
 	CallID string `json:"call_id"`
 	Error  string `json:"error,omitempty"`
 
+	AudioTransport string `json:"audio_transport,omitempty"`
+
 	Pipeline struct {
-		HasAudioSocket   bool `json:"has_audiosocket"`
-		HasTranscription bool `json:"has_transcription"`
-		HasPlayback      bool `json:"has_playback"`
+		HasAudioSocket    bool `json:"has_audiosocket"`
+		HasExternalMedia  bool `json:"has_externalmedia"`
+		HasTranscription  bool `json:"has_transcription"`
+		HasPlayback       bool `json:"has_playback"`
 	} `json:"pipeline"`
 
 	Errors   []string `json:"errors,omitempty"`
@@ -251,8 +254,10 @@ func buildRCAReport(analysis *Analysis, llm *LLMDiagnosis) *RCAReport {
 		Symptom:      analysis.Symptom,
 		Metrics:      analysis.Metrics,
 		LLMDiagnosis: llm,
+		AudioTransport: analysis.AudioTransport,
 	}
 	rep.Pipeline.HasAudioSocket = analysis.HasAudioSocket
+	rep.Pipeline.HasExternalMedia = analysis.HasExternalMedia
 	rep.Pipeline.HasTranscription = analysis.HasTranscription
 	rep.Pipeline.HasPlayback = analysis.HasPlayback
 	rep.SymptomAnalysis = analysis.SymptomAnalysis
@@ -314,10 +319,12 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 	cleanOutput := ansiStripPattern.ReplaceAllString(string(output), "")
 
 	callMap := make(map[string]*Call)
-	audioSocketChannels := make(map[string]bool)
+	excludedChannels := make(map[string]bool)
 
 	// First pass: identify AudioSocket channels (internal infrastructure)
 	audioSocketPattern := regexp.MustCompile(`"audiosocket_channel_id":\s*"([0-9]+\.[0-9]+)"`)
+	externalMediaPattern := regexp.MustCompile(`"external_media_id":\s*"([0-9]+\.[0-9]+)"`)
+	pendingExternalMediaPattern := regexp.MustCompile(`"pending_external_media_id":\s*"([0-9]+\.[0-9]+)"`)
 	lines := strings.Split(cleanOutput, "\n")
 
 	if r.verbose {
@@ -327,9 +334,23 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 	for _, line := range lines {
 		matches := audioSocketPattern.FindStringSubmatch(line)
 		if len(matches) > 1 {
-			audioSocketChannels[matches[1]] = true
+			excludedChannels[matches[1]] = true
 			if r.verbose {
 				fmt.Fprintf(os.Stderr, "[DEBUG] Found AudioSocket channel: %s\n", matches[1])
+			}
+		}
+		matches = externalMediaPattern.FindStringSubmatch(line)
+		if len(matches) > 1 {
+			excludedChannels[matches[1]] = true
+			if r.verbose {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Found ExternalMedia channel: %s\n", matches[1])
+			}
+		}
+		matches = pendingExternalMediaPattern.FindStringSubmatch(line)
+		if len(matches) > 1 {
+			excludedChannels[matches[1]] = true
+			if r.verbose {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Found pending ExternalMedia channel: %s\n", matches[1])
 			}
 		}
 	}
@@ -348,10 +369,10 @@ func (r *Runner) getRecentCalls(limit int) ([]Call, error) {
 			if len(matches) > 1 {
 				matchCount++
 				callID := matches[1]
-				// Skip AudioSocket channels
-				if audioSocketChannels[callID] {
+				// Skip non-caller channels (AudioSocket / ExternalMedia helper channels)
+				if excludedChannels[callID] {
 					if r.verbose {
-						fmt.Fprintf(os.Stderr, "[DEBUG] Skipping AudioSocket channel: %s\n", callID)
+						fmt.Fprintf(os.Stderr, "[DEBUG] Skipping non-caller channel: %s\n", callID)
 					}
 					continue
 				}
@@ -398,18 +419,75 @@ func (r *Runner) collectCallData() (string, error) {
 		return "", err
 	}
 
-	// Filter logs for this call ID
-	allLogs := string(output)
+	// Filter logs for this call ID, including related helper channels (AudioSocket / ExternalMedia).
+	// Many ExternalMedia events are emitted on the ExternalMedia channel id, not the caller channel id.
+	ansiStripPattern := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	allLogs := ansiStripPattern.ReplaceAllString(string(output), "")
 	lines := strings.Split(allLogs, "\n")
-	var callLogs []string
 
-	for _, line := range lines {
-		if strings.Contains(line, r.callID) {
-			callLogs = append(callLogs, line)
+	relatedIDs := make(map[string]bool)
+	included := make([]string, 0, 1024)
+	includedSet := make(map[string]bool)
+	channelIDPattern := regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+
+	addLine := func(line string) {
+		if line == "" {
+			return
+		}
+		if includedSet[line] {
+			return
+		}
+		includedSet[line] = true
+		included = append(included, line)
+	}
+
+	addRelated := func(v any) {
+		s, ok := v.(string)
+		if !ok {
+			return
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || s == r.callID {
+			return
+		}
+		// Channel IDs are usually like 1761518880.2191; keep the filter loose but safe.
+		if channelIDPattern.MatchString(s) {
+			relatedIDs[s] = true
 		}
 	}
 
-	return strings.Join(callLogs, "\n"), nil
+	// First pass: include lines that reference the caller id; capture related channel ids.
+	for _, line := range lines {
+		if !strings.Contains(line, r.callID) {
+			continue
+		}
+
+		addLine(line)
+
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		addRelated(entry["audiosocket_channel_id"])
+		addRelated(entry["external_media_id"])
+		addRelated(entry["pending_external_media_id"])
+		// Some log lines use "channel_id" to reference the helper channel.
+		addRelated(entry["channel_id"])
+	}
+
+	// Second pass: include any log lines that reference a related channel id.
+	if len(relatedIDs) > 0 {
+		for _, line := range lines {
+			for id := range relatedIDs {
+				if strings.Contains(line, id) {
+					addLine(line)
+					break
+				}
+			}
+		}
+	}
+
+	return strings.Join(included, "\n"), nil
 }
 
 // Analysis holds analysis results
@@ -421,7 +499,9 @@ type Analysis struct {
 	MetricsMap         map[string]string
 	Metrics            *CallMetrics
 	BaselineComparison *BaselineComparison
+	AudioTransport     string
 	HasAudioSocket     bool
+	HasExternalMedia   bool
 	HasTranscription   bool
 	HasPlayback        bool
 	Symptom            string
@@ -438,6 +518,12 @@ func (r *Runner) analyzeBasic(logData string) *Analysis {
 
 	lines := strings.Split(logData, "\n")
 
+	// Transport detection should be strict enough to avoid false positives from
+	// config/alignment logs (e.g., "audiosocket_format" can appear even when
+	// ExternalMedia is used).
+	hasAudioSocketEvidence := false
+	hasExternalMediaEvidence := false
+
 	for _, line := range lines {
 		lower := strings.ToLower(line)
 
@@ -451,10 +537,20 @@ func (r *Runner) analyzeBasic(logData string) *Analysis {
 			analysis.Warnings = append(analysis.Warnings, line)
 		}
 
-		// Audio pipeline indicators
-		if strings.Contains(lower, "audiosocket") {
-			analysis.HasAudioSocket = true
+		// Transport indicators (strict)
+		if strings.Contains(lower, "\"audiosocket_channel_id\"") ||
+			(strings.Contains(lower, "audiosocket") && strings.Contains(lower, "channel") && strings.Contains(lower, "stasis")) ||
+			strings.Contains(lower, "audiosocket channel entered stasis") {
+			hasAudioSocketEvidence = true
 		}
+		if strings.Contains(lower, "🎯 external media") ||
+			strings.Contains(lower, "externalmedia channel") ||
+			strings.Contains(lower, "\"external_media_id\"") ||
+			strings.Contains(lower, "\"pending_external_media_id\"") ||
+			strings.Contains(lower, "create_external_media_channel") {
+			hasExternalMediaEvidence = true
+		}
+
 		if strings.Contains(lower, "transcription") || strings.Contains(lower, "transcript") {
 			analysis.HasTranscription = true
 		}
@@ -474,7 +570,44 @@ func (r *Runner) analyzeBasic(logData string) *Analysis {
 		}
 	}
 
+	analysis.HasAudioSocket = hasAudioSocketEvidence
+	analysis.HasExternalMedia = hasExternalMediaEvidence
+	analysis.AudioTransport = detectTransportBestEffort(logData, hasAudioSocketEvidence, hasExternalMediaEvidence)
+
 	return analysis
+}
+
+func detectTransportBestEffort(logData string, hasAudioSocketEvidence, hasExternalMediaEvidence bool) string {
+	if hasExternalMediaEvidence && !hasAudioSocketEvidence {
+		return "externalmedia"
+	}
+	if hasAudioSocketEvidence && !hasExternalMediaEvidence {
+		return "audiosocket"
+	}
+
+	// Ambiguous or unknown from logs: fall back to config.
+	if transport := detectTransportFromConfig(); transport != "" {
+		return transport
+	}
+	return ""
+}
+
+func detectTransportFromConfig() string {
+	cmd := exec.Command("docker", "exec", "ai_engine", "cat", "/app/config/ai-agent.yaml")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+
+	// Avoid adding a YAML dependency to this file; do a loose match.
+	lower := strings.ToLower(string(output))
+	if strings.Contains(lower, "\naudio_transport: audiosocket") || strings.Contains(lower, "audio_transport: audiosocket") {
+		return "audiosocket"
+	}
+	if strings.Contains(lower, "\naudio_transport: externalmedia") || strings.Contains(lower, "audio_transport: externalmedia") {
+		return "externalmedia"
+	}
+	return ""
 }
 
 // displayFindings shows analysis results
@@ -486,10 +619,30 @@ func (r *Runner) displayFindings(analysis *Analysis) {
 
 	// Pipeline status
 	fmt.Println("Pipeline Status:")
+	switch strings.ToLower(strings.TrimSpace(analysis.AudioTransport)) {
+	case "audiosocket":
+		successColor.Println("  ✅ Transport: AudioSocket")
+	case "externalmedia":
+		successColor.Println("  ✅ Transport: ExternalMedia RTP")
+	default:
+		warningColor.Println("  ⚠️  Transport: Unknown")
+	}
+
 	if analysis.HasAudioSocket {
-		successColor.Println("  ✅ AudioSocket: Active")
-	} else {
+		successColor.Println("  ✅ AudioSocket: Detected")
+	} else if analysis.AudioTransport == "audiosocket" {
 		errorColor.Println("  ❌ AudioSocket: Not detected")
+	} else {
+		// Not applicable for ExternalMedia calls.
+		infoColor.Println("  ℹ️  AudioSocket: Not used")
+	}
+
+	if analysis.HasExternalMedia {
+		successColor.Println("  ✅ ExternalMedia: Detected")
+	} else if analysis.AudioTransport == "externalmedia" {
+		errorColor.Println("  ❌ ExternalMedia: Not detected")
+	} else {
+		infoColor.Println("  ℹ️  ExternalMedia: Not used")
 	}
 
 	if analysis.HasTranscription {
@@ -586,9 +739,22 @@ func (r *Runner) displayFindings(analysis *Analysis) {
 func (r *Runner) displayRecommendations(analysis *Analysis) {
 	fmt.Println("Recommendations:")
 
-	if !analysis.HasAudioSocket {
-		fmt.Println("  • Check if AudioSocket is configured correctly")
-		fmt.Println("  • Verify port 8090 is accessible")
+	transport := strings.ToLower(strings.TrimSpace(analysis.AudioTransport))
+	if transport == "audiosocket" {
+		if !analysis.HasAudioSocket {
+			fmt.Println("  • Check if AudioSocket is configured correctly")
+			fmt.Println("  • Verify AudioSocket port is reachable from Asterisk")
+		}
+	} else if transport == "externalmedia" {
+		if !analysis.HasExternalMedia {
+			fmt.Println("  • Check if ExternalMedia RTP is configured correctly")
+			fmt.Println("  • Verify UDP 18080 reachability (firewall/NAT)")
+		}
+	} else {
+		if !analysis.HasAudioSocket && !analysis.HasExternalMedia {
+			fmt.Println("  • Check which transport you're using (audiosocket vs externalmedia)")
+			fmt.Println("  • Confirm config/ai-agent.yaml has a valid audio_transport value")
+		}
 	}
 
 	if len(analysis.AudioIssues) > 0 {
@@ -723,8 +889,15 @@ func (r *Runner) displayMetrics(metrics *CallMetrics) {
 
 	// Transport/Format
 	if metrics.AudioSocketFormat != "" || metrics.ProviderInputFormat != "" {
+		transport := ""
+		if metrics.FormatAlignment != nil {
+			transport = strings.ToLower(strings.TrimSpace(metrics.FormatAlignment.ConfigAudioTransport))
+		}
 		successColor.Println("Transport Configuration:")
-		if metrics.AudioSocketFormat != "" {
+		if transport != "" {
+			fmt.Printf("  Transport: %s\n", transport)
+		}
+		if transport == "audiosocket" && metrics.AudioSocketFormat != "" {
 			if metrics.AudioSocketFormat == "slin" {
 				successColor.Printf("  AudioSocket format: %s ✅ CORRECT\n", metrics.AudioSocketFormat)
 			} else {

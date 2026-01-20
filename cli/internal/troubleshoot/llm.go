@@ -94,7 +94,11 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 
 	// Pipeline status
 	prompt.WriteString("Pipeline Status:\n")
-	prompt.WriteString(fmt.Sprintf("- AudioSocket: %v\n", analysis.HasAudioSocket))
+	if analysis.AudioTransport != "" {
+		prompt.WriteString(fmt.Sprintf("- Transport: %s\n", analysis.AudioTransport))
+	}
+	prompt.WriteString(fmt.Sprintf("- AudioSocket detected: %v\n", analysis.HasAudioSocket))
+	prompt.WriteString(fmt.Sprintf("- ExternalMedia detected: %v\n", analysis.HasExternalMedia))
 	prompt.WriteString(fmt.Sprintf("- Transcription: %v\n", analysis.HasTranscription))
 	prompt.WriteString(fmt.Sprintf("- Playback: %v\n", analysis.HasPlayback))
 	prompt.WriteString("\n")
@@ -141,7 +145,13 @@ func (llm *LLMAnalyzer) buildPrompt(analysis *Analysis, logData string) string {
 	if analysis.Metrics != nil && analysis.Metrics.FormatAlignment != nil {
 		prompt.WriteString(analysis.Metrics.FormatAlignment.FormatForLLM())
 		prompt.WriteString("CRITICAL: Format mismatches cause garbled audio, distortion, or complete audio failure.\n")
-		prompt.WriteString("Golden baseline: audiosocket.format=slin, provider transcodes as needed.\n\n")
+		if strings.ToLower(strings.TrimSpace(analysis.AudioTransport)) == "audiosocket" {
+			prompt.WriteString("Golden baseline: audiosocket.format=slin, provider transcodes as needed.\n\n")
+		} else if strings.ToLower(strings.TrimSpace(analysis.AudioTransport)) == "externalmedia" {
+			prompt.WriteString("Golden baseline: external_media.codec matches RTP wire codec (typically ulaw@8k); provider transcodes/resamples as needed.\n\n")
+		} else {
+			prompt.WriteString("Golden baseline depends on transport (audiosocket vs externalmedia); validate transport/profile alignment first.\n\n")
+		}
 	}
 
 	// Sample logs (truncated)

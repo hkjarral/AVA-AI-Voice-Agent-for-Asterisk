@@ -43,6 +43,7 @@ type CallMetrics struct {
 // FormatAlignment tracks format/sampling configuration and actual behavior
 type FormatAlignment struct {
 	// From config
+	ConfigAudioTransport      string
 	ConfigAudioSocketFormat    string
 	ConfigProviderInputFormat  string
 	ConfigProviderOutputFormat string
@@ -341,8 +342,15 @@ func (m *CallMetrics) FormatForLLM() string {
 
 	// Transport/Format
 	if m.AudioSocketFormat != "" || m.ProviderInputFormat != "" {
+		transport := ""
+		if m.FormatAlignment != nil {
+			transport = strings.ToLower(strings.TrimSpace(m.FormatAlignment.ConfigAudioTransport))
+		}
 		out.WriteString("Transport Configuration:\n")
-		if m.AudioSocketFormat != "" {
+		if transport != "" {
+			out.WriteString(fmt.Sprintf("  Transport: %s\n", transport))
+		}
+		if transport == "audiosocket" && m.AudioSocketFormat != "" {
 			out.WriteString(fmt.Sprintf("  AudioSocket format: %s\n", m.AudioSocketFormat))
 		}
 		if m.ProviderInputFormat != "" {
@@ -356,7 +364,7 @@ func (m *CallMetrics) FormatForLLM() string {
 		}
 
 		// Check for mismatches
-		if m.AudioSocketFormat != "" && m.AudioSocketFormat != "slin" {
+		if transport == "audiosocket" && m.AudioSocketFormat != "" && m.AudioSocketFormat != "slin" {
 			out.WriteString("  ⚠️  ISSUE: AudioSocket should use 'slin' format\n")
 		}
 		out.WriteString("\n")

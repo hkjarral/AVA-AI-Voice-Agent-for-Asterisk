@@ -42,17 +42,36 @@ func (sc *SymptomChecker) analyzeNoAudio(analysis *Analysis, logData string) {
 	}
 
 	lower := strings.ToLower(logData)
+	transport := strings.ToLower(strings.TrimSpace(analysis.AudioTransport))
 
-	// Check AudioSocket connection
-	if !strings.Contains(lower, "audiosocket") {
-		analysis.SymptomAnalysis.Findings = append(analysis.SymptomAnalysis.Findings,
-			"❌ AudioSocket not detected in logs")
-		analysis.SymptomAnalysis.RootCauses = append(analysis.SymptomAnalysis.RootCauses,
-			"AudioSocket server not running or not configured")
-		analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
-			"Check AudioSocket configuration in config/ai-agent.yaml")
-		analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
-			"Verify port 8090 is listening: netstat -tuln | grep 8090")
+	if transport == "audiosocket" || transport == "" {
+		// Check AudioSocket connection
+		if !strings.Contains(lower, "\"audiosocket_channel_id\"") && !strings.Contains(lower, "audiosocket channel") {
+			analysis.SymptomAnalysis.Findings = append(analysis.SymptomAnalysis.Findings,
+				"❌ AudioSocket not detected in logs")
+			analysis.SymptomAnalysis.RootCauses = append(analysis.SymptomAnalysis.RootCauses,
+				"AudioSocket server not running or not configured")
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Check audio_transport: audiosocket and audiosocket section in config/ai-agent.yaml")
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Verify port 8090 is listening on the Asterisk side")
+		}
+	}
+
+	if transport == "externalmedia" || transport == "" {
+		// Check ExternalMedia RTP indicators
+		if !strings.Contains(lower, "external media") && !strings.Contains(lower, "\"external_media_id\"") {
+			analysis.SymptomAnalysis.Findings = append(analysis.SymptomAnalysis.Findings,
+				"❌ ExternalMedia RTP not detected in logs")
+			analysis.SymptomAnalysis.RootCauses = append(analysis.SymptomAnalysis.RootCauses,
+				"ExternalMedia channel not created/attached or RTP not reaching ai_engine")
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Check audio_transport: externalmedia and external_media section in config/ai-agent.yaml")
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Verify UDP port 18080 reachability (firewall/NAT) between Asterisk and ai_engine")
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"If behind NAT/VPN: set external_media.advertise_host to a reachable IP")
+		}
 	}
 
 	// Check for connection errors
@@ -89,6 +108,7 @@ func (sc *SymptomChecker) analyzeGarbled(analysis *Analysis, logData string) {
 	}
 
 	lower := strings.ToLower(logData)
+	transport := strings.ToLower(strings.TrimSpace(analysis.AudioTransport))
 
 	// Check for underflows
 	if strings.Contains(lower, "underflow") {
@@ -109,8 +129,15 @@ func (sc *SymptomChecker) analyzeGarbled(analysis *Analysis, logData string) {
 			"⚠️  Audio format issues detected")
 		analysis.SymptomAnalysis.RootCauses = append(analysis.SymptomAnalysis.RootCauses,
 			"Audio codec mismatch between components")
-		analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
-			"Verify AudioSocket format matches Asterisk dialplan (slin)")
+		if transport == "externalmedia" {
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Verify external_media.codec matches RTP wire codec (typically ulaw@8k for telephony)")
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Verify external_media.format/sample_rate alignment with provider expectations (avoid unnecessary resampling)")
+		} else {
+			analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
+				"Verify audiosocket.format matches Asterisk dialplan (slin recommended)")
+		}
 		analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
 			"Check transcoding configuration")
 	}
@@ -130,7 +157,7 @@ func (sc *SymptomChecker) analyzeGarbled(analysis *Analysis, logData string) {
 		analysis.SymptomAnalysis.Findings = append(analysis.SymptomAnalysis.Findings,
 			"⚠️  Sample rate configuration detected")
 		analysis.SymptomAnalysis.Actions = append(analysis.SymptomAnalysis.Actions,
-			"Verify sample rate consistency: AudioSocket(8kHz) ↔ Provider")
+			"Verify sample rate consistency across transport ↔ provider")
 	}
 }
 
