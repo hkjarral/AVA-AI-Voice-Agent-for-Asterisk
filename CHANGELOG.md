@@ -27,7 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Admin UI Setup Wizard: OpenAI Realtime now prompts for the OpenAI API key (no Groq key mix-up) and validates correctly.
 - Agent CLI `agent rca`: detect AudioSocket vs ExternalMedia calls and tailor transport diagnostics (avoid AudioSocket-only false positives).
-- Admin UI System Ready: Docker Compose version detection now uses the same compose command resolution as container operations; avoids stale label-based warnings.
+- Admin UI System Ready: report **host** Docker Compose version via container labels (`com.docker.compose.version`) with fallback to container CLI detection when labels aren’t available.
+- Admin UI Web Terminal: input text is now legible on dark background (light text).
 - Docker builds: pin base OS/runtime to avoid upstream tag drift (`admin_ui`/`ai_engine`: Debian 12 `bookworm` + Python 3.11; `local_ai_server`: Debian 13 `trixie` + Python 3.11 for Kroko compatibility).
 - Ollama pipelines: prevent overly-eager `hangup_call` tool calls from ending calls when the caller did not indicate end-of-call intent; support `num_ctx` pass-through and honor `tools_enabled` for tool calling.
 - Email transcripts: improve Outlook compatibility by rendering transcript newlines as `<br/>` (HTML-escaped) so caller/AI lines display correctly across clients.
