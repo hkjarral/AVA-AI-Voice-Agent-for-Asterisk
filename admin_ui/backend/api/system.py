@@ -1388,8 +1388,9 @@ async def get_directory_health():
                     f.write("test")
                 os.remove(test_file)
                 checks["host_directory"]["writable"] = True
-                checks["host_directory"]["status"] = "ok"
-                checks["host_directory"]["message"] = "Directory exists and is writable"
+                if checks["host_directory"]["status"] != "warning":
+                    checks["host_directory"]["status"] = "ok"
+                    checks["host_directory"]["message"] = "Directory exists and is writable"
             except PermissionError:
                 checks["host_directory"]["status"] = "error"
                 checks["host_directory"]["message"] = "Directory exists but not writable"
@@ -1486,42 +1487,42 @@ async def fix_directory_issues():
             if not os.path.exists(resolved):
                 # Inside Docker, the symlink may point to a host path that isn't present in the container.
                 # If the media volume is mounted at /mnt/asterisk_media, don't hard-fail on this probe.
-	                if in_docker and os.path.exists("/mnt/asterisk_media"):
-	                    logger.debug(
-	                        "asterisk_media symlink target not visible inside container; ignoring (resolved=%s)",
-	                        resolved,
-	                    )
-	                else:
-	                    errors.append(
-	                        f"asterisk_media points to missing target: {host_media_root} -> {resolved}"
-	                    )
-	                    manual_steps.append(
-	                        "Ensure your external media mount persists across reboots (e.g., /etc/fstab or systemd mount unit), then restart containers."
-	                    )
-	                    manual_steps.append("Run on host: sudo ./preflight.sh --apply-fixes")
-	                    return {
-	                        "success": False,
-	                        "fixes_applied": fixes_applied,
-	                        "errors": errors,
-	                        "manual_steps": manual_steps,
-	                        "restart_required": False,
-	                    }
-    except Exception as e:
+                if in_docker and os.path.exists("/mnt/asterisk_media"):
+                    logger.debug(
+                        "asterisk_media symlink target not visible inside container; ignoring (resolved=%s)",
+                        resolved,
+                    )
+                else:
+                    errors.append(
+                        f"asterisk_media points to missing target: {host_media_root} -> {resolved}"
+                    )
+                    manual_steps.append(
+                        "Ensure your external media mount persists across reboots (e.g., /etc/fstab or systemd mount unit), then restart containers."
+                    )
+                    manual_steps.append("Run on host: sudo ./preflight.sh --apply-fixes")
+                    return {
+                        "success": False,
+                        "fixes_applied": fixes_applied,
+                        "errors": errors,
+                        "manual_steps": manual_steps,
+                        "restart_required": False,
+                    }
+    except Exception:
         logger.debug("Failed to inspect asterisk_media symlink target", exc_info=True)
     
     # Fix 1: Create directory if missing
     try:
-        os.makedirs(path_to_fix, mode=0o777, exist_ok=True)
+        os.makedirs(path_to_fix, mode=0o2775, exist_ok=True)
         fixes_applied.append(f"Created directory: {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to create directory: {str(e)}")
     
     # Fix 2: Set permissions
     try:
-        os.chmod(path_to_fix, 0o777)
+        os.chmod(path_to_fix, 0o2775)
         parent_dir = os.path.dirname(path_to_fix)
-        os.chmod(parent_dir, 0o777)
-        fixes_applied.append(f"Set permissions 777 on {path_to_fix}")
+        os.chmod(parent_dir, 0o2775)
+        fixes_applied.append(f"Set permissions 2775 on {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to set permissions: {str(e)}")
     
