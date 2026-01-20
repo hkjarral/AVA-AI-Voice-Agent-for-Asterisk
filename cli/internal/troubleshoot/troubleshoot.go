@@ -599,15 +599,20 @@ func detectTransportFromConfig() string {
 		return ""
 	}
 
-	// Avoid adding a YAML dependency to this file; do a loose match.
-	lower := strings.ToLower(string(output))
-	if strings.Contains(lower, "\naudio_transport: audiosocket") || strings.Contains(lower, "audio_transport: audiosocket") {
-		return "audiosocket"
+	// Avoid adding a YAML dependency to this file; parse with a tolerant regex
+	// that supports optional quotes and trailing comments.
+	return detectTransportFromConfigText(string(output))
+}
+
+func detectTransportFromConfigText(configText string) string {
+	// Go uses RE2 which does not support backreferences, so tolerate optional
+	// quoting without enforcing matching quote pairs.
+	transportRe := regexp.MustCompile(`(?im)^\s*audio_transport\s*:\s*['"]?(audiosocket|externalmedia)['"]?\s*(?:#.*)?$`)
+	matches := transportRe.FindStringSubmatch(configText)
+	if len(matches) < 2 {
+		return ""
 	}
-	if strings.Contains(lower, "\naudio_transport: externalmedia") || strings.Contains(lower, "audio_transport: externalmedia") {
-		return "externalmedia"
-	}
-	return ""
+	return strings.ToLower(matches[1])
 }
 
 // displayFindings shows analysis results
