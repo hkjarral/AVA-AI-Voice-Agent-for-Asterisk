@@ -1296,6 +1296,7 @@ async def get_directory_health():
     """
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
     ast_media_dir = os.getenv("AST_MEDIA_DIR", "")
+    in_docker = bool(os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", ""))
     
     # Expected paths
     host_media_root = os.path.join(project_root, "asterisk_media")
@@ -1312,11 +1313,12 @@ async def get_directory_health():
         },
         "host_directory": {
             "status": "unknown",
-            "path": host_media_dir,
+            "path": container_media_dir if in_docker else host_media_dir,
             "media_root": host_media_root,
             "media_root_is_symlink": False,
             "media_root_symlink_target": None,
             "media_root_resolved": None,
+            "paths_checked": [host_media_dir, container_media_dir],
             "exists": False,
             "writable": False,
             "message": ""
@@ -1356,19 +1358,31 @@ async def get_directory_health():
 
             # If the symlink target is missing, report an actionable error.
             if not os.path.exists(checks["host_directory"]["media_root_resolved"] or ""):
-                checks["host_directory"]["status"] = "error"
-                checks["host_directory"]["message"] = (
-                    "asterisk_media is a symlink but its target is missing. "
-                    "This commonly happens after a reboot when the external media mount did not come up. "
-                    "Ensure the mount is persisted on the host (e.g., /etc/fstab or a systemd mount unit), "
-                    "then restart containers (or rerun preflight.sh on the host)."
-                )
-                broken_media_root = True
+                # In Docker, the symlink may point to a host path that is not present inside the container,
+                # even though the actual media volume is mounted at /mnt/asterisk_media.
+                if in_docker and os.path.exists("/mnt/asterisk_media"):
+                    checks["host_directory"]["status"] = "warning"
+                    checks["host_directory"]["message"] = (
+                        "asterisk_media is a symlink but the container cannot verify its target path. "
+                        "This can be normal when Docker mounts the resolved host directory at /mnt/asterisk_media. "
+                        "If you see missing audio directories after a reboot, verify the host mount persists and restart containers."
+                    )
+                else:
+                    checks["host_directory"]["status"] = "error"
+                    checks["host_directory"]["message"] = (
+                        "asterisk_media is a symlink but its target is missing. "
+                        "This commonly happens after a reboot when the external media mount did not come up. "
+                        "Ensure the mount is persisted on the host (e.g., /etc/fstab or a systemd mount unit), "
+                        "then restart containers (or rerun preflight.sh on the host)."
+                    )
+                    broken_media_root = True
 
-        if not broken_media_root and os.path.exists(host_media_dir):
+        # Prefer checking the mounted media volume path from inside containers.
+        path_to_check = container_media_dir if in_docker else host_media_dir
+        if not broken_media_root and os.path.exists(path_to_check):
             checks["host_directory"]["exists"] = True
             # Test write permission
-            test_file = os.path.join(host_media_dir, ".write_test")
+            test_file = os.path.join(path_to_check, ".write_test")
             try:
                 with open(test_file, "w") as f:
                     f.write("test")
@@ -1381,7 +1395,10 @@ async def get_directory_health():
                 checks["host_directory"]["message"] = "Directory exists but not writable"
         elif not broken_media_root:
             checks["host_directory"]["status"] = "error"
-            checks["host_directory"]["message"] = "Directory does not exist"
+            if in_docker:
+                checks["host_directory"]["message"] = f"Directory does not exist (checked: {path_to_check})"
+            else:
+                checks["host_directory"]["message"] = "Directory does not exist"
     except Exception as e:
         checks["host_directory"]["status"] = "error"
         checks["host_directory"]["message"] = f"Error checking directory: {str(e)}"
@@ -1391,8 +1408,6 @@ async def get_directory_health():
     # /var/lib/asterisk/sounds is on the host and not mounted into the container.
     # If the other checks pass, assume symlink is OK (user can verify with test call).
     try:
-        in_docker = os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", "")
-        
         if os.path.islink(asterisk_sounds_link):
             checks["asterisk_symlink"]["exists"] = True
             target = os.readlink(asterisk_sounds_link)
@@ -1455,7 +1470,7 @@ async def fix_directory_issues():
     host_media_root = os.path.join(project_root, "asterisk_media")
     host_media_dir = os.path.join(project_root, "asterisk_media", "ai-generated")
     asterisk_sounds_link = "/var/lib/asterisk/sounds/ai-generated"
-    in_docker = os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", "")
+    in_docker = bool(os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER", ""))
     
     fixes_applied = []
     errors = []
@@ -1467,22 +1482,30 @@ async def fix_directory_issues():
         if os.path.islink(host_media_root):
             resolved = os.path.realpath(host_media_root)
             if not os.path.exists(resolved):
-                errors.append(
-                    f"asterisk_media points to missing target: {host_media_root} -> {resolved}"
-                )
-                manual_steps.append(
-                    "Ensure your external media mount persists across reboots (e.g., /etc/fstab or systemd mount unit), then restart containers."
-                )
-                manual_steps.append("Run on host: sudo ./preflight.sh --apply-fixes")
-                return {
-                    "success": False,
-                    "fixes_applied": fixes_applied,
-                    "errors": errors,
-                    "manual_steps": manual_steps,
-                    "restart_required": False,
-                }
-    except Exception:
-        pass
+                # Inside Docker, the symlink may point to a host path that isn't present in the container.
+                # If the media volume is mounted at /mnt/asterisk_media, don't hard-fail on this probe.
+	                if in_docker and os.path.exists("/mnt/asterisk_media"):
+	                    logger.debug(
+	                        "asterisk_media symlink target not visible inside container; ignoring (resolved=%s)",
+	                        resolved,
+	                    )
+	                else:
+	                    errors.append(
+	                        f"asterisk_media points to missing target: {host_media_root} -> {resolved}"
+	                    )
+	                    manual_steps.append(
+	                        "Ensure your external media mount persists across reboots (e.g., /etc/fstab or systemd mount unit), then restart containers."
+	                    )
+	                    manual_steps.append("Run on host: sudo ./preflight.sh --apply-fixes")
+	                    return {
+	                        "success": False,
+	                        "fixes_applied": fixes_applied,
+	                        "errors": errors,
+	                        "manual_steps": manual_steps,
+	                        "restart_required": False,
+	                    }
+    except Exception as e:
+        logger.debug("Failed to inspect asterisk_media symlink target", exc_info=True)
     
     # Fix 1: Create directory if missing
     try:

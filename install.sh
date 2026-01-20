@@ -82,37 +82,72 @@ setup_media_paths() {
                 fi
             fi
 
-            # Persist bind mount across reboots via /etc/fstab (systemd-friendly when available).
-            if [ -f /etc/fstab ]; then
-                local options="bind,nofail"
-                if command -v systemctl >/dev/null 2>&1; then
-                    options="bind,nofail,x-systemd.automount"
-                fi
-                local fstab_line="$MEDIA_DIR $ASTERISK_SOUNDS_LINK none $options 0 0"
-                if ! awk -v mp="$ASTERISK_SOUNDS_LINK" '
-                    $0 ~ /^[[:space:]]*#/ { next }
-                    NF < 2 { next }
-                    $2 == mp { found=1 }
-                    END { exit(found ? 0 : 1) }
-                ' /etc/fstab 2>/dev/null; then
-                    if {
-                        echo ""
-                        echo "# AAVA: expose generated audio to Asterisk (bind mount)"
-                        echo "$fstab_line"
-                    } | $SUDO tee -a /etc/fstab >/dev/null; then
-                        print_success "Persisted bind mount in /etc/fstab"
-                        if command -v systemctl >/dev/null 2>&1; then
-                            $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
-                        fi
-                    else
-                        print_warning "Failed to update /etc/fstab; bind mount may not persist after reboot"
-                        print_info "  Add manually to /etc/fstab:"
-                        print_info "    $fstab_line"
-                    fi
-                fi
-            else
-                print_warning "/etc/fstab not found; cannot persist bind mount after reboot"
-            fi
+	            # Persist bind mount across reboots via /etc/fstab (systemd-friendly when available).
+	            if [ -f /etc/fstab ]; then
+	                local options="bind,nofail"
+	                if command -v systemctl >/dev/null 2>&1; then
+	                    options="bind,nofail,x-systemd.automount"
+	                fi
+	                local fstab_line="$MEDIA_DIR $ASTERISK_SOUNDS_LINK none $options 0 0"
+	                local existing_entry=""
+	                existing_entry="$(awk -v mp="$ASTERISK_SOUNDS_LINK" '
+	                    $0 ~ /^[[:space:]]*#/ { next }
+	                    NF < 2 { next }
+	                    $2 == mp { print; exit }
+	                ' /etc/fstab 2>/dev/null || true)"
+
+	                if [ -n "$existing_entry" ]; then
+	                    local existing_src=""
+	                    existing_src="$(echo "$existing_entry" | awk '{print $1}' 2>/dev/null || true)"
+	                    if [ -n "$existing_src" ] && [ "$existing_src" != "$MEDIA_DIR" ]; then
+	                        print_warning "/etc/fstab already has an entry for $ASTERISK_SOUNDS_LINK but points to a different source"
+	                        print_info "  Existing: $existing_entry"
+	                        print_info "  Desired:  $fstab_line"
+	                        if [ -t 0 ]; then
+	                            read -r -p "Update /etc/fstab to use the desired source? [y/N] " ans
+	                            if [[ "$ans" =~ ^[Yy]$ ]]; then
+	                                local backup="/etc/fstab.aava.bak.$(date +%Y%m%d_%H%M%S)"
+	                                $SUDO cp /etc/fstab "$backup" 2>/dev/null || true
+	                                tmpfile="$(mktemp 2>/dev/null || echo /tmp/aava-fstab.$$)"
+	                                awk -v mp="$ASTERISK_SOUNDS_LINK" -v newline="$fstab_line" '
+	                                    $0 ~ /^[[:space:]]*#/ { print; next }
+	                                    NF < 2 { print; next }
+	                                    $2 == mp && !replaced { print newline; replaced=1; next }
+	                                    { print }
+	                                ' /etc/fstab > "$tmpfile"
+	                                if $SUDO cp "$tmpfile" /etc/fstab; then
+	                                    print_success "Updated /etc/fstab (backup: $backup)"
+	                                    if command -v systemctl >/dev/null 2>&1; then
+	                                        $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
+	                                    fi
+	                                else
+	                                    print_warning "Failed to update /etc/fstab; bind mount may not persist after reboot"
+	                                    print_info "  Add manually to /etc/fstab:"
+	                                    print_info "    $fstab_line"
+	                                fi
+	                                rm -f "$tmpfile" 2>/dev/null || true
+	                            fi
+	                        fi
+	                    fi
+	                else
+	                    if {
+	                        echo ""
+	                        echo "# AAVA: expose generated audio to Asterisk (bind mount)"
+	                        echo "$fstab_line"
+	                    } | $SUDO tee -a /etc/fstab >/dev/null; then
+	                        print_success "Persisted bind mount in /etc/fstab"
+	                        if command -v systemctl >/dev/null 2>&1; then
+	                            $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
+	                        fi
+	                    else
+	                        print_warning "Failed to update /etc/fstab; bind mount may not persist after reboot"
+	                        print_info "  Add manually to /etc/fstab:"
+	                        print_info "    $fstab_line"
+	                    fi
+	                fi
+	            else
+	                print_warning "/etc/fstab not found; cannot persist bind mount after reboot"
+	            fi
         elif [ -e "$ASTERISK_SOUNDS_LINK" ] && [ ! -L "$ASTERISK_SOUNDS_LINK" ]; then
             print_warning "Asterisk sounds path exists but is not a symlink: $ASTERISK_SOUNDS_LINK"
             print_info "  Fix manually: $SUDO mv '$ASTERISK_SOUNDS_LINK' '${ASTERISK_SOUNDS_LINK}.bak' && $SUDO ln -sf '$MEDIA_DIR' '$ASTERISK_SOUNDS_LINK'"
