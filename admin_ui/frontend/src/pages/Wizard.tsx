@@ -828,189 +828,218 @@ const Wizard = () => {
                     <div className="space-y-4">
                         <h2 className="text-xl font-semibold mb-4">Configure API Keys</h2>
 
-                        {(config.provider === 'openai_realtime' || config.provider === 'local_hybrid') && (
+                        {config.provider === 'openai_realtime' && (
                             <div className="space-y-4">
-                                {config.provider === 'local_hybrid' && (
-                                    <div className="space-y-6 border-b pb-6 mb-6">
-                                        <h3 className="font-medium text-lg">Local AI Configuration</h3>
-
-                                        {/* STT Config */}
-                                        <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
-                                            <h4 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Speech-to-Text (STT)</h4>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <label className="text-sm font-medium">Backend</label>
-                                                    <select
-                                                        className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                        value={config.local_stt_backend}
-                                                        onChange={e => setConfig({ ...config, local_stt_backend: e.target.value })}
-                                                    >
-                                                        <option value="vosk">Vosk (Local)</option>
-                                                        <option value="kroko">Kroko (Local/Cloud)</option>
-                                                        <option value="sherpa">Sherpa (Local)</option>
-                                                        <option value="faster_whisper">Faster-Whisper (Local)</option>
-                                                    </select>
-                                                </div>
-                                                {config.local_stt_backend === 'kroko' && (
-                                                    <div className="flex items-center pt-6">
-                                                        <label className="flex items-center space-x-2 cursor-pointer">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={config.kroko_embedded}
-                                                                onChange={e => setConfig({ ...config, kroko_embedded: e.target.checked })}
-                                                                className="rounded border-gray-300"
-                                                            />
-                                                            <span className="text-sm">Embedded Mode (Local)</span>
-                                                        </label>
-                                                    </div>
-                                                )}
-                                            </div>
-                                            {config.local_stt_backend === 'kroko' && !config.kroko_embedded && (
-                                                <div>
-                                                    <label className="text-sm font-medium">Kroko API Key</label>
-                                                    <input
-                                                        type="password"
-                                                        className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                        value={config.kroko_api_key || ''}
-                                                        onChange={e => setConfig({ ...config, kroko_api_key: e.target.value })}
-                                                        placeholder="Kroko API Key"
-                                                    />
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        {/* TTS Config */}
-                                        <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
-                                            <h4 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Text-to-Speech (TTS)</h4>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <label className="text-sm font-medium">Backend</label>
-                                                    <select
-                                                        className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                        value={
-                                                            config.local_tts_backend === 'kokoro'
-                                                                ? (config.kokoro_mode === 'local' ? 'kokoro_local' : 'kokoro_cloud')
-                                                                : config.local_tts_backend
-                                                        }
-                                                        onChange={e => {
-                                                            const val = e.target.value;
-                                                            if (val === 'kokoro_local') {
-                                                                setConfig({ ...config, local_tts_backend: 'kokoro', kokoro_mode: 'local' });
-                                                            } else if (val === 'kokoro_cloud') {
-                                                                setConfig({ ...config, local_tts_backend: 'kokoro', kokoro_mode: 'api' });
-                                                            } else {
-                                                                setConfig({ ...config, local_tts_backend: val });
-                                                            }
-                                                        }}
-                                                    >
-                                                        <option value="piper">Piper (Local)</option>
-                                                        <option value="kokoro_local">Kokoro (Local)</option>
-                                                        <option value="kokoro_cloud">Kokoro (Cloud/API)</option>
-                                                        <option value="melotts">MeloTTS (Local/CPU)</option>
-                                                    </select>
-                                                </div></div>
-                                            {config.local_tts_backend === 'kokoro' && config.kokoro_mode === 'api' && (
-                                                <div>
-                                                    <label className="text-sm font-medium">Kokoro API Key</label>
-                                                    <input
-                                                        type="password"
-                                                        className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                        value={config.kokoro_api_key || ''}
-                                                        onChange={e => setConfig({ ...config, kokoro_api_key: e.target.value })}
-                                                        placeholder="Kokoro API Key"
-                                                    />
-                                                </div>
-                                            )}
-                                            {config.local_tts_backend === 'kokoro' && config.kokoro_mode === 'local' && (
-                                                <div>
-                                                    <label className="text-sm font-medium">Voice</label>
-                                                    <select
-                                                        className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                        value={config.kokoro_voice || 'af_heart'}
-                                                        onChange={e => setConfig({ ...config, kokoro_voice: e.target.value })}
-                                                    >
-                                                        <option value="af_heart">Heart (Female, US)</option>
-                                                        <option value="af_bella">Bella (Female, US)</option>
-                                                        <option value="af_nicole">Nicole (Female, US)</option>
-                                                        <option value="af_sarah">Sarah (Female, US)</option>
-                                                        <option value="af_sky">Sky (Female, US)</option>
-                                                        <option value="am_adam">Adam (Male, US)</option>
-                                                        <option value="am_michael">Michael (Male, US)</option>
-                                                        <option value="bf_emma">Emma (Female, UK)</option>
-                                                        <option value="bf_isabella">Isabella (Female, UK)</option>
-                                                        <option value="bm_george">George (Male, UK)</option>
-                                                        <option value="bm_lewis">Lewis (Male, UK)</option>
-                                                    </select>
-                                                    <p className="text-xs text-muted-foreground mt-1">
-                                                        af=American Female, am=American Male, bf=British Female, bm=British Male
-                                                    </p>
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        {/* LLM Config for Hybrid */}
-                                        <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
-                                            <h4 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Large Language Model (LLM)</h4>
-                                            <div>
-                                                <label className="text-sm font-medium">Provider</label>
-                                                <select
-                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
-                                                    value={config.hybrid_llm_provider || 'groq'}
-                                                    onChange={e => setConfig({ ...config, hybrid_llm_provider: e.target.value })}
-                                                >
-                                                    <option value="groq">Groq (Cloud) - Free tier, no credit card</option>
-                                                    <option value="openai">OpenAI (Cloud)</option>
-                                                    <option value="ollama">Ollama (Self-hosted) - No API key needed</option>
-                                                </select>
-                                            </div>
-                                            {config.hybrid_llm_provider === 'groq' && (
-                                                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-md border border-amber-200 dark:border-amber-800">
-                                                    <p className="text-sm text-amber-800 dark:text-amber-300">
-                                                        <strong>Note:</strong> Groq does not support function/tool calling reliably.
-                                                    </p>
-                                                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                                                        Tools are allowlisted per Context. If you use Groq as the LLM, keep context tools empty.
-                                                    </p>
-                                                </div>
-                                            )}
-                                            {config.hybrid_llm_provider === 'ollama' && (
-                                                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md border border-blue-200 dark:border-blue-800">
-                                                    <p className="text-sm text-blue-800 dark:text-blue-300">
-                                                        <strong>Ollama:</strong> Run your own LLM on a Mac, PC, or server.
-                                                    </p>
-                                                    <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                                                        Configure the Ollama URL in Providers → ollama_llm after setup.
-                                                    </p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-                                {config.hybrid_llm_provider !== 'ollama' && (
+                                <div className="bg-blue-50/50 dark:bg-blue-900/10 p-4 rounded-md border border-blue-100 dark:border-blue-900/20 text-sm text-blue-800 dark:text-blue-300">
+                                    <p className="font-semibold mb-1">OpenAI Realtime</p>
+                                    <p className="text-blue-700 dark:text-blue-400">Requires an OpenAI API key.</p>
+                                </div>
                                 <div className="space-y-2">
-                                    <label className="text-sm font-medium">
-                                        {config.hybrid_llm_provider === 'groq' ? 'Groq API Key' : 'OpenAI API Key'}
-                                        {config.provider === 'local_hybrid' && <span className="text-muted-foreground font-normal ml-2">(for LLM only)</span>}
-                                    </label>
+                                    <label className="text-sm font-medium">OpenAI API Key</label>
                                     <div className="flex space-x-2">
                                         <input
                                             type="password"
                                             className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.hybrid_llm_provider === 'groq' ? (config.groq_key || '') : (config.openai_key || '')}
-                                            onChange={e => setConfig({ ...config, [config.hybrid_llm_provider === 'groq' ? 'groq_key' : 'openai_key']: e.target.value })}
-                                            placeholder={config.hybrid_llm_provider === 'groq' ? 'gsk_...' : 'sk-...'}
+                                            value={config.openai_key || ''}
+                                            onChange={e => setConfig({ ...config, openai_key: e.target.value })}
+                                            placeholder="sk-..."
                                         />
                                         <button
                                             type="button"
-                                            onClick={() => handleTestKey(config.hybrid_llm_provider === 'groq' ? 'groq' : 'openai', config.hybrid_llm_provider === 'groq' ? (config.groq_key || '') : (config.openai_key || ''))}
+                                            onClick={() => handleTestKey('openai', config.openai_key || '')}
                                             className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
                                             disabled={loading}
                                         >
                                             Test
                                         </button>
                                     </div>
-                                    <p className="text-xs text-muted-foreground">Required for Local Hybrid cloud LLM.</p>
+                                    <p className="text-xs text-muted-foreground">Required for OpenAI Realtime provider.</p>
                                 </div>
+                            </div>
+                        )}
+
+                        {config.provider === 'local_hybrid' && (
+                            <div className="space-y-4">
+                                <div className="space-y-6 border-b pb-6 mb-6">
+                                    <h3 className="font-medium text-lg">Local AI Configuration</h3>
+
+                                    {/* STT Config */}
+                                    <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
+                                        <h4 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Speech-to-Text (STT)</h4>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="text-sm font-medium">Backend</label>
+                                                <select
+                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
+                                                    value={config.local_stt_backend}
+                                                    onChange={e => setConfig({ ...config, local_stt_backend: e.target.value })}
+                                                >
+                                                    <option value="vosk">Vosk (Local)</option>
+                                                    <option value="kroko">Kroko (Local/Cloud)</option>
+                                                    <option value="sherpa">Sherpa (Local)</option>
+                                                    <option value="faster_whisper">Faster-Whisper (Local)</option>
+                                                </select>
+                                            </div>
+                                            {config.local_stt_backend === 'kroko' && (
+                                                <div className="flex items-center pt-6">
+                                                    <label className="flex items-center space-x-2 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={config.kroko_embedded}
+                                                            onChange={e => setConfig({ ...config, kroko_embedded: e.target.checked })}
+                                                            className="rounded border-gray-300"
+                                                        />
+                                                        <span className="text-sm">Embedded Mode (Local)</span>
+                                                    </label>
+                                                </div>
+                                            )}
+                                        </div>
+                                        {config.local_stt_backend === 'kroko' && !config.kroko_embedded && (
+                                            <div>
+                                                <label className="text-sm font-medium">Kroko API Key</label>
+                                                <input
+                                                    type="password"
+                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
+                                                    value={config.kroko_api_key || ''}
+                                                    onChange={e => setConfig({ ...config, kroko_api_key: e.target.value })}
+                                                    placeholder="Kroko API Key"
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* TTS Config */}
+                                    <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
+                                        <h4 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Text-to-Speech (TTS)</h4>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="text-sm font-medium">Backend</label>
+                                                <select
+                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
+                                                    value={
+                                                        config.local_tts_backend === 'kokoro'
+                                                            ? (config.kokoro_mode === 'local' ? 'kokoro_local' : 'kokoro_cloud')
+                                                            : config.local_tts_backend
+                                                    }
+                                                    onChange={e => {
+                                                        const val = e.target.value;
+                                                        if (val === 'kokoro_local') {
+                                                            setConfig({ ...config, local_tts_backend: 'kokoro', kokoro_mode: 'local' });
+                                                        } else if (val === 'kokoro_cloud') {
+                                                            setConfig({ ...config, local_tts_backend: 'kokoro', kokoro_mode: 'api' });
+                                                        } else {
+                                                            setConfig({ ...config, local_tts_backend: val });
+                                                        }
+                                                    }}
+                                                >
+                                                    <option value="piper">Piper (Local)</option>
+                                                    <option value="kokoro_local">Kokoro (Local)</option>
+                                                    <option value="kokoro_cloud">Kokoro (Cloud/API)</option>
+                                                    <option value="melotts">MeloTTS (Local/CPU)</option>
+                                                </select>
+                                            </div></div>
+                                        {config.local_tts_backend === 'kokoro' && config.kokoro_mode === 'api' && (
+                                            <div>
+                                                <label className="text-sm font-medium">Kokoro API Key</label>
+                                                <input
+                                                    type="password"
+                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
+                                                    value={config.kokoro_api_key || ''}
+                                                    onChange={e => setConfig({ ...config, kokoro_api_key: e.target.value })}
+                                                    placeholder="Kokoro API Key"
+                                                />
+                                            </div>
+                                        )}
+                                        {config.local_tts_backend === 'kokoro' && config.kokoro_mode === 'local' && (
+                                            <div>
+                                                <label className="text-sm font-medium">Voice</label>
+                                                <select
+                                                    className="w-full p-2 rounded-md border border-input bg-background mt-1"
+                                                    value={config.kokoro_voice || 'af_heart'}
+                                                    onChange={e => setConfig({ ...config, kokoro_voice: e.target.value })}
+                                                >
+                                                    <option value="af_heart">Heart (Female, US)</option>
+                                                    <option value="af_bella">Bella (Female, US)</option>
+                                                    <option value="af_nicole">Nicole (Female, US)</option>
+                                                    <option value="af_sarah">Sarah (Female, US)</option>
+                                                    <option value="af_sky">Sky (Female, US)</option>
+                                                    <option value="am_adam">Adam (Male, US)</option>
+                                                    <option value="am_michael">Michael (Male, US)</option>
+                                                    <option value="bf_emma">Emma (Female, UK)</option>
+                                                    <option value="bf_isabella">Isabella (Female, UK)</option>
+                                                    <option value="bm_george">George (Male, UK)</option>
+                                                    <option value="bm_lewis">Lewis (Male, UK)</option>
+                                                </select>
+                                                <p className="text-xs text-muted-foreground mt-1">
+                                                    af=American Female, am=American Male, bf=British Female, bm=British Male
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* LLM Config for Hybrid */}
+                                    <div className="space-y-3 p-4 bg-muted/30 rounded-lg border">
+                                        <h4 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Large Language Model (LLM)</h4>
+                                        <div>
+                                            <label className="text-sm font-medium">Provider</label>
+                                            <select
+                                                className="w-full p-2 rounded-md border border-input bg-background mt-1"
+                                                value={config.hybrid_llm_provider || 'groq'}
+                                                onChange={e => setConfig({ ...config, hybrid_llm_provider: e.target.value })}
+                                            >
+                                                <option value="groq">Groq (Cloud) - Free tier, no credit card</option>
+                                                <option value="openai">OpenAI (Cloud)</option>
+                                                <option value="ollama">Ollama (Self-hosted) - No API key needed</option>
+                                            </select>
+                                        </div>
+                                        {config.hybrid_llm_provider === 'groq' && (
+                                            <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-md border border-amber-200 dark:border-amber-800">
+                                                <p className="text-sm text-amber-800 dark:text-amber-300">
+                                                    <strong>Note:</strong> Groq does not support function/tool calling reliably.
+                                                </p>
+                                                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                                                    Tools are allowlisted per Context. If you use Groq as the LLM, keep context tools empty.
+                                                </p>
+                                            </div>
+                                        )}
+                                        {config.hybrid_llm_provider === 'ollama' && (
+                                            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md border border-blue-200 dark:border-blue-800">
+                                                <p className="text-sm text-blue-800 dark:text-blue-300">
+                                                    <strong>Ollama:</strong> Run your own LLM on a Mac, PC, or server.
+                                                </p>
+                                                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                                                    Configure the Ollama URL in Providers → ollama_llm after setup.
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {config.hybrid_llm_provider !== 'ollama' && (
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">
+                                            {config.hybrid_llm_provider === 'groq' ? 'Groq API Key' : 'OpenAI API Key'}
+                                            <span className="text-muted-foreground font-normal ml-2">(for LLM only)</span>
+                                        </label>
+                                        <div className="flex space-x-2">
+                                            <input
+                                                type="password"
+                                                className="w-full p-2 rounded-md border border-input bg-background"
+                                                value={config.hybrid_llm_provider === 'groq' ? (config.groq_key || '') : (config.openai_key || '')}
+                                                onChange={e => setConfig({ ...config, [config.hybrid_llm_provider === 'groq' ? 'groq_key' : 'openai_key']: e.target.value })}
+                                                placeholder={config.hybrid_llm_provider === 'groq' ? 'gsk_...' : 'sk-...'}
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => handleTestKey(config.hybrid_llm_provider === 'groq' ? 'groq' : 'openai', config.hybrid_llm_provider === 'groq' ? (config.groq_key || '') : (config.openai_key || ''))}
+                                                className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                                                disabled={loading}
+                                            >
+                                                Test
+                                            </button>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground">Required for Local Hybrid cloud LLM.</p>
+                                    </div>
                                 )}
                             </div>
                         )}
