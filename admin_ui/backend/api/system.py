@@ -1557,19 +1557,14 @@ echo "media permissions fixed"
     
     # Fix 1: Create directory if missing
     try:
-        os.makedirs(path_to_fix, mode=0o2750, exist_ok=True)
-        fixes_applied.append(f"Created directory: {path_to_fix}")
+        os.makedirs(path_to_fix, exist_ok=True)
+        fixes_applied.append(f"Ensured directory exists: {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to create directory: {str(e)}")
     
-    # Fix 2: Set permissions
-    try:
-        os.chmod(path_to_fix, 0o2750)
-        parent_dir = os.path.dirname(path_to_fix)
-        os.chmod(parent_dir, 0o2750)
-        fixes_applied.append(f"Set permissions 2750 on {path_to_fix}")
-    except Exception as e:
-        errors.append(f"Failed to set permissions: {str(e)}")
+    # Fix 2: Permissions are best applied on the host via preflight/install to keep
+    # Asterisk + containers aligned. Avoid chmod here (CodeQL flags group/world bits).
+    manual_steps.append("For permission alignment, run on host: sudo ./preflight.sh --apply-fixes")
     
     # Fix 3: Symlink - can only be done from host, not container
     if in_docker:
