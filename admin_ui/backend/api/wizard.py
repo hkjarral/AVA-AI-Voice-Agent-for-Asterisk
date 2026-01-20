@@ -36,6 +36,7 @@ DISK_BLOCK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB (hard stop for downloads)
 
 
 def _format_bytes(num_bytes: int) -> str:
+    """Format bytes into a human-readable string."""
     if num_bytes < 0:
         return "unknown"
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -149,6 +150,7 @@ echo "models permissions fixed"
 
 
 def _ensure_models_dir_ready(path: str) -> None:
+    """Ensure a models directory exists and is writable (best-effort auto-remediation)."""
     def _is_writable_dir(dir_path: str) -> bool:
         if not os.path.isdir(dir_path):
             return False
@@ -197,6 +199,7 @@ def _ensure_models_dir_ready(path: str) -> None:
 
 
 def _url_content_length(url: str) -> Optional[int]:
+    """Return Content-Length for `url` (best-effort), or None when unavailable."""
     try:
         req = urllib.request.Request(url, method="HEAD")
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -209,6 +212,7 @@ def _url_content_length(url: str) -> Optional[int]:
 
 
 def _sha256_file(path: str) -> str:
+    """Compute SHA256 of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -217,10 +221,12 @@ def _sha256_file(path: str) -> str:
 
 
 def _write_sha256_sidecar(path: str, sha256_hex: str) -> None:
+    """Write a `.sha256` sidecar for a downloaded artifact."""
     atomic_write_text(f"{path}.sha256", f"{sha256_hex}  {os.path.basename(path)}\n")
 
 
 def _is_within_directory(base_dir: str, candidate_path: str) -> bool:
+    """Return True when `candidate_path` resolves under `base_dir`."""
     base = os.path.abspath(base_dir)
     cand = os.path.abspath(candidate_path)
     return cand == base or cand.startswith(base + os.sep)
@@ -341,6 +347,7 @@ _latest_download_job_id: Optional[str] = None
 
 
 def _create_download_job(kind: str, *, current_file: str = "") -> DownloadJob:
+    """Create and register a new in-memory download job."""
     global _latest_download_job_id
     job_id = str(uuid.uuid4())
     job = DownloadJob(id=job_id, kind=kind)
@@ -357,6 +364,7 @@ def _create_download_job(kind: str, *, current_file: str = "") -> DownloadJob:
 
 
 def _get_download_job(job_id: Optional[str]) -> Optional[DownloadJob]:
+    """Return the requested job, or the most recent job if `job_id` is None."""
     with _download_jobs_lock:
         if job_id:
             return _download_jobs.get(job_id)
@@ -366,6 +374,7 @@ def _get_download_job(job_id: Optional[str]) -> Optional[DownloadJob]:
 
 
 def _job_output(job_id: str, line: str) -> None:
+    """Append a log line to a download job (trims to a fixed buffer)."""
     with _download_jobs_lock:
         job = _download_jobs.get(job_id)
         if not job:
@@ -376,6 +385,7 @@ def _job_output(job_id: str, line: str) -> None:
 
 
 def _job_set_progress(job_id: str, **updates: Any) -> None:
+    """Update progress fields for an in-flight download job."""
     with _download_jobs_lock:
         job = _download_jobs.get(job_id)
         if not job:
@@ -384,6 +394,7 @@ def _job_set_progress(job_id: str, **updates: Any) -> None:
 
 
 def _job_finish(job_id: str, *, completed: bool, error: Optional[str] = None) -> None:
+    """Mark a download job as finished (success or error)."""
     with _download_jobs_lock:
         job = _download_jobs.get(job_id)
         if not job:
@@ -1723,6 +1734,8 @@ async def download_selected_models(selection: ModelSelection):
             env_updates.append(f"LOCAL_TTS_BACKEND={tts_model.get('backend') or selection.tts}")
             if skip_llm_download:
                 env_updates.append("LOCAL_AI_MODE=minimal")
+            else:
+                env_updates.append("LOCAL_AI_MODE=full")
 
             # Kroko toggle (embedded vs cloud)
             if (stt_model.get("backend") or selection.stt) == "kroko":
@@ -2515,6 +2528,7 @@ class SetupConfig(BaseModel):
 
 @router.post("/save")
 async def save_setup_config(config: SetupConfig):
+    """Persist wizard configuration into `.env` and baseline config files."""
     # Validation: Check for required keys based on provider
     if config.provider == "openai_realtime" and not config.openai_key:
             raise HTTPException(status_code=400, detail="OpenAI API Key is required for OpenAI Realtime provider")
