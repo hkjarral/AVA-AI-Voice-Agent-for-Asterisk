@@ -1,6 +1,6 @@
 # Hardware Requirements
 
-System specifications and performance characteristics for Asterisk AI Voice Agent v5.1.4.
+System specifications and performance characteristics for Asterisk AI Voice Agent v5.1.6.
 
 ## Overview
 

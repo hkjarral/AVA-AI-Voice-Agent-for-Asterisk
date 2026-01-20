@@ -12,16 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [5.1.6] - 2026-01-20
+
 ### Added
 
 - Admin UI Dashboard: show current project version in the **System Ready** card (best-effort detection via `git describe` with fallback to README parsing; supports `AAVA_PROJECT_VERSION` override).
 
 ### Changed
 
-- Docs/CLI: align operator-facing version references to `v5.1.4` (avoid hardcoded `v5.0` strings in CLI help/output where possible).
+- Docs/CLI: align operator-facing version references to `v5.1.6` (avoid hardcoded `v5.0` strings in CLI help/output where possible).
+- Agent CLI: default `agent version` string now reports `5.1.6` (still overridable via `-ldflags`).
 
 ### Fixed
 
+- Admin UI Setup Wizard: OpenAI Realtime now prompts for the OpenAI API key (no Groq key mix-up) and validates correctly.
+- Agent CLI `agent rca`: detect AudioSocket vs ExternalMedia calls and tailor transport diagnostics (avoid AudioSocket-only false positives).
+- Admin UI System Ready: Docker Compose version detection now uses the same compose command resolution as container operations; avoids stale label-based warnings.
 - Docker builds: pin base OS/runtime to avoid upstream tag drift (`admin_ui`/`ai_engine`: Debian 12 `bookworm` + Python 3.11; `local_ai_server`: Debian 13 `trixie` + Python 3.11 for Kroko compatibility).
 - Ollama pipelines: prevent overly-eager `hangup_call` tool calls from ending calls when the caller did not indicate end-of-call intent; support `num_ctx` pass-through and honor `tools_enabled` for tool calling.
 - Email transcripts: improve Outlook compatibility by rendering transcript newlines as `<br/>` (HTML-escaped) so caller/AI lines display correctly across clients.

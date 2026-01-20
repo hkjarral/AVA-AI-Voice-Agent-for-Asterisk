@@ -123,7 +123,7 @@ At minimum, you will add a context like:
 
 ```asterisk
 [from-ai-agent]
-exten => s,1,NoOp(Asterisk AI Voice Agent v5.1.4)
+exten => s,1,NoOp(Asterisk AI Voice Agent v5.1.6)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
