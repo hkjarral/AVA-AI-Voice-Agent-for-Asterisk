@@ -1537,7 +1537,7 @@ async def fix_directory_issues():
 set -eu
 mkdir -p /project/asterisk_media/ai-generated
 chown {desired_uid}:{desired_gid} /project/asterisk_media /project/asterisk_media/ai-generated || true
-chmod 2770 /project/asterisk_media /project/asterisk_media/ai-generated || true
+chmod 2750 /project/asterisk_media /project/asterisk_media/ai-generated || true
 echo "media permissions fixed"
 """
                 output = client.containers.run(
@@ -1557,17 +1557,17 @@ echo "media permissions fixed"
     
     # Fix 1: Create directory if missing
     try:
-        os.makedirs(path_to_fix, mode=0o2770, exist_ok=True)
+        os.makedirs(path_to_fix, mode=0o2750, exist_ok=True)
         fixes_applied.append(f"Created directory: {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to create directory: {str(e)}")
     
     # Fix 2: Set permissions
     try:
-        os.chmod(path_to_fix, 0o2770)
+        os.chmod(path_to_fix, 0o2750)
         parent_dir = os.path.dirname(path_to_fix)
-        os.chmod(parent_dir, 0o2770)
-        fixes_applied.append(f"Set permissions 2770 on {path_to_fix}")
+        os.chmod(parent_dir, 0o2750)
+        fixes_applied.append(f"Set permissions 2750 on {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to set permissions: {str(e)}")
     
