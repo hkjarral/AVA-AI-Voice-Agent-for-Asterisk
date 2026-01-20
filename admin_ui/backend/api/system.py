@@ -1830,88 +1830,93 @@ def _detect_compose():
         "status": "error",
         "message": "Docker Compose not detected"
     }
-    
-    # Method 1: Try docker compose (v2 plugin) via subprocess
-    try:
-        result = subprocess.run(
-            ["docker", "compose", "version", "--short"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            version = result.stdout.strip().lstrip("v")
-            compose_info["installed"] = True
-            compose_info["version"] = version
-            compose_info["type"] = "plugin"
-            compose_info["status"] = "ok"
-            compose_info["message"] = None
-            
-            # Check version - v2.x.x format
-            try:
-                parts = version.split(".")
-                major = int(parts[0])
-                minor = int(parts[1]) if len(parts) > 1 else 0
-                if major >= 2:
-                    if minor < 20:
-                        compose_info["status"] = "warning"
-                        compose_info["message"] = "Upgrade to Compose 2.20+ recommended"
-                    # v2.20+ is good
-                elif major == 1:
-                    compose_info["status"] = "error"
-                    compose_info["message"] = "Compose v1 is EOL and unsupported"
-            except:
-                pass
-            
-            return compose_info
-    except Exception as e:
-        # Docker CLI not available in container
-        pass
-    
-    # Method 2: Infer from Docker SDK - if we're running in compose, it's v2
-    try:
-        client = docker.from_env()
-        # Check if any containers are managed by compose
-        for container in client.containers.list():
-            labels = container.labels
-            if "com.docker.compose.version" in labels:
-                version = labels.get("com.docker.compose.version", "")
-                compose_info["installed"] = True
-                compose_info["version"] = version
-                compose_info["type"] = "plugin"
-                compose_info["status"] = "ok"
-                compose_info["message"] = None
-                
-                # Check version
-                try:
-                    parts = version.split(".")
-                    major = int(parts[0])
-                    minor = int(parts[1]) if len(parts) > 1 else 0
-                    if major >= 2:
-                        if minor < 20:
-                            compose_info["status"] = "warning"
-                            compose_info["message"] = "Upgrade to Compose 2.20+ recommended"
-                    elif major == 1:
-                        compose_info["status"] = "error"
-                        compose_info["message"] = "Compose v1 is EOL and unsupported"
-                except:
-                    pass
-                
-                return compose_info
-    except:
-        pass
-    
-    # Method 3: Try docker-compose (v1 standalone) - last resort
-    try:
-        result = subprocess.run(
-            ["docker-compose", "version", "--short"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            compose_info["installed"] = True
-            compose_info["version"] = result.stdout.strip().lstrip("v")
-            compose_info["type"] = "standalone_v1"
+
+    def _parse_version(text: str) -> str:
+        import re
+
+        if not text:
+            return ""
+        text = text.strip()
+        # Common outputs:
+        # - "v2.24.6"
+        # - "2.24.6"
+        # - "Docker Compose version v2.24.6"
+        m = re.search(r"\bv?(\d+\.\d+\.\d+)\b", text)
+        return m.group(1) if m else ""
+
+    def _classify_version(version: str) -> None:
+        # version is normalized to "X.Y.Z"
+        try:
+            parts = version.split(".")
+            major = int(parts[0])
+            minor = int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            return
+
+        if major > 2:
+            # Compose may report major versions >2 depending on packaging; treat as modern.
+            return
+        if major == 2:
+            if minor < 20:
+                compose_info["status"] = "warning"
+                compose_info["message"] = "Upgrade to Compose 2.20+ recommended"
+        elif major == 1:
             compose_info["status"] = "error"
             compose_info["message"] = "Compose v1 is EOL and unsupported"
-    except:
+
+    # Method 1: Use the same compose command resolution we use for operations.
+    try:
+        compose_cmd = get_docker_compose_cmd()
+        # First try `version --short` (supported by docker compose and docker-compose v2)
+        result = subprocess.run(
+            compose_cmd + ["version", "--short"],
+            capture_output=True, text=True, timeout=5
+        )
+        out = (result.stdout or "").strip()
+        if result.returncode != 0 or not out:
+            # Fall back to full `version` output and parse.
+            result = subprocess.run(
+                compose_cmd + ["version"],
+                capture_output=True, text=True, timeout=5
+            )
+            out = (result.stdout or "") + "\n" + (result.stderr or "")
+
+        version = _parse_version(out)
+        if version:
+            compose_info["installed"] = True
+            compose_info["version"] = version
+            compose_info["status"] = "ok"
+            compose_info["message"] = None
+
+            # Type
+            if len(compose_cmd) >= 2 and compose_cmd[-1] == "compose":
+                compose_info["type"] = "plugin"
+            else:
+                # docker-compose binary can be v1 or v2
+                compose_info["type"] = "standalone"
+
+            _classify_version(version)
+            return compose_info
+    except Exception:
+        # Compose CLI not available inside container (or docker not in PATH).
+        pass
+
+    # Method 2: Best-effort inference from Docker SDK container labels.
+    # This is useful when Compose CLI isn't present, but should NOT be used
+    # for version warnings (labels can be stale across upgrades).
+    try:
+        client = docker.from_env()
+        for container in client.containers.list():
+            labels = container.labels or {}
+            version = (labels.get("com.docker.compose.version") or "").strip().lstrip("v")
+            if version:
+                compose_info["installed"] = True
+                compose_info["version"] = version
+                compose_info["type"] = "label"
+                compose_info["status"] = "ok"
+                compose_info["message"] = "Compose detected via container labels (version may be stale)"
+                return compose_info
+    except Exception:
         pass
     
     return compose_info
