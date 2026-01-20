@@ -48,6 +48,43 @@ Preflight ensures required host directories exist with correct permissions, incl
 - `./data` (Call History SQLite and runtime state)
 - `./models/{stt,tts,llm,kroko}` (mounted into `ai_engine` and `local_ai_server` as `/app/models`)
 
+#### Media directory persistence across reboots (important)
+
+Generated audio is written to the host under:
+
+- `./asterisk_media/ai-generated` (host)
+- mounted into containers as `/mnt/asterisk_media/ai-generated`
+
+For **Asterisk file playback** (e.g., `sound:ai-generated/...`) the host Asterisk must be able to read those files under:
+
+- `/var/lib/asterisk/sounds/ai-generated`
+
+Preflight (and `install.sh`) uses the following strategy:
+
+1. **Prefer a symlink**: `/var/lib/asterisk/sounds/ai-generated` → `./asterisk_media/ai-generated` (works when the `asterisk` user can traverse the repo path).
+2. **Fallback to a bind mount** when the repo path is not accessible (common if the project is under `/root` with `0700` permissions):
+   - `/var/lib/asterisk/sounds/ai-generated` is bind-mounted to `./asterisk_media/ai-generated`
+   - The bind mount is **persisted in `/etc/fstab`** (systemd-friendly, best-effort) so it survives host reboots.
+
+Quick verification on the host:
+
+```bash
+ls -la /var/lib/asterisk/sounds/ai-generated
+mountpoint /var/lib/asterisk/sounds/ai-generated || true
+```
+
+If you use **external/shared storage** for media (common on FreePBX), you may have `./asterisk_media` as a symlink to something like `/mnt/asterisk_media`. In that case, you must also ensure the **external mount itself** is persisted across reboots (e.g., via `/etc/fstab` or a systemd mount unit). If the mount doesn’t come up after a reboot, the Admin UI will report a Host Directory error and you should:
+
+```bash
+sudo ./preflight.sh --apply-fixes
+```
+
+Tip: `--persist-media-mount` is available as a troubleshooting/verification helper when bind-mount mode is used:
+
+```bash
+sudo ./preflight.sh --apply-fixes --persist-media-mount
+```
+
 If preflight reports warnings or failures, resolve them first, then re-run preflight until it returns clean:
 - Troubleshooting: `docs/TROUBLESHOOTING_GUIDE.md`
 - Re-run: `sudo ./preflight.sh --apply-fixes`

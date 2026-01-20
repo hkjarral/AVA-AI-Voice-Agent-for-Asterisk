@@ -32,7 +32,7 @@ setup_media_paths() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # This repo mounts ./asterisk_media into the ai_engine container at /mnt/asterisk_media.
     # Keep host and container aligned by using the repo-local directory by default.
-    MEDIA_DIR="${AST_MEDIA_DIR:-$SCRIPT_DIR/asterisk_media/ai-generated}"
+    MEDIA_DIR="$SCRIPT_DIR/asterisk_media/ai-generated"
     MEDIA_PARENT="$(dirname "$MEDIA_DIR")"
     ASTERISK_SOUNDS_DIR="/var/lib/asterisk/sounds"
     ASTERISK_SOUNDS_LINK="${ASTERISK_SOUNDS_DIR}/ai-generated"
@@ -45,9 +45,75 @@ setup_media_paths() {
     $SUDO chmod 2775 "$MEDIA_PARENT" 2>/dev/null || true
     $SUDO chmod 2775 "$MEDIA_DIR" 2>/dev/null || true
 
-    # Best-effort: create/update symlink so `sound:ai-generated/...` resolves on the Asterisk host.
+    # Prefer symlink when Asterisk can traverse MEDIA_DIR; otherwise use a bind mount (common when repo is under /root).
+    local use_bind_mount=false
+    if [ -d "$ASTERISK_SOUNDS_DIR" ] && id asterisk &>/dev/null; then
+        if command -v sudo >/dev/null 2>&1; then
+            if ! sudo -u asterisk test -x "$MEDIA_DIR" 2>/dev/null; then
+                use_bind_mount=true
+            fi
+        else
+            if ! su -s /bin/bash -c "test -x '$MEDIA_DIR'" asterisk 2>/dev/null; then
+                use_bind_mount=true
+            fi
+        fi
+    fi
+
+    # Best-effort: create/update symlink or bind mount so `sound:ai-generated/...` resolves on the Asterisk host.
     if [ -d "$ASTERISK_SOUNDS_DIR" ]; then
-        if [ -e "$ASTERISK_SOUNDS_LINK" ] && [ ! -L "$ASTERISK_SOUNDS_LINK" ]; then
+        if [ "$use_bind_mount" = true ]; then
+            print_warning "Asterisk user cannot access $MEDIA_DIR; using bind mount at $ASTERISK_SOUNDS_LINK (avoids /root traversal)"
+
+            # Replace any existing symlink at the mountpoint.
+            if [ -L "$ASTERISK_SOUNDS_LINK" ]; then
+                $SUDO rm -f "$ASTERISK_SOUNDS_LINK" 2>/dev/null || true
+            fi
+            $SUDO mkdir -p "$ASTERISK_SOUNDS_LINK" 2>/dev/null || true
+
+            if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$ASTERISK_SOUNDS_LINK" 2>/dev/null; then
+                print_success "Bind mount already active: $ASTERISK_SOUNDS_LINK"
+            else
+                $SUDO mount --bind "$MEDIA_DIR" "$ASTERISK_SOUNDS_LINK" 2>/dev/null || true
+                if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$ASTERISK_SOUNDS_LINK" 2>/dev/null; then
+                    print_success "Bind mounted $ASTERISK_SOUNDS_LINK -> $MEDIA_DIR"
+                else
+                    print_warning "Could not create bind mount (may need sudo): $ASTERISK_SOUNDS_LINK"
+                    print_info "  Try: $SUDO mount --bind '$MEDIA_DIR' '$ASTERISK_SOUNDS_LINK'"
+                fi
+            fi
+
+            # Persist bind mount across reboots via /etc/fstab (systemd-friendly when available).
+            if [ -f /etc/fstab ]; then
+                local options="bind,nofail"
+                if command -v systemctl >/dev/null 2>&1; then
+                    options="bind,nofail,x-systemd.automount"
+                fi
+                local fstab_line="$MEDIA_DIR $ASTERISK_SOUNDS_LINK none $options 0 0"
+                if ! awk -v mp="$ASTERISK_SOUNDS_LINK" '
+                    $0 ~ /^[[:space:]]*#/ { next }
+                    NF < 2 { next }
+                    $2 == mp { found=1 }
+                    END { exit(found ? 0 : 1) }
+                ' /etc/fstab 2>/dev/null; then
+                    if {
+                        echo ""
+                        echo "# AAVA: expose generated audio to Asterisk (bind mount)"
+                        echo "$fstab_line"
+                    } | $SUDO tee -a /etc/fstab >/dev/null; then
+                        print_success "Persisted bind mount in /etc/fstab"
+                        if command -v systemctl >/dev/null 2>&1; then
+                            $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
+                        fi
+                    else
+                        print_warning "Failed to update /etc/fstab; bind mount may not persist after reboot"
+                        print_info "  Add manually to /etc/fstab:"
+                        print_info "    $fstab_line"
+                    fi
+                fi
+            else
+                print_warning "/etc/fstab not found; cannot persist bind mount after reboot"
+            fi
+        elif [ -e "$ASTERISK_SOUNDS_LINK" ] && [ ! -L "$ASTERISK_SOUNDS_LINK" ]; then
             print_warning "Asterisk sounds path exists but is not a symlink: $ASTERISK_SOUNDS_LINK"
             print_info "  Fix manually: $SUDO mv '$ASTERISK_SOUNDS_LINK' '${ASTERISK_SOUNDS_LINK}.bak' && $SUDO ln -sf '$MEDIA_DIR' '$ASTERISK_SOUNDS_LINK'"
         else

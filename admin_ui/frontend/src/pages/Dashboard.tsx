@@ -106,7 +106,9 @@ const Dashboard = () => {
                     alert('Fixes applied! Container restart may be required for changes to take effect.');
                 }
             } else {
-                alert(`Some fixes failed: ${res.data.errors.join(', ')}`);
+                const errors = Array.isArray(res.data.errors) ? res.data.errors.join('\n') : 'Unknown error';
+                const manualSteps = Array.isArray(res.data.manual_steps) ? res.data.manual_steps.join('\n') : '';
+                alert(`Some fixes failed:\n${errors}${manualSteps ? `\n\nManual steps:\n${manualSteps}` : ''}`);
             }
         } catch (err: any) {
             alert(`Failed to fix directories: ${err?.message || 'Unknown error'}`);
@@ -193,7 +195,10 @@ const Dashboard = () => {
                             <StatusIcon status={checks.host_directory.status} />
                             <span className="text-muted-foreground font-medium">Host Directory</span>
                         </div>
-                        <div className="ml-6 text-[10px] text-muted-foreground/70 truncate" title={checks.host_directory.path}>
+                        <div
+                            className="ml-6 text-[10px] text-muted-foreground/70 truncate"
+                            title={checks.host_directory.message || checks.host_directory.path}
+                        >
                             {checks.host_directory.path || 'Unknown'}
                         </div>
                     </div>

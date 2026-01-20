@@ -192,6 +192,93 @@ print_fix_and_docs() {
     fi
 }
 
+is_systemd_available() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local pid1
+    pid1="$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ' || true)"
+    [ "$pid1" = "systemd" ]
+}
+
+fstab_has_mountpoint() {
+    local mountpoint="$1"
+    awk -v mp="$mountpoint" '
+        $0 ~ /^[[:space:]]*#/ { next }
+        NF < 2 { next }
+        $2 == mp { found=1 }
+        END { exit(found ? 0 : 1) }
+    ' /etc/fstab 2>/dev/null
+}
+
+fstab_mountpoint_has_bind_option() {
+    local mountpoint="$1"
+    awk -v mp="$mountpoint" '
+        $0 ~ /^[[:space:]]*#/ { next }
+        NF < 4 { next }
+        $2 == mp && $4 ~ /(^|,)bind(,|$)/ { found=1 }
+        END { exit(found ? 0 : 1) }
+    ' /etc/fstab 2>/dev/null
+}
+
+ensure_fstab_bind_mount() {
+    local source="$1"
+    local target="$2"
+
+    if [ ! -f /etc/fstab ]; then
+        log_fail "/etc/fstab not found; cannot persist media bind mount"
+        return 1
+    fi
+
+    if fstab_has_mountpoint "$target"; then
+        if fstab_mountpoint_has_bind_option "$target"; then
+            log_ok "Bind mount already persisted in /etc/fstab: $target"
+        else
+            log_warn "Found an /etc/fstab entry for $target but it is not a bind mount; leaving unchanged"
+        fi
+        return 0
+    fi
+
+    local options="bind,nofail"
+    if is_systemd_available; then
+        options="bind,nofail,x-systemd.automount"
+    fi
+    local fstab_line="$source $target none $options 0 0"
+
+    if {
+        echo ""
+        echo "# AAVA: expose generated audio to Asterisk (bind mount)"
+        echo "$fstab_line"
+    } | sudo tee -a /etc/fstab >/dev/null; then
+        log_ok "Persisted media bind mount in /etc/fstab"
+        if is_systemd_available; then
+            sudo systemctl daemon-reload >/dev/null 2>&1 || log_warn "systemctl daemon-reload failed (fstab changes may not apply until reboot)"
+        fi
+        return 0
+    fi
+
+    log_fail "Failed to update /etc/fstab for media bind mount"
+    log_info "  You can persist it manually by adding this line to /etc/fstab:"
+    log_info "  $fstab_line"
+    return 1
+}
+
+verify_fstab_bind_mount() {
+    local target="$1"
+    if [ ! -f /etc/fstab ]; then
+        log_warn "/etc/fstab not found; cannot verify bind mount persistence"
+        return 1
+    fi
+    if ! fstab_has_mountpoint "$target"; then
+        log_warn "No /etc/fstab entry found for: $target"
+        return 1
+    fi
+    if fstab_mountpoint_has_bind_option "$target"; then
+        log_ok "Bind mount persistence entry found in /etc/fstab: $target"
+        return 0
+    fi
+    log_warn "/etc/fstab has an entry for $target but it does not appear to be a bind mount"
+    return 1
+}
+
 # Parse args
 LOCAL_AI_MODE_OVERRIDE=""
 PERSIST_MEDIA_MOUNT=false
@@ -212,7 +299,7 @@ for arg in "$@"; do
             echo "  --local-ai-mode=MODE  Set LOCAL_AI_MODE in .env (MODE=full|minimal)"
             echo "  --local-ai-minimal    Shortcut for --local-ai-mode=minimal"
             echo "  --local-ai-full       Shortcut for --local-ai-mode=full"
-            echo "  --persist-media-mount Persist Asterisk sounds bind mount in /etc/fstab when needed"
+            echo "  --persist-media-mount Verify (and with --apply-fixes, persist) Asterisk sounds bind mount when bind-mount mode is used"
             echo "  --help         Show this help message"
             echo ""
             echo "Exit codes:"
@@ -1618,21 +1705,18 @@ check_asterisk_uid_gid() {
                     FIX_CMDS+=("sudo mount --bind $MEDIA_DIR $ASTERISK_SOUNDS_LINK")
                 fi
 
-                # Optional: persist bind mount across reboots.
-                local fstab_line="$MEDIA_DIR $ASTERISK_SOUNDS_LINK none bind 0 0"
+                # Persist bind mount across reboots (systemd assumed; falls back to generic fstab options).
+                ensure_fstab_bind_mount "$MEDIA_DIR" "$ASTERISK_SOUNDS_LINK" || true
+
+                # Optional: explicit verification (useful for troubleshooting after reboots).
                 if [ "$PERSIST_MEDIA_MOUNT" = true ]; then
-                    if [ -f /etc/fstab ] && ! grep -Fqs "$fstab_line" /etc/fstab 2>/dev/null; then
-                        {
-                            echo ""
-                            echo "# AAVA: expose generated audio to Asterisk (bind mount)"
-                            echo "$fstab_line"
-                        } | sudo tee -a /etc/fstab >/dev/null 2>&1 || true
-                        log_ok "Persisted media bind mount in /etc/fstab"
+                    verify_fstab_bind_mount "$ASTERISK_SOUNDS_LINK" || true
+                    if mountpoint -q "$ASTERISK_SOUNDS_LINK" 2>/dev/null; then
+                        log_ok "Bind mount is currently active: $ASTERISK_SOUNDS_LINK"
+                    else
+                        log_warn "Bind mount is not currently active: $ASTERISK_SOUNDS_LINK"
+                        log_info "  Try: sudo mount '$ASTERISK_SOUNDS_LINK'  (or reboot)"
                     fi
-                else
-                    log_info "To persist this bind mount after reboot, add to /etc/fstab:"
-                    log_info "  $fstab_line"
-                    log_info "Or rerun: ./preflight.sh --apply-fixes --persist-media-mount"
                 fi
             else
                 # Symlink mode (works when Asterisk can traverse MEDIA_DIR)
@@ -1702,8 +1786,14 @@ check_asterisk_uid_gid() {
             if [ "$use_bind_mount" = true ]; then
                 FIX_CMDS+=("sudo rm -f $ASTERISK_SOUNDS_LINK && sudo mkdir -p $ASTERISK_SOUNDS_LINK")
                 FIX_CMDS+=("sudo mount --bind $MEDIA_DIR $ASTERISK_SOUNDS_LINK  # avoid /root traversal issues")
-                FIX_CMDS+=("# Optional persistence:")
-                FIX_CMDS+=("# echo '$MEDIA_DIR $ASTERISK_SOUNDS_LINK none bind 0 0' | sudo tee -a /etc/fstab")
+                FIX_CMDS+=("# Persist bind mount across reboots (systemd):")
+                FIX_CMDS+=("# echo '$MEDIA_DIR $ASTERISK_SOUNDS_LINK none bind,nofail,x-systemd.automount 0 0' | sudo tee -a /etc/fstab")
+                FIX_CMDS+=("# sudo systemctl daemon-reload")
+                if [ "$PERSIST_MEDIA_MOUNT" = true ]; then
+                    verify_fstab_bind_mount "$ASTERISK_SOUNDS_LINK" || true
+                    log_info "To apply persistence automatically, run:"
+                    log_info "  sudo ./preflight.sh --apply-fixes"
+                fi
             else
                 FIX_CMDS+=("sudo ln -sfn $MEDIA_DIR $ASTERISK_SOUNDS_LINK  # allow Asterisk to serve generated audio")
             fi
@@ -2016,7 +2106,8 @@ print_summary() {
         echo ""
         echo "  Tip (file playback):"
         echo "     If Asterisk file playback fails with 'File ... does not exist' and your project is under /root,"
-        echo "     run: sudo ./preflight.sh --apply-fixes --persist-media-mount"
+        echo "     run: sudo ./preflight.sh --apply-fixes"
+        echo "     (For troubleshooting, add: --persist-media-mount)"
         echo ""
         echo "  Tip (local AI build mode):"
         echo "     Local AI Server is optional (only needed for local_hybrid/local_only pipelines)."
@@ -2076,7 +2167,8 @@ print_summary() {
         echo ""
         echo "  Tip (file playback):"
         echo "     If Asterisk file playback fails with 'File ... does not exist' and your project is under /root,"
-        echo "     run: sudo ./preflight.sh --apply-fixes --persist-media-mount"
+        echo "     run: sudo ./preflight.sh --apply-fixes"
+        echo "     (For troubleshooting, add: --persist-media-mount)"
         echo ""
         echo "  1. Start the Admin UI:"
         echo "     ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent up -d admin_ui"
