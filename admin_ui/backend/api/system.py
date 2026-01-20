@@ -1864,7 +1864,37 @@ def _detect_compose():
             compose_info["status"] = "error"
             compose_info["message"] = "Compose v1 is EOL and unsupported"
 
-    # Method 1: Use the same compose command resolution we use for operations.
+    # Method 1 (preferred): Infer host Compose version from Docker container labels.
+    # Compose is client-side; the most reliable way to learn the *host* Compose version
+    # (when running Admin UI inside a container) is the version label attached to
+    # containers created by Compose on the host.
+    #
+    # Note: this reflects the Compose version used to create/recreate the current stack.
+    try:
+        client = docker.from_env()
+        versions = []
+        for container in client.containers.list():
+            labels = container.labels or {}
+            v = (labels.get("com.docker.compose.version") or "").strip().lstrip("v")
+            if v:
+                versions.append(v)
+
+        if versions:
+            # If multiple versions exist, pick the most common.
+            from collections import Counter
+
+            version = Counter(versions).most_common(1)[0][0]
+            compose_info["installed"] = True
+            compose_info["version"] = version
+            compose_info["type"] = "host_label"
+            compose_info["status"] = "ok"
+            compose_info["message"] = None
+            _classify_version(version)
+            return compose_info
+    except Exception:
+        pass
+
+    # Method 2: Use the same compose command resolution we use for operations (container CLI).
     try:
         compose_cmd = get_docker_compose_cmd()
         # First try `version --short` (supported by docker compose and docker-compose v2)
@@ -1899,24 +1929,6 @@ def _detect_compose():
             return compose_info
     except Exception:
         # Compose CLI not available inside container (or docker not in PATH).
-        pass
-
-    # Method 2: Best-effort inference from Docker SDK container labels.
-    # This is useful when Compose CLI isn't present, but should NOT be used
-    # for version warnings (labels can be stale across upgrades).
-    try:
-        client = docker.from_env()
-        for container in client.containers.list():
-            labels = container.labels or {}
-            version = (labels.get("com.docker.compose.version") or "").strip().lstrip("v")
-            if version:
-                compose_info["installed"] = True
-                compose_info["version"] = version
-                compose_info["type"] = "label"
-                compose_info["status"] = "ok"
-                compose_info["message"] = "Compose detected via container labels (version may be stale)"
-                return compose_info
-    except Exception:
         pass
     
     return compose_info
