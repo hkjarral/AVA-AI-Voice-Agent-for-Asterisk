@@ -229,7 +229,7 @@ venv/
 
 # Documentation-only rule files (keep local, not in GA branch)
 # (Allow these specific artifacts to track on `develop` when needed.)
-!Agents.md
+!AGENTS.md
 !Gemini.md
 
 # Local diagnostics bundles
@@ -262,7 +262,6 @@ dialplan_*.conf
 PRE_MERGE_CHECKLIST.md
 
 # IDE-specific rule files (development only - not for GA/main branch)
-Agents.md
 Gemini.md
 
 # Development-only documentation (Linear integration for contributors)

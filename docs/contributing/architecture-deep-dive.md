@@ -248,7 +248,7 @@ Ongoing milestones and their acceptance criteria live in `docs/ROADMAP.md`. Upda
 
 ### IDE Playbooks
 
-- **Codex / CLI**: `Agents.md` and `.agent/workflows/` summarize deployment runbooks and regression expectations for terminal-first workflows.
+- **Codex / CLI**: `AGENTS.md` and `.agent/workflows/` summarize deployment runbooks and regression expectations for terminal-first workflows.
 - **Cursor**: `.cursor/rules/asterisk_ai_voice_agent.mdc` mirrors the same guardrails, emphasizing SessionStore usage, dual upstream transport, and streaming-first playback.
 - **Windsurf**: `.windsurf/rules/asterisk_ai_voice_agent.md` keeps IDE prompts aligned with the roadmap so code and documentation stays in sync.
 - **Shared artifacts**: Golden baselines (`docs/baselines/golden/`), regression evidence (`docs/resilience.md`), and architecture/roadmap snapshots (`docs/contributing/architecture-deep-dive.md`, `docs/ROADMAP.md`) are the canonical hand-off regardless of editor; update them after every call so all IDEs inherit the latest context.
