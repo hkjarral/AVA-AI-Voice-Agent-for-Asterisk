@@ -118,7 +118,7 @@ const TerminalPage = () => {
                     <TerminalIcon className="w-4 h-4 text-muted-foreground" />
                     <input
                         type="text"
-                        className="flex-1 bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground/50"
+                        className="flex-1 bg-transparent border-none outline-none text-gray-100 placeholder:text-gray-500"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         placeholder="Enter command (e.g., help, status, logs ai_engine)..."
