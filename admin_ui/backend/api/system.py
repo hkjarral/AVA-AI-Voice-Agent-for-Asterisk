@@ -1477,6 +1477,15 @@ async def fix_directory_issues():
     errors = []
     manual_steps = []
 
+    desired_gid = 995
+    try:
+        env_gid = (_dotenv_value("ASTERISK_GID") or "").strip()
+        if env_gid.isdigit():
+            desired_gid = int(env_gid)
+    except Exception:
+        desired_gid = 995
+    desired_uid = 1000
+
     path_to_fix = "/mnt/asterisk_media/ai-generated" if in_docker else host_media_dir
     
     # If asterisk_media is a symlink to a missing target (common after reboot with external mounts),
@@ -1509,20 +1518,56 @@ async def fix_directory_issues():
                     }
     except Exception:
         logger.debug("Failed to inspect asterisk_media symlink target", exc_info=True)
+
+    # Prefer applying permission fixes on the host via Docker when running inside a container.
+    # This avoids discrepancies between container-visible paths and host bind-mount resolution.
+    if in_docker:
+        try:
+            client = docker.from_env()
+            container = client.containers.get("admin_ui")
+            mounts = container.attrs.get("Mounts", []) or []
+            host_project_path = None
+            for m in mounts:
+                if m.get("Destination") == "/app/project":
+                    host_project_path = m.get("Source")
+                    break
+
+            if host_project_path:
+                script = f"""
+set -eu
+mkdir -p /project/asterisk_media/ai-generated
+chown {desired_uid}:{desired_gid} /project/asterisk_media /project/asterisk_media/ai-generated || true
+chmod 2770 /project/asterisk_media /project/asterisk_media/ai-generated || true
+echo "media permissions fixed"
+"""
+                output = client.containers.run(
+                    "alpine:latest",
+                    command=["sh", "-c", script],
+                    volumes={host_project_path: {"bind": "/project", "mode": "rw"}},
+                    remove=True,
+                )
+                msg = (output.decode().strip() if output else "").strip()
+                if msg:
+                    fixes_applied.append(msg)
+            else:
+                manual_steps.append("Could not detect host project path for /app/project mount (admin_ui)")
+        except Exception:
+            logger.debug("Failed to apply host-side media permission fix via Docker", exc_info=True)
+            manual_steps.append("Run on host: sudo ./preflight.sh --apply-fixes")
     
     # Fix 1: Create directory if missing
     try:
-        os.makedirs(path_to_fix, mode=0o2775, exist_ok=True)
+        os.makedirs(path_to_fix, mode=0o2770, exist_ok=True)
         fixes_applied.append(f"Created directory: {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to create directory: {str(e)}")
     
     # Fix 2: Set permissions
     try:
-        os.chmod(path_to_fix, 0o2775)
+        os.chmod(path_to_fix, 0o2770)
         parent_dir = os.path.dirname(path_to_fix)
-        os.chmod(parent_dir, 0o2775)
-        fixes_applied.append(f"Set permissions 2775 on {path_to_fix}")
+        os.chmod(parent_dir, 0o2770)
+        fixes_applied.append(f"Set permissions 2770 on {path_to_fix}")
     except Exception as e:
         errors.append(f"Failed to set permissions: {str(e)}")
     
