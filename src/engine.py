@@ -477,6 +477,8 @@ class Engine:
         self._health_runner: Optional[web.AppRunner] = None
         # MCP client manager (experimental)
         self.mcp_manager = None
+        # Background ARI reconnect supervisor task
+        self._ari_listener_task: Optional[asyncio.Task] = None
 
         # Event handlers
         self.ari_client.on_event("StasisStart", self._handle_stasis_start)
@@ -514,7 +516,7 @@ class Engine:
                 await self.conversation_coordinator.sync_from_session(session)
 
     async def start(self):
-        """Connect to ARI and start the engine."""
+        """Start the engine and ARI reconnect supervisor."""
         # 1) Load providers first (low risk)
         await self._load_providers()
         
@@ -739,11 +741,11 @@ class Engine:
                 logger.error("Failed to start ExternalMedia RTP transport", error=str(exc), exc_info=True)
                 self.rtp_server = None
 
-        # 6) Connect to ARI regardless to keep readiness visible and allow Stasis handling
-        await self.ari_client.connect()
-        # Add PlaybackFinished event handler for timing control
+        # 6) Start ARI reconnect supervisor (initial connect happens in the background).
+        # This avoids a startup race after host reboot where Asterisk/ARI isn't ready yet.
         self.ari_client.add_event_handler("PlaybackFinished", self._on_playback_finished)
-        asyncio.create_task(self.ari_client.start_listening())
+        if not self._ari_listener_task or self._ari_listener_task.done():
+            self._ari_listener_task = asyncio.create_task(self.ari_client.start_listening())
         # Outbound scheduler (runs even if no campaigns are active; lightweight idle)
         try:
             if not self._outbound_scheduler_task:

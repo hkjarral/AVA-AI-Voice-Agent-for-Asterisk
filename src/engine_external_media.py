@@ -147,13 +147,9 @@ class ExternalMediaEngine:
             self.ari_client.add_event_handler("ChannelDestroyed", self._on_channel_destroyed)
             self.ari_client.add_event_handler("PlaybackFinished", self._on_playback_finished)
             
-            # Connect to ARI
-            await self.ari_client.connect()
-            logger.info("Connected to ARI")
-            
-            # Start WebSocket event loop as background task
+            # Start ARI reconnect supervisor (initial connect happens in the background).
             asyncio.create_task(self.ari_client.start_listening())
-            logger.info("ARI WebSocket started")
+            logger.info("ARI reconnect supervisor started")
             
             self.running = True
             logger.info("External Media engine started successfully")
