@@ -4,6 +4,7 @@ Uses ARI External Media channels for bidirectional RTP communication.
 """
 
 import asyncio
+import contextlib
 import os
 import signal
 import uuid
@@ -35,6 +36,7 @@ class ExternalMediaEngine:
     def __init__(self, config: AppConfig):
         self.config = config
         self.ari_client: Optional[ARIClient] = None
+        self._ari_listener_task: Optional[asyncio.Task] = None
         self.rtp_server: Optional[RTPServer] = None
         self.providers: Dict[str, AIProviderInterface] = {}
         self.active_calls: Dict[str, Dict[str, Any]] = {}
@@ -148,7 +150,9 @@ class ExternalMediaEngine:
             self.ari_client.add_event_handler("PlaybackFinished", self._on_playback_finished)
             
             # Start ARI reconnect supervisor (initial connect happens in the background).
-            asyncio.create_task(self.ari_client.start_listening())
+            if not self._ari_listener_task or self._ari_listener_task.done():
+                self._ari_listener_task = asyncio.create_task(self.ari_client.start_listening())
+                self._ari_listener_task.add_done_callback(self._on_ari_listener_task_done)
             logger.info("ARI reconnect supervisor started")
             
             self.running = True
@@ -176,11 +180,29 @@ class ExternalMediaEngine:
             if self.ari_client:
                 await self.ari_client.disconnect()
                 logger.info("ARI client disconnected")
+
+            task = getattr(self, "_ari_listener_task", None)
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             
             logger.info("External Media engine stopped")
             
         except Exception as e:
             logger.error(f"Error stopping External Media engine: {e}")
+
+    def _on_ari_listener_task_done(self, task: "asyncio.Task") -> None:
+        """Log background ARI listener task failures (prevents swallowed exceptions)."""
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as err:
+            logger.debug("Failed inspecting ARI listener task result", error=str(err))
+            return
+        if exc:
+            logger.error("ARI listener task exited unexpectedly", error=str(exc))
     
     async def _on_stasis_start(self, event: Dict[str, Any]):
         """Handle StasisStart event - create External Media channel and bridge."""

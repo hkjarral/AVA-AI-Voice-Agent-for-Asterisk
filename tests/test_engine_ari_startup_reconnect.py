@@ -7,6 +7,8 @@ from src.engine import Engine
 
 
 class _StubARIClient:
+    """Stub ARI client that simulates startup-time connection failure."""
+
     def __init__(self):
         self.connect_calls = 0
         self.handlers = []
@@ -19,20 +21,24 @@ class _StubARIClient:
         self.handlers.append((event_type, handler))
 
     async def start_listening(self):
+        """Mimic reconnect supervisor behavior without looping forever."""
         # Mimic reconnect supervisor behavior without sleeping/looping forever.
         try:
             await self.connect()
-        except Exception:
+        except ConnectionError:
             return
 
 
 class _StubPipelineOrchestrator:
+    """Stub pipeline orchestrator to avoid dependencies in Engine.start()."""
+
     async def start(self):
         return None
 
 
 @pytest.mark.unit
 async def test_engine_start_does_not_fail_when_ari_unavailable_at_startup():
+    """Engine.start() should schedule ARI reconnect even if ARI is down."""
     engine = Engine.__new__(Engine)
     engine.providers = {}
     engine._call_providers = {}
@@ -59,9 +65,6 @@ async def test_engine_start_does_not_fail_when_ari_unavailable_at_startup():
 
     await engine.start()
 
-    # Let the background task run once.
-    await asyncio.sleep(0)
-
     assert engine._ari_listener_task is not None
+    await asyncio.wait_for(engine._ari_listener_task, timeout=0.1)
     assert engine.ari_client.connect_calls >= 1
-
