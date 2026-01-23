@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+### Fixed
+
+- Admin UI: auto-detect the media directory group inside the container and add `appuser` to that GID at startup, preventing false “media directory not writable” warnings after host reboots on systems where Asterisk uses a non-default group ID.
+
 ## [5.1.6] - 2026-01-20
 
 ### Added

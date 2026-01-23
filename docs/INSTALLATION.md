@@ -47,6 +47,10 @@ sudo ./preflight.sh --apply-fixes
 Preflight ensures required host directories exist with correct permissions, including:
 - `./data` (Call History SQLite and runtime state)
 - `./models/{stt,tts,llm,kroko}` (mounted into `ai_engine` and `local_ai_server` as `/app/models`)
+- `./asterisk_media/ai-generated` (mounted as `/mnt/asterisk_media/ai-generated` for generated audio)
+
+> Note: Admin UI health checks validate the media directory from within the `admin_ui` container.
+> On some systems Asterisk uses a non-default group ID; newer releases auto-detect this at `admin_ui` startup so the UI doesn't incorrectly warn after reboot.
 
 If preflight reports warnings or failures, resolve them first, then re-run preflight until it returns clean:
 - Troubleshooting: `docs/TROUBLESHOOTING_GUIDE.md`
