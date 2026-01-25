@@ -3296,6 +3296,34 @@ async def updates_run(body: UpdateRunRequest):
     import uuid
     job_id = uuid.uuid4().hex
 
+    # Create an initial job marker immediately so the UI doesn't hit a race where the
+    # updater container hasn't created its state/log files yet.
+    try:
+        project_root = os.getenv("PROJECT_ROOT", "/app/project")
+        jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
+        os.makedirs(jobs_dir, exist_ok=True)
+        state_path = os.path.join(jobs_dir, f"{job_id}.json")
+        log_path = os.path.join(jobs_dir, f"{job_id}.log")
+        import json
+        from datetime import datetime, timezone
+
+        payload = {
+            "job_id": job_id,
+            "status": "starting",
+            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "finished_at": None,
+            "include_ui": bool(body.include_ui),
+            "exit_code": None,
+            "log_path": log_path,
+            "ref": (body.ref or "main").strip(),
+            "checkout": bool(body.checkout),
+        }
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        # Best-effort only; the updater container will still manage state/logs.
+        pass
+
     client = docker.from_env()
     name = f"aava-update-{job_id[:12]}"
 

@@ -132,6 +132,7 @@ const UpdatesPage = () => {
     setLogTail(res.data.log_tail || '');
     const st = (res.data.job?.status || '').toLowerCase();
     setRunning(st === 'running');
+    setRunError(null);
   };
 
   const runUpdate = async () => {
@@ -197,7 +198,13 @@ const UpdatesPage = () => {
       try {
         await fetchJob(jobId);
       } catch (err: any) {
-        if (!cancelled) setRunError(err.response?.data?.detail || err.message || 'Failed to read update job');
+        const status = err?.response?.status;
+        // Immediately after starting a job, there can be a brief delay before the updater container
+        // writes its state/log files. Treat 404 as transient to avoid spurious UI errors.
+        if (!cancelled) {
+          if (status === 404) return;
+          setRunError(err.response?.data?.detail || err.message || 'Failed to read update job');
+        }
       }
     };
     tick();
