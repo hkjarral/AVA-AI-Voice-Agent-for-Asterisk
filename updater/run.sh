@@ -14,6 +14,8 @@ JOBS_DIR="${UPDATES_DIR}/jobs"
 BIN_DIR="${PROJECT_ROOT}/.agent/bin"
 AGENT_BIN="${BIN_DIR}/agent"
 BUILTIN_AGENT="/usr/local/bin/agent"
+BACKUP_DIR_REL=".agent/update-backups/${JOB_ID}"
+BACKUP_DIR="${PROJECT_ROOT}/${BACKUP_DIR_REL}"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
@@ -45,7 +47,8 @@ write_job_state() {
   local exit_code="${2:-}"
   local state_file="${JOBS_DIR}/${JOB_ID}.json"
 
-  jq -n \
+  local patch
+  patch="$(jq -n \
     --arg job_id "${JOB_ID}" \
     --arg status "${status}" \
     --arg started_at "${JOB_STARTED_AT:-}" \
@@ -61,7 +64,13 @@ write_job_state() {
       include_ui: ($include_ui == "true"),
       exit_code: (if $exit_code == "" then null else ($exit_code|tonumber) end),
       log_path: (if $log_path == "" then null else $log_path end)
-    }' > "${state_file}.tmp"
+    }')"
+
+  if [ -f "${state_file}" ]; then
+    jq -s '.[0] * .[1]' "${state_file}" <(echo "${patch}") > "${state_file}.tmp"
+  else
+    echo "${patch}" > "${state_file}.tmp"
+  fi
 
   mv "${state_file}.tmp" "${state_file}"
 }
@@ -87,15 +96,63 @@ run_update() {
   JOB_LOG_PATH="${JOBS_DIR}/${JOB_ID}.log"
   export JOB_LOG_PATH
 
+  # Snapshot pre-update HEAD so operators can rollback manually if needed.
+  pre_sha="$(git -c safe.directory="${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  pre_branch="$(git -c safe.directory="${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ "${pre_branch}" = "HEAD" ] || [ -z "${pre_branch}" ]; then
+    pre_branch="detached"
+  fi
+
+  pre_update_branch="aava-pre-update-${JOB_ID}"
+  git -c safe.directory="${PROJECT_ROOT}" branch -f "${pre_update_branch}" HEAD >/dev/null 2>&1 || true
+
+  # Capture a plan snapshot for history/summary (best-effort).
+  plan_json=""
+  if [ -x "${BUILTIN_AGENT}" ]; then
+    plan_json="$("${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>/dev/null || true)"
+  else
+    plan_json="$("${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>/dev/null || true)"
+  fi
+
+  # Merge metadata into job state so the UI can show an actionable summary even if logs are pruned.
+  meta_patch="$(jq -n \
+    --arg type "update" \
+    --arg ref "${REF}" \
+    --arg remote "${REMOTE}" \
+    --arg checkout "${CHECKOUT}" \
+    --arg backup_dir_rel "${BACKUP_DIR_REL}" \
+    --arg pre_update_branch "${pre_update_branch}" \
+    --arg pre_update_sha "${pre_sha}" \
+    --arg pre_update_ref "${pre_branch}" \
+    --arg plan_raw "${plan_json}" \
+    '{
+      type: $type,
+      ref: $ref,
+      remote: $remote,
+      checkout: ($checkout == "true"),
+      backup_dir_rel: $backup_dir_rel,
+      pre_update_branch: $pre_update_branch,
+      pre_update_sha: (if ($pre_update_sha|length) == 0 then null else $pre_update_sha end),
+      pre_update_ref: (if ($pre_update_ref|length) == 0 then null else $pre_update_ref end),
+      plan: (try ($plan_raw | fromjson) catch null)
+    }')"
+
+  state_file="${JOBS_DIR}/${JOB_ID}.json"
+  if [ -f "${state_file}" ]; then
+    jq -s '.[0] * .[1]' "${state_file}" <(echo "${meta_patch}") > "${state_file}.tmp" && mv "${state_file}.tmp" "${state_file}"
+  else
+    echo "${meta_patch}" > "${state_file}"
+  fi
+
   write_job_state "running" ""
 
   install_agent_if_needed
 
   set +e
   if [ -x "${BUILTIN_AGENT}" ]; then
-    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
   else
-    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
   fi
   code="${PIPESTATUS[0]}"
   set -e

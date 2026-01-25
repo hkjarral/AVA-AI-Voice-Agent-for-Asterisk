@@ -3362,6 +3362,61 @@ class UpdateJobResponse(BaseModel):
     log_tail: Optional[str] = None
 
 
+class UpdateHistoryItem(BaseModel):
+    job: dict
+
+
+class UpdateHistoryResponse(BaseModel):
+    jobs: list[dict]
+
+
+@router.get("/updates/history", response_model=UpdateHistoryResponse)
+async def updates_history(limit: int = 10):
+    """
+    Return the most recent update jobs (summary).
+
+    Data source: `.agent/updates/jobs/*.json` persisted on the project volume.
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 25:
+        limit = 25
+
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
+    if not os.path.isdir(jobs_dir):
+        return UpdateHistoryResponse(jobs=[])
+
+    import glob
+    import json
+    from datetime import datetime
+
+    def _parse_dt(s: Optional[str]) -> Optional[datetime]:
+        if not s:
+            return None
+        try:
+            # Most of our timestamps are Zulu ISO.
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    items: list[tuple[float, dict]] = []
+    for path in glob.glob(os.path.join(jobs_dir, "*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                job = json.load(f) or {}
+        except Exception:
+            continue
+
+        # Sort key: finished_at > started_at > mtime.
+        st = _parse_dt(job.get("finished_at")) or _parse_dt(job.get("started_at"))
+        ts = st.timestamp() if st else os.path.getmtime(path)
+        items.append((ts, job))
+
+    items.sort(key=lambda x: x[0], reverse=True)
+    return UpdateHistoryResponse(jobs=[j for _, j in items[:limit]])
+
+
 @router.get("/updates/jobs/{job_id}", response_model=UpdateJobResponse)
 async def updates_job(job_id: str):
     project_root = os.getenv("PROJECT_ROOT", "/app/project")

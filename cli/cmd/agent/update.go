@@ -43,6 +43,7 @@ var (
 	updateSelfUpdate    bool
 	updateIncludeUI     bool
 	updateCheckout      bool
+	updateBackupID      string
 	updatePlan          bool
 	updatePlanJSON      bool
 	gitSafeDirectory    string
@@ -79,6 +80,7 @@ func init() {
 	updateCmd.Flags().BoolVar(&updateSelfUpdate, "self-update", true, "auto-update the agent CLI binary if a newer release is available")
 	updateCmd.Flags().BoolVar(&updateIncludeUI, "include-ui", true, "include admin_ui rebuild/restart when changes require it")
 	updateCmd.Flags().BoolVar(&updateCheckout, "checkout", false, "allow switching to --ref branch before updating (UI-driven updates typically enable this)")
+	updateCmd.Flags().StringVar(&updateBackupID, "backup-id", "", "use a stable backup identifier (creates .agent/update-backups/<id>)")
 	updateCmd.Flags().BoolVar(&updatePlan, "plan", false, "print the update plan (git/diff/docker actions) without applying it")
 	updateCmd.Flags().BoolVar(&updatePlanJSON, "plan-json", false, "when used with --plan, output the plan as JSON")
 	rootCmd.AddCommand(updateCmd)
@@ -729,8 +731,20 @@ func parseSemver(v string) (major int, minor int, patch int, ok bool) {
 }
 
 func createUpdateBackups(ctx *updateContext) error {
-	timestamp := time.Now().UTC().Format("20060102_150405")
-	backupDir := filepath.Join(ctx.repoRoot, ".agent", "update-backups", timestamp)
+	id := strings.TrimSpace(updateBackupID)
+	if id != "" {
+		id = sanitizeBackupID(id)
+		if id == "" {
+			return errors.New("invalid --backup-id")
+		}
+	}
+
+	dirName := time.Now().UTC().Format("20060102_150405")
+	if id != "" {
+		dirName = id
+	}
+
+	backupDir := filepath.Join(ctx.repoRoot, ".agent", "update-backups", dirName)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create backup directory: %w", err)
 	}
@@ -749,6 +763,33 @@ func createUpdateBackups(ctx *updateContext) error {
 		}
 	}
 	return nil
+}
+
+func sanitizeBackupID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			out.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			out.WriteRune(r)
+		case r >= '0' && r <= '9':
+			out.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			out.WriteRune(r)
+		default:
+			out.WriteByte('_')
+		}
+	}
+	return strings.Trim(out.String(), "._-")
 }
 
 func backupPathIfExists(relPath string, backupRoot string) error {

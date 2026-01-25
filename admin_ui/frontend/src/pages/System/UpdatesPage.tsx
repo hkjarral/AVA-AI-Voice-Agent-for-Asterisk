@@ -52,6 +52,10 @@ interface UpdateJobResponse {
   log_tail?: string | null;
 }
 
+interface UpdateHistoryResponse {
+  jobs: any[];
+}
+
 const UpdatesPage = () => {
   const [status, setStatus] = useState<UpdatesStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
@@ -72,6 +76,10 @@ const UpdatesPage = () => {
   const [logTail, setLogTail] = useState<string>('');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+
+  const [history, setHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const pickDefaultBranch = (remoteBranches: string[], localBranch?: string) => {
     const uniq = Array.from(new Set(remoteBranches || []));
@@ -103,11 +111,28 @@ const UpdatesPage = () => {
       const def = pickDefaultBranch(branchesRes.data.branches || [], statusRes.data.local?.branch);
       setSelectedBranch(def);
       setInitialized(true);
+
+      // Best-effort: load recent history after a check.
+      fetchHistory();
     } catch (err: any) {
       setStatusError(err.response?.data?.detail || err.message || 'Failed to check updates');
       setInitialized(false);
     } finally {
       setStatusLoading(false);
+    }
+  };
+
+  const fetchHistory = async () => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const res = await axios.get<UpdateHistoryResponse>('/api/system/updates/history', { params: { limit: 10 } });
+      setHistory(res.data.jobs || []);
+    } catch (err: any) {
+      setHistoryError(err.response?.data?.detail || err.message || 'Failed to load update history');
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -133,6 +158,10 @@ const UpdatesPage = () => {
     const st = (res.data.job?.status || '').toLowerCase();
     setRunning(st === 'running');
     setRunError(null);
+
+    if (st === 'success' || st === 'failed') {
+      fetchHistory();
+    }
   };
 
   const runUpdate = async () => {
@@ -437,6 +466,85 @@ const UpdatesPage = () => {
               {logTail || (job && job.status === 'success' ? 'Logs pruned after successful update.' : 'No output yet.')}
             </pre>
           </div>
+        </div>
+      </ConfigCard>
+
+      <ConfigCard>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle className="w-5 h-5" />
+            <div className="text-base font-semibold">Recent Runs</div>
+          </div>
+          <button
+            onClick={fetchHistory}
+            disabled={historyLoading}
+            className="p-1.5 hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
+            title="Refresh history"
+          >
+            <RefreshCw className={`w-4 h-4 ${historyLoading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+        {historyError && <div className="text-sm text-destructive mb-2">{historyError}</div>}
+        {!initialized && <div className="text-sm text-muted-foreground mb-2">Click “Check updates” to load history.</div>}
+
+        <div className="overflow-auto border border-border rounded-lg">
+          <table className="min-w-[780px] w-full text-sm">
+            <thead className="bg-muted/30">
+              <tr className="text-left">
+                <th className="px-3 py-2 text-xs text-muted-foreground">When</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">Branch</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">Result</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">UI</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">Rebuild</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">Restart</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">Files</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.length ? (
+                history.map((h) => {
+                  const st = String(h.status || '').toLowerCase();
+                  const plan = h.plan || {};
+                  const rebuild = Array.isArray(plan.services_rebuild) ? plan.services_rebuild.join(', ') : '';
+                  const restart = Array.isArray(plan.services_restart) ? plan.services_restart.join(', ') : '';
+                  const files = plan.changed_file_count ?? '';
+                  const when = h.finished_at || h.started_at || '';
+                  return (
+                    <tr key={h.job_id} className="border-t border-border">
+                      <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{when || '-'}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{h.ref || '-'}</td>
+                      <td className="px-3 py-2">
+                        {st === 'success' ? (
+                          <span className="inline-flex items-center gap-1 text-primary">
+                            <CheckCircle2 className="w-4 h-4" /> success
+                          </span>
+                        ) : st === 'failed' ? (
+                          <span className="inline-flex items-center gap-1 text-destructive">
+                            <XCircle className="w-4 h-4" /> failed
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-muted-foreground">
+                            <RefreshCw className="w-4 h-4 animate-spin" /> {st || 'unknown'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs">{h.include_ui ? 'yes' : 'no'}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{rebuild || '-'}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{restart || '-'}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={7} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                    {historyLoading ? 'Loading…' : 'No recent runs yet.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </ConfigCard>
     </ConfigSection>
