@@ -2911,8 +2911,9 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
     lock = _updater_lock()
     with lock:
         try:
-            # `host_project_root` is a host path as seen by the Docker daemon.
-            # It is typically NOT visible inside the admin_ui container, so we can only validate it's non-empty.
+            # `host_project_root` is used for bind mounts when *running* updater containers, but for
+            # building the updater image we must use a path that exists inside this container
+            # (docker-py builds by tarring local files and sending them to the daemon).
             if not host_project_root:
                 raise HTTPException(
                     status_code=500,
@@ -2926,9 +2927,10 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
             except Exception:
                 pass
 
-            logger.info("Building updater image: %s (path=%s)", tag, host_project_root)
+            build_root = os.getenv("PROJECT_ROOT", "/app/project")
+            logger.info("Building updater image: %s (context=%s)", tag, build_root)
             client.images.build(
-                path=host_project_root,
+                path=build_root,
                 dockerfile="updater/Dockerfile",
                 tag=tag,
                 rm=True,
