@@ -2911,6 +2911,12 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
     lock = _updater_lock()
     with lock:
         try:
+            if not host_project_root or not os.path.isdir(host_project_root):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid project root for updater build: {host_project_root!r}",
+                )
+
             client = docker.from_env()
             try:
                 client.images.get(tag)
@@ -2918,7 +2924,7 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
             except Exception:
                 pass
 
-            logger.info("Building updater image: %s", tag)
+            logger.info("Building updater image: %s (path=%s)", tag, host_project_root)
             client.images.build(
                 path=host_project_root,
                 dockerfile="updater/Dockerfile",
