@@ -2779,13 +2779,26 @@ def _project_host_root_from_admin_ui_container() -> str:
     not from inside this container.
     """
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
-    container_id = (os.getenv("HOSTNAME") or "").strip()
-    if not container_id:
-        raise HTTPException(status_code=500, detail="Cannot determine container id (HOSTNAME missing)")
+    # Prefer a stable container name. Our compose file uses `container_name: admin_ui`.
+    # HOSTNAME can be the host's hostname in some deployments, so it's not reliable.
+    explicit_name = (os.getenv("AAVA_ADMIN_UI_CONTAINER_NAME") or "").strip()
+    candidates = [c for c in [explicit_name, "admin_ui", (os.getenv("HOSTNAME") or "").strip()] if c]
 
     try:
         client = docker.from_env()
-        c = client.containers.get(container_id)
+
+        c = None
+        last_err = None
+        for ident in candidates:
+            try:
+                c = client.containers.get(ident)
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if c is None:
+            raise last_err or RuntimeError("container lookup failed")
+
         mounts = c.attrs.get("Mounts", []) or []
         for m in mounts:
             if m.get("Destination") == project_root and m.get("Type") == "bind":
