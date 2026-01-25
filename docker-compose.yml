@@ -165,6 +165,9 @@ services:
       - .env
     environment:
       - PROJECT_ROOT=/app/project
+      # HOST_PROJECT_ROOT is the actual host filesystem path for docker compose operations.
+      # This is critical because Docker (via socket) resolves volume mounts on the HOST, not inside this container.
+      - HOST_PROJECT_ROOT=${HOST_PROJECT_ROOT:-/root/Asterisk-AI-Voice-Agent}
       # Note: UVICORN_HOST, UVICORN_PORT, JWT_SECRET, TZ are loaded from .env via env_file
       # Do NOT add them here with ${VAR:-default} - it prevents UI env changes from taking effect
     restart: unless-stopped

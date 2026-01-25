@@ -539,7 +539,11 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
     import subprocess
     import httpx
 
-    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    # CRITICAL: Docker compose must use HOST paths, not container paths.
+    # When admin_ui runs inside a container with PROJECT_ROOT=/app/project,
+    # Docker (via socket) interprets volume mounts relative to the HOST filesystem.
+    # HOST_PROJECT_ROOT should be set to the actual host path (e.g., /root/Asterisk-AI-Voice-Agent)
+    project_root = os.getenv("HOST_PROJECT_ROOT") or os.getenv("PROJECT_ROOT", "/app/project")
 
     # Normalize legacy hyphenated service names to canonical underscored service names.
     legacy_to_canonical = {
