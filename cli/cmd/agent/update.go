@@ -1095,12 +1095,20 @@ func printUpdateSummary(ctx *updateContext, checkStatus string, warnCount int, f
 	}
 }
 
+func updateHumanWriter() io.Writer {
+	// When emitting machine-readable JSON plans, keep human output on stderr so stdout stays valid JSON.
+	if updatePlan && updatePlanJSON {
+		return os.Stderr
+	}
+	return os.Stdout
+}
+
 func printUpdateStep(title string) {
-	fmt.Printf("\n==> %s\n", title)
+	fmt.Fprintf(updateHumanWriter(), "\n==> %s\n", title)
 }
 
 func printUpdateInfo(format string, args ...any) {
-	fmt.Printf(" - "+format+"\n", args...)
+	fmt.Fprintf(updateHumanWriter(), " - "+format+"\n", args...)
 }
 
 func printDockerActionsPlanned(ctx *updateContext) {
