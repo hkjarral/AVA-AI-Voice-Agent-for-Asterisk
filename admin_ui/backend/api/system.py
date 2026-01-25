@@ -2823,16 +2823,81 @@ def _ensure_updater_image(host_project_root: str) -> None:
 def _current_project_head_sha() -> Optional[str]:
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
     try:
-        proc = subprocess.run(
-            ["git", "-c", f"safe.directory={project_root}", "-C", project_root, "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-        )
-        if proc.returncode == 0:
-            sha = (proc.stdout or "").strip()
+        # Prefer git when available, but fall back to reading `.git/HEAD` directly because
+        # the admin_ui container may not include the git binary.
+        import shutil
+        if shutil.which("git"):
+            proc = subprocess.run(
+                ["git", "-c", f"safe.directory={project_root}", "-C", project_root, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+            )
+            if proc.returncode == 0:
+                sha = (proc.stdout or "").strip()
+                if sha:
+                    return sha
+
+        def _read_text(path: str) -> Optional[str]:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return None
+
+        def _resolve_gitdir(root: str) -> Optional[str]:
+            import os
+            git_path = os.path.join(root, ".git")
+            if os.path.isdir(git_path):
+                return git_path
+            if os.path.isfile(git_path):
+                # Worktree/submodule style: `.git` file contains `gitdir: <path>`
+                raw = _read_text(git_path) or ""
+                raw = raw.strip()
+                if raw.startswith("gitdir:"):
+                    gd = raw.split(":", 1)[1].strip()
+                    if not gd:
+                        return None
+                    if not os.path.isabs(gd):
+                        gd = os.path.normpath(os.path.join(root, gd))
+                    return gd
+            return None
+
+        def _read_packed_ref(gitdir: str, ref: str) -> Optional[str]:
+            import os
+            packed = _read_text(os.path.join(gitdir, "packed-refs"))
+            if not packed:
+                return None
+            for line in packed.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("^"):
+                    continue
+                parts = line.split()
+                if len(parts) != 2:
+                    continue
+                sha, name = parts
+                if name == ref:
+                    return sha
+            return None
+
+        gitdir = _resolve_gitdir(project_root)
+        if not gitdir:
+            return None
+
+        head = (_read_text(f"{gitdir}/HEAD") or "").strip()
+        if not head:
+            return None
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            if not ref:
+                return None
+            import os
+            ref_path = os.path.join(gitdir, ref)
+            sha = (_read_text(ref_path) or "").strip()
             if sha:
                 return sha
+            return _read_packed_ref(gitdir, ref)
+        return head
     except Exception:
         pass
     return None
