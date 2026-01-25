@@ -3085,6 +3085,7 @@ async def updates_status():
             command=(
                 "set -euo pipefail; "
                 "cd /app/project; "
+                "git -c safe.directory=/app/project rev-parse --abbrev-ref HEAD; "
                 "git -c safe.directory=/app/project rev-parse HEAD; "
                 "git -c safe.directory=/app/project describe --tags --always --dirty"
             ),
@@ -3092,25 +3093,28 @@ async def updates_status():
         )
         if code != 0:
             return UpdateStatusResponse(
-                local={"head_sha": "unknown", "describe": "unknown"},
+                local={"branch": "unknown", "head_sha": "unknown", "describe": "unknown"},
                 remote=None,
                 update_available=None,
                 error="Local status unavailable (updater image not ready)",
             )
 
         lines = [l.strip() for l in out.splitlines() if l.strip()]
-        if len(lines) < 2:
+        if len(lines) < 3:
             return UpdateStatusResponse(
-                local={"head_sha": "unknown", "describe": "unknown"},
+                local={"branch": "unknown", "head_sha": "unknown", "describe": "unknown"},
                 remote=None,
                 update_available=None,
                 error="Local status unavailable (unexpected git output)",
             )
-        head_sha = lines[0]
-        describe = lines[1]
+        branch = lines[0]
+        head_sha = lines[1]
+        describe = lines[2]
+        if branch == "HEAD":
+            branch = "detached"
     except Exception:
         return UpdateStatusResponse(
-            local={"head_sha": "unknown", "describe": "unknown"},
+            local={"branch": "unknown", "head_sha": "unknown", "describe": "unknown"},
             remote=None,
             update_available=None,
             error="Local status unavailable (updater not built yet)",
@@ -3188,7 +3192,7 @@ async def updates_status():
         error = "Unable to compare local version to remote (offline or missing objects)"
 
     return UpdateStatusResponse(
-        local={"head_sha": head_sha, "describe": describe},
+        local={"branch": branch, "head_sha": head_sha, "describe": describe},
         remote={"latest_tag": tag, "latest_tag_sha": tag_sha},
         update_available=update_available,
         error=error,
@@ -3199,8 +3203,53 @@ class UpdatePlanResponse(BaseModel):
     plan: dict
 
 
+class UpdateBranchesResponse(BaseModel):
+    branches: list[str]
+    error: Optional[str] = None
+
+
+@router.get("/updates/branches", response_model=UpdateBranchesResponse)
+async def updates_branches():
+    """
+    Return the list of remote branches on origin for the Updates UI dropdown.
+    """
+    host_root = _project_host_root_from_admin_ui_container()
+
+    code, out = _run_updater_ephemeral(
+        host_root,
+        env={"PROJECT_ROOT": "/app/project"},
+        command=(
+            "set -euo pipefail; "
+            "cd /app/project; "
+            "git -c safe.directory=/app/project ls-remote --heads origin"
+        ),
+        timeout_sec=20,
+    )
+    if code != 0:
+        return UpdateBranchesResponse(branches=[], error="Remote branches unavailable (offline or blocked)")
+
+    branches: list[str] = []
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            _sha, ref = line.split("\t", 1)
+        except Exception:
+            continue
+        if not ref.startswith("refs/heads/"):
+            continue
+        name = ref[len("refs/heads/") :].strip()
+        if not name:
+            continue
+        branches.append(name)
+
+    branches = sorted(set(branches))
+    return UpdateBranchesResponse(branches=branches, error=None)
+
+
 @router.get("/updates/plan", response_model=UpdatePlanResponse)
-async def updates_plan(include_ui: bool = False):
+async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bool = True):
     """
     Return a pre-update plan from `agent update --plan --plan-json`.
     """
@@ -3210,6 +3259,9 @@ async def updates_plan(include_ui: bool = False):
         "PROJECT_ROOT": "/app/project",
         "AAVA_UPDATE_MODE": "plan",
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
+        "AAVA_UPDATE_REMOTE": "origin",
+        "AAVA_UPDATE_REF": (ref or "main").strip(),
+        "AAVA_UPDATE_CHECKOUT": "true" if checkout else "false",
     }
     # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
     code, out = _run_updater_ephemeral(host_root, env=env, timeout_sec=120, capture_stderr=False)
@@ -3226,6 +3278,8 @@ async def updates_plan(include_ui: bool = False):
 
 class UpdateRunRequest(BaseModel):
     include_ui: bool = False
+    ref: str = "main"
+    checkout: bool = True
 
 
 class UpdateRunResponse(BaseModel):
@@ -3254,6 +3308,9 @@ async def updates_run(body: UpdateRunRequest):
         "AAVA_UPDATE_MODE": "run",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_INCLUDE_UI": "true" if body.include_ui else "false",
+        "AAVA_UPDATE_REMOTE": "origin",
+        "AAVA_UPDATE_REF": (body.ref or "main").strip(),
+        "AAVA_UPDATE_CHECKOUT": "true" if body.checkout else "false",
     }
 
     try:

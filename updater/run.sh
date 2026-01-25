@@ -5,6 +5,9 @@ PROJECT_ROOT="${PROJECT_ROOT:-/app/project}"
 JOB_ID="${AAVA_UPDATE_JOB_ID:-}"
 MODE="${AAVA_UPDATE_MODE:-run}" # run|plan
 INCLUDE_UI="${AAVA_UPDATE_INCLUDE_UI:-false}" # true|false
+REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
+REF="${AAVA_UPDATE_REF:-main}"
+CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
 
 UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
 JOBS_DIR="${UPDATES_DIR}/jobs"
@@ -67,9 +70,9 @@ run_plan() {
   install_agent_if_needed
 
   if [ -x "${BUILTIN_AGENT}" ]; then
-    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --include-ui="${INCLUDE_UI}"
+    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}"
   fi
-  exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --include-ui="${INCLUDE_UI}"
+  exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}"
 }
 
 run_update() {
@@ -90,9 +93,9 @@ run_update() {
 
   set +e
   if [ -x "${BUILTIN_AGENT}" ]; then
-    "${BUILTIN_AGENT}" update -v --self-update=false --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
   else
-    "${AGENT_BIN}" update -v --self-update=false --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
   fi
   code="${PIPESTATUS[0]}"
   set -e

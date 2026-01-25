@@ -42,6 +42,7 @@ var (
 	updateSkipCheck     bool
 	updateSelfUpdate    bool
 	updateIncludeUI     bool
+	updateCheckout      bool
 	updatePlan          bool
 	updatePlanJSON      bool
 	gitSafeDirectory    string
@@ -77,6 +78,7 @@ func init() {
 	updateCmd.Flags().BoolVar(&updateSkipCheck, "skip-check", false, "skip running agent check after update")
 	updateCmd.Flags().BoolVar(&updateSelfUpdate, "self-update", true, "auto-update the agent CLI binary if a newer release is available")
 	updateCmd.Flags().BoolVar(&updateIncludeUI, "include-ui", true, "include admin_ui rebuild/restart when changes require it")
+	updateCmd.Flags().BoolVar(&updateCheckout, "checkout", false, "allow switching to --ref branch before updating (UI-driven updates typically enable this)")
 	updateCmd.Flags().BoolVar(&updatePlan, "plan", false, "print the update plan (git/diff/docker actions) without applying it")
 	updateCmd.Flags().BoolVar(&updatePlanJSON, "plan-json", false, "when used with --plan, output the plan as JSON")
 	rootCmd.AddCommand(updateCmd)
@@ -103,8 +105,14 @@ type updatePlanReport struct {
 	RepoRoot         string              `json:"repo_root"`
 	Remote           string              `json:"remote"`
 	Ref              string              `json:"ref"`
+	CurrentBranch    string              `json:"current_branch"`
+	TargetBranch     string              `json:"target_branch"`
+	Checkout         bool                `json:"checkout"`
+	WouldCheckout    bool                `json:"would_checkout"`
 	OldSHA           string              `json:"old_sha"`
 	NewSHA           string              `json:"new_sha"`
+	Relation         string              `json:"relation"` // equal|behind|ahead|diverged
+	CodeChanged      bool                `json:"code_changed"`
 	UpdateAvailable  bool                `json:"update_available"`
 	Dirty            bool                `json:"dirty"`
 	NoStash          bool                `json:"no_stash"`
@@ -117,6 +125,8 @@ type updatePlanReport struct {
 	ServicesRestart  []string            `json:"services_restart"`
 	SkippedServices  map[string]string   `json:"skipped_services,omitempty"`
 	ChangedFileCount int                 `json:"changed_file_count"`
+	ChangedFiles     []string            `json:"changed_files,omitempty"`
+	FilesTruncated   bool                `json:"changed_files_truncated,omitempty"`
 	Warnings         []string            `json:"warnings,omitempty"`
 }
 
@@ -183,57 +193,66 @@ func runUpdate() (retErr error) {
 	}
 	// Keep tags current so "git describe --tags" reflects newly published versions.
 	_ = gitFetchTags(updateRemote)
-	ctx.newSHA, err = gitRevParse(fmt.Sprintf("%s/%s", updateRemote, updateRef))
+	targetRemoteRef := fmt.Sprintf("%s/%s", updateRemote, updateRef)
+	targetSHA, err := gitRevParse(targetRemoteRef)
+	if err != nil {
+		return err
+	}
+	ctx.newSHA = targetSHA
+
+	currentBranch, _ := gitCurrentBranch()
+	branchMismatch := strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
+	if branchMismatch {
+		if !updateCheckout {
+			return fmt.Errorf("target ref %q differs from current branch %q; re-run with --checkout to allow switching branches", updateRef, currentBranch)
+		}
+		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
+		exists, existsErr := gitLocalBranchExists(updateRef)
+		if existsErr != nil {
+			return existsErr
+		}
+		if exists {
+			if err := gitCheckout(updateRef); err != nil {
+				return err
+			}
+		} else {
+			if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
+				return err
+			}
+		}
+	}
+
+	branchHead, err := gitRevParse("HEAD")
 	if err != nil {
 		return err
 	}
 
-	updateAvailable, relErr := gitIsAncestor(ctx.oldSHA, ctx.newSHA)
+	updateAvailable, relErr := gitIsAncestor(branchHead, targetSHA)
 	if relErr != nil {
 		return relErr
 	}
-	remoteIsAncestor, relErr2 := gitIsAncestor(ctx.newSHA, ctx.oldSHA)
+	remoteIsAncestor, relErr2 := gitIsAncestor(targetSHA, branchHead)
 	if relErr2 != nil {
 		return relErr2
 	}
 
-	if ctx.newSHA == ctx.oldSHA || (!updateAvailable && remoteIsAncestor) {
-		printUpdateInfo("Already up to date (%s)", shortSHA(ctx.oldSHA))
-		if ctx.newSHA != ctx.oldSHA && remoteIsAncestor {
-			printUpdateInfo("Local branch is ahead of %s/%s; skipping fast-forward update", updateRemote, updateRef)
-		}
-		if ctx.stashed {
-			printUpdateStep("Restoring stashed changes")
-			if err := gitStashPop(ctx); err != nil {
-				return err
-			}
-		}
-		if updateSkipCheck {
-			printUpdateSummary(ctx, "", 0, 0)
-			return nil
-		}
-
-		printUpdateStep("Running agent check")
-		report, status, warnCount, failCount, err := runPostUpdateCheck()
-		printPostUpdateCheck(report, warnCount, failCount)
-		printUpdateSummary(ctx, status, warnCount, failCount)
-		if err != nil {
+	finalSHA := branchHead
+	if strings.TrimSpace(branchHead) == strings.TrimSpace(targetSHA) {
+		printUpdateInfo("Already up to date on %s (%s)", updateRef, shortSHA(branchHead))
+		finalSHA = branchHead
+	} else if updateAvailable {
+		printUpdateStep("Fast-forwarding code")
+		if err := gitMergeFastForward(targetRemoteRef); err != nil {
 			return err
 		}
-		if failCount > 0 {
-			return errors.New("post-update check reported failures")
-		}
-		return nil
+		finalSHA = targetSHA
+	} else if remoteIsAncestor {
+		printUpdateInfo("Local branch is ahead of %s; skipping fast-forward update", targetRemoteRef)
+		finalSHA = branchHead
+	} else {
+		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s (resolve manually and re-run)", targetRemoteRef)
 	}
-
-	if !updateAvailable {
-		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s/%s (resolve manually and re-run)", updateRemote, updateRef)
-	}
-
-	printUpdateStep("Fast-forwarding code")
-	if err := gitMergeFastForward(fmt.Sprintf("%s/%s", updateRemote, updateRef)); err != nil {
-		return err
-	}
+	ctx.newSHA = finalSHA
 
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
@@ -241,13 +260,14 @@ func runUpdate() (retErr error) {
 			return err
 		}
 	}
-
-	ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
-	if err != nil {
-		return err
+	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
+		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
+		if err != nil {
+			return err
+		}
+		decideDockerActions(ctx)
+		applyServiceFilters(ctx)
 	}
-	decideDockerActions(ctx)
-	applyServiceFilters(ctx)
 
 	printUpdateStep("Applying Docker changes")
 	printDockerActionsPlanned(ctx)
@@ -279,6 +299,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		return err
 	}
 
+	currentBranch, _ := gitCurrentBranch()
+	wouldCheckout := updateCheckout && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef))
+
 	if err := gitFetch(updateRemote, updateRef); err != nil {
 		return err
 	}
@@ -298,29 +321,53 @@ func runUpdatePlan(ctx *updateContext) error {
 	if relErr2 != nil {
 		return relErr2
 	}
-	if updateAvailable {
+	codeChanged := strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA)
+	if codeChanged {
 		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
 		if err != nil {
 			return err
 		}
-	} else {
-		ctx.changedFiles = nil
-	}
-
-	if updateAvailable {
 		decideDockerActions(ctx)
 		applyServiceFilters(ctx)
+	} else {
+		ctx.changedFiles = nil
 	}
 
 	wouldStash := dirty && !updateNoStash
 	wouldAbort := dirty && updateNoStash
 
+	relation := "equal"
+	if codeChanged {
+		switch {
+		case updateAvailable:
+			relation = "behind"
+		case remoteIsAncestor:
+			relation = "ahead"
+		default:
+			relation = "diverged"
+		}
+	}
+
+	limit := 200
+	files := ctx.changedFiles
+	truncated := false
+	if len(files) > limit {
+		files = files[:limit]
+		truncated = true
+	}
+
 	rep := &updatePlanReport{
 		RepoRoot:         ctx.repoRoot,
 		Remote:           updateRemote,
 		Ref:              updateRef,
+		CurrentBranch:    strings.TrimSpace(currentBranch),
+		TargetBranch:     strings.TrimSpace(updateRef),
+		Checkout:         updateCheckout,
+		WouldCheckout:    wouldCheckout,
 		OldSHA:           ctx.oldSHA,
 		NewSHA:           ctx.newSHA,
+		Relation:         relation,
+		CodeChanged:      codeChanged,
 		UpdateAvailable:  updateAvailable,
 		Dirty:            dirty,
 		NoStash:          updateNoStash,
@@ -333,9 +380,14 @@ func runUpdatePlan(ctx *updateContext) error {
 		ServicesRestart:  sortedKeys(ctx.servicesToRestart),
 		SkippedServices:  nil,
 		ChangedFileCount: len(ctx.changedFiles),
+		ChangedFiles:     files,
+		FilesTruncated:   truncated,
 	}
 	if len(ctx.skippedServices) > 0 {
 		rep.SkippedServices = ctx.skippedServices
+	}
+	if wouldCheckout && strings.TrimSpace(currentBranch) != "" && strings.TrimSpace(currentBranch) != "HEAD" && strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef) {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("Selected ref %q differs from current branch %q; update will checkout/switch branches (use --checkout=false to disallow).", updateRef, currentBranch))
 	}
 	if !updateIncludeUI && (ctx.skippedServices["admin_ui"] != "") {
 		rep.Warnings = append(rep.Warnings, "Admin UI changes detected but excluded (use --include-ui to apply admin_ui rebuild/restart).")
@@ -882,6 +934,63 @@ func gitMergeFastForward(remoteRef string) error {
 	_, err := runGitCmd("merge", "--ff-only", remoteRef)
 	if err != nil {
 		return fmt.Errorf("git merge --ff-only %s failed (branch likely diverged or local conflicts). Fix manually and retry: %w", remoteRef, err)
+	}
+	return nil
+}
+
+func gitCurrentBranch() (string, error) {
+	out, err := runGitCmd("rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD failed: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func gitLocalBranchExists(branch string) (bool, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return false, errors.New("branch name is empty")
+	}
+
+	gitArgs := make([]string, 0, 6)
+	if gitSafeDirectory != "" {
+		gitArgs = append(gitArgs, "-c", "safe.directory="+gitSafeDirectory)
+	}
+	gitArgs = append(gitArgs, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+
+	cmd := exec.Command("git", gitArgs...)
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg != "" {
+		return false, fmt.Errorf("git show-ref failed: %s", msg)
+	}
+	return false, fmt.Errorf("git show-ref failed: %w", err)
+}
+
+func gitCheckout(branch string) error {
+	_, err := runGitCmd("checkout", branch)
+	if err != nil {
+		return fmt.Errorf("git checkout %s failed: %w", branch, err)
+	}
+	return nil
+}
+
+func gitCheckoutTrack(branch string, remoteRef string) error {
+	_, err := runGitCmd("checkout", "-b", branch, "--track", remoteRef)
+	if err != nil {
+		return fmt.Errorf("git checkout -b %s --track %s failed: %w", branch, remoteRef, err)
 	}
 	return nil
 }
