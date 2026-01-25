@@ -233,12 +233,13 @@ const UpdatesPage = () => {
     <ConfigSection
       title="Updates"
       description="Mimics a GitHub-style update flow: check updates, pick a branch, preview file/container impact, then proceed."
-      icon={<ArrowUpCircle className="w-5 h-5" />}
     >
-      <ConfigCard
-        title="Check Updates"
-        icon={<ArrowUpCircle className="w-5 h-5" />}
-        action={
+      <ConfigCard>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle className="w-5 h-5" />
+            <div className="text-base font-semibold">Check Updates</div>
+          </div>
           <button
             onClick={checkUpdates}
             disabled={statusLoading}
@@ -248,9 +249,9 @@ const UpdatesPage = () => {
             <RefreshCw className={`w-4 h-4 ${statusLoading ? 'animate-spin' : ''}`} />
             {statusLoading ? 'Checking…' : 'Check updates'}
           </button>
-        }
-      >
-        <div className="p-4 space-y-2">
+        </div>
+
+        <div className="space-y-2">
           {statusError && <div className="text-sm text-destructive">{statusError}</div>}
           {branchesError && <div className="text-sm text-muted-foreground">{branchesError}</div>}
           {status && status.error && <div className="text-sm text-muted-foreground">{status.error}</div>}
@@ -277,21 +278,23 @@ const UpdatesPage = () => {
         </div>
       </ConfigCard>
 
-      <ConfigCard
-        title="Select Branch + Preview"
-        icon={<RefreshCw className="w-5 h-5" />}
-        action={
+      <ConfigCard>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-5 h-5" />
+            <div className="text-base font-semibold">Select Branch + Preview</div>
+          </div>
           <button
             onClick={() => fetchPlan()}
             disabled={!initialized || planLoading}
-            className="p-1.5 hover:bg-accent rounded-lg transition-colors"
+            className="p-1.5 hover:bg-accent rounded-lg transition-colors disabled:opacity-50"
             title="Refresh preview"
           >
             <RefreshCw className={`w-4 h-4 ${planLoading ? 'animate-spin' : ''}`} />
           </button>
-        }
-      >
-        <div className="p-4 space-y-3">
+        </div>
+
+        <div className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <div className="text-xs text-muted-foreground mb-1">Target branch</div>
@@ -382,8 +385,13 @@ const UpdatesPage = () => {
         </div>
       </ConfigCard>
 
-      <ConfigCard title="Proceed" icon={<Play className="w-5 h-5" />}>
-        <div className="p-4 space-y-3">
+      <ConfigCard>
+        <div className="flex items-center gap-2 mb-3">
+          <Play className="w-5 h-5" />
+          <div className="text-base font-semibold">Proceed</div>
+        </div>
+
+        <div className="space-y-3">
           {runError && <div className="text-sm text-destructive">{runError}</div>}
           <div className="flex items-center gap-2">
             <button
