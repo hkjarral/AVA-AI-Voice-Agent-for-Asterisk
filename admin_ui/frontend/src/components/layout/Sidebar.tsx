@@ -20,6 +20,7 @@ import {
     Code,
     HelpCircle,
     HardDrive,
+    ArrowUpCircle,
     Phone,
     CalendarClock,
     LogOut,
@@ -100,6 +101,7 @@ const Sidebar = () => {
                     <SidebarItem to="/env" icon={Globe} label="Environment" />
                     <SidebarItem to="/docker" icon={Container} label="Docker Services" />
                     <SidebarItem to="/models" icon={HardDrive} label="Models" />
+                    <SidebarItem to="/updates" icon={ArrowUpCircle} label="Updates" />
                     <SidebarItem to="/logs" icon={FileText} label="Logs" />
                     <SidebarItem to="/terminal" icon={Terminal} label="Terminal" />
                 </SidebarGroup>

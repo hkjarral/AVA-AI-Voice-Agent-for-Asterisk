@@ -41,6 +41,9 @@ var (
 	updateForceRecreate bool
 	updateSkipCheck     bool
 	updateSelfUpdate    bool
+	updateIncludeUI     bool
+	updatePlan          bool
+	updatePlanJSON      bool
 	gitSafeDirectory    string
 )
 
@@ -50,7 +53,7 @@ var updateCmd = &cobra.Command{
 	Long: `Update Asterisk AI Voice Agent to the latest code and apply changes safely.
 
 This command:
-  - Backs up operator-owned config (.env, config/ai-agent.yaml, config/contexts/)
+  - Backs up operator-owned config (.env, config/ai-agent.yaml, config/users.json, config/contexts/)
   - Safely fast-forwards to origin/main (no forced merges by default)
   - Preserves local tracked changes using git stash (optional)
   - Rebuilds/restarts only the containers impacted by the change set
@@ -73,6 +76,9 @@ func init() {
 	updateCmd.Flags().BoolVar(&updateForceRecreate, "force-recreate", false, "force recreate containers during docker compose up")
 	updateCmd.Flags().BoolVar(&updateSkipCheck, "skip-check", false, "skip running agent check after update")
 	updateCmd.Flags().BoolVar(&updateSelfUpdate, "self-update", true, "auto-update the agent CLI binary if a newer release is available")
+	updateCmd.Flags().BoolVar(&updateIncludeUI, "include-ui", true, "include admin_ui rebuild/restart when changes require it")
+	updateCmd.Flags().BoolVar(&updatePlan, "plan", false, "print the update plan (git/diff/docker actions) without applying it")
+	updateCmd.Flags().BoolVar(&updatePlanJSON, "plan-json", false, "when used with --plan, output the plan as JSON")
 	rootCmd.AddCommand(updateCmd)
 }
 
@@ -89,9 +95,32 @@ type updateContext struct {
 	servicesToRebuild map[string]bool
 	servicesToRestart map[string]bool
 	composeChanged    bool
+
+	skippedServices map[string]string // service -> "rebuild"|"restart" (filtered by flags)
 }
 
-func runUpdate() error {
+type updatePlanReport struct {
+	RepoRoot         string              `json:"repo_root"`
+	Remote           string              `json:"remote"`
+	Ref              string              `json:"ref"`
+	OldSHA           string              `json:"old_sha"`
+	NewSHA           string              `json:"new_sha"`
+	UpdateAvailable  bool                `json:"update_available"`
+	Dirty            bool                `json:"dirty"`
+	NoStash          bool                `json:"no_stash"`
+	StashUntracked   bool                `json:"stash_untracked"`
+	WouldStash       bool                `json:"would_stash"`
+	WouldAbort       bool                `json:"would_abort"`
+	RebuildMode      string              `json:"rebuild_mode"`
+	ComposeChanged   bool                `json:"compose_changed"`
+	ServicesRebuild  []string            `json:"services_rebuild"`
+	ServicesRestart  []string            `json:"services_restart"`
+	SkippedServices  map[string]string   `json:"skipped_services,omitempty"`
+	ChangedFileCount int                 `json:"changed_file_count"`
+	Warnings         []string            `json:"warnings,omitempty"`
+}
+
+func runUpdate() (retErr error) {
 	printUpdateStep("Preparing update")
 	if updateSelfUpdate {
 		maybeSelfUpdateAndReexec()
@@ -109,11 +138,23 @@ func runUpdate() error {
 		repoRoot:          repoRoot,
 		servicesToRebuild: map[string]bool{},
 		servicesToRestart: map[string]bool{},
+		skippedServices:   map[string]string{},
 	}
+
+	defer func() {
+		if retErr != nil && !updatePlan {
+			printUpdateFailureRecovery(ctx, retErr)
+		}
+	}()
 
 	ctx.oldSHA, err = gitRevParse("HEAD")
 	if err != nil {
 		return err
+	}
+
+	// Plan-only: show what would happen without changing the repo or containers.
+	if updatePlan {
+		return runUpdatePlan(ctx)
 	}
 
 	printUpdateStep("Creating backups")
@@ -140,6 +181,8 @@ func runUpdate() error {
 	if err := gitFetch(updateRemote, updateRef); err != nil {
 		return err
 	}
+	// Keep tags current so "git describe --tags" reflects newly published versions.
+	_ = gitFetchTags(updateRemote)
 	ctx.newSHA, err = gitRevParse(fmt.Sprintf("%s/%s", updateRemote, updateRef))
 	if err != nil {
 		return err
@@ -188,6 +231,7 @@ func runUpdate() error {
 		return err
 	}
 	decideDockerActions(ctx)
+	applyServiceFilters(ctx)
 
 	printUpdateStep("Applying Docker changes")
 	printDockerActionsPlanned(ctx)
@@ -211,6 +255,101 @@ func runUpdate() error {
 		return errors.New("post-update check reported failures")
 	}
 	return nil
+}
+
+func runUpdatePlan(ctx *updateContext) error {
+	dirty, err := gitIsDirty(updateStashUntracked)
+	if err != nil {
+		return err
+	}
+
+	if err := gitFetch(updateRemote, updateRef); err != nil {
+		return err
+	}
+	_ = gitFetchTags(updateRemote)
+
+	newSHA, err := gitRevParse(fmt.Sprintf("%s/%s", updateRemote, updateRef))
+	if err != nil {
+		return err
+	}
+
+	ctx.newSHA = newSHA
+	ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
+	if err != nil {
+		return err
+	}
+
+	decideDockerActions(ctx)
+	applyServiceFilters(ctx)
+
+	wouldStash := dirty && !updateNoStash
+	wouldAbort := dirty && updateNoStash
+
+	rep := &updatePlanReport{
+		RepoRoot:         ctx.repoRoot,
+		Remote:           updateRemote,
+		Ref:              updateRef,
+		OldSHA:           ctx.oldSHA,
+		NewSHA:           ctx.newSHA,
+		UpdateAvailable:  strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA),
+		Dirty:            dirty,
+		NoStash:          updateNoStash,
+		StashUntracked:   updateStashUntracked,
+		WouldStash:       wouldStash,
+		WouldAbort:       wouldAbort,
+		RebuildMode:      strings.ToLower(strings.TrimSpace(updateRebuild)),
+		ComposeChanged:   ctx.composeChanged,
+		ServicesRebuild:  sortedKeys(ctx.servicesToRebuild),
+		ServicesRestart:  sortedKeys(ctx.servicesToRestart),
+		SkippedServices:  nil,
+		ChangedFileCount: len(ctx.changedFiles),
+	}
+	if len(ctx.skippedServices) > 0 {
+		rep.SkippedServices = ctx.skippedServices
+	}
+	if !updateIncludeUI && (ctx.skippedServices["admin_ui"] != "") {
+		rep.Warnings = append(rep.Warnings, "Admin UI changes detected but excluded (use --include-ui to apply admin_ui rebuild/restart).")
+	}
+	if !updateIncludeUI && ctx.composeChanged {
+		rep.Warnings = append(rep.Warnings, "Compose files changed; admin_ui changes (if any) are excluded unless --include-ui is enabled.")
+	}
+
+	if updatePlanJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+
+	printUpdateStep("Update plan")
+	printUpdateInfo("Repo: %s", ctx.repoRoot)
+	printUpdateInfo("From: %s", shortSHA(ctx.oldSHA))
+	printUpdateInfo("To:   %s", shortSHA(ctx.newSHA))
+	if wouldAbort {
+		printUpdateInfo("Would abort: working tree is dirty and --no-stash was set")
+	} else if wouldStash {
+		printUpdateInfo("Would stash: working tree has local changes")
+	}
+	printDockerActionsPlanned(ctx)
+	if len(rep.Warnings) > 0 {
+		for _, w := range rep.Warnings {
+			printUpdateInfo("Warning: %s", w)
+		}
+	}
+	return nil
+}
+
+func applyServiceFilters(ctx *updateContext) {
+	// UI-driven updates may want to avoid restarting/rebuilding admin_ui by default.
+	if !updateIncludeUI {
+		if ctx.servicesToRebuild["admin_ui"] {
+			delete(ctx.servicesToRebuild, "admin_ui")
+			ctx.skippedServices["admin_ui"] = "rebuild"
+		}
+		if ctx.servicesToRestart["admin_ui"] {
+			delete(ctx.servicesToRestart, "admin_ui")
+			ctx.skippedServices["admin_ui"] = "restart"
+		}
+	}
 }
 
 func maybeSelfUpdateAndReexec() {
@@ -512,6 +651,7 @@ func createUpdateBackups(ctx *updateContext) error {
 	paths := []string{
 		".env",
 		filepath.Join("config", "ai-agent.yaml"),
+		filepath.Join("config", "users.json"),
 		filepath.Join("config", "contexts"),
 	}
 
@@ -694,6 +834,14 @@ func gitFetch(remote string, ref string) error {
 	return nil
 }
 
+func gitFetchTags(remote string) error {
+	_, err := runGitCmd("fetch", "--tags", remote)
+	if err != nil {
+		return fmt.Errorf("git fetch --tags %s failed: %w", remote, err)
+	}
+	return nil
+}
+
 func gitMergeFastForward(remoteRef string) error {
 	_, err := runGitCmd("merge", "--ff-only", remoteRef)
 	if err != nil {
@@ -784,6 +932,21 @@ func applyDockerActions(ctx *updateContext) error {
 		if updateForceRecreate {
 			args = append(args, "--force-recreate")
 		}
+		// If admin_ui updates are excluded, scope the compose up to the non-UI services to
+		// avoid unintended recreate/restart of admin_ui.
+		if !updateIncludeUI {
+			targets := map[string]bool{
+				"ai_engine":       true,
+				"local_ai_server": true,
+			}
+			for svc := range ctx.servicesToRebuild {
+				targets[svc] = true
+			}
+			for svc := range ctx.servicesToRestart {
+				targets[svc] = true
+			}
+			args = append(args, sortedKeys(targets)...)
+		}
 		if _, err := runCmd("docker", args...); err != nil {
 			return fmt.Errorf("docker compose up (remove-orphans) failed: %w", err)
 		}
@@ -830,6 +993,40 @@ func runPostUpdateCheck() (report *check.Report, status string, warnCount int, f
 		return report, "WARN", warnCount, 0, nil
 	}
 	return report, "PASS", 0, 0, nil
+}
+
+func printUpdateFailureRecovery(ctx *updateContext, err error) {
+	fmt.Printf("\n==> Update failed\n")
+	printUpdateInfo("Error: %v", err)
+
+	if ctx == nil {
+		return
+	}
+
+	if ctx.backupDir != "" {
+		printUpdateInfo("Backups: %s", ctx.backupDir)
+		fmt.Println("Recovery (restore operator-owned config):")
+		fmt.Printf("  cp %s .env\n", filepath.Join(ctx.backupDir, ".env"))
+		fmt.Printf("  cp %s %s\n", filepath.Join(ctx.backupDir, "config", "ai-agent.yaml"), filepath.Join("config", "ai-agent.yaml"))
+		fmt.Printf("  cp %s %s\n", filepath.Join(ctx.backupDir, "config", "users.json"), filepath.Join("config", "users.json"))
+		fmt.Println("  # Replace contexts directory (if needed):")
+		fmt.Printf("  rm -rf %s && cp -r %s %s\n",
+			filepath.Join("config", "contexts"),
+			filepath.Join(ctx.backupDir, "config", "contexts"),
+			filepath.Join("config", "contexts"),
+		)
+	}
+
+	if ctx.stashed {
+		fmt.Println("Recovery (git stash):")
+		fmt.Println("  git stash list")
+		fmt.Println("  git stash pop   # may conflict; resolve if needed")
+	}
+
+	if ctx.repoRoot != "" {
+		fmt.Println("If git reports 'dubious ownership':")
+		fmt.Printf("  git config --global --add safe.directory %s\n", ctx.repoRoot)
+	}
 }
 
 func printUpdateSummary(ctx *updateContext, checkStatus string, warnCount int, failCount int) {

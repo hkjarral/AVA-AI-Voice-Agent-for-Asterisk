@@ -39,6 +39,7 @@ const RawYamlPage = lazy(() => import('./pages/Advanced/RawYamlPage'));
 const LogsPage = lazy(() => import('./pages/System/LogsPage'));
 const TerminalPage = lazy(() => import('./pages/System/TerminalPage'));
 const ModelsPage = lazy(() => import('./pages/System/ModelsPage'));
+const UpdatesPage = lazy(() => import('./pages/System/UpdatesPage'));
 
 // Loading fallback for lazy-loaded pages
 const PageLoader = () => (
@@ -155,6 +156,7 @@ function App() {
                                             <Route path="/logs" element={<LogsPage />} />
                                             <Route path="/terminal" element={<TerminalPage />} />
                                             <Route path="/models" element={<ModelsPage />} />
+                                            <Route path="/updates" element={<UpdatesPage />} />
 
                                             {/* Help */}
                                             <Route path="/help" element={<HelpPage />} />

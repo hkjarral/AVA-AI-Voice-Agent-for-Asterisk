@@ -2753,3 +2753,384 @@ async def test_ari_connection(request: AriTestRequest):
             "success": False,
             "error": "Connection failed - check host/port/scheme and credentials."
         }
+
+
+# =============================================================================
+# Updates API (UI-driven agent update)
+# =============================================================================
+
+_UPDATER_IMAGE_TAG = "asterisk-ai-voice-agent-updater:latest"
+_UPDATER_IMAGE_LOCK = None
+
+
+def _updater_lock():
+    global _UPDATER_IMAGE_LOCK
+    if _UPDATER_IMAGE_LOCK is None:
+        import threading
+        _UPDATER_IMAGE_LOCK = threading.Lock()
+    return _UPDATER_IMAGE_LOCK
+
+
+def _project_host_root_from_admin_ui_container() -> str:
+    """
+    Resolve the host path that backs /app/project in the admin_ui container.
+
+    We need a host path because Docker binds are evaluated by the daemon on the host,
+    not from inside this container.
+    """
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    container_id = (os.getenv("HOSTNAME") or "").strip()
+    if not container_id:
+        raise HTTPException(status_code=500, detail="Cannot determine container id (HOSTNAME missing)")
+
+    try:
+        client = docker.from_env()
+        c = client.containers.get(container_id)
+        mounts = c.attrs.get("Mounts", []) or []
+        for m in mounts:
+            if m.get("Destination") == project_root and m.get("Type") == "bind":
+                src = (m.get("Source") or "").strip()
+                if src:
+                    return src
+        raise HTTPException(status_code=500, detail=f"Cannot resolve host mount backing {project_root}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to resolve project host root: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to resolve project host root")
+
+
+def _ensure_updater_image(host_project_root: str) -> None:
+    """
+    Ensure the updater image exists locally; build it on-demand from the project checkout.
+    """
+    lock = _updater_lock()
+    with lock:
+        try:
+            client = docker.from_env()
+            try:
+                client.images.get(_UPDATER_IMAGE_TAG)
+                return
+            except Exception:
+                pass
+
+            logger.info("Building updater image: %s", _UPDATER_IMAGE_TAG)
+            client.images.build(
+                path=host_project_root,
+                dockerfile="updater/Dockerfile",
+                tag=_UPDATER_IMAGE_TAG,
+                rm=True,
+            )
+        except Exception as e:
+            logger.exception("Failed to build updater image: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to build updater image")
+
+
+def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Optional[str] = None, timeout_sec: int = 30, capture_stderr: bool = True) -> tuple[int, str]:
+    """
+    Run the updater image as a short-lived container and return (exit_code, stdout/stderr).
+
+    If command is provided, we override the default entrypoint with bash -lc <command>.
+    """
+    import uuid
+
+    _ensure_updater_image(host_project_root)
+
+    client = docker.from_env()
+    name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
+
+    volumes = {
+        host_project_root: {"bind": "/app/project", "mode": "rw"},
+        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+    }
+
+    try:
+        if command:
+            container = client.containers.run(
+                _UPDATER_IMAGE_TAG,
+                command=command,
+                entrypoint=["bash", "-lc"],
+                environment=env,
+                volumes=volumes,
+                name=name,
+                detach=True,
+            )
+        else:
+            container = client.containers.run(
+                _UPDATER_IMAGE_TAG,
+                environment=env,
+                volumes=volumes,
+                name=name,
+                detach=True,
+            )
+
+        result = container.wait(timeout=timeout_sec)
+        status = int((result or {}).get("StatusCode", 1))
+        logs = (container.logs(stdout=True, stderr=capture_stderr) or b"").decode("utf-8", errors="replace")
+        return status, logs
+    finally:
+        try:
+            c = client.containers.get(name)
+            c.remove(force=True)
+        except Exception:
+            pass
+
+
+def _parse_semver_tag(tag: str) -> Optional[tuple[int, int, int]]:
+    tag = (tag or "").strip()
+    if not tag.startswith("v"):
+        return None
+    parts = tag[1:].split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except Exception:
+        return None
+
+
+def _select_latest_v_tag(ls_remote_text: str) -> Optional[dict]:
+    """
+    Parse `git ls-remote --tags origin 'refs/tags/v*'` output and return:
+      { "tag": "vX.Y.Z", "sha": "<commit-sha>" }
+
+    Handles annotated tags by preferring peeled `^{}` lines.
+    """
+    refs: dict[str, dict] = {}
+    for line in (ls_remote_text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            sha, ref = line.split("\t", 1)
+        except Exception:
+            continue
+        if not ref.startswith("refs/tags/"):
+            continue
+        name = ref[len("refs/tags/"):]
+        peeled = False
+        if name.endswith("^{}"):
+            name = name[:-3]
+            peeled = True
+        if not name.startswith("v"):
+            continue
+        ent = refs.get(name) or {"sha": None, "peeled_sha": None}
+        if peeled:
+            ent["peeled_sha"] = sha
+        else:
+            ent["sha"] = sha
+        refs[name] = ent
+
+    best = None
+    best_ver = None
+    for tag, ent in refs.items():
+        ver = _parse_semver_tag(tag)
+        if not ver:
+            continue
+        if best_ver is None or ver > best_ver:
+            best_ver = ver
+            best = {"tag": tag, "sha": ent.get("peeled_sha") or ent.get("sha")}
+    if best and best.get("sha"):
+        return best
+    return None
+
+
+class UpdateStatusResponse(BaseModel):
+    local: dict
+    remote: Optional[dict] = None
+    update_available: Optional[bool] = None
+    error: Optional[str] = None
+
+
+@router.get("/updates/status", response_model=UpdateStatusResponse)
+async def updates_status():
+    host_root = _project_host_root_from_admin_ui_container()
+
+    try:
+        # Gather local info
+        code, out = _run_updater_ephemeral(
+            host_root,
+            env={"PROJECT_ROOT": "/app/project"},
+            command=(
+                "set -euo pipefail; "
+                "cd /app/project; "
+                "git -c safe.directory=/app/project rev-parse HEAD; "
+                "git -c safe.directory=/app/project describe --tags --always --dirty"
+            ),
+            timeout_sec=30,
+        )
+        if code != 0:
+            return UpdateStatusResponse(
+                local={"head_sha": "unknown", "describe": "unknown"},
+                remote=None,
+                update_available=None,
+                error="Local status unavailable (updater image not ready)",
+            )
+
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        if len(lines) < 2:
+            return UpdateStatusResponse(
+                local={"head_sha": "unknown", "describe": "unknown"},
+                remote=None,
+                update_available=None,
+                error="Local status unavailable (unexpected git output)",
+            )
+        head_sha = lines[0]
+        describe = lines[1]
+    except Exception:
+        return UpdateStatusResponse(
+            local={"head_sha": "unknown", "describe": "unknown"},
+            remote=None,
+            update_available=None,
+            error="Local status unavailable (updater not built yet)",
+        )
+
+    # Remote info (best-effort; offline returns unknown)
+    code2, out2 = _run_updater_ephemeral(
+        host_root,
+        env={"PROJECT_ROOT": "/app/project"},
+        command=(
+            "set -euo pipefail; "
+            "cd /app/project; "
+            "git -c safe.directory=/app/project ls-remote --tags origin 'refs/tags/v*'"
+        ),
+        timeout_sec=15,
+    )
+    if code2 != 0:
+        return UpdateStatusResponse(
+            local={"head_sha": head_sha, "describe": describe},
+            remote=None,
+            update_available=None,
+            error="Remote unavailable (offline or blocked)",
+        )
+
+    latest = _select_latest_v_tag(out2)
+    if not latest:
+        return UpdateStatusResponse(
+            local={"head_sha": head_sha, "describe": describe},
+            remote=None,
+            update_available=None,
+            error="No v* tags found on remote",
+        )
+
+    update_available = (head_sha.strip() != (latest.get("sha") or "").strip())
+    return UpdateStatusResponse(
+        local={"head_sha": head_sha, "describe": describe},
+        remote={"latest_tag": latest["tag"], "latest_tag_sha": latest["sha"]},
+        update_available=update_available,
+        error=None,
+    )
+
+
+class UpdatePlanResponse(BaseModel):
+    plan: dict
+
+
+@router.get("/updates/plan", response_model=UpdatePlanResponse)
+async def updates_plan(include_ui: bool = False):
+    """
+    Return a pre-update plan from `agent update --plan --plan-json`.
+    """
+    host_root = _project_host_root_from_admin_ui_container()
+
+    env = {
+        "PROJECT_ROOT": "/app/project",
+        "AAVA_UPDATE_MODE": "plan",
+        "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
+    }
+    # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
+    code, out = _run_updater_ephemeral(host_root, env=env, timeout_sec=120, capture_stderr=False)
+    if code != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to compute update plan: {out.strip()[:400]}")
+
+    import json
+    try:
+        plan = json.loads(out)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Updater returned invalid JSON")
+    return UpdatePlanResponse(plan=plan)
+
+
+class UpdateRunRequest(BaseModel):
+    include_ui: bool = False
+
+
+class UpdateRunResponse(BaseModel):
+    job_id: str
+
+
+@router.post("/updates/run", response_model=UpdateRunResponse)
+async def updates_run(body: UpdateRunRequest):
+    host_root = _project_host_root_from_admin_ui_container()
+    _ensure_updater_image(host_root)
+
+    import uuid
+    job_id = uuid.uuid4().hex
+
+    client = docker.from_env()
+    name = f"aava-update-{job_id[:12]}"
+
+    volumes = {
+        host_root: {"bind": "/app/project", "mode": "rw"},
+        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+    }
+    env = {
+        "PROJECT_ROOT": "/app/project",
+        "AAVA_UPDATE_MODE": "run",
+        "AAVA_UPDATE_JOB_ID": job_id,
+        "AAVA_UPDATE_INCLUDE_UI": "true" if body.include_ui else "false",
+    }
+
+    try:
+        client.containers.run(
+            _UPDATER_IMAGE_TAG,
+            environment=env,
+            volumes=volumes,
+            name=name,
+            detach=True,
+            auto_remove=True,
+        )
+    except Exception as e:
+        logger.exception("Failed to start update runner: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to start update runner")
+
+    return UpdateRunResponse(job_id=job_id)
+
+
+class UpdateJobResponse(BaseModel):
+    job: dict
+    log_tail: Optional[str] = None
+
+
+@router.get("/updates/jobs/{job_id}", response_model=UpdateJobResponse)
+async def updates_job(job_id: str):
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
+    state_path = os.path.join(jobs_dir, f"{job_id}.json")
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+
+    import json
+
+    if not os.path.exists(state_path) and not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail="Update job not found")
+
+    job = {}
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                job = json.load(f) or {}
+        except Exception:
+            job = {"job_id": job_id, "status": "unknown"}
+    else:
+        job = {"job_id": job_id, "status": "running"}
+
+    tail = None
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read().splitlines()
+            tail = "\n".join(data[-250:])
+        except Exception:
+            tail = None
+
+    return UpdateJobResponse(job=job, log_tail=tail)
