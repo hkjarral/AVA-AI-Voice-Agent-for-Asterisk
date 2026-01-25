@@ -539,11 +539,11 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
     import subprocess
     import httpx
 
-    # CRITICAL: Docker compose must use HOST paths, not container paths.
-    # When admin_ui runs inside a container with PROJECT_ROOT=/app/project,
-    # Docker (via socket) interprets volume mounts relative to the HOST filesystem.
-    # HOST_PROJECT_ROOT should be set to the actual host path (e.g., /root/Asterisk-AI-Voice-Agent)
-    project_root = os.getenv("HOST_PROJECT_ROOT") or os.getenv("PROJECT_ROOT", "/app/project")
+    # Container path where docker-compose.yml is mounted (for subprocess cwd)
+    container_project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    # Host path for Docker daemon to resolve volume mounts correctly
+    # Docker interprets volume paths relative to HOST filesystem, not container
+    host_project_root = os.getenv("HOST_PROJECT_ROOT", "")
 
     # Normalize legacy hyphenated service names to canonical underscored service names.
     legacy_to_canonical = {
@@ -596,6 +596,12 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
         cmd = compose_cmd + [
             "-p",
             "asterisk-ai-voice-agent",
+        ]
+        # If HOST_PROJECT_ROOT is set, use --project-directory to tell Docker
+        # where to resolve volume mounts on the HOST filesystem
+        if host_project_root:
+            cmd += ["--project-directory", host_project_root]
+        cmd += [
             "up",
             "-d",
             "--force-recreate",
@@ -605,7 +611,7 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
 
         result = subprocess.run(
             cmd,
-            cwd=project_root,
+            cwd=container_project_root,
             capture_output=True,
             text=True,
             timeout=300,
