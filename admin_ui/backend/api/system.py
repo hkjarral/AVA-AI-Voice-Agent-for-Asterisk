@@ -2823,6 +2823,44 @@ def _project_host_root_from_admin_ui_container() -> str:
         raise HTTPException(status_code=500, detail="Failed to resolve project host root")
 
 
+def _docker_sock_host_path_from_admin_ui_container() -> str:
+    """
+    Resolve the host path that backs /var/run/docker.sock in the admin_ui container.
+
+    Some deployments mount a non-standard Docker socket path (via DOCKER_SOCK in `.env`).
+    When starting updater containers, we must mount the *host* socket path.
+    """
+    explicit_name = (os.getenv("AAVA_ADMIN_UI_CONTAINER_NAME") or "").strip()
+    candidates = [c for c in [explicit_name, "admin_ui", (os.getenv("HOSTNAME") or "").strip()] if c]
+
+    try:
+        client = docker.from_env()
+
+        c = None
+        last_err = None
+        for ident in candidates:
+            try:
+                c = client.containers.get(ident)
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if c is None:
+            raise last_err or RuntimeError("container lookup failed")
+
+        mounts = c.attrs.get("Mounts", []) or []
+        for m in mounts:
+            if m.get("Destination") == "/var/run/docker.sock" and m.get("Type") == "bind":
+                src = (m.get("Source") or "").strip()
+                if src:
+                    return src
+    except Exception:
+        # Fall back to the default path; most hosts use /var/run/docker.sock (or a symlink).
+        pass
+
+    return "/var/run/docker.sock"
+
+
 def _ensure_updater_image(host_project_root: str) -> None:
     """
     Ensure the updater image exists locally; build it on-demand from the project checkout.
@@ -2967,13 +3005,14 @@ def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Option
     client = docker.from_env()
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
 
+    host_docker_sock = _docker_sock_host_path_from_admin_ui_container()
     volumes = {
         # IMPORTANT: mount the project at the same absolute path inside the container as on the host.
         # Docker Compose resolves relative bind mounts on the HOST filesystem, so if we mounted the repo
         # at a different in-container path (e.g. /app/project), compose would hand Docker non-existent
         # host paths like /app/project/src.
         host_project_root: {"bind": host_project_root, "mode": "rw"},
-        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+        host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
 
     try:
@@ -3293,6 +3332,7 @@ class UpdateRunResponse(BaseModel):
 @router.post("/updates/run", response_model=UpdateRunResponse)
 async def updates_run(body: UpdateRunRequest):
     host_root = _project_host_root_from_admin_ui_container()
+    host_docker_sock = _docker_sock_host_path_from_admin_ui_container()
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
     _ensure_updater_image_for_sha(host_root, tag)
@@ -3333,7 +3373,7 @@ async def updates_run(body: UpdateRunRequest):
 
     volumes = {
         host_root: {"bind": host_root, "mode": "rw"},
-        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+        host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
     env = {
         "PROJECT_ROOT": host_root,
@@ -3377,6 +3417,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     This starts a detached updater container with `AAVA_UPDATE_MODE=rollback`.
     """
     host_root = _project_host_root_from_admin_ui_container()
+    host_docker_sock = _docker_sock_host_path_from_admin_ui_container()
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
     _ensure_updater_image_for_sha(host_root, tag)
@@ -3440,7 +3481,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
 
     volumes = {
         host_root: {"bind": host_root, "mode": "rw"},
-        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+        host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
     env = {
         "PROJECT_ROOT": host_root,

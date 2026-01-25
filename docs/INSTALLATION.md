@@ -1,12 +1,12 @@
-# Asterisk AI Voice Agent - Installation Guide (v5.1.7)
+# Asterisk AI Voice Agent - Installation Guide (v5.2.1)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.1.7 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.2.1 on your server.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade from v4.6.0 → v5.1.7 (Existing Checkout)
+## Upgrade from v4.6.0 → v5.2.1 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -18,11 +18,11 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 
 ### 1) Pull the new release
 
-Once `v5.1.7` is published:
+Once `v5.2.1` is published:
 
 ```bash
 git fetch --tags
-git checkout v5.1.7
+git checkout v5.2.1
 ```
 
 If you track branches instead of tags:
@@ -37,6 +37,10 @@ If you have the CLI installed, this is equivalent (and safer for common operator
 ```bash
 agent update
 ```
+
+From **v5.2.1+**, most operators can also update directly from the Admin UI:
+
+- **Admin UI → System → Updates** (preview changes, then proceed)
 
 ### 2) Re-run preflight (recommended)
 
@@ -188,7 +192,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.1.7.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.2.1.
 
 ---
 
@@ -485,7 +489,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 
 ```asterisk
 [from-ai-agent]
-exten => s,1,NoOp(Asterisk AI Voice Agent v5.1.7)
+exten => s,1,NoOp(Asterisk AI Voice Agent v5.2.1)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```

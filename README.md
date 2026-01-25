@@ -2,7 +2,7 @@
 
 # Asterisk AI Voice Agent
 
-![Version](https://img.shields.io/badge/version-5.1.7-blue.svg)
+![Version](https://img.shields.io/badge/version-5.2.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -21,7 +21,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 ## 📖 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
-- [🎉 What's New](#-whats-new-in-v517)
+- [🎉 What's New](#-whats-new-in-v521)
 - [🌟 Why Asterisk AI Voice Agent?](#-why-asterisk-ai-voice-agent)
 - [✨ Features](#-features)
 - [🎥 Demo](#-demo)
@@ -110,7 +110,7 @@ For users who prefer the command line or need headless setup.
 agent setup
 ```
 
-> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.1.7.
+> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.2.1.
 
 ### Option B: Manual Setup
 ```bash
@@ -126,7 +126,7 @@ docker compose up -d
 Add this to your FreePBX (`extensions_custom.conf`):
 ```asterisk
 [from-ai-agent]
-exten => s,1,NoOp(Asterisk AI Voice Agent v5.1.7)
+exten => s,1,NoOp(Asterisk AI Voice Agent v5.2.1)
  ; Optional per-call overrides:
  ; - AI_PROVIDER selects a provider/pipeline (otherwise uses default_provider from ai-agent.yaml)
  ; - AI_CONTEXT selects a context/persona (otherwise uses default context)
@@ -153,33 +153,17 @@ docker compose logs -f ai_engine
 
 ---
 
-## 🎉 What's New in v5.1.7
+## 🎉 What's New in v5.2.1
 
 <details open>
 <summary><b>Latest Updates</b></summary>
 
-### 🎧 Transport + Turn-Taking Reliability (v5.1.7)
-- ExternalMedia RTP: reduce “first greeting” dead-air by waiting briefly for the remote RTP endpoint before falling back
-- Upstream Squelch: new engine-side noise squelch for continuous-audio providers + new UI controls (tunable; can be disabled for quiet callers)
-- End-of-call robustness: provider-agnostic transcript gating and hangup sequencing (prevents repeated “transcript?” loops and premature hangups)
-### 🔚 Farewell / Hangup Improvements (v5.1.7)
-- OpenAI Realtime: wait for `output_audio.done` before hangup to avoid cutting off farewell speech
+### 🔄 Updates UX (v5.2.1)
+- Admin UI: **System → Updates** page (GitHub-style): check updates → choose branch → preview impact → proceed
+- Preview shows **files changed** and **containers to rebuild/restart** (with opt-in “Update UI too”)
+- Detached updater job survives `admin_ui` rebuild/restarts and keeps a **Recent Runs** summary with rollback options
 
-### 📞 Outbound Campaign Dialer (Alpha)
-- **Call Scheduling UI**: create campaigns, import leads, view outcomes
-- **Campaign scheduler**: pacing + concurrency (1–5)
-- **Voicemail detection**: Asterisk `AMD()` + voicemail drop
-- **Consent gate (optional)**: DTMF `1` accept / `2` deny
-- Docs: [docs/OUTBOUND_CALLING.md](docs/OUTBOUND_CALLING.md)
-
-### 🧩 Groq Speech (STT + TTS) for Modular Pipelines
-- Groq STT/TTS pipeline adapters for cloud-only modular pipelines
-
-### 🧠 Ollama & Local Pipeline Improvements
-- Streaming/segment gating improvements and safer fallbacks for Ollama-backed pipelines
-
-### 🔁 Attended (Warm) Transfer
-- DTMF acceptance flow and improved transfer UX
+For full release notes, see [CHANGELOG.md](CHANGELOG.md).
 
 </details>
 

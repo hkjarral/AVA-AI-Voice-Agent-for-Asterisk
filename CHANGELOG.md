@@ -12,6 +12,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [5.2.1] - 2026-01-25
+
+### Added
+
+- Admin UI: **System → Updates** page with a GitHub-style flow: **Check updates → choose branch → preview file/container impact → proceed**.
+- Admin UI: branch dropdown supports updating to **any remote branch** (useful for testing feature/fix branches via UI).
+- Admin UI: **Recent Runs** table (last 10) with job summaries (success/failure, rebuild/restart actions, file count) and recovery helpers.
+- Admin UI: one-click **Rollback** for failed update jobs (restores pre-update code + operator config from the backup).
+- Agent CLI: `agent update` enhancements for UI-driven updates:
+  - `--plan` / `--plan-json` to preview actions without applying
+  - `--checkout` to allow switching branches when updating to a non-current ref
+  - `--include-ui` to include/exclude `admin_ui` rebuild/restart
+  - `--backup-id` for stable backups (used by UI jobs)
+
+### Changed
+
+- Updates: “latest version” checks consider **`v*` tags only** and compute status using commit ancestry (handles “local ahead” cleanly).
+- Updates: UI-triggered jobs write state under `./.agent/updates/jobs/` and backups under `./.agent/update-backups/<job_id>/`.
+- Updater: update/plan execution runs in a **detached updater container** so jobs survive `admin_ui` rebuild/restarts.
+
+### Fixed
+
+- Updates: docker compose operations from inside containers now resolve bind mounts correctly by mounting the repo at the **same absolute host path**.
+- Updates: avoid transient “Update job not found” UI errors immediately after starting a job.
+
 ## [5.1.7] - 2026-01-24
 
 ### Added
@@ -1133,6 +1158,7 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 
 ## Version History
 
+- **v5.2.1** (2026-01-25) - Admin UI Updates page (branch preview/run), job history + rollback, safer updater runner
 - **v5.1.7** (2026-01-24) - ExternalMedia greeting reliability, upstream squelch, hangup/transcript robustness
 - **v5.1.6** (2026-01-20) - Admin UI + RCA improvements, CLI surface alignment, setup wizard fixes
 - **v5.0.0** (2026-01-07) - Outbound Campaign Dialer (Alpha), Groq Speech, Ollama improvements, attended transfer
@@ -1143,7 +1169,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v5.1.7...HEAD
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v5.2.1...HEAD
+[5.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.1
 [5.1.7]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.1.7
 [5.1.6]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.1.6
 [5.0.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.0.0
