@@ -2846,7 +2846,6 @@ def _current_project_head_sha() -> Optional[str]:
                 return None
 
         def _resolve_gitdir(root: str) -> Optional[str]:
-            import os
             git_path = os.path.join(root, ".git")
             if os.path.isdir(git_path):
                 return git_path
@@ -2891,7 +2890,6 @@ def _current_project_head_sha() -> Optional[str]:
             ref = head.split(":", 1)[1].strip()
             if not ref:
                 return None
-            import os
             ref_path = os.path.join(gitdir, ref)
             sha = (_read_text(ref_path) or "").strip()
             if sha:
