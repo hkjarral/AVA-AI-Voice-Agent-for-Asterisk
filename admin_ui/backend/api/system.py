@@ -2759,7 +2759,7 @@ async def test_ari_connection(request: AriTestRequest):
 # Updates API (UI-driven agent update)
 # =============================================================================
 
-_UPDATER_IMAGE_TAG = "asterisk-ai-voice-agent-updater:latest"
+_UPDATER_IMAGE_REPO = "asterisk-ai-voice-agent-updater"
 _UPDATER_IMAGE_LOCK = None
 
 
@@ -2817,21 +2817,49 @@ def _ensure_updater_image(host_project_root: str) -> None:
     """
     Ensure the updater image exists locally; build it on-demand from the project checkout.
     """
+    raise RuntimeError("_ensure_updater_image requires a tag; use _ensure_updater_image_for_sha")
+
+
+def _current_project_head_sha() -> Optional[str]:
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    try:
+        proc = subprocess.run(
+            ["git", "-c", f"safe.directory={project_root}", "-C", project_root, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if proc.returncode == 0:
+            sha = (proc.stdout or "").strip()
+            if sha:
+                return sha
+    except Exception:
+        pass
+    return None
+
+
+def _updater_image_tag_for_sha(sha: Optional[str]) -> str:
+    if not sha:
+        return f"{_UPDATER_IMAGE_REPO}:latest"
+    return f"{_UPDATER_IMAGE_REPO}:sha-{sha[:12]}"
+
+
+def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
     lock = _updater_lock()
     with lock:
         try:
             client = docker.from_env()
             try:
-                client.images.get(_UPDATER_IMAGE_TAG)
+                client.images.get(tag)
                 return
             except Exception:
                 pass
 
-            logger.info("Building updater image: %s", _UPDATER_IMAGE_TAG)
+            logger.info("Building updater image: %s", tag)
             client.images.build(
                 path=host_project_root,
                 dockerfile="updater/Dockerfile",
-                tag=_UPDATER_IMAGE_TAG,
+                tag=tag,
                 rm=True,
             )
         except Exception as e:
@@ -2847,7 +2875,9 @@ def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Option
     """
     import uuid
 
-    _ensure_updater_image(host_project_root)
+    sha = _current_project_head_sha()
+    tag = _updater_image_tag_for_sha(sha)
+    _ensure_updater_image_for_sha(host_project_root, tag)
 
     client = docker.from_env()
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
@@ -2860,7 +2890,7 @@ def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Option
     try:
         if command:
             container = client.containers.run(
-                _UPDATER_IMAGE_TAG,
+                tag,
                 command=command,
                 entrypoint=["bash", "-lc"],
                 environment=env,
@@ -2870,7 +2900,7 @@ def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Option
             )
         else:
             container = client.containers.run(
-                _UPDATER_IMAGE_TAG,
+                tag,
                 environment=env,
                 volumes=volumes,
                 name=name,
@@ -3075,7 +3105,9 @@ class UpdateRunResponse(BaseModel):
 @router.post("/updates/run", response_model=UpdateRunResponse)
 async def updates_run(body: UpdateRunRequest):
     host_root = _project_host_root_from_admin_ui_container()
-    _ensure_updater_image(host_root)
+    sha = _current_project_head_sha()
+    tag = _updater_image_tag_for_sha(sha)
+    _ensure_updater_image_for_sha(host_root, tag)
 
     import uuid
     job_id = uuid.uuid4().hex
@@ -3096,7 +3128,7 @@ async def updates_run(body: UpdateRunRequest):
 
     try:
         client.containers.run(
-            _UPDATER_IMAGE_TAG,
+            tag,
             environment=env,
             volumes=volumes,
             name=name,
