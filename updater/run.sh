@@ -113,6 +113,7 @@ run_update() {
 
 main() {
   ensure_dirs
+  cd "${PROJECT_ROOT}"
 
   case "${MODE}" in
     plan) run_plan ;;
