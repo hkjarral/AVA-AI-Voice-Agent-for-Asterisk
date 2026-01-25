@@ -3,11 +3,12 @@ set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/app/project}"
 JOB_ID="${AAVA_UPDATE_JOB_ID:-}"
-MODE="${AAVA_UPDATE_MODE:-run}" # run|plan
+MODE="${AAVA_UPDATE_MODE:-run}" # run|plan|rollback
 INCLUDE_UI="${AAVA_UPDATE_INCLUDE_UI:-false}" # true|false
 REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
 REF="${AAVA_UPDATE_REF:-main}"
 CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
+ROLLBACK_FROM_JOB="${AAVA_UPDATE_ROLLBACK_FROM_JOB:-}"
 
 UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
 JOBS_DIR="${UPDATES_DIR}/jobs"
@@ -171,6 +172,139 @@ run_update() {
   exit "${code}"
 }
 
+run_rollback() {
+  if [ -z "${JOB_ID}" ]; then
+    echo "ERR: AAVA_UPDATE_JOB_ID is required for rollback mode" >&2
+    exit 2
+  fi
+  if [ -z "${ROLLBACK_FROM_JOB}" ]; then
+    echo "ERR: AAVA_UPDATE_ROLLBACK_FROM_JOB is required for rollback mode" >&2
+    exit 2
+  fi
+
+  JOB_STARTED_AT="$(now_iso)"
+  export JOB_STARTED_AT
+
+  JOB_LOG_PATH="${JOBS_DIR}/${JOB_ID}.log"
+  export JOB_LOG_PATH
+
+  src_state="${JOBS_DIR}/${ROLLBACK_FROM_JOB}.json"
+  if [ ! -f "${src_state}" ]; then
+    echo "ERR: source job not found: ${ROLLBACK_FROM_JOB}" >&2
+    write_job_state "failed" "2"
+    exit 2
+  fi
+
+  pre_branch="$(jq -r '.pre_update_branch // empty' "${src_state}" 2>/dev/null || true)"
+  backup_rel="$(jq -r '.backup_dir_rel // empty' "${src_state}" 2>/dev/null || true)"
+  src_include_ui="$(jq -r '.include_ui // empty' "${src_state}" 2>/dev/null || true)"
+
+  if [ -z "${pre_branch}" ] || [ -z "${backup_rel}" ]; then
+    echo "ERR: source job missing rollback metadata (pre_update_branch/backup_dir_rel)" >&2
+    write_job_state "failed" "2"
+    exit 2
+  fi
+
+  include_ui_effective="${src_include_ui}"
+  if [ "${include_ui_effective}" != "true" ] && [ "${include_ui_effective}" != "false" ]; then
+    include_ui_effective="${INCLUDE_UI}"
+  fi
+
+  # Add a minimal "plan" snapshot so the UI history table can summarize container actions.
+  plan_patch="$(jq -n --arg include_ui "${include_ui_effective}" '{
+      repo_root: null,
+      remote: null,
+      ref: null,
+      services_rebuild: (if ($include_ui == "true") then ["ai_engine","local_ai_server","admin_ui"] else ["ai_engine","local_ai_server"] end),
+      services_restart: [],
+      changed_file_count: null
+    }')"
+
+  meta_patch="$(jq -n \
+    --arg type "rollback" \
+    --arg from_job_id "${ROLLBACK_FROM_JOB}" \
+    --arg ref "${pre_branch}" \
+    --arg backup_dir_rel "${backup_rel}" \
+    --arg pre_update_branch "${pre_branch}" \
+    --arg include_ui "${include_ui_effective}" \
+    --argjson plan "${plan_patch}" \
+    '{
+      type: $type,
+      rollback_from_job_id: $from_job_id,
+      ref: $ref,
+      backup_dir_rel: $backup_dir_rel,
+      pre_update_branch: $pre_update_branch,
+      include_ui: ($include_ui == "true"),
+      plan: $plan
+    }')"
+
+  state_file="${JOBS_DIR}/${JOB_ID}.json"
+  if [ -f "${state_file}" ]; then
+    jq -s '.[0] * .[1]' "${state_file}" <(echo "${meta_patch}") > "${state_file}.tmp" && mv "${state_file}.tmp" "${state_file}"
+  else
+    echo "${meta_patch}" > "${state_file}"
+  fi
+
+  write_job_state "running" ""
+
+  set +e
+  (
+    set -euo pipefail
+
+    echo "==> Rollback requested" >&2
+    echo "==> Source job: ${ROLLBACK_FROM_JOB}" >&2
+    echo "==> Restoring code to: ${pre_branch}" >&2
+    echo "==> Restoring operator config from: ${backup_rel}" >&2
+
+    # Best-effort: preserve any current local changes before switching branches.
+    if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)" ]; then
+      echo "==> Working tree is dirty; stashing changes (best-effort)" >&2
+      git -c safe.directory="${PROJECT_ROOT}" stash push -u -m "aava rollback ${JOB_ID}" >/dev/null 2>&1 || true
+    fi
+
+    git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}"
+
+    if [ -f "${PROJECT_ROOT}/${backup_rel}/.env" ]; then
+      cp -f "${PROJECT_ROOT}/${backup_rel}/.env" "${PROJECT_ROOT}/.env"
+    fi
+    if [ -f "${PROJECT_ROOT}/${backup_rel}/config/ai-agent.yaml" ]; then
+      mkdir -p "${PROJECT_ROOT}/config"
+      cp -f "${PROJECT_ROOT}/${backup_rel}/config/ai-agent.yaml" "${PROJECT_ROOT}/config/ai-agent.yaml"
+    fi
+    if [ -f "${PROJECT_ROOT}/${backup_rel}/config/users.json" ]; then
+      mkdir -p "${PROJECT_ROOT}/config"
+      cp -f "${PROJECT_ROOT}/${backup_rel}/config/users.json" "${PROJECT_ROOT}/config/users.json"
+    fi
+    if [ -d "${PROJECT_ROOT}/${backup_rel}/config/contexts" ]; then
+      rm -rf "${PROJECT_ROOT}/config/contexts"
+      mkdir -p "${PROJECT_ROOT}/config"
+      cp -r "${PROJECT_ROOT}/${backup_rel}/config/contexts" "${PROJECT_ROOT}/config/contexts"
+    fi
+
+    compose_targets="ai_engine local_ai_server"
+    if [ "${include_ui_effective}" = "true" ]; then
+      compose_targets="${compose_targets} admin_ui"
+    fi
+
+    echo "==> Rebuilding services: ${compose_targets}" >&2
+    docker compose up -d --build ${compose_targets}
+  ) 2>&1 | tee "${JOB_LOG_PATH}"
+  code="${PIPESTATUS[0]}"
+  set -e
+
+  JOB_FINISHED_AT="$(now_iso)"
+  export JOB_FINISHED_AT
+
+  if [ "${code}" -eq 0 ]; then
+    write_job_state "success" "${code}"
+    rm -f "${JOB_LOG_PATH}"
+  else
+    write_job_state "failed" "${code}"
+  fi
+
+  exit "${code}"
+}
+
 main() {
   ensure_dirs
   cd "${PROJECT_ROOT}"
@@ -178,8 +312,9 @@ main() {
   case "${MODE}" in
     plan) run_plan ;;
     run) run_update ;;
+    rollback) run_rollback ;;
     *)
-      echo "ERR: unknown mode: ${MODE} (expected run|plan)" >&2
+      echo "ERR: unknown mode: ${MODE} (expected run|plan|rollback)" >&2
       exit 2
       ;;
   esac

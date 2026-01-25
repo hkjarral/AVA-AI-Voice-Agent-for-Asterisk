@@ -169,6 +169,39 @@ const UpdatesPage = () => {
     }
   };
 
+  const rollbackFromJob = async (sourceJob: any) => {
+    const fromJobId = sourceJob?.job_id;
+    if (!fromJobId) return;
+
+    const preBranch = sourceJob?.pre_update_branch || 'unknown';
+    const backupRel = sourceJob?.backup_dir_rel || 'unknown';
+    const ok = window.confirm(
+      [
+        'Start rollback?',
+        '',
+        `Source job: ${fromJobId}`,
+        `Pre-update branch: ${preBranch}`,
+        `Backup: ${backupRel}`,
+        '',
+        'Notes:',
+        '- This will checkout the pre-update branch and restore operator config from the backup.',
+        '- Services may rebuild/restart (including admin_ui if it was included in the original update).',
+      ].join('\n')
+    );
+    if (!ok) return;
+
+    setRunError(null);
+    try {
+      const res = await axios.post('/api/system/updates/rollback', { from_job_id: fromJobId });
+      const id = res.data.job_id;
+      setJobId(id);
+      localStorage.setItem('aava_update_job_id', id);
+      setRunning(true);
+    } catch (err: any) {
+      setRunError(err.response?.data?.detail || err.message || 'Failed to start rollback');
+    }
+  };
+
   const fetchPlan = async (ref?: string) => {
     setPlanLoading(true);
     setPlanError(null);
@@ -569,13 +602,22 @@ const UpdatesPage = () => {
                       <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
                       <td className="px-3 py-2">
                         {st === 'failed' && h.pre_update_branch && h.backup_dir_rel ? (
-                          <button
-                            onClick={() => copyRecoveryCommands(h)}
-                            className="px-2 py-1 text-xs rounded-md border border-border hover:bg-accent transition-colors"
-                            title="Copy rollback commands"
-                          >
-                            {copiedJobId === h.job_id ? 'Copied' : 'Copy'}
-                          </button>
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              onClick={() => rollbackFromJob(h)}
+                              className="px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                              title="Rollback using this job's backup"
+                            >
+                              Rollback
+                            </button>
+                            <button
+                              onClick={() => copyRecoveryCommands(h)}
+                              className="px-2 py-1 text-xs rounded-md border border-border hover:bg-accent transition-colors"
+                              title="Copy rollback commands"
+                            >
+                              {copiedJobId === h.job_id ? 'Copied' : 'Copy'}
+                            </button>
+                          </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}

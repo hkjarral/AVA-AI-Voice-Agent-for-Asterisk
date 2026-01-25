@@ -2968,7 +2968,11 @@ def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Option
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
 
     volumes = {
-        host_project_root: {"bind": "/app/project", "mode": "rw"},
+        # IMPORTANT: mount the project at the same absolute path inside the container as on the host.
+        # Docker Compose resolves relative bind mounts on the HOST filesystem, so if we mounted the repo
+        # at a different in-container path (e.g. /app/project), compose would hand Docker non-existent
+        # host paths like /app/project/src.
+        host_project_root: {"bind": host_project_root, "mode": "rw"},
         "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
 
@@ -3081,13 +3085,13 @@ async def updates_status():
         # Gather local info
         code, out = _run_updater_ephemeral(
             host_root,
-            env={"PROJECT_ROOT": "/app/project"},
+            env={"PROJECT_ROOT": host_root},
             command=(
                 "set -euo pipefail; "
-                "cd /app/project; "
-                "git -c safe.directory=/app/project rev-parse --abbrev-ref HEAD; "
-                "git -c safe.directory=/app/project rev-parse HEAD; "
-                "git -c safe.directory=/app/project describe --tags --always --dirty"
+                "cd \"$PROJECT_ROOT\"; "
+                "git -c safe.directory=\"$PROJECT_ROOT\" rev-parse --abbrev-ref HEAD; "
+                "git -c safe.directory=\"$PROJECT_ROOT\" rev-parse HEAD; "
+                "git -c safe.directory=\"$PROJECT_ROOT\" describe --tags --always --dirty"
             ),
             timeout_sec=30,
         )
@@ -3123,11 +3127,11 @@ async def updates_status():
     # Remote info (best-effort; offline returns unknown)
     code2, out2 = _run_updater_ephemeral(
         host_root,
-        env={"PROJECT_ROOT": "/app/project"},
+        env={"PROJECT_ROOT": host_root},
         command=(
             "set -euo pipefail; "
-            "cd /app/project; "
-            "git -c safe.directory=/app/project ls-remote --tags origin 'refs/tags/v*'"
+            "cd \"$PROJECT_ROOT\"; "
+            "git -c safe.directory=\"$PROJECT_ROOT\" ls-remote --tags origin 'refs/tags/v*'"
         ),
         timeout_sec=15,
     )
@@ -3155,21 +3159,21 @@ async def updates_status():
     tag_sha = latest["sha"]
 
     rel_cmd = (
-        "cd /app/project; "
+        "cd \"$PROJECT_ROOT\"; "
         # Best-effort: fetch the tag object so merge-base comparisons work even if the tag wasn't present locally.
-        f"git -c safe.directory=/app/project fetch -q origin refs/tags/{tag}:refs/tags/{tag} >/dev/null 2>&1 || true; "
+        f"git -c safe.directory=\"$PROJECT_ROOT\" fetch -q origin refs/tags/{tag}:refs/tags/{tag} >/dev/null 2>&1 || true; "
         f"head='{head_sha.strip()}'; target='{tag_sha.strip()}'; "
         # If we can't resolve the target commit locally, degrade gracefully to unknown.
-        "git -c safe.directory=/app/project cat-file -e \"$target^{commit}\" >/dev/null 2>&1 || { echo unknown; exit 0; }; "
+        "git -c safe.directory=\"$PROJECT_ROOT\" cat-file -e \"$target^{commit}\" >/dev/null 2>&1 || { echo unknown; exit 0; }; "
         "if [ \"$head\" = \"$target\" ]; then echo equal; exit 0; fi; "
-        "git -c safe.directory=/app/project merge-base --is-ancestor \"$head\" \"$target\" >/dev/null 2>&1 && { echo behind; exit 0; }; "
-        "git -c safe.directory=/app/project merge-base --is-ancestor \"$target\" \"$head\" >/dev/null 2>&1 && { echo ahead; exit 0; }; "
+        "git -c safe.directory=\"$PROJECT_ROOT\" merge-base --is-ancestor \"$head\" \"$target\" >/dev/null 2>&1 && { echo behind; exit 0; }; "
+        "git -c safe.directory=\"$PROJECT_ROOT\" merge-base --is-ancestor \"$target\" \"$head\" >/dev/null 2>&1 && { echo ahead; exit 0; }; "
         "echo diverged; exit 0"
     )
 
     code3, out3 = _run_updater_ephemeral(
         host_root,
-        env={"PROJECT_ROOT": "/app/project"},
+        env={"PROJECT_ROOT": host_root},
         command=rel_cmd,
         timeout_sec=20,
     )
@@ -3217,11 +3221,11 @@ async def updates_branches():
 
     code, out = _run_updater_ephemeral(
         host_root,
-        env={"PROJECT_ROOT": "/app/project"},
+        env={"PROJECT_ROOT": host_root},
         command=(
             "set -euo pipefail; "
-            "cd /app/project; "
-            "git -c safe.directory=/app/project ls-remote --heads origin"
+            "cd \"$PROJECT_ROOT\"; "
+            "git -c safe.directory=\"$PROJECT_ROOT\" ls-remote --heads origin"
         ),
         timeout_sec=20,
     )
@@ -3256,7 +3260,7 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
     host_root = _project_host_root_from_admin_ui_container()
 
     env = {
-        "PROJECT_ROOT": "/app/project",
+        "PROJECT_ROOT": host_root,
         "AAVA_UPDATE_MODE": "plan",
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
         "AAVA_UPDATE_REMOTE": "origin",
@@ -3328,11 +3332,11 @@ async def updates_run(body: UpdateRunRequest):
     name = f"aava-update-{job_id[:12]}"
 
     volumes = {
-        host_root: {"bind": "/app/project", "mode": "rw"},
+        host_root: {"bind": host_root, "mode": "rw"},
         "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
     env = {
-        "PROJECT_ROOT": "/app/project",
+        "PROJECT_ROOT": host_root,
         "AAVA_UPDATE_MODE": "run",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_INCLUDE_UI": "true" if body.include_ui else "false",
@@ -3355,6 +3359,112 @@ async def updates_run(body: UpdateRunRequest):
         raise HTTPException(status_code=500, detail="Failed to start update runner")
 
     return UpdateRunResponse(job_id=job_id)
+
+
+class UpdateRollbackRequest(BaseModel):
+    from_job_id: str
+
+
+class UpdateRollbackResponse(BaseModel):
+    job_id: str
+
+
+@router.post("/updates/rollback", response_model=UpdateRollbackResponse)
+async def updates_rollback(body: UpdateRollbackRequest):
+    """
+    Roll back to the pre-update branch + restore config from the backup captured by a prior update job.
+
+    This starts a detached updater container with `AAVA_UPDATE_MODE=rollback`.
+    """
+    host_root = _project_host_root_from_admin_ui_container()
+    sha = _current_project_head_sha()
+    tag = _updater_image_tag_for_sha(sha)
+    _ensure_updater_image_for_sha(host_root, tag)
+
+    from_job_id = (body.from_job_id or "").strip()
+    if not from_job_id:
+        raise HTTPException(status_code=400, detail="from_job_id is required")
+
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
+    src_state_path = os.path.join(jobs_dir, f"{from_job_id}.json")
+    if not os.path.exists(src_state_path):
+        raise HTTPException(status_code=404, detail="Source update job not found")
+
+    import json
+    from datetime import datetime, timezone
+
+    src_job = {}
+    try:
+        with open(src_state_path, "r", encoding="utf-8") as f:
+            src_job = json.load(f) or {}
+    except Exception:
+        src_job = {}
+
+    include_ui = bool(src_job.get("include_ui"))
+    pre_update_branch = (src_job.get("pre_update_branch") or "").strip() or None
+    backup_dir_rel = (src_job.get("backup_dir_rel") or "").strip() or None
+
+    import uuid
+    job_id = uuid.uuid4().hex
+
+    # Create an initial job marker immediately so the UI can start polling right away.
+    try:
+        os.makedirs(jobs_dir, exist_ok=True)
+        state_path = os.path.join(jobs_dir, f"{job_id}.json")
+        log_path = os.path.join(jobs_dir, f"{job_id}.log")
+        payload = {
+            "job_id": job_id,
+            "type": "rollback",
+            "rollback_from_job_id": from_job_id,
+            "status": "starting",
+            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "finished_at": None,
+            "include_ui": include_ui,
+            "exit_code": None,
+            "log_path": log_path,
+        }
+        if pre_update_branch:
+            payload["ref"] = pre_update_branch
+            payload["pre_update_branch"] = pre_update_branch
+        if backup_dir_rel:
+            payload["backup_dir_rel"] = backup_dir_rel
+
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+    client = docker.from_env()
+    name = f"aava-rollback-{job_id[:12]}"
+
+    volumes = {
+        host_root: {"bind": host_root, "mode": "rw"},
+        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+    }
+    env = {
+        "PROJECT_ROOT": host_root,
+        "AAVA_UPDATE_MODE": "rollback",
+        "AAVA_UPDATE_JOB_ID": job_id,
+        "AAVA_UPDATE_ROLLBACK_FROM_JOB": from_job_id,
+        # Prefer the include_ui setting from the source job as a fallback for older jobs.
+        "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
+    }
+
+    try:
+        client.containers.run(
+            tag,
+            environment=env,
+            volumes=volumes,
+            name=name,
+            detach=True,
+            auto_remove=True,
+        )
+    except Exception as e:
+        logger.exception("Failed to start rollback runner: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to start rollback runner")
+
+    return UpdateRollbackResponse(job_id=job_id)
 
 
 class UpdateJobResponse(BaseModel):
