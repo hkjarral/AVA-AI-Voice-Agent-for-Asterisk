@@ -10,6 +10,7 @@ UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
 JOBS_DIR="${UPDATES_DIR}/jobs"
 BIN_DIR="${PROJECT_ROOT}/.agent/bin"
 AGENT_BIN="${BIN_DIR}/agent"
+BUILTIN_AGENT="/usr/local/bin/agent"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
@@ -18,6 +19,11 @@ ensure_dirs() {
 }
 
 install_agent_if_needed() {
+  # Prefer the baked-in agent binary from the updater image (built from the repo's cli/).
+  if [ -x "${BUILTIN_AGENT}" ]; then
+    return
+  fi
+
   if [ -x "${AGENT_BIN}" ]; then
     return
   fi
@@ -60,6 +66,9 @@ write_job_state() {
 run_plan() {
   install_agent_if_needed
 
+  if [ -x "${BUILTIN_AGENT}" ]; then
+    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --include-ui="${INCLUDE_UI}"
+  fi
   exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --include-ui="${INCLUDE_UI}"
 }
 
@@ -80,7 +89,11 @@ run_update() {
   install_agent_if_needed
 
   set +e
-  "${AGENT_BIN}" update -v --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+  if [ -x "${BUILTIN_AGENT}" ]; then
+    "${BUILTIN_AGENT}" update -v --self-update=false --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+  else
+    "${AGENT_BIN}" update -v --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+  fi
   code="${PIPESTATUS[0]}"
   set -e
 

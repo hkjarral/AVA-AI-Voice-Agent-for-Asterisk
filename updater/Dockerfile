@@ -3,8 +3,20 @@
 # Purpose:
 # - Run `agent update` and `agent update --plan` in a detached container started by Admin UI.
 # - Must include: git, curl, docker CLI, docker compose plugin.
+# - Must include a recent `agent` binary (built from the repo's `cli/` source) so UI plan/run
+#   can rely on new flags even before a GitHub Release is published.
 #
 # The container does NOT run as part of normal docker-compose services.
+
+FROM golang:1.22-bookworm AS agent-builder
+
+WORKDIR /src/cli
+
+COPY cli/go.mod cli/go.sum ./
+RUN go mod download
+
+COPY cli/ ./
+RUN CGO_ENABLED=0 go build -o /out/agent ./cmd/agent
 
 FROM debian:bookworm-slim
 
@@ -29,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /runner
 
+COPY --from=agent-builder /out/agent /usr/local/bin/agent
 COPY updater/run.sh /usr/local/bin/aava-update-runner
 RUN chmod +x /usr/local/bin/aava-update-runner
 
