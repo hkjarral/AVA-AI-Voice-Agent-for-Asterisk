@@ -188,8 +188,20 @@ func runUpdate() (retErr error) {
 		return err
 	}
 
-	if ctx.newSHA == ctx.oldSHA {
+	updateAvailable, relErr := gitIsAncestor(ctx.oldSHA, ctx.newSHA)
+	if relErr != nil {
+		return relErr
+	}
+	remoteIsAncestor, relErr2 := gitIsAncestor(ctx.newSHA, ctx.oldSHA)
+	if relErr2 != nil {
+		return relErr2
+	}
+
+	if ctx.newSHA == ctx.oldSHA || (!updateAvailable && remoteIsAncestor) {
 		printUpdateInfo("Already up to date (%s)", shortSHA(ctx.oldSHA))
+		if ctx.newSHA != ctx.oldSHA && remoteIsAncestor {
+			printUpdateInfo("Local branch is ahead of %s/%s; skipping fast-forward update", updateRemote, updateRef)
+		}
 		if ctx.stashed {
 			printUpdateStep("Restoring stashed changes")
 			if err := gitStashPop(ctx); err != nil {
@@ -212,6 +224,10 @@ func runUpdate() (retErr error) {
 			return errors.New("post-update check reported failures")
 		}
 		return nil
+	}
+
+	if !updateAvailable {
+		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s/%s (resolve manually and re-run)", updateRemote, updateRef)
 	}
 
 	printUpdateStep("Fast-forwarding code")
@@ -274,13 +290,27 @@ func runUpdatePlan(ctx *updateContext) error {
 	}
 
 	ctx.newSHA = newSHA
-	ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
-	if err != nil {
-		return err
+	updateAvailable, relErr := gitIsAncestor(ctx.oldSHA, ctx.newSHA)
+	if relErr != nil {
+		return relErr
+	}
+	remoteIsAncestor, relErr2 := gitIsAncestor(ctx.newSHA, ctx.oldSHA)
+	if relErr2 != nil {
+		return relErr2
+	}
+	if updateAvailable {
+		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
+		if err != nil {
+			return err
+		}
+	} else {
+		ctx.changedFiles = nil
 	}
 
-	decideDockerActions(ctx)
-	applyServiceFilters(ctx)
+	if updateAvailable {
+		decideDockerActions(ctx)
+		applyServiceFilters(ctx)
+	}
 
 	wouldStash := dirty && !updateNoStash
 	wouldAbort := dirty && updateNoStash
@@ -291,7 +321,7 @@ func runUpdatePlan(ctx *updateContext) error {
 		Ref:              updateRef,
 		OldSHA:           ctx.oldSHA,
 		NewSHA:           ctx.newSHA,
-		UpdateAvailable:  strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA),
+		UpdateAvailable:  updateAvailable,
 		Dirty:            dirty,
 		NoStash:          updateNoStash,
 		StashUntracked:   updateStashUntracked,
@@ -312,6 +342,12 @@ func runUpdatePlan(ctx *updateContext) error {
 	}
 	if !updateIncludeUI && ctx.composeChanged {
 		rep.Warnings = append(rep.Warnings, "Compose files changed; admin_ui changes (if any) are excluded unless --include-ui is enabled.")
+	}
+	if !updateAvailable && remoteIsAncestor && strings.TrimSpace(ctx.newSHA) != strings.TrimSpace(ctx.oldSHA) {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("Local branch is ahead of %s/%s; no fast-forward update available.", updateRemote, updateRef))
+	}
+	if !updateAvailable && !remoteIsAncestor && strings.TrimSpace(ctx.newSHA) != strings.TrimSpace(ctx.oldSHA) {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("Local branch has diverged from %s/%s; update requires manual resolution.", updateRemote, updateRef))
 	}
 
 	if updatePlanJSON {
@@ -1146,6 +1182,36 @@ func runGitCmd(args ...string) (string, error) {
 	}
 	gitArgs = append(gitArgs, args...)
 	return runCmd("git", gitArgs...)
+}
+
+func gitIsAncestor(ancestor string, descendant string) (bool, error) {
+	gitArgs := make([]string, 0, 6)
+	if gitSafeDirectory != "" {
+		gitArgs = append(gitArgs, "-c", "safe.directory="+gitSafeDirectory)
+	}
+	gitArgs = append(gitArgs, "merge-base", "--is-ancestor", ancestor, descendant)
+
+	cmd := exec.Command("git", gitArgs...)
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		// Exit status 1 means "not an ancestor" for --is-ancestor.
+		if exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg != "" {
+		return false, fmt.Errorf("git merge-base --is-ancestor failed: %s", msg)
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor failed: %w", err)
 }
 
 func findGitRootFromCWD() (string, error) {
