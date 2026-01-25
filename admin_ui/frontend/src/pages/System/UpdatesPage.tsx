@@ -57,6 +57,7 @@ interface UpdateHistoryResponse {
 }
 
 const UpdatesPage = () => {
+  const [copiedJobId, setCopiedJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<UpdatesStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -133,6 +134,38 @@ const UpdatesPage = () => {
       setHistory([]);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  const copyRecoveryCommands = async (job: any) => {
+    const preBranch = job?.pre_update_branch;
+    const backupRel = job?.backup_dir_rel;
+    if (!preBranch || !backupRel) return;
+
+    const composeTargets = job?.include_ui ? 'ai_engine local_ai_server admin_ui' : 'ai_engine local_ai_server';
+    const text = [
+      '# Roll back to pre-update code + restore operator config',
+      '# NOTE: adjust REPO if your checkout path differs.',
+      'REPO=/root/Asterisk-AI-Voice-Agent',
+      'cd \"$REPO\"',
+      'git config --global --add safe.directory \"$REPO\"',
+      '',
+      `git checkout \"${preBranch}\"`,
+      '',
+      `cp \"${backupRel}/.env\" .env`,
+      `cp \"${backupRel}/config/ai-agent.yaml\" config/ai-agent.yaml`,
+      `cp \"${backupRel}/config/users.json\" config/users.json`,
+      'rm -rf config/contexts && cp -r \"' + `${backupRel}/config/contexts\"` + '\" config/contexts',
+      '',
+      `docker compose up -d --build ${composeTargets}`,
+    ].join('\n');
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedJobId(job.job_id);
+      setTimeout(() => setCopiedJobId(null), 2000);
+    } catch (e) {
+      window.prompt('Copy recovery commands:', text);
     }
   };
 
@@ -499,6 +532,7 @@ const UpdatesPage = () => {
                 <th className="px-3 py-2 text-xs text-muted-foreground">Rebuild</th>
                 <th className="px-3 py-2 text-xs text-muted-foreground">Restart</th>
                 <th className="px-3 py-2 text-xs text-muted-foreground">Files</th>
+                <th className="px-3 py-2 text-xs text-muted-foreground">Recovery</th>
               </tr>
             </thead>
             <tbody>
@@ -533,12 +567,25 @@ const UpdatesPage = () => {
                       <td className="px-3 py-2 font-mono text-xs">{rebuild || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{restart || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
+                      <td className="px-3 py-2">
+                        {st === 'failed' && h.pre_update_branch && h.backup_dir_rel ? (
+                          <button
+                            onClick={() => copyRecoveryCommands(h)}
+                            className="px-2 py-1 text-xs rounded-md border border-border hover:bg-accent transition-colors"
+                            title="Copy rollback commands"
+                          >
+                            {copiedJobId === h.job_id ? 'Copied' : 'Copy'}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  <td colSpan={8} className="px-3 py-6 text-center text-sm text-muted-foreground">
                     {historyLoading ? 'Loading…' : 'No recent runs yet.'}
                   </td>
                 </tr>
