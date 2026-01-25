@@ -2889,9 +2889,12 @@ def _run_updater_ephemeral(host_project_root: str, *, env: dict, command: Option
 
     try:
         if command:
+            # NOTE: docker-py will split string commands (like a shell), which breaks `bash -lc "<cmd>"`
+            # by making only the first token the `-c` argument (often `set`), and the remainder positional args.
+            # Always pass the command as a single argv element so bash receives it as one string.
             container = client.containers.run(
                 tag,
-                command=command,
+                command=[command],
                 entrypoint=["bash", "-lc"],
                 environment=env,
                 volumes=volumes,
