@@ -92,7 +92,7 @@ run_update() {
   if [ -x "${BUILTIN_AGENT}" ]; then
     "${BUILTIN_AGENT}" update -v --self-update=false --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
   else
-    "${AGENT_BIN}" update -v --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${AGENT_BIN}" update -v --self-update=false --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
   fi
   code="${PIPESTATUS[0]}"
   set -e
