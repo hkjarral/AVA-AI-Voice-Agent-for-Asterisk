@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /runner
 
-COPY run.sh /usr/local/bin/aava-update-runner
+COPY updater/run.sh /usr/local/bin/aava-update-runner
 RUN chmod +x /usr/local/bin/aava-update-runner
 
 ENTRYPOINT ["/usr/local/bin/aava-update-runner"]
