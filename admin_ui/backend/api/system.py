@@ -3056,12 +3056,54 @@ async def updates_status():
             error="No v* tags found on remote",
         )
 
-    update_available = (head_sha.strip() != (latest.get("sha") or "").strip())
+    # Determine update availability using commit ancestry (handles "local ahead" cleanly).
+    # Note: we intentionally avoid relying on SHA inequality alone because it incorrectly
+    # reports updates when running a newer (ahead) local branch.
+    tag = latest["tag"]
+    tag_sha = latest["sha"]
+
+    rel_cmd = (
+        "cd /app/project; "
+        # Best-effort: fetch the tag object so merge-base comparisons work even if the tag wasn't present locally.
+        f"git -c safe.directory=/app/project fetch -q origin refs/tags/{tag}:refs/tags/{tag} >/dev/null 2>&1 || true; "
+        f"head='{head_sha.strip()}'; target='{tag_sha.strip()}'; "
+        # If we can't resolve the target commit locally, degrade gracefully to unknown.
+        "git -c safe.directory=/app/project cat-file -e \"$target^{commit}\" >/dev/null 2>&1 || { echo unknown; exit 0; }; "
+        "if [ \"$head\" = \"$target\" ]; then echo equal; exit 0; fi; "
+        "git -c safe.directory=/app/project merge-base --is-ancestor \"$head\" \"$target\" >/dev/null 2>&1 && { echo behind; exit 0; }; "
+        "git -c safe.directory=/app/project merge-base --is-ancestor \"$target\" \"$head\" >/dev/null 2>&1 && { echo ahead; exit 0; }; "
+        "echo diverged; exit 0"
+    )
+
+    code3, out3 = _run_updater_ephemeral(
+        host_root,
+        env={"PROJECT_ROOT": "/app/project"},
+        command=rel_cmd,
+        timeout_sec=20,
+    )
+    relation = (out3 or "").strip().splitlines()[-1].strip() if code3 == 0 and (out3 or "").strip() else "unknown"
+
+    if relation == "equal":
+        update_available = False
+        error = None
+    elif relation == "behind":
+        update_available = True
+        error = None
+    elif relation == "ahead":
+        update_available = False
+        error = None
+    elif relation == "diverged":
+        update_available = None
+        error = "Local branch diverged from latest release (run plan for details)"
+    else:
+        update_available = None
+        error = "Unable to compare local version to remote (offline or missing objects)"
+
     return UpdateStatusResponse(
         local={"head_sha": head_sha, "describe": describe},
-        remote={"latest_tag": latest["tag"], "latest_tag_sha": latest["sha"]},
+        remote={"latest_tag": tag, "latest_tag_sha": tag_sha},
         update_available=update_available,
-        error=None,
+        error=error,
     )
 
 
