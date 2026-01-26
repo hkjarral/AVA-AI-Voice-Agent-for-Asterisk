@@ -84,12 +84,12 @@ Note: The CLI binary and the Python engine may have different version strings de
 
 ### Available Tools
 
-- **`agent setup`** - Interactive setup wizard (v5.2.1)
-- **`agent check`** - Standard diagnostics report (v5.2.1)
-- **`agent rca`** - Post-call root cause analysis (v5.2.1)
+- **`agent setup`** - Interactive setup wizard (v5.2.3)
+- **`agent check`** - Standard diagnostics report (v5.2.3)
+- **`agent rca`** - Post-call root cause analysis (v5.2.3)
 - **`agent update`** - Pull latest code + rebuild/restart as needed (v5.1+)
 
-Legacy aliases (v5.2.1; hidden from `--help`):
+Legacy aliases (v5.2.3; hidden from `--help`):
 - `agent init` → `agent setup`
 - `agent doctor` → `agent check`
 - `agent troubleshoot` → `agent rca`
@@ -643,7 +643,7 @@ agent demo -v
 # Run setup wizard
 agent setup
 
-# Flags below are planned; they may exist but are not implemented in v5.2.1:
+# Flags below are planned; they may exist but are not implemented in v5.2.3:
 # agent setup --non-interactive
 # agent setup --template <name>
 ```
@@ -1470,7 +1470,7 @@ streaming:
 
 ```
 [from-ai-agent]
-exten => s,1,NoOp(AI Voice Agent v5.2.1)
+exten => s,1,NoOp(AI Voice Agent)
  same => n,Answer()
  same => n,Set(AI_CONTEXT=demo_openai)  ; Optional: select context
  same => n,Stasis(asterisk-ai-voice-agent)
@@ -1513,5 +1513,5 @@ See [docs/Transport-Mode-Compatibility.md](Transport-Mode-Compatibility.md) for 
 
 ---
 
-**Last Updated:** January 12, 2026  
-**Version:** 5.2.1
+**Last Updated:** January 26, 2026  
+**Version:** 5.2.3
