@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [5.2.4] - 2026-01-26
+
+### Fixed
+
+- Admin UI: Dashboard no longer performs update checks that can trigger building the updater image; updates are checked only from **System → Updates** on explicit user action.
+- Admin UI: Docker Services “Restart” uses Docker SDK restart (avoids compose recreate failures on hosts where repo paths like `/root/...` are not accessible inside the `admin_ui` container).
+- Admin UI: compose-based start/recreate/build operations are executed via the detached updater runner to ensure host-path resolution is correct.
+
 ## [5.2.3] - 2026-01-26
 
 ### Fixed

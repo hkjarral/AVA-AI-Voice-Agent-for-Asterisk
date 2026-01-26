@@ -62,7 +62,7 @@ sudo ./preflight.sh --apply-fixes
 
 ```bash
 # Start the Admin UI container
-docker compose up -d --build admin_ui
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 ```
 
 ### 3. Access the Dashboard
@@ -81,14 +81,14 @@ Follow the **Setup Wizard** to configure your providers and make a test call.
 
 ```bash
 # Start ai_engine (required for health checks)
-docker compose up -d --build ai_engine
+docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 
 # Check ai_engine health
 curl http://localhost:15000/health
 # Expected: {"status":"healthy"}
 
 # View logs for any errors
-docker compose logs ai_engine | tail -20
+docker compose -p asterisk-ai-voice-agent logs ai_engine | tail -20
 ```
 
 ### 5. Connect Asterisk
@@ -110,7 +110,7 @@ For users who prefer the command line or need headless setup.
 agent setup
 ```
 
-> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.2.3.
+> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.2.4.
 
 ### Option B: Manual Setup
 ```bash
@@ -119,7 +119,7 @@ cp .env.example .env
 # Edit .env with your API keys
 
 # Start services
-docker compose up -d
+docker compose -p asterisk-ai-voice-agent up -d
 ```
 
 ### Configure Asterisk Dialplan
@@ -148,12 +148,12 @@ agent check
 
 **View logs:**
 ```bash
-docker compose logs -f ai_engine
+docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ```
 
 ---
 
-## 🎉 What's New in v5.2.3
+## 🎉 What's New in v5.2.4
 
 <details open>
 <summary><b>Latest Updates</b></summary>
@@ -304,7 +304,7 @@ Modern web interface for configuration and system management.
 
 **Quick Start:**
 ```bash
-docker compose up -d admin_ui
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 # Access at: http://localhost:3003
 # Login: admin / admin (change immediately!)
 ```

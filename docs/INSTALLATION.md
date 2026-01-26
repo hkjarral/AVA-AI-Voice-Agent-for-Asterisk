@@ -79,10 +79,10 @@ To recover without enabling `local_ai_server`, bring up only the services you ac
 ```bash
 cd /root/Asterisk-AI-Voice-Agent
 
-# If the update planned to rebuild admin_ui, run this once (safe even if not needed):
-docker compose build admin_ui
+# If the update planned to rebuild admin_ui, recreate it (safe even if not needed):
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 
-docker compose up -d --remove-orphans --no-build ai_engine admin_ui
+docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build ai_engine admin_ui
 agent check
 ```
 
@@ -90,8 +90,8 @@ If you *do* want `local_ai_server`, build it and then re-run compose:
 
 ```bash
 cd /root/Asterisk-AI-Voice-Agent
-docker compose build local_ai_server
-docker compose up -d --remove-orphans --no-build
+docker compose -p asterisk-ai-voice-agent build local_ai_server
+docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build
 ```
 
 ### 2) Re-run preflight (recommended)
@@ -163,13 +163,13 @@ If preflight reports warnings or failures, resolve them first, then re-run prefl
 ### 4) Rebuild and recreate containers
 
 ```bash
-docker compose up -d --build --force-recreate admin_ui ai_engine
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui ai_engine
 ```
 
 If your configuration requires local inference:
 
 ```bash
-docker compose up -d --build --force-recreate local_ai_server
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server
 ```
 
 ### 5) Verify
@@ -182,7 +182,7 @@ agent check
 > ⚠️ **Operator note (production hardening):** `ai_engine` exposes a health/metrics server on port `15000`.
 > In the default compose, it binds to `0.0.0.0` so `admin_ui` can reach it reliably on best-effort hosts.
 > For production, restrict access via firewall/VPN/reverse proxy, or bind it to localhost by setting:
-> - `HEALTH_BIND_HOST=127.0.0.1` in `.env` (then `docker compose up -d --force-recreate ai_engine`)
+> - `HEALTH_BIND_HOST=127.0.0.1` in `.env` (then `docker compose -p asterisk-ai-voice-agent up -d --force-recreate ai_engine`)
 > - Optional: set `HEALTH_API_TOKEN` in `.env` if you need authenticated remote access.
 
 ### Path A: Admin UI Setup Wizard (Recommended)
@@ -197,10 +197,10 @@ cd Asterisk-AI-Voice-Agent
 sudo ./preflight.sh --apply-fixes
 
 # Start Admin UI first
-docker compose up -d admin_ui
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 
 # Complete the Setup Wizard in Admin UI, then start ai_engine
-docker compose up -d ai_engine
+docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 ```
 
 If you hit permission/container/health issues during setup, start with:
@@ -371,7 +371,7 @@ If your host uses **rootless Docker**, the Admin UI needs the rootless socket mo
 
 ```bash
 export DOCKER_SOCK=/run/user/$(id -u)/docker.sock
-docker compose up -d --force-recreate admin_ui
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 ```
 
 `./preflight.sh` prints the exact command for your system when it detects rootless Docker.
@@ -444,7 +444,7 @@ After you complete the wizard, the script will create a `.env` file in the proje
 Once the configuration is complete, the script will prompt you to build and start the Docker container. You can also do this manually.
 
 ```bash
-docker compose up --build -d
+docker compose -p asterisk-ai-voice-agent up --build -d
 ```
 
 > IMPORTANT: First startup time (local models)
@@ -452,7 +452,7 @@ docker compose up --build -d
 > If you selected a Local or Hybrid workflow, the `local-ai-server` may take 15–20 minutes on first startup to load LLM/TTS models depending on your CPU, RAM, and disk speed. This is expected and readiness may show degraded until models have fully loaded. Monitor with:
 >
 > ```bash
-> docker compose logs -f local_ai_server
+> docker compose -p asterisk-ai-voice-agent logs -f local_ai_server
 > ```
 >
 > Subsequent restarts are typically much faster due to OS page cache. If startup is too slow for your hardware, consider using MEDIUM or LIGHT tier models and update the `.env` model paths accordingly.
@@ -464,7 +464,7 @@ After starting the service, you can check that it is running correctly.
 ### Check Docker Container Status
 
 ```bash
-docker compose ps
+docker compose -p asterisk-ai-voice-agent ps
 ```
 
 You should see the `ai_engine` container running, and `local_ai_server` if your selected configuration requires local STT/LLM/TTS.
@@ -486,7 +486,7 @@ Expected: `{"status":"healthy"}`
 In `ai_engine` logs, look for indicators that ARI is reachable and authenticated.
 
 ```bash
-docker compose logs -f ai_engine
+docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ```
 
 If ARI is not reachable, verify `.env` values and that Asterisk ARI is enabled:
@@ -523,7 +523,7 @@ If you get “greeting only” or “no audio”, jump to:
 ### Check Container Logs
 
 ```bash
-docker compose logs -f ai_engine
+docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ```
 
 Look for a message indicating a successful connection to Asterisk ARI and that the engine is ready to start the selected transport.
@@ -605,11 +605,11 @@ asterisk -rx "dialplan reload"
   - Run helpers directly in the container if desired:
 
         ```bash
-        docker compose exec -T ai_engine python /app/scripts/validate_externalmedia_config.py
-        docker compose exec -T ai_engine python /app/scripts/test_externalmedia_call.py
-        docker compose exec -T ai_engine python /app/scripts/monitor_externalmedia.py
-        docker compose exec -T ai_engine python /app/scripts/capture_test_logs.py --duration 40
-        docker compose exec -T ai_engine python /app/scripts/analyze_logs.py /app/logs/latest.json
+        docker compose -p asterisk-ai-voice-agent exec -T ai_engine python /app/scripts/validate_externalmedia_config.py
+        docker compose -p asterisk-ai-voice-agent exec -T ai_engine python /app/scripts/test_externalmedia_call.py
+        docker compose -p asterisk-ai-voice-agent exec -T ai_engine python /app/scripts/monitor_externalmedia.py
+        docker compose -p asterisk-ai-voice-agent exec -T ai_engine python /app/scripts/capture_test_logs.py --duration 40
+        docker compose -p asterisk-ai-voice-agent exec -T ai_engine python /app/scripts/analyze_logs.py /app/logs/latest.json
         ```
 
 For more advanced troubleshooting, refer to the project's main `README.md` or open an issue in the repository.

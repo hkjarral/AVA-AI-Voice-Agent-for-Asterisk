@@ -160,7 +160,7 @@ Once Docker services are up and ARI is configured:
 1. Check container status:
 
    ```bash
-   docker compose ps
+   docker compose -p asterisk-ai-voice-agent ps
    ```
 
 2. Check health:
@@ -175,7 +175,7 @@ Once Docker services are up and ARI is configured:
    - Watch logs:
 
    ```bash
-   docker compose logs -f ai_engine
+   docker compose -p asterisk-ai-voice-agent logs -f ai_engine
    ```
 
 If the call behaves as expected, you are ready to start developing.

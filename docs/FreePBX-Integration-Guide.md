@@ -417,26 +417,26 @@ The `./install.sh` script starts the correct services automatically based on you
 
 **For OpenAI Realtime or Deepgram** (cloud-only):
 ```bash
-docker compose up -d --build ai_engine
+docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 ```
 
 **For Local Hybrid** (needs local models):
 ```bash
 # Start local_ai_server first
-docker compose up -d local_ai_server
+docker compose -p asterisk-ai-voice-agent up -d local_ai_server
 
 # Wait for health (first start may take 5-10 min to load models)
-docker compose logs -f local_ai_server
+docker compose -p asterisk-ai-voice-agent logs -f local_ai_server
 
 # Once healthy, start ai_engine
-docker compose up -d --build ai_engine
+docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 ```
 
 ### 4.2 Monitor Startup
 
 ```bash
 # Watch ai_engine logs
-docker compose logs -f ai_engine
+docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 # Look for these key messages:
 # ✅ "Successfully connected to ARI"
@@ -535,7 +535,7 @@ curl http://127.0.0.1:15000/metrics | grep ai_agent
 **Solution**:
 ```bash
 # Check ai_engine logs
-docker compose logs ai_engine | tail -50
+docker compose -p asterisk-ai-voice-agent logs ai_engine | tail -50
 
 # Look for:
 # ✅ "Successfully connected to ARI"
@@ -585,7 +585,7 @@ docker compose logs ai_engine | grep -E "STT|transcription|utterance"
 curl http://127.0.0.1:15000/metrics | grep latency
 
 # For Local Hybrid: ensure local-ai-server is healthy
-docker compose logs local_ai_server | tail -20
+docker compose -p asterisk-ai-voice-agent logs local_ai_server | tail -20
 
 # Look for model loading messages
 # Expected: "STT model loaded", "LLM model loaded", "TTS model loaded"
@@ -615,7 +615,7 @@ See the validated transport combinations in `docs/Transport-Mode-Compatibility.m
 **Solution**:
 ```bash
 # Check container status
-docker compose ps
+docker compose -p asterisk-ai-voice-agent ps
 
 # Verify ports are listening
 netstat -tuln | grep -E "8090|18080|15000"
