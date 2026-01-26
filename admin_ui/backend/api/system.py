@@ -3323,6 +3323,8 @@ class UpdateRunRequest(BaseModel):
     include_ui: bool = False
     ref: str = "main"
     checkout: bool = True
+    update_cli_host: bool = True
+    cli_install_path: Optional[str] = None
 
 
 class UpdateRunResponse(BaseModel):
@@ -3361,6 +3363,8 @@ async def updates_run(body: UpdateRunRequest):
             "log_path": log_path,
             "ref": (body.ref or "main").strip(),
             "checkout": bool(body.checkout),
+            "update_cli_host": bool(body.update_cli_host),
+            "cli_install_path": (body.cli_install_path or "").strip() or None,
         }
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
@@ -3383,7 +3387,11 @@ async def updates_run(body: UpdateRunRequest):
         "AAVA_UPDATE_REMOTE": "origin",
         "AAVA_UPDATE_REF": (body.ref or "main").strip(),
         "AAVA_UPDATE_CHECKOUT": "true" if body.checkout else "false",
+        "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if body.update_cli_host else "false",
     }
+    cli_path = (body.cli_install_path or "").strip()
+    if cli_path:
+        env["AAVA_UPDATE_CLI_INSTALL_PATH"] = cli_path
 
     try:
         client.containers.run(
@@ -3445,6 +3453,8 @@ async def updates_rollback(body: UpdateRollbackRequest):
     include_ui = bool(src_job.get("include_ui"))
     pre_update_branch = (src_job.get("pre_update_branch") or "").strip() or None
     backup_dir_rel = (src_job.get("backup_dir_rel") or "").strip() or None
+    update_cli_host = bool(src_job.get("update_cli_host", True))
+    cli_install_path = (src_job.get("cli_install_path") or "").strip() or None
 
     import uuid
     job_id = uuid.uuid4().hex
@@ -3462,6 +3472,8 @@ async def updates_rollback(body: UpdateRollbackRequest):
             "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": None,
             "include_ui": include_ui,
+            "update_cli_host": update_cli_host,
+            "cli_install_path": cli_install_path,
             "exit_code": None,
             "log_path": log_path,
         }
@@ -3490,7 +3502,10 @@ async def updates_rollback(body: UpdateRollbackRequest):
         "AAVA_UPDATE_ROLLBACK_FROM_JOB": from_job_id,
         # Prefer the include_ui setting from the source job as a fallback for older jobs.
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
+        "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if update_cli_host else "false",
     }
+    if cli_install_path:
+        env["AAVA_UPDATE_CLI_INSTALL_PATH"] = cli_install_path
 
     try:
         client.containers.run(

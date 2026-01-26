@@ -68,6 +68,8 @@ const UpdatesPage = () => {
   const [initialized, setInitialized] = useState(false);
 
   const [includeUI, setIncludeUI] = useState(false);
+  const [updateCliHost, setUpdateCliHost] = useState(true);
+  const [cliInstallPath, setCliInstallPath] = useState('');
   const [plan, setPlan] = useState<UpdatePlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -257,6 +259,8 @@ const UpdatesPage = () => {
         '',
         `Target branch: ${selectedBranch}`,
         `Update UI too: ${includeUI ? 'yes' : 'no'}`,
+        `Update agent CLI too: ${updateCliHost ? 'yes' : 'no'}`,
+        updateCliHost ? `Agent CLI install path: ${cliInstallPath.trim() || 'auto'}` : '',
         `Will rebuild: ${rebuild}`,
         `Will restart: ${restart}`,
         `Skipped: ${skipped}`,
@@ -265,13 +269,19 @@ const UpdatesPage = () => {
         'Notes:',
         '- The updater will stash local changes first (may conflict on restore).',
         '- Services may restart during update.',
-        '- Update logs are retained and visible in the UI after completion.',
+        '- Update logs are retained (last 10 runs) and visible in the UI after completion.',
       ].join('\n')
     );
     if (!ok) return;
 
     try {
-      const res = await axios.post('/api/system/updates/run', { include_ui: includeUI, ref: selectedBranch, checkout: true });
+      const res = await axios.post('/api/system/updates/run', {
+        include_ui: includeUI,
+        ref: selectedBranch,
+        checkout: true,
+        update_cli_host: updateCliHost,
+        cli_install_path: cliInstallPath.trim() || null,
+      });
       const id = res.data.job_id;
       setJobId(id);
       localStorage.setItem('aava_update_job_id', id);
@@ -419,7 +429,7 @@ const UpdatesPage = () => {
               </select>
               {!branches.length && initialized && <div className="mt-1 text-xs text-muted-foreground">No branches returned.</div>}
             </div>
-            <div className="flex items-end">
+            <div className="flex flex-col justify-end gap-2">
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -429,8 +439,30 @@ const UpdatesPage = () => {
                 />
                 Update UI too (allow admin_ui rebuild/restart)
               </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={updateCliHost}
+                  onChange={(e) => setUpdateCliHost(e.target.checked)}
+                  className="rounded border-border"
+                />
+                Update agent CLI too (best-effort)
+              </label>
             </div>
           </div>
+
+          {updateCliHost && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Agent CLI install path (optional)</div>
+              <input
+                value={cliInstallPath}
+                onChange={(e) => setCliInstallPath(e.target.value)}
+                placeholder="auto (detect existing or install to /usr/local/bin/agent)"
+                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm font-mono"
+              />
+              <div className="mt-1 text-xs text-muted-foreground">Leave blank for auto-detect + default install.</div>
+            </div>
+          )}
 
           {planError && <div className="text-sm text-destructive">{planError}</div>}
 
@@ -534,7 +566,10 @@ const UpdatesPage = () => {
           <div className="border border-border rounded-lg bg-card/30 p-3">
             <div className="text-xs text-muted-foreground mb-2">Live output (tail)</div>
             <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-[340px] overflow-auto">
-              {logTail || (job && String(job.status || '').toLowerCase() === 'success' ? 'No log available for this job.' : 'No output yet.')}
+              {logTail ||
+                (job && ['success', 'failed'].includes(String(job.status || '').toLowerCase())
+                  ? 'No log available for this job.'
+                  : 'No output yet.')}
             </pre>
           </div>
         </div>

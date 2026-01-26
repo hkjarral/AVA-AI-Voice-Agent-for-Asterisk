@@ -9,6 +9,9 @@ REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
 REF="${AAVA_UPDATE_REF:-main}"
 CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
 ROLLBACK_FROM_JOB="${AAVA_UPDATE_ROLLBACK_FROM_JOB:-}"
+UPDATE_CLI_HOST="${AAVA_UPDATE_UPDATE_CLI_HOST:-true}" # true|false
+CLI_INSTALL_PATH="${AAVA_UPDATE_CLI_INSTALL_PATH:-}" # optional absolute host path
+KEEP_JOB_LOGS="${AAVA_UPDATE_KEEP_JOB_LOGS:-10}" # keep last N job logs
 
 UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
 JOBS_DIR="${UPDATES_DIR}/jobs"
@@ -22,6 +25,26 @@ now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 ensure_dirs() {
   mkdir -p "${JOBS_DIR}" "${BIN_DIR}"
+}
+
+prune_job_logs() {
+  local keep="${KEEP_JOB_LOGS}"
+  if ! [[ "${keep}" =~ ^[0-9]+$ ]]; then
+    keep=10
+  fi
+  if [ "${keep}" -lt 1 ]; then
+    keep=1
+  fi
+
+  # Only prune log files; keep job state JSON and backups for operator recovery.
+  mapfile -t logs < <(ls -1t "${JOBS_DIR}"/*.log 2>/dev/null || true)
+  if [ "${#logs[@]}" -le "${keep}" ]; then
+    return 0
+  fi
+
+  for ((i=keep; i<${#logs[@]}; i++)); do
+    rm -f "${logs[$i]}" >/dev/null 2>&1 || true
+  done
 }
 
 install_agent_if_needed() {
@@ -76,19 +99,90 @@ sync_agent_cli() {
     chmod +x "${AGENT_BIN}" 2>/dev/null || true
   fi
 
-  # Best-effort: update a globally installed agent binary on the host if it exists.
-  # This helps operators who still run `agent` over SSH.
-  echo "==> Updating agent CLI (host /usr/local/bin) (best-effort)..." >&2
+  if [ "${UPDATE_CLI_HOST}" != "true" ]; then
+    echo "==> Skipping agent CLI update on host (disabled)..." >&2
+    return 0
+  fi
+
+  host_agent_is_aava() {
+    local host_path="$1"
+    local host_dir
+    local host_base
+    host_dir="$(dirname "${host_path}")"
+    host_base="$(basename "${host_path}")"
+
+    docker run --rm \
+      -v "${host_dir}:/hostdir:ro" \
+      debian:bookworm-slim \
+      bash -lc "/hostdir/${host_base} version 2>/dev/null | head -n 1 | grep -q 'Asterisk AI Voice Agent CLI'" \
+      >/dev/null 2>&1
+  }
+
+  host_install_agent_to() {
+    local host_path="$1"
+    local host_dir
+    local host_base
+    host_dir="$(dirname "${host_path}")"
+    host_base="$(basename "${host_path}")"
+
+    docker run --rm \
+      -v "${PROJECT_ROOT}:/src:ro" \
+      -v "${host_dir}:/hostdir" \
+      debian:bookworm-slim \
+      bash -lc "install -m 0755 /src/.agent/bin/agent /hostdir/${host_base}"
+  }
+
+  # Prefer updating an existing, verified install path. If none is detected, install to /usr/local/bin/agent.
+  local requested_path
+  requested_path="$(echo "${CLI_INSTALL_PATH}" | xargs || true)"
+
+  local target_path=""
+  local conflicts=()
+
+  if [ -n "${requested_path}" ]; then
+    if [[ "${requested_path}" != /* ]]; then
+      echo "WARN: invalid AAVA_UPDATE_CLI_INSTALL_PATH (must be absolute): ${requested_path}" >&2
+      echo "WARN: skipping host agent CLI update (continuing)" >&2
+      return 0
+    fi
+    target_path="${requested_path}"
+  else
+    for p in /usr/local/bin/agent /usr/bin/agent /bin/agent; do
+      if host_agent_is_aava "${p}"; then
+        target_path="${p}"
+        break
+      fi
+      # If the file exists but doesn't look like our CLI, record it so we can avoid overwriting silently.
+      set +e
+      docker run --rm -v "$(dirname "${p}"):/hostdir:ro" debian:bookworm-slim bash -lc "test -f /hostdir/$(basename "${p}")" >/dev/null 2>&1
+      exists_rc=$?
+      set -e
+      if [ "${exists_rc}" -eq 0 ]; then
+        conflicts+=("${p}")
+      fi
+    done
+  fi
+
+  if [ -z "${target_path}" ]; then
+    if [ "${#conflicts[@]}" -gt 0 ]; then
+      echo "WARN: found an existing 'agent' binary on host that is not AAVA CLI: ${conflicts[*]}" >&2
+      echo "HINT: set a custom install path (Update agent CLI → custom path) to avoid overwriting unknown binaries." >&2
+      echo "==> Skipping host agent CLI update (continuing)" >&2
+      return 0
+    fi
+    target_path="/usr/local/bin/agent"
+  fi
+
+  echo "==> Updating agent CLI on host: ${target_path} (best-effort)..." >&2
   set +e
-  docker run --rm \
-    -v "${PROJECT_ROOT}:/src" \
-    -v /usr/local/bin:/host/usr/local/bin \
-    debian:bookworm-slim \
-    bash -lc 'if [ -f /host/usr/local/bin/agent ]; then install -m 0755 /src/.agent/bin/agent /host/usr/local/bin/agent; else echo "SKIP: /usr/local/bin/agent not found on host"; fi'
+  host_install_agent_to "${target_path}"
   _rc2=$?
   set -e
   if [ "${_rc2}" -ne 0 ]; then
-    echo "WARN: failed to update /usr/local/bin/agent on host (continuing)" >&2
+    echo "WARN: failed to install/update agent CLI at ${target_path} on host (continuing)" >&2
+    if [ -z "${requested_path}" ]; then
+      echo "HINT: set a custom install path (Update agent CLI → custom path) if your host doesn't use /usr/local/bin/agent." >&2
+    fi
   fi
 }
 
@@ -218,6 +312,7 @@ run_update() {
     write_job_state "failed" "${code}"
   fi
 
+  prune_job_logs || true
   exit "${code}"
 }
 
@@ -392,6 +487,7 @@ run_rollback() {
     write_job_state "failed" "${code}"
   fi
 
+  prune_job_logs || true
   exit "${code}"
 }
 
