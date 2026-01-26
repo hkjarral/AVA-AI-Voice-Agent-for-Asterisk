@@ -84,12 +84,12 @@ Note: The CLI binary and the Python engine may have different version strings de
 
 ### Available Tools
 
-- **`agent setup`** - Interactive setup wizard (v5.2.3)
-- **`agent check`** - Standard diagnostics report (v5.2.3)
-- **`agent rca`** - Post-call root cause analysis (v5.2.3)
+- **`agent setup`** - Interactive setup wizard (v5.2.4)
+- **`agent check`** - Standard diagnostics report (v5.2.4)
+- **`agent rca`** - Post-call root cause analysis (v5.2.4)
 - **`agent update`** - Pull latest code + rebuild/restart as needed (v5.1+)
 
-Legacy aliases (v5.2.3; hidden from `--help`):
+Legacy aliases (v5.2.4; hidden from `--help`):
 - `agent init` → `agent setup`
 - `agent doctor` → `agent check`
 - `agent troubleshoot` → `agent rca`
@@ -643,7 +643,7 @@ agent demo -v
 # Run setup wizard
 agent setup
 
-# Flags below are planned; they may exist but are not implemented in v5.2.3:
+# Flags below are planned; they may exist but are not implemented in v5.2.4:
 # agent setup --non-interactive
 # agent setup --template <name>
 ```
@@ -1514,4 +1514,4 @@ See [docs/Transport-Mode-Compatibility.md](Transport-Mode-Compatibility.md) for 
 ---
 
 **Last Updated:** January 26, 2026  
-**Version:** 5.2.3
+**Version:** 5.2.4
