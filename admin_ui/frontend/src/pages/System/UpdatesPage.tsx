@@ -301,9 +301,12 @@ const UpdatesPage = () => {
     if (!jobId) return;
     let cancelled = false;
     let interval: any;
+    let notFoundCount = 0;
+    const MAX_NOT_FOUND = 10; // ~20s at 2s intervals
     const tick = async () => {
       try {
         const st = await fetchJob(jobId);
+        notFoundCount = 0;
         if (!cancelled && (st === 'success' || st === 'failed')) {
           clearInterval(interval);
         }
@@ -312,7 +315,17 @@ const UpdatesPage = () => {
         // Immediately after starting a job, there can be a brief delay before the updater container
         // writes its state/log files. Treat 404 as transient to avoid spurious UI errors.
         if (!cancelled) {
-          if (status === 404) return;
+          if (status === 404) {
+            notFoundCount += 1;
+            if (notFoundCount < MAX_NOT_FOUND) return;
+            clearInterval(interval);
+            setRunning(false);
+            setJob(null);
+            setJobId(null);
+            localStorage.removeItem('aava_update_job_id');
+            setRunError('Update job not found (may be stale or pruned).');
+            return;
+          }
           setRunError(err.response?.data?.detail || err.message || 'Failed to read update job');
         }
       }
