@@ -965,6 +965,12 @@ func gitFetch(remote string, ref string) error {
 		return errors.New("git fetch: remote/ref is empty")
 	}
 
+	// Defense-in-depth: avoid git option injection via remote names (git interprets args starting
+	// with '-' as options even when passed via exec.Command).
+	if strings.HasPrefix(remote, "-") || strings.ContainsAny(remote, " \t\r\n") {
+		return fmt.Errorf("invalid git remote %q", remote)
+	}
+
 	// Defense-in-depth: avoid git option injection via ref names (git interprets args starting
 	// with '-' as options even when passed via exec.Command).
 	if strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, " \t\r\n") {
