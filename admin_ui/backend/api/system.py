@@ -512,7 +512,7 @@ async def _start_via_compose(container_id: str, service_map: dict):
             return {"status": "success", "method": "docker-compose", "output": (out or '').strip() or "Container started"}
         raise HTTPException(status_code=500, detail=f"Failed to start via compose: {(out or '').strip()[:800]}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 async def _recreate_via_compose(service_name: str, health_check: bool = True):
@@ -625,7 +625,7 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
     except Exception as e:
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Failed to recreate service")
+        raise HTTPException(status_code=500, detail="Failed to recreate service") from e
 
 
 async def _poll_health(url: str, timeout_seconds: int = 30, service_name: str = "service") -> str:
@@ -2740,6 +2740,7 @@ _UPDATER_IMAGE_REPO = "asterisk-ai-voice-agent-updater"
 _UPDATER_IMAGE_LOCK = None
 _UPDATES_STATUS_CACHE: dict = {"checked_at": 0.0, "data": None}
 _UPDATES_STATUS_CACHE_TTL_SEC = 600  # 10 minutes
+_UPDATES_STATUS_CACHE_LOCK = None
 
 
 def _updater_lock():
@@ -2748,6 +2749,14 @@ def _updater_lock():
         import threading
         _UPDATER_IMAGE_LOCK = threading.Lock()
     return _UPDATER_IMAGE_LOCK
+
+
+def _updates_status_cache_lock():
+    global _UPDATES_STATUS_CACHE_LOCK
+    if _UPDATES_STATUS_CACHE_LOCK is None:
+        import threading
+        _UPDATES_STATUS_CACHE_LOCK = threading.Lock()
+    return _UPDATES_STATUS_CACHE_LOCK
 
 
 def _project_host_root_from_admin_ui_container() -> str:
@@ -3147,12 +3156,13 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
         import time
 
         now = time.time()
-        cached = _UPDATES_STATUS_CACHE.get("data")
-        checked_at = float(_UPDATES_STATUS_CACHE.get("checked_at") or 0.0)
+        with _updates_status_cache_lock():
+            cached = _UPDATES_STATUS_CACHE.get("data")
+            checked_at = float(_UPDATES_STATUS_CACHE.get("checked_at") or 0.0)
         if not force and cached and (now - checked_at) < _UPDATES_STATUS_CACHE_TTL_SEC:
             return UpdateStatusResponse(**cached)
     except Exception:
-        pass
+        logger.debug("Failed to read updates status cache", exc_info=True)
 
     host_root = _project_host_root_from_admin_ui_container()
 
@@ -3209,10 +3219,11 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
         try:
             import time
 
-            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
-            _UPDATES_STATUS_CACHE["data"] = payload
+            with _updates_status_cache_lock():
+                _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+                _UPDATES_STATUS_CACHE["data"] = payload
         except Exception:
-            pass
+            logger.debug("Failed to write updates status cache", exc_info=True)
         return UpdateStatusResponse(**payload)
 
     # Remote info (best-effort; offline returns unknown)
@@ -3236,10 +3247,11 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
         try:
             import time
 
-            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
-            _UPDATES_STATUS_CACHE["data"] = payload
+            with _updates_status_cache_lock():
+                _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+                _UPDATES_STATUS_CACHE["data"] = payload
         except Exception:
-            pass
+            logger.debug("Failed to write updates status cache", exc_info=True)
         return UpdateStatusResponse(**payload)
 
     latest = _select_latest_v_tag(out2)
@@ -3253,10 +3265,11 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
         try:
             import time
 
-            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
-            _UPDATES_STATUS_CACHE["data"] = payload
+            with _updates_status_cache_lock():
+                _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+                _UPDATES_STATUS_CACHE["data"] = payload
         except Exception:
-            pass
+            logger.debug("Failed to write updates status cache", exc_info=True)
         return UpdateStatusResponse(**payload)
 
     # Determine update availability using commit ancestry (handles "local ahead" cleanly).
@@ -3311,10 +3324,11 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
     try:
         import time
 
-        _UPDATES_STATUS_CACHE["checked_at"] = time.time()
-        _UPDATES_STATUS_CACHE["data"] = payload
+        with _updates_status_cache_lock():
+            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+            _UPDATES_STATUS_CACHE["data"] = payload
     except Exception:
-        pass
+        logger.debug("Failed to write updates status cache", exc_info=True)
     return UpdateStatusResponse(**payload)
 
 
