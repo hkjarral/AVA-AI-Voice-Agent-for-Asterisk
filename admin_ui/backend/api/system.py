@@ -15,6 +15,19 @@ from services.fs import upsert_env_vars
 logger = logging.getLogger(__name__)
 
 
+def _validate_git_ref(ref: str) -> str:
+    """
+    Basic defense-in-depth: reject values that could be interpreted by git as options.
+
+    We intentionally keep this permissive (allow typical branch names with `/._-`) and
+    rely on `git` to enforce full refname rules.
+    """
+    r = (ref or "").strip()
+    if not r or r.startswith("-") or any(c.isspace() for c in r):
+        raise HTTPException(status_code=400, detail="Invalid ref")
+    return r
+
+
 def _extract_mounts(container) -> List[dict]:
     """
     Normalize Docker mount info into a stable, UI-friendly shape.
@@ -3300,12 +3313,13 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
     """
     host_root = _project_host_root_from_admin_ui_container()
 
+    ref = _validate_git_ref(ref)
     env = {
         "PROJECT_ROOT": host_root,
         "AAVA_UPDATE_MODE": "plan",
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
         "AAVA_UPDATE_REMOTE": "origin",
-        "AAVA_UPDATE_REF": (ref or "main").strip(),
+        "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if checkout else "false",
     }
     # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
@@ -3341,7 +3355,6 @@ async def updates_run(body: UpdateRunRequest):
     tag = _updater_image_tag_for_sha(sha)
     _ensure_updater_image_for_sha(host_root, tag)
 
-    import uuid
     job_id = uuid.uuid4().hex
 
     # Create an initial job marker immediately so the UI doesn't hit a race where the
@@ -3381,13 +3394,14 @@ async def updates_run(body: UpdateRunRequest):
         host_root: {"bind": host_root, "mode": "rw"},
         host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
+    ref = _validate_git_ref(body.ref or "main")
     env = {
         "PROJECT_ROOT": host_root,
         "AAVA_UPDATE_MODE": "run",
         "AAVA_UPDATE_JOB_ID": job_id,
         "AAVA_UPDATE_INCLUDE_UI": "true" if body.include_ui else "false",
         "AAVA_UPDATE_REMOTE": "origin",
-        "AAVA_UPDATE_REF": (body.ref or "main").strip(),
+        "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if body.checkout else "false",
         "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if body.update_cli_host else "false",
     }
