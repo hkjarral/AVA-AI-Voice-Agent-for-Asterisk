@@ -1,12 +1,12 @@
-# Asterisk AI Voice Agent - Installation Guide (v5.2.1)
+# Asterisk AI Voice Agent - Installation Guide (v5.2.2)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.2.1 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.2.2 on your server.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade from v4.6.0 → v5.2.1 (Existing Checkout)
+## Upgrade from v4.6.0 → v5.2.2 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -18,11 +18,11 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 
 ### 1) Pull the new release
 
-Once `v5.2.1` is published:
+Once `v5.2.2` is published:
 
 ```bash
 git fetch --tags
-git checkout v5.2.1
+git checkout v5.2.2
 ```
 
 If you track branches instead of tags:
@@ -41,6 +41,33 @@ agent update
 From **v5.2.1+**, most operators can also update directly from the Admin UI:
 
 - **Admin UI → System → Updates** (preview changes, then proceed)
+
+#### If you’re on an older agent CLI (recommended troubleshooting)
+
+If `agent update` says “Already up to date” but GitHub has newer commits/tags, your local `origin/main` may be stale.
+This can happen on older installations and older agent CLI versions.
+
+Run a manual fetch/prune and retry:
+
+```bash
+REPO=/root/Asterisk-AI-Voice-Agent
+cd "$REPO"
+
+# If you see "detected dubious ownership", run this once:
+git config --global --add safe.directory "$REPO"
+
+git fetch origin --prune --tags
+agent update
+```
+
+If `agent` itself is very old (or missing), reinstall the CLI and retry:
+
+```bash
+cd /root/Asterisk-AI-Voice-Agent
+INSTALL_DIR=/usr/local/bin bash scripts/install-cli.sh
+agent version
+agent update
+```
 
 ### 2) Re-run preflight (recommended)
 
@@ -192,7 +219,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.2.1.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.2.2.
 
 ---
 
@@ -489,7 +516,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 
 ```asterisk
 [from-ai-agent]
-exten => s,1,NoOp(Asterisk AI Voice Agent v5.2.1)
+exten => s,1,NoOp(Asterisk AI Voice Agent)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
