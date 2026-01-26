@@ -1,12 +1,12 @@
-# Asterisk AI Voice Agent - Installation Guide (v5.2.2)
+# Asterisk AI Voice Agent - Installation Guide (v5.2.3)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.2.2 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v5.2.3 on your server.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade from v4.6.0 → v5.2.2 (Existing Checkout)
+## Upgrade from v4.6.0 → v5.2.3 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -18,11 +18,11 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 
 ### 1) Pull the new release
 
-Once `v5.2.2` is published:
+Once `v5.2.3` is published:
 
 ```bash
 git fetch --tags
-git checkout v5.2.2
+git checkout v5.2.3
 ```
 
 If you track branches instead of tags:
@@ -67,6 +67,31 @@ cd /root/Asterisk-AI-Voice-Agent
 INSTALL_DIR=/usr/local/bin bash scripts/install-cli.sh
 agent version
 agent update
+```
+
+#### If the update fails with “No such image: ...local-ai-server:latest”
+
+Some installations never started or built the optional `local_ai_server` container (for example, if you only use remote providers).
+Older `agent update` versions could still try to recreate `local_ai_server` when Compose files change.
+
+To recover without enabling `local_ai_server`, bring up only the services you actually run:
+
+```bash
+cd /root/Asterisk-AI-Voice-Agent
+
+# If the update planned to rebuild admin_ui, run this once (safe even if not needed):
+docker compose build admin_ui
+
+docker compose up -d --remove-orphans --no-build ai_engine admin_ui
+agent check
+```
+
+If you *do* want `local_ai_server`, build it and then re-run compose:
+
+```bash
+cd /root/Asterisk-AI-Voice-Agent
+docker compose build local_ai_server
+docker compose up -d --remove-orphans --no-build
 ```
 
 ### 2) Re-run preflight (recommended)
@@ -219,7 +244,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.2.2.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v5.2.3.
 
 ---
 

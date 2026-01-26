@@ -1141,6 +1141,25 @@ func applyDockerActions(ctx *updateContext) error {
 		return fmt.Errorf("docker compose is required but not available: %w", err)
 	}
 
+	// When compose files change, avoid doing an unscoped `docker compose up` because it can
+	// implicitly (re)create services the operator never started (e.g., local_ai_server) and
+	// fail if their images aren't present. Instead, scope to services that are already running
+	// plus any services we explicitly intend to rebuild/restart.
+	runningServices := map[string]bool{}
+	out, err := runCmd("docker", "compose", "ps", "--services", "--status", "running")
+	if err != nil {
+		// Fallback for older compose versions (or environments where --status isn't supported).
+		out, err = runCmd("docker", "compose", "ps", "--services")
+	}
+	if err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			svc := strings.TrimSpace(line)
+			if svc != "" {
+				runningServices[svc] = true
+			}
+		}
+	}
+
 	if ctx.composeChanged {
 		// Avoid implicit builds when Compose files change (some deployments use pull_policy: build).
 		// The rebuild/restart logic below will handle builds explicitly when needed.
@@ -1148,28 +1167,50 @@ func applyDockerActions(ctx *updateContext) error {
 		if updateForceRecreate {
 			args = append(args, "--force-recreate")
 		}
-		// If admin_ui updates are excluded, scope the compose up to the non-UI services to
-		// avoid unintended recreate/restart of admin_ui.
-		if !updateIncludeUI {
-			targets := map[string]bool{
-				"ai_engine":       true,
-				"local_ai_server": true,
-			}
-			for svc := range ctx.servicesToRebuild {
-				targets[svc] = true
-			}
-			for svc := range ctx.servicesToRestart {
-				targets[svc] = true
-			}
-			args = append(args, sortedKeys(targets)...)
+
+		targets := map[string]bool{}
+		for svc := range runningServices {
+			targets[svc] = true
 		}
-		if _, err := runCmd("docker", args...); err != nil {
-			return fmt.Errorf("docker compose up (remove-orphans) failed: %w", err)
+		for svc := range ctx.servicesToRebuild {
+			targets[svc] = true
+		}
+		for svc := range ctx.servicesToRestart {
+			targets[svc] = true
+		}
+
+		// If admin_ui updates are excluded, ensure we never recreate/restart it as part of the
+		// compose-changed `up` step.
+		if !updateIncludeUI {
+			delete(targets, "admin_ui")
+		}
+
+		// Only run compose-up if we have explicit targets; otherwise, don't implicitly start services.
+		if len(targets) > 0 {
+			args = append(args, sortedKeys(targets)...)
+			if _, err := runCmd("docker", args...); err != nil {
+				return fmt.Errorf("docker compose up (remove-orphans) failed: %w", err)
+			}
 		}
 	}
 
 	rebuildServices := sortedKeys(ctx.servicesToRebuild)
 	restartServices := sortedKeys(ctx.servicesToRestart)
+
+	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
+	if !updateIncludeUI {
+		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
+		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
+		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
+	}
+
+	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
+	// attempt (restart would fail anyway). We'll still allow the rebuild path to start it.
+	if len(restartServices) > 0 {
+		restartServices = filterSlice(restartServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
 
 	if len(rebuildServices) > 0 {
 		args := []string{"compose", "up", "-d", "--build"}
@@ -1192,6 +1233,19 @@ func applyDockerActions(ctx *updateContext) error {
 	}
 
 	return nil
+}
+
+func filterSlice(in []string, keep func(string) bool) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if keep(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func runPostUpdateCheck() (report *check.Report, status string, warnCount int, failCount int, err error) {

@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [5.2.3] - 2026-01-26
+
+### Fixed
+
+- Agent CLI: `agent update` no longer runs an unscoped `docker compose up` when Compose files change; it targets only running/impacted services to avoid unintentionally creating optional services (e.g., `local_ai_server`) and failing on systems that never built those images.
+
 ## [5.2.2] - 2026-01-26
 
 ### Fixed
