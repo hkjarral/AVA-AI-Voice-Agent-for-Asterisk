@@ -324,6 +324,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		return relErr2
 	}
 	codeChanged := strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA)
+	// Git treats a commit as its own ancestor, so when SHAs match `gitIsAncestor(old,new)` is true.
+	// For plan/reporting, treat identical SHAs as "no update available".
+	updateAvailable = updateAvailable && codeChanged
 	if codeChanged {
 		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
 		if err != nil {

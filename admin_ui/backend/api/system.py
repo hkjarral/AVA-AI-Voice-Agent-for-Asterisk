@@ -13,6 +13,21 @@ from services.fs import upsert_env_vars
 
 logger = logging.getLogger(__name__)
 
+
+_UPDATE_JOB_ID_RE = re.compile(r"^[a-fA-F0-9]{32}$")
+
+
+def _validate_update_job_id(value: str, *, field: str = "job_id") -> str:
+    """
+    Update job IDs are generated as `uuid.uuid4().hex` (32 hex chars).
+
+    Validate user-provided IDs before using them in path construction to prevent path traversal.
+    """
+    v = (value or "").strip()
+    if not v or not _UPDATE_JOB_ID_RE.fullmatch(v):
+        raise HTTPException(status_code=400, detail=f"Invalid {field} format")
+    return v.lower()
+
 def _extract_mounts(container) -> List[dict]:
     """
     Normalize Docker mount info into a stable, UI-friendly shape.
@@ -3430,9 +3445,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     tag = _updater_image_tag_for_sha(sha)
     _ensure_updater_image_for_sha(host_root, tag)
 
-    from_job_id = (body.from_job_id or "").strip()
-    if not from_job_id:
-        raise HTTPException(status_code=400, detail="from_job_id is required")
+    from_job_id = _validate_update_job_id(body.from_job_id, field="from_job_id")
 
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
     jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
@@ -3622,6 +3635,7 @@ async def updates_history(limit: int = 10):
 
 @router.get("/updates/jobs/{job_id}", response_model=UpdateJobResponse)
 async def updates_job(job_id: str):
+    job_id = _validate_update_job_id(job_id, field="job_id")
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
     jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
     state_path = os.path.join(jobs_dir, f"{job_id}.json")

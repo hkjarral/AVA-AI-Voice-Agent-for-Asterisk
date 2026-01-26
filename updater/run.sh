@@ -19,7 +19,6 @@ BIN_DIR="${PROJECT_ROOT}/.agent/bin"
 AGENT_BIN="${BIN_DIR}/agent"
 BUILTIN_AGENT="/usr/local/bin/agent"
 BACKUP_DIR_REL=".agent/update-backups/${JOB_ID}"
-BACKUP_DIR="${PROJECT_ROOT}/${BACKUP_DIR_REL}"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
@@ -424,9 +423,12 @@ run_rollback() {
       cp -f "${PROJECT_ROOT}/${backup_rel}/config/users.json" "${PROJECT_ROOT}/config/users.json"
     fi
     if [ -d "${PROJECT_ROOT}/${backup_rel}/config/contexts" ]; then
-      rm -rf "${PROJECT_ROOT}/config/contexts"
       mkdir -p "${PROJECT_ROOT}/config"
-      cp -r "${PROJECT_ROOT}/${backup_rel}/config/contexts" "${PROJECT_ROOT}/config/contexts"
+      tmp_contexts="${PROJECT_ROOT}/config/contexts.rollback-tmp"
+      rm -rf "${tmp_contexts}"
+      cp -r "${PROJECT_ROOT}/${backup_rel}/config/contexts" "${tmp_contexts}"
+      rm -rf "${PROJECT_ROOT}/config/contexts"
+      mv "${tmp_contexts}" "${PROJECT_ROOT}/config/contexts"
     fi
 
     mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
