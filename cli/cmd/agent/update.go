@@ -959,9 +959,30 @@ func gitStashPop(ctx *updateContext) error {
 }
 
 func gitFetch(remote string, ref string) error {
-	_, err := runGitCmd("fetch", remote, ref)
+	remote = strings.TrimSpace(remote)
+	ref = strings.TrimSpace(ref)
+	if remote == "" || ref == "" {
+		return errors.New("git fetch: remote/ref is empty")
+	}
+
+	// Defense-in-depth: avoid git option injection via ref names (git interprets args starting
+	// with '-' as options even when passed via exec.Command).
+	if strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, " \t\r\n") {
+		return fmt.Errorf("invalid git ref %q", ref)
+	}
+
+	// Normalize common ref inputs.
+	ref = strings.TrimPrefix(ref, "refs/heads/")
+	ref = strings.TrimPrefix(ref, remote+"/")
+
+	// Ensure the remote-tracking ref (refs/remotes/<remote>/<ref>) is updated.
+	// `git fetch <remote> <ref>` updates FETCH_HEAD but does not always advance origin/<ref>
+	// depending on the remote's fetch refspec. Using an explicit refspec prevents false "up to date"
+	// decisions when we later read origin/<ref>.
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", ref, remote, ref)
+	_, err := runGitCmd("fetch", "--prune", remote, refspec)
 	if err != nil {
-		return fmt.Errorf("git fetch %s %s failed: %w", remote, ref, err)
+		return fmt.Errorf("git fetch --prune %s %s failed: %w", remote, ref, err)
 	}
 	return nil
 }
