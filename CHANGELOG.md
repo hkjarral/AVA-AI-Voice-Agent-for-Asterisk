@@ -19,12 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin UI: **System → Updates** page with a GitHub-style flow: **Check updates → choose branch → preview file/container impact → proceed**.
 - Admin UI: branch dropdown supports updating to **any remote branch** (useful for testing feature/fix branches via UI).
 - Admin UI: **Recent Runs** table (last 10) with job summaries (success/failure, rebuild/restart actions, file count) and recovery helpers.
-- Admin UI: one-click **Rollback** for failed update jobs (restores pre-update code + operator config from the backup).
+- Admin UI: one-click **Rollback** for failed update jobs (restores pre-update code + operator config from the backup; rebuilds/restarts only impacted services).
+- Admin UI: keep full update logs for both success and failure runs.
 - Agent CLI: `agent update` enhancements for UI-driven updates:
   - `--plan` / `--plan-json` to preview actions without applying
   - `--checkout` to allow switching branches when updating to a non-current ref
   - `--include-ui` to include/exclude `admin_ui` rebuild/restart
   - `--backup-id` for stable backups (used by UI jobs)
+  - UI-driven updates also refresh the project-local CLI binary at `./.agent/bin/agent`
 
 ### Changed
 
@@ -35,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Updates: docker compose operations from inside containers now resolve bind mounts correctly by mounting the repo at the **same absolute host path**.
+- Updates: respect non-default Docker socket mounts (e.g., `DOCKER_SOCK`) when starting updater jobs.
 - Updates: avoid transient “Update job not found” UI errors immediately after starting a job.
 
 ## [5.1.7] - 2026-01-24

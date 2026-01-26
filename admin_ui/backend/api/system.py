@@ -3513,6 +3513,43 @@ class UpdateJobResponse(BaseModel):
     log_tail: Optional[str] = None
 
 
+def _tail_text_file(path: str, max_lines: int = 250, max_bytes: int = 512 * 1024) -> str:
+    """
+    Return the last `max_lines` lines of a text file without reading the entire file into memory.
+    """
+    if max_lines < 1:
+        max_lines = 1
+    if max_bytes < 4 * 1024:
+        max_bytes = 4 * 1024
+
+    try:
+        file_size = os.path.getsize(path)
+        if file_size <= 0:
+            return ""
+
+        with open(path, "rb") as f:
+            chunk_size = 32 * 1024
+            pos = file_size
+            remaining = min(file_size, max_bytes)
+            data = b""
+
+            while remaining > 0:
+                read_size = min(chunk_size, remaining)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                data = chunk + data
+                if data.count(b"\n") >= max_lines + 1:
+                    break
+                remaining -= read_size
+
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        return "\n".join(lines[-max_lines:])
+    except Exception:
+        return ""
+
+
 class UpdateHistoryItem(BaseModel):
     job: dict
 
@@ -3592,11 +3629,6 @@ async def updates_job(job_id: str):
 
     tail = None
     if os.path.exists(log_path):
-        try:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                data = f.read().splitlines()
-            tail = "\n".join(data[-250:])
-        except Exception:
-            tail = None
+        tail = _tail_text_file(log_path, max_lines=250)
 
     return UpdateJobResponse(job=job, log_tail=tail)

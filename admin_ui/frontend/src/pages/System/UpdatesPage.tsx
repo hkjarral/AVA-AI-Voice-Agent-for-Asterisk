@@ -222,12 +222,13 @@ const UpdatesPage = () => {
     setJob(res.data.job);
     setLogTail(res.data.log_tail || '');
     const st = (res.data.job?.status || '').toLowerCase();
-    setRunning(st === 'running');
+    setRunning(!(st === 'success' || st === 'failed'));
     setRunError(null);
 
     if (st === 'success' || st === 'failed') {
       fetchHistory();
     }
+    return st;
   };
 
   const runUpdate = async () => {
@@ -264,7 +265,7 @@ const UpdatesPage = () => {
         'Notes:',
         '- The updater will stash local changes first (may conflict on restore).',
         '- Services may restart during update.',
-        '- Successful update logs are auto-pruned; failed update logs are retained.',
+        '- Update logs are retained and visible in the UI after completion.',
       ].join('\n')
     );
     if (!ok) return;
@@ -289,9 +290,13 @@ const UpdatesPage = () => {
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
+    let interval: any;
     const tick = async () => {
       try {
-        await fetchJob(jobId);
+        const st = await fetchJob(jobId);
+        if (!cancelled && (st === 'success' || st === 'failed')) {
+          clearInterval(interval);
+        }
       } catch (err: any) {
         const status = err?.response?.status;
         // Immediately after starting a job, there can be a brief delay before the updater container
@@ -303,7 +308,7 @@ const UpdatesPage = () => {
       }
     };
     tick();
-    const interval = setInterval(tick, 2000);
+    interval = setInterval(tick, 2000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -529,7 +534,7 @@ const UpdatesPage = () => {
           <div className="border border-border rounded-lg bg-card/30 p-3">
             <div className="text-xs text-muted-foreground mb-2">Live output (tail)</div>
             <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-[340px] overflow-auto">
-              {logTail || (job && job.status === 'success' ? 'Logs pruned after successful update.' : 'No output yet.')}
+              {logTail || (job && String(job.status || '').toLowerCase() === 'success' ? 'No log available for this job.' : 'No output yet.')}
             </pre>
           </div>
         </div>

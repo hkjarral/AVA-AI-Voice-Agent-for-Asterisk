@@ -43,6 +43,50 @@ install_agent_if_needed() {
   INSTALL_DIR="${BIN_DIR}" bash "${PROJECT_ROOT}/scripts/install-cli.sh" >&2
 }
 
+sync_agent_cli() {
+  # Goal: ensure a project-local CLI exists at `./.agent/bin/agent` after UI-driven updates
+  # so operators (and future UI jobs) can rely on a recent binary without SSHing to reinstall.
+  mkdir -p "${BIN_DIR}"
+
+  # Prefer building from the updated repo using Docker + golang image (no host Go required).
+  # Best-effort: if this fails, fall back to copying the bundled agent binary from this image.
+  echo "==> Updating agent CLI (project-local)..." >&2
+
+  set +e
+  docker run --rm \
+    -v "${PROJECT_ROOT}:/src" \
+    -w /src/cli \
+    golang:1.22-bookworm \
+    bash -lc "go mod download && CGO_ENABLED=0 go build -o /src/.agent/bin/agent ./cmd/agent"
+  rc=$?
+  set -e
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "WARN: failed to build agent CLI from updated source; falling back to bundled agent binary" >&2
+    if [ -x "${BUILTIN_AGENT}" ]; then
+      cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
+      chmod +x "${AGENT_BIN}" || true
+    fi
+  else
+    chmod +x "${AGENT_BIN}" 2>/dev/null || true
+  fi
+
+  # Best-effort: update a globally installed agent binary on the host if it exists.
+  # This helps operators who still run `agent` over SSH.
+  echo "==> Updating agent CLI (host /usr/local/bin) (best-effort)..." >&2
+  set +e
+  docker run --rm \
+    -v "${PROJECT_ROOT}:/src" \
+    -v /usr/local/bin:/host/usr/local/bin \
+    debian:bookworm-slim \
+    bash -lc 'if [ -f /host/usr/local/bin/agent ]; then install -m 0755 /src/.agent/bin/agent /host/usr/local/bin/agent; else echo "SKIP: /usr/local/bin/agent not found on host"; fi'
+  _rc2=$?
+  set -e
+  if [ "${_rc2}" -ne 0 ]; then
+    echo "WARN: failed to update /usr/local/bin/agent on host (continuing)" >&2
+  fi
+}
+
 write_job_state() {
   local status="$1" # running|success|failed
   local exit_code="${2:-}"
@@ -162,9 +206,9 @@ run_update() {
   export JOB_FINISHED_AT
 
   if [ "${code}" -eq 0 ]; then
+    # Keep logs on success so operators can review full output after the fact.
+    sync_agent_cli || true
     write_job_state "success" "${code}"
-    # Prune logs on success (keep only a small job marker).
-    rm -f "${JOB_LOG_PATH}"
   else
     write_job_state "failed" "${code}"
   fi
@@ -210,15 +254,19 @@ run_rollback() {
     include_ui_effective="${INCLUDE_UI}"
   fi
 
-  # Add a minimal "plan" snapshot so the UI history table can summarize container actions.
-  plan_patch="$(jq -n --arg include_ui "${include_ui_effective}" '{
-      repo_root: null,
-      remote: null,
-      ref: null,
-      services_rebuild: (if ($include_ui == "true") then ["ai_engine","local_ai_server","admin_ui"] else ["ai_engine","local_ai_server"] end),
-      services_restart: [],
-      changed_file_count: null
-    }')"
+  # Prefer the original job plan to determine which services were impacted.
+  plan_patch="$(jq -c --arg include_ui "${include_ui_effective}" '
+    def arr(x): (x // []) | map(select(. != null)) | map(tostring);
+    def filter_ui(a): if $include_ui == "true" then a else a | map(select(. != "admin_ui")) end;
+    def r: filter_ui(arr(.plan.services_rebuild));
+    def s: filter_ui(arr(.plan.services_restart));
+    def missing: ((r|length) == 0 and (s|length) == 0);
+    {
+      services_rebuild: (if missing then (if ($include_ui == "true") then ["ai_engine","local_ai_server","admin_ui"] else ["ai_engine","local_ai_server"] end) else r end),
+      services_restart: (if missing then [] else s end),
+      changed_file_count: (.plan.changed_file_count // null),
+      compose_changed: (.plan.compose_changed // false)
+    }' "${src_state}" 2>/dev/null || echo '{"services_rebuild":["ai_engine","local_ai_server"],"services_restart":[],"changed_file_count":null,"compose_changed":false}')"
 
   meta_patch="$(jq -n \
     --arg type "rollback" \
@@ -281,13 +329,49 @@ run_rollback() {
       cp -r "${PROJECT_ROOT}/${backup_rel}/config/contexts" "${PROJECT_ROOT}/config/contexts"
     fi
 
-    compose_targets="ai_engine local_ai_server"
-    if [ "${include_ui_effective}" = "true" ]; then
-      compose_targets="${compose_targets} admin_ui"
+    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
+
+    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
+      extra=""
+      if [ "${include_ui_effective}" = "true" ]; then
+        extra=" + admin_ui"
+      fi
+      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
+      rebuild_services=("ai_engine" "local_ai_server")
+      if [ "${include_ui_effective}" = "true" ]; then
+        rebuild_services+=("admin_ui")
+      fi
     fi
 
-    echo "==> Rebuilding services: ${compose_targets}" >&2
-    docker compose up -d --build ${compose_targets}
+    if [ "${compose_changed}" = "true" ]; then
+      targets=("ai_engine" "local_ai_server")
+      if [ "${include_ui_effective}" = "true" ]; then
+        targets+=("admin_ui")
+      fi
+      targets+=("${rebuild_services[@]}" "${restart_services[@]}")
+      # De-dup targets
+      mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF && !seen[$0]++')
+      echo "==> Compose changed; reconciling services (no-build): ${targets[*]:-none}" >&2
+      if [ "${#targets[@]}" -gt 0 ]; then
+        docker compose up -d --remove-orphans --no-build "${targets[@]}"
+      else
+        docker compose up -d --remove-orphans --no-build
+      fi
+    fi
+
+    if [ "${#rebuild_services[@]}" -gt 0 ]; then
+      echo "==> Rebuilding services: ${rebuild_services[*]}" >&2
+      docker compose up -d --build "${rebuild_services[@]}"
+    fi
+
+    if [ "${#restart_services[@]}" -gt 0 ]; then
+      echo "==> Restarting services: ${restart_services[*]}" >&2
+      for svc in "${restart_services[@]}"; do
+        docker compose restart "${svc}" || docker compose up -d --no-build "${svc}"
+      done
+    fi
   ) 2>&1 | tee "${JOB_LOG_PATH}"
   code="${PIPESTATUS[0]}"
   set -e
@@ -296,8 +380,9 @@ run_rollback() {
   export JOB_FINISHED_AT
 
   if [ "${code}" -eq 0 ]; then
+    # Keep logs on success so operators can review full output after the fact.
+    sync_agent_cli || true
     write_job_state "success" "${code}"
-    rm -f "${JOB_LOG_PATH}"
   else
     write_job_state "failed" "${code}"
   fi
