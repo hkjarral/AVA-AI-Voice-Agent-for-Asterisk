@@ -157,7 +157,7 @@ const UpdatesPage = () => {
       `cp \"${backupRel}/.env\" .env`,
       `cp \"${backupRel}/config/ai-agent.yaml\" config/ai-agent.yaml`,
       `cp \"${backupRel}/config/users.json\" config/users.json`,
-      'rm -rf config/contexts && cp -r \"' + `${backupRel}/config/contexts\"` + '\" config/contexts',
+      `rm -rf config/contexts && cp -r \"${backupRel}/config/contexts\" config/contexts`,
       '',
       `docker compose up -d --build ${composeTargets}`,
     ].join('\n');

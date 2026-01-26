@@ -84,7 +84,7 @@ sync_agent_cli() {
     -e AAVA_CLI_VERSION="${ver}" \
     -e AAVA_BUILD_TIME="${bt}" \
     golang:1.22-bookworm \
-    bash -c 'go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags "-X main.version=${AAVA_CLI_VERSION} -X main.buildTime=${AAVA_BUILD_TIME}" -o /src/.agent/bin/agent ./cmd/agent'
+    bash -c "go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags \"-X main.version='\$AAVA_CLI_VERSION' -X main.buildTime='\$AAVA_BUILD_TIME'\" -o /src/.agent/bin/agent ./cmd/agent"
   rc=$?
   set -e
 
