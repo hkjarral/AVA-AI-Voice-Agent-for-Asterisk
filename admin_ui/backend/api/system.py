@@ -266,27 +266,30 @@ async def start_container(container_id: str):
     if service_name not in set(service_map.values()):
         raise HTTPException(status_code=400, detail="Only AAVA services can be started from Admin UI")
     
-    project_root = os.getenv("PROJECT_ROOT", "/app/project")
-    
-    logger.info("Starting %s from %s", _sanitize_for_log(service_name), _sanitize_for_log(project_root))
-    
+    host_root = _project_host_root_from_admin_ui_container()
+    logger.info("Starting %s via updater-runner (host_root=%s)", _sanitize_for_log(service_name), _sanitize_for_log(host_root))
+
+    def _compose_up_cmd(svc: str, *, build: bool) -> str:
+        flag = "--build" if build else "--no-build"
+        return (
+            "set -euo pipefail; "
+            "cd \"$PROJECT_ROOT\"; "
+            f"docker compose -p asterisk-ai-voice-agent up -d {flag} {svc}"
+        )
+
     try:
-        compose_cmd = get_docker_compose_cmd()
-
         if service_name == "local_ai_server":
-            # Fast path: start without build if the image is already present.
-            cmd_no_build = compose_cmd + ["-p", "asterisk-ai-voice-agent", "up", "-d", "--no-build", service_name]
-            result = subprocess.run(
-                cmd_no_build,
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-                timeout=60,
+            # Fast path: start without build if the image already exists.
+            code, out = _run_updater_ephemeral(
+                host_root,
+                env={"PROJECT_ROOT": host_root},
+                command=_compose_up_cmd(service_name, build=False),
+                timeout_sec=120,
             )
-            if result.returncode == 0:
-                return {"status": "success", "output": result.stdout or "Container started"}
+            if code == 0:
+                return {"status": "success", "output": out.strip() or "Container started"}
 
-            stderr = (result.stderr or result.stdout or "").strip()
+            err = (out or "").strip()
             needs_build_markers = [
                 "No such image",
                 "pull access denied",
@@ -294,56 +297,31 @@ async def start_container(container_id: str):
                 "unable to find image",
                 "requires build",
             ]
-            if any(m.lower() in stderr.lower() for m in needs_build_markers):
-                # Slow path: build may take many minutes. Run it in background and write output to a file.
-                log_path = os.path.join(project_root, "logs", "local_ai_server_start.log")
-                os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                logf = open(log_path, "a")
-                logf.write("\n\n=== local_ai_server start (dashboard) ===\n")
-                logf.flush()
-
-                cmd_build = compose_cmd + ["-p", "asterisk-ai-voice-agent", "up", "-d", "--build", service_name]
-                subprocess.Popen(
-                    cmd_build,
-                    cwd=project_root,
-                    stdout=logf,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
+            if any(m.lower() in err.lower() for m in needs_build_markers):
+                code2, out2 = _run_updater_ephemeral(
+                    host_root,
+                    env={"PROJECT_ROOT": host_root},
+                    command=_compose_up_cmd(service_name, build=True),
+                    timeout_sec=1800,
                 )
-                return {
-                    "status": "starting",
-                    "output": f"Local AI Server build/start initiated in background; this can take several minutes. See {log_path} or container logs once created.",
-                }
+                if code2 == 0:
+                    return {"status": "success", "output": out2.strip() or "Container started"}
+                raise HTTPException(status_code=500, detail=f"Failed to build/start local_ai_server: {(out2 or '').strip()[:800]}")
 
-            raise HTTPException(status_code=500, detail=f"Failed to start: {stderr or 'Unknown error'}")
+            raise HTTPException(status_code=500, detail=f"Failed to start: {err[:800] or 'Unknown error'}")
 
-        # Use docker compose with --build to ensure image exists
-        cmd = compose_cmd + ["-p", "asterisk-ai-voice-agent", "up", "-d", "--build", service_name]
-
-        result = subprocess.run(
-            cmd,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 min timeout for potential build (non-local-ai services)
+        code, out = _run_updater_ephemeral(
+            host_root,
+            env={"PROJECT_ROOT": host_root},
+            command=_compose_up_cmd(service_name, build=True),
+            timeout_sec=600,
         )
-
-        logger.debug(
-            "start returncode=%s stdout=%s stderr=%s",
-            result.returncode,
-            (result.stdout or "")[:2000],
-            (result.stderr or "")[:2000],
-        )
-
-        if result.returncode == 0:
-            return {"status": "success", "output": result.stdout or "Container started"}
-        else:
-            raise HTTPException(status_code=500, detail=f"Failed to start: {result.stderr or result.stdout}")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timeout waiting for container start")
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="docker-compose not found")
-    except Exception as e:
+        if code == 0:
+            return {"status": "success", "output": out.strip() or "Container started"}
+        raise HTTPException(status_code=500, detail=f"Failed to start: {(out or '').strip()[:800]}")
+    except HTTPException:
+        raise
+    except Exception:
         logger.error("Error starting service %s", _sanitize_for_log(str(service_name)), exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to start service")
 
@@ -439,10 +417,8 @@ async def restart_container(container_id: str, force: bool = False):
             }
 
     # NOTE: docker restart does NOT reload env_file changes.
-    # For ai_engine/local_ai_server, prefer force-recreate so updated .env keys apply.
-    if container_name in ("ai_engine", "local_ai_server"):
-        service_name = service_map.get(container_name, container_name)
-        return await _recreate_via_compose(service_name)
+    # Restart is still useful for recovering from crashes and non-env changes.
+    # Use explicit "recreate" actions (via updater-runner) when env_file changes must be applied.
 
     # Special-case: Restarting admin-ui from inside admin-ui is inherently racy if we try to
     # force-recreate it (the API process is the one being replaced). Use a scheduled Docker-SDK
@@ -478,11 +454,17 @@ async def restart_container(container_id: str, force: bool = False):
         container.restart(timeout=10)
         
         logger.info("Container %s restarted successfully via Docker SDK", safe_container_name)
-        return {
+        payload = {
             "status": "success", 
             "method": "docker-sdk",
             "output": f"Container {safe_container_name} restarted"
         }
+        if container_name in ("ai_engine", "local_ai_server"):
+            payload["note"] = (
+                "Restart does not reload env_file (.env) changes. "
+                "If you changed .env, use a recreate/force-recreate for this service."
+            )
+        return payload
         
     except docker.errors.NotFound:
         # Container doesn't exist. Only allow compose-based start for known AAVA services.
@@ -506,38 +488,31 @@ async def restart_container(container_id: str, force: bool = False):
 
 async def _start_via_compose(container_id: str, service_map: dict):
     """Helper to start a container via docker-compose."""
-    import subprocess
-    
     service_name = service_map.get(container_id)
     if not service_name:
         raise HTTPException(status_code=400, detail="Unsupported service for compose start")
-    project_root = os.getenv("PROJECT_ROOT", "/app/project")
     
     try:
-        compose_cmd = get_docker_compose_cmd()
+        host_root = _project_host_root_from_admin_ui_container()
         build_flag = "--build" if service_name == "local_ai_server" else "--no-build"
-        timeout_sec = 1800 if service_name == "local_ai_server" else 120
-        cmd = compose_cmd + ["-p", "asterisk-ai-voice-agent", "up", "-d", build_flag, service_name]
-        
-        result = subprocess.run(
-            cmd,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec
+        timeout_sec = 1800 if service_name == "local_ai_server" else 300
+        cmd = (
+            "set -euo pipefail; "
+            "cd \"$PROJECT_ROOT\"; "
+            f"docker compose -p asterisk-ai-voice-agent up -d {build_flag} {service_name}"
         )
-        
-        if result.returncode == 0:
-            return {"status": "success", "method": "docker-compose", "output": result.stdout or "Container started"}
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to start via compose: {result.stderr or result.stdout}"
-            )
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="docker-compose not found")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timeout waiting for container start")
+
+        code, out = _run_updater_ephemeral(
+            host_root,
+            env={"PROJECT_ROOT": host_root},
+            command=cmd,
+            timeout_sec=timeout_sec,
+        )
+        if code == 0:
+            return {"status": "success", "method": "docker-compose", "output": (out or '').strip() or "Container started"}
+        raise HTTPException(status_code=500, detail=f"Failed to start via compose: {(out or '').strip()[:800]}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def _recreate_via_compose(service_name: str, health_check: bool = True):
@@ -551,14 +526,8 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
     Returns:
         Dict with status, method, and health_status fields
     """
-    import subprocess
     import httpx
-
-    # Container path where docker-compose.yml is mounted (for subprocess cwd)
-    container_project_root = os.getenv("PROJECT_ROOT", "/app/project")
-    # Host path for Docker daemon to resolve volume mounts correctly
-    # Docker interprets volume paths relative to HOST filesystem, not container
-    host_project_root = os.getenv("HOST_PROJECT_ROOT", "")
+    host_root = _project_host_root_from_admin_ui_container()
 
     # Normalize legacy hyphenated service names to canonical underscored service names.
     legacy_to_canonical = {
@@ -605,38 +574,21 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
         except Exception as e:
             logger.warning(f"Error stopping container: {e}")
         
-        compose_cmd = get_docker_compose_cmd()
-        # Use --force-recreate instead of --build for faster restarts
-        # Rebuild only happens on explicit build request, not restart
-        cmd = compose_cmd + [
-            "-p",
-            "asterisk-ai-voice-agent",
-        ]
-        # If HOST_PROJECT_ROOT is set, use --project-directory to tell Docker
-        # where to resolve volume mounts on the HOST filesystem
-        if host_project_root:
-            cmd += ["--project-directory", host_project_root]
-        cmd += [
-            "up",
-            "-d",
-            "--force-recreate",
-            "--no-build",
-            service_name,
-        ]
-
-        result = subprocess.run(
-            cmd,
-            cwd=container_project_root,
-            capture_output=True,
-            text=True,
-            timeout=300,
+        # Run compose in updater-runner so relative binds resolve on the host correctly.
+        cmd = (
+            "set -euo pipefail; "
+            "cd \"$PROJECT_ROOT\"; "
+            f"docker compose -p asterisk-ai-voice-agent up -d --force-recreate --no-build {service_name}"
         )
-
-        if result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to recreate via compose: {result.stderr or result.stdout}",
-            )
+        timeout_sec = 600 if service_name == "local_ai_server" else 300
+        code, out = _run_updater_ephemeral(
+            host_root,
+            env={"PROJECT_ROOT": host_root},
+            command=cmd,
+            timeout_sec=timeout_sec,
+        )
+        if code != 0:
+            raise HTTPException(status_code=500, detail=f"Failed to recreate via compose: {(out or '').strip()[:800]}")
         
         # Health check polling after successful recreate
         health_status = "skipped"
@@ -653,27 +605,27 @@ async def _recreate_via_compose(service_name: str, health_check: bool = True):
             return {
                 "status": "degraded",
                 "method": "docker-compose",
-                "output": result.stdout or "Service recreated but health check timed out",
+                "output": (out or "").strip() or "Service recreated but health check timed out",
                 "health_status": health_status,
             }
         elif health_status == "unhealthy":
             return {
                 "status": "degraded",
                 "method": "docker-compose",
-                "output": result.stdout or "Service recreated but not healthy",
+                "output": (out or "").strip() or "Service recreated but not healthy",
                 "health_status": health_status,
             }
         
         return {
             "status": "success", 
             "method": "docker-compose", 
-            "output": result.stdout or "Service recreated",
+            "output": (out or "").strip() or "Service recreated",
             "health_status": health_status,
         }
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="docker-compose not found")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timeout waiting for container recreate")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail="Failed to recreate service")
 
 
 async def _poll_health(url: str, timeout_seconds: int = 30, service_name: str = "service") -> str:
@@ -2786,6 +2738,8 @@ async def test_ari_connection(request: AriTestRequest):
 
 _UPDATER_IMAGE_REPO = "asterisk-ai-voice-agent-updater"
 _UPDATER_IMAGE_LOCK = None
+_UPDATES_STATUS_CACHE: dict = {"checked_at": 0.0, "data": None}
+_UPDATES_STATUS_CACHE_TTL_SEC = 600  # 10 minutes
 
 
 def _updater_lock():
@@ -3132,7 +3086,74 @@ class UpdateStatusResponse(BaseModel):
 
 
 @router.get("/updates/status", response_model=UpdateStatusResponse)
-async def updates_status():
+async def updates_status(check_remote: bool = False, build_updater: bool = False, force: bool = False):
+    """
+    Return update status for the Updates UI.
+
+    IMPORTANT:
+    - By default, this endpoint does NOT build the updater image and does NOT contact the remote.
+    - The Updates page explicitly opts in by setting `build_updater=true` and `check_remote=true`.
+    """
+    # If caller didn't explicitly request a real check, keep this cheap and side-effect free.
+    if not build_updater and not check_remote:
+        project_root = os.getenv("PROJECT_ROOT", "/app/project")
+
+        def _read_text(p: str) -> Optional[str]:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return None
+
+        def _current_branch(root: str) -> Optional[str]:
+            import os
+
+            gitpath = os.path.join(root, ".git")
+            gitdir = gitpath
+            if os.path.isfile(gitpath):
+                raw = (_read_text(gitpath) or "").strip()
+                if raw.startswith("gitdir:"):
+                    gd = raw.split(":", 1)[1].strip()
+                    if not gd:
+                        return None
+                    if not os.path.isabs(gd):
+                        gd = os.path.normpath(os.path.join(root, gd))
+                    gitdir = gd
+                else:
+                    return None
+
+            head = (_read_text(os.path.join(gitdir, "HEAD")) or "").strip()
+            if not head:
+                return None
+            if head.startswith("ref:"):
+                ref = head.split(":", 1)[1].strip()
+                if ref.startswith("refs/heads/"):
+                    return ref[len("refs/heads/") :]
+                return ref
+            return "detached"
+
+        branch = _current_branch(project_root) or "unknown"
+        head_sha = _current_project_head_sha() or "unknown"
+        describe = head_sha[:12] if isinstance(head_sha, str) and head_sha not in ("", "unknown") else "unknown"
+        return UpdateStatusResponse(
+            local={"branch": branch, "head_sha": head_sha, "describe": describe},
+            remote=None,
+            update_available=None,
+            error="Not checked",
+        )
+
+    # Check-mode: allow a short-lived cache unless caller forces refresh.
+    try:
+        import time
+
+        now = time.time()
+        cached = _UPDATES_STATUS_CACHE.get("data")
+        checked_at = float(_UPDATES_STATUS_CACHE.get("checked_at") or 0.0)
+        if not force and cached and (now - checked_at) < _UPDATES_STATUS_CACHE_TTL_SEC:
+            return UpdateStatusResponse(**cached)
+    except Exception:
+        pass
+
     host_root = _project_host_root_from_admin_ui_container()
 
     try:
@@ -3178,6 +3199,22 @@ async def updates_status():
             error="Local status unavailable (updater not built yet)",
         )
 
+    if not check_remote:
+        payload = {
+            "local": {"branch": branch, "head_sha": head_sha, "describe": describe},
+            "remote": None,
+            "update_available": None,
+            "error": None,
+        }
+        try:
+            import time
+
+            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+            _UPDATES_STATUS_CACHE["data"] = payload
+        except Exception:
+            pass
+        return UpdateStatusResponse(**payload)
+
     # Remote info (best-effort; offline returns unknown)
     code2, out2 = _run_updater_ephemeral(
         host_root,
@@ -3190,21 +3227,37 @@ async def updates_status():
         timeout_sec=15,
     )
     if code2 != 0:
-        return UpdateStatusResponse(
-            local={"head_sha": head_sha, "describe": describe},
-            remote=None,
-            update_available=None,
-            error="Remote unavailable (offline or blocked)",
-        )
+        payload = {
+            "local": {"branch": branch, "head_sha": head_sha, "describe": describe},
+            "remote": None,
+            "update_available": None,
+            "error": "Remote unavailable (offline or blocked)",
+        }
+        try:
+            import time
+
+            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+            _UPDATES_STATUS_CACHE["data"] = payload
+        except Exception:
+            pass
+        return UpdateStatusResponse(**payload)
 
     latest = _select_latest_v_tag(out2)
     if not latest:
-        return UpdateStatusResponse(
-            local={"head_sha": head_sha, "describe": describe},
-            remote=None,
-            update_available=None,
-            error="No v* tags found on remote",
-        )
+        payload = {
+            "local": {"branch": branch, "head_sha": head_sha, "describe": describe},
+            "remote": None,
+            "update_available": None,
+            "error": "No v* tags found on remote",
+        }
+        try:
+            import time
+
+            _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+            _UPDATES_STATUS_CACHE["data"] = payload
+        except Exception:
+            pass
+        return UpdateStatusResponse(**payload)
 
     # Determine update availability using commit ancestry (handles "local ahead" cleanly).
     # Note: we intentionally avoid relying on SHA inequality alone because it incorrectly
@@ -3249,12 +3302,20 @@ async def updates_status():
         update_available = None
         error = "Unable to compare local version to remote (offline or missing objects)"
 
-    return UpdateStatusResponse(
-        local={"branch": branch, "head_sha": head_sha, "describe": describe},
-        remote={"latest_tag": tag, "latest_tag_sha": tag_sha},
-        update_available=update_available,
-        error=error,
-    )
+    payload = {
+        "local": {"branch": branch, "head_sha": head_sha, "describe": describe},
+        "remote": {"latest_tag": tag, "latest_tag_sha": tag_sha},
+        "update_available": update_available,
+        "error": error,
+    }
+    try:
+        import time
+
+        _UPDATES_STATUS_CACHE["checked_at"] = time.time()
+        _UPDATES_STATUS_CACHE["data"] = payload
+    except Exception:
+        pass
+    return UpdateStatusResponse(**payload)
 
 
 class UpdatePlanResponse(BaseModel):

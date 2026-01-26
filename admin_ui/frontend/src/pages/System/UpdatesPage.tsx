@@ -92,7 +92,7 @@ const UpdatesPage = () => {
     return uniq[0] || 'main';
   };
 
-  const checkUpdates = async () => {
+  const checkUpdates = async (opts?: { force?: boolean }) => {
     setInitialized(false);
     setPlan(null);
     setPlanError(null);
@@ -103,7 +103,9 @@ const UpdatesPage = () => {
     setStatusLoading(true);
     try {
       const [statusRes, branchesRes] = await Promise.all([
-        axios.get<UpdatesStatus>('/api/system/updates/status'),
+        axios.get<UpdatesStatus>('/api/system/updates/status', {
+          params: { check_remote: true, build_updater: true, force: opts?.force ? true : false },
+        }),
         axios.get<BranchesResponse>('/api/system/updates/branches'),
       ]);
 
@@ -370,15 +372,26 @@ const UpdatesPage = () => {
             <ArrowUpCircle className="w-5 h-5" />
             <div className="text-base font-semibold">Check Updates</div>
           </div>
-          <button
-            onClick={checkUpdates}
-            disabled={statusLoading}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            title="Check updates"
-          >
-            <RefreshCw className={`w-4 h-4 ${statusLoading ? 'animate-spin' : ''}`} />
-            {statusLoading ? 'Checking…' : 'Check updates'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => checkUpdates()}
+              disabled={statusLoading}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              title="Check updates"
+            >
+              <RefreshCw className={`w-4 h-4 ${statusLoading ? 'animate-spin' : ''}`} />
+              {statusLoading ? 'Checking…' : 'Check updates'}
+            </button>
+            <button
+              onClick={() => checkUpdates({ force: true })}
+              disabled={statusLoading}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-border hover:bg-accent disabled:opacity-50"
+              title="Force refresh (ignore cached status)"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Force refresh
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2">

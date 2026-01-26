@@ -1009,7 +1009,6 @@ async def rebuild_local_ai_server(request: RebuildRequest):
     
     WARNING: This operation takes 5-10 minutes!
     """
-    import subprocess
     from settings import PROJECT_ROOT
     
     # Build the docker compose build command with build args
@@ -1060,24 +1059,26 @@ async def rebuild_local_ai_server(request: RebuildRequest):
                 phase="error",
             )
 
-        # Run docker compose build with build args
-        cmd = ["docker", "compose", "-p", "asterisk-ai-voice-agent", "build"] + build_args + ["local_ai_server"]
-        
-        process = subprocess.Popen(
-            cmd,
-            cwd=PROJECT_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
+        # Run docker compose build in the updater-runner container so relative binds resolve on the host correctly.
+        from api.system import _project_host_root_from_admin_ui_container, _run_updater_ephemeral
+        host_root = _project_host_root_from_admin_ui_container()
+        build_args_str = " ".join(build_args)
+        cmd = (
+            "set -euo pipefail; "
+            "cd \"$PROJECT_ROOT\"; "
+            f"docker compose -p asterisk-ai-voice-agent build {build_args_str} local_ai_server"
         )
-        
-        # Wait for build to complete (this can take several minutes)
-        stdout, _ = process.communicate(timeout=600)  # 10 minute timeout
-        
-        if process.returncode != 0:
+        code, out = _run_updater_ephemeral(
+            host_root,
+            env={"PROJECT_ROOT": host_root},
+            command=cmd,
+            timeout_sec=1800,
+        )
+
+        if code != 0:
             return RebuildResponse(
                 success=False,
-                message=f"Docker build failed: {stdout[-500:] if stdout else 'Unknown error'}",
+                message=f"Docker build failed: {(out or '')[-800:] if out else 'Unknown error'}",
                 phase="error"
             )
         
@@ -1096,13 +1097,6 @@ async def rebuild_local_ai_server(request: RebuildRequest):
             success=True,
             message=f"Rebuild complete! Enabled: {', '.join(backends_enabled)}{warning_suffix}",
             phase="complete"
-        )
-        
-    except subprocess.TimeoutExpired:
-        return RebuildResponse(
-            success=False,
-            message="Build timed out after 10 minutes",
-            phase="error"
         )
     except Exception as e:
         return RebuildResponse(

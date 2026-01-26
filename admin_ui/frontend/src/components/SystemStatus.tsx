@@ -98,13 +98,6 @@ interface PlatformResponse {
   };
 }
 
-interface UpdatesStatus {
-  local: { head_sha: string; describe: string };
-  remote?: { latest_tag: string; latest_tag_sha: string } | null;
-  update_available?: boolean | null;
-  error?: string | null;
-}
-
 // Status icon component
 const StatusIcon = ({ status }: { status: string }) => {
   switch (status) {
@@ -227,7 +220,6 @@ export const SystemStatus = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
-  const [updates, setUpdates] = useState<UpdatesStatus | null>(null);
 
   const fetchPlatform = async () => {
     try {
@@ -250,21 +242,6 @@ export const SystemStatus = () => {
     fetchPlatform();
     // Refresh every 30 seconds
     const interval = setInterval(fetchPlatform, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const fetchUpdates = async () => {
-      try {
-        const res = await axios.get('/api/system/updates/status');
-        setUpdates(res.data);
-      } catch (err) {
-        // Best-effort; do not block System Status.
-        setUpdates(null);
-      }
-    };
-    fetchUpdates();
-    const interval = setInterval(fetchUpdates, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -370,19 +347,7 @@ export const SystemStatus = () => {
             <div className="text-sm text-foreground" title={platform.project?.source ? `source: ${platform.project.source}` : undefined}>
               {platform.project?.version || 'Unknown'}
             </div>
-            {updates && (
-              <div className="text-xs">
-                {updates.update_available === true ? (
-                  <Link to="/updates" className="text-yellow-500 hover:underline">
-                    Update available{updates.remote?.latest_tag ? `: ${updates.remote.latest_tag}` : ''}
-                  </Link>
-                ) : updates.update_available === false ? (
-                  <span className="text-primary">Up to date</span>
-                ) : (
-                  <span className="text-muted-foreground">Update status: unknown</span>
-                )}
-              </div>
-            )}
+            <div className="text-xs text-muted-foreground">Update status: not checked</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
