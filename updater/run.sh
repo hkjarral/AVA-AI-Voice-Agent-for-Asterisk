@@ -52,12 +52,17 @@ sync_agent_cli() {
   # Best-effort: if this fails, fall back to copying the bundled agent binary from this image.
   echo "==> Updating agent CLI (project-local)..." >&2
 
+  ver="$(git -c safe.directory="${PROJECT_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "dev")"
+  bt="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
   set +e
   docker run --rm \
     -v "${PROJECT_ROOT}:/src" \
     -w /src/cli \
+    -e AAVA_CLI_VERSION="${ver}" \
+    -e AAVA_BUILD_TIME="${bt}" \
     golang:1.22-bookworm \
-    bash -lc "go mod download && CGO_ENABLED=0 go build -o /src/.agent/bin/agent ./cmd/agent"
+    bash -lc 'go mod download && CGO_ENABLED=0 go build -ldflags "-X main.version=${AAVA_CLI_VERSION} -X main.buildTime=${AAVA_BUILD_TIME}" -o /src/.agent/bin/agent ./cmd/agent'
   rc=$?
   set -e
 
