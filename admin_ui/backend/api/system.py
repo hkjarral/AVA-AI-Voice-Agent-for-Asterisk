@@ -2992,7 +2992,7 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
                     decode=True,
                 )
                 _ingest_build_logs(logs)
-            except TypeError as e:
+            except TypeError:
                 logger.warning(
                     "docker-py images.build TypeError with network_mode/decode; retrying without decode (network_mode=host).",
                     exc_info=True,
@@ -3025,19 +3025,7 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
         except HTTPException:
             raise
         except docker.errors.BuildError as e:
-            try:
-                for chunk in (getattr(e, "build_log", None) or []):
-                    if isinstance(chunk, dict):
-                        if "stream" in chunk:
-                            _capture_line(str(chunk.get("stream") or ""))
-                        if "error" in chunk:
-                            _capture_line(str(chunk.get("error") or ""))
-                    elif isinstance(chunk, (bytes, bytearray)):
-                        _capture_line(chunk.decode("utf-8", errors="replace"))
-                    else:
-                        _capture_line(str(chunk))
-            except Exception:
-                pass
+            _ingest_build_logs(getattr(e, "build_log", None) or [])
 
             tail = "\n".join(last_lines[-25:]).strip()
             if tail:
