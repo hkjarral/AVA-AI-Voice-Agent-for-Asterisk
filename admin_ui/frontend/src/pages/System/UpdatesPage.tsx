@@ -109,7 +109,8 @@ const UpdatesPage = () => {
     setBranchesError(null);
     try {
       const branchesRes = await axios.get<BranchesResponse>('/api/system/updates/branches', {
-        params: { build_updater: false, force: opts?.force ? true : false },
+        // Branch listing requires git; if the updater image isn't present, allow a local build fallback.
+        params: { build_updater: true, force: opts?.force ? true : false },
       });
       setBranches(branchesRes.data.branches || []);
       if (branchesRes.data.error) setBranchesError(branchesRes.data.error);
@@ -132,7 +133,8 @@ const UpdatesPage = () => {
     setStatusLoading(true);
     try {
       const statusRes = await axios.get<UpdatesStatus>('/api/system/updates/status', {
-        params: { check_remote: true, build_updater: false, force: opts?.force ? true : false },
+        // Allow updater image local-build fallback on explicit user action ("Check updates").
+        params: { check_remote: true, build_updater: true, force: opts?.force ? true : false },
       });
 
       setStatus(statusRes.data);
