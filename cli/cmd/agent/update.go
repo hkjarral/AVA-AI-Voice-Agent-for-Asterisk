@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,20 @@ var (
 	gitSafeDirectory    string
 )
 
+var semverTagRe = regexp.MustCompile(`^(v)?([0-9]+\.[0-9]+\.[0-9]+)$`)
+
+func normalizeSemverTagRef(ref string) (string, bool) {
+	r := strings.TrimSpace(ref)
+	if r == "" {
+		return "", false
+	}
+	m := semverTagRe.FindStringSubmatch(r)
+	if m == nil {
+		return "", false
+	}
+	return "v" + m[2], true
+}
+
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Pull latest code and apply updates",
@@ -71,7 +86,7 @@ Safety notes:
 
 func init() {
 	updateCmd.Flags().StringVar(&updateRemote, "remote", "origin", "git remote name")
-	updateCmd.Flags().StringVar(&updateRef, "ref", "main", "git ref/branch to update to (e.g., main)")
+	updateCmd.Flags().StringVar(&updateRef, "ref", "main", "git ref to update to (branch like main, or tag like v5.2.4)")
 	updateCmd.Flags().BoolVar(&updateNoStash, "no-stash", false, "abort if repo has local changes instead of stashing")
 	updateCmd.Flags().BoolVar(&updateStashUntracked, "stash-untracked", false, "include untracked files when stashing (does not include ignored files)")
 	updateCmd.Flags().StringVar(&updateRebuild, "rebuild", string(rebuildAuto), "rebuild mode: auto|none|all")
@@ -189,37 +204,56 @@ func runUpdate() (retErr error) {
 		}
 	}
 
-	printUpdateStep(fmt.Sprintf("Fetching %s/%s", updateRemote, updateRef))
+	tagRef, isTag := normalizeSemverTagRef(updateRef)
+	if isTag {
+		updateRef = tagRef
+		printUpdateStep(fmt.Sprintf("Fetching %s tag %s", updateRemote, updateRef))
+	} else {
+		printUpdateStep(fmt.Sprintf("Fetching %s/%s", updateRemote, updateRef))
+	}
 	if err := gitFetch(updateRemote, updateRef); err != nil {
 		return err
 	}
 	// Keep tags current so "git describe --tags" reflects newly published versions.
 	_ = gitFetchTags(updateRemote)
 	targetRemoteRef := fmt.Sprintf("%s/%s", updateRemote, updateRef)
-	targetSHA, err := gitRevParse(targetRemoteRef)
+	targetRev := targetRemoteRef
+	if isTag {
+		targetRev = updateRef
+	}
+	targetLabel := targetRemoteRef
+	if isTag {
+		targetLabel = updateRef
+	}
+	targetSHA, err := gitRevParse(targetRev)
 	if err != nil {
 		return err
 	}
 	ctx.newSHA = targetSHA
 
 	currentBranch, _ := gitCurrentBranch()
-	branchMismatch := strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
-	if branchMismatch {
-		if !updateCheckout {
-			return fmt.Errorf("target ref %q differs from current branch %q; re-run with --checkout to allow switching branches", updateRef, currentBranch)
-		}
-		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
-		exists, existsErr := gitLocalBranchExists(updateRef)
-		if existsErr != nil {
-			return existsErr
-		}
-		if exists {
-			if err := gitCheckout(updateRef); err != nil {
-				return err
+	if isTag && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD") {
+		return fmt.Errorf("cannot update to tag %q from a detached HEAD; checkout a branch (e.g., `git checkout main`) and re-run", updateRef)
+	}
+	if !isTag {
+		branchMismatch := strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
+		if branchMismatch {
+			if !updateCheckout {
+				return fmt.Errorf("target ref %q differs from current branch %q; re-run with --checkout to allow switching branches", updateRef, currentBranch)
 			}
-		} else {
-			if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
-				return err
+			printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
+			exists, existsErr := gitLocalBranchExists(updateRef)
+			if existsErr != nil {
+				return existsErr
+			}
+			if exists {
+				if err := gitCheckout(updateRef); err != nil {
+					return err
+				}
+			} else {
+				if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -244,15 +278,19 @@ func runUpdate() (retErr error) {
 		finalSHA = branchHead
 	} else if updateAvailable {
 		printUpdateStep("Fast-forwarding code")
-		if err := gitMergeFastForward(targetRemoteRef); err != nil {
+		mergeRef := targetRemoteRef
+		if isTag {
+			mergeRef = updateRef
+		}
+		if err := gitMergeFastForward(mergeRef); err != nil {
 			return err
 		}
 		finalSHA = targetSHA
 	} else if remoteIsAncestor {
-		printUpdateInfo("Local branch is ahead of %s; skipping fast-forward update", targetRemoteRef)
+		printUpdateInfo("Local branch is ahead of %s; skipping fast-forward update", targetLabel)
 		finalSHA = branchHead
 	} else {
-		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s (resolve manually and re-run)", targetRemoteRef)
+		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s (resolve manually and re-run)", targetLabel)
 	}
 	ctx.newSHA = finalSHA
 
@@ -302,14 +340,22 @@ func runUpdatePlan(ctx *updateContext) error {
 	}
 
 	currentBranch, _ := gitCurrentBranch()
-	wouldCheckout := updateCheckout && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef))
+	tagRef, isTag := normalizeSemverTagRef(updateRef)
+	if isTag {
+		updateRef = tagRef
+	}
+	wouldCheckout := !isTag && updateCheckout && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef))
 
 	if err := gitFetch(updateRemote, updateRef); err != nil {
 		return err
 	}
 	_ = gitFetchTags(updateRemote)
 
-	newSHA, err := gitRevParse(fmt.Sprintf("%s/%s", updateRemote, updateRef))
+	rev := fmt.Sprintf("%s/%s", updateRemote, updateRef)
+	if isTag {
+		rev = updateRef
+	}
+	newSHA, err := gitRevParse(rev)
 	if err != nil {
 		return err
 	}
@@ -979,7 +1025,18 @@ func gitFetch(remote string, ref string) error {
 
 	// Normalize common ref inputs.
 	ref = strings.TrimPrefix(ref, "refs/heads/")
+	ref = strings.TrimPrefix(ref, "refs/tags/")
 	ref = strings.TrimPrefix(ref, remote+"/")
+
+	// Semver tag refs (vX.Y.Z) are fetched as tags, not remote-tracking branches.
+	if tag, ok := normalizeSemverTagRef(ref); ok {
+		refspec := fmt.Sprintf("+refs/tags/%s:refs/tags/%s", tag, tag)
+		_, err := runGitCmd("fetch", "--prune", remote, refspec)
+		if err != nil {
+			return fmt.Errorf("git fetch --prune %s %s failed: %w", remote, refspec, err)
+		}
+		return nil
+	}
 
 	// Ensure the remote-tracking ref (refs/remotes/<remote>/<ref>) is updated.
 	// `git fetch <remote> <ref>` updates FETCH_HEAD but does not always advance origin/<ref>

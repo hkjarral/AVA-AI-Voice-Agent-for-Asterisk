@@ -7,9 +7,10 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 type UpdateAvailable = boolean | null;
 
 interface UpdatesStatus {
-  local: { branch?: string; head_sha: string; describe: string };
+  local: { branch?: string; head_sha: string; describe: string; deployed_tag?: string | null };
   remote?: { latest_tag: string; latest_tag_sha: string } | null;
   update_available?: UpdateAvailable;
+  changelog_latest?: string | null;
   error?: string | null;
 }
 
@@ -65,6 +66,7 @@ const UpdatesPage = () => {
   const [branches, setBranches] = useState<string[]>([]);
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [selectedBranch, setSelectedBranch] = useState('main');
+  const [targetMode, setTargetMode] = useState<'stable' | 'main' | 'advanced'>('stable');
   const [initialized, setInitialized] = useState(false);
 
   const [includeUI, setIncludeUI] = useState(false);
@@ -92,6 +94,33 @@ const UpdatesPage = () => {
     return uniq[0] || 'main';
   };
 
+  const targetRef = useMemo(() => {
+    if (targetMode === 'stable') return status?.remote?.latest_tag || '';
+    if (targetMode === 'main') return 'main';
+    return selectedBranch;
+  }, [targetMode, status, selectedBranch]);
+
+  const targetCheckout = useMemo(() => {
+    // For release tags, avoid branch switching semantics. For main/branches, allow checkout.
+    return targetMode !== 'stable';
+  }, [targetMode]);
+
+  const loadBranches = async (opts?: { force?: boolean }) => {
+    setBranchesError(null);
+    try {
+      const branchesRes = await axios.get<BranchesResponse>('/api/system/updates/branches', {
+        params: { build_updater: false, force: opts?.force ? true : false },
+      });
+      setBranches(branchesRes.data.branches || []);
+      if (branchesRes.data.error) setBranchesError(branchesRes.data.error);
+      const def = pickDefaultBranch(branchesRes.data.branches || [], status?.local?.branch);
+      setSelectedBranch(def);
+    } catch (err: any) {
+      setBranchesError(err.response?.data?.detail || err.message || 'Failed to load branches');
+      setBranches([]);
+    }
+  };
+
   const checkUpdates = async (opts?: { force?: boolean }) => {
     setInitialized(false);
     setPlan(null);
@@ -102,23 +131,22 @@ const UpdatesPage = () => {
 
     setStatusLoading(true);
     try {
-      const [statusRes, branchesRes] = await Promise.all([
-        axios.get<UpdatesStatus>('/api/system/updates/status', {
-          params: { check_remote: true, build_updater: true, force: opts?.force ? true : false },
-        }),
-        axios.get<BranchesResponse>('/api/system/updates/branches'),
-      ]);
+      const statusRes = await axios.get<UpdatesStatus>('/api/system/updates/status', {
+        params: { check_remote: true, build_updater: false, force: opts?.force ? true : false },
+      });
 
       setStatus(statusRes.data);
-      setBranches(branchesRes.data.branches || []);
-      if (branchesRes.data.error) setBranchesError(branchesRes.data.error);
-
-      const def = pickDefaultBranch(branchesRes.data.branches || [], statusRes.data.local?.branch);
-      setSelectedBranch(def);
+      const localDef = statusRes.data.local?.branch || 'main';
+      setSelectedBranch(localDef === 'detached' ? 'main' : localDef);
       setInitialized(true);
 
       // Best-effort: load recent history after a check.
       fetchHistory();
+
+      // Advanced mode: fetch branches for branch selection.
+      if (targetMode === 'advanced') {
+        loadBranches();
+      }
     } catch (err: any) {
       setStatusError(err.response?.data?.detail || err.message || 'Failed to check updates');
       setInitialized(false);
@@ -211,7 +239,7 @@ const UpdatesPage = () => {
     setPlanError(null);
     try {
       const res = await axios.get('/api/system/updates/plan', {
-        params: { ref: ref || selectedBranch, include_ui: includeUI, checkout: true },
+        params: { ref: ref || targetRef, include_ui: includeUI, checkout: targetCheckout },
       });
       setPlan(res.data.plan);
     } catch (err: any) {
@@ -259,7 +287,7 @@ const UpdatesPage = () => {
       [
         'Proceed with update?',
         '',
-        `Target branch: ${selectedBranch}`,
+        `Target: ${targetRef || 'unknown'}`,
         `Update UI too: ${includeUI ? 'yes' : 'no'}`,
         `Update agent CLI too: ${updateCliHost ? 'yes' : 'no'}`,
         updateCliHost ? `Agent CLI install path: ${cliInstallPath.trim() || 'auto'}` : '',
@@ -279,8 +307,8 @@ const UpdatesPage = () => {
     try {
       const res = await axios.post('/api/system/updates/run', {
         include_ui: includeUI,
-        ref: selectedBranch,
-        checkout: true,
+        ref: targetRef,
+        checkout: targetCheckout,
         update_cli_host: updateCliHost,
         cli_install_path: cliInstallPath.trim() || null,
       });
@@ -295,9 +323,10 @@ const UpdatesPage = () => {
 
   useEffect(() => {
     if (!initialized) return;
-    fetchPlan();
+    if (!targetRef) return;
+    fetchPlan(targetRef);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialized, includeUI, selectedBranch]);
+  }, [initialized, includeUI, targetRef, targetCheckout]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -409,6 +438,8 @@ const UpdatesPage = () => {
               <div>
                 <div className="text-xs text-muted-foreground">Local (branch)</div>
                 <div className="font-mono text-xs break-all">{status.local?.branch || 'Unknown'}</div>
+                <div className="mt-1 text-xs text-muted-foreground">Deployed tag</div>
+                <div className="font-mono text-xs break-all">{status.local?.deployed_tag || 'Unknown'}</div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Remote (latest v*)</div>
@@ -416,8 +447,15 @@ const UpdatesPage = () => {
               </div>
             </div>
           ) : (
-            <div className="text-sm text-muted-foreground">Click “Check updates” to load status and branches.</div>
+            <div className="text-sm text-muted-foreground">Click “Check updates” to load status and release info.</div>
           )}
+
+          {status?.changelog_latest ? (
+            <div className="border border-border rounded-lg bg-card/30 p-3">
+              <div className="text-xs text-muted-foreground mb-2">Latest release notes</div>
+              <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-[260px] overflow-auto">{status.changelog_latest}</pre>
+            </div>
+          ) : null}
         </div>
       </ConfigCard>
 
@@ -425,7 +463,7 @@ const UpdatesPage = () => {
         <div className="flex items-center justify-between gap-3 mb-3">
           <div className="flex items-center gap-2">
             <RefreshCw className="w-5 h-5" />
-            <div className="text-base font-semibold">Select Branch + Preview</div>
+            <div className="text-base font-semibold">Select Target + Preview</div>
           </div>
           <button
             onClick={() => fetchPlan()}
@@ -440,20 +478,75 @@ const UpdatesPage = () => {
         <div className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <div className="text-xs text-muted-foreground mb-1">Target branch</div>
-              <select
-                value={selectedBranch}
-                onChange={(e) => setSelectedBranch(e.target.value)}
-                disabled={!initialized || !branches.length}
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm"
-              >
-                {(branches.length ? branches : [selectedBranch]).map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-              {!branches.length && initialized && <div className="mt-1 text-xs text-muted-foreground">No branches returned.</div>}
+              <div className="text-xs text-muted-foreground mb-2">Update target</div>
+              <div className="space-y-2 text-sm">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="aava-update-target"
+                    checked={targetMode === 'stable'}
+                    onChange={() => setTargetMode('stable')}
+                    className="rounded border-border"
+                  />
+                  Stable (latest release tag)
+                  <span className="ml-auto font-mono text-xs text-muted-foreground">{status?.remote?.latest_tag || 'unknown'}</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="aava-update-target"
+                    checked={targetMode === 'main'}
+                    onChange={() => setTargetMode('main')}
+                    className="rounded border-border"
+                  />
+                  Main (hotfixes)
+                  <span className="ml-auto font-mono text-xs text-muted-foreground">main</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="aava-update-target"
+                    checked={targetMode === 'advanced'}
+                    onChange={() => {
+                      setTargetMode('advanced');
+                      if (initialized && !branches.length) loadBranches();
+                    }}
+                    className="rounded border-border"
+                  />
+                  Advanced (pick a branch)
+                </label>
+              </div>
+
+              {targetMode === 'advanced' && (
+                <div className="mt-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs text-muted-foreground">Target branch</div>
+                    <button
+                      onClick={() => loadBranches({ force: true })}
+                      disabled={!initialized}
+                      className="text-xs px-2 py-1 rounded-md border border-border hover:bg-accent disabled:opacity-50"
+                      title="Refresh branches"
+                    >
+                      Refresh branches
+                    </button>
+                  </div>
+                  <select
+                    value={selectedBranch}
+                    onChange={(e) => setSelectedBranch(e.target.value)}
+                    disabled={!initialized || !branches.length}
+                    className="w-full mt-1 px-3 py-2 rounded-md border border-border bg-background text-sm"
+                  >
+                    {(branches.length ? branches : [selectedBranch]).map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                  {!branches.length && initialized && (
+                    <div className="mt-1 text-xs text-muted-foreground">No branches returned.</div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex flex-col justify-end gap-2">
               <label className="flex items-center gap-2 text-sm">
@@ -516,7 +609,7 @@ const UpdatesPage = () => {
               </div>
 
               <div className="text-xs text-muted-foreground">
-                Branch: <span className="font-mono">{selectedBranch}</span> • files changed: {plan.changed_file_count} • compose changed:{' '}
+                Target: <span className="font-mono">{targetRef || 'unknown'}</span> • files changed: {plan.changed_file_count} • compose changed:{' '}
                 {plan.compose_changed ? 'yes' : 'no'}
               </div>
 
@@ -544,7 +637,7 @@ const UpdatesPage = () => {
           )}
 
           {!plan && initialized && !planLoading && !planError && (
-            <div className="text-sm text-muted-foreground">Select a branch to see a preview.</div>
+            <div className="text-sm text-muted-foreground">Select a target to see a preview.</div>
           )}
           {!initialized && <div className="text-sm text-muted-foreground">Click “Check updates” first.</div>}
         </div>

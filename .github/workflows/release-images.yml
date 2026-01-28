@@ -72,6 +72,15 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+          {
+            echo "updater_tags<<EOF"
+            echo "ghcr.io/${OWNER}/asterisk-ai-voice-agent-updater:${TAG}"
+            if [ "$PUBLISH_LATEST" = "true" ]; then
+              echo "ghcr.io/${OWNER}/asterisk-ai-voice-agent-updater:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push ai-engine
         uses: docker/build-push-action@v6
         with:
@@ -104,3 +113,11 @@ jobs:
           file: ./admin_ui/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.admin_ui_tags }}
+
+      - name: Build and push updater
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./updater/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.updater_tags }}
