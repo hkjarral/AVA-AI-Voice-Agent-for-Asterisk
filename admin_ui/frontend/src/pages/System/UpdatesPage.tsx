@@ -105,7 +105,7 @@ const UpdatesPage = () => {
     return targetMode !== 'stable';
   }, [targetMode]);
 
-  const loadBranches = async (opts?: { force?: boolean }) => {
+  const loadBranches = async (opts?: { force?: boolean; localBranch?: string }) => {
     setBranchesError(null);
     try {
       const branchesRes = await axios.get<BranchesResponse>('/api/system/updates/branches', {
@@ -114,7 +114,7 @@ const UpdatesPage = () => {
       });
       setBranches(branchesRes.data.branches || []);
       if (branchesRes.data.error) setBranchesError(branchesRes.data.error);
-      const def = pickDefaultBranch(branchesRes.data.branches || [], status?.local?.branch);
+      const def = pickDefaultBranch(branchesRes.data.branches || [], opts?.localBranch ?? status?.local?.branch);
       setSelectedBranch(def);
     } catch (err: any) {
       setBranchesError(err.response?.data?.detail || err.message || 'Failed to load branches');
@@ -147,7 +147,7 @@ const UpdatesPage = () => {
 
       // Advanced mode: fetch branches for branch selection.
       if (targetMode === 'advanced') {
-        loadBranches();
+        loadBranches({ localBranch: localDef });
       }
     } catch (err: any) {
       setStatusError(err.response?.data?.detail || err.message || 'Failed to check updates');
