@@ -2,7 +2,7 @@
 
 # Asterisk AI Voice Agent
 
-![Version](https://img.shields.io/badge/version-5.2.4-blue.svg)
+![Version](https://img.shields.io/badge/version-5.2.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -21,7 +21,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 ## 📖 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
-- [🎉 What's New](#-whats-new-in-v524)
+- [🎉 What's New](#-whats-new-in-v525)
 - [🌟 Why Asterisk AI Voice Agent?](#-why-asterisk-ai-voice-agent)
 - [✨ Features](#-features)
 - [🎥 Demo](#-demo)
@@ -110,7 +110,7 @@ For users who prefer the command line or need headless setup.
 agent setup
 ```
 
-> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.2.4.
+> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v5.2.5.
 
 ### Option B: Manual Setup
 ```bash
@@ -153,19 +153,23 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 ---
 
-## 🎉 What's New in v5.2.4
+## 🎉 What's New in v5.2.5
 
 <details open>
 <summary><b>Latest Updates</b></summary>
 
-### 🔄 Updates UX (v5.2.1)
+### 🔄 Updates UX (v5.2.1+)
 - Admin UI: **System → Updates** page (GitHub-style): check updates → choose branch → preview impact → proceed
 - Preview shows **files changed** and **containers to rebuild/restart** (with opt-in “Update UI too”)
 - Detached updater job survives `admin_ui` rebuild/restarts and keeps a **Recent Runs** summary with rollback options
 
-### 🛠️ Update Hardening (v5.2.2 → v5.2.3)
-- Agent CLI: `agent update` now uses an explicit fetch refspec so `origin/<ref>` is reliably updated (prevents false “Already up to date”)
-- Agent CLI: compose-change updates target only running/impacted services (avoids trying to start optional `local_ai_server` on servers that never built it)
+### 🛠️ Update Hardening (v5.2.2+)
+- Admin UI: Updates prefer pulling the published updater image (fallback to local build when needed)
+- Agent CLI: `agent update` supports semver tag refs like `v5.2.5` (in addition to branches)
+
+### 🔊 Default Transport (v5.2.5)
+- Fresh installs now default to **AudioSocket** (`audio_transport: audiosocket`) for simpler, modern deployments
+- ExternalMedia RTP remains supported as a legacy/compat fallback
 
 For full release notes, see [CHANGELOG.md](CHANGELOG.md).
 

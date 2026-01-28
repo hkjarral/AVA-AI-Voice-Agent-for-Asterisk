@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [5.2.5] - 2026-01-28
+
+### Added
+
+- Updates: publish the `asterisk-ai-voice-agent-updater` image to GHCR on release tags (aligned with other containers).
+- Admin UI: Stable/Main/Advanced update targets + render the latest release notes (from `CHANGELOG.md`) after **Check updates**.
+- Agent CLI: `agent update` supports semver tag refs like `v5.2.5` (in addition to branches).
+
+### Changed
+
+- Config: fresh installs now default to **AudioSocket** (`audio_transport: audiosocket`).
+
+### Fixed
+
+- Admin UI Updates: prefer pulling the published updater image and fall back to a local build using host networking in restricted DNS/egress environments.
+
 ## [5.2.4] - 2026-01-26
 
 ### Fixed
@@ -1181,6 +1197,10 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 
 ## Version History
 
+- **v5.2.5** (2026-01-28) - Stable Updates improvements + updater image publishing + AudioSocket default
+- **v5.2.4** (2026-01-26) - Admin UI Docker Services hardening + remove background update checks
+- **v5.2.3** (2026-01-26) - Agent update targets only impacted services on compose changes
+- **v5.2.2** (2026-01-26) - Agent update explicit fetch refspec to avoid stale origin branches
 - **v5.2.1** (2026-01-25) - Admin UI Updates page (branch preview/run), job history + rollback, safer updater runner
 - **v5.1.7** (2026-01-24) - ExternalMedia greeting reliability, upstream squelch, hangup/transcript robustness
 - **v5.1.6** (2026-01-20) - Admin UI + RCA improvements, CLI surface alignment, setup wizard fixes
@@ -1192,7 +1212,11 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v5.2.1...HEAD
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v5.2.5...HEAD
+[5.2.5]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.5
+[5.2.4]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.4
+[5.2.3]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.3
+[5.2.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.2
 [5.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.1
 [5.1.7]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.1.7
 [5.1.6]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.1.6

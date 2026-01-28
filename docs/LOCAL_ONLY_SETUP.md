@@ -46,7 +46,7 @@ LOCAL_WS_URL=ws://127.0.0.1:8765
 # Default to local provider
 default_provider: local
 active_pipeline: local_only
-audio_transport: externalmedia
+audio_transport: audiosocket
 
 # Provider Configuration
 providers:
@@ -113,6 +113,8 @@ contexts:
       You are a helpful AI assistant. Be concise and friendly.
       Keep responses under 2 sentences when possible.
 ```
+
+> Note: AudioSocket is recommended for most deployments. If you prefer ExternalMedia RTP (legacy), set `audio_transport: externalmedia` instead.
 
 ### 3. Important Notes
 

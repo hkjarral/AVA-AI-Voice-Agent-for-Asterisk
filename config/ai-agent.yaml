@@ -1,7 +1,7 @@
 active_pipeline: local_hybrid
 asterisk:
   app_name: asterisk-ai-voice-agent
-audio_transport: externalmedia
+audio_transport: audiosocket
 audiosocket:
   format: slin
   host: 127.0.0.1
