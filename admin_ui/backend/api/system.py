@@ -2772,7 +2772,13 @@ def _updates_status_cache_lock():
     return _UPDATES_STATUS_CACHE_LOCK
 
 
-_DOCKER_IMAGE_REF_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$")
+# Allow an optional registry host with port prefix (e.g. "registry.example.com:5000/...").
+_DOCKER_IMAGE_REF_RE = re.compile(
+    r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*:[0-9]+/)?"
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
+    r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+    r"(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$"
+)
 
 
 def _validate_docker_image_ref(ref: str) -> str:
