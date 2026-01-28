@@ -2778,6 +2778,13 @@ def _run_subprocess(cmd: list[str], *, cwd: Optional[str] = None, timeout_sec: i
 
     Note: keep output bounded by callers (tail/truncate) when returning to UI.
     """
+    # Defense-in-depth: we only expect to invoke Docker CLI here.
+    # This prevents accidental expansion of this helper into a generic "run anything" hook.
+    if not cmd or cmd[0] != "docker":
+        raise ValueError("unsupported subprocess command")
+    for arg in cmd:
+        if not isinstance(arg, str) or arg == "" or "\x00" in arg or any(c.isspace() for c in arg):
+            raise ValueError("invalid subprocess argument")
     try:
         proc = subprocess.run(
             cmd,
@@ -3032,7 +3039,11 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
             build_root = os.getenv("PROJECT_ROOT", "/app/project")
             # Avoid docker-py image build streaming decode issues by using Docker CLI.
             # Always use host networking to avoid restricted bridge DNS/egress environments.
-            logger.info("Building updater image: %s (context=%s, network=host)", tag, build_root)
+            logger.info(
+                "Building updater image: %s (context=%s, network=host)",
+                _sanitize_for_log(tag),
+                _sanitize_for_log(build_root),
+            )
             code, out = _run_subprocess(
                 ["docker", "build", "--network=host", "-f", "updater/Dockerfile", "-t", tag, "."],
                 cwd=build_root,
@@ -3080,12 +3091,12 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
             code, out = _run_subprocess(["docker", "pull", remote_ref], timeout_sec=900)
             if code == 0:
                 _run_subprocess(["docker", "tag", remote_ref, local_tag], timeout_sec=60)
-                logger.info("Pulled updater image: %s -> %s", remote_ref, local_tag)
+                logger.info("Pulled updater image: %s -> %s", _sanitize_for_log(remote_ref), _sanitize_for_log(local_tag))
                 return
             logger.warning(
                 "Failed to pull updater image %s: %s",
-                remote_ref,
-                (out or "").strip().splitlines()[-1:] or "",
+                _sanitize_for_log(remote_ref),
+                _sanitize_for_log((out or "").strip().splitlines()[-1:][0] if (out or "").strip().splitlines() else ""),
             )
 
     if not allow_build:
