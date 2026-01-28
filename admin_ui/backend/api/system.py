@@ -2772,22 +2772,27 @@ def _updates_status_cache_lock():
     return _UPDATES_STATUS_CACHE_LOCK
 
 
-def _run_subprocess(cmd: list[str], *, cwd: Optional[str] = None, timeout_sec: int = 60) -> tuple[int, str]:
-    """
-    Run a subprocess command and return (exit_code, combined_output).
+_DOCKER_IMAGE_REF_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$")
 
-    Note: keep output bounded by callers (tail/truncate) when returning to UI.
+
+def _validate_docker_image_ref(ref: str) -> str:
+    r = (ref or "").strip()
+    if not r or r.startswith("-") or any(c.isspace() for c in r) or "\x00" in r:
+        raise ValueError("invalid docker image ref")
+    if not _DOCKER_IMAGE_REF_RE.fullmatch(r):
+        raise ValueError("invalid docker image ref")
+    return r
+
+
+def _run_docker(args: list[str], *, cwd: Optional[str] = None, timeout_sec: int = 60) -> tuple[int, str]:
     """
-    # Defense-in-depth: we only expect to invoke Docker CLI here.
-    # This prevents accidental expansion of this helper into a generic "run anything" hook.
-    if not cmd or cmd[0] != "docker":
-        raise ValueError("unsupported subprocess command")
-    for arg in cmd:
-        if not isinstance(arg, str) or arg == "" or "\x00" in arg or any(c.isspace() for c in arg):
-            raise ValueError("invalid subprocess argument")
+    Run Docker CLI and return (exit_code, combined_output).
+    """
+    if not args or any((not isinstance(a, str) or a == "" or "\x00" in a or any(c.isspace() for c in a)) for a in args):
+        raise ValueError("invalid docker args")
     try:
         proc = subprocess.run(
-            cmd,
+            ["docker", *args],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -3044,8 +3049,9 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
                 _sanitize_for_log(tag),
                 _sanitize_for_log(build_root),
             )
-            code, out = _run_subprocess(
-                ["docker", "build", "--network=host", "-f", "updater/Dockerfile", "-t", tag, "."],
+            safe_tag = _validate_docker_image_ref(tag)
+            code, out = _run_docker(
+                ["build", "--network=host", "-f", "updater/Dockerfile", "-t", safe_tag, "."],
                 cwd=build_root,
                 timeout_sec=1800,
             )
@@ -3087,10 +3093,10 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
     if prefer_pull_ref:
         remote_repo = _updater_remote_image_repo()
         for t in _updater_pull_tags_for_ref(prefer_pull_ref):
-            remote_ref = f"{remote_repo}:{t}"
-            code, out = _run_subprocess(["docker", "pull", remote_ref], timeout_sec=900)
+            remote_ref = _validate_docker_image_ref(f"{remote_repo}:{t}")
+            code, out = _run_docker(["pull", remote_ref], timeout_sec=900)
             if code == 0:
-                _run_subprocess(["docker", "tag", remote_ref, local_tag], timeout_sec=60)
+                _run_docker(["tag", remote_ref, _validate_docker_image_ref(local_tag)], timeout_sec=60)
                 logger.info("Pulled updater image: %s -> %s", _sanitize_for_log(remote_ref), _sanitize_for_log(local_tag))
                 return
             logger.warning(
