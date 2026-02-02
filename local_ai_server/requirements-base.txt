@@ -1,7 +1,7 @@
 # Base dependencies (always required)
 # These are needed regardless of which backends are enabled
 websockets==15.0.1
-numpy==1.26.4
+numpy==2.4.2
 
 # Note: Backend-specific packages are installed conditionally via Dockerfile build args
 # See Dockerfile for INCLUDE_VOSK, INCLUDE_SHERPA, INCLUDE_PIPER, INCLUDE_KOKORO, INCLUDE_LLAMA
