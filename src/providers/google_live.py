@@ -720,11 +720,15 @@ class GoogleLiveProvider(AIProviderInterface):
                 ws_url,
                 subprotocols=["gemini-live"],
                 max_size=10 * 1024 * 1024,  # 10MB max message size
+                # Disable library-level ping frames. We implement our own keepalive behavior
+                # in `_keepalive_loop()` and have seen 1008 closes correlated with ping activity.
+                ping_interval=None,
+                ping_timeout=None,
             )
-            
+
             _GOOGLE_LIVE_SESSIONS.inc()
             self._session_gauge_incremented = True
-             
+
             logger.info(
                 "Google Live WebSocket connected",
                 call_id=call_id,
@@ -732,24 +736,24 @@ class GoogleLiveProvider(AIProviderInterface):
 
             # Create ACK event BEFORE sending setup (like Deepgram pattern)
             self._setup_ack_event = asyncio.Event()
-            
+
             # Start receive loop FIRST (so it can catch setupComplete)
             self._receive_task = asyncio.create_task(
                 self._receive_loop(),
                 name=f"google-live-receive-{call_id}",
             )
-            
+
             # Send setup message to configure session
             await self._send_setup(context)
-            
+
             # Wait for setup acknowledgment
             logger.debug("Waiting for Google Live setupComplete...", call_id=self._call_id)
             await asyncio.wait_for(self._setup_ack_event.wait(), timeout=5.0)
             logger.info("Google Live setup complete (ACK received)", call_id=self._call_id)
-        
+
             # Note: Greeting is sent by _handle_setup_complete() to avoid race condition
             # Do NOT send greeting here as it would duplicate the greeting
-            
+
             self._keepalive_task = asyncio.create_task(
                 self._keepalive_loop(),
                 name=f"google-live-keepalive-{call_id}",
