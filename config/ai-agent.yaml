@@ -17,7 +17,7 @@ barge_in:
   pipeline_talk_detect_enabled: true
   pipeline_talk_detect_silence_ms: 1200
   pipeline_talk_detect_talking_threshold: 128
-  post_tts_end_protection_ms: 800
+  post_tts_end_protection_ms: 250
   greeting_protection_ms: 0
   provider_fallback_enabled: true
   provider_fallback_providers:
