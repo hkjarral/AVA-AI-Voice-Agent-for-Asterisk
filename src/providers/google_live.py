@@ -204,6 +204,9 @@ class GoogleLiveProvider(AIProviderInterface):
         self._last_ws_pong_monotonic: Optional[float] = None
         self._last_ws_ping_rtt_ms: Optional[float] = None
         self._last_ws_ping_error: Optional[str] = None
+        # When `realtimeInput` is continuously streaming, WebSocket pings are redundant (and may trigger 1008
+        # policy closes on some accounts). Track last `realtimeInput` send time so keepalive only fires on idle.
+        self._last_realtime_input_sent_monotonic: Optional[float] = None
 
     def _summarize_outbound(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -923,6 +926,9 @@ class GoogleLiveProvider(AIProviderInterface):
             summary_with_ts = dict(summary)
             summary_with_ts["ts_monotonic"] = round(time.monotonic(), 3)
             self._outbound_summaries.append(summary_with_ts)
+            # Track continuous audio traffic to avoid unnecessary WS pings.
+            if summary_with_ts.get("type") == "realtimeInput":
+                self._last_realtime_input_sent_monotonic = float(summary_with_ts["ts_monotonic"])
         except Exception:
             pass
 
@@ -2026,14 +2032,29 @@ class GoogleLiveProvider(AIProviderInterface):
 
     async def _keepalive_loop(self) -> None:
         """Send periodic keepalive messages."""
+        interval_sec = float(getattr(self.config, "ws_keepalive_interval_sec", _KEEPALIVE_INTERVAL_SEC) or _KEEPALIVE_INTERVAL_SEC)
+        idle_sec = float(getattr(self.config, "ws_keepalive_idle_sec", 5.0) or 5.0)
+        enabled = bool(getattr(self.config, "ws_keepalive_enabled", True))
+
+        if not enabled:
+            return
+
         while self._ws_is_open():
             try:
-                await asyncio.sleep(_KEEPALIVE_INTERVAL_SEC)
+                await asyncio.sleep(interval_sec)
                 # Use WebSocket ping frames (protocol-level) rather than undocumented API messages.
                 # The Live API docs require `realtimeInput` messages to have a valid payload; sending
                 # `{ "realtimeInput": {} }` can be treated as an unsupported operation (observed as
                 # 1008 close + 501 NotImplemented in dashboards).
                 if self._setup_complete and self.websocket:
+                    # If we're actively streaming audio, don't send pings. Some accounts appear to
+                    # close connections (1008) after repeated ping frames even when audio is flowing.
+                    try:
+                        last_audio = self._last_realtime_input_sent_monotonic
+                        if last_audio is not None and (time.monotonic() - last_audio) < idle_sec:
+                            continue
+                    except Exception:
+                        pass
                     ping = getattr(self.websocket, "ping", None)
                     if callable(ping):
                         t0 = time.monotonic()

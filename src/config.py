@@ -251,6 +251,13 @@ class GoogleProviderConfig(BaseModel):
     # Google Live only: heuristic hangup detection based on transcript markers (end_call / assistant_farewell).
     # Disable to isolate provider disconnects (e.g., WS 1008) without marker-driven cleanup_after_tts.
     hangup_markers_enabled: bool = Field(default=True)
+    # Google Live only: protocol-level WebSocket ping keepalive.
+    # NOTE: Google Live typically receives continuous `realtimeInput` audio frames; pings are only needed
+    # if the transport becomes idle. Some accounts/models appear to close connections (1008) after repeated
+    # ping frames, so we default to pinging only when idle (see provider implementation).
+    ws_keepalive_enabled: bool = Field(default=True)
+    ws_keepalive_interval_sec: float = Field(default=15.0)
+    ws_keepalive_idle_sec: float = Field(default=5.0)
 
 
 class GroqSTTProviderConfig(BaseModel):

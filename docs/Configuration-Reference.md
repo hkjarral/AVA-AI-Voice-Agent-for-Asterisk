@@ -340,6 +340,9 @@ Config notes:
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.
 - `providers.google_live.hangup_fallback_turn_complete_timeout_sec`: grace period waiting for `turnComplete` before fallback hangup.
 - `providers.google_live.hangup_markers_enabled`: enable/disable marker-based hangup heuristics (end_call / assistant_farewell) used to arm `cleanup_after_tts`.
+- `providers.google_live.ws_keepalive_enabled`: enable protocol-level WebSocket ping keepalive (pings only fire when the connection is idle).
+- `providers.google_live.ws_keepalive_interval_sec`: ping interval when keepalive is enabled.
+- `providers.google_live.ws_keepalive_idle_sec`: minimum idle time (no `realtimeInput`) before sending a ping.
 
 ### Deepgram Voice Agent (monolithic agent)
 
