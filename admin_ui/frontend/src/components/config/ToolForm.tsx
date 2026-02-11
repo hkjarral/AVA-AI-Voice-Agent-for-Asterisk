@@ -742,6 +742,7 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                         label="Hangup Guardrail Mode"
                                         value={config.hangup_call?.policy?.mode || DEFAULT_HANGUP_POLICY_MODE}
                                         onChange={(e) => updateHangupPolicy('mode', e.target.value)}
+                                        tooltip="Controls how strict the engine is when matching end-of-call intent from text: Relaxed matches broader phrasing, Normal balances false positives vs misses, Strict requires stronger matches."
                                         options={[
                                             { value: 'relaxed', label: 'Relaxed' },
                                             { value: 'normal', label: 'Normal' },
@@ -752,22 +753,32 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                 </div>
                                 <div className="mt-1 grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2">
-                                        <FormLabel>End Call Markers</FormLabel>
+                                        <FormLabel tooltip="Caller-side phrases that indicate they want to end the call. If a transcript contains one of these markers, the hangup guardrail is more likely to allow call termination.">
+                                            End Call Markers
+                                        </FormLabel>
                                         <textarea
                                             className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
                                             value={endCallMarkerText}
                                             onChange={(e) => updateHangupMarkers('end_call', parseMarkerList(e.target.value))}
                                             disabled={!showHangupExpert}
                                         />
+                                        <p className="text-xs text-muted-foreground">
+                                            One phrase per line. Focus on user intent language (for example, "that&apos;s all", "no thanks", "end call").
+                                        </p>
                                     </div>
                                     <div className="space-y-2">
-                                        <FormLabel>Assistant Farewell Markers</FormLabel>
+                                        <FormLabel tooltip="Assistant-side phrases used to recognize that the AI has delivered a farewell. Helps fallback logic avoid hanging up before the closing message is complete.">
+                                            Assistant Farewell Markers
+                                        </FormLabel>
                                         <textarea
                                             className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
                                             value={assistantFarewellMarkerText}
                                             onChange={(e) => updateHangupMarkers('assistant_farewell', parseMarkerList(e.target.value))}
                                             disabled={!showHangupExpert}
                                         />
+                                        <p className="text-xs text-muted-foreground">
+                                            One phrase per line. Include common assistant closings (for example, "goodbye", "thank you for calling").
+                                        </p>
                                     </div>
                                 </div>
                             </div>
