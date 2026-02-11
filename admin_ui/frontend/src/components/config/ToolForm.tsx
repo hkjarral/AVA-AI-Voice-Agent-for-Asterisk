@@ -724,7 +724,7 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                         : 'Expert values are shown with defaults and are read-only until enabled.'}
                                 </p>
                                 <p className="text-xs text-muted-foreground mt-2">
-                                    Markers are fallback safety signals. If the model correctly calls <code>hangup_call</code>, the call still ends even without marker matching.
+                                    These markers are global defaults. Pipelines can override end-of-call markers per pipeline under <code>Pipelines</code> → <code>LLM Expert Settings</code>.
                                 </p>
                                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <FormSelect

@@ -386,6 +386,22 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                     <p className="text-xs text-muted-foreground">
                         Used when Google Live does not emit a reliable turn-complete event after a hangup farewell.
                     </p>
+                    <div className="space-y-3 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
+                        <div className="flex items-center space-x-2">
+                            <input
+                                type="checkbox"
+                                id="hangup_markers_enabled"
+                                className="rounded border-input"
+                                checked={config.hangup_markers_enabled ?? false}
+                                onChange={(e) => handleChange('hangup_markers_enabled', e.target.checked)}
+                            />
+                            <label htmlFor="hangup_markers_enabled" className="text-sm font-medium">Enable Marker-Based Hangup Heuristics</label>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            Advanced: uses transcript marker matching (end_call / assistant_farewell) to arm <code>cleanup_after_tts</code> when a toolCall is missing.
+                            Recommended off for production; rely on <code>hangup_call</code> to end calls gracefully.
+                        </p>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Audio Idle Timeout (sec)</label>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FormInput, FormLabel, FormSwitch } from '../ui/FormComponents';
+import { FormInput, FormLabel, FormSwitch, FormSelect } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -18,6 +18,15 @@ interface PipelineFormProps {
     onChange: (newConfig: any) => void;
     isNew?: boolean;
 }
+
+const parseMarkerList = (value: string) =>
+    (value || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+const renderMarkerList = (value: any) =>
+    (Array.isArray(value) ? value : []).join('\n');
 
 const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange, isNew }) => {
     const [localConfig, setLocalConfig] = useState<any>({ ...config });
@@ -93,6 +102,18 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         const existingRole = existingOptions[role] || {};
         const nextRole = { ...existingRole, ...updates };
         updateConfig({ options: { ...existingOptions, [role]: nextRole } });
+    };
+
+    const setRoleOptions = (role: 'stt' | 'llm' | 'tts', nextRole: any) => {
+        const existingOptions = localConfig.options || {};
+        const nextOptions = { ...existingOptions };
+        const roleObj = (nextRole && typeof nextRole === 'object') ? nextRole : {};
+        if (Object.keys(roleObj).length === 0) {
+            delete nextOptions[role];
+        } else {
+            nextOptions[role] = roleObj;
+        }
+        updateConfig({ options: nextOptions });
     };
 
     // Helper to filter providers by capability
@@ -190,6 +211,16 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         ? localConfig.options?.stt?.timestamp_granularities
         : [];
     const timestampGranularitiesText = timestampGranularities.join(', ');
+
+    const guardrailEnabledValue =
+        localConfig.options?.llm?.hangup_call_guardrail === true
+            ? 'true'
+            : localConfig.options?.llm?.hangup_call_guardrail === false
+                ? 'false'
+                : '';
+
+    const guardrailModeValue = String(localConfig.options?.llm?.hangup_call_guardrail_mode || '');
+    const guardrailMarkersValue = localConfig.options?.llm?.hangup_call_guardrail_markers?.end_call;
 
     return (
         <div className="space-y-6">
@@ -373,6 +404,92 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                     disabled={!showLlmExpert}
                                 />
                             )}
+                        </div>
+                        <div className="mt-2 border-t border-amber-300/30 pt-3 space-y-3">
+                            <p className="text-xs text-muted-foreground">
+                                Hangup guardrails apply to pipeline LLMs that emit <code>hangup_call</code> too eagerly. These settings are per-pipeline and do not affect full-agent providers like Google Live.
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormSelect
+                                    label="Hangup Call Guardrail"
+                                    value={guardrailEnabledValue}
+                                    onChange={(e) => {
+                                        const v = String(e.target.value || '');
+                                        if (!v) {
+                                            const next = { ...(localConfig.options?.llm || {}) };
+                                            delete next.hangup_call_guardrail;
+                                            setRoleOptions('llm', next);
+                                            return;
+                                        }
+                                        updateRoleOptions('llm', { hangup_call_guardrail: v === 'true' });
+                                    }}
+                                    tooltip="Auto: enabled only for specific adapters (e.g., Ollama) unless explicitly set. When enabled, hangup_call is allowed only if user end-of-call intent is detected from text."
+                                    options={[
+                                        { value: '', label: 'Auto (default)' },
+                                        { value: 'true', label: 'Enabled' },
+                                        { value: 'false', label: 'Disabled' },
+                                    ]}
+                                    disabled={!showLlmExpert}
+                                />
+                                <FormSelect
+                                    label="Hangup Guardrail Mode"
+                                    value={guardrailModeValue}
+                                    onChange={(e) => {
+                                        const v = String(e.target.value || '');
+                                        if (!v) {
+                                            const next = { ...(localConfig.options?.llm || {}) };
+                                            delete next.hangup_call_guardrail_mode;
+                                            setRoleOptions('llm', next);
+                                            return;
+                                        }
+                                        updateRoleOptions('llm', { hangup_call_guardrail_mode: v });
+                                    }}
+                                    tooltip="Auto uses the global hangup policy mode. Relaxed disables the guardrail, Strict forces it on, Normal uses adapter defaults unless explicitly enabled/disabled above."
+                                    options={[
+                                        { value: '', label: 'Auto (global)' },
+                                        { value: 'relaxed', label: 'Relaxed' },
+                                        { value: 'normal', label: 'Normal' },
+                                        { value: 'strict', label: 'Strict' },
+                                    ]}
+                                    disabled={!showLlmExpert}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <FormLabel tooltip="Per-pipeline override list of caller phrases that indicate they want to end the call. Leave empty to use the global defaults from the Hangup tool policy.">
+                                    End-Call Intent Markers (Override)
+                                </FormLabel>
+                                <textarea
+                                    className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
+                                    value={renderMarkerList(guardrailMarkersValue)}
+                                    onChange={(e) => {
+                                        const items = parseMarkerList(e.target.value);
+                                        if (items.length === 0) {
+                                            const next = { ...(localConfig.options?.llm || {}) };
+                                            if (next.hangup_call_guardrail_markers && typeof next.hangup_call_guardrail_markers === 'object') {
+                                                const nextMarkers = { ...(next.hangup_call_guardrail_markers || {}) };
+                                                delete nextMarkers.end_call;
+                                                if (Object.keys(nextMarkers).length === 0) {
+                                                    delete next.hangup_call_guardrail_markers;
+                                                } else {
+                                                    next.hangup_call_guardrail_markers = nextMarkers;
+                                                }
+                                            }
+                                            setRoleOptions('llm', next);
+                                            return;
+                                        }
+                                        updateRoleOptions('llm', {
+                                            hangup_call_guardrail_markers: {
+                                                ...(localConfig.options?.llm?.hangup_call_guardrail_markers || {}),
+                                                end_call: items,
+                                            },
+                                        });
+                                    }}
+                                    disabled={!showLlmExpert}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    One phrase per line. Keep this list short to reduce false positives.
+                                </p>
+                            </div>
                         </div>
                     </div>
                 )}

@@ -29,6 +29,14 @@ Starting in v4.0, the project added a **modular pipeline architecture** alongsid
 - Configuration: Define under `pipelines:` block and set `active_pipeline: "pipeline_name"`
 - **Best for**: Flexibility, privacy (local audio processing), cost control
 
+### Pipeline LLM Hangup Guardrail (hangup_call)
+
+Some pipeline LLMs can be overly eager to emit `hangup_call`. A per-pipeline guardrail can require explicit end-of-call intent in the user's transcript before honoring `hangup_call`.
+
+- `pipelines.<name>.options.llm.hangup_call_guardrail`: `true`/`false` (unset = auto; enabled by default for specific adapters)
+- `pipelines.<name>.options.llm.hangup_call_guardrail_mode`: `relaxed`/`normal`/`strict` (unset = use global hangup policy mode)
+- `pipelines.<name>.options.llm.hangup_call_guardrail_markers.end_call`: list of caller phrases that count as end-of-call intent (unset/empty = use global hangup policy defaults)
+
 ### Golden Baselines
 See the 5 validated configurations in `config/`:
 - `ai-agent.golden-openai.yaml` - OpenAI Realtime (monolithic, fastest)
@@ -339,7 +347,7 @@ Config notes:
 - `providers.google_live.hangup_fallback_min_armed_sec`: minimum armed duration before fallback can fire.
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.
 - `providers.google_live.hangup_fallback_turn_complete_timeout_sec`: grace period waiting for `turnComplete` before fallback hangup.
-- `providers.google_live.hangup_markers_enabled`: enable/disable marker-based hangup heuristics (end_call / assistant_farewell) used to arm `cleanup_after_tts`.
+- `providers.google_live.hangup_markers_enabled`: enable/disable marker-based hangup heuristics (end_call / assistant_farewell) used to arm `cleanup_after_tts`. Recommended `false` for production (prefer tool-driven hangup via `hangup_call`).
 - `providers.google_live.ws_keepalive_enabled`: enable protocol-level WebSocket ping keepalive (pings only fire when the connection is idle).
 - `providers.google_live.ws_keepalive_interval_sec`: ping interval when keepalive is enabled.
 - `providers.google_live.ws_keepalive_idle_sec`: minimum idle time (no `realtimeInput`) before sending a ping.

@@ -1338,6 +1338,9 @@ providers:
     llm_temperature: 0.8
     llm_top_k: 40
     llm_top_p: 0.95
+    # Google Live: prefer tool-driven hangup. Marker-driven cleanup_after_tts can cause premature teardown
+    # during transcript/email capture flows.
+    hangup_markers_enabled: false
     output_encoding: linear16
     output_sample_rate_hz: 24000
     provider_input_encoding: linear16
