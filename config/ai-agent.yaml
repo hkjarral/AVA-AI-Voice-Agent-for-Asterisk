@@ -1341,6 +1341,9 @@ providers:
     # Google Live: prefer tool-driven hangup. Marker-driven cleanup_after_tts can cause premature teardown
     # during transcript/email capture flows.
     hangup_markers_enabled: false
+    # Google Live: disable WebSocket keepalive by default. We saw 1008 disconnects correlated with ping/keepalive
+    # behavior; opt-in if needed once verified for your account/model.
+    ws_keepalive_enabled: false
     output_encoding: linear16
     output_sample_rate_hz: 24000
     provider_input_encoding: linear16
