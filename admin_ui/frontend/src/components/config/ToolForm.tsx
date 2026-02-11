@@ -25,21 +25,11 @@ const DEFAULT_HANGUP_END_CALL_MARKERS = [
     "no transcript",
     "no transcript needed",
     "don't send a transcript",
-    "do not send a transcript",
-    "no need for a transcript",
     "no thanks",
-    "no thank you",
     "that's all",
-    "that is all",
-    "that's it",
-    "that is it",
     "nothing else",
-    "all set",
-    "all good",
-    "end the call",
     "end call",
     "hang up",
-    "hangup",
     "goodbye",
     "bye",
 ];
@@ -47,12 +37,8 @@ const DEFAULT_HANGUP_ASSISTANT_FAREWELL_MARKERS = [
     "goodbye",
     "bye",
     "thank you for calling",
-    "thanks for calling",
     "have a great day",
-    "have a good day",
     "take care",
-    "ending the call",
-    "i'll let you go",
 ];
 
 const parseMarkerList = (value: string) =>
@@ -736,6 +722,9 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                     {showHangupExpert
                                         ? 'Warning: these values directly influence hangup intent matching and fallback behavior.'
                                         : 'Expert values are shown with defaults and are read-only until enabled.'}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-2">
+                                    Markers are fallback safety signals. If the model correctly calls <code>hangup_call</code>, the call still ends even without marker matching.
                                 </p>
                                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <FormSelect
