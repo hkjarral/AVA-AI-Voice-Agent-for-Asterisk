@@ -2038,7 +2038,7 @@ class GoogleLiveProvider(AIProviderInterface):
         """Send periodic keepalive messages."""
         interval_sec = float(getattr(self.config, "ws_keepalive_interval_sec", _KEEPALIVE_INTERVAL_SEC) or _KEEPALIVE_INTERVAL_SEC)
         idle_sec = float(getattr(self.config, "ws_keepalive_idle_sec", 5.0) or 5.0)
-        enabled = bool(getattr(self.config, "ws_keepalive_enabled", True))
+        enabled = bool(getattr(self.config, "ws_keepalive_enabled", False))
 
         if not enabled:
             return
