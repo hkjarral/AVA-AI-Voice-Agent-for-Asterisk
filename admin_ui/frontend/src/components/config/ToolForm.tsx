@@ -9,6 +9,12 @@ import { EmailTemplateModal } from './EmailTemplateModal';
 interface ToolFormProps {
     config: any;
     contexts?: Record<string, any>;
+    hangupUsage?: {
+        googleLiveMarkersEnabled: boolean | null;
+        pipelineEndCallOverrides: string[];
+        pipelineModeOverrides: { name: string; mode: string }[];
+        pipelineGuardrailOverrides: { name: string; enabled: boolean }[];
+    };
     onChange: (newConfig: any) => void;
     onSaveNow?: (newConfig: any) => Promise<void>;
 }
@@ -41,6 +47,8 @@ const DEFAULT_HANGUP_ASSISTANT_FAREWELL_MARKERS = [
     "take care",
 ];
 
+const HANGUP_EXPERT_STORAGE_KEY = 'aava.ui.tools.hangupExpertSettings';
+
 const parseMarkerList = (value: string) =>
     (value || '')
         .split('\n')
@@ -58,21 +66,38 @@ const hasLiveAgentExpertSettings = (ext: any) => {
     return actionType !== 'transfer' || Boolean(ext?.pass_caller_info) || aliases.length > 0;
 };
 
-const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
-	    const [editingDestination, setEditingDestination] = useState<string | null>(null);
-	    const [destinationForm, setDestinationForm] = useState<any>({});
+const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFormProps) => {
+		    const [editingDestination, setEditingDestination] = useState<string | null>(null);
+		    const [destinationForm, setDestinationForm] = useState<any>({});
         const [emailDefaults, setEmailDefaults] = useState<any>(null);
         const [emailDefaultsError, setEmailDefaultsError] = useState<string | null>(null);
         const [showSummaryEmailAdvanced, setShowSummaryEmailAdvanced] = useState(false);
         const [showTranscriptEmailAdvanced, setShowTranscriptEmailAdvanced] = useState(false);
         const [templateModalOpen, setTemplateModalOpen] = useState(false);
         const [templateModalTool, setTemplateModalTool] = useState<'send_email_summary' | 'request_transcript'>('send_email_summary');
-        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => Boolean(config?.hangup_call?.policy));
+        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => {
+            try {
+                const v = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
+                if (v === 'true') return true;
+                if (v === 'false') return false;
+            } catch {
+                // Ignore storage failures (private browsing, blocked storage, etc.).
+            }
+            return false;
+        });
         const [showLiveAgentsExpert, setShowLiveAgentsExpert] = useState<boolean>(() =>
             Object.values(config?.extensions?.internal || {}).some((ext: any) => hasLiveAgentExpertSettings(ext))
         );
         const [showSummaryEmailExpert, setShowSummaryEmailExpert] = useState<boolean>(() => Boolean(config?.send_email_summary?.from_name));
         const [showTranscriptEmailExpert, setShowTranscriptEmailExpert] = useState<boolean>(() => Boolean(config?.request_transcript?.from_name));
+
+        useEffect(() => {
+            try {
+                localStorage.setItem(HANGUP_EXPERT_STORAGE_KEY, showHangupExpert ? 'true' : 'false');
+            } catch {
+                // Ignore.
+            }
+        }, [showHangupExpert]);
 
         // Per-context override draft rows
         const [summaryAdminCtx, setSummaryAdminCtx] = useState('');
@@ -726,6 +751,41 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                 <p className="text-xs text-muted-foreground mt-2">
                                     These markers are global defaults. Pipelines can override end-of-call markers per pipeline under <code>Pipelines</code> → <code>LLM Expert Settings</code>.
                                 </p>
+                                {hangupUsage && (
+                                    <div className="mt-3 text-xs text-muted-foreground space-y-1">
+                                        <div className="font-medium text-foreground">Usage</div>
+                                        <div>
+                                            Google Live marker heuristics:{' '}
+                                            <span className="font-mono">
+                                                {hangupUsage.googleLiveMarkersEnabled === null
+                                                    ? 'unknown'
+                                                    : hangupUsage.googleLiveMarkersEnabled
+                                                        ? 'enabled'
+                                                        : 'disabled'}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            Pipelines overriding end-call markers:{' '}
+                                            {hangupUsage.pipelineEndCallOverrides.length > 0
+                                                ? hangupUsage.pipelineEndCallOverrides.join(', ')
+                                                : 'none'}
+                                        </div>
+                                        <div>
+                                            Pipelines overriding guardrail mode:{' '}
+                                            {hangupUsage.pipelineModeOverrides.length > 0
+                                                ? hangupUsage.pipelineModeOverrides.map((p) => `${p.name}=${p.mode}`).join(', ')
+                                                : 'none'}
+                                        </div>
+                                        <div>
+                                            Pipelines overriding guardrail enabled:{' '}
+                                            {hangupUsage.pipelineGuardrailOverrides.length > 0
+                                                ? hangupUsage.pipelineGuardrailOverrides
+                                                    .map((p) => `${p.name}=${p.enabled ? 'on' : 'off'}`)
+                                                    .join(', ')
+                                                : 'none'}
+                                        </div>
+                                    </div>
+                                )}
                                 <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <FormSelect
                                         label="Hangup Guardrail Mode"

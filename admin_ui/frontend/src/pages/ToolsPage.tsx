@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
@@ -25,6 +25,43 @@ const ToolsPage = () => {
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
+
+    const hangupUsage = useMemo(() => {
+        const providers = (config && typeof config === 'object') ? (config as any).providers : null;
+        const googleLiveMarkersEnabledRaw = providers?.google_live?.hangup_markers_enabled;
+        const googleLiveMarkersEnabled =
+            googleLiveMarkersEnabledRaw === true ? true : googleLiveMarkersEnabledRaw === false ? false : null;
+
+        const pipelines = (config && typeof config === 'object') ? (config as any).pipelines : null;
+        const pipelineEndCallOverrides: string[] = [];
+        const pipelineModeOverrides: { name: string; mode: string }[] = [];
+        const pipelineGuardrailOverrides: { name: string; enabled: boolean }[] = [];
+
+        if (pipelines && typeof pipelines === 'object' && !Array.isArray(pipelines)) {
+            Object.entries(pipelines).forEach(([name, pipeline]) => {
+                const llmOpts = (pipeline as any)?.options?.llm;
+                const end = llmOpts?.hangup_call_guardrail_markers?.end_call;
+                if (Array.isArray(end) && end.length > 0) {
+                    pipelineEndCallOverrides.push(name);
+                }
+                const mode = String(llmOpts?.hangup_call_guardrail_mode || '').trim();
+                if (mode) {
+                    pipelineModeOverrides.push({ name, mode });
+                }
+                const enabled = llmOpts?.hangup_call_guardrail;
+                if (enabled === true || enabled === false) {
+                    pipelineGuardrailOverrides.push({ name, enabled });
+                }
+            });
+        }
+
+        return {
+            googleLiveMarkersEnabled,
+            pipelineEndCallOverrides,
+            pipelineModeOverrides,
+            pipelineGuardrailOverrides,
+        };
+    }, [config]);
 
     useEffect(() => {
         fetchConfig();
@@ -284,6 +321,7 @@ const ToolsPage = () => {
                             <ToolForm
                                 config={{ ...(config.tools || {}), farewell_hangup_delay_sec: config.farewell_hangup_delay_sec }}
                                 contexts={config.contexts || {}}
+                                hangupUsage={hangupUsage}
                                 onChange={updateToolsConfig}
                                 onSaveNow={updateToolsConfigAndSaveNow}
                             />
