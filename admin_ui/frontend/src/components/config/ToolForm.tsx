@@ -384,10 +384,34 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
     }, [hasLiveAgents, hasLiveAgentDestinationOverride]);
 
     useEffect(() => {
-        if (config?.hangup_call?.policy) {
+        const policy = config?.hangup_call?.policy;
+        if (!policy || typeof policy !== 'object') return;
+
+        const mode = String((policy as any).mode || '').trim();
+        const markers = (policy as any).markers;
+        const hasMarkers =
+            markers &&
+            typeof markers === 'object' &&
+            !Array.isArray(markers) &&
+            ((Array.isArray((markers as any).end_call) && (markers as any).end_call.length > 0) ||
+                (Array.isArray((markers as any).assistant_farewell) && (markers as any).assistant_farewell.length > 0));
+
+        // Auto-open only when the operator has configured meaningful overrides AND the user hasn't
+        // explicitly chosen a persisted preference for showing/hiding this expert section.
+        if (!mode && !hasMarkers) return;
+        try {
+            const persisted = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
+            if (persisted === null) {
+                setShowHangupExpert(true);
+            }
+        } catch {
             setShowHangupExpert(true);
         }
-    }, [config?.hangup_call?.policy]);
+    }, [
+        config?.hangup_call?.policy?.mode,
+        config?.hangup_call?.policy?.markers?.end_call,
+        config?.hangup_call?.policy?.markers?.assistant_farewell,
+    ]);
 
     useEffect(() => {
         if (Object.values(config?.extensions?.internal || {}).some((ext: any) => hasLiveAgentExpertSettings(ext))) {
