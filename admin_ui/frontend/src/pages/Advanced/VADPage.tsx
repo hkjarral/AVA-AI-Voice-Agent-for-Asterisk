@@ -18,6 +18,7 @@ const VADPage = () => {
     const [saving, setSaving] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
+    const [showExpertMode, setShowExpertMode] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -155,6 +156,20 @@ const VADPage = () => {
                 </button>
             </div>
 
+            <ConfigCard>
+                <FormSwitch
+                    label="Expert Mode"
+                    description="Expose low-level VAD timing and buffer controls."
+                    checked={showExpertMode}
+                    onChange={(e) => setShowExpertMode(e.target.checked)}
+                />
+                {showExpertMode && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+                        Warning: expert VAD settings can clip speech or introduce turn latency if tuned aggressively.
+                    </p>
+                )}
+            </ConfigCard>
+
             <ConfigSection title="Primary Detection" description="Main VAD settings for speech detection.">
                 <ConfigCard>
                     <div className="space-y-6">
@@ -271,6 +286,50 @@ const VADPage = () => {
                     </div>
                 </ConfigCard>
             </ConfigSection>
+
+            {showExpertMode && (
+                <ConfigSection
+                    title="Utterance Controls (Expert)"
+                    description="Fine-grained utterance boundary tuning for engine-side heuristics."
+                >
+                    <ConfigCard>
+                        <div className="space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <FormInput
+                                    label="Min Utterance Duration (ms)"
+                                    type="number"
+                                    value={vadConfig.min_utterance_duration_ms ?? 800}
+                                    onChange={(e) => updateVADConfig('min_utterance_duration_ms', parseInt(e.target.value))}
+                                    tooltip="Minimum duration to consider detected speech a valid utterance."
+                                />
+                                <FormInput
+                                    label="Max Utterance Duration (ms)"
+                                    type="number"
+                                    value={vadConfig.max_utterance_duration_ms ?? 8000}
+                                    onChange={(e) => updateVADConfig('max_utterance_duration_ms', parseInt(e.target.value))}
+                                    tooltip="Hard cap for a single utterance before forced boundary handling."
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <FormInput
+                                    label="Utterance Padding (ms)"
+                                    type="number"
+                                    value={vadConfig.utterance_padding_ms ?? 100}
+                                    onChange={(e) => updateVADConfig('utterance_padding_ms', parseInt(e.target.value))}
+                                    tooltip="Extra audio kept around utterance boundaries for naturalness."
+                                />
+                                <FormInput
+                                    label="Fallback Buffer Size (bytes)"
+                                    type="number"
+                                    value={vadConfig.fallback_buffer_size ?? 128000}
+                                    onChange={(e) => updateVADConfig('fallback_buffer_size', parseInt(e.target.value))}
+                                    tooltip="Internal fallback buffer size used by engine-side VAD fallback paths."
+                                />
+                            </div>
+                        </div>
+                    </ConfigCard>
+                </ConfigSection>
+            )}
 
             <ConfigSection
                 title="Upstream Squelch"

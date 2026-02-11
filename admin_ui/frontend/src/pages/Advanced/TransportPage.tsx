@@ -7,7 +7,7 @@ import { Save, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
-import { FormInput, FormSelect } from '../../components/ui/FormComponents';
+import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
 const TransportPage = () => {
@@ -19,6 +19,7 @@ const TransportPage = () => {
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [applyMethod, setApplyMethod] = useState<string>('restart');
+    const [showExpertMode, setShowExpertMode] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -224,6 +225,20 @@ const TransportPage = () => {
                 </ConfigCard>
             </ConfigSection>
 
+            <ConfigCard>
+                <FormSwitch
+                    label="Expert Mode"
+                    description="Expose high-impact transport hardening and endpoint lock controls."
+                    checked={showExpertMode}
+                    onChange={(e) => setShowExpertMode(e.target.checked)}
+                />
+                {showExpertMode && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+                        Warning: incorrect expert transport settings can drop RTP packets or break media connectivity.
+                    </p>
+                )}
+            </ConfigCard>
+
             {transportType === 'audiosocket' && (
                 <ConfigSection title="AudioSocket Settings" description="Configuration for the AudioSocket server.">
                     <ConfigCard>
@@ -359,6 +374,20 @@ const TransportPage = () => {
                                     tooltip="Auto-inferred from format if not set."
                                 />
                             </div>
+
+                            {showExpertMode && (
+                                <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
+                                    <FormSwitch
+                                        label="Lock Remote Endpoint"
+                                        description="Drop RTP packets if source host/port changes mid-call."
+                                        checked={externalMediaConfig.lock_remote_endpoint ?? true}
+                                        onChange={(e) => updateSectionConfig('external_media', 'lock_remote_endpoint', e.target.checked)}
+                                    />
+                                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+                                        Security hardening: keep enabled unless your network path legitimately rewrites RTP source mid-call.
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     </ConfigCard>
                 </ConfigSection>

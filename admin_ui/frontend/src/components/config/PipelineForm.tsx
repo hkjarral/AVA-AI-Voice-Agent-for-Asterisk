@@ -24,6 +24,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const [localAIStatus, setLocalAIStatus] = useState<LocalAIStatus | null>(null);
     const [statusLoading, setStatusLoading] = useState(false);
     const [showAdvancedSTT, setShowAdvancedSTT] = useState(false);
+    const [showExpertMode, setShowExpertMode] = useState(false);
 
     // Fetch local AI server status for backend info (AAVA-116)
     useEffect(() => {
@@ -59,6 +60,13 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         const existingSTT = existingOptions.stt || {};
         const nextSTT = { ...existingSTT, ...updates };
         updateConfig({ options: { ...existingOptions, stt: nextSTT } });
+    };
+
+    const updateRoleOptions = (role: 'stt' | 'llm' | 'tts', updates: any) => {
+        const existingOptions = localConfig.options || {};
+        const existingRole = existingOptions[role] || {};
+        const nextRole = { ...existingRole, ...updates };
+        updateConfig({ options: { ...existingOptions, [role]: nextRole } });
     };
 
     // Helper to filter providers by capability
@@ -140,6 +148,22 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
 
         updateConfig(updates);
     };
+
+    const sttKey = String(localConfig.stt || '').toLowerCase();
+    const llmKey = String(localConfig.llm || '').toLowerCase();
+    const ttsKey = String(localConfig.tts || '').toLowerCase();
+
+    const isOpenAIStt = sttKey.includes('openai');
+    const isOpenAILlm = llmKey.includes('openai');
+    const isOpenAITts = ttsKey.includes('openai');
+    const isGroqStt = sttKey.includes('groq');
+    const isGroqTts = ttsKey.includes('groq');
+    const isOllamaLlm = llmKey.includes('ollama');
+
+    const timestampGranularities = Array.isArray(localConfig.options?.stt?.timestamp_granularities)
+        ? localConfig.options?.stt?.timestamp_granularities
+        : [];
+    const timestampGranularitiesText = timestampGranularities.join(', ');
 
     return (
         <div className="space-y-6">
@@ -288,6 +312,89 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                         <p className="text-xs text-destructive">No TTS providers available. Create a modular TTS provider first.</p>
                     )}
                 </div>
+            </div>
+
+            <div className="space-y-4 border-t border-border pt-6">
+                <FormSwitch
+                    label="Expert Mode"
+                    description="Expose provider-specific pipeline knobs used by advanced adapters."
+                    checked={showExpertMode}
+                    onChange={(e) => setShowExpertMode(e.target.checked)}
+                />
+
+                {showExpertMode && (
+                    <div className="space-y-4 border border-amber-300/40 rounded-lg p-4 bg-amber-500/10">
+                        <p className="text-xs text-amber-700 dark:text-amber-400">
+                            Warning: these overrides bypass conservative defaults and can break tool-calling or audio formatting if misconfigured.
+                        </p>
+
+                        {(isOpenAILlm || isOllamaLlm) && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormSwitch
+                                    label="LLM Tools Enabled"
+                                    description="Allow tool calls at the pipeline adapter level."
+                                    checked={localConfig.options?.llm?.tools_enabled ?? true}
+                                    onChange={(e) => updateRoleOptions('llm', { tools_enabled: e.target.checked })}
+                                />
+                            </div>
+                        )}
+
+                        {isOpenAILlm && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormInput
+                                    label="OpenAI Realtime Model"
+                                    value={localConfig.options?.llm?.realtime_model || ''}
+                                    onChange={(e) => updateRoleOptions('llm', { realtime_model: e.target.value })}
+                                    placeholder="gpt-4o-realtime-preview-2024-12-17"
+                                    tooltip="Adapter-level realtime model override for OpenAI pipeline LLM."
+                                />
+                            </div>
+                        )}
+
+                        {isOpenAITts && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormInput
+                                    label="OpenAI TTS Response Format"
+                                    value={localConfig.options?.tts?.response_format || ''}
+                                    onChange={(e) => updateRoleOptions('tts', { response_format: e.target.value })}
+                                    placeholder="wav"
+                                    tooltip="Adapter response format (e.g., wav, pcm)."
+                                />
+                            </div>
+                        )}
+
+                        {(isOpenAIStt || isGroqStt) && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormInput
+                                    label="STT Timestamp Granularities"
+                                    value={timestampGranularitiesText}
+                                    onChange={(e) =>
+                                        updateRoleOptions('stt', {
+                                            timestamp_granularities: (e.target.value || '')
+                                                .split(',')
+                                                .map((v) => v.trim())
+                                                .filter(Boolean),
+                                        })
+                                    }
+                                    placeholder="segment, word"
+                                    tooltip="Comma-separated; only supported on specific models/endpoints."
+                                />
+                            </div>
+                        )}
+
+                        {isGroqTts && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormInput
+                                    label="Groq TTS Max Input Chars"
+                                    type="number"
+                                    value={localConfig.options?.tts?.max_input_chars ?? 200}
+                                    onChange={(e) => updateRoleOptions('tts', { max_input_chars: parseInt(e.target.value || '200', 10) })}
+                                    tooltip="Max characters per TTS chunk before adapter splits text."
+                                />
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
 
         </div>

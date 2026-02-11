@@ -20,8 +20,49 @@ const DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE =
 const DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT = "Connecting you now.";
 const DEFAULT_ATTENDED_CALLER_DECLINED_PROMPT =
     "I’m not able to complete that transfer right now. Would you like me to take a message, or is there anything else I can help with?";
-// Note: Hangup guardrails (markers, policy modes) removed in v5.0
-// Call ending behavior is now controlled via context prompts
+const DEFAULT_HANGUP_POLICY_MODE = 'normal';
+const DEFAULT_HANGUP_END_CALL_MARKERS = [
+    "no transcript",
+    "no transcript needed",
+    "don't send a transcript",
+    "do not send a transcript",
+    "no need for a transcript",
+    "no thanks",
+    "no thank you",
+    "that's all",
+    "that is all",
+    "that's it",
+    "that is it",
+    "nothing else",
+    "all set",
+    "all good",
+    "end the call",
+    "end call",
+    "hang up",
+    "hangup",
+    "goodbye",
+    "bye",
+];
+const DEFAULT_HANGUP_ASSISTANT_FAREWELL_MARKERS = [
+    "goodbye",
+    "bye",
+    "thank you for calling",
+    "thanks for calling",
+    "have a great day",
+    "have a good day",
+    "take care",
+    "ending the call",
+    "i'll let you go",
+];
+
+const parseMarkerList = (value: string) =>
+    (value || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+const renderMarkerList = (value: string[] | undefined, fallback: string[]) =>
+    (Array.isArray(value) && value.length > 0 ? value : fallback).join('\n');
 
 const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
 	    const [editingDestination, setEditingDestination] = useState<string | null>(null);
@@ -32,6 +73,16 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
         const [showTranscriptEmailAdvanced, setShowTranscriptEmailAdvanced] = useState(false);
         const [templateModalOpen, setTemplateModalOpen] = useState(false);
         const [templateModalTool, setTemplateModalTool] = useState<'send_email_summary' | 'request_transcript'>('send_email_summary');
+        const [showExpertMode, setShowExpertMode] = useState<boolean>(() =>
+            Boolean(
+                config?.hangup_call?.policy ||
+                Object.values(config?.extensions?.internal || {}).some((ext: any) =>
+                    ext?.action_type != null || ext?.pass_caller_info != null || (Array.isArray(ext?.aliases) && ext.aliases.length > 0)
+                ) ||
+                config?.send_email_summary?.from_name ||
+                config?.request_transcript?.from_name
+            )
+        );
 
         // Per-context override draft rows
         const [summaryAdminCtx, setSummaryAdminCtx] = useState('');
@@ -212,6 +263,17 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
         onChange(next);
     };
 
+    const updateHangupPolicy = (field: string, value: any) => {
+        const current = config.hangup_call?.policy || {};
+        updateNestedConfig('hangup_call', 'policy', { ...current, [field]: value });
+    };
+
+    const updateHangupMarkers = (field: 'end_call' | 'assistant_farewell', value: string[]) => {
+        const current = config.hangup_call?.policy || {};
+        const markers = { ...(current.markers || {}), [field]: value };
+        updateNestedConfig('hangup_call', 'policy', { ...current, markers });
+    };
+
     const removeByContextKey = (section: string, key: string, contextName: string) => {
         const next = { ...config };
         const toolCfg = { ...(next[section] || {}) };
@@ -226,6 +288,14 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
     };
 
     const contextNames = Object.keys(contexts || {}).slice().sort();
+    const endCallMarkerText = renderMarkerList(
+        config.hangup_call?.policy?.markers?.end_call,
+        DEFAULT_HANGUP_END_CALL_MARKERS
+    );
+    const assistantFarewellMarkerText = renderMarkerList(
+        config.hangup_call?.policy?.markers?.assistant_farewell,
+        DEFAULT_HANGUP_ASSISTANT_FAREWELL_MARKERS
+    );
 
     const getDefaultEmailTemplate = (tool: 'send_email_summary' | 'request_transcript') => {
         if (!emailDefaults) return '';
@@ -359,6 +429,22 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
 
     return (
         <div className="space-y-8">
+            <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/10">
+                <FormSwitch
+                    label="Expert Mode"
+                    description="Expose advanced and high-impact tool behavior controls."
+                    checked={showExpertMode}
+                    onChange={(e) => setShowExpertMode(e.target.checked)}
+                    className="mb-0 border-0 p-0 bg-transparent"
+                />
+                {showExpertMode && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+                        Warning: Expert settings can materially change call flow and hangup behavior.
+                        Validate in a staging call flow before production.
+                    </p>
+                )}
+            </div>
+
             {/* AI Identity & General Settings */}
             <div className="space-y-4 border-b border-border pb-6">
                 <h3 className="text-lg font-semibold text-primary">General Settings</h3>
@@ -630,6 +716,43 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                             </p>
                         </div>
                     )}
+                    {showExpertMode && config.hangup_call?.enabled !== false && (
+                        <div className="mt-4 pl-4 border-l-2 border-amber-300/40 ml-2 space-y-4">
+                            <p className="text-xs text-amber-700 dark:text-amber-400">
+                                Expert: these settings directly affect hangup intent detection and fallback behavior.
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormSelect
+                                    label="Hangup Guardrail Mode"
+                                    value={config.hangup_call?.policy?.mode || DEFAULT_HANGUP_POLICY_MODE}
+                                    onChange={(e) => updateHangupPolicy('mode', e.target.value)}
+                                    options={[
+                                        { value: 'relaxed', label: 'Relaxed' },
+                                        { value: 'normal', label: 'Normal' },
+                                        { value: 'strict', label: 'Strict' },
+                                    ]}
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <FormLabel>End Call Markers</FormLabel>
+                                    <textarea
+                                        className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px]"
+                                        value={endCallMarkerText}
+                                        onChange={(e) => updateHangupMarkers('end_call', parseMarkerList(e.target.value))}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <FormLabel>Assistant Farewell Markers</FormLabel>
+                                    <textarea
+                                        className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px]"
+                                        value={assistantFarewellMarkerText}
+                                        onChange={(e) => updateHangupMarkers('assistant_farewell', parseMarkerList(e.target.value))}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Leave Voicemail */}
@@ -667,7 +790,7 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
 	                                }
                                     const rowId = getInternalExtRowId(key);
                                     getInternalExtRowMeta(rowId).autoDerivedKey = true;
-	                                updateNestedConfig('extensions', 'internal', { ...existing, [key]: { name: '', description: '', dial_string: '', transfer: true, device_state_tech: 'auto' } });
+	                                updateNestedConfig('extensions', 'internal', { ...existing, [key]: { name: '', description: '', dial_string: '', transfer: true, device_state_tech: 'auto', action_type: 'transfer', aliases: [], pass_caller_info: false } });
 	                            }}
 	                            className="text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors"
 	                        >
@@ -799,6 +922,56 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
 	                                        title="Description"
 	                                    />
 	                                </div>
+                                    {showExpertMode && (
+                                        <>
+                                            <div className="md:col-span-2">
+                                                <select
+                                                    className="w-full border rounded px-2 py-1 text-sm bg-background"
+                                                    value={ext.action_type || 'transfer'}
+                                                    onChange={(e) => {
+                                                        const updated = { ...(config.extensions?.internal || {}) };
+                                                        updated[key] = { ...ext, action_type: e.target.value };
+                                                        updateNestedConfig('extensions', 'internal', updated);
+                                                    }}
+                                                    title="Action type used when transfer tool resolves this target"
+                                                >
+                                                    <option value="transfer">action_type: transfer</option>
+                                                    <option value="voicemail">action_type: voicemail</option>
+                                                    <option value="queue">action_type: queue</option>
+                                                    <option value="ringgroup">action_type: ringgroup</option>
+                                                </select>
+                                            </div>
+                                            <div className="md:col-span-2">
+                                                <input
+                                                    className="w-full border rounded px-2 py-1 text-sm"
+                                                    placeholder="Aliases (comma-separated)"
+                                                    value={Array.isArray(ext.aliases) ? ext.aliases.join(', ') : (ext.aliases || '')}
+                                                    onChange={(e) => {
+                                                        const aliases = (e.target.value || '')
+                                                            .split(',')
+                                                            .map((s) => s.trim())
+                                                            .filter(Boolean);
+                                                        const updated = { ...(config.extensions?.internal || {}) };
+                                                        updated[key] = { ...ext, aliases };
+                                                        updateNestedConfig('extensions', 'internal', updated);
+                                                    }}
+                                                    title="Alternative names users can say to target this live agent"
+                                                />
+                                            </div>
+                                            <div className="md:col-span-2">
+                                                <FormSwitch
+                                                    label="Pass Caller Info"
+                                                    description="Include caller name/number and last transcript in transfer context."
+                                                    checked={ext.pass_caller_info ?? false}
+                                                    onChange={(e) => {
+                                                        const updated = { ...(config.extensions?.internal || {}) };
+                                                        updated[key] = { ...ext, pass_caller_info: e.target.checked };
+                                                        updateNestedConfig('extensions', 'internal', updated);
+                                                    }}
+                                                />
+                                            </div>
+                                        </>
+                                    )}
 	                                <div className="md:col-span-3 flex justify-end items-center gap-3 min-w-0 overflow-hidden">
                                         <button
                                             type="button"
@@ -882,6 +1055,12 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                 label="From Email"
                                 value={config.send_email_summary?.from_email || ''}
                                 onChange={(e) => updateNestedConfig('send_email_summary', 'from_email', e.target.value)}
+                            />
+                            <FormInput
+                                label="From Name"
+                                value={config.send_email_summary?.from_name || ''}
+                                onChange={(e) => updateNestedConfig('send_email_summary', 'from_name', e.target.value)}
+                                placeholder="AI Voice Agent"
                             />
                             <FormInput
                                 label="Admin Email (Recipient)"
@@ -1098,6 +1277,12 @@ const ToolForm = ({ config, contexts, onChange, onSaveNow }: ToolFormProps) => {
                                 value={config.request_transcript?.from_email || ''}
                                 onChange={(e) => updateNestedConfig('request_transcript', 'from_email', e.target.value)}
                                 placeholder="agent@yourdomain.com"
+                            />
+                            <FormInput
+                                label="From Name"
+                                value={config.request_transcript?.from_name || ''}
+                                onChange={(e) => updateNestedConfig('request_transcript', 'from_name', e.target.value)}
+                                placeholder="AI Voice Agent"
                             />
                             <FormInput
                                 label="Admin Email (BCC)"
