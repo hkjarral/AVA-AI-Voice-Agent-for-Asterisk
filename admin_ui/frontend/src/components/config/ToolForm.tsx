@@ -285,8 +285,23 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 
     const updateHangupMarkers = (field: 'end_call' | 'assistant_farewell', value: string[]) => {
         const current = config.hangup_call?.policy || {};
-        const markers = { ...(current.markers || {}), [field]: value };
-        updateNestedConfig('hangup_call', 'policy', { ...current, markers });
+        const currentMarkers =
+            current.markers && typeof current.markers === 'object' && !Array.isArray(current.markers)
+                ? current.markers
+                : {};
+        const markers = { ...(currentMarkers || {}) };
+        if (!value || value.length === 0) {
+            delete (markers as any)[field];
+        } else {
+            (markers as any)[field] = value;
+        }
+        const nextPolicy = { ...current };
+        if (Object.keys(markers).length === 0) {
+            delete (nextPolicy as any).markers;
+        } else {
+            (nextPolicy as any).markers = markers;
+        }
+        updateNestedConfig('hangup_call', 'policy', nextPolicy);
     };
 
     const removeByContextKey = (section: string, key: string, contextName: string) => {

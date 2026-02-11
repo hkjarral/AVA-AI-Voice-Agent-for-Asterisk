@@ -1084,6 +1084,12 @@ func recoverFromStashConflict(ctx *updateContext) error {
 			// This may reintroduce drift; operators should move overrides into ai-agent.local.yaml.
 			if copyErr := copyFile(backupBase, filepath.Join("config", "ai-agent.yaml")); copyErr == nil {
 				printUpdateInfo("Restored config/ai-agent.yaml (fallback)")
+			} else {
+				printUpdateInfo(
+					"WARN: could not restore backup ai-agent.yaml either: %v (backup still at %s)",
+					copyErr,
+					ctx.backupDir,
+				)
 			}
 		}
 	}
@@ -1152,7 +1158,7 @@ func migrateBackupBaseConfigEditsToLocal(oldSHA string, backupBasePath string) e
 	patch := configmerge.ComputeOverrideNoDeletes(baseBefore, backupBase)
 	localPath := filepath.Join("config", "ai-agent.local.yaml")
 	local := map[string]any{}
-	if _, err := os.Stat(localPath); err == nil {
+	if _, statErr := os.Stat(localPath); statErr == nil {
 		m, err := configmerge.ReadYAMLFile(localPath)
 		if err != nil {
 			return fmt.Errorf("failed to parse existing %s during migration: %w", localPath, err)
@@ -1160,6 +1166,8 @@ func migrateBackupBaseConfigEditsToLocal(oldSHA string, backupBasePath string) e
 		if m != nil {
 			local = m
 		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to stat %s: %w", localPath, statErr)
 	}
 
 	mergedLocal := configmerge.DeepMerge(local, patch)
@@ -1197,7 +1205,7 @@ func migrateBaseConfigEditsToLocal() error {
 	patch := configmerge.ComputeOverrideNoDeletes(baseClean, baseWorking)
 	localRel := filepath.Join("config", "ai-agent.local.yaml")
 	localExisting := map[string]any{}
-	if _, err := os.Stat(localRel); err == nil {
+	if _, statErr := os.Stat(localRel); statErr == nil {
 		m, err := configmerge.ReadYAMLFile(localRel)
 		if err != nil {
 			return fmt.Errorf("failed to parse existing %s during migration: %w", localRel, err)
@@ -1205,6 +1213,8 @@ func migrateBaseConfigEditsToLocal() error {
 		if m != nil {
 			localExisting = m
 		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to stat %s: %w", localRel, statErr)
 	}
 	localNew := configmerge.DeepMerge(localExisting, patch)
 	if err := configmerge.WriteYAMLFileAtomic(localRel, localNew); err != nil {
