@@ -221,6 +221,12 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
 
     const guardrailModeValue = String(localConfig.options?.llm?.hangup_call_guardrail_mode || '');
     const guardrailMarkersValue = localConfig.options?.llm?.hangup_call_guardrail_markers?.end_call;
+    const guardrailMarkersText = renderMarkerList(guardrailMarkersValue);
+    const [guardrailMarkersDraft, setGuardrailMarkersDraft] = useState<string>(guardrailMarkersText);
+
+    useEffect(() => {
+        setGuardrailMarkersDraft(guardrailMarkersText);
+    }, [guardrailMarkersText]);
 
     return (
         <div className="space-y-6">
@@ -460,9 +466,12 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                 </FormLabel>
                                 <textarea
                                     className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
-                                    value={renderMarkerList(guardrailMarkersValue)}
+                                    value={guardrailMarkersDraft}
                                     onChange={(e) => {
-                                        const items = parseMarkerList(e.target.value);
+                                        setGuardrailMarkersDraft(e.target.value);
+                                    }}
+                                    onBlur={() => {
+                                        const items = parseMarkerList(guardrailMarkersDraft);
                                         if (items.length === 0) {
                                             const next = { ...(localConfig.options?.llm || {}) };
                                             if (next.hangup_call_guardrail_markers && typeof next.hangup_call_guardrail_markers === 'object') {

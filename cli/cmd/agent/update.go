@@ -1208,7 +1208,8 @@ func migrateBaseConfigEditsToLocal() error {
 }
 
 func gitFileModified(path string) (bool, error) {
-	out, err := runGitCmd("diff", "--name-only", "--", path)
+	// Use status porcelain so we detect staged-only changes too.
+	out, err := runGitCmd("status", "--porcelain", "--", path)
 	if err != nil {
 		return false, err
 	}

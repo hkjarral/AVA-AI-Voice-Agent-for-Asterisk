@@ -9201,8 +9201,13 @@ class Engine:
                                 if override_end:
                                     end_markers = normalize_marker_list(override_end, list(end_markers))
                                     end_markers_source = "pipeline_override"
-                            except Exception:
-                                pass
+                            except (TypeError, ValueError, AttributeError) as e:
+                                logger.warning(
+                                    "Failed applying pipeline hangup marker override; using global defaults",
+                                    call_id=call_id,
+                                    error=str(e),
+                                    exc_info=True,
+                                )
                             has_end_intent = text_contains_marker_word(normalized_user_text, end_markers)
                             if not has_end_intent:
                                 before_count = len(tool_calls)

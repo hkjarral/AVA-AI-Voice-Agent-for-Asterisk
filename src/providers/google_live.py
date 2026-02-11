@@ -21,6 +21,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import math
 import time
 import struct
 import audioop
@@ -2036,12 +2037,26 @@ class GoogleLiveProvider(AIProviderInterface):
 
     async def _keepalive_loop(self) -> None:
         """Send periodic keepalive messages."""
-        interval_sec = float(getattr(self.config, "ws_keepalive_interval_sec", _KEEPALIVE_INTERVAL_SEC) or _KEEPALIVE_INTERVAL_SEC)
-        idle_sec = float(getattr(self.config, "ws_keepalive_idle_sec", 5.0) or 5.0)
+        try:
+            interval_sec = float(
+                getattr(self.config, "ws_keepalive_interval_sec", _KEEPALIVE_INTERVAL_SEC) or _KEEPALIVE_INTERVAL_SEC
+            )
+        except (TypeError, ValueError):
+            interval_sec = float(_KEEPALIVE_INTERVAL_SEC)
+        try:
+            idle_sec = float(getattr(self.config, "ws_keepalive_idle_sec", 5.0) or 5.0)
+        except (TypeError, ValueError):
+            idle_sec = 5.0
         enabled = bool(getattr(self.config, "ws_keepalive_enabled", False))
 
         if not enabled:
             return
+
+        # Guard against bad config values that could cause a tight loop.
+        if (not math.isfinite(interval_sec)) or interval_sec < 1.0:
+            interval_sec = float(_KEEPALIVE_INTERVAL_SEC) if float(_KEEPALIVE_INTERVAL_SEC) >= 1.0 else 1.0
+        if (not math.isfinite(idle_sec)) or idle_sec < 0.0:
+            idle_sec = 0.0
 
         while self._ws_is_open():
             try:
@@ -2053,12 +2068,9 @@ class GoogleLiveProvider(AIProviderInterface):
                 if self._setup_complete and self.websocket:
                     # If we're actively streaming audio, don't send pings. Some accounts appear to
                     # close connections (1008) after repeated ping frames even when audio is flowing.
-                    try:
-                        last_audio = self._last_realtime_input_sent_monotonic
-                        if last_audio is not None and (time.monotonic() - last_audio) < idle_sec:
-                            continue
-                    except Exception:
-                        pass
+                    last_audio = getattr(self, "_last_realtime_input_sent_monotonic", None)
+                    if isinstance(last_audio, (int, float)) and (time.monotonic() - float(last_audio)) < idle_sec:
+                        continue
                     ping = getattr(self.websocket, "ping", None)
                     if callable(ping):
                         t0 = time.monotonic()
@@ -2074,7 +2086,7 @@ class GoogleLiveProvider(AIProviderInterface):
                                     "ts_monotonic": round(t0, 3),
                                 }
                             )
-                        except Exception:
+                        except (AttributeError, TypeError, ValueError):
                             pass
                         pong_waiter = ping()
                         if asyncio.iscoroutine(pong_waiter):

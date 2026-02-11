@@ -10,6 +10,8 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
+const VAD_UTTERANCE_EXPERT_STORAGE_KEY = 'aava.ui.vad.utteranceExpert';
+
 const VADPage = () => {
     const { confirm } = useConfirmDialog();
     const [config, setConfig] = useState<any>({});
@@ -18,7 +20,24 @@ const VADPage = () => {
     const [saving, setSaving] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
-    const [showUtteranceExpert, setShowUtteranceExpert] = useState(false);
+    const [showUtteranceExpert, setShowUtteranceExpert] = useState<boolean>(() => {
+        try {
+            const v = localStorage.getItem(VAD_UTTERANCE_EXPERT_STORAGE_KEY);
+            if (v === 'true') return true;
+            if (v === 'false') return false;
+        } catch {
+            // Ignore storage failures.
+        }
+        return false;
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(VAD_UTTERANCE_EXPERT_STORAGE_KEY, showUtteranceExpert ? 'true' : 'false');
+        } catch {
+            // Ignore.
+        }
+    }, [showUtteranceExpert]);
 
     useEffect(() => {
         fetchConfig();

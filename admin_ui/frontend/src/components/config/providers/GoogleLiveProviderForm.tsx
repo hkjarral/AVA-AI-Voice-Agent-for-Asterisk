@@ -502,6 +502,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                     className="rounded border-input"
                                     checked={config.ws_keepalive_enabled ?? false}
                                     onChange={(e) => handleChange('ws_keepalive_enabled', e.target.checked)}
+                                    disabled={!expertEnabled}
                                 />
                                 <p className="text-xs text-muted-foreground">
                                     Default: off. Turn on only if you see idle disconnects.
@@ -519,6 +520,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                     className="w-full p-2 rounded border border-input bg-background"
                                     value={config.ws_keepalive_interval_sec ?? 15.0}
                                     onChange={(e) => handleChange('ws_keepalive_interval_sec', e.target.value ? parseFloat(e.target.value) : null)}
+                                    disabled={!expertEnabled}
                                 />
                             </div>
 
@@ -533,6 +535,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                     className="w-full p-2 rounded border border-input bg-background"
                                     value={config.ws_keepalive_idle_sec ?? 5.0}
                                     onChange={(e) => handleChange('ws_keepalive_idle_sec', e.target.value ? parseFloat(e.target.value) : null)}
+                                    disabled={!expertEnabled}
                                 />
                             </div>
                         </div>

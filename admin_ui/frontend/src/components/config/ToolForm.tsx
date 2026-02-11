@@ -311,6 +311,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
         config.hangup_call?.policy?.markers?.assistant_farewell,
         DEFAULT_HANGUP_ASSISTANT_FAREWELL_MARKERS
     );
+    const [endCallMarkerDraft, setEndCallMarkerDraft] = useState<string>(endCallMarkerText);
+    const [assistantFarewellMarkerDraft, setAssistantFarewellMarkerDraft] = useState<string>(assistantFarewellMarkerText);
+
+    useEffect(() => {
+        setEndCallMarkerDraft(endCallMarkerText);
+    }, [endCallMarkerText]);
+
+    useEffect(() => {
+        setAssistantFarewellMarkerDraft(assistantFarewellMarkerText);
+    }, [assistantFarewellMarkerText]);
 
     const getDefaultEmailTemplate = (tool: 'send_email_summary' | 'request_transcript') => {
         if (!emailDefaults) return '';
@@ -807,8 +817,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                         </FormLabel>
                                         <textarea
                                             className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
-                                            value={endCallMarkerText}
-                                            onChange={(e) => updateHangupMarkers('end_call', parseMarkerList(e.target.value))}
+                                            value={endCallMarkerDraft}
+                                            onChange={(e) => setEndCallMarkerDraft(e.target.value)}
+                                            onBlur={() => updateHangupMarkers('end_call', parseMarkerList(endCallMarkerDraft))}
                                             disabled={!showHangupExpert}
                                         />
                                         <p className="text-xs text-muted-foreground">
@@ -821,8 +832,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                         </FormLabel>
                                         <textarea
                                             className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
-                                            value={assistantFarewellMarkerText}
-                                            onChange={(e) => updateHangupMarkers('assistant_farewell', parseMarkerList(e.target.value))}
+                                            value={assistantFarewellMarkerDraft}
+                                            onChange={(e) => setAssistantFarewellMarkerDraft(e.target.value)}
+                                            onBlur={() => updateHangupMarkers('assistant_farewell', parseMarkerList(assistantFarewellMarkerDraft))}
                                             disabled={!showHangupExpert}
                                         />
                                         <p className="text-xs text-muted-foreground">
