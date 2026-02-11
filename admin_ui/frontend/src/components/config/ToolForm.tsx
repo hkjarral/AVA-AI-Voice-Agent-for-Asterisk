@@ -67,18 +67,20 @@ const hasLiveAgentExpertSettings = (ext: any) => {
 };
 
 const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFormProps) => {
-		    const [editingDestination, setEditingDestination] = useState<string | null>(null);
-		    const [destinationForm, setDestinationForm] = useState<any>({});
-        const [emailDefaults, setEmailDefaults] = useState<any>(null);
-        const [emailDefaultsError, setEmailDefaultsError] = useState<string | null>(null);
-        const [showSummaryEmailAdvanced, setShowSummaryEmailAdvanced] = useState(false);
-        const [showTranscriptEmailAdvanced, setShowTranscriptEmailAdvanced] = useState(false);
-        const [templateModalOpen, setTemplateModalOpen] = useState(false);
-        const [templateModalTool, setTemplateModalTool] = useState<'send_email_summary' | 'request_transcript'>('send_email_summary');
-        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => {
-            try {
-                const v = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
-                if (v === 'true') return true;
+			    const [editingDestination, setEditingDestination] = useState<string | null>(null);
+			    const [destinationForm, setDestinationForm] = useState<any>({});
+	        const [emailDefaults, setEmailDefaults] = useState<any>(null);
+	        const [emailDefaultsError, setEmailDefaultsError] = useState<string | null>(null);
+	        const [showSummaryEmailAdvanced, setShowSummaryEmailAdvanced] = useState(false);
+	        const [showTranscriptEmailAdvanced, setShowTranscriptEmailAdvanced] = useState(false);
+	        const [templateModalOpen, setTemplateModalOpen] = useState(false);
+	        const [templateModalTool, setTemplateModalTool] = useState<'send_email_summary' | 'request_transcript'>('send_email_summary');
+	        const [internalAliasesDraftByRowId, setInternalAliasesDraftByRowId] = useState<Record<string, string>>({});
+	        const internalAliasesCommittedRef = useRef<Record<string, string>>({});
+	        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => {
+	            try {
+	                const v = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
+	                if (v === 'true') return true;
                 if (v === 'false') return false;
             } catch {
                 // Ignore storage failures (private browsing, blocked storage, etc.).
@@ -91,18 +93,56 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
         const [showSummaryEmailExpert, setShowSummaryEmailExpert] = useState<boolean>(() => Boolean(config?.send_email_summary?.from_name));
         const [showTranscriptEmailExpert, setShowTranscriptEmailExpert] = useState<boolean>(() => Boolean(config?.request_transcript?.from_name));
 
-        useEffect(() => {
-            try {
-                localStorage.setItem(HANGUP_EXPERT_STORAGE_KEY, showHangupExpert ? 'true' : 'false');
-            } catch {
-                // Ignore.
-            }
-        }, [showHangupExpert]);
+	        useEffect(() => {
+	            try {
+	                localStorage.setItem(HANGUP_EXPERT_STORAGE_KEY, showHangupExpert ? 'true' : 'false');
+	            } catch {
+	                // Ignore.
+	            }
+	        }, [showHangupExpert]);
 
-        // Per-context override draft rows
-        const [summaryAdminCtx, setSummaryAdminCtx] = useState('');
-        const [summaryAdminVal, setSummaryAdminVal] = useState('');
-        const [summaryFromCtx, setSummaryFromCtx] = useState('');
+	        useEffect(() => {
+	            const internal = config?.extensions?.internal || {};
+	            const rowIdsInUse = new Set<string>();
+
+	            setInternalAliasesDraftByRowId((prev) => {
+	                let next: Record<string, string> | null = null;
+	                const ensureNext = () => (next ??= { ...prev });
+
+	                Object.entries(internal).forEach(([key, ext]: [string, any]) => {
+	                    const rowId = getInternalExtRowId(key);
+	                    rowIdsInUse.add(rowId);
+
+	                    const committed = Array.isArray(ext?.aliases) ? ext.aliases.join(', ') : String(ext?.aliases || '');
+	                    const prevCommitted = internalAliasesCommittedRef.current[rowId];
+	                    const draft = prev[rowId];
+
+	                    internalAliasesCommittedRef.current[rowId] = committed;
+
+	                    // Sync committed -> draft when (a) draft is uninitialized, or (b) draft matches the
+	                    // last committed value (meaning the user hasn't started editing).
+	                    if (draft === undefined || (prevCommitted !== undefined && draft === prevCommitted && draft !== committed)) {
+	                        ensureNext()[rowId] = committed;
+	                    }
+	                });
+
+	                // Drop draft rows that no longer exist.
+	                Object.keys(prev).forEach((rowId) => {
+	                    if (!rowIdsInUse.has(rowId)) {
+	                        ensureNext();
+	                        delete next![rowId];
+	                        delete internalAliasesCommittedRef.current[rowId];
+	                    }
+	                });
+
+	                return next ?? prev;
+	            });
+	        }, [config?.extensions?.internal]);
+
+	        // Per-context override draft rows
+	        const [summaryAdminCtx, setSummaryAdminCtx] = useState('');
+	        const [summaryAdminVal, setSummaryAdminVal] = useState('');
+	        const [summaryFromCtx, setSummaryFromCtx] = useState('');
         const [summaryFromVal, setSummaryFromVal] = useState('');
         const [transcriptAdminCtx, setTranscriptAdminCtx] = useState('');
         const [transcriptAdminVal, setTranscriptAdminVal] = useState('');
@@ -1086,24 +1126,34 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                                 <option value="ringgroup">action_type: ringgroup</option>
                                             </select>
                                         </div>
-                                        <div className="md:col-span-2">
-                                            <input
-                                                className="w-full border rounded px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-                                                placeholder="Aliases (comma-separated)"
-                                                value={Array.isArray(ext.aliases) ? ext.aliases.join(', ') : (ext.aliases || '')}
-                                                onChange={(e) => {
-                                                    const aliases = (e.target.value || '')
-                                                        .split(',')
-                                                        .map((s) => s.trim())
-                                                        .filter(Boolean);
-                                                    const updated = { ...(config.extensions?.internal || {}) };
-                                                    updated[key] = { ...ext, aliases };
-                                                    updateNestedConfig('extensions', 'internal', updated);
-                                                }}
-                                                title="Alternative names users can say to target this live agent"
-                                                disabled={!showLiveAgentsExpert}
-                                            />
-                                        </div>
+	                                        <div className="md:col-span-2">
+	                                            <input
+	                                                className="w-full border rounded px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+	                                                placeholder="Aliases (comma-separated)"
+	                                                value={internalAliasesDraftByRowId[rowId] ?? (Array.isArray(ext.aliases) ? ext.aliases.join(', ') : (ext.aliases || ''))}
+	                                                onChange={(e) => {
+	                                                    const raw = String(e.target.value || '');
+	                                                    setInternalAliasesDraftByRowId((prev) => ({ ...prev, [rowId]: raw }));
+	                                                }}
+	                                                onBlur={() => {
+	                                                    const raw = internalAliasesDraftByRowId[rowId] ?? '';
+	                                                    const aliases = String(raw)
+	                                                        .split(',')
+	                                                        .map((s) => s.trim())
+	                                                        .filter(Boolean);
+	                                                    const committed = aliases.join(', ');
+
+	                                                    internalAliasesCommittedRef.current[rowId] = committed;
+	                                                    setInternalAliasesDraftByRowId((prev) => ({ ...prev, [rowId]: committed }));
+
+	                                                    const updated = { ...(config.extensions?.internal || {}) };
+	                                                    updated[key] = { ...ext, aliases };
+	                                                    updateNestedConfig('extensions', 'internal', updated);
+	                                                }}
+	                                                title="Alternative names users can say to target this live agent"
+	                                                disabled={!showLiveAgentsExpert}
+	                                            />
+	                                        </div>
                                         <div className="md:col-span-2">
                                             <FormSwitch
                                                 label="Pass Caller Info"
