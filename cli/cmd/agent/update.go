@@ -1153,7 +1153,11 @@ func migrateBackupBaseConfigEditsToLocal(oldSHA string, backupBasePath string) e
 	localPath := filepath.Join("config", "ai-agent.local.yaml")
 	local := map[string]any{}
 	if _, err := os.Stat(localPath); err == nil {
-		if m, err := configmerge.ReadYAMLFile(localPath); err == nil {
+		m, err := configmerge.ReadYAMLFile(localPath)
+		if err != nil {
+			return fmt.Errorf("failed to parse existing %s during migration: %w", localPath, err)
+		}
+		if m != nil {
 			local = m
 		}
 	}
@@ -1163,7 +1167,9 @@ func migrateBackupBaseConfigEditsToLocal(oldSHA string, backupBasePath string) e
 		return err
 	}
 	// Ensure base file is reset to upstream version.
-	_, _ = runGitCmd("checkout", "--", filepath.Join("config", "ai-agent.yaml"))
+	if _, err := runGitCmd("checkout", "--", filepath.Join("config", "ai-agent.yaml")); err != nil {
+		return fmt.Errorf("failed to reset %s to upstream: %w", filepath.Join("config", "ai-agent.yaml"), err)
+	}
 	return nil
 }
 
@@ -1192,7 +1198,11 @@ func migrateBaseConfigEditsToLocal() error {
 	localRel := filepath.Join("config", "ai-agent.local.yaml")
 	localExisting := map[string]any{}
 	if _, err := os.Stat(localRel); err == nil {
-		if m, err := configmerge.ReadYAMLFile(localRel); err == nil {
+		m, err := configmerge.ReadYAMLFile(localRel)
+		if err != nil {
+			return fmt.Errorf("failed to parse existing %s during migration: %w", localRel, err)
+		}
+		if m != nil {
 			localExisting = m
 		}
 	}

@@ -9187,71 +9187,70 @@ class Engine:
                         else:
                             hangup_guardrail_enabled = bool(guardrail_cfg)
 
-                        if hangup_guardrail_enabled and tool_calls and any(tc.get("name") == "hangup_call" for tc in tool_calls):
-                            normalized_user_text = re.sub(r"\s+", " ", (transcript_text or "").strip().lower())
-                            end_markers = (hangup_policy.get("markers") or {}).get("end_call", [])
-                            end_markers_source = "global_hangup_policy"
+                    if hangup_guardrail_enabled and tool_calls and any(tc.get("name") == "hangup_call" for tc in tool_calls):
+                        normalized_user_text = re.sub(r"\s+", " ", (transcript_text or "").strip().lower())
+                        end_markers = (hangup_policy.get("markers") or {}).get("end_call", [])
+                        end_markers_source = "global_hangup_policy"
+                        try:
+                            override_cfg = (llm_options or {}).get("hangup_call_guardrail_markers")
+                            override_end = None
+                            if isinstance(override_cfg, dict):
+                                override_end = override_cfg.get("end_call")
+                            else:
+                                override_end = override_cfg
+                            if override_end:
+                                end_markers = normalize_marker_list(override_end, list(end_markers))
+                                end_markers_source = "pipeline_override"
+                        except (TypeError, ValueError, AttributeError) as e:
+                            logger.warning(
+                                "Failed applying pipeline hangup marker override; using global defaults",
+                                call_id=call_id,
+                                error=str(e),
+                                exc_info=True,
+                            )
+                        has_end_intent = text_contains_marker_word(normalized_user_text, end_markers)
+                        before_count = len(tool_calls)
+                        if not has_end_intent:
+                            tool_calls = [tc for tc in tool_calls if tc.get("name") != "hangup_call"]
+                        dropped = before_count - len(tool_calls)
+                        if dropped:
+                            logger.warning(
+                                "Dropping hangup_call tool call (no end-of-call intent detected)",
+                                call_id=call_id,
+                                transcript_preview=normalized_user_text[:120],
+                                guardrail_mode=effective_mode,
+                                markers_source=end_markers_source,
+                            )
+                        if not response_text and not tool_calls:
                             try:
-                                override_cfg = (llm_options or {}).get("hangup_call_guardrail_markers")
-                                override_end = None
-                                if isinstance(override_cfg, dict):
-                                    override_end = override_cfg.get("end_call")
+                                llm_options_no_tools = dict(llm_options or {})
+                                llm_options_no_tools["tools"] = []
+                                llm_options_no_tools["tools_enabled"] = False
+                                llm_result_retry = await pipeline.llm_adapter.generate(
+                                    call_id,
+                                    transcript_text,
+                                    context_for_llm,
+                                    llm_options_no_tools,
+                                )
+                                if isinstance(llm_result_retry, LLMResponse):
+                                    response_text = (llm_result_retry.text or "").strip()
+                                    tool_calls = llm_result_retry.tool_calls or []
                                 else:
-                                    override_end = override_cfg
-                                if override_end:
-                                    end_markers = normalize_marker_list(override_end, list(end_markers))
-                                    end_markers_source = "pipeline_override"
-                            except (TypeError, ValueError, AttributeError) as e:
-                                logger.warning(
-                                    "Failed applying pipeline hangup marker override; using global defaults",
+                                    response_text = (str(llm_result_retry) or "").strip()
+                                    tool_calls = []
+                                if tool_calls:
+                                    logger.info(
+                                        "Dropping tool calls from retry (tools disabled)",
+                                        call_id=call_id,
+                                        tool_count=len(tool_calls),
+                                    )
+                                    tool_calls = []
+                            except Exception:
+                                logger.debug(
+                                    "LLM retry without tools failed",
                                     call_id=call_id,
-                                    error=str(e),
                                     exc_info=True,
                                 )
-                            has_end_intent = text_contains_marker_word(normalized_user_text, end_markers)
-                            if not has_end_intent:
-                                before_count = len(tool_calls)
-                                tool_calls = [tc for tc in tool_calls if tc.get("name") != "hangup_call"]
-                            dropped = before_count - len(tool_calls)
-                            if dropped:
-                                logger.warning(
-                                    "Dropping hangup_call tool call (no end-of-call intent detected)",
-                                    call_id=call_id,
-                                    transcript_preview=normalized_user_text[:120],
-                                    guardrail_mode=effective_mode,
-                                    markers_source=end_markers_source,
-                                )
-                            if not response_text and not tool_calls:
-                                try:
-                                    llm_options_no_tools = dict(llm_options or {})
-                                    llm_options_no_tools["tools"] = []
-                                    llm_options_no_tools["tools_enabled"] = False
-                                    llm_result_retry = await pipeline.llm_adapter.generate(
-                                        call_id,
-                                        transcript_text,
-                                        context_for_llm,
-                                        llm_options_no_tools,
-                                    )
-                                    if isinstance(llm_result_retry, LLMResponse):
-                                        response_text = (llm_result_retry.text or "").strip()
-                                        tool_calls = llm_result_retry.tool_calls or []
-                                    else:
-                                        response_text = (str(llm_result_retry) or "").strip()
-                                        tool_calls = []
-                                    if tool_calls:
-                                        logger.info(
-                                            "Dropping tool calls from retry (tools disabled)",
-                                            call_id=call_id,
-                                            tool_count=len(tool_calls),
-                                        )
-                                        tool_calls = []
-                                except Exception:
-                                    logger.debug(
-                                        "LLM retry without tools failed",
-                                        call_id=call_id,
-                                        exc_info=True,
-                                    )
-                                    return
 
                     if not response_text and not tool_calls:
                         return
