@@ -253,8 +253,9 @@ agent update
 ```
 
 Notes:
-- Creates backups of `.env`, `config/ai-agent.yaml`, `config/ai-agent.local.yaml`, and `config/users.json` before updating.
-- If a `git stash pop` conflict occurs (e.g. upstream changes to `ai-agent.yaml`), the updater automatically recovers: resets the working tree, drops the failed stash, and restores operator config from the pre-update backup.
+- Creates backups of `.env`, `config/ai-agent.local.yaml`, `config/users.json`, and `config/contexts/` before updating.
+- Also snapshots `config/ai-agent.yaml` (base config) so the updater can migrate legacy local edits into `config/ai-agent.local.yaml`.
+- If a `git stash pop` conflict occurs (commonly caused by local edits to `config/ai-agent.yaml`), the updater automatically recovers: resets the working tree, drops the failed stash, restores operator config from the pre-update backup, and migrates any `ai-agent.yaml` edits into `ai-agent.local.yaml`.
 - Uses fast-forward only; if your local branch has diverged, it will stop and print guidance.
 - Rebuilds/restarts only the impacted services, then runs `agent check` (unless `--skip-check`).
 - If a newer CLI release is available, `agent update` can self-update the `agent` binary first (default; disable with `--self-update=false`).
