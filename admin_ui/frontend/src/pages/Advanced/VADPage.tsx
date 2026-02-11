@@ -18,7 +18,7 @@ const VADPage = () => {
     const [saving, setSaving] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
-    const [showExpertMode, setShowExpertMode] = useState(false);
+    const [showUtteranceExpert, setShowUtteranceExpert] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -104,6 +104,19 @@ const VADPage = () => {
         });
     };
 
+    useEffect(() => {
+        const vad = config?.vad || {};
+        const hasExpertOverrides = [
+            'min_utterance_duration_ms',
+            'max_utterance_duration_ms',
+            'utterance_padding_ms',
+            'fallback_buffer_size',
+        ].some((field) => vad[field] !== undefined);
+        if (hasExpertOverrides) {
+            setShowUtteranceExpert(true);
+        }
+    }, [config?.vad]);
+
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>;
 
     if (yamlError) return (
@@ -155,20 +168,6 @@ const VADPage = () => {
                     {saving ? 'Saving...' : 'Save Changes'}
                 </button>
             </div>
-
-            <ConfigCard>
-                <FormSwitch
-                    label="Expert Mode"
-                    description="Expose low-level VAD timing and buffer controls."
-                    checked={showExpertMode}
-                    onChange={(e) => setShowExpertMode(e.target.checked)}
-                />
-                {showExpertMode && (
-                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
-                        Warning: expert VAD settings can clip speech or introduce turn latency if tuned aggressively.
-                    </p>
-                )}
-            </ConfigCard>
 
             <ConfigSection title="Primary Detection" description="Main VAD settings for speech detection.">
                 <ConfigCard>
@@ -287,49 +286,65 @@ const VADPage = () => {
                 </ConfigCard>
             </ConfigSection>
 
-            {showExpertMode && (
-                <ConfigSection
-                    title="Utterance Controls (Expert)"
-                    description="Fine-grained utterance boundary tuning for engine-side heuristics."
-                >
-                    <ConfigCard>
-                        <div className="space-y-6">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <FormInput
-                                    label="Min Utterance Duration (ms)"
-                                    type="number"
-                                    value={vadConfig.min_utterance_duration_ms ?? 800}
-                                    onChange={(e) => updateVADConfig('min_utterance_duration_ms', parseInt(e.target.value))}
-                                    tooltip="Minimum duration to consider detected speech a valid utterance."
-                                />
-                                <FormInput
-                                    label="Max Utterance Duration (ms)"
-                                    type="number"
-                                    value={vadConfig.max_utterance_duration_ms ?? 8000}
-                                    onChange={(e) => updateVADConfig('max_utterance_duration_ms', parseInt(e.target.value))}
-                                    tooltip="Hard cap for a single utterance before forced boundary handling."
-                                />
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <FormInput
-                                    label="Utterance Padding (ms)"
-                                    type="number"
-                                    value={vadConfig.utterance_padding_ms ?? 100}
-                                    onChange={(e) => updateVADConfig('utterance_padding_ms', parseInt(e.target.value))}
-                                    tooltip="Extra audio kept around utterance boundaries for naturalness."
-                                />
-                                <FormInput
-                                    label="Fallback Buffer Size (bytes)"
-                                    type="number"
-                                    value={vadConfig.fallback_buffer_size ?? 128000}
-                                    onChange={(e) => updateVADConfig('fallback_buffer_size', parseInt(e.target.value))}
-                                    tooltip="Internal fallback buffer size used by engine-side VAD fallback paths."
-                                />
-                            </div>
+            <ConfigSection
+                title="Utterance Controls"
+                description="Fine-grained utterance boundary tuning for engine-side heuristics."
+            >
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <div className="border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
+                            <FormSwitch
+                                label="Utterance Expert Settings"
+                                description="Enable editing of low-level utterance timing and buffer controls."
+                                checked={showUtteranceExpert}
+                                onChange={(e) => setShowUtteranceExpert(e.target.checked)}
+                                className="mb-0 border-0 p-0 bg-transparent"
+                            />
+                            <p className={`text-xs mt-2 ${showUtteranceExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                                {showUtteranceExpert
+                                    ? 'Warning: these controls can clip speech, delay turn-taking, or over-buffer audio if tuned aggressively.'
+                                    : 'Expert values are visible and read-only until enabled.'}
+                            </p>
                         </div>
-                    </ConfigCard>
-                </ConfigSection>
-            )}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <FormInput
+                                label="Min Utterance Duration (ms)"
+                                type="number"
+                                value={vadConfig.min_utterance_duration_ms ?? 800}
+                                onChange={(e) => updateVADConfig('min_utterance_duration_ms', parseInt(e.target.value))}
+                                tooltip="Minimum duration to consider detected speech a valid utterance."
+                                disabled={!showUtteranceExpert}
+                            />
+                            <FormInput
+                                label="Max Utterance Duration (ms)"
+                                type="number"
+                                value={vadConfig.max_utterance_duration_ms ?? 8000}
+                                onChange={(e) => updateVADConfig('max_utterance_duration_ms', parseInt(e.target.value))}
+                                tooltip="Hard cap for a single utterance before forced boundary handling."
+                                disabled={!showUtteranceExpert}
+                            />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <FormInput
+                                label="Utterance Padding (ms)"
+                                type="number"
+                                value={vadConfig.utterance_padding_ms ?? 100}
+                                onChange={(e) => updateVADConfig('utterance_padding_ms', parseInt(e.target.value))}
+                                tooltip="Extra audio kept around utterance boundaries for naturalness."
+                                disabled={!showUtteranceExpert}
+                            />
+                            <FormInput
+                                label="Fallback Buffer Size (bytes)"
+                                type="number"
+                                value={vadConfig.fallback_buffer_size ?? 128000}
+                                onChange={(e) => updateVADConfig('fallback_buffer_size', parseInt(e.target.value))}
+                                tooltip="Internal fallback buffer size used by engine-side VAD fallback paths."
+                                disabled={!showUtteranceExpert}
+                            />
+                        </div>
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
 
             <ConfigSection
                 title="Upstream Squelch"

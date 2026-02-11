@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface DeepgramProviderFormProps {
     config: any;
@@ -9,27 +9,18 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
-    const [showExpertMode, setShowExpertMode] = useState<boolean>(() => Boolean(config?.allow_output_autodetect));
+    const [showOutputAutodetectExpert, setShowOutputAutodetectExpert] = useState<boolean>(
+        () => config?.allow_output_autodetect !== undefined
+    );
+
+    useEffect(() => {
+        if (config?.allow_output_autodetect !== undefined) {
+            setShowOutputAutodetectExpert(true);
+        }
+    }, [config?.allow_output_autodetect]);
 
     return (
         <div className="space-y-6">
-            <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/10">
-                <label className="flex items-center gap-2 text-sm font-medium">
-                    <input
-                        type="checkbox"
-                        className="rounded border-input"
-                        checked={showExpertMode}
-                        onChange={(e) => setShowExpertMode(e.target.checked)}
-                    />
-                    Expert Mode
-                </label>
-                {showExpertMode && (
-                    <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
-                        Warning: Expert Deepgram settings can change output format detection and call audio behavior.
-                    </p>
-                )}
-            </div>
-
             {/* Base URL Section */}
             <div>
                 <h4 className="font-semibold mb-3">API Endpoints</h4>
@@ -519,23 +510,32 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </p>
                 </div>
 
-                {showExpertMode && (
-                    <div className="space-y-2 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
-                        <label className="flex items-center gap-2 text-sm font-medium">
-                            <input
-                                type="checkbox"
-                                className="rounded border-input"
-                                checked={config.allow_output_autodetect ?? false}
-                                onChange={(e) => handleChange('allow_output_autodetect', e.target.checked)}
-                            />
-                            Allow Output Auto-Detect
-                        </label>
-                        <p className="text-xs text-amber-700 dark:text-amber-400">
-                            Expert: enables runtime inference of provider output encoding/rate on first payload.
-                            Use only when explicit output format settings do not match actual provider output.
-                        </p>
-                    </div>
-                )}
+                <div className="space-y-2 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                            type="checkbox"
+                            className="rounded border-input"
+                            checked={showOutputAutodetectExpert}
+                            onChange={(e) => setShowOutputAutodetectExpert(e.target.checked)}
+                        />
+                        Expert Settings
+                    </label>
+                    <p className={`text-xs ${showOutputAutodetectExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                        {showOutputAutodetectExpert
+                            ? 'Warning: output auto-detect can alter runtime audio interpretation and should be used only for provider mismatch scenarios.'
+                            : 'Advanced output-detection value is shown and locked until expert mode is enabled.'}
+                    </p>
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                            type="checkbox"
+                            className="rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+                            checked={config.allow_output_autodetect ?? false}
+                            onChange={(e) => handleChange('allow_output_autodetect', e.target.checked)}
+                            disabled={!showOutputAutodetectExpert}
+                        />
+                        Allow Output Auto-Detect
+                    </label>
+                </div>
             </div>
 
             {/* Authentication Section */}
