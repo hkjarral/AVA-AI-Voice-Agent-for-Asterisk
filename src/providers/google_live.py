@@ -194,6 +194,14 @@ class GoogleLiveProvider(AIProviderInterface):
         # Diagnostics: keep a small ring buffer of outbound message summaries
         # to help explain server-initiated closes (e.g., 1008 policy violations).
         self._outbound_summaries: deque[Dict[str, Any]] = deque(maxlen=12)
+        # WebSocket keepalive telemetry (ping/pong frames are not part of the JSON protocol payload).
+        # We track them explicitly so 1008/1011 closes can be correlated to keepalive timing.
+        self._ws_ping_seq: int = 0
+        self._ws_pong_seq: int = 0
+        self._last_ws_ping_monotonic: Optional[float] = None
+        self._last_ws_pong_monotonic: Optional[float] = None
+        self._last_ws_ping_rtt_ms: Optional[float] = None
+        self._last_ws_ping_error: Optional[str] = None
 
     def _summarize_outbound(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -257,6 +265,13 @@ class GoogleLiveProvider(AIProviderInterface):
             except Exception:
                 pass
             self._session_gauge_incremented = False
+        # Keepalive telemetry should not leak across sessions.
+        self._ws_ping_seq = 0
+        self._ws_pong_seq = 0
+        self._last_ws_ping_monotonic = None
+        self._last_ws_pong_monotonic = None
+        self._last_ws_ping_rtt_ms = None
+        self._last_ws_ping_error = None
 
     async def _emit_provider_disconnected(self, *, code: Optional[int], reason: str) -> None:
         # IMPORTANT: Tell the engine the provider is gone so we don't leave dead air.
@@ -1143,6 +1158,22 @@ class GoogleLiveProvider(AIProviderInterface):
                 meaning=close_meaning,
                 reason=close_reason,
                 outbound_tail=list(self._outbound_summaries),
+                ws_keepalive={
+                    "ping_seq": self._ws_ping_seq,
+                    "pong_seq": self._ws_pong_seq,
+                    "last_ping_age_sec": (
+                        round(time.monotonic() - self._last_ws_ping_monotonic, 3)
+                        if self._last_ws_ping_monotonic is not None
+                        else None
+                    ),
+                    "last_pong_age_sec": (
+                        round(time.monotonic() - self._last_ws_pong_monotonic, 3)
+                        if self._last_ws_pong_monotonic is not None
+                        else None
+                    ),
+                    "last_ping_rtt_ms": (round(self._last_ws_ping_rtt_ms, 2) if self._last_ws_ping_rtt_ms else None),
+                    "last_ping_error": self._last_ws_ping_error,
+                },
             )
             
             # Specific guidance for common errors
@@ -1157,6 +1188,22 @@ class GoogleLiveProvider(AIProviderInterface):
                     call_id=self._call_id,
                     hint=hint,
                     outbound_tail=list(self._outbound_summaries),
+                    ws_keepalive={
+                        "ping_seq": self._ws_ping_seq,
+                        "pong_seq": self._ws_pong_seq,
+                        "last_ping_age_sec": (
+                            round(time.monotonic() - self._last_ws_ping_monotonic, 3)
+                            if self._last_ws_ping_monotonic is not None
+                            else None
+                        ),
+                        "last_pong_age_sec": (
+                            round(time.monotonic() - self._last_ws_pong_monotonic, 3)
+                            if self._last_ws_pong_monotonic is not None
+                            else None
+                        ),
+                        "last_ping_rtt_ms": (round(self._last_ws_ping_rtt_ms, 2) if self._last_ws_ping_rtt_ms else None),
+                        "last_ping_error": self._last_ws_ping_error,
+                    },
                 )
             # Persist any pending transcription buffers before we signal the engine to tear down.
             try:
@@ -1975,14 +2022,34 @@ class GoogleLiveProvider(AIProviderInterface):
                 if self._setup_complete and self.websocket:
                     ping = getattr(self.websocket, "ping", None)
                     if callable(ping):
+                        t0 = time.monotonic()
+                        self._ws_ping_seq += 1
+                        self._last_ws_ping_monotonic = t0
+                        self._last_ws_ping_error = None
+                        try:
+                            # Add to outbound tail so close diagnostics show ping timing too.
+                            self._outbound_summaries.append(
+                                {
+                                    "type": "ws_ping",
+                                    "seq": self._ws_ping_seq,
+                                    "ts_monotonic": round(t0, 3),
+                                }
+                            )
+                        except Exception:
+                            pass
                         pong_waiter = ping()
                         if asyncio.iscoroutine(pong_waiter):
                             pong_waiter = await pong_waiter
                         if pong_waiter is not None:
                             await asyncio.wait_for(pong_waiter, timeout=5.0)
+                        t1 = time.monotonic()
+                        self._ws_pong_seq += 1
+                        self._last_ws_pong_monotonic = t1
+                        self._last_ws_ping_rtt_ms = (t1 - t0) * 1000.0
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self._last_ws_ping_error = str(e)
                 logger.error(
                     "Keepalive error",
                     call_id=self._call_id,
