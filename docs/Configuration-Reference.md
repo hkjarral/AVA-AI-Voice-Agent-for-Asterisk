@@ -339,6 +339,7 @@ Config notes:
 - `providers.google_live.hangup_fallback_min_armed_sec`: minimum armed duration before fallback can fire.
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.
 - `providers.google_live.hangup_fallback_turn_complete_timeout_sec`: grace period waiting for `turnComplete` before fallback hangup.
+- `providers.google_live.hangup_markers_enabled`: enable/disable marker-based hangup heuristics (end_call / assistant_farewell) used to arm `cleanup_after_tts`.
 
 ### Deepgram Voice Agent (monolithic agent)
 

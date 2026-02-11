@@ -248,6 +248,9 @@ class GoogleProviderConfig(BaseModel):
     # Guard against premature fallback hangup before the provider emits turnComplete.
     # If turnComplete never arrives, fallback still proceeds after this timeout.
     hangup_fallback_turn_complete_timeout_sec: float = Field(default=2.5)
+    # Google Live only: heuristic hangup detection based on transcript markers (end_call / assistant_farewell).
+    # Disable to isolate provider disconnects (e.g., WS 1008) without marker-driven cleanup_after_tts.
+    hangup_markers_enabled: bool = Field(default=True)
 
 
 class GroqSTTProviderConfig(BaseModel):

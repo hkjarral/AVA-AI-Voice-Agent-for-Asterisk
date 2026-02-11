@@ -128,6 +128,8 @@ class GoogleLiveProvider(AIProviderInterface):
         super().__init__(on_event)
         self.config = config
         self._hangup_policy = normalize_hangup_policy(hangup_policy or {})
+        # Google Live only: allow disabling marker-based hangup heuristics to isolate provider disconnects.
+        self._hangup_markers_enabled: bool = bool(getattr(config, "hangup_markers_enabled", True))
         self.websocket: Optional[ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
         self._keepalive_task: Optional[asyncio.Task] = None
@@ -343,6 +345,8 @@ class GoogleLiveProvider(AIProviderInterface):
         return re.sub(r"\s+", " ", (value or "").strip().lower())
 
     def _detect_user_end_intent(self, text: str) -> Optional[str]:
+        if not self._hangup_markers_enabled:
+            return None
         t = self._norm_text(text)
         if not t:
             return None
@@ -353,6 +357,8 @@ class GoogleLiveProvider(AIProviderInterface):
         return None
 
     def _detect_assistant_farewell(self, text: str) -> Optional[str]:
+        if not self._hangup_markers_enabled:
+            return None
         t = self._norm_text(text)
         if not t:
             return None
@@ -673,6 +679,11 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id=call_id,
             model=self._normalize_model_name(self.config.llm_model),
         )
+        if not self._hangup_markers_enabled:
+            logger.warning(
+                "Google Live marker-based hangup heuristics are disabled",
+                call_id=call_id,
+            )
 
         # Build WebSocket URL with API key
         api_key = self.config.api_key or ""
@@ -1450,6 +1461,9 @@ class GoogleLiveProvider(AIProviderInterface):
         speaks a farewell. To keep call teardown reliable, detect obvious end-of-call turns and set
         `cleanup_after_tts=True` so the engine hangs up after audio playback completes.
         """
+        # Marker-driven heuristic; keep tool-driven hangups working even when markers are disabled.
+        if not self._hangup_markers_enabled:
+            return
         if not self._call_id:
             return
         session_store = getattr(self, "_session_store", None)
