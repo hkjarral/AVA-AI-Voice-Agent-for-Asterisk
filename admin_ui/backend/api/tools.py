@@ -471,8 +471,6 @@ async def get_tool_catalog():
         return ToolCatalogResponse(tools=out, source="local_fallback")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build tool catalog: {str(e)}")
-    except Exception as e:
-        return EmailTemplatePreviewResponse(success=False, error=str(e))
 
 
 def _extract_json_paths(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
