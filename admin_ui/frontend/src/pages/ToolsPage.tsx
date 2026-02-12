@@ -3,7 +3,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
-import { Save, AlertCircle, RefreshCw, Loader2, Phone, Webhook, Search } from 'lucide-react';
+import { Save, AlertCircle, RefreshCw, Loader2, Phone, Webhook, Search, BookOpen, ChevronDown, ChevronRight } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -12,7 +12,24 @@ import HTTPToolForm from '../components/config/HTTPToolForm';
 import { useAuth } from '../auth/AuthContext';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
 
-type ToolPhase = 'in_call' | 'pre_call' | 'post_call';
+type ToolPhase = 'in_call' | 'pre_call' | 'post_call' | 'catalog';
+
+type ToolParam = {
+    name: string;
+    type: string;
+    description: string;
+    required?: boolean;
+};
+
+type ToolDef = {
+    name: string;
+    description: string;
+    category?: string;
+    phase?: string;
+    is_global?: boolean;
+    source?: 'builtin' | 'http' | 'mcp' | 'unknown' | string;
+    parameters?: ToolParam[];
+};
 
 const ToolsPage = () => {
     const { confirm } = useConfirmDialog();
@@ -25,6 +42,11 @@ const ToolsPage = () => {
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
+    const [toolCatalog, setToolCatalog] = useState<ToolDef[]>([]);
+    const [toolCatalogError, setToolCatalogError] = useState<string | null>(null);
+    const [toolCatalogLoading, setToolCatalogLoading] = useState(false);
+    const [toolCatalogQuery, setToolCatalogQuery] = useState('');
+    const [toolCatalogExpanded, setToolCatalogExpanded] = useState<Record<string, boolean>>({});
 
     const hangupUsage = useMemo(() => {
         const providers = (config && typeof config === 'object') ? (config as any).providers : null;
@@ -65,6 +87,7 @@ const ToolsPage = () => {
 
     useEffect(() => {
         fetchConfig();
+        fetchToolCatalog();
     }, []);
 
     useEffect(() => {
@@ -87,6 +110,22 @@ const ToolsPage = () => {
             setYamlError(null);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchToolCatalog = async () => {
+        setToolCatalogLoading(true);
+        try {
+            const res = await axios.get('/api/tools/catalog');
+            const tools = (res.data && Array.isArray(res.data.tools)) ? res.data.tools : [];
+            setToolCatalog(tools);
+            setToolCatalogError(null);
+        } catch (err: any) {
+            console.error('Failed to load tool catalog', err);
+            setToolCatalog([]);
+            setToolCatalogError(err?.response?.data?.detail || err?.message || 'Failed to load tool catalog');
+        } finally {
+            setToolCatalogLoading(false);
         }
     };
 
@@ -293,6 +332,17 @@ const ToolsPage = () => {
                         <Webhook className="w-4 h-4" />
                         Post-Call
                     </button>
+                    <button
+                        onClick={() => setActivePhase('catalog')}
+                        className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                            activePhase === 'catalog'
+                                ? 'border-primary text-primary'
+                                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
+                        }`}
+                    >
+                        <BookOpen className="w-4 h-4" />
+                        Catalog
+                    </button>
                 </div>
             </div>
 
@@ -356,6 +406,167 @@ const ToolsPage = () => {
                             phase="post_call"
                             contexts={config.contexts}
                         />
+                    </ConfigCard>
+                </ConfigSection>
+            )}
+
+            {activePhase === 'catalog' && (
+                <ConfigSection
+                    title="Tool Catalog (Read-only)"
+                    description="Reference for all tools currently registered in the AI Engine, including built-in, HTTP, and MCP tools. This does not change tool behavior."
+                >
+                    <ConfigCard>
+                        <div className="space-y-4">
+                            <div className="flex flex-col md:flex-row md:items-center gap-3">
+                                <div className="flex-1 relative">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                                    <input
+                                        type="text"
+                                        className="w-full pl-10 pr-3 py-2 rounded border border-input bg-background text-sm"
+                                        placeholder="Search tools (name, description, phase, source)"
+                                        value={toolCatalogQuery}
+                                        onChange={(e) => setToolCatalogQuery(e.target.value)}
+                                    />
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={fetchToolCatalog}
+                                    disabled={toolCatalogLoading}
+                                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
+                                >
+                                    {toolCatalogLoading ? (
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    ) : (
+                                        <RefreshCw className="w-4 h-4 mr-2" />
+                                    )}
+                                    Refresh
+                                </button>
+                            </div>
+
+                            {toolCatalogError && (
+                                <div className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400">
+                                    {toolCatalogError}
+                                </div>
+                            )}
+
+                            <div className="overflow-x-auto border border-border rounded-md">
+                                <table className="w-full text-sm">
+                                    <thead className="bg-secondary/40 text-muted-foreground">
+                                        <tr>
+                                            <th className="text-left px-3 py-2 w-10"></th>
+                                            <th className="text-left px-3 py-2">Tool</th>
+                                            <th className="text-left px-3 py-2">Phase</th>
+                                            <th className="text-left px-3 py-2">Source</th>
+                                            <th className="text-left px-3 py-2">Description</th>
+                                            <th className="text-left px-3 py-2 w-16">Params</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {(() => {
+                                            const q = toolCatalogQuery.trim().toLowerCase();
+                                            const filtered = (toolCatalog || [])
+                                                .filter((t) => {
+                                                    if (!q) return true;
+                                                    const hay = [
+                                                        t.name,
+                                                        t.description,
+                                                        t.phase,
+                                                        t.source,
+                                                        t.category,
+                                                    ]
+                                                        .filter(Boolean)
+                                                        .join(' ')
+                                                        .toLowerCase();
+                                                    return hay.includes(q);
+                                                })
+                                                .sort((a, b) => a.name.localeCompare(b.name));
+
+                                            if (toolCatalogLoading && filtered.length === 0) {
+                                                return (
+                                                    <tr>
+                                                        <td className="px-3 py-3" colSpan={6}>
+                                                            <div className="flex items-center text-muted-foreground">
+                                                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                                                Loading tool catalog...
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            }
+
+                                            if (filtered.length === 0) {
+                                                return (
+                                                    <tr>
+                                                        <td className="px-3 py-3 text-muted-foreground" colSpan={6}>
+                                                            No tools match this search.
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            }
+
+                                            return filtered.flatMap((t) => {
+                                                const expanded = !!toolCatalogExpanded[t.name];
+                                                const params = Array.isArray(t.parameters) ? t.parameters : [];
+                                                return [
+                                                    (
+                                                        <tr key={t.name} className="border-t border-border align-top">
+                                                            <td className="px-3 py-2">
+                                                                <button
+                                                                    type="button"
+                                                                    className="text-muted-foreground hover:text-foreground"
+                                                                    onClick={() => setToolCatalogExpanded((prev) => ({ ...prev, [t.name]: !expanded }))}
+                                                                    aria-label={expanded ? 'Collapse tool details' : 'Expand tool details'}
+                                                                >
+                                                                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                                                </button>
+                                                            </td>
+                                                            <td className="px-3 py-2 font-medium text-foreground whitespace-nowrap">
+                                                                {t.name}
+                                                                {t.is_global ? (
+                                                                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded border border-border bg-secondary/40 text-muted-foreground">
+                                                                        global
+                                                                    </span>
+                                                                ) : null}
+                                                            </td>
+                                                            <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{t.phase || '-'}</td>
+                                                            <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{t.source || 'unknown'}</td>
+                                                            <td className="px-3 py-2 text-foreground/90">{t.description || '-'}</td>
+                                                            <td className="px-3 py-2 text-muted-foreground text-right">{params.length}</td>
+                                                        </tr>
+                                                    ),
+                                                    expanded ? (
+                                                        <tr key={`${t.name}-details`} className="border-t border-border bg-secondary/20">
+                                                            <td className="px-3 py-2" colSpan={6}>
+                                                                {params.length === 0 ? (
+                                                                    <div className="text-xs text-muted-foreground">No parameters.</div>
+                                                                ) : (
+                                                                    <div className="space-y-2">
+                                                                        <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Parameters</div>
+                                                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                                            {params.map((p) => (
+                                                                                <div key={`${t.name}-${p.name}`} className="rounded border border-border bg-background/60 p-2">
+                                                                                    <div className="flex items-center justify-between">
+                                                                                        <div className="text-xs font-medium text-foreground">
+                                                                                            {p.name}{p.required ? <span className="ml-1 text-red-500">*</span> : null}
+                                                                                        </div>
+                                                                                        <div className="text-[10px] text-muted-foreground">{p.type}</div>
+                                                                                    </div>
+                                                                                    <div className="text-xs text-muted-foreground mt-1">{p.description || '-'}</div>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    ) : null,
+                                                ].filter(Boolean) as any;
+                                            });
+                                        })()}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </ConfigCard>
                 </ConfigSection>
             )}

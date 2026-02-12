@@ -14,6 +14,7 @@ import ipaddress
 import socket
 from urllib.parse import urlparse, urljoin
 from settings import get_setting
+from . import config as config_api
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -238,6 +239,238 @@ async def preview_email_template(request: EmailTemplatePreviewRequest):
         if len(rendered) > 500_000:
             raise ValueError("Rendered HTML too large for preview")
         return EmailTemplatePreviewResponse(success=True, html=rendered)
+    except Exception as e:
+        return EmailTemplatePreviewResponse(success=False, error=str(e))
+
+
+class ToolParameterInfo(BaseModel):
+    name: str
+    type: str
+    description: str
+    required: bool = False
+    enum: Optional[Any] = None
+    default: Optional[Any] = None
+
+
+class ToolDefinitionInfo(BaseModel):
+    name: str
+    description: str
+    category: str = ""
+    phase: str = ""
+    is_global: bool = False
+    requires_channel: bool = False
+    max_execution_time: int = 0
+    timeout_ms: Optional[Any] = None
+    output_variables: Optional[Any] = None
+    parameters: List[ToolParameterInfo] = []
+    has_input_schema: bool = False
+    source: str = "builtin"  # builtin | http | mcp | unknown
+
+
+class ToolCatalogResponse(BaseModel):
+    tools: List[ToolDefinitionInfo]
+    source: str = "ai_engine"  # ai_engine | local_fallback
+
+
+def _ai_engine_base_urls() -> list[str]:
+    """Return candidate ai-engine health base URLs (no trailing /health)."""
+    candidates: list[str] = []
+    env = os.getenv("HEALTH_CHECK_AI_ENGINE_URL")
+    if env:
+        candidates.append(env.replace("/health", ""))
+    candidates.extend(["http://127.0.0.1:15000", "http://ai-engine:15000", "http://ai_engine:15000"])
+    out: list[str] = []
+    for c in candidates:
+        c = (c or "").strip().rstrip("/")
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def _safe_jsonable(obj: Any, *, max_depth: int = 5, max_items: int = 50, depth: int = 0) -> Any:
+    if depth >= max_depth:
+        return str(obj)
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for idx, (k, v) in enumerate(list(obj.items())[:max_items]):
+            out[str(k)] = _safe_jsonable(v, max_depth=max_depth, max_items=max_items, depth=depth + 1)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [_safe_jsonable(v, max_depth=max_depth, max_items=max_items, depth=depth + 1) for v in list(obj)[:max_items]]
+    return str(obj)
+
+
+def _http_tool_names_from_config(cfg: dict) -> set[str]:
+    names: set[str] = set()
+    tools_block = cfg.get("tools") if isinstance(cfg, dict) else None
+    if isinstance(tools_block, dict):
+        for name, tool_cfg in tools_block.items():
+            if not isinstance(name, str) or not name:
+                continue
+            if not isinstance(tool_cfg, dict):
+                continue
+            kind = str(tool_cfg.get("kind") or "").strip()
+            if kind in ("generic_http_lookup", "generic_webhook"):
+                names.add(name)
+    in_call = cfg.get("in_call_tools") if isinstance(cfg, dict) else None
+    if isinstance(in_call, dict):
+        for name, tool_cfg in in_call.items():
+            if not isinstance(name, str) or not name:
+                continue
+            if not isinstance(tool_cfg, dict):
+                continue
+            kind = str(tool_cfg.get("kind") or "in_call_http_lookup").strip()
+            if kind == "in_call_http_lookup":
+                names.add(name)
+    return names
+
+
+@router.get("/catalog", response_model=ToolCatalogResponse)
+async def get_tool_catalog():
+    """
+    Return a read-only tool catalog for Admin UI.
+
+    Prefers ai-engine's live view (includes MCP tools), falls back to local
+    best-effort initialization from merged YAML config.
+    """
+    merged_cfg: dict = {}
+    try:
+        merged_cfg = config_api._read_merged_config_dict() or {}
+        if not isinstance(merged_cfg, dict):
+            merged_cfg = {}
+    except Exception:
+        merged_cfg = {}
+
+    http_tool_names = _http_tool_names_from_config(merged_cfg)
+
+    # Preferred: ask ai-engine (authoritative for what is actually registered/runnable).
+    for base in _ai_engine_base_urls():
+        url = f"{base}/tools/definitions"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+            if resp.status_code != 200:
+                continue
+            data = resp.json() if resp.content else {}
+            tools = data.get("tools") if isinstance(data, dict) else None
+            if not isinstance(tools, list):
+                continue
+
+            out: List[ToolDefinitionInfo] = []
+            for item in tools:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                source = "builtin"
+                if name.startswith("mcp_"):
+                    source = "mcp"
+                elif name in http_tool_names:
+                    source = "http"
+
+                params_raw = item.get("parameters") if isinstance(item.get("parameters"), list) else []
+                params_out: List[ToolParameterInfo] = []
+                for p in params_raw:
+                    if not isinstance(p, dict):
+                        continue
+                    params_out.append(
+                        ToolParameterInfo(
+                            name=str(p.get("name") or ""),
+                            type=str(p.get("type") or ""),
+                            description=str(p.get("description") or ""),
+                            required=bool(p.get("required", False)),
+                            enum=_safe_jsonable(p.get("enum")),
+                            default=_safe_jsonable(p.get("default")),
+                        )
+                    )
+
+                out.append(
+                    ToolDefinitionInfo(
+                        name=name,
+                        description=str(item.get("description") or ""),
+                        category=str(item.get("category") or ""),
+                        phase=str(item.get("phase") or ""),
+                        is_global=bool(item.get("is_global", False)),
+                        requires_channel=bool(item.get("requires_channel", False)),
+                        max_execution_time=int(item.get("max_execution_time") or 0),
+                        timeout_ms=_safe_jsonable(item.get("timeout_ms")),
+                        output_variables=_safe_jsonable(item.get("output_variables")),
+                        parameters=params_out,
+                        has_input_schema=bool(item.get("has_input_schema", False)),
+                        source=source,
+                    )
+                )
+            return ToolCatalogResponse(tools=out, source="ai_engine")
+        except httpx.ConnectError:
+            continue
+        except Exception:
+            continue
+
+    # Fallback: local best-effort tool registry init.
+    try:
+        project_root = os.environ.get("PROJECT_ROOT")
+        if not project_root:
+            here = os.path.abspath(os.path.dirname(__file__))
+            project_root = os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
+
+        import sys
+        if project_root and project_root not in sys.path:
+            sys.path.insert(0, project_root)
+
+        from src.tools.registry import tool_registry  # type: ignore
+        tool_registry.clear()
+        tool_registry.initialize_default_tools()
+        tools_cfg = merged_cfg.get("tools") if isinstance(merged_cfg, dict) else {}
+        in_call_cfg = merged_cfg.get("in_call_tools") if isinstance(merged_cfg, dict) else {}
+        if isinstance(tools_cfg, dict):
+            tool_registry.initialize_http_tools_from_config(tools_cfg)
+        if isinstance(in_call_cfg, dict):
+            tool_registry.initialize_in_call_http_tools_from_config(in_call_cfg, cache_key="global")
+
+        out: List[ToolDefinitionInfo] = []
+        for d in tool_registry.get_definitions():
+            name = str(getattr(d, "name", "") or "").strip()
+            if not name:
+                continue
+            source = "builtin"
+            if name.startswith("mcp_"):
+                source = "mcp"
+            elif name in http_tool_names:
+                source = "http"
+            params_out: List[ToolParameterInfo] = []
+            for p in (getattr(d, "parameters", None) or []):
+                params_out.append(
+                    ToolParameterInfo(
+                        name=str(getattr(p, "name", "")),
+                        type=str(getattr(p, "type", "")),
+                        description=str(getattr(p, "description", "")),
+                        required=bool(getattr(p, "required", False)),
+                        enum=_safe_jsonable(getattr(p, "enum", None)),
+                        default=_safe_jsonable(getattr(p, "default", None)),
+                    )
+                )
+            out.append(
+                ToolDefinitionInfo(
+                    name=name,
+                    description=str(getattr(d, "description", "")),
+                    category=str(getattr(getattr(d, "category", None), "value", "") or ""),
+                    phase=str(getattr(getattr(d, "phase", None), "value", "") or ""),
+                    is_global=bool(getattr(d, "is_global", False)),
+                    requires_channel=bool(getattr(d, "requires_channel", False)),
+                    max_execution_time=int(getattr(d, "max_execution_time", 0) or 0),
+                    timeout_ms=_safe_jsonable(getattr(d, "timeout_ms", None)),
+                    output_variables=_safe_jsonable(getattr(d, "output_variables", [])),
+                    parameters=params_out,
+                    has_input_schema=bool(getattr(d, "input_schema", None)),
+                    source=source,
+                )
+            )
+        return ToolCatalogResponse(tools=out, source="local_fallback")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build tool catalog: {str(e)}")
     except Exception as e:
         return EmailTemplatePreviewResponse(success=False, error=str(e))
 

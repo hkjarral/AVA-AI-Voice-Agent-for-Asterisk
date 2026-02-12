@@ -11581,6 +11581,10 @@ class Engine:
             app.router.add_post('/reload', self._reload_handler)
             app.router.add_get('/mcp/status', self._mcp_status_handler)
             app.router.add_post('/mcp/test/{server_id}', self._mcp_test_handler)
+            # Read-only tool catalog for Admin UI: includes built-in, HTTP, and MCP tool wrappers
+            # registered in the engine's tool registry. This is intentionally unauthenticated
+            # (similar to /mcp/status) and should not include secrets or PII.
+            app.router.add_get('/tools/definitions', self._tools_definitions_handler)
             app.router.add_get('/sessions/stats', self._sessions_stats_handler)
             runner = web.AppRunner(app)
             await runner.setup()
@@ -11605,6 +11609,67 @@ class Engine:
             logger.info("Health endpoint started", host=health_host, port=health_port)
         except Exception as exc:
             logger.error("Failed to start health endpoint", error=str(exc), exc_info=True)
+
+    @staticmethod
+    def _safe_jsonable(obj: Any, *, max_depth: int = 5, max_items: int = 50, depth: int = 0) -> Any:
+        """
+        Best-effort JSON sanitizer to prevent health endpoints from failing on odd tool defaults.
+
+        This endpoint must never return raw secrets; tool definitions should not contain them,
+        but defaults/enums can sometimes be non-primitive.
+        """
+        if depth >= max_depth:
+            return str(obj)
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, dict):
+            out: Dict[str, Any] = {}
+            for idx, (k, v) in enumerate(list(obj.items())[:max_items]):
+                out[str(k)] = Engine._safe_jsonable(v, max_depth=max_depth, max_items=max_items, depth=depth + 1)
+            return out
+        if isinstance(obj, (list, tuple)):
+            return [Engine._safe_jsonable(v, max_depth=max_depth, max_items=max_items, depth=depth + 1) for v in list(obj)[:max_items]]
+        return str(obj)
+
+    async def _tools_definitions_handler(self, request):
+        """Return current tool definitions from the engine's tool registry (sanitized)."""
+        try:
+            from src.tools.registry import tool_registry
+            defs = tool_registry.get_definitions()
+            tools_out: List[Dict[str, Any]] = []
+            for d in defs:
+                params_out: List[Dict[str, Any]] = []
+                for p in (d.parameters or []):
+                    params_out.append(
+                        {
+                            "name": str(getattr(p, "name", "")),
+                            "type": str(getattr(p, "type", "")),
+                            "description": str(getattr(p, "description", "")),
+                            "required": bool(getattr(p, "required", False)),
+                            "enum": self._safe_jsonable(getattr(p, "enum", None)),
+                            "default": self._safe_jsonable(getattr(p, "default", None)),
+                        }
+                    )
+                tools_out.append(
+                    {
+                        "name": str(getattr(d, "name", "")),
+                        "description": str(getattr(d, "description", "")),
+                        "category": str(getattr(getattr(d, "category", None), "value", "") or ""),
+                        "phase": str(getattr(getattr(d, "phase", None), "value", "") or ""),
+                        "is_global": bool(getattr(d, "is_global", False)),
+                        "requires_channel": bool(getattr(d, "requires_channel", False)),
+                        "max_execution_time": int(getattr(d, "max_execution_time", 0) or 0),
+                        "timeout_ms": self._safe_jsonable(getattr(d, "timeout_ms", None)),
+                        "output_variables": self._safe_jsonable(getattr(d, "output_variables", [])),
+                        "parameters": params_out,
+                        "has_input_schema": bool(getattr(d, "input_schema", None)),
+                    }
+                )
+            # Keep response shape stable so Admin UI can cache it.
+            return web.json_response({"tools": tools_out}, status=200)
+        except Exception as exc:
+            logger.debug("Tools definitions handler failed", error=str(exc), exc_info=True)
+            return web.json_response({"tools": [], "error": "internal_error"}, status=500)
 
     async def _sessions_stats_handler(self, request):
         """Return active session statistics for Admin UI (Milestone 21).

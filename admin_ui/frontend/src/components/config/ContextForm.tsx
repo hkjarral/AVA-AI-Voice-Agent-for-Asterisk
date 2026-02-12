@@ -2,6 +2,7 @@ import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import { ChevronDown, ChevronRight, Search, Phone, Webhook, Lock } from 'lucide-react';
 import { useState } from 'react';
+import HelpTooltip from '../ui/HelpTooltip';
 
 interface ContextFormProps {
     config: any;
@@ -9,6 +10,7 @@ interface ContextFormProps {
     pipelines?: any;
     availableTools?: string[];
     toolEnabledMap?: Record<string, boolean>;
+    toolCatalogByName?: Record<string, any>;
     availableProfiles?: string[];
     defaultProfileName?: string;
     httpTools?: Record<string, any>;
@@ -16,7 +18,7 @@ interface ContextFormProps {
     isNew?: boolean;
 }
 
-const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
+const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
     const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({
         pre_call: false,
         in_call: true,
@@ -101,6 +103,13 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
     const displayToolName = (tool: string) => {
         if (tool === 'transfer') return 'blind_transfer';
         return tool;
+    };
+
+    const toolDescription = (tool: string) => {
+        const canonical = displayToolName(tool);
+        const fromCatalog = toolCatalogByName?.[canonical]?.description || toolCatalogByName?.[tool]?.description;
+        if (typeof fromCatalog === 'string' && fromCatalog.trim()) return fromCatalog.trim();
+        return '';
     };
 
     const isToolDisabled = (tool: string) => {
@@ -232,6 +241,9 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                                     />
                                                 )}
                                                 <span className="text-xs font-medium">{tool.name}</span>
+                                                {(toolCatalogByName?.[tool.name]?.description || tool.description) ? (
+                                                    <HelpTooltip content={(toolCatalogByName?.[tool.name]?.description || tool.description || '').toString()} />
+                                                ) : null}
                                                 {tool.is_global && <span title="Global tool (runs for all contexts)"><Lock className="w-3 h-3 text-blue-500" /></span>}
                                             </div>
                                             {tool.is_global && (
@@ -294,6 +306,9 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                             onChange={() => handleToolToggle(tool)}
                                         />
                                         <span className="text-xs font-medium">{displayToolName(tool)}</span>
+                                        {toolDescription(tool) ? (
+                                            <HelpTooltip content={toolDescription(tool)} />
+                                        ) : null}
                                     </label>
                                 ))}
                                 {/* HTTP tools with phase=in_call */}
@@ -314,6 +329,9 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                                 />
                                             )}
                                             <span className="text-xs font-medium">{tool.name}</span>
+                                            {(toolCatalogByName?.[tool.name]?.description || tool.description) ? (
+                                                <HelpTooltip content={(toolCatalogByName?.[tool.name]?.description || tool.description || '').toString()} />
+                                            ) : null}
                                             {tool.is_global && <span title="Global tool (runs for all contexts)"><Lock className="w-3 h-3 text-blue-500" /></span>}
                                         </div>
                                         {tool.is_global && (
@@ -377,6 +395,9 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                                     />
                                                 )}
                                                 <span className="text-xs font-medium">{tool.name}</span>
+                                                {(toolCatalogByName?.[tool.name]?.description || tool.description) ? (
+                                                    <HelpTooltip content={(toolCatalogByName?.[tool.name]?.description || tool.description || '').toString()} />
+                                                ) : null}
                                                 {tool.is_global && <span title="Global tool (runs for all contexts)"><Lock className="w-3 h-3 text-blue-500" /></span>}
                                             </div>
                                             {tool.is_global && (
