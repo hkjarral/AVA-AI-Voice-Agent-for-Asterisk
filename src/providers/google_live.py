@@ -895,6 +895,23 @@ class GoogleLiveProvider(AIProviderInterface):
             # (causes 1007 "Unknown name toolConfig" error)
             # Tool calling mode must be controlled via system prompt instead
         
+        # Configure server-side VAD for turn detection (realtimeInputConfig)
+        # Higher endOfSpeechSensitivity + lower silenceDurationMs = faster response after user stops talking
+        # Configurable via YAML: providers.google_live.vad_*
+        vad_eos = getattr(self.config, "vad_end_of_speech_sensitivity", "END_SENSITIVITY_HIGH")
+        vad_sos = getattr(self.config, "vad_start_of_speech_sensitivity", "START_SENSITIVITY_LOW")
+        vad_prefix_ms = int(getattr(self.config, "vad_prefix_padding_ms", 20))
+        vad_silence_ms = int(getattr(self.config, "vad_silence_duration_ms", 500))
+        setup_msg["setup"]["realtimeInputConfig"] = {
+            "automaticActivityDetection": {
+                "disabled": False,
+                "startOfSpeechSensitivity": vad_sos,
+                "endOfSpeechSensitivity": vad_eos,
+                "prefixPaddingMs": vad_prefix_ms,
+                "silenceDurationMs": vad_silence_ms,
+            }
+        }
+
         # Enable transcriptions for conversation history tracking (configurable)
         # This allows us to populate email summaries and transcripts
         # Note: Using camelCase per Google Live API format
