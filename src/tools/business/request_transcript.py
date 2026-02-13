@@ -52,7 +52,7 @@ class RequestTranscriptTool(Tool):
             name="request_transcript",
             description=(
                 "Send the call transcript to the caller's email. "
-                "Ask for their email, spell it back for confirmation, "
+                "Ask for their email, spell it back (repeat it back) for confirmation, "
                 "then call this tool only after they confirm."
             ),
             category=ToolCategory.BUSINESS,

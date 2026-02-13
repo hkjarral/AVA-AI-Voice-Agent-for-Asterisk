@@ -793,10 +793,9 @@ class GoogleLiveProvider(AIProviderInterface):
         """
         Strip the ``models/`` prefix and apply legacy alias remapping.
 
-        The operator-configured model name is used as-is after prefix
-        stripping.  We intentionally do NOT silently replace unrecognized
-        model names with a default — that hides config errors and causes
-        the wrong model to be used at runtime.
+        Google Live requires a Live-capable native-audio model. If a non-live
+        model name is provided, fall back to the provider default so calls
+        don't fail due to a UI/wizard mismatch.
         """
         m = (model or "").strip()
         if m.startswith("models/"):
@@ -818,15 +817,14 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             return replacement
 
-        # Pass through whatever the operator configured — do not second-guess.
-        # A warning is still useful so typos are visible in logs.
         m_l = m.lower()
         if ("native-audio" not in m_l) and ("live" not in m_l):
             logger.warning(
-                "Google Live model name does not contain 'native-audio' or 'live'; "
-                "verify this is a valid Live API model",
+                "Google Live model name does not look like a Live native-audio model; using default",
                 configured_model=m,
+                fallback_model=GoogleLiveProvider.DEFAULT_LIVE_MODEL,
             )
+            return GoogleLiveProvider.DEFAULT_LIVE_MODEL
         return m
 
     async def _send_setup(self, context: Optional[Dict[str, Any]], system_prompt_override: Optional[str] = None) -> None:

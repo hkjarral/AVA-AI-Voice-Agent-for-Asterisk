@@ -34,7 +34,7 @@ class HangupCallTool(Tool):
         return ToolDefinition(
             name="hangup_call",
             description=(
-                "End the current call. Call this when the caller is ready to hang up. "
+                "End the current call. Call this when the caller says goodbye or thank you and is ready to hang up. "
                 "Set farewell_message to your goodbye sentence."
             ),
             category=ToolCategory.TELEPHONY,
