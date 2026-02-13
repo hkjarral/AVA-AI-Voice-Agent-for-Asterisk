@@ -141,6 +141,9 @@ profiles:
       sample_rate_hz: 8000
 
 # Provider Configuration - Local STT/TTS, Telnyx for LLM
+# Note: For Telnyx AI Inference, we override the OpenAI provider's api_key
+# to use TELNYX_API_KEY instead of OPENAI_API_KEY. The pipeline options
+# set base_url to Telnyx's OpenAI-compatible endpoint.
 providers:
   local:
     enabled: true
@@ -150,12 +153,12 @@ providers:
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
   openai:
     enabled: true
-    api_key: "${OPENAI_API_KEY}"
+    # Use TELNYX_API_KEY for this Telnyx-specific config
+    # (standard OpenAI configs would use OPENAI_API_KEY)
+    api_key: "${TELNYX_API_KEY}"
   deepgram:
     enabled: true
     api_key: "${DEEPGRAM_API_KEY}"
-  # Telnyx provider configuration
-  # Note: Telnyx uses OpenAI-compatible API, configured via pipeline options
 
 # Pipeline Configuration - Telnyx Hybrid
 # Local STT + Telnyx LLM + Local TTS

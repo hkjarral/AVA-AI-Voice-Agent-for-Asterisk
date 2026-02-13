@@ -86,7 +86,15 @@ active_pipeline: telnyx_hybrid
 
 **Option B: Override OpenAI base_url for LLM**
 
+When using `openai_llm` with Telnyx's OpenAI-compatible `base_url`, the API key is resolved from the `providers.openai.api_key` setting, NOT from a separate Telnyx provider block. You must set `providers.openai.api_key` to use your `TELNYX_API_KEY`:
+
 ```yaml
+providers:
+  openai:
+    enabled: true
+    # Use TELNYX_API_KEY when routing LLM requests to Telnyx
+    api_key: "${TELNYX_API_KEY}"
+
 pipelines:
   local_hybrid:
     stt: local_stt
@@ -100,6 +108,8 @@ pipelines:
         temperature: 0.7
         max_tokens: 150
 ```
+
+**Key Point**: The `openai_llm` adapter reads `api_key` from the `providers.openai` configuration. Setting `base_url` to Telnyx only changes the endpoint - you must also ensure `providers.openai.api_key` points to your Telnyx API key.
 
 ### 4. Available Models
 
