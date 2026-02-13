@@ -7,6 +7,7 @@
 #  - config/ai-agent.golden-google-live.yaml
 #  - config/ai-agent.golden-elevenlabs.yaml
 #  - config/ai-agent.golden-local-hybrid.yaml
+#  - config/ai-agent.golden-telnyx.yaml
 #
 # Secrets come from .env (see .env.example). YAML values may reference env using ${NAME}.
 

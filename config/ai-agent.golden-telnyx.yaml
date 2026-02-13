@@ -1,0 +1,201 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Golden Baseline: Telnyx AI Inference - Local Hybrid Pipeline
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# VALIDATED CONFIGURATION - Production-ready
+#
+# Requirements:
+#   - TELNYX_API_KEY in .env file
+#   - Asterisk 18+ with ARI and AudioSocket modules
+#
+# Performance:
+#   - Response time: Depends on model selection (GPT-4o-mini: ~1-2s)
+#   - Audio quality: Local STT/TTS quality
+#   - Cost: Competitive AI inference pricing
+#
+# Best for:
+#   - Cost-effective deployments with competitive LLM pricing
+#   - Model flexibility (GPT-4o, Claude, Llama, Mistral via one API)
+#   - Privacy-focused setups (audio stays local, only LLM in cloud)
+#
+# Why Telnyx AI Inference?
+#   - OpenAI-compatible API (drop-in replacement)
+#   - 53+ models from multiple providers
+#   - Competitive pricing, often cheaper than direct providers
+#   - Single API key for multiple model families
+#
+# For detailed parameter explanations, see: docs/Configuration-Reference.md
+# For setup guide, see: docs/Provider-Telnyx-Setup.md
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Active Configuration
+config_version: 6
+active_pipeline: telnyx_hybrid
+default_provider: local
+
+# Audio Transport - AudioSocket for low latency
+audio_transport: audiosocket
+audiosocket:
+  format: slin
+  host: 0.0.0.0
+  port: 8090
+
+# Playback Mode
+downstream_mode: stream
+
+# Contexts - Use demo_telnyx context to activate Telnyx AI Inference
+contexts:
+  default:
+    greeting: Hello, how can I help you today?
+    profile: telephony_ulaw_8k
+    prompt: You are a helpful AI assistant. Be concise and clear.
+    provider: local
+  demo_telnyx:
+    greeting: "Hi! I'm Ava powered by Telnyx AI Inference. I can use models like GPT-4o, Claude, and Llama. What would you like to know?"
+    prompt: |
+      You are Ava (Asterisk Voice Agent) demonstrating Telnyx AI Inference.
+      Be helpful, conversational, and explain features clearly.
+      
+      ABOUT TELNYX AI INFERENCE:
+      - OpenAI-compatible API for easy integration
+      - 53+ models including GPT-4o, Claude, Llama, Mistral
+      - Competitive pricing, often cheaper than direct providers
+      - Single API key for multiple model families
+      
+      YOUR ROLE:
+      - Answer questions about the project and AI capabilities
+      - Be conversational and adapt to the caller's technical level
+      - Keep responses short unless the caller asks for more detail
+    profile: telephony_ulaw_8k
+    provider: local
+    tools:
+      - hangup_call
+
+# Barge-In - Enable for natural interruption
+barge_in:
+  enabled: true
+  energy_threshold: 700
+  initial_protection_ms: 100
+  min_ms: 150
+  post_tts_end_protection_ms: 100
+
+# VAD Configuration - For utterance detection with local STT
+vad:
+  enhanced_enabled: true
+  fallback_buffer_size: 128000
+  fallback_enabled: true
+  fallback_interval_ms: 4000
+  max_utterance_duration_ms: 10000
+  min_utterance_duration_ms: 600
+  use_provider_vad: false
+  utterance_padding_ms: 200
+  webrtc_aggressiveness: 1
+  webrtc_end_silence_frames: 50
+  webrtc_start_frames: 3
+
+# Streaming Configuration
+streaming:
+  chunk_size_ms: 20
+  connection_timeout_ms: 120000
+  continuous_stream: true
+  empty_backoff_ticks_max: 5
+  fallback_timeout_ms: 8000
+  greeting_min_start_ms: 40
+  jitter_buffer_ms: 950
+  keepalive_interval_ms: 5000
+  low_watermark_ms: 80
+  min_start_ms: 120
+  normalizer:
+    enabled: true
+    max_gain_db: 18.0
+    target_rms: 1400
+  provider_grace_ms: 500
+  sample_rate: 8000
+
+# Audio Profiles - telephony_ulaw_8k for local STT/TTS
+profiles:
+  default: telephony_responsive
+  telephony_ulaw_8k:
+    chunk_ms: auto
+    idle_cutoff_ms: 800
+    internal_rate_hz: 8000
+    provider_pref:
+      input_encoding: mulaw
+      input_sample_rate_hz: 8000
+      output_encoding: mulaw
+      output_sample_rate_hz: 8000
+    transport_out:
+      encoding: slin
+      sample_rate_hz: 8000
+  telephony_responsive:
+    chunk_ms: auto
+    idle_cutoff_ms: 600
+    internal_rate_hz: 8000
+    provider_pref:
+      input_encoding: mulaw
+      input_sample_rate_hz: 8000
+      output_encoding: mulaw
+      output_sample_rate_hz: 8000
+    transport_out:
+      encoding: slin
+      sample_rate_hz: 8000
+
+# Provider Configuration - Local STT/TTS, Telnyx for LLM
+providers:
+  local:
+    enabled: true
+    ws_url: "${LOCAL_WS_URL:-ws://127.0.0.1:8765}"
+    connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
+    response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=5.0}
+    chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
+  openai:
+    enabled: true
+    api_key: "${OPENAI_API_KEY}"
+  deepgram:
+    enabled: true
+    api_key: "${DEEPGRAM_API_KEY}"
+  # Telnyx provider configuration
+  # Note: Telnyx uses OpenAI-compatible API, configured via pipeline options
+
+# Pipeline Configuration - Telnyx Hybrid
+# Local STT + Telnyx LLM + Local TTS
+pipelines:
+  telnyx_hybrid:
+    stt: local_stt
+    llm: openai_llm  # Uses OpenAI-compatible client
+    tts: local_tts
+    options:
+      llm:
+        # Telnyx AI Inference endpoint (OpenAI-compatible)
+        base_url: "https://api.telnyx.com/v2/ai"
+        # Model selection - choose from 53+ available models
+        # Popular options: gpt-4o, gpt-4o-mini, claude-3-5-sonnet, llama-3.1-70b
+        model: "gpt-4o-mini"
+        temperature: 0.7
+        max_tokens: 150
+      stt:
+        chunk_ms: 160
+        mode: stt
+        stream_format: pcm16_16k
+        streaming: true
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
+
+# LLM Configuration
+llm:
+  initial_greeting: Hello, how can I help you today?
+  prompt: Voice assistant. Answer in 5-8 words. Be direct. Expand only if asked.
+
+# Asterisk Configuration
+asterisk:
+  app_name: asterisk-ai-voice-agent
+
+# ExternalMedia (not used by AudioSocket, but required by config schema)
+external_media:
+  codec: ulaw
+  direction: both
+  port_range: 18080:18099
+  rtp_host: 0.0.0.0
+  rtp_port: 18080

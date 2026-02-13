@@ -241,7 +241,7 @@ For full release notes and migration guide, see [CHANGELOG.md](CHANGELOG.md).
 
 ## ✨ Features
 
-### 5 Golden Baseline Configurations
+### 6 Golden Baseline Configurations
 
 1. **OpenAI Realtime** (Recommended for Quick Start)
    - Modern cloud AI with natural conversations (<2s response).
@@ -267,6 +267,12 @@ For full release notes and migration guide, see [CHANGELOG.md](CHANGELOG.md).
    - Local STT/TTS + Cloud LLM (OpenAI). Audio stays on-premises.
    - Config: `config/ai-agent.golden-local-hybrid.yaml`
    - *Best for: Audio privacy, cost control, compliance.*
+
+6. **Telnyx AI Inference** (Cost-Effective Multi-Model)
+   - Local STT/TTS + Telnyx LLM with 53+ models (GPT-4o, Claude, Llama).
+   - OpenAI-compatible API with competitive pricing.
+   - Config: `config/ai-agent.golden-telnyx.yaml`
+   - *Best for: Model flexibility, cost optimization, multi-provider access.*
 
 ### Fully Local (Optional)
 
