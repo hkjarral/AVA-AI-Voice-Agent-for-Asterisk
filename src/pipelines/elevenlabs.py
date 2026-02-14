@@ -8,6 +8,7 @@ API Reference: https://elevenlabs.io/docs/api-reference/text-to-speech
 from __future__ import annotations
 
 import audioop
+from ..audio.resampler import resample_audio
 import time
 import uuid
 from typing import Any, AsyncIterator, Callable, Dict, Optional
@@ -67,6 +68,11 @@ class ElevenLabsTTSAdapter(TTSComponent):
     async def close_call(self, call_id: str) -> None:
         """Cleanup call resources (no per-call state)."""
         pass
+
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        # Merge provider config into options so the base validator sees base_url.
+        merged = self._compose_options(options or {})
+        return await super().validate_connectivity(merged)
 
     async def synthesize(
         self,
@@ -165,11 +171,11 @@ class ElevenLabsTTSAdapter(TTSComponent):
                     converted = raw_audio
                 elif output_format == "pcm_16000":
                     # Convert PCM16 16kHz to μ-law 8kHz
-                    resampled, _ = audioop.ratecv(raw_audio, 2, 1, 16000, 8000, None)
+                    resampled, _ = resample_audio(raw_audio, 16000, 8000)
                     converted = audioop.lin2ulaw(resampled, 2)
                 elif output_format == "pcm_24000":
                     # Convert PCM16 24kHz to μ-law 8kHz
-                    resampled, _ = audioop.ratecv(raw_audio, 2, 1, 24000, 8000, None)
+                    resampled, _ = resample_audio(raw_audio, 24000, 8000)
                     converted = audioop.lin2ulaw(resampled, 2)
                 else:
                     # For other formats, assume it's already usable or skip conversion

@@ -51,23 +51,16 @@ class RequestTranscriptTool(Tool):
         return ToolDefinition(
             name="request_transcript",
             description=(
-                "Send call transcript to caller's email address. "
-                "IMPORTANT: Before calling this tool, you MUST: "
-                "1. Ask caller for their email address, "
-                "2. Read back the captured email clearly (e.g., 'I have h-a-i-d-e-r-k-h-a-l-i-l at hotmail dot com'), "
-                "3. Ask 'Is that correct?' and wait for confirmation, "
-                "4. Only call this tool AFTER caller confirms the email is correct. "
-                "Do NOT call this tool multiple times for the same request."
+                "Send the call transcript to the caller's email. "
+                "Ask for their email, spell it back (repeat it back) for confirmation, "
+                "then call this tool only after they confirm."
             ),
             category=ToolCategory.BUSINESS,
             parameters=[
                 ToolParameter(
                     name="caller_email",
                     type="string",
-                    description=(
-                        "Caller's email address extracted from speech recognition. "
-                        "Examples: 'john dot smith at gmail dot com' should be parsed as 'john.smith@gmail.com'"
-                    ),
+                    description="The caller's confirmed email address.",
                     required=True
                 )
             ]

@@ -31,25 +31,26 @@
 # Active Configuration
 config_version: 6
 active_pipeline: telnyx_hybrid
-default_provider: local
+default_provider: telnyx_hybrid
 
-# Audio Transport - AudioSocket for low latency
-audio_transport: audiosocket
-audiosocket:
-  format: slin
-  host: 0.0.0.0
-  port: 8090
+# Audio Transport - ExternalMedia RTP for pipelines
+audio_transport: externalmedia
+external_media:
+  codec: ulaw
+  direction: both
+  port_range: 18080:18099
+  rtp_host: 0.0.0.0
+  rtp_port: 18080
 
-# Playback Mode
-downstream_mode: stream
+# Playback Mode - File mode is the most validated/robust option for pipelines
+downstream_mode: file
 
-# Contexts - Use demo_telnyx context to activate Telnyx AI Inference
+# Contexts - Use demo_telnyx for Telnyx persona/tool scoping
 contexts:
   default:
     greeting: Hello, how can I help you today?
     profile: telephony_ulaw_8k
     prompt: You are a helpful AI assistant. Be concise and clear.
-    provider: local
   demo_telnyx:
     greeting: "Hi! I'm Ava powered by Telnyx AI Inference. I can use models like GPT-4o, Claude, and Llama. What would you like to know?"
     prompt: |
@@ -67,7 +68,6 @@ contexts:
       - Be conversational and adapt to the caller's technical level
       - Keep responses short unless the caller asks for more detail
     profile: telephony_ulaw_8k
-    provider: local
     tools:
       - hangup_call
 
@@ -141,9 +141,6 @@ profiles:
       sample_rate_hz: 8000
 
 # Provider Configuration - Local STT/TTS, Telnyx for LLM
-# Note: For Telnyx AI Inference, we override the OpenAI provider's api_key
-# to use TELNYX_API_KEY instead of OPENAI_API_KEY. The pipeline options
-# set base_url to Telnyx's OpenAI-compatible endpoint.
 providers:
   local:
     enabled: true
@@ -151,29 +148,32 @@ providers:
     connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=5.0}
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
-  openai:
+  telnyx_llm:
     enabled: true
-    # Use TELNYX_API_KEY for this Telnyx-specific config
-    # (standard OpenAI configs would use OPENAI_API_KEY)
+    type: telnyx
+    capabilities: [llm]
+    chat_base_url: "https://api.telnyx.com/v2/ai"
     api_key: "${TELNYX_API_KEY}"
-  deepgram:
-    enabled: true
-    api_key: "${DEEPGRAM_API_KEY}"
+    # Telnyx-hosted default model (works with TELNYX_API_KEY only)
+    # Recommended for tool calling (auto tool choice supported)
+    chat_model: "Qwen/Qwen3-235B-A22B"
+    temperature: 0.7
+    response_timeout_sec: 5.0
 
 # Pipeline Configuration - Telnyx Hybrid
 # Local STT + Telnyx LLM + Local TTS
 pipelines:
   telnyx_hybrid:
     stt: local_stt
-    llm: openai_llm  # Uses OpenAI-compatible client
+    llm: telnyx_llm
     tts: local_tts
     options:
       llm:
-        # Telnyx AI Inference endpoint (OpenAI-compatible)
-        base_url: "https://api.telnyx.com/v2/ai"
-        # Model selection - choose from 53+ available models
-        # Popular options: gpt-4o, gpt-4o-mini, claude-3-5-sonnet, llama-3.1-70b
-        model: "gpt-4o-mini"
+        # Model selection
+        # Telnyx-hosted models like meta-llama/* work with TELNYX_API_KEY only.
+        # External models like openai/* require providers.telnyx_llm.api_key_ref (Integration Secret identifier).
+        # Recommended for tool calling (auto tool choice supported)
+        model: "Qwen/Qwen3-235B-A22B"
         temperature: 0.7
         max_tokens: 150
       stt:
@@ -195,10 +195,8 @@ llm:
 asterisk:
   app_name: asterisk-ai-voice-agent
 
-# ExternalMedia (not used by AudioSocket, but required by config schema)
-external_media:
-  codec: ulaw
-  direction: both
-  port_range: 18080:18099
-  rtp_host: 0.0.0.0
-  rtp_port: 18080
+# AudioSocket (not used by ExternalMedia, but required by config schema)
+audiosocket:
+  format: slin
+  host: 0.0.0.0
+  port: 8090

@@ -39,6 +39,16 @@ from src.tools.adapters.openai import OpenAIToolAdapter
 
 logger = get_logger(__name__)
 
+
+def _log_provider_task_exception(task: asyncio.Task) -> None:
+    """Done-callback: log exceptions from fire-and-forget provider tasks."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error("Provider background task failed", task_name=task.get_name(), error=str(exc), exc_info=exc)
+
+
 _COMMIT_INTERVAL_SEC = 0.2
 _KEEPALIVE_INTERVAL_SEC = 15.0
 
@@ -96,6 +106,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._farewell_response_id: Optional[str] = None  # Track farewell response for hangup
         self._hangup_after_response: bool = False  # Flag to trigger hangup after next response
         self._farewell_timeout_task: Optional[asyncio.Task] = None  # Timeout fallback for hangup
+        self._greeting_vad_task: Optional[asyncio.Task] = None
+        self._background_tasks: set[asyncio.Task] = set()
         self._in_audio_burst: bool = False
         # Track whether ANY audio was emitted during a given response (response_id -> bool).
         # _in_audio_burst is only "currently emitting", and is often false by response.done.
@@ -736,6 +748,19 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # Cancel farewell timeout if active
             self._cancel_farewell_timeout()
 
+            if self._greeting_vad_task and not self._greeting_vad_task.done():
+                self._greeting_vad_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._greeting_vad_task
+
+            bg_tasks = list(self._background_tasks)
+            for task in bg_tasks:
+                if not task.done():
+                    task.cancel()
+            if bg_tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.gather(*bg_tasks, return_exceptions=True)
+
             if self.websocket and self.websocket.state.name == "OPEN":
                 await self.websocket.close()
 
@@ -751,6 +776,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             previous_call_id = self._call_id
             self._receive_task = None
             self._keepalive_task = None
+            self._greeting_vad_task = None
+            self._background_tasks.clear()
             self.websocket = None
             self._call_id = None
             self._closing = False
@@ -1044,7 +1071,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         
         # FALLBACK: Re-enable VAD after timeout in case response.done doesn't fire correctly
         # This ensures two-way conversation can proceed even if greeting tracking fails
-        asyncio.create_task(self._greeting_vad_fallback())
+        if self._greeting_vad_task and not self._greeting_vad_task.done():
+            self._greeting_vad_task.cancel()
+        self._greeting_vad_task = asyncio.create_task(self._greeting_vad_fallback())
+        self._greeting_vad_task.add_done_callback(_log_provider_task_exception)
+        self._background_tasks.add(self._greeting_vad_task)
+        self._greeting_vad_task.add_done_callback(self._background_tasks.discard)
 
     async def _greeting_vad_fallback(self):
         """Fallback to re-enable VAD if greeting completion detection fails."""
@@ -1917,7 +1949,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     function_name=function_name,
                 )
                 # Handle function call via tool adapter
-                asyncio.create_task(self._handle_function_call(event))
+                task = asyncio.create_task(self._handle_function_call(event))
+                task.add_done_callback(_log_provider_task_exception)
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             return
 
         logger.debug("Unhandled OpenAI Realtime event", event_type=event_type)
@@ -1959,7 +1994,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                                 logger.debug("Session not found for latency tracking", call_id=call_id_copy)
                         except Exception as e:
                             logger.debug("Failed to save turn latency", call_id=call_id_copy, error=str(e))
-                    asyncio.create_task(save_latency())
+                    task = asyncio.create_task(save_latency())
+                    task.add_done_callback(_log_provider_task_exception)
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                 except Exception as e:
                     logger.debug("Failed to create latency save task", error=str(e))
             logger.info("Turn latency recorded", call_id=self._call_id, latency_ms=round(turn_latency_ms, 1))

@@ -1,4 +1,4 @@
-active_pipeline: local_hybrid
+active_pipeline: null
 asterisk:
   app_name: asterisk-ai-voice-agent
 audio_transport: audiosocket
@@ -27,7 +27,7 @@ barge_in:
   provider_output_suppress_extend_ms: 600
   provider_output_suppress_chunk_extend_ms: 250
 config_version: 6
-farewell_hangup_delay_sec: 5
+farewell_hangup_delay_sec: 3
 contexts:
   default:
     greeting: Hello
@@ -229,6 +229,7 @@ contexts:
       Hi {caller_name}, I'm Multilingual Ava with the Google Gemini Live demo.
       Ask me about the project in your preferred language.
     profile: telephony_ulaw_8k
+    provider: google_live
     prompt: >
       You are Ava (Asterisk Voice Agent) demonstrating the Google Gemini Live
       API configuration.
@@ -379,13 +380,13 @@ contexts:
 
       CALL ENDING PROTOCOL (CRITICAL - follow exactly):
 
-      - When the user says goodbye, says that is all, or indicates they want to end the call, first offer to email them a transcript
+      - When user shows intent to end the call, first offer to email them a transcript
 
-      - If they want the transcript, use the request_transcript tool to collect their email address
+      - If yes, get their email, confirm it, and call the request_transcript function with the captured email address
 
-      - To end ANY call, you MUST call the hangup_call tool with your farewell message as the parameter
+      - If user declines the transcript, do NOT speak any farewell words yourself. Instead, IMMEDIATELY call the hangup_call function with your farewell as the parameter. The system will speak it for you.
 
-      - NEVER just say goodbye verbally - always use hangup_call tool to end the call
+      - NEVER say goodbye, thank you, or any farewell words verbally. ALWAYS pass them inside hangup_call(farewell_message="..."). If you speak farewell words without calling hangup_call, the call will be cut off mid-sentence.
 
       - If the user explicitly asks you to hang up or end the call, do so IMMEDIATELY using the hangup_call tool without further questions
 
@@ -1218,13 +1219,7 @@ pipelines:
           encoding: mulaw
           sample_rate: 8000
     stt: local_stt
-    tools:
-      - transfer
-      - cancel_transfer
-      - hangup_call
-      - leave_voicemail
-      - send_email_summary
-      - request_transcript
+    tools: null
     tts: local_tts
   local_hybrid_groq:
     llm: groq_llm
@@ -1247,6 +1242,27 @@ pipelines:
           sample_rate: 8000
     stt: local_stt
     tts: local_tts
+  # Local STT + OpenAI LLM + ElevenLabs TTS (premium voice quality)
+  # Requires: ELEVENLABS_API_KEY + OPENAI_API_KEY in .env
+  hybrid_elevenlabs:
+    stt: local_stt
+    llm: openai_llm
+    tts: elevenlabs_tts
+    options:
+      stt:
+        chunk_ms: 160
+        mode: stt
+        streaming: true
+        stream_format: pcm16_16k
+      llm:
+        base_url: https://api.openai.com/v1
+        model: gpt-4o-mini
+        temperature: 0.7
+        max_tokens: 200
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
 profiles:
   default: telephony_ulaw_8k
   openai_realtime_24k:
@@ -1304,7 +1320,7 @@ providers:
       - llm
       - tts
     continuous_input: true
-    enabled: true
+    enabled: false
     greeting: Hello, how can I help you today?
     input_encoding: mulaw
     input_gain_max_db: 0
@@ -1318,6 +1334,7 @@ providers:
     type: full
   google_live:
     api_key: ${GOOGLE_API_KEY}
+    name: google_live
     capabilities:
       - stt
       - llm
@@ -1334,10 +1351,16 @@ providers:
     input_gain_target_rms: 0
     input_sample_rate_hz: 8000
     llm_max_output_tokens: 8192
-    llm_model: gemini-2.5-flash-native-audio-preview-12-2025
-    llm_temperature: 0.8
-    llm_top_k: 40
-    llm_top_p: 0.95
+    llm_model: gemini-2.5-flash-native-audio-latest
+    llm_temperature: 0.4
+    llm_top_k: 20
+    llm_top_p: 0.9
+    # Google Live: marker-driven hangup disabled — using tool-driven hangup (hangup_call) instead.
+    # Tool-driven hangup is more reliable with the CALL ENDING PROTOCOL prompt.
+    hangup_markers_enabled: false
+    # Google Live: disable WebSocket keepalive by default. We saw 1008 disconnects correlated with ping/keepalive
+    # behavior; opt-in if needed once verified for your account/model.
+    ws_keepalive_enabled: false
     output_encoding: linear16
     output_sample_rate_hz: 24000
     provider_input_encoding: linear16
@@ -1347,6 +1370,12 @@ providers:
     target_sample_rate_hz: 8000
     tts_voice_name: Aoede
     type: full
+    # Server-side VAD tuning (realtimeInputConfig.automaticActivityDetection)
+    # Controls how Google detects speech start/end in the audio stream.
+    vad_start_of_speech_sensitivity: START_SENSITIVITY_HIGH
+    vad_end_of_speech_sensitivity: END_SENSITIVITY_HIGH
+    vad_prefix_padding_ms: 20
+    vad_silence_duration_ms: 500
   local:
     # Local AI Server WebSocket URL. Default deployment uses host networking, so 127.0.0.1 is correct.
     # If you run containers on a user-defined bridge network (no host networking), use ws://local_ai_server:8765.
@@ -1359,7 +1388,7 @@ providers:
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
     connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
     continuous_input: true
-    enabled: true
+    enabled: false
     farewell_mode: ${LOCAL_FAREWELL_MODE:=asterisk}
     farewell_timeout_sec: ${LOCAL_FAREWELL_TIMEOUT:=30.0}
     greeting: Hello! I'm your local AI assistant running entirely on-premises.
@@ -1371,13 +1400,15 @@ providers:
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=10.0}
     stt_model: models/stt/vosk-model-en-us-0.22
     temperature: 0.4
-    tts_voice: models/tts/en_US-lessac-medium.onnx
+    tts_voice: /app/models/tts/en_US-lessac-medium.onnx
+    kokoro_model_path: /app/models/tts/kokoro
+    tts_backend: piper
     type: full
   local_llm:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
       - llm
-    enabled: true
+    enabled: false
     llm_model: models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf
     max_tokens: 32
     temperature: 0.4
@@ -1390,7 +1421,7 @@ providers:
       - stt
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
     connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
-    enabled: true
+    enabled: false
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=10.0}
     stt_backend: vosk
     stt_model: models/stt/vosk-model-en-us-0.22
@@ -1401,7 +1432,7 @@ providers:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
       - tts
-    enabled: true
+    enabled: false
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=10.0}
     tts_voice: models/tts/en_US-lessac-medium.onnx
     type: local
@@ -1413,7 +1444,7 @@ providers:
     api_key: ${OPENAI_API_KEY}
     chat_base_url: https://api.openai.com/v1
     chat_model: gpt-4o-mini
-    enabled: true
+    enabled: false
     response_timeout_sec: 5
     temperature: 0.7
     type: openai
@@ -1423,7 +1454,7 @@ providers:
     api_key: ${GROQ_API_KEY}
     chat_base_url: https://api.groq.com/openai/v1
     chat_model: llama-3.3-70b-versatile
-    enabled: true
+    enabled: false
     response_timeout_sec: 10
     temperature: 0.7
     tools_enabled: false
@@ -1474,7 +1505,7 @@ providers:
     continuous_input: true
     egress_pacer_enabled: false
     egress_pacer_warmup_ms: 320
-    enabled: true
+    enabled: false
     greeting: Hello, how can I help you today?
     input_encoding: ulaw
     input_gain_max_db: 0
@@ -1505,7 +1536,7 @@ providers:
     voice: alloy
   elevenlabs_agent:
     type: full
-    enabled: true
+    enabled: false
     capabilities:
       - stt
       - llm
@@ -1530,8 +1561,23 @@ providers:
     continuous_input: true
     input_gain_target_rms: 0
     input_gain_max_db: 0
-  openai_stt:
+  # ElevenLabs TTS - Modular pipeline adapter for STT→LLM→TTS pipelines
+  # Use with pipelines (e.g., local_stt + openai_llm + elevenlabs_tts)
+  # Requires ELEVENLABS_API_KEY in .env
+  elevenlabs_tts:
+    type: elevenlabs
     enabled: true
+    capabilities:
+      - tts
+    voice_id: "21m00Tcm4TlvDq8ikWAM"   # Rachel (warm, professional)
+    model_id: "eleven_turbo_v2_5"        # Fast, high-quality
+    output_format: "ulaw_8000"           # Telephony-optimized
+    stability: 0.5
+    similarity_boost: 0.75
+    style: 0.0
+    use_speaker_boost: true
+  openai_stt:
+    enabled: false
     capabilities:
       - stt
     input_encoding: linear16
@@ -1543,7 +1589,7 @@ providers:
     request_timeout_sec: 15
     type: openai
   openai_tts:
-    enabled: true
+    enabled: false
     capabilities:
       - tts
     response_format: wav
@@ -1756,13 +1802,14 @@ tools:
   cancel_transfer:
     allow_after_answer: false
     allow_during_ring: true
-    enabled: true
+    enabled: false
   default_action_timeout: 30
   enabled: true
   extensions:
     internal:
       '6000':
         action_type: transfer
+        device_state_tech: auto
         aliases:
           - agent
           - representative
@@ -1787,7 +1834,7 @@ tools:
     require_confirmation: false
     policy:
       mode: normal
-      enforce_transcript_offer: true
+      enforce_transcript_offer: false
       block_during_contact_capture: true
       markers:
         end_call:
@@ -1849,11 +1896,11 @@ tools:
           - decline
           - skip
   leave_voicemail:
-    enabled: true
+    enabled: false
     extension: '2765'
   request_transcript:
-    admin_email: admin@yourdomain.com
-    api_key: ${RESEND_API_KEY}
+    admin_email: ''
+    api_key: ${REQUEST_TRANSCRIPT_API_KEY:-}
     common_domains:
       - gmail.com
       - yahoo.com
@@ -1862,50 +1909,36 @@ tools:
       - icloud.com
     confirm_email: true
     enabled: false
-    from_email: agent@yourdomain.com
-    from_name: AI Voice Agent
+    from_email: ${REQUEST_TRANSCRIPT_FROM_EMAIL:-noreply@example.com}
+    from_name: ${REQUEST_TRANSCRIPT_FROM_NAME:-Asterisk AI Voice Agent}
     max_attempts: 2
-    provider: resend
-    validate_domain: true
+    provider: ${REQUEST_TRANSCRIPT_PROVIDER:-resend}
+    validate_domain: false
   send_email_summary:
-    admin_email: admin@yourdomain.com
-    api_key: ${RESEND_API_KEY}
+    admin_email: ${SEND_EMAIL_ADMIN:-}
+    api_key: ${SEND_EMAIL_API_KEY:-}
     enabled: false
-    from_email: agent@yourdomain.com
-    from_name: AI Voice Agent
+    from_email: ${SEND_EMAIL_FROM:-noreply@example.com}
+    from_name: ${SEND_EMAIL_FROM_NAME:-Asterisk AI Voice Agent}
     include_metadata: true
     include_transcript: true
-    provider: resend
+    provider: ${SEND_EMAIL_PROVIDER:-resend}
   transfer:
-    technology: SIP
+    technology: PJSIP
     destinations:
       sales_agent:
         description: Sales agent
         target: '2765'
         type: extension
-      sales_queue:
-        description: Sales team queue
-        target: '300'
-        type: queue
-      sales_team:
-        description: Sales team ring group
-        target: '600'
-        type: ringgroup
-      support_agent:
-        description: Support agent
-        target: '6000'
-        type: extension
-      support_queue:
-        description: Technical support queue
-        target: '301'
-        type: queue
-      support_team:
-        description: Support team ring group
-        target: '601'
-        type: ringgroup
-    enabled: true
+        live_agent: false
+      sales_queue: null
+      sales_team: null
+      support_agent: null
+      support_queue: null
+      support_team: null
+    enabled: false
 mcp:
-  enabled: true
+  enabled: false
   servers:
     weather:
       transport: stdio

@@ -3478,13 +3478,26 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
             )
             if code != 0:
                 tail = "\n".join((out or "").splitlines()[-40:]).strip()
-                hint = (
-                    "If this fails due to DNS/egress restrictions, try on the host:\n"
-                    "  cd /root/Asterisk-AI-Voice-Agent\n"
-                    "  docker buildx build --network=host --progress=plain -f updater/Dockerfile .\n"
-                    "Or update via CLI:\n"
-                    "  agent update"
-                )
+                # AAVA-179: Detect DNS resolution failures and provide a targeted fix
+                dns_keywords = ["could not resolve", "temporary failure in name resolution",
+                                "no such host", "dns", "getaddrinfo", "resolve host"]
+                is_dns_issue = any(k in (out or "").lower() for k in dns_keywords)
+                if is_dns_issue:
+                    hint = (
+                        "DNS resolution failed during Docker image build.\n\n"
+                        "Fix: Add DNS servers to Docker daemon config and restart:\n"
+                        '  echo \'{"dns": ["8.8.8.8", "8.8.4.4"]}\' | sudo tee /etc/docker/daemon.json\n'
+                        "  sudo systemctl restart docker\n\n"
+                        "Then retry the update from the Admin UI."
+                    )
+                else:
+                    hint = (
+                        "If this fails due to DNS/egress restrictions, try:\n"
+                        '  echo \'{"dns": ["8.8.8.8", "8.8.4.4"]}\' | sudo tee /etc/docker/daemon.json\n'
+                        "  sudo systemctl restart docker\n\n"
+                        "Or update via CLI:\n"
+                        "  agent update"
+                    )
                 if tail:
                     logger.error("Updater build failed (tail):\n%s", tail)
                     raise HTTPException(status_code=500, detail=f"Failed to build updater image:\n{tail}\n\n{hint}")
@@ -3566,6 +3579,10 @@ def _run_updater_ephemeral(
         host_docker_sock: {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
 
+    # AAVA-179: Add DNS fallback so containers can resolve hostnames even when
+    # the Docker daemon's default DNS is broken (common on Ubuntu with systemd-resolved).
+    dns_fallback = ["8.8.8.8", "8.8.4.4"]
+
     try:
         if command:
             # NOTE: docker-py will split string commands (like a shell), which breaks `bash -lc "<cmd>"`
@@ -3578,6 +3595,7 @@ def _run_updater_ephemeral(
                 environment=env,
                 volumes=volumes,
                 name=name,
+                dns=dns_fallback,
                 detach=True,
             )
         else:
@@ -3586,6 +3604,7 @@ def _run_updater_ephemeral(
                 environment=env,
                 volumes=volumes,
                 name=name,
+                dns=dns_fallback,
                 detach=True,
             )
 

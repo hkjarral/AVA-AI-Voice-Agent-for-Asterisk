@@ -10,6 +10,9 @@ structlog==25.5.0
 prometheus-client==0.24.1
 PyYAML==6.0.3
 
+# Audio resampling (numpy linear interpolation for artifact-free streaming)
+numpy>=1.24.0
+
 # Utilities
 tenacity==8.2.3
 
@@ -20,6 +23,9 @@ webrtcvad==2.0.10
 resend>=2.0.0
 jinja2==3.1.6
 dnspython==2.8.0
+
+# NumPy for audio resampling (replaces audioop.ratecv)
+numpy>=1.24.0
 
 # OpenAI for summary generation
 openai>=1.0.0

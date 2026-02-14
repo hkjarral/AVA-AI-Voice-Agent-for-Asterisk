@@ -19,6 +19,7 @@ import uuid
 import wave
 import audioop
 from datetime import datetime, timezone
+from src.audio.resampler import resample_audio
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -172,7 +173,7 @@ def _convert_upload_to_ulaw(data: bytes, ext: str) -> bytes:
     if nch == 2:
         frames = audioop.tomono(frames, 2, 0.5, 0.5)
     if fr != 8000:
-        frames, _ = audioop.ratecv(frames, 2, 1, fr, 8000, None)
+        frames, _ = resample_audio(frames, fr, 8000)
     return audioop.lin2ulaw(frames, 2)
 
 @router.get("/recordings", response_model=List[RecordingRow])
@@ -691,7 +692,7 @@ async def upload_voicemail_media(campaign_id: str, file: UploadFile = File(...))
 
         # Resample to 8kHz if needed.
         if fr != 8000:
-            frames, _ = audioop.ratecv(frames, 2, 1, fr, 8000, None)
+            frames, _ = resample_audio(frames, fr, 8000)
 
         ulaw_data = audioop.lin2ulaw(frames, 2)
 
@@ -751,7 +752,7 @@ async def upload_consent_media(campaign_id: str, file: UploadFile = File(...)):
         if nch == 2:
             frames = audioop.tomono(frames, 2, 0.5, 0.5)
         if fr != 8000:
-            frames, _ = audioop.ratecv(frames, 2, 1, fr, 8000, None)
+            frames, _ = resample_audio(frames, fr, 8000)
         ulaw_data = audioop.lin2ulaw(frames, 2)
 
     with open(path, "wb") as f:

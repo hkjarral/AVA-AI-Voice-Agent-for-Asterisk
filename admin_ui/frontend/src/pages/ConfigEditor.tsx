@@ -22,6 +22,7 @@ import GoogleLiveProviderForm from '../components/config/providers/GoogleLivePro
 import LocalProviderForm from '../components/config/providers/LocalProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
+import TelnyxProviderForm from '../components/config/providers/TelnyxProviderForm';
 
 
 const ConfigEditor = () => {
@@ -315,6 +316,7 @@ const ConfigEditor = () => {
                             <option value="google_live">Google Live</option>
                             <option value="local">Local</option>
                             <option value="openai">OpenAI (Standard)</option>
+                            <option value="telnyx">Telnyx (LLM)</option>
                         </select>
                     </div>
                 )}
@@ -326,6 +328,7 @@ const ConfigEditor = () => {
             if (data.realtime_base_url || data.turn_detection) return 'openai_realtime';
             if (data.google_live || data.llm_model?.includes('gemini')) return 'google_live';
             if (data.ws_url) return 'local';
+            if ((data.chat_base_url || '').includes('telnyx.com')) return 'telnyx';
             if (data.stt_model && !data.ws_url) return 'openai';
             return 'deepgram'; // Default
         };
@@ -348,6 +351,9 @@ const ConfigEditor = () => {
                 break;
             case 'openai':
                 FormComponent = OpenAIProviderForm;
+                break;
+            case 'telnyx':
+                FormComponent = TelnyxProviderForm;
                 break;
             default:
                 FormComponent = DeepgramProviderForm;

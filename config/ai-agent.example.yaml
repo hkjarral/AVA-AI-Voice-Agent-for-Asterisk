@@ -50,6 +50,25 @@ pipelines:
         format:
           encoding: ulaw
           sample_rate: 8000
+  # Local STT + OpenAI LLM + ElevenLabs TTS (premium voice quality)
+  hybrid_elevenlabs:
+    stt: local_stt
+    llm: openai_llm
+    tts: elevenlabs_tts
+    options:
+      stt:
+        chunk_ms: 320
+        streaming: true
+        stream_format: "pcm16_16k"
+      llm:
+        base_url: "https://api.openai.com/v1"
+        model: "gpt-4o-mini"
+        temperature: 0.7
+        max_tokens: 150
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
   # Local STT + OpenAI LLM + Deepgram TTS
   hybrid_deepgram_openai:
     stt: local_stt
@@ -145,6 +164,21 @@ providers:
     api_key: "${DEEPGRAM_API_KEY}"
     model: "nova-2-general"
     tts_model: "aura-asteria-en"
+  # ElevenLabs TTS - Modular pipeline adapter for STT→LLM→TTS pipelines
+  # Use with pipelines (e.g., local_stt + openai_llm + elevenlabs_tts)
+  # Requires ELEVENLABS_API_KEY in .env
+  elevenlabs_tts:
+    type: elevenlabs
+    enabled: true
+    capabilities:
+      - tts
+    voice_id: "21m00Tcm4TlvDq8ikWAM"   # Rachel (warm, professional)
+    model_id: "eleven_turbo_v2_5"        # Fast, high-quality
+    output_format: "ulaw_8000"           # Telephony-optimized
+    stability: 0.5
+    similarity_boost: 0.75
+    style: 0.0
+    use_speaker_boost: true
 
 # Canonical LLM defaults (used by providers/pipelines unless overridden)
 llm:

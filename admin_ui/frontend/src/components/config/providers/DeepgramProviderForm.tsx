@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface DeepgramProviderFormProps {
     config: any;
@@ -9,6 +9,15 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
+    const [showOutputAutodetectExpert, setShowOutputAutodetectExpert] = useState<boolean>(
+        () => config?.allow_output_autodetect !== undefined
+    );
+
+    useEffect(() => {
+        if (config?.allow_output_autodetect !== undefined) {
+            setShowOutputAutodetectExpert(true);
+        }
+    }, [config?.allow_output_autodetect]);
 
     return (
         <div className="space-y-6">
@@ -97,6 +106,23 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         <p className="text-xs text-muted-foreground">
                             Nova-3/Nova-2 General for multilingual; specialized models for English use-cases.
                             <a href="https://developers.deepgram.com/docs/models-languages-overview" target="_blank" rel="noopener noreferrer" className="ml-1 text-blue-500 hover:underline">Language Support ↗</a>
+                        </p>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">
+                            STT Language
+                            <span className="text-xs text-muted-foreground ml-2">(stt_language)</span>
+                        </label>
+                        <input
+                            type="text"
+                            className="w-full p-2 rounded border border-input bg-background"
+                            value={config.stt_language || 'en-US'}
+                            onChange={(e) => handleChange('stt_language', e.target.value)}
+                            placeholder="en-US"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            Default language for STT in pipeline mode (can be overridden per pipeline/context).
                         </p>
                     </div>
 
@@ -482,6 +508,33 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     <p className="text-xs text-muted-foreground">
                         Seconds to wait after farewell audio before hanging up. Leave empty to use global default.
                     </p>
+                </div>
+
+                <div className="space-y-2 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                            type="checkbox"
+                            className="rounded border-input"
+                            checked={showOutputAutodetectExpert}
+                            onChange={(e) => setShowOutputAutodetectExpert(e.target.checked)}
+                        />
+                        Expert Settings
+                    </label>
+                    <p className={`text-xs ${showOutputAutodetectExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                        {showOutputAutodetectExpert
+                            ? 'Warning: output auto-detect can alter runtime audio interpretation and should be used only for provider mismatch scenarios.'
+                            : 'Advanced output-detection value is shown and locked until expert mode is enabled.'}
+                    </p>
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                            type="checkbox"
+                            className="rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+                            checked={config.allow_output_autodetect ?? false}
+                            onChange={(e) => handleChange('allow_output_autodetect', e.target.checked)}
+                            disabled={!showOutputAutodetectExpert}
+                        />
+                        Allow Output Auto-Detect
+                    </label>
                 </div>
             </div>
 

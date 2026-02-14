@@ -377,7 +377,7 @@ const EnvPage = () => {
         // AI Engine - NAT/Hybrid Network
         'AUDIOSOCKET_ADVERTISE_HOST', 'EXTERNAL_MEDIA_ADVERTISE_HOST',
         // AI Engine - API Keys
-        'OPENAI_API_KEY', 'GROQ_API_KEY', 'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'RESEND_API_KEY',
+        'OPENAI_API_KEY', 'GROQ_API_KEY', 'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'TELNYX_API_KEY', 'RESEND_API_KEY',
         'ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
         // Email (SMTP)
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_TLS_MODE', 'SMTP_TLS_VERIFY',
@@ -669,6 +669,7 @@ const EnvPage = () => {
                         {renderSecretInput('Groq API Key', 'GROQ_API_KEY', 'gsk_...')}
                         {renderSecretInput('Deepgram API Key', 'DEEPGRAM_API_KEY', 'Token...')}
                         {renderSecretInput('Google API Key', 'GOOGLE_API_KEY', 'AIza...')}
+                        {renderSecretInput('Telnyx API Key', 'TELNYX_API_KEY', 'KEY...')}
                         {renderSecretInput('ElevenLabs API Key', 'ELEVENLABS_API_KEY', 'xi-...')}
                         <FormInput
                             label="ElevenLabs Agent ID"

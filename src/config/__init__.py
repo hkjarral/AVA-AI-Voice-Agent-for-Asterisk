@@ -33,6 +33,7 @@ AudioSocketConfig = _parent_config.AudioSocketConfig
 LocalProviderConfig = _parent_config.LocalProviderConfig
 DeepgramProviderConfig = _parent_config.DeepgramProviderConfig
 OpenAIProviderConfig = _parent_config.OpenAIProviderConfig
+TelnyxLLMProviderConfig = _parent_config.TelnyxLLMProviderConfig
 GoogleProviderConfig = _parent_config.GoogleProviderConfig
 GroqSTTProviderConfig = _parent_config.GroqSTTProviderConfig
 GroqTTSProviderConfig = _parent_config.GroqTTSProviderConfig
@@ -60,6 +61,7 @@ __all__ = [
     'LocalProviderConfig',
     'DeepgramProviderConfig',
     'OpenAIProviderConfig',
+    'TelnyxLLMProviderConfig',
     'GoogleProviderConfig',
     'GroqSTTProviderConfig',
     'GroqTTSProviderConfig',

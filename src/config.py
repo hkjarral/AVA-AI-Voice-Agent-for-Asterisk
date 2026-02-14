@@ -7,7 +7,7 @@ using Pydantic v2 for validation and type safety.
 
 import os
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Dict, Any, Optional, List
 import structlog
 
@@ -196,6 +196,31 @@ class OpenAIProviderConfig(BaseModel):
     farewell_hangup_delay_sec: Optional[float] = None
 
 
+class TelnyxLLMProviderConfig(BaseModel):
+    """
+    Canonical defaults for the Telnyx AI Inference LLM adapter.
+
+    Notes:
+    - Telnyx-hosted models (e.g. meta-llama/*) work with TELNYX_API_KEY only.
+    - External models (e.g. openai/*) require an Integration Secret identifier
+      passed via `api_key_ref` (see Telnyx docs for "Integration Secrets").
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: Optional[str] = None
+    api_key_ref: Optional[str] = None
+
+    chat_base_url: str = Field(default="https://api.telnyx.com/v2/ai")
+    # Default to a model that supports tool calling reliably on Telnyx.
+    chat_model: str = Field(default="Qwen/Qwen3-235B-A22B")
+
+    temperature: float = Field(default=0.7)
+    max_tokens: Optional[int] = None
+    # Telnyx-hosted models can be slower than OpenAI; keep a more forgiving default.
+    response_timeout_sec: float = Field(default=30.0)
+
+
 class GoogleProviderConfig(BaseModel):
     api_key: Optional[str] = None
     project_id: Optional[str] = None
@@ -248,6 +273,16 @@ class GoogleProviderConfig(BaseModel):
     # Guard against premature fallback hangup before the provider emits turnComplete.
     # If turnComplete never arrives, fallback still proceeds after this timeout.
     hangup_fallback_turn_complete_timeout_sec: float = Field(default=2.5)
+    # Google Live only: heuristic hangup detection based on transcript markers (end_call / assistant_farewell).
+    # For production, prefer tool-driven hangup (`hangup_call`) to avoid marker-driven premature cleanup.
+    hangup_markers_enabled: bool = Field(default=False)
+    # Google Live only: protocol-level WebSocket ping keepalive.
+    # NOTE: Google Live typically receives continuous `realtimeInput` audio frames; pings are only needed
+    # if the transport becomes idle. Some accounts/models appear to close connections (1008) after repeated
+    # ping frames, so we default to pinging only when idle (see provider implementation).
+    ws_keepalive_enabled: bool = Field(default=False)
+    ws_keepalive_interval_sec: float = Field(default=15.0)
+    ws_keepalive_idle_sec: float = Field(default=5.0)
 
 
 class GroqSTTProviderConfig(BaseModel):

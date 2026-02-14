@@ -22,7 +22,7 @@ assignees: ''
 <!-- What actually happened -->
 
 ## Environment
-- **Version**: <!-- e.g., v5.0.0 -->
+- **Version**: <!-- e.g., v6.1.1 -->
 - **OS**: <!-- e.g., Ubuntu 22.04 -->
 - **Docker Version**: <!-- e.g., 24.0.7 -->
 - **Asterisk Version**: <!-- e.g., 18.20.0 -->

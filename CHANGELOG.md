@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+### Added
+
+- **Telnyx AI Inference (pipelines)**: New modular LLM provider `telnyx_llm` (OpenAI-compatible Chat Completions) powered by `TELNYX_API_KEY`. Credits: Abhishek (PR #219).
+
 ## [6.1.1] - 2026-02-09
 
 ### Added

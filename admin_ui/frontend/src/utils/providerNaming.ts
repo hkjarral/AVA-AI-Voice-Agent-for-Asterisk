@@ -86,6 +86,10 @@ export const REGISTERED_PROVIDER_TYPES = [
     'google',
     'elevenlabs',
     'ollama',
+    'telnyx',
+    'telenyx',
+    // AAVA-182: Admin UI creates providers with type 'modular'
+    'modular',
 ] as const;
 
 export type RegisteredProviderType = typeof REGISTERED_PROVIDER_TYPES[number];

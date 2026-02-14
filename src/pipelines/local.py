@@ -13,6 +13,7 @@ import base64
 import json
 import time
 import audioop
+from ..audio.resampler import resample_audio
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
 
@@ -533,6 +534,7 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
             options,
             default_mode="stt",
         )
+        self._resample_state: Optional[tuple] = None
 
     async def start_stream(
         self,
@@ -756,11 +758,11 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         if fmt in {"pcm16", "pcm16_16k", "pcm16-16k"}:
             return audio
         if fmt in {"pcm16_8k", "pcm16-8k"}:
-            converted, _ = audioop.ratecv(audio, 2, 1, 8000, 16000, None)
+            converted, self._resample_state = resample_audio(audio, 8000, 16000, state=self._resample_state)
             return converted
         if fmt in {"mulaw8k", "ulaw8k"}:
             linear = audioop.ulaw2lin(audio, 2)
-            converted, _ = audioop.ratecv(linear, 2, 1, 8000, 16000, None)
+            converted, self._resample_state = resample_audio(linear, 8000, 16000, state=self._resample_state)
             return converted
         raise ValueError(f"Unsupported audio format '{fmt}' for local STT streaming")
 

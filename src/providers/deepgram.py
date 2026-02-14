@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import websockets
 import time
@@ -24,6 +25,16 @@ from src.tools.registry import tool_registry
 from src.tools.adapters.deepgram import DeepgramToolAdapter
 
 logger = get_logger(__name__)
+
+
+def _log_provider_task_exception(task: asyncio.Task) -> None:
+    """Done-callback: log exceptions from fire-and-forget provider tasks."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error("Provider background task failed", task_name=task.get_name(), error=str(exc), exc_info=exc)
+
 
 _DEEPGRAM_INPUT_RATE = Gauge(
     "ai_agent_deepgram_input_sample_rate_hz",
@@ -137,6 +148,7 @@ class DeepgramProvider(AIProviderInterface):
         self.llm_config = llm_config
         self.websocket: Optional[ClientConnection] = None
         self._keep_alive_task: Optional[asyncio.Task] = None
+        self._receive_task: Optional[asyncio.Task] = None
         self._is_audio_flowing = False
         self.request_id: Optional[str] = None
         self.session_id: Optional[str] = None
@@ -369,7 +381,7 @@ class DeepgramProvider(AIProviderInterface):
 
             # Prepare ACK gate and start receiver early to catch server responses
             self._ack_event = asyncio.Event()
-            asyncio.create_task(self._receive_loop())
+            self._receive_task = asyncio.create_task(self._receive_loop())
 
             await self._configure_agent()
             self._keep_alive_task = asyncio.create_task(self._keep_alive())
@@ -923,12 +935,17 @@ class DeepgramProvider(AIProviderInterface):
         try:
             if self._keep_alive_task:
                 self._keep_alive_task.cancel()
+            if self._receive_task and not self._receive_task.done():
+                self._receive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._receive_task
             if self.websocket and self.websocket.state.name == "OPEN":
                 await self.websocket.close()
             if not self._closed:
                 logger.info("Disconnected from Deepgram Voice Agent.")
             self._closed = True
         finally:
+            self._receive_task = None
             self._clear_metrics(self.call_id)
             self.call_id = None
             self._closing = False
@@ -1211,7 +1228,8 @@ class DeepgramProvider(AIProviderInterface):
                                     request_id=getattr(self, "request_id", None),
                                 )
                                 # Handle function call via tool adapter
-                                asyncio.create_task(self._handle_function_call(event_data))
+                                _t = asyncio.create_task(self._handle_function_call(event_data))
+                                _t.add_done_callback(_log_provider_task_exception)
                             elif et == "ConnectionClosed":
                                 logger.info(
                                     "🔌 Deepgram ConnectionClosed",
@@ -1400,7 +1418,8 @@ class DeepgramProvider(AIProviderInterface):
                                             logger.debug("Session not found for latency tracking", call_id=call_id_copy)
                                     except Exception as e:
                                         logger.debug("Failed to save turn latency", call_id=call_id_copy, error=str(e))
-                                asyncio.create_task(save_latency())
+                                _t = asyncio.create_task(save_latency())
+                                _t.add_done_callback(_log_provider_task_exception)
                             except Exception as e:
                                 logger.debug("Failed to create latency save task", error=str(e))
                         logger.info("Turn latency recorded", call_id=self.call_id, latency_ms=round(turn_latency_ms, 1))

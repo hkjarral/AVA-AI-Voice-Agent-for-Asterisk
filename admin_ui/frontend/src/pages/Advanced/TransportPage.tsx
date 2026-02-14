@@ -7,7 +7,7 @@ import { Save, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
-import { FormInput, FormSelect } from '../../components/ui/FormComponents';
+import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
 const TransportPage = () => {
@@ -19,6 +19,7 @@ const TransportPage = () => {
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [applyMethod, setApplyMethod] = useState<string>('restart');
+    const [showExternalMediaExpert, setShowExternalMediaExpert] = useState(false);
 
     useEffect(() => {
         fetchConfig();
@@ -136,6 +137,12 @@ const TransportPage = () => {
             }
         });
     };
+
+    useEffect(() => {
+        if (config?.external_media?.lock_remote_endpoint !== undefined) {
+            setShowExternalMediaExpert(true);
+        }
+    }, [config?.external_media?.lock_remote_endpoint]);
 
     if (loading) return <div className="p-8 text-center text-muted-foreground">Loading configuration...</div>;
 
@@ -358,6 +365,33 @@ const TransportPage = () => {
                                     onChange={(e) => updateSectionConfig('external_media', 'sample_rate', parseInt(e.target.value))}
                                     tooltip="Auto-inferred from format if not set."
                                 />
+                            </div>
+
+                            <div className="border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
+                                <FormSwitch
+                                    label="External Media Expert Settings"
+                                    description="Expose RTP source endpoint hardening controls."
+                                    checked={showExternalMediaExpert}
+                                    onChange={(e) => setShowExternalMediaExpert(e.target.checked)}
+                                    className="mb-0 border-0 p-0 bg-transparent"
+                                />
+                                <p className={`text-xs mt-2 ${showExternalMediaExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                                    {showExternalMediaExpert
+                                        ? 'Warning: incorrect settings can drop RTP packets or break media connectivity.'
+                                        : 'Expert values are visible and read-only until enabled.'}
+                                </p>
+                                <div className="mt-3">
+                                    <FormSwitch
+                                        label="Lock Remote Endpoint"
+                                        description="Drop RTP packets if source host/port changes mid-call."
+                                        checked={externalMediaConfig.lock_remote_endpoint ?? true}
+                                        onChange={(e) => updateSectionConfig('external_media', 'lock_remote_endpoint', e.target.checked)}
+                                        disabled={!showExternalMediaExpert}
+                                    />
+                                    <p className="text-xs text-muted-foreground mt-2">
+                                        Security hardening: keep enabled unless your network path legitimately rewrites RTP source mid-call.
+                                    </p>
+                                </div>
                             </div>
                         </div>
                     </ConfigCard>

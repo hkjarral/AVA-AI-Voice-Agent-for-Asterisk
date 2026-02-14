@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 var (
 	checkJSON bool
+	checkFix  bool
 )
 
 var checkCmd = &cobra.Command{
@@ -33,6 +35,20 @@ Exit codes:
   1 - WARN (non-critical issues)
   2 - FAIL (critical issues)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if checkFix {
+			if checkJSON {
+				return errors.New("--fix cannot be combined with --json")
+			}
+			exitCode, err := runCheckWithFix()
+			if err != nil {
+				return err
+			}
+			if exitCode != 0 {
+				os.Exit(exitCode)
+			}
+			return nil
+		}
+
 		runner := check.NewRunner(verbose, version, buildTime)
 		report, err := runner.Run()
 
@@ -78,5 +94,6 @@ Exit codes:
 
 func init() {
 	checkCmd.Flags().BoolVar(&checkJSON, "json", false, "output as JSON (JSON only)")
+	checkCmd.Flags().BoolVar(&checkFix, "fix", false, "attempt automatic recovery from recent backups and re-run diagnostics")
 	rootCmd.AddCommand(checkCmd)
 }

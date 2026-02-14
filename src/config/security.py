@@ -158,6 +158,7 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
     - GROQ_API_KEY: Groq provider API key (Groq Speech + Groq OpenAI-compatible LLM)
     - DEEPGRAM_API_KEY: Deepgram provider API key
     - GOOGLE_API_KEY: Google provider API key
+    - TELNYX_API_KEY: Telnyx AI Inference API key (OpenAI-compatible LLM)
     
     Args:
         config_data: Configuration dictionary to modify in-place
@@ -200,6 +201,18 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
                 chat_host = _url_host(provider_cfg.get("chat_base_url", ""))
                 if name_lower.startswith("groq") or cfg_type == "groq" or chat_host == "api.groq.com":
                     provider_cfg["api_key"] = groq_key
+                    providers_block[provider_name] = provider_cfg
+
+        # Inject TELNYX_API_KEY for any telnyx* provider blocks (telnyx_llm, etc.)
+        telnyx_key = os.getenv("TELNYX_API_KEY")
+        if telnyx_key:
+            for provider_name, provider_cfg in list(providers_block.items()):
+                if not isinstance(provider_cfg, dict):
+                    continue
+                name_lower = str(provider_name).lower()
+                chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
+                if name_lower.startswith(("telnyx", "telenyx")) or chat_host == "api.telnyx.com":
+                    provider_cfg["api_key"] = telnyx_key
                     providers_block[provider_name] = provider_cfg
         
         # Inject DEEPGRAM_API_KEY

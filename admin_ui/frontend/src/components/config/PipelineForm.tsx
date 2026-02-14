@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FormInput, FormLabel, FormSwitch } from '../ui/FormComponents';
+import { FormInput, FormLabel, FormSwitch, FormSelect } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -19,11 +19,29 @@ interface PipelineFormProps {
     isNew?: boolean;
 }
 
+const parseMarkerList = (value: string) =>
+    (value || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+const renderMarkerList = (value: any) =>
+    (Array.isArray(value) ? value : []).join('\n');
+
 const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange, isNew }) => {
     const [localConfig, setLocalConfig] = useState<any>({ ...config });
     const [localAIStatus, setLocalAIStatus] = useState<LocalAIStatus | null>(null);
     const [statusLoading, setStatusLoading] = useState(false);
     const [showAdvancedSTT, setShowAdvancedSTT] = useState(false);
+    const [showLlmExpert, setShowLlmExpert] = useState<boolean>(
+        () => config?.options?.llm?.tools_enabled !== undefined || Boolean(config?.options?.llm?.realtime_model)
+    );
+    const [showSttExpert, setShowSttExpert] = useState<boolean>(
+        () => Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0
+    );
+    const [showTtsExpert, setShowTtsExpert] = useState<boolean>(
+        () => config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined
+    );
 
     // Fetch local AI server status for backend info (AAVA-116)
     useEffect(() => {
@@ -48,6 +66,24 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         setLocalConfig({ ...config });
     }, [config]);
 
+    useEffect(() => {
+        if (config?.options?.llm?.tools_enabled !== undefined || config?.options?.llm?.realtime_model) {
+            setShowLlmExpert(true);
+        }
+    }, [config?.options?.llm?.tools_enabled, config?.options?.llm?.realtime_model]);
+
+    useEffect(() => {
+        if (Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0) {
+            setShowSttExpert(true);
+        }
+    }, [config?.options?.stt?.timestamp_granularities]);
+
+    useEffect(() => {
+        if (config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined) {
+            setShowTtsExpert(true);
+        }
+    }, [config?.options?.tts?.response_format, config?.options?.tts?.max_input_chars]);
+
     const updateConfig = (updates: any) => {
         const newConfig = { ...localConfig, ...updates };
         setLocalConfig(newConfig);
@@ -61,17 +97,51 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         updateConfig({ options: { ...existingOptions, stt: nextSTT } });
     };
 
+    const updateRoleOptions = (role: 'stt' | 'llm' | 'tts', updates: any) => {
+        const existingOptions = localConfig.options || {};
+        const existingRole = existingOptions[role] || {};
+        const nextRole = { ...existingRole, ...updates };
+        updateConfig({ options: { ...existingOptions, [role]: nextRole } });
+    };
+
+    const setRoleOptions = (role: 'stt' | 'llm' | 'tts', nextRole: any) => {
+        const existingOptions = localConfig.options || {};
+        const nextOptions = { ...existingOptions };
+        const roleObj = (nextRole && typeof nextRole === 'object') ? nextRole : {};
+        if (Object.keys(roleObj).length === 0) {
+            delete nextOptions[role];
+        } else {
+            nextOptions[role] = roleObj;
+        }
+        updateConfig({ options: nextOptions });
+    };
+
     // Helper to filter providers by capability
     // Prefer capabilities array (authoritative). For legacy configs missing capabilities, infer from key suffix.
     // Only show registered providers that have engine adapter support.
     const getProvidersByCapability = (cap: 'stt' | 'llm' | 'tts', selectedProvider?: string) => {
+        const isRegisteredOrInferred = (providerKey: string, provider: any) => {
+            if (isRegisteredProvider(provider)) return true;
+            // Legacy configs may omit `type`. Infer registration from the provider key prefix.
+            // This preserves pipeline editability for older YAML and prevents "provider disappears" UX.
+            const k = (providerKey || '').toLowerCase();
+            if (k.startsWith('local')) return true;
+            if (k.startsWith('openai')) return true;
+            if (k.startsWith('groq')) return true;
+            if (k.startsWith('google')) return true;
+            if (k.startsWith('ollama')) return true;
+            if (k.startsWith('elevenlabs')) return true;
+            if (k.startsWith('telnyx') || k.startsWith('telenyx')) return true;
+            return false;
+        };
+
         const base = Object.entries(providers || {})
             .filter(([providerKey, p]: [string, any]) => {
                 // Exclude Full Agents from modular slots
                 if (isFullAgentProvider(p)) return false;
 
                 // Exclude unregistered providers (no engine adapter)
-                if (!isRegisteredProvider(p)) return false;
+                if (!isRegisteredOrInferred(providerKey, p)) return false;
 
                 // Hide disabled providers from choices (but keep them visible if currently selected).
                 if (p.enabled === false) return false;
@@ -140,6 +210,38 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
 
         updateConfig(updates);
     };
+
+    const sttKey = String(localConfig.stt || '').toLowerCase();
+    const llmKey = String(localConfig.llm || '').toLowerCase();
+    const ttsKey = String(localConfig.tts || '').toLowerCase();
+
+    const isOpenAIStt = sttKey.includes('openai');
+    const isOpenAILlm = llmKey.includes('openai');
+    const isOpenAITts = ttsKey.includes('openai');
+    const isGroqStt = sttKey.includes('groq');
+    const isGroqTts = ttsKey.includes('groq');
+    const isOllamaLlm = llmKey.includes('ollama');
+
+    const timestampGranularities = Array.isArray(localConfig.options?.stt?.timestamp_granularities)
+        ? localConfig.options?.stt?.timestamp_granularities
+        : [];
+    const timestampGranularitiesText = timestampGranularities.join(', ');
+
+    const guardrailEnabledValue =
+        localConfig.options?.llm?.hangup_call_guardrail === true
+            ? 'true'
+            : localConfig.options?.llm?.hangup_call_guardrail === false
+                ? 'false'
+                : '';
+
+    const guardrailModeValue = String(localConfig.options?.llm?.hangup_call_guardrail_mode || '');
+    const guardrailMarkersValue = localConfig.options?.llm?.hangup_call_guardrail_markers?.end_call;
+    const guardrailMarkersText = renderMarkerList(guardrailMarkersValue);
+    const [guardrailMarkersDraft, setGuardrailMarkersDraft] = useState<string>(guardrailMarkersText);
+
+    useEffect(() => {
+        setGuardrailMarkersDraft(guardrailMarkersText);
+    }, [guardrailMarkersText]);
 
     return (
         <div className="space-y-6">
@@ -288,6 +390,206 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                         <p className="text-xs text-destructive">No TTS providers available. Create a modular TTS provider first.</p>
                     )}
                 </div>
+            </div>
+
+            <div className="space-y-4 border-t border-border pt-6">
+                {(isOpenAILlm || isOllamaLlm) && (
+                    <div className="space-y-3 border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
+                        <FormSwitch
+                            label="LLM Expert Settings"
+                            description="Expose high-impact LLM adapter overrides."
+                            checked={showLlmExpert}
+                            onChange={(e) => setShowLlmExpert(e.target.checked)}
+                            className="mb-0 border-0 p-0 bg-transparent"
+                        />
+                        <p className={`text-xs ${showLlmExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                            {showLlmExpert
+                                ? 'Warning: LLM expert overrides can break tool-calling behavior if they diverge from provider defaults.'
+                                : 'Expert values are visible and read-only until LLM expert mode is enabled.'}
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormSwitch
+                                label="LLM Tools Enabled"
+                                description="Allow tool calls at the pipeline adapter level."
+                                checked={localConfig.options?.llm?.tools_enabled ?? true}
+                                onChange={(e) => updateRoleOptions('llm', { tools_enabled: e.target.checked })}
+                                disabled={!showLlmExpert}
+                            />
+                            {isOpenAILlm && (
+                                <FormInput
+                                    label="OpenAI Realtime Model"
+                                    value={localConfig.options?.llm?.realtime_model || ''}
+                                    onChange={(e) => updateRoleOptions('llm', { realtime_model: e.target.value })}
+                                    placeholder="gpt-4o-realtime-preview-2024-12-17"
+                                    tooltip="Adapter-level realtime model override for OpenAI pipeline LLM."
+                                    disabled={!showLlmExpert}
+                                />
+                            )}
+                        </div>
+                        <div className="mt-2 border-t border-amber-300/30 pt-3 space-y-3">
+                            <p className="text-xs text-muted-foreground">
+                                Hangup guardrails apply to pipeline LLMs that emit <code>hangup_call</code> too eagerly. These settings are per-pipeline and do not affect full-agent providers like Google Live.
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormSelect
+                                    label="Hangup Call Guardrail"
+                                    value={guardrailEnabledValue}
+                                    onChange={(e) => {
+                                        const v = String(e.target.value || '');
+                                        if (!v) {
+                                            const next = { ...(localConfig.options?.llm || {}) };
+                                            delete next.hangup_call_guardrail;
+                                            setRoleOptions('llm', next);
+                                            return;
+                                        }
+                                        updateRoleOptions('llm', { hangup_call_guardrail: v === 'true' });
+                                    }}
+                                    tooltip="Auto: enabled only for specific adapters (e.g., Ollama) unless explicitly set. When enabled, hangup_call is allowed only if user end-of-call intent is detected from text."
+                                    options={[
+                                        { value: '', label: 'Auto (default)' },
+                                        { value: 'true', label: 'Enabled' },
+                                        { value: 'false', label: 'Disabled' },
+                                    ]}
+                                    disabled={!showLlmExpert}
+                                />
+                                <FormSelect
+                                    label="Hangup Guardrail Mode"
+                                    value={guardrailModeValue}
+                                    onChange={(e) => {
+                                        const v = String(e.target.value || '');
+                                        if (!v) {
+                                            const next = { ...(localConfig.options?.llm || {}) };
+                                            delete next.hangup_call_guardrail_mode;
+                                            setRoleOptions('llm', next);
+                                            return;
+                                        }
+                                        updateRoleOptions('llm', { hangup_call_guardrail_mode: v });
+                                    }}
+                                    tooltip="Auto uses the global hangup policy mode. Relaxed disables the guardrail, Strict forces it on, Normal uses adapter defaults unless explicitly enabled/disabled above."
+                                    options={[
+                                        { value: '', label: 'Auto (global)' },
+                                        { value: 'relaxed', label: 'Relaxed' },
+                                        { value: 'normal', label: 'Normal' },
+                                        { value: 'strict', label: 'Strict' },
+                                    ]}
+                                    disabled={!showLlmExpert}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <FormLabel tooltip="Per-pipeline override list of caller phrases that indicate they want to end the call. Leave empty to use the global defaults from the Hangup tool policy.">
+                                    End-Call Intent Markers (Override)
+                                </FormLabel>
+                                <textarea
+                                    className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
+                                    value={guardrailMarkersDraft}
+                                    onChange={(e) => {
+                                        setGuardrailMarkersDraft(e.target.value);
+                                    }}
+                                    onBlur={() => {
+                                        const items = parseMarkerList(guardrailMarkersDraft);
+                                        if (items.length === 0) {
+                                            const next = { ...(localConfig.options?.llm || {}) };
+                                            if (next.hangup_call_guardrail_markers && typeof next.hangup_call_guardrail_markers === 'object') {
+                                                const nextMarkers = { ...(next.hangup_call_guardrail_markers || {}) };
+                                                delete nextMarkers.end_call;
+                                                if (Object.keys(nextMarkers).length === 0) {
+                                                    delete next.hangup_call_guardrail_markers;
+                                                } else {
+                                                    next.hangup_call_guardrail_markers = nextMarkers;
+                                                }
+                                            }
+                                            setRoleOptions('llm', next);
+                                            return;
+                                        }
+                                        updateRoleOptions('llm', {
+                                            hangup_call_guardrail_markers: {
+                                                ...(localConfig.options?.llm?.hangup_call_guardrail_markers || {}),
+                                                end_call: items,
+                                            },
+                                        });
+                                    }}
+                                    disabled={!showLlmExpert}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    One phrase per line. Keep this list short to reduce false positives.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {(isOpenAIStt || isGroqStt) && (
+                    <div className="space-y-3 border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
+                        <FormSwitch
+                            label="STT Expert Settings"
+                            description="Expose advanced STT adapter timestamp options."
+                            checked={showSttExpert}
+                            onChange={(e) => setShowSttExpert(e.target.checked)}
+                            className="mb-0 border-0 p-0 bg-transparent"
+                        />
+                        <p className={`text-xs ${showSttExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                            {showSttExpert
+                                ? 'Warning: unsupported timestamp settings can fail transcription requests on some models.'
+                                : 'Expert values are visible and read-only until STT expert mode is enabled.'}
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormInput
+                                label="STT Timestamp Granularities"
+                                value={timestampGranularitiesText}
+                                onChange={(e) =>
+                                    updateRoleOptions('stt', {
+                                        timestamp_granularities: (e.target.value || '')
+                                            .split(',')
+                                            .map((v) => v.trim())
+                                            .filter(Boolean),
+                                    })
+                                }
+                                placeholder="segment, word"
+                                tooltip="Comma-separated; only supported on specific models/endpoints."
+                                disabled={!showSttExpert}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {(isOpenAITts || isGroqTts) && (
+                    <div className="space-y-3 border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
+                        <FormSwitch
+                            label="TTS Expert Settings"
+                            description="Expose provider-specific TTS adapter overrides."
+                            checked={showTtsExpert}
+                            onChange={(e) => setShowTtsExpert(e.target.checked)}
+                            className="mb-0 border-0 p-0 bg-transparent"
+                        />
+                        <p className={`text-xs ${showTtsExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                            {showTtsExpert
+                                ? 'Warning: TTS expert overrides can change output encoding/chunking and impact call playback.'
+                                : 'Expert values are visible and read-only until TTS expert mode is enabled.'}
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {isOpenAITts && (
+                                <FormInput
+                                    label="OpenAI TTS Response Format"
+                                    value={localConfig.options?.tts?.response_format || ''}
+                                    onChange={(e) => updateRoleOptions('tts', { response_format: e.target.value })}
+                                    placeholder="wav"
+                                    tooltip="Adapter response format (e.g., wav, pcm)."
+                                    disabled={!showTtsExpert}
+                                />
+                            )}
+                            {isGroqTts && (
+                                <FormInput
+                                    label="Groq TTS Max Input Chars"
+                                    type="number"
+                                    value={localConfig.options?.tts?.max_input_chars ?? 200}
+                                    onChange={(e) => updateRoleOptions('tts', { max_input_chars: parseInt(e.target.value || '200', 10) })}
+                                    tooltip="Max characters per TTS chunk before adapter splits text."
+                                    disabled={!showTtsExpert}
+                                />
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
         </div>

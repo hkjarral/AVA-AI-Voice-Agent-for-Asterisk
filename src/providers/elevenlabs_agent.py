@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import audioop
+from ..audio.resampler import resample_audio
 import struct
 from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass
@@ -74,6 +75,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._session_state = ElevenLabsSessionState()
         self._connected = False
         self._closing = False
+        self._closed = False
+        self._in_audio_burst: bool = False
         
         # Audio resampling state
         self._resample_state_in = None  # For input resampling
@@ -132,6 +135,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Reset connection state for new session
         self._connected = False
         self._closing = False
+        self._closed = False
+        self._in_audio_burst = False
         self._ws = None
         self._receive_task = None
         self._keepalive_task = None
@@ -327,8 +332,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Resample to 16kHz if needed
         target_rate = self.config.provider_input_sample_rate_hz
         if in_rate != target_rate:
-            pcm16_audio, self._resample_state_in = audioop.ratecv(
-                pcm16_audio, 2, 1, in_rate, target_rate, self._resample_state_in
+            pcm16_audio, self._resample_state_in = resample_audio(
+                pcm16_audio, in_rate, target_rate, state=self._resample_state_in
             )
         
         # Encode to base64
@@ -363,44 +368,74 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     
     async def stop_session(self) -> None:
         """Close the connection and clean up resources."""
+        if self._closing or self._closed:
+            return
         self._closing = True
-        logger.info(f"[elevenlabs] [{self._call_id}] Stopping session...")
-        
-        # Cancel tasks
-        if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
+        previous_call_id = self._call_id
+        try:
+            logger.info(f"[elevenlabs] [{self._call_id}] Stopping session...")
+            
+            # Emit final AgentAudioDone if we were mid-burst
+            if self._in_audio_burst and self.on_event:
+                self._in_audio_burst = False
+                try:
+                    await self.on_event({
+                        "type": "AgentAudioDone",
+                        "call_id": self._call_id,
+                        "streaming_done": True,
+                    })
+                except Exception:
+                    logger.debug(f"[elevenlabs] [{self._call_id}] Failed to emit AgentAudioDone during stop_session")
+            
+            # Cancel tasks
+            if self._receive_task and not self._receive_task.done():
+                self._receive_task.cancel()
+                try:
+                    await asyncio.wait_for(self._receive_task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            if self._keepalive_task and not self._keepalive_task.done():
+                self._keepalive_task.cancel()
+                try:
+                    await asyncio.wait_for(self._keepalive_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            # Close WebSocket
+            if self._ws:
+                try:
+                    await self._ws.close()
+                except Exception as e:
+                    logger.debug(f"[elevenlabs] [{self._call_id}] WebSocket close error: {e}")
+                self._ws = None
+            
+            self._connected = False
+            
+            # Emit session ended event
             try:
-                await asyncio.wait_for(self._receive_task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-        
-        if self._keepalive_task and not self._keepalive_task.done():
-            self._keepalive_task.cancel()
-            try:
-                await asyncio.wait_for(self._keepalive_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-        
-        # Close WebSocket
-        if self._ws:
-            try:
-                await self._ws.close()
+                await self.on_event({
+                    "type": "session_ended",
+                    "call_id": self._call_id,
+                    "provider": "elevenlabs_agent",
+                    "audio_sent_bytes": self._session_state.total_audio_sent,
+                    "audio_received_bytes": self._session_state.total_audio_received,
+                })
             except Exception as e:
-                logger.debug(f"[elevenlabs] [{self._call_id}] WebSocket close error: {e}")
-            self._ws = None
-        
-        self._connected = False
-        
-        # Emit session ended event
-        await self.on_event({
-            "type": "session_ended",
-            "call_id": self._call_id,
-            "provider": "elevenlabs_agent",
-            "audio_sent_bytes": self._session_state.total_audio_sent,
-            "audio_received_bytes": self._session_state.total_audio_received,
-        })
-        
-        logger.info(f"[elevenlabs] [{self._call_id}] Session stopped")
+                logger.debug(
+                    "[elevenlabs] [%s] Failed to emit session_ended (sent=%s, received=%s): %s",
+                    self._call_id,
+                    self._session_state.total_audio_sent,
+                    self._session_state.total_audio_received,
+                    e,
+                    exc_info=True,
+                )
+            
+            logger.info(f"[elevenlabs] [{previous_call_id}] Session stopped")
+        finally:
+            self._closing = False
+            self._closed = True
+            self._in_audio_burst = False
     
     async def _receive_loop(self) -> None:
         """Process incoming WebSocket messages from ElevenLabs."""
@@ -547,6 +582,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Convert to telephony format if needed
         output_audio = self._convert_output_audio(pcm16_audio)
         
+        self._in_audio_burst = True
         # Emit audio event
         await self.on_event({
             "type": "AgentAudio",
@@ -567,8 +603,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         
         # Resample if needed
         if source_rate != target_rate:
-            output, self._resample_state_out = audioop.ratecv(
-                output, 2, 1, source_rate, target_rate, self._resample_state_out
+            output, self._resample_state_out = resample_audio(
+                output, source_rate, target_rate, state=self._resample_state_out
             )
         
         # Encode to μ-law or a-law if needed
@@ -650,6 +686,18 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     async def _handle_interruption(self, data: Dict[str, Any]) -> None:
         """Handle interruption event (barge-in detected)."""
         logger.debug(f"[elevenlabs] [{self._call_id}] Interruption detected")
+        
+        # Signal end of audio burst on interruption
+        if self._in_audio_burst and self.on_event:
+            self._in_audio_burst = False
+            try:
+                await self.on_event({
+                    "type": "AgentAudioDone",
+                    "call_id": self._call_id,
+                    "streaming_done": True,
+                })
+            except Exception:
+                logger.debug(f"[elevenlabs] [{self._call_id}] Failed to emit AgentAudioDone on interruption")
         
         await self.on_event({
             "type": "interruption",

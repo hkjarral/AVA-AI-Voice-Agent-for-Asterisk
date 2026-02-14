@@ -4,6 +4,7 @@ import { Plus, Trash2, AlertTriangle } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import { FormInput, FormSelect, FormLabel, FormSwitch } from '../../ui/FormComponents';
 import { Capability, ensureModularKey, isRegisteredProvider, getUnregisteredReason, REGISTERED_PROVIDER_TYPES } from '../../../utils/providerNaming';
+import { GOOGLE_LIVE_MODEL_OPTIONS } from '../../../utils/googleLiveModels';
 
 interface GenericProviderFormProps {
     config: any;
@@ -22,6 +23,8 @@ const CAPABILITIES: { value: Capability; label: string }[] = [
     { value: 'llm', label: 'Large Language Model (LLM)' },
     { value: 'tts', label: 'Text-to-Speech (TTS)' },
 ];
+
+const GOOGLE_LIVE_SUGGESTED_MODELS = GOOGLE_LIVE_MODEL_OPTIONS.map((modelOption) => modelOption.value);
 
 const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     deepgram: {
@@ -57,18 +60,8 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
         voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
     },
     google_live: {
-        model: [
-            'gemini-2.5-flash-native-audio-preview-12-2025',
-            'gemini-2.5-flash-native-audio-preview-09-2025',
-            'gemini-live-2.5-flash-native-audio',
-            'gemini-live-2.5-flash-preview-native-audio-09-2025',
-        ],
-        llm_model: [
-            'gemini-2.5-flash-native-audio-preview-12-2025',
-            'gemini-2.5-flash-native-audio-preview-09-2025',
-            'gemini-live-2.5-flash-native-audio',
-            'gemini-live-2.5-flash-preview-native-audio-09-2025',
-        ],
+        model: GOOGLE_LIVE_SUGGESTED_MODELS,
+        llm_model: GOOGLE_LIVE_SUGGESTED_MODELS,
         tts_voice_name: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr'],
     },
 };

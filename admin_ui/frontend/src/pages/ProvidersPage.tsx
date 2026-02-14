@@ -19,7 +19,9 @@ import DeepgramProviderForm from '../components/config/providers/DeepgramProvide
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
+import TelnyxProviderForm from '../components/config/providers/TelnyxProviderForm';
 import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider } from '../utils/providerNaming';
+import { GOOGLE_LIVE_DEFAULT_MODEL } from '../utils/googleLiveModels';
 
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
 
@@ -199,7 +201,7 @@ const ProvidersPage: React.FC = () => {
                 type: 'full',
                 capabilities: ['stt', 'llm', 'tts'],
                 api_key: '${GOOGLE_API_KEY}',
-                llm_model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+                llm_model: GOOGLE_LIVE_DEFAULT_MODEL,
                 input_encoding: 'ulaw',
                 input_sample_rate_hz: 8000,
                 target_encoding: 'ulaw',
@@ -223,6 +225,16 @@ const ProvidersPage: React.FC = () => {
                 local_stt: { type: 'local', capabilities: ['stt'], enabled: false, ws_url: '${LOCAL_WS_URL:-ws://127.0.0.1:8765}', auth_token: '${LOCAL_WS_AUTH_TOKEN:-}' },
                 local_llm: { type: 'local', capabilities: ['llm'], enabled: false, auth_token: '${LOCAL_WS_AUTH_TOKEN:-}' },
                 local_tts: { type: 'local', capabilities: ['tts'], enabled: false, ws_url: '${LOCAL_WS_URL:-ws://127.0.0.1:8765}', auth_token: '${LOCAL_WS_AUTH_TOKEN:-}' }
+            },
+            telnyx_llm: {
+                enabled: false,
+                type: 'telnyx',
+                capabilities: ['llm'],
+                chat_base_url: 'https://api.telnyx.com/v2/ai',
+                api_key: '${TELNYX_API_KEY}',
+                chat_model: 'Qwen/Qwen3-235B-A22B',
+                temperature: 0.7,
+                response_timeout_sec: 30.0,
             }
         };
 
@@ -439,6 +451,23 @@ const ProvidersPage: React.FC = () => {
         const existingData = !isNewProvider && editingProvider ? (config.providers?.[editingProvider] || {}) : {};
         const providerData = { ...existingData, ...providerForm, name: finalName, capabilities };
 
+        // Telnyx LLM defaults: ensure the values shown in the form are actually persisted to YAML.
+        // Without this, the form may display placeholders while the YAML remains unset, causing ai_engine
+        // to fall back to its internal defaults (which can differ across releases).
+        try {
+            const providerType = String(providerData.type || '').toLowerCase();
+            const isTelnyx = providerType === 'telnyx' || providerType === 'telenyx' || finalName.includes('telnyx') || finalName.includes('telenyx');
+            const isLLMOnly = Array.isArray(providerData.capabilities) && providerData.capabilities.length === 1 && providerData.capabilities[0] === 'llm';
+            if (isTelnyx && isLLMOnly) {
+                if (!providerData.chat_base_url) providerData.chat_base_url = 'https://api.telnyx.com/v2/ai';
+                if (!providerData.chat_model) providerData.chat_model = 'Qwen/Qwen3-235B-A22B';
+                if (providerData.temperature === undefined || providerData.temperature === null) providerData.temperature = 0.7;
+                if (!providerData.response_timeout_sec) providerData.response_timeout_sec = 30.0;
+            }
+        } catch {
+            // Non-blocking defaults
+        }
+
         if (!isFull && providerData.capabilities.length !== 1) {
             toast.error('Modular providers must have exactly one capability.');
             return;
@@ -531,6 +560,9 @@ const ProvidersPage: React.FC = () => {
         if (providerName.includes('elevenlabs')) {
             return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} />;
         }
+        if (providerName.includes('telnyx') || providerName.includes('telenyx')) {
+            return <TelnyxProviderForm config={providerForm} onChange={updateForm} />;
+        }
         
         // Fall back to type-based selection
         switch (providerForm.type) {
@@ -547,6 +579,9 @@ const ProvidersPage: React.FC = () => {
                 return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} />;
             case 'ollama':
                 return <OllamaProviderForm config={providerForm} onChange={updateForm} />;
+            case 'telnyx':
+            case 'telenyx':
+                return <TelnyxProviderForm config={providerForm} onChange={updateForm} />;
             default:
                 return <GenericProviderForm config={providerForm} onChange={updateForm} isNew={isNewProvider} />;
         }
@@ -1005,7 +1040,7 @@ const ProvidersPage: React.FC = () => {
                         {[
                             { id: 'openai_realtime', name: 'OpenAI Realtime', desc: 'GPT-4o real-time voice agent' },
                             { id: 'deepgram', name: 'Deepgram', desc: 'Nova-2 STT + Aura TTS voice agent' },
-                            { id: 'google_live', name: 'Google Live', desc: 'Gemini 2.0 Flash real-time agent' },
+                            { id: 'google_live', name: 'Google Live', desc: 'Gemini 2.5 Native Audio real-time agent' },
                             { id: 'elevenlabs_agent', name: 'ElevenLabs Agent', desc: 'ElevenLabs conversational AI' },
                         ].map(template => (
                             <label key={template.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 cursor-pointer">
@@ -1060,6 +1095,37 @@ const ProvidersPage: React.FC = () => {
                                 <p className="text-xs text-muted-foreground">Adds local_stt, local_llm, local_tts for pipeline use</p>
                             </div>
                         </label>
+                    </div>
+                    <div className="space-y-2">
+                        <h4 className="text-sm font-medium">Modular Providers (Cloud)</h4>
+                        {[
+                            { id: 'telnyx_llm', name: 'Telnyx LLM', desc: 'Telnyx AI Inference (OpenAI-compatible /chat/completions)' },
+                        ].map(template => (
+                            <label key={template.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={selectedTemplates.includes(template.id)}
+                                    onChange={(e) => {
+                                        if (e.target.checked) {
+                                            setSelectedTemplates([...selectedTemplates, template.id]);
+                                        } else {
+                                            setSelectedTemplates(selectedTemplates.filter(t => t !== template.id));
+                                        }
+                                    }}
+                                    disabled={!!config.providers?.[template.id]}
+                                    className="mt-1"
+                                />
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-medium">{template.name}</span>
+                                        {config.providers?.[template.id] && (
+                                            <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded">Already exists</span>
+                                        )}
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">{template.desc}</p>
+                                </div>
+                            </label>
+                        ))}
                     </div>
                 </div>
             </Modal>

@@ -446,10 +446,19 @@ exten => s,1,NoOp(AI Agent Call)
 
         setLocalAIStatus((prev) => ({ ...prev, serverStarted: true, serverReady: false, serverLogs: ['Starting container...'] }));
 
+        let isBuilding = false;
         try {
             const res = await axios.post('/api/wizard/local/start-server');
             if (!res.data.success) {
                 throw new Error(res.data.message || 'Failed to start local_ai_server');
+            }
+            // AAVA-177: Backend signals when a full image build was kicked off
+            isBuilding = !!res.data.building;
+            if (isBuilding) {
+                setLocalAIStatus((prev) => ({
+                    ...prev,
+                    serverLogs: ['Building Docker image (this can take 10-60 minutes for GPU builds)...'],
+                }));
             }
         } catch (err: any) {
             setLocalAIStatus((prev) => ({ ...prev, serverStarted: false, serverReady: false }));
@@ -458,11 +467,14 @@ exten => s,1,NoOp(AI Agent Call)
             setStartingLocalServer(false);
         }
 
+        // AAVA-177: Use 60-minute timeout for image builds, 2-minute for normal starts
+        const pollTimeoutMs = isBuilding ? 3_600_000 : 120_000;
+
         const pollLogs = async () => {
             if (localServerPollRef.current.cancelled) return;
             const startedAt = localServerPollRef.current.startedAt || Date.now();
             const elapsed = Date.now() - startedAt;
-            if (elapsed >= 120_000) return;
+            if (elapsed >= pollTimeoutMs) return;
             try {
                 const logRes = await axios.get('/api/wizard/local/server-logs');
                 if (!localServerPollRef.current.cancelled) {

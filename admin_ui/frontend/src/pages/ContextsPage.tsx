@@ -26,6 +26,7 @@ const ContextsPage = () => {
     } | null>(null);
     const [availableTools, setAvailableTools] = useState<string[]>([]);
     const [toolEnabledMap, setToolEnabledMap] = useState<Record<string, boolean>>({});
+    const [toolCatalogByName, setToolCatalogByName] = useState<Record<string, any>>({});
     const [editingContext, setEditingContext] = useState<string | null>(null);
     const [contextForm, setContextForm] = useState<any>({});
     const [isNewContext, setIsNewContext] = useState(false);
@@ -49,6 +50,7 @@ const ContextsPage = () => {
                 const parsed = yaml.load(res.data.content) as any;
                 setConfig(parsed || {});
                 await fetchMcpTools(parsed || {});
+                await fetchToolCatalog();
                 setError(null);
                 setYamlError(null);
             }
@@ -65,6 +67,23 @@ const ContextsPage = () => {
             }
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchToolCatalog = async () => {
+        try {
+            const res = await axios.get('/api/tools/catalog');
+            const tools = (res.data && Array.isArray(res.data.tools)) ? res.data.tools : [];
+            const next: Record<string, any> = {};
+            tools.forEach((t: any) => {
+                if (t && typeof t === 'object' && typeof t.name === 'string' && t.name.trim()) {
+                    next[t.name.trim()] = t;
+                }
+            });
+            setToolCatalogByName(next);
+        } catch (err) {
+            // Non-blocking: context editing should still work even if catalog fails to load.
+            setToolCatalogByName({});
         }
     };
 
@@ -531,6 +550,7 @@ const ContextsPage = () => {
                     pipelines={config.pipelines}
                     availableTools={availableTools}
                     toolEnabledMap={toolEnabledMap}
+                    toolCatalogByName={toolCatalogByName}
                     availableProfiles={availableProfiles}
                     defaultProfileName={defaultProfileName}
                     httpTools={{...config.tools, ...config.in_call_tools}}

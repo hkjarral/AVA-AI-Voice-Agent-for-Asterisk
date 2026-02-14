@@ -1,6 +1,6 @@
 # FreePBX Integration Guide
 
-Complete guide for integrating Asterisk AI Voice Agent v5.3.1+ with FreePBX.
+Complete guide for integrating Asterisk AI Voice Agent v6.0+ with FreePBX.
 
 ## 1. Overview
 

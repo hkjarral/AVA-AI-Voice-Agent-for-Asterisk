@@ -32,6 +32,7 @@ FAILURES=()
 FIX_CMDS=()          # Commands that --apply-fixes will run
 MANUAL_CMDS=()       # Commands user must run manually (e.g., reboot/logout)
 APPLY_FIXES=false
+FORCE_MODE=false
 DOCKER_ROOTLESS=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -285,6 +286,7 @@ PERSIST_MEDIA_MOUNT=false
 for arg in "$@"; do
     case $arg in
         --apply-fixes) APPLY_FIXES=true ;;
+        --force) FORCE_MODE=true ;;
         --local-ai-mode=*) LOCAL_AI_MODE_OVERRIDE="${arg#*=}" ;;
         --local-ai-minimal) LOCAL_AI_MODE_OVERRIDE="minimal" ;;
         --local-ai-full) LOCAL_AI_MODE_OVERRIDE="full" ;;
@@ -296,6 +298,7 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --apply-fixes  Apply fixes automatically (requires root/sudo)"
+            echo "  --force        Downgrade unsupported-OS failure to warning (for users with Docker pre-installed)"
             echo "  --local-ai-mode=MODE  Set LOCAL_AI_MODE in .env (MODE=full|minimal)"
             echo "  --local-ai-minimal    Shortcut for --local-ai-mode=minimal"
             echo "  --local-ai-full       Shortcut for --local-ai-mode=full"
@@ -378,7 +381,11 @@ detect_os() {
     
     # Check for unsupported OS family with helpful instructions
     if [ "$OS_FAMILY" = "unknown" ]; then
-        log_fail "Unsupported Linux distribution: $OS_ID"
+        if [ "$FORCE_MODE" = true ]; then
+            log_warn "Unsupported Linux distribution: $OS_ID (continuing due to --force)"
+        else
+            log_fail "Unsupported Linux distribution: $OS_ID"
+        fi
         log_info ""
         log_info "  Verified (maintainer-tested):"
         log_info "    - PBX Distro 12.7.8-2306-1.sng7 (Sangoma/FreePBX)"
@@ -395,7 +402,8 @@ detect_os() {
         log_info "  Supported platforms matrix:"
         log_info "    https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/SUPPORTED_PLATFORMS.md"
         log_info ""
-        log_info "  Then re-run this script to verify the setup."
+        log_info "  Then re-run with --force to skip this check:"
+        log_info "    ./preflight.sh --force"
     fi
     
     # Check EOL status (WARNING only - we still support if Docker works)

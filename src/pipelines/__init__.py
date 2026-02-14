@@ -15,6 +15,9 @@ from .openai import (
     OpenAILLMAdapter,
     OpenAITTSAdapter,
 )
+from .telnyx import (
+    TelnyxLLMAdapter,
+)
 from .orchestrator import (
     PipelineOrchestrator,
     PipelineOrchestratorError,
@@ -31,6 +34,7 @@ __all__ = [
     "OpenAISTTAdapter",
     "OpenAILLMAdapter",
     "OpenAITTSAdapter",
+    "TelnyxLLMAdapter",
     "PipelineOrchestrator",
     "PipelineOrchestratorError",
     "PipelineResolution",

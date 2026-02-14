@@ -34,6 +34,57 @@ router = APIRouter()
 
 DISK_WARNING_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 DISK_BLOCK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB (hard stop for downloads)
+GOOGLE_LIVE_DEFAULT_MODEL = "gemini-2.5-flash-native-audio-latest"
+GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+GOOGLE_LIVE_PREFERRED_MODELS = [
+    GOOGLE_LIVE_DEFAULT_MODEL,
+    "gemini-2.5-flash-native-audio-preview-12-2025",
+    "gemini-2.5-flash-native-audio-preview-09-2025",
+    "gemini-live-2.5-flash-native-audio",
+    "gemini-live-2.5-flash-preview-native-audio-09-2025",
+    "gemini-live-2.5-flash-preview",
+]
+
+
+def _extract_google_live_models(models: List[Dict[str, Any]]) -> List[str]:
+    """Extract model names that support bidiGenerateContent (Gemini Live)."""
+    live_models: List[str] = []
+    for model in models:
+        methods = model.get("supportedGenerationMethods", [])
+        if "bidiGenerateContent" in methods:
+            model_name = model.get("name", "").replace("models/", "")
+            if model_name:
+                live_models.append(model_name)
+    return live_models
+
+
+def _select_google_live_model(live_models: List[str]) -> Optional[str]:
+    """Pick the best available Google Live model using preferred order."""
+    for preferred_model in GOOGLE_LIVE_PREFERRED_MODELS:
+        if preferred_model in live_models:
+            return preferred_model
+    if live_models:
+        return live_models[0]
+    return None
+
+
+async def _discover_google_live_model(api_key: str) -> Optional[str]:
+    """Discover an available Google Live model for the provided API key."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                GOOGLE_MODELS_URL,
+                params={"key": api_key},
+                timeout=10.0,
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            models = data.get("models", [])
+            live_models = _extract_google_live_models(models)
+            return _select_google_live_model(live_models)
+    except Exception:
+        return None
 
 
 def _parse_optional_bool(raw: Optional[str]) -> Optional[bool]:
@@ -2121,7 +2172,8 @@ async def start_local_ai_server():
 
             return {
                 "success": True,
-                "message": f"Local AI Server build/start initiated in background; this can take several minutes. See {log_path} or container logs once created.",
+                "building": True,
+                "message": f"Local AI Server image is being built in the background (this can take 10-60 minutes for GPU builds). See {log_path} or container logs once created.",
                 "media_setup": media_setup,
             }
 
@@ -2406,21 +2458,17 @@ async def validate_api_key(validation: ApiKeyValidation):
                     
             elif provider == "google":
                 response = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+                    GOOGLE_MODELS_URL,
+                    params={"key": api_key},
                     timeout=10.0
                 )
                 if response.status_code == 200:
                     # Check if the required model with bidiGenerateContent is available
                     data = response.json()
                     models = data.get("models", [])
-                    
+
                     # Find models that support bidiGenerateContent (required for Live API)
-                    live_models = []
-                    for model in models:
-                        methods = model.get("supportedGenerationMethods", [])
-                        if "bidiGenerateContent" in methods:
-                            model_name = model.get("name", "").replace("models/", "")
-                            live_models.append(model_name)
+                    live_models = _extract_google_live_models(models)
                     
                     if not live_models:
                         return {
@@ -2428,24 +2476,20 @@ async def validate_api_key(validation: ApiKeyValidation):
                             "error": "API key valid but no Live API models available. Your API key doesn't have access to Gemini Live models (bidiGenerateContent). Try creating a new key at aistudio.google.com"
                         }
                     
-                    # Check if our preferred models are available (in order of preference)
-                    preferred_models = [
-                        "gemini-2.5-flash-native-audio-preview-12-2025",  # Latest native audio model
-                        "gemini-2.0-flash-live-001",  # Stable live model
-                        "gemini-2.0-flash-exp",  # Experimental
-                    ]
-                    
-                    for preferred_model in preferred_models:
-                        if preferred_model in live_models:
-                            return {
-                                "valid": True, 
-                                "message": f"Google API key is valid. Live model '{preferred_model}' is available."
-                            }
-                    
-                    # No preferred model found, but we have some live models
+                    selected_model = _select_google_live_model(live_models)
+                    if selected_model:
+                        return {
+                            "valid": True,
+                            "message": f"Google API key is valid. Live model '{selected_model}' is available.",
+                            "selected_model": selected_model,
+                            "available_models": live_models,
+                        }
+
+                    # Defensive fallback (should not happen if live_models is non-empty)
                     return {
-                        "valid": True, 
-                        "message": f"Google API key is valid. Available Live models: {', '.join(live_models[:3])}"
+                        "valid": True,
+                        "message": f"Google API key is valid. Available Live models: {', '.join(live_models[:3])}",
+                        "available_models": live_models,
                     }
                 elif response.status_code in [400, 403]:
                     return {"valid": False, "error": "Invalid API key"}
@@ -2786,6 +2830,18 @@ async def save_setup_config(config: SetupConfig):
             # Helper to check if provider already exists with config
             def provider_exists(name: str) -> bool:
                 return name in providers and len(providers[name]) > 1  # More than just 'enabled'
+
+            selected_google_live_model = GOOGLE_LIVE_DEFAULT_MODEL
+            if config.provider == "google_live" and config.google_key:
+                discovered_model = await _discover_google_live_model(config.google_key)
+                if discovered_model:
+                    selected_google_live_model = discovered_model
+                    logger.info("Resolved Google Live model for setup: %s", selected_google_live_model)
+                else:
+                    logger.warning(
+                        "Could not resolve Google Live model during setup; falling back to default: %s",
+                        selected_google_live_model,
+                    )
             
             # Full agent providers - clear active_pipeline when setting as default
             if config.provider in ["openai_realtime", "deepgram", "google_live", "elevenlabs_agent", "local"]:
@@ -2835,7 +2891,7 @@ async def save_setup_config(config: SetupConfig):
                 if not provider_exists("google_live"):
                     providers["google_live"].update({
                         "api_key": "${GOOGLE_API_KEY}",
-                        "llm_model": "gemini-2.5-flash-native-audio-preview-12-2025",
+                        "llm_model": selected_google_live_model,
                         "input_encoding": "ulaw",
                         "input_sample_rate_hz": 8000,
                         "provider_input_encoding": "linear16",
@@ -2846,6 +2902,7 @@ async def save_setup_config(config: SetupConfig):
                         "type": "full",
                         "capabilities": ["stt", "llm", "tts"]
                     })
+                providers["google_live"]["llm_model"] = selected_google_live_model
                 providers["google_live"]["greeting"] = config.greeting
                 providers["google_live"]["instructions"] = f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise."
 

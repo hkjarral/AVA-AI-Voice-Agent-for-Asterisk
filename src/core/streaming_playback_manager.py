@@ -580,7 +580,9 @@ class StreamingPlaybackManager:
             # Set TTS gating before starting stream
             # Skip gating for full agent providers that handle turn-taking internally
             # These providers have server-side VAD and don't need client-side audio gating
-            FULL_AGENT_PROVIDERS = {'deepgram', 'openai_realtime', 'elevenlabs_agent', 'google_live'}
+            # NOTE: google_live is intentionally EXCLUDED — it lacks server-side echo cancellation,
+            # so engine-side gating is required to prevent echoed model audio from confusing its VAD.
+            FULL_AGENT_PROVIDERS = {'deepgram', 'openai_realtime', 'elevenlabs_agent'}
             provider_name = getattr(session, 'provider_name', None) if session else None
             skip_gating = provider_name in FULL_AGENT_PROVIDERS
             
@@ -645,12 +647,20 @@ class StreamingPlaybackManager:
             transport_format = self.audiosocket_format
             if self.audio_transport == "externalmedia":
                 session = await self.session_store.get_by_call_id(call_id)
-                if session and hasattr(session, 'external_media_codec'):
+                if session and hasattr(session, 'external_media_codec') and session.external_media_codec:
                     transport_format = session.external_media_codec
                     logger.debug(
                         "Using ExternalMedia codec for target format",
                         call_id=call_id,
                         codec=transport_format
+                    )
+                else:
+                    # Greeting may fire before ExternalMedia codec is stored;
+                    # default to ulaw which is the standard ExternalMedia codec.
+                    transport_format = "ulaw"
+                    logger.debug(
+                        "ExternalMedia codec not yet available, defaulting to ulaw",
+                        call_id=call_id,
                     )
             
             mulaw_transport = self._is_mulaw(transport_format)

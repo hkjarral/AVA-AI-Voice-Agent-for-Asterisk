@@ -7,6 +7,7 @@ import asyncio
 import socket
 import struct
 import audioop
+from .audio.resampler import resample_audio
 import time
 import random
 from dataclasses import dataclass, field
@@ -445,7 +446,7 @@ class RTPServer:
             # CRITICAL: Must match what engine expects based on config
             if self.sample_rate != self.SAMPLE_RATE:
                 # Resample from codec rate to configured engine rate
-                pcm_resampled, state = audioop.ratecv(pcm_decoded, 2, 1, self.SAMPLE_RATE, self.sample_rate, session.resample_state)
+                pcm_resampled, state = resample_audio(pcm_decoded, self.SAMPLE_RATE, self.sample_rate, state=session.resample_state)
                 session.resample_state = state
             else:
                 # No resampling needed

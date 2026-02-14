@@ -40,6 +40,7 @@ def _ai_engine_env_key(key: str) -> bool:
             "GROQ_API_KEY",
             "DEEPGRAM_API_KEY",
             "GOOGLE_API_KEY",
+            "TELNYX_API_KEY",
             "RESEND_API_KEY",
             "ELEVENLABS_API_KEY",
             "ELEVENLABS_AGENT_ID",
@@ -1090,9 +1091,83 @@ async def test_provider_connection(request: ProviderTestRequest):
                 return {"success": False, "message": f"OpenAI API error: HTTP {response.status_code}"}
 
         # ============================================================
-        # OPENAI-COMPATIBLE (OpenAI / Groq / OpenRouter / etc.)
+        # TELNYX (OpenAI-compatible) - validate /models + a tiny /chat/completions
         # ============================================================
-        if provider_config.get('type') == 'openai':
+        provider_type = str(provider_config.get('type') or '').lower()
+        chat_base_url = (provider_config.get('chat_base_url') or provider_config.get('base_url') or '').rstrip('/')
+        host = _url_host(chat_base_url)
+        is_telnyx = provider_type in ('telnyx', 'telenyx') or ('telnyx' in provider_name) or host == 'api.telnyx.com'
+        if is_telnyx:
+            base_url = (chat_base_url or 'https://api.telnyx.com/v2/ai').rstrip('/')
+            api_key = get_env_key('TELNYX_API_KEY') or os.getenv('TELNYX_API_KEY') or ''
+            if not api_key:
+                return {"success": False, "message": "TELNYX_API_KEY not set in .env"}
+
+            # Prefer explicit model config; if unset, use a safe default for testing.
+            model = (provider_config.get('chat_model') or provider_config.get('model') or '').strip()
+            if not model:
+                model = "Qwen/Qwen3-235B-A22B"
+
+            api_key_ref = (provider_config.get('api_key_ref') or '').strip()
+            if model.startswith('openai/') and not api_key_ref:
+                return {
+                    "success": False,
+                    "message": "Telnyx external models like openai/* require api_key_ref (Integration Secret identifier).",
+                }
+
+            def _telnyx_error_summary(resp: httpx.Response) -> str:
+                try:
+                    j = resp.json()
+                    if isinstance(j, dict) and isinstance(j.get("errors"), list) and j["errors"]:
+                        e0 = j["errors"][0] if isinstance(j["errors"][0], dict) else {}
+                        code = e0.get("code")
+                        title = e0.get("title")
+                        detail = e0.get("detail")
+                        parts = [p for p in [code, title, detail] if p]
+                        if parts:
+                            return " / ".join(str(p) for p in parts)
+                except Exception:
+                    pass
+                text = (resp.text or "").strip().replace("\n", " ")
+                return text[:180] if text else f"HTTP {resp.status_code}"
+
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    models_resp = await client.get(
+                        f"{base_url}/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                    if models_resp.status_code != 200:
+                        return {"success": False, "message": f"Telnyx /models failed: {_telnyx_error_summary(models_resp)}"}
+
+                    payload: Dict[str, Any] = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": "You are a test assistant."},
+                            {"role": "user", "content": "Reply with exactly: OK"},
+                        ],
+                        "temperature": 0.0,
+                        "max_tokens": 16,
+                    }
+                    if api_key_ref:
+                        payload["api_key_ref"] = api_key_ref
+
+                    chat_resp = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                    if chat_resp.status_code == 200:
+                        return {"success": True, "message": f"Connected to Telnyx. Chat completion OK with model: {model}"}
+                    return {"success": False, "message": f"Telnyx chat completion failed: {_telnyx_error_summary(chat_resp)}"}
+            except Exception as e:
+                logger.debug("Telnyx provider validation failed", error=str(e), exc_info=True)
+                return {"success": False, "message": f"Cannot connect to Telnyx at {base_url} (see server logs)"}
+
+        # ============================================================
+        # OPENAI-COMPATIBLE (OpenAI / Groq / OpenRouter / etc.) - validate /models
+        # ============================================================
+        if provider_type == 'openai':
             chat_base_url = (provider_config.get('chat_base_url') or 'https://api.openai.com/v1').rstrip('/')
             api_key = provider_config.get('api_key')
             if not api_key:

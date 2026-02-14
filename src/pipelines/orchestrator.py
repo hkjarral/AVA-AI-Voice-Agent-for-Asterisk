@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from ..config import (
     AppConfig,
@@ -23,6 +24,7 @@ from ..config import (
     GroqTTSProviderConfig,
     LocalProviderConfig,
     OpenAIProviderConfig,
+    TelnyxLLMProviderConfig,
 )
 from ..logging_config import get_logger
 from .base import Component, STTComponent, LLMComponent, TTSComponent
@@ -34,6 +36,7 @@ from .local import LocalLLMAdapter, LocalSTTAdapter, LocalTTSAdapter
 from .ollama import OllamaLLMAdapter
 from .openai import OpenAISTTAdapter, OpenAILLMAdapter, OpenAITTSAdapter
 from .groq import GroqSTTAdapter, GroqTTSAdapter
+from .telnyx import TelnyxLLMAdapter
 
 logger = get_logger(__name__)
 
@@ -221,6 +224,7 @@ class PipelineOrchestrator:
         self._local_provider_config: Optional[LocalProviderConfig] = self._hydrate_local_config()
         self._deepgram_provider_config: Optional[DeepgramProviderConfig] = self._hydrate_deepgram_config()
         self._openai_provider_config: Optional[OpenAIProviderConfig] = self._hydrate_openai_config()
+        self._telnyx_llm_provider_config: Optional[TelnyxLLMProviderConfig] = self._hydrate_telnyx_llm_config()
         self._google_provider_config: Optional[GoogleProviderConfig] = self._hydrate_google_config()
         self._elevenlabs_provider_config: Optional[ElevenLabsProviderConfig] = self._hydrate_elevenlabs_config()
         self._groq_stt_provider_config: Optional[GroqSTTProviderConfig] = self._hydrate_groq_stt_config()
@@ -517,6 +521,23 @@ class PipelineOrchestrator:
         else:
             logger.debug("OpenAI pipeline adapters not registered - provider config unavailable or invalid")
 
+        if self._telnyx_llm_provider_config:
+            llm_factory = self._make_telnyx_llm_factory(self._telnyx_llm_provider_config)
+            self.register_factory("telnyx_llm", llm_factory)
+            # Alias for typo tolerance.
+            self.register_factory("telenyx_llm", llm_factory)
+            try:
+                host = (urlparse(str(self._telnyx_llm_provider_config.chat_base_url)).hostname or "").lower()
+            except Exception:
+                host = None
+            logger.info(
+                "Telnyx LLM pipeline adapter registered",
+                llm_factory="telnyx_llm",
+                host=host,
+            )
+        else:
+            logger.debug("Telnyx LLM pipeline adapter not registered - API key unavailable or config missing")
+
         if self._google_provider_config:
             stt_factory = self._make_google_stt_factory(self._google_provider_config)
             llm_factory = self._make_google_llm_factory(self._google_provider_config)
@@ -756,6 +777,22 @@ class PipelineOrchestrator:
 
         return factory
 
+    def _make_telnyx_llm_factory(
+        self,
+        provider_config: TelnyxLLMProviderConfig,
+    ) -> ComponentFactory:
+        config_payload = provider_config.model_dump()
+
+        def factory(component_key: str, options: Dict[str, Any]) -> Component:
+            return TelnyxLLMAdapter(
+                component_key,
+                self.config,
+                TelnyxLLMProviderConfig(**config_payload),
+                options,
+            )
+
+        return factory
+
     def _make_openai_tts_factory(
         self,
         provider_config: OpenAIProviderConfig,
@@ -893,13 +930,24 @@ class PipelineOrchestrator:
         providers = getattr(self.config, "providers", {}) or {}
         raw_config = providers.get("elevenlabs")
         if not raw_config:
-            # Fallback: accept modular elevenlabs_tts provider
+            # Fallback: accept modular elevenlabs_tts provider.
+            # AAVA-181: Skip full-agent type providers (elevenlabs_agent) — they
+            # have their own config path and different voice/model semantics.
             for name, cfg in providers.items():
                 try:
                     lower = str(name).lower()
                 except Exception:
                     lower = ""
-                if lower.startswith("elevenlabs_") or (isinstance(cfg, dict) and str(cfg.get("type", "")).lower() == "elevenlabs"):
+                if not isinstance(cfg, dict):
+                    continue
+                cfg_type = str(cfg.get("type", "")).lower()
+                if cfg_type in ("elevenlabs_agent", "full"):
+                    continue
+                # Also skip providers with all three capabilities (full agents)
+                cfg_caps = cfg.get("capabilities", [])
+                if isinstance(cfg_caps, list) and "stt" in cfg_caps and "llm" in cfg_caps and "tts" in cfg_caps:
+                    continue
+                if lower.startswith("elevenlabs_") or cfg_type == "elevenlabs":
                     raw_config = cfg
                     break
         if not raw_config:
@@ -912,7 +960,18 @@ class PipelineOrchestrator:
             config = raw_config
         elif isinstance(raw_config, dict):
             try:
-                config = ElevenLabsProviderConfig(**raw_config)
+                # AAVA-181: Filter out Admin UI metadata fields (name, type,
+                # capabilities, continuous_input) and empty strings that would
+                # override Pydantic defaults (e.g., base_url: '').
+                el_fields = set(ElevenLabsProviderConfig.model_fields.keys())
+                filtered = {}
+                for k, v in raw_config.items():
+                    if k not in el_fields:
+                        continue
+                    if isinstance(v, str) and v == "":
+                        continue
+                    filtered[k] = v
+                config = ElevenLabsProviderConfig(**filtered)
             except Exception as exc:
                 logger.warning(
                     "Failed to hydrate ElevenLabs provider config for pipelines",
@@ -990,6 +1049,49 @@ class PipelineOrchestrator:
 
         if not config.api_key:
             logger.warning("OpenAI pipeline adapters require an API key; falling back to placeholder adapters")
+            return None
+
+        return config
+
+    def _hydrate_telnyx_llm_config(self) -> Optional[TelnyxLLMProviderConfig]:
+        providers = getattr(self.config, "providers", {}) or {}
+        raw = providers.get("telnyx_llm") or providers.get("telenyx_llm") or providers.get("telnyx")
+        merged: Dict[str, Any] = {}
+
+        if isinstance(raw, dict):
+            merged.update(raw)
+        elif isinstance(raw, OpenAIProviderConfig):
+            merged.update(raw.model_dump())
+
+        if not merged:
+            for _, cfg in providers.items():
+                if not isinstance(cfg, dict):
+                    continue
+                base = str(cfg.get("chat_base_url") or cfg.get("base_url") or "").strip()
+                try:
+                    host = (urlparse(base).hostname or "").lower()
+                except Exception:
+                    host = ""
+                if host == "api.telnyx.com":
+                    merged.update(cfg)
+                    break
+
+        if not merged:
+            return None
+
+        merged.setdefault("chat_base_url", "https://api.telnyx.com/v2/ai")
+
+        try:
+            config = TelnyxLLMProviderConfig(**merged)
+        except Exception as exc:
+            logger.warning(
+                "Failed to hydrate Telnyx LLM provider config for pipelines",
+                error=str(exc),
+            )
+            return None
+
+        if not config.api_key:
+            logger.warning("Telnyx pipeline adapter requires TELNYX_API_KEY; falling back to placeholder adapters")
             return None
 
         return config
@@ -1176,6 +1278,8 @@ class PipelineOrchestrator:
             hints.append("Ensure providers.local is enabled and local-ai-server is reachable.")
         elif provider == "groq":
             hints.append("Set GROQ_API_KEY and configure providers.groq_stt/providers.groq_tts.")
+        elif provider in ("telnyx", "telenyx"):
+            hints.append("Set TELNYX_API_KEY and configure providers.telnyx_llm.")
 
         hint = f" Hint: {' '.join(hints)}" if hints else ""
         return f"Pipeline '{pipeline_name}' cannot resolve {role} component '{component_key}' (placeholder adapter).{hint}"

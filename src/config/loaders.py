@@ -202,4 +202,16 @@ def load_yaml_with_local_override(path: str) -> dict:
         return base_data
 
     logger.info("Merging operator local config override", local_path=local_path)
+
+    # Log provider-level overrides so operators can see what changed.
+    local_providers = local_data.get("providers", {})
+    if local_providers:
+        for pname, poverrides in local_providers.items():
+            if isinstance(poverrides, dict):
+                logger.info(
+                    "Local override applied to provider",
+                    provider=pname,
+                    overridden_keys=sorted(poverrides.keys()),
+                )
+
     return deep_merge_dicts(base_data, local_data)

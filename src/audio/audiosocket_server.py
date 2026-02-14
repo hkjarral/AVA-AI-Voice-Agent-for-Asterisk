@@ -279,7 +279,7 @@ class AudioSocketServer:
     async def disconnect(self, conn_id: str) -> None:
         """Proactively close a connection (used during call cleanup)."""
         async with self._lock:
-            writer = self._writers.get(conn_id)
+            writer = self._writers.pop(conn_id, None)
         if not writer:
             return
         writer.close()

@@ -1,6 +1,6 @@
 # Production Deployment Guide
 
-Best practices and recommendations for deploying Asterisk AI Voice Agent `v5.0+` in production environments.
+Best practices and recommendations for deploying Asterisk AI Voice Agent `v6.0+` in production environments.
 
 ## Overview
 
@@ -812,7 +812,7 @@ echo "=== End Health Check ==="
 
 ### Upgrade Procedures
 
-**Minor Version Upgrade** (e.g., v4.0.0 → v4.0.1):
+**Minor Version Upgrade** (e.g., v6.1.0 → v6.1.1):
 
 ```bash
 # 1. Backup current state
@@ -820,10 +820,10 @@ echo "=== End Health Check ==="
 
 # 2. Pull latest code
 git fetch origin
-git checkout v4.0.1  # Or: git pull origin main
+git checkout v6.1.1  # Or: git pull origin main
 
 # 3. Compare configuration changes
-git diff v4.0.0..v4.0.1 config/ai-agent.example.yaml
+git diff v6.1.0..v6.1.1 config/ai-agent.example.yaml
 
 # 4. Update if needed
 # Review and update config/ai-agent.yaml
@@ -838,11 +838,11 @@ docker compose logs -f ai_engine
 # 7. Make test call
 
 # 8. Rollback if issues
-# git checkout v4.0.0
+# git checkout v6.1.0
 # docker compose up -d --force-recreate ai_engine
 ```
 
-**Major Version Upgrade** (e.g., v4.x → v5.x):
+**Major Version Upgrade** (e.g., v5.x → v6.x):
 
 1. **Review CHANGELOG.md** for breaking changes
 2. **Test in staging environment** first
@@ -1033,12 +1033,12 @@ ulimit -n 65536
 
 ## Migration from Existing System
 
-### From Legacy v3.0
+### From Legacy Versions (v3.x / v4.x / v5.x)
 
-1. **Review Breaking Changes**: Check CHANGELOG.md
-2. **Update Configuration Format**: v4.0 uses unified YAML structure
+1. **Review Breaking Changes**: Check CHANGELOG.md and [Migration Guide](MIGRATION.md)
+2. **Update Configuration Format**: v6.x uses a three-file config layout (`ai-agent.yaml`, `ai-agent.local.yaml`, `.env`)
 3. **Test Golden Baselines**: Try recommended configurations first
-4. **Migrate Gradually**: Run v3.0 and v4.0 side-by-side initially
+4. **Migrate Gradually**: Test in a staging environment before switching production
 
 ### From Other AI Voice Systems
 

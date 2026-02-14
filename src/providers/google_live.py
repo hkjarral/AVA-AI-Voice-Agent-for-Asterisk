@@ -21,6 +21,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import math
 import time
 import struct
 import audioop
@@ -111,10 +112,9 @@ class GoogleLiveProvider(AIProviderInterface):
     - Input: 8kHz µ-law → 16kHz PCM16 → Gemini Live API
     - Output: 24kHz PCM16 from Gemini → 8kHz µ-law/PCM16 → AudioSocket
     """
-    DEFAULT_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+    DEFAULT_LIVE_MODEL = "gemini-2.5-flash-native-audio-latest"
     LEGACY_LIVE_MODEL_MAP = {
-        "gemini-2.5-flash-native-audio-latest": DEFAULT_LIVE_MODEL,
-        # Older preview aliases that are no longer available.
+        # Older preview aliases that are no longer preferred.
         "gemini-live-2.5-flash-preview": DEFAULT_LIVE_MODEL,
     }
 
@@ -128,6 +128,8 @@ class GoogleLiveProvider(AIProviderInterface):
         super().__init__(on_event)
         self.config = config
         self._hangup_policy = normalize_hangup_policy(hangup_policy or {})
+        # Google Live only: allow disabling marker-based hangup heuristics to isolate provider disconnects.
+        self._hangup_markers_enabled: bool = bool(getattr(config, "hangup_markers_enabled", True))
         self.websocket: Optional[ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
         self._keepalive_task: Optional[asyncio.Task] = None
@@ -159,8 +161,7 @@ class GoogleLiveProvider(AIProviderInterface):
         self._force_farewell_task: Optional[asyncio.Task] = None
         self._force_farewell_text: str = ""
         self._force_farewell_sent: bool = False
-        # Conversation state
-        self._conversation_history: List[Dict[str, Any]] = []
+        self._post_hangup_output_detected: bool = False
         
         # Initialize tool adapter early (before start_session) so engine can inject context
         # This ensures _session_store, _ari_client, etc. are available for tool execution
@@ -191,9 +192,22 @@ class GoogleLiveProvider(AIProviderInterface):
         self._session_gauge_incremented: bool = False
         self._ws_unavailable_logged: bool = False
         self._ws_send_close_logged: bool = False
+        self._closing: bool = False
+        self._closed: bool = False
         # Diagnostics: keep a small ring buffer of outbound message summaries
         # to help explain server-initiated closes (e.g., 1008 policy violations).
         self._outbound_summaries: deque[Dict[str, Any]] = deque(maxlen=12)
+        # WebSocket keepalive telemetry (ping/pong frames are not part of the JSON protocol payload).
+        # We track them explicitly so 1008/1011 closes can be correlated to keepalive timing.
+        self._ws_ping_seq: int = 0
+        self._ws_pong_seq: int = 0
+        self._last_ws_ping_monotonic: Optional[float] = None
+        self._last_ws_pong_monotonic: Optional[float] = None
+        self._last_ws_ping_rtt_ms: Optional[float] = None
+        self._last_ws_ping_error: Optional[str] = None
+        # When `realtimeInput` is continuously streaming, WebSocket pings are redundant (and may trigger 1008
+        # policy closes on some accounts). Track last `realtimeInput` send time so keepalive only fires on idle.
+        self._last_realtime_input_sent_monotonic: Optional[float] = None
 
     def _summarize_outbound(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -257,6 +271,13 @@ class GoogleLiveProvider(AIProviderInterface):
             except Exception:
                 pass
             self._session_gauge_incremented = False
+        # Keepalive telemetry should not leak across sessions.
+        self._ws_ping_seq = 0
+        self._ws_pong_seq = 0
+        self._last_ws_ping_monotonic = None
+        self._last_ws_pong_monotonic = None
+        self._last_ws_ping_rtt_ms = None
+        self._last_ws_ping_error = None
 
     async def _emit_provider_disconnected(self, *, code: Optional[int], reason: str) -> None:
         # IMPORTANT: Tell the engine the provider is gone so we don't leave dead air.
@@ -328,6 +349,8 @@ class GoogleLiveProvider(AIProviderInterface):
         return re.sub(r"\s+", " ", (value or "").strip().lower())
 
     def _detect_user_end_intent(self, text: str) -> Optional[str]:
+        if not self._hangup_markers_enabled:
+            return None
         t = self._norm_text(text)
         if not t:
             return None
@@ -338,6 +361,8 @@ class GoogleLiveProvider(AIProviderInterface):
         return None
 
     def _detect_assistant_farewell(self, text: str) -> Optional[str]:
+        if not self._hangup_markers_enabled:
+            return None
         t = self._norm_text(text)
         if not t:
             return None
@@ -632,8 +657,9 @@ class GoogleLiveProvider(AIProviderInterface):
             context: Optional context including system prompt, tools, etc.
         """
         self._call_id = call_id
+        self._closing = False
+        self._closed = False
         self._session_start_time = time.time()
-        self._conversation_history = []
         self._setup_complete = False
         self._greeting_completed = False
         self._ws_unavailable_logged = False
@@ -653,11 +679,18 @@ class GoogleLiveProvider(AIProviderInterface):
         else:
             self._allowed_tools = []
 
+        effective_model = self._normalize_model_name(self.config.llm_model)
         logger.info(
             "Starting Google Live session",
             call_id=call_id,
-            model=self._normalize_model_name(self.config.llm_model),
+            configured_model=self.config.llm_model,
+            effective_model=effective_model,
         )
+        if not self._hangup_markers_enabled:
+            logger.warning(
+                "Google Live marker-based hangup heuristics are disabled",
+                call_id=call_id,
+            )
 
         # Build WebSocket URL with API key
         api_key = self.config.api_key or ""
@@ -691,11 +724,15 @@ class GoogleLiveProvider(AIProviderInterface):
                 ws_url,
                 subprotocols=["gemini-live"],
                 max_size=10 * 1024 * 1024,  # 10MB max message size
+                # Disable library-level ping frames. We implement our own keepalive behavior
+                # in `_keepalive_loop()` and have seen 1008 closes correlated with ping activity.
+                ping_interval=None,
+                ping_timeout=None,
             )
-            
+
             _GOOGLE_LIVE_SESSIONS.inc()
             self._session_gauge_incremented = True
-             
+
             logger.info(
                 "Google Live WebSocket connected",
                 call_id=call_id,
@@ -703,24 +740,24 @@ class GoogleLiveProvider(AIProviderInterface):
 
             # Create ACK event BEFORE sending setup (like Deepgram pattern)
             self._setup_ack_event = asyncio.Event()
-            
+
             # Start receive loop FIRST (so it can catch setupComplete)
             self._receive_task = asyncio.create_task(
                 self._receive_loop(),
                 name=f"google-live-receive-{call_id}",
             )
-            
+
             # Send setup message to configure session
             await self._send_setup(context)
-            
+
             # Wait for setup acknowledgment
             logger.debug("Waiting for Google Live setupComplete...", call_id=self._call_id)
             await asyncio.wait_for(self._setup_ack_event.wait(), timeout=5.0)
             logger.info("Google Live setup complete (ACK received)", call_id=self._call_id)
-        
+
             # Note: Greeting is sent by _handle_setup_complete() to avoid race condition
             # Do NOT send greeting here as it would duplicate the greeting
-            
+
             self._keepalive_task = asyncio.create_task(
                 self._keepalive_loop(),
                 name=f"google-live-keepalive-{call_id}",
@@ -744,13 +781,21 @@ class GoogleLiveProvider(AIProviderInterface):
     @staticmethod
     def _normalize_model_name(model: Optional[str]) -> str:
         """
-        Normalize model identifiers for compatibility with older UI/config options.
+        Strip the ``models/`` prefix and apply legacy alias remapping.
+
+        Google Live requires a Live-capable native-audio model. If a non-live
+        model name is provided, fall back to the provider default so calls
+        don't fail due to a UI/wizard mismatch.
         """
         m = (model or "").strip()
         if m.startswith("models/"):
             m = m[7:]
 
         if not m:
+            logger.warning(
+                "No Google Live model configured; using default",
+                fallback_model=GoogleLiveProvider.DEFAULT_LIVE_MODEL,
+            )
             return GoogleLiveProvider.DEFAULT_LIVE_MODEL
 
         if m in GoogleLiveProvider.LEGACY_LIVE_MODEL_MAP:
@@ -762,20 +807,15 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             return replacement
 
-        # Accept both native-audio and legacy Live model names.
-        # v5.x allowed non-native-audio Live models (e.g. `gemini-2.0-flash-live-001`).
-        # Forcing everything to the preview native-audio model can regress stability and blocks
-        # operators from testing alternate Live models for RCA.
         m_l = m.lower()
-        if ("native-audio" in m_l) or ("live" in m_l):
-            return m
-
-        logger.warning(
-            "Google Live model does not look like a Live-capable model; falling back to default",
-            configured_model=m,
-            fallback_model=GoogleLiveProvider.DEFAULT_LIVE_MODEL,
-        )
-        return GoogleLiveProvider.DEFAULT_LIVE_MODEL
+        if ("native-audio" not in m_l) and ("live" not in m_l):
+            logger.warning(
+                "Google Live model name does not look like a Live native-audio model; using default",
+                configured_model=m,
+                fallback_model=GoogleLiveProvider.DEFAULT_LIVE_MODEL,
+            )
+            return GoogleLiveProvider.DEFAULT_LIVE_MODEL
+        return m
 
     async def _send_setup(self, context: Optional[Dict[str, Any]]) -> None:
         """Send session setup message to Gemini Live API."""
@@ -870,6 +910,24 @@ class GoogleLiveProvider(AIProviderInterface):
         if self.config.enable_output_transcription:
             setup_msg["setup"]["outputAudioTranscription"] = {}
 
+        # Configure server-side VAD for turn detection (realtimeInputConfig)
+        # Higher startOfSpeechSensitivity = catches shorter utterances
+        # Lower silenceDurationMs = faster response after user stops talking
+        # Configurable via YAML: providers.google_live.vad_*
+        vad_eos = getattr(self.config, "vad_end_of_speech_sensitivity", "END_SENSITIVITY_HIGH")
+        vad_sos = getattr(self.config, "vad_start_of_speech_sensitivity", "START_SENSITIVITY_HIGH")
+        vad_prefix_ms = int(getattr(self.config, "vad_prefix_padding_ms", 20))
+        vad_silence_ms = int(getattr(self.config, "vad_silence_duration_ms", 500))
+        setup_msg["setup"]["realtimeInputConfig"] = {
+            "automaticActivityDetection": {
+                "disabled": False,
+                "startOfSpeechSensitivity": vad_sos,
+                "endOfSpeechSensitivity": vad_eos,
+                "prefixPaddingMs": vad_prefix_ms,
+                "silenceDurationMs": vad_silence_ms,
+            }
+        }
+
         # Debug: Log setup message structure
         logger.debug(
             "Sending Google Live setup message",
@@ -897,6 +955,9 @@ class GoogleLiveProvider(AIProviderInterface):
             summary_with_ts = dict(summary)
             summary_with_ts["ts_monotonic"] = round(time.monotonic(), 3)
             self._outbound_summaries.append(summary_with_ts)
+            # Track continuous audio traffic to avoid unnecessary WS pings.
+            if summary_with_ts.get("type") == "realtimeInput":
+                self._last_realtime_input_sent_monotonic = float(summary_with_ts["ts_monotonic"])
         except Exception:
             pass
 
@@ -1031,7 +1092,7 @@ class GoogleLiveProvider(AIProviderInterface):
             sample_rate: Sample rate of input audio (default from config)
             encoding: Audio encoding (ulaw/linear16/pcm16)
         """
-        if not self.websocket or not self._setup_complete:
+        if not self.websocket or not self._setup_complete or self._closing:
             return
 
         try:
@@ -1143,6 +1204,22 @@ class GoogleLiveProvider(AIProviderInterface):
                 meaning=close_meaning,
                 reason=close_reason,
                 outbound_tail=list(self._outbound_summaries),
+                ws_keepalive={
+                    "ping_seq": self._ws_ping_seq,
+                    "pong_seq": self._ws_pong_seq,
+                    "last_ping_age_sec": (
+                        round(time.monotonic() - self._last_ws_ping_monotonic, 3)
+                        if self._last_ws_ping_monotonic is not None
+                        else None
+                    ),
+                    "last_pong_age_sec": (
+                        round(time.monotonic() - self._last_ws_pong_monotonic, 3)
+                        if self._last_ws_pong_monotonic is not None
+                        else None
+                    ),
+                    "last_ping_rtt_ms": (round(self._last_ws_ping_rtt_ms, 2) if self._last_ws_ping_rtt_ms else None),
+                    "last_ping_error": self._last_ws_ping_error,
+                },
             )
             
             # Specific guidance for common errors
@@ -1157,11 +1234,26 @@ class GoogleLiveProvider(AIProviderInterface):
                     call_id=self._call_id,
                     hint=hint,
                     outbound_tail=list(self._outbound_summaries),
+                    ws_keepalive={
+                        "ping_seq": self._ws_ping_seq,
+                        "pong_seq": self._ws_pong_seq,
+                        "last_ping_age_sec": (
+                            round(time.monotonic() - self._last_ws_ping_monotonic, 3)
+                            if self._last_ws_ping_monotonic is not None
+                            else None
+                        ),
+                        "last_pong_age_sec": (
+                            round(time.monotonic() - self._last_ws_pong_monotonic, 3)
+                            if self._last_ws_pong_monotonic is not None
+                            else None
+                        ),
+                        "last_ping_rtt_ms": (round(self._last_ws_ping_rtt_ms, 2) if self._last_ws_ping_rtt_ms else None),
+                        "last_ping_error": self._last_ws_ping_error,
+                    },
                 )
             # Persist any pending transcription buffers before we signal the engine to tear down.
             try:
-                if close_code != 1000:
-                    await self._flush_pending_transcriptions_on_disconnect(code=close_code, reason=close_reason)
+                await self._flush_pending_transcriptions_on_disconnect(code=close_code, reason=close_reason)
             except Exception:
                 logger.debug(
                     "Failed flushing pending transcriptions on disconnect",
@@ -1170,6 +1262,19 @@ class GoogleLiveProvider(AIProviderInterface):
                 )
             self._mark_ws_disconnected()
             try:
+                # If farewell audio is already buffered/playing (hangup_call was invoked),
+                # the WebSocket is no longer needed.  Let the engine's cleanup_after_tts
+                # flow finish playback and hang up gracefully.
+                if self._hangup_after_response:
+                    logger.info(
+                        "Google Live WebSocket closed during farewell — "
+                        "letting buffered farewell audio play out",
+                        call_id=self._call_id,
+                        code=close_code,
+                        reason=close_reason,
+                    )
+                    return  # Don't emit ProviderDisconnected
+
                 # Only treat abnormal closes as a "disconnect" signal for the engine.
                 # Normal closure (1000) can occur during expected teardown and should not
                 # force an immediate hangup (would cut off farewell audio / cleanup flows).
@@ -1242,8 +1347,9 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id=self._call_id,
         )
 
-        # Play greeting if configured
-        if self.config.greeting:
+        # Play greeting if configured (skip on reconnect — caller already heard it)
+        if self.config.greeting and not self._greeting_completed:
+            self._greeting_completed = True
             await self._send_greeting()
 
     async def _handle_server_content(self, data: Dict[str, Any]) -> None:
@@ -1304,6 +1410,8 @@ class GoogleLiveProvider(AIProviderInterface):
             text = output_transcription.get("text", "")
             if text:
                 self._turn_has_assistant_output = True
+                if self._hangup_after_response and not self._force_farewell_sent:
+                    self._post_hangup_output_detected = True
                 self._output_transcription_buffer, self._last_output_transcription_fragment = _merge_transcription_fragment(
                     self._output_transcription_buffer, text, self._last_output_transcription_fragment
                 )
@@ -1403,6 +1511,9 @@ class GoogleLiveProvider(AIProviderInterface):
         speaks a farewell. To keep call teardown reliable, detect obvious end-of-call turns and set
         `cleanup_after_tts=True` so the engine hangs up after audio playback completes.
         """
+        # Marker-driven heuristic; keep tool-driven hangups working even when markers are disabled.
+        if not self._hangup_markers_enabled:
+            return
         if not self._call_id:
             return
         session_store = getattr(self, "_session_store", None)
@@ -1483,6 +1594,9 @@ class GoogleLiveProvider(AIProviderInterface):
         if not self._call_id:
             return
         if not self._hangup_fallback_armed:
+            return
+        # If HangupReady was already emitted, disarming is too late — engine already received signal.
+        if self._hangup_fallback_emitted:
             return
         # If hangup_call tool was invoked, keep the hangup flow intact.
         if self._hangup_after_response:
@@ -1685,6 +1799,16 @@ class GoogleLiveProvider(AIProviderInterface):
             if self._hangup_ready_emitted:
                 self._hangup_after_response = False
                 return
+            # If this turnComplete had no audio, it's the tool-response ack turn
+            # (fires ~200ms after hangup_call), NOT the farewell audio turn.
+            # Wait for a turn that actually carries farewell audio.
+            if not had_audio:
+                logger.info(
+                    "🔚 Hangup pending; ignoring no-audio assistant turnComplete "
+                    "(tool-ack, not farewell)",
+                    call_id=self._call_id,
+                )
+                return
             logger.info(
                 "🔚 Farewell response completed - triggering hangup",
                 call_id=self._call_id,
@@ -1806,6 +1930,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 )
 
                 if func_name == "hangup_call" and self._force_farewell_text:
+                    self._post_hangup_output_detected = False
                     self._schedule_forced_farewell_if_needed()
                 
                 # Log tool call to session for call history (Milestone 21)
@@ -1865,7 +1990,9 @@ class GoogleLiveProvider(AIProviderInterface):
     async def _maybe_force_farewell_after_hangup(self) -> None:
         try:
             # Grace window: if the model starts speaking, don't send a duplicate farewell request.
-            await asyncio.sleep(0.9)
+            # Google Live models typically need 2-2.5s to produce first audio after a tool response;
+            # 3.0s avoids firing before the model naturally begins its farewell.
+            await asyncio.sleep(3.0)
             if not self._call_id or not self._setup_complete or not self._ws_is_open():
                 return
             if not self._hangup_after_response:
@@ -1873,6 +2000,10 @@ class GoogleLiveProvider(AIProviderInterface):
             if self._force_farewell_sent:
                 return
             if self._hangup_fallback_audio_started:
+                logger.debug(
+                    "Skipping forced farewell - model already streaming post-hangup audio",
+                    call_id=self._call_id,
+                )
                 return
 
             farewell = (self._force_farewell_text or "").strip()
@@ -1961,28 +2092,73 @@ class GoogleLiveProvider(AIProviderInterface):
             "Google Live server sending goAway",
             call_id=self._call_id,
         )
-        # Prepare for reconnection if needed
 
     async def _keepalive_loop(self) -> None:
         """Send periodic keepalive messages."""
+        try:
+            interval_sec = float(
+                getattr(self.config, "ws_keepalive_interval_sec", _KEEPALIVE_INTERVAL_SEC) or _KEEPALIVE_INTERVAL_SEC
+            )
+        except (TypeError, ValueError):
+            interval_sec = float(_KEEPALIVE_INTERVAL_SEC)
+        try:
+            idle_sec = float(getattr(self.config, "ws_keepalive_idle_sec", 5.0) or 5.0)
+        except (TypeError, ValueError):
+            idle_sec = 5.0
+        enabled = bool(getattr(self.config, "ws_keepalive_enabled", False))
+
+        if not enabled:
+            return
+
+        # Guard against bad config values that could cause a tight loop.
+        if (not math.isfinite(interval_sec)) or interval_sec < 1.0:
+            interval_sec = float(_KEEPALIVE_INTERVAL_SEC) if float(_KEEPALIVE_INTERVAL_SEC) >= 1.0 else 1.0
+        if (not math.isfinite(idle_sec)) or idle_sec < 0.0:
+            idle_sec = 0.0
+
         while self._ws_is_open():
             try:
-                await asyncio.sleep(_KEEPALIVE_INTERVAL_SEC)
+                await asyncio.sleep(interval_sec)
                 # Use WebSocket ping frames (protocol-level) rather than undocumented API messages.
                 # The Live API docs require `realtimeInput` messages to have a valid payload; sending
                 # `{ "realtimeInput": {} }` can be treated as an unsupported operation (observed as
                 # 1008 close + 501 NotImplemented in dashboards).
                 if self._setup_complete and self.websocket:
+                    # If we're actively streaming audio, don't send pings. Some accounts appear to
+                    # close connections (1008) after repeated ping frames even when audio is flowing.
+                    last_audio = getattr(self, "_last_realtime_input_sent_monotonic", None)
+                    if isinstance(last_audio, (int, float)) and (time.monotonic() - float(last_audio)) < idle_sec:
+                        continue
                     ping = getattr(self.websocket, "ping", None)
                     if callable(ping):
+                        t0 = time.monotonic()
+                        self._ws_ping_seq += 1
+                        self._last_ws_ping_monotonic = t0
+                        self._last_ws_ping_error = None
+                        try:
+                            # Add to outbound tail so close diagnostics show ping timing too.
+                            self._outbound_summaries.append(
+                                {
+                                    "type": "ws_ping",
+                                    "seq": self._ws_ping_seq,
+                                    "ts_monotonic": round(t0, 3),
+                                }
+                            )
+                        except (AttributeError, TypeError, ValueError):
+                            pass
                         pong_waiter = ping()
                         if asyncio.iscoroutine(pong_waiter):
                             pong_waiter = await pong_waiter
                         if pong_waiter is not None:
                             await asyncio.wait_for(pong_waiter, timeout=5.0)
+                        t1 = time.monotonic()
+                        self._ws_pong_seq += 1
+                        self._last_ws_pong_monotonic = t1
+                        self._last_ws_ping_rtt_ms = (t1 - t0) * 1000.0
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self._last_ws_ping_error = str(e)
                 logger.error(
                     "Keepalive error",
                     call_id=self._call_id,
@@ -2004,66 +2180,85 @@ class GoogleLiveProvider(AIProviderInterface):
 
     async def stop_session(self) -> None:
         """Stop the Google Live session and cleanup resources."""
+        if self._closing or self._closed:
+            return
         if not self._call_id:
             return
 
-        logger.info(
-            "Stopping Google Live session",
-            call_id=self._call_id,
-        )
-
-        # Cancel background tasks
-        if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._receive_task
-
-        if self._keepalive_task and not self._keepalive_task.done():
-            self._keepalive_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._keepalive_task
-
-        if self._hangup_fallback_task and not self._hangup_fallback_task.done():
-            self._hangup_fallback_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._hangup_fallback_task
-
-        if self._force_farewell_task and not self._force_farewell_task.done():
-            self._force_farewell_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._force_farewell_task
-
-        # Close WebSocket
-        if self._ws_is_open():
-            await self.websocket.close()
-        self._mark_ws_disconnected()
-
-        # Clear state
-        self._call_id = None
-        self._session_id = None
-        self._input_buffer.clear()  # Clear audio buffer
-        self._conversation_history.clear()
-        self._hangup_after_response = False
-        self._hangup_fallback_armed = False
-        self._hangup_fallback_emitted = False
-        self._hangup_fallback_armed_at = None
-        self._hangup_fallback_audio_started = False
-        self._hangup_fallback_turn_complete_seen = False
-        self._hangup_fallback_wait_logged = False
-        self._force_farewell_text = ""
-        self._force_farewell_sent = False
-        self._last_audio_out_monotonic = None
-        self._user_end_intent = None
-        self._assistant_farewell_intent = None
-        self._model_text_buffer = ""
-        self._input_transcription_buffer = ""
-        self._output_transcription_buffer = ""
-
-        if self._session_start_time:
-            duration = time.time() - self._session_start_time
+        self._closing = True
+        try:
             logger.info(
-                "Google Live session ended",
-                duration_seconds=round(duration, 2),
+                "Stopping Google Live session",
+                call_id=self._call_id,
             )
 
-        logger.info("Google Live session stopped")
+            # Emit final AgentAudioDone if we were mid-burst (RED-4)
+            if self._in_audio_burst and self.on_event:
+                self._in_audio_burst = False
+                try:
+                    await self.on_event({
+                        "type": "AgentAudioDone",
+                        "call_id": self._call_id,
+                        "streaming_done": True,
+                    })
+                except Exception:
+                    logger.debug("Failed to emit AgentAudioDone during stop_session",
+                                 call_id=self._call_id, exc_info=True)
+
+            # Cancel background tasks
+            if self._receive_task and not self._receive_task.done():
+                self._receive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._receive_task
+
+            if self._keepalive_task and not self._keepalive_task.done():
+                self._keepalive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._keepalive_task
+
+            if self._hangup_fallback_task and not self._hangup_fallback_task.done():
+                self._hangup_fallback_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._hangup_fallback_task
+
+            if self._force_farewell_task and not self._force_farewell_task.done():
+                self._force_farewell_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._force_farewell_task
+
+            # Close WebSocket
+            if self._ws_is_open():
+                await self.websocket.close()
+            self._mark_ws_disconnected()
+        finally:
+            # Clear state
+            self._call_id = None
+            self._session_id = None
+            self._input_buffer.clear()
+            self._hangup_after_response = False
+            self._hangup_fallback_armed = False
+            self._hangup_fallback_emitted = False
+            self._hangup_fallback_armed_at = None
+            self._hangup_fallback_audio_started = False
+            self._hangup_fallback_turn_complete_seen = False
+            self._hangup_fallback_wait_logged = False
+            self._force_farewell_text = ""
+            self._force_farewell_sent = False
+            self._post_hangup_output_detected = False
+            self._last_audio_out_monotonic = None
+            self._user_end_intent = None
+            self._assistant_farewell_intent = None
+            self._model_text_buffer = ""
+            self._input_transcription_buffer = ""
+            self._output_transcription_buffer = ""
+            self._closing = False
+            self._closed = True
+
+            if self._session_start_time:
+                duration = time.time() - self._session_start_time
+                logger.info(
+                    "Google Live session ended",
+                    duration_seconds=round(duration, 2),
+                )
+
+            logger.info("Google Live session stopped")

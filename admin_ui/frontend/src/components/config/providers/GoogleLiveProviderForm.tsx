@@ -1,44 +1,40 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import HelpTooltip from '../../ui/HelpTooltip';
+import {
+    GOOGLE_LIVE_MODEL_GROUPS,
+    GOOGLE_LIVE_SUPPORTED_MODELS,
+    normalizeGoogleLiveModelForUi,
+} from '../../../utils/googleLiveModels';
 
 interface GoogleLiveProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
 }
 
-const DEFAULT_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
-const LEGACY_LIVE_MODEL_MAP: Record<string, string> = {
-    'gemini-2.5-flash-native-audio-latest': DEFAULT_LIVE_MODEL,
-    'gemini-live-2.5-flash-preview': DEFAULT_LIVE_MODEL,
-    'gemini-2.0-flash-live-001': DEFAULT_LIVE_MODEL,
-    'gemini-2.0-flash-live-001-preview-09-2025': DEFAULT_LIVE_MODEL,
-    'gemini-2.5-flash-preview-native-audio-dialog': DEFAULT_LIVE_MODEL,
-    'gemini-2.5-flash-exp-native-audio-thinking-dialog': DEFAULT_LIVE_MODEL,
-};
-const SUPPORTED_LIVE_MODELS = [
-    'gemini-2.5-flash-native-audio-preview-12-2025',
-    'gemini-2.5-flash-native-audio-preview-09-2025',
-    'gemini-live-2.5-flash-native-audio',
-    'gemini-live-2.5-flash-preview-native-audio-09-2025',
-];
-
 const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config, onChange }) => {
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
 
-    const selectedModel = (() => {
-        const raw = (config.llm_model || '').toString().trim();
-        if (!raw) {
-            return DEFAULT_LIVE_MODEL;
+    const expertStorageKey = `providers.google_live.expert.keepalive.v1`;
+    const [expertEnabled, setExpertEnabled] = useState<boolean>(() => {
+        try {
+            return window.localStorage.getItem(expertStorageKey) === 'true';
+        } catch {
+            return false;
         }
-        if (raw in LEGACY_LIVE_MODEL_MAP) {
-            return LEGACY_LIVE_MODEL_MAP[raw];
+    });
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(expertStorageKey, expertEnabled ? 'true' : 'false');
+        } catch {
+            // ignore
         }
-        if (raw.includes('native-audio')) {
-            return raw;
-        }
-        return DEFAULT_LIVE_MODEL;
-    })();
+    }, [expertEnabled]);
+
+    const selectedModel = normalizeGoogleLiveModelForUi(config.llm_model);
 
     return (
         <div className="space-y-6">
@@ -74,15 +70,16 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             value={selectedModel}
                             onChange={(e) => handleChange('llm_model', e.target.value)}
                         >
-                            <optgroup label="Gemini Developer API">
-                                <option value="gemini-2.5-flash-native-audio-preview-12-2025">Gemini 2.5 Flash Native Audio (Dec 2025)</option>
-                                <option value="gemini-2.5-flash-native-audio-preview-09-2025">Gemini 2.5 Flash Native Audio (Sep 2025)</option>
-                            </optgroup>
-                            <optgroup label="Vertex AI Live API">
-                                <option value="gemini-live-2.5-flash-native-audio">Gemini Live 2.5 Flash Native Audio (GA)</option>
-                                <option value="gemini-live-2.5-flash-preview-native-audio-09-2025">Gemini Live 2.5 Flash Native Audio (Preview 09-2025)</option>
-                            </optgroup>
-                            {!SUPPORTED_LIVE_MODELS.includes(selectedModel) && (
+                            {GOOGLE_LIVE_MODEL_GROUPS.map((group) => (
+                                <optgroup key={group.label} label={group.label}>
+                                    {group.options.map((modelOption) => (
+                                        <option key={modelOption.value} value={modelOption.value}>
+                                            {modelOption.label}
+                                        </option>
+                                    ))}
+                                </optgroup>
+                            ))}
+                            {!GOOGLE_LIVE_SUPPORTED_MODELS.includes(selectedModel) && (
                                 <optgroup label="Custom">
                                     <option value={selectedModel}>{selectedModel}</option>
                                 </optgroup>
@@ -386,9 +383,28 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                     <p className="text-xs text-muted-foreground">
                         Used when Google Live does not emit a reliable turn-complete event after a hangup farewell.
                     </p>
+                    <div className="space-y-3 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
+                        <div className="flex items-center space-x-2">
+                            <input
+                                type="checkbox"
+                                id="hangup_markers_enabled"
+                                className="rounded border-input"
+                                checked={config.hangup_markers_enabled ?? false}
+                                onChange={(e) => handleChange('hangup_markers_enabled', e.target.checked)}
+                            />
+                            <label htmlFor="hangup_markers_enabled" className="text-sm font-medium">Enable Marker-Based Hangup Heuristics</label>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            Advanced: uses transcript marker matching (end_call / assistant_farewell) to arm <code>cleanup_after_tts</code> when a toolCall is missing.
+                            Recommended off for production; rely on <code>hangup_call</code> to end calls gracefully.
+                        </p>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Audio Idle Timeout (sec)</label>
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                Audio Idle Timeout (sec)
+                                <HelpTooltip content="How long to wait after the last audio output before triggering hangup. If the model stops producing audio for this duration after a farewell, the call is ended. Default: 1.25s." />
+                            </label>
                             <input
                                 type="number"
                                 step="0.05"
@@ -398,7 +414,10 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Minimum Armed Time (sec)</label>
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                Minimum Armed Time (sec)
+                                <HelpTooltip content="Minimum time the hangup fallback must be armed before it can fire. Prevents premature hangup if the model is still processing. Default: 0.8s." />
+                            </label>
                             <input
                                 type="number"
                                 step="0.05"
@@ -408,7 +427,10 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">No Audio Timeout (sec)</label>
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                No Audio Timeout (sec)
+                                <HelpTooltip content="If the model produces NO audio at all after hangup_call, wait this long before forcing a farewell and disconnect. Covers cases where the model goes silent. Default: 4.0s." />
+                            </label>
                             <input
                                 type="number"
                                 step="0.1"
@@ -418,7 +440,10 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Turn Complete Timeout (sec)</label>
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                Turn Complete Timeout (sec)
+                                <HelpTooltip content="After the model's farewell audio finishes, wait this long for a turnComplete event before proceeding with hangup. Default: 2.5s." />
+                            </label>
                             <input
                                 type="number"
                                 step="0.1"
@@ -426,6 +451,148 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 value={config.hangup_fallback_turn_complete_timeout_sec ?? 2.5}
                                 onChange={(e) => handleChange('hangup_fallback_turn_complete_timeout_sec', e.target.value ? parseFloat(e.target.value) : null)}
                             />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    <h4 className="font-semibold text-sm border-b pb-2">Voice Activity Detection (VAD)</h4>
+                    <p className="text-xs text-muted-foreground">
+                        Controls Google's server-side speech detection. Higher sensitivity catches shorter utterances but may trigger on background noise.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                Start of Speech Sensitivity
+                                <HelpTooltip content="How aggressively Google detects the START of speech. HIGH catches short utterances (1-2 words) better but may false-trigger on noise. LOW requires more confident speech onset." />
+                            </label>
+                            <select
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.vad_start_of_speech_sensitivity || 'START_SENSITIVITY_HIGH'}
+                                onChange={(e) => handleChange('vad_start_of_speech_sensitivity', e.target.value)}
+                            >
+                                <option value="START_SENSITIVITY_LOW">Low</option>
+                                <option value="START_SENSITIVITY_MEDIUM">Medium</option>
+                                <option value="START_SENSITIVITY_HIGH">High (Recommended)</option>
+                            </select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                End of Speech Sensitivity
+                                <HelpTooltip content="How aggressively Google detects the END of speech. HIGH means faster turn-taking (shorter silence = end of utterance). LOW waits longer before deciding the user stopped talking." />
+                            </label>
+                            <select
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.vad_end_of_speech_sensitivity || 'END_SENSITIVITY_HIGH'}
+                                onChange={(e) => handleChange('vad_end_of_speech_sensitivity', e.target.value)}
+                            >
+                                <option value="END_SENSITIVITY_LOW">Low</option>
+                                <option value="END_SENSITIVITY_MEDIUM">Medium</option>
+                                <option value="END_SENSITIVITY_HIGH">High (Recommended)</option>
+                            </select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                Prefix Padding (ms)
+                                <HelpTooltip content="Milliseconds of audio to include BEFORE detected speech start. Lower values reduce latency; higher values capture soft speech onsets. Telephony default: 20ms." />
+                            </label>
+                            <input
+                                type="number"
+                                step="10"
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.vad_prefix_padding_ms ?? 20}
+                                onChange={(e) => handleChange('vad_prefix_padding_ms', e.target.value ? parseInt(e.target.value) : null)}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium flex items-center gap-1">
+                                Silence Duration (ms)
+                                <HelpTooltip content="Milliseconds of silence required to mark the end of an utterance. Lower = faster responses but may cut off mid-sentence pauses. Higher = more natural pauses but slower turn-taking. Telephony default: 500ms." />
+                            </label>
+                            <input
+                                type="number"
+                                step="50"
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.vad_silence_duration_ms ?? 500}
+                                onChange={(e) => handleChange('vad_silence_duration_ms', e.target.value ? parseInt(e.target.value) : null)}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    <h4 className="font-semibold text-sm border-b pb-2">Expert Settings</h4>
+                    <div className="space-y-3 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-start gap-2">
+                                <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5" />
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-sm font-medium">WebSocket Keepalive (Advanced)</span>
+                                        <HelpTooltip content="These settings control provider-level WebSocket keepalive behavior. Only change if you are troubleshooting disconnects. Some Google Live accounts/models may close the connection (1008) when keepalives are enabled." />
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        Warning: enabling keepalive can materially change connection stability. Validate with real test calls before production.
+                                    </p>
+                                </div>
+                            </div>
+                            <input
+                                type="checkbox"
+                                className="rounded border-input"
+                                checked={expertEnabled}
+                                onChange={(e) => {
+                                    setExpertEnabled(e.target.checked);
+                                }}
+                            />
+                        </div>
+
+                        <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${expertEnabled ? '' : 'opacity-60 pointer-events-none'}`}>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1">
+                                    Keepalive Enabled
+                                    <HelpTooltip content="Sends protocol-level WebSocket ping frames when the connection is idle. If disabled, the provider only relies on normal audio traffic to keep the session alive." />
+                                </label>
+                                <input
+                                    type="checkbox"
+                                    className="rounded border-input"
+                                    checked={config.ws_keepalive_enabled ?? false}
+                                    onChange={(e) => handleChange('ws_keepalive_enabled', e.target.checked)}
+                                    disabled={!expertEnabled}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Default: off. Turn on only if you see idle disconnects.
+                                </p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1">
+                                    Keepalive Interval (sec)
+                                    <HelpTooltip content="How often to send ping frames (when idle). Lower values increase ping traffic; higher values reduce traffic but may not prevent idle timeouts." />
+                                </label>
+                                <input
+                                    type="number"
+                                    step="0.5"
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={config.ws_keepalive_interval_sec ?? 15.0}
+                                    onChange={(e) => handleChange('ws_keepalive_interval_sec', e.target.value ? parseFloat(e.target.value) : null)}
+                                    disabled={!expertEnabled}
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium flex items-center gap-1">
+                                    Idle Threshold (sec)
+                                    <HelpTooltip content="Only send keepalive pings if we haven't sent any realtime audio to Google in the last N seconds. Prevents pinging while audio is actively flowing." />
+                                </label>
+                                <input
+                                    type="number"
+                                    step="0.5"
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={config.ws_keepalive_idle_sec ?? 5.0}
+                                    onChange={(e) => handleChange('ws_keepalive_idle_sec', e.target.value ? parseFloat(e.target.value) : null)}
+                                    disabled={!expertEnabled}
+                                />
+                            </div>
                         </div>
                     </div>
                 </div>

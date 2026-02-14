@@ -146,17 +146,17 @@ providers:
     target_encoding: ulaw
     target_sample_rate_hz: 8000
     # Model + tuning
-    llm_model: gemini-2.5-flash-native-audio-preview-12-2025
-    llm_temperature: 0.8
-    llm_max_output_tokens: 8192
-    llm_top_p: 0.95
-    llm_top_k: 40
+    llm_model: gemini-2.5-flash-native-audio-latest
+    llm_temperature: 0.4
+    llm_max_output_tokens: 768
+    llm_top_p: 0.9
+    llm_top_k: 20
     # Voice + modalities
     tts_voice_name: Aoede
     response_modalities: audio
     # Transcription
     enable_input_transcription: true
-    enable_output_transcription: true
+    enable_output_transcription: false
 
 # LLM fallback (unused in full agent mode but required by schema)
 llm:
@@ -195,4 +195,3 @@ external_media:
   port_range: 18080:18099
   rtp_host: 0.0.0.0
   rtp_port: 18080
-

@@ -29,6 +29,14 @@ Starting in v4.0, the project added a **modular pipeline architecture** alongsid
 - Configuration: Define under `pipelines:` block and set `active_pipeline: "pipeline_name"`
 - **Best for**: Flexibility, privacy (local audio processing), cost control
 
+### Pipeline LLM Hangup Guardrail (hangup_call)
+
+Some pipeline LLMs can be overly eager to emit `hangup_call`. A per-pipeline guardrail can require explicit end-of-call intent in the user's transcript before honoring `hangup_call`.
+
+- `pipelines.<name>.options.llm.hangup_call_guardrail`: `true`/`false` (unset = auto; enabled by default for specific adapters)
+- `pipelines.<name>.options.llm.hangup_call_guardrail_mode`: `relaxed`/`normal`/`strict` (unset = use global hangup policy mode)
+- `pipelines.<name>.options.llm.hangup_call_guardrail_markers.end_call`: list of caller phrases that count as end-of-call intent (unset/empty = use global hangup policy defaults)
+
 ### Golden Baselines
 See the 5 validated configurations in `config/`:
 - `ai-agent.golden-openai.yaml` - OpenAI Realtime (monolithic, fastest)
@@ -292,6 +300,22 @@ Requirements:
 
 - `OPENAI_API_KEY` must be set in the environment.
 
+### Telnyx AI Inference (pipelines)
+
+Telnyx AI Inference is supported as a modular LLM component:
+
+- `telnyx_llm`: OpenAI-compatible Chat Completions (`chat_base_url`, `chat_model`, `temperature`, `max_tokens`, `response_timeout_sec`, `api_key_ref`)
+
+Requirements:
+
+- `TELNYX_API_KEY` must be set in the environment.
+
+Notes:
+
+- Telnyx supports many model IDs. Use the exact model ID returned by Telnyx `/models`.
+- Some model IDs represent **external providers** (for example `openai/gpt-4o`). Those require `providers.telnyx_llm.api_key_ref` to be set (Integration Secret identifier) or Telnyx will return `400` with "OpenAI API key required…".
+- For pipeline selection, set `AI_PROVIDER=telnyx_hybrid` (pipeline name) in your dialplan when forcing a per-extension pipeline.
+
 ### Deepgram Voice Agent
 
 - providers.deepgram.api_key: injected from `DEEPGRAM_API_KEY` (env-only; do not commit secrets to YAML).
@@ -339,6 +363,10 @@ Config notes:
 - `providers.google_live.hangup_fallback_min_armed_sec`: minimum armed duration before fallback can fire.
 - `providers.google_live.hangup_fallback_no_audio_timeout_sec`: timeout when provider emits no farewell audio.
 - `providers.google_live.hangup_fallback_turn_complete_timeout_sec`: grace period waiting for `turnComplete` before fallback hangup.
+- `providers.google_live.hangup_markers_enabled`: enable/disable marker-based hangup heuristics (end_call / assistant_farewell) used to arm `cleanup_after_tts`. Recommended `false` for production (prefer tool-driven hangup via `hangup_call`).
+- `providers.google_live.ws_keepalive_enabled`: enable protocol-level WebSocket ping keepalive (pings only fire when the connection is idle).
+- `providers.google_live.ws_keepalive_interval_sec`: ping interval when keepalive is enabled.
+- `providers.google_live.ws_keepalive_idle_sec`: minimum idle time (no `realtimeInput`) before sending a ping.
 
 ### Deepgram Voice Agent (monolithic agent)
 

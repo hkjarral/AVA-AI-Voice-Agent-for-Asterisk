@@ -62,11 +62,15 @@ services:
       dockerfile: Dockerfile
       network: host
       args:
-        - INCLUDE_KROKO_EMBEDDED=${INCLUDE_KROKO_EMBEDDED:-false}
+        - INCLUDE_VOSK=${INCLUDE_VOSK:-true}
+        - INCLUDE_SHERPA=${INCLUDE_SHERPA:-true}
         - INCLUDE_FASTER_WHISPER=${INCLUDE_FASTER_WHISPER:-false}
         - INCLUDE_WHISPER_CPP=${INCLUDE_WHISPER_CPP:-false}
+        - INCLUDE_PIPER=${INCLUDE_PIPER:-true}
+        - INCLUDE_KOKORO=${INCLUDE_KOKORO:-true}
         - INCLUDE_MELOTTS=${INCLUDE_MELOTTS:-false}
         - INCLUDE_LLAMA=${INCLUDE_LLAMA:-true}
+        - INCLUDE_KROKO_EMBEDDED=${INCLUDE_KROKO_EMBEDDED:-false}
     container_name: local_ai_server
     network_mode: host
     env_file:

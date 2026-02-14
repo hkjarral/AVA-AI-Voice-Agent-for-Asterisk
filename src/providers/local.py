@@ -8,7 +8,9 @@ from websockets.asyncio.client import ClientConnection
 
 from structlog import get_logger
 
+import audioop
 from ..config import LocalProviderConfig
+from ..audio.resampler import resample_audio
 from .base import AIProviderInterface
 from ..tools.parser import parse_response_with_tools
 
@@ -40,6 +42,7 @@ class LocalProvider(AIProviderInterface):
         self._mode: str = getattr(config, 'mode', 'full') or 'full'
         # Track if server port is unavailable (not running at all)
         self._server_unavailable: bool = False
+        self._resample_state_stt: Optional[tuple] = None
         # Parse host/port from ws_url for port checking
         self._server_host, self._server_port = self._parse_ws_url(self.ws_url)
         # Track if we were previously connected (for background reconnect on disconnect)
@@ -388,7 +391,6 @@ class LocalProvider(AIProviderInterface):
                     pass
 
                 # Convert and send one aggregated message
-                import audioop
                 # Handle different input modes
                 if self.input_mode == 'pcm16_16k':
                     # Already 16kHz PCM, just concatenate
@@ -396,11 +398,11 @@ class LocalProvider(AIProviderInterface):
                 elif self.input_mode == 'pcm16_8k':
                     # 8kHz PCM, resample to 16kHz
                     pcm8k = b"".join(batch)
-                    pcm16k, _ = audioop.ratecv(pcm8k, 2, 1, 8000, 16000, None)
+                    pcm16k, self._resample_state_stt = resample_audio(pcm8k, 8000, 16000, state=self._resample_state_stt)
                 else:
                     # µ-law 8kHz, convert to PCM then resample
                     pcm8k = b"".join(audioop.ulaw2lin(b, 2) for b in batch)
-                    pcm16k, _ = audioop.ratecv(pcm8k, 2, 1, 8000, 16000, None)
+                    pcm16k, self._resample_state_stt = resample_audio(pcm8k, 8000, 16000, state=self._resample_state_stt)
                 
                 # Process audio batch for STT
                 total_bytes = sum(len(b) for b in batch)

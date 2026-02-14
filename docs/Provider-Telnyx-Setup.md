@@ -47,17 +47,22 @@ curl -X GET "https://api.telnyx.com/v2/ai/models" \
 
 Telnyx uses the OpenAI-compatible API, making it a drop-in replacement. Configure it in `config/ai-agent.yaml`:
 
-**Option A: Use Telnyx as an LLM in a Pipeline**
+**Option A (Recommended): Use `telnyx_llm` in a Pipeline**
 
 ```yaml
 providers:
-  openai:
+  # Telnyx modular LLM provider (OpenAI-compatible Chat Completions)
+  # API key is injected from TELNYX_API_KEY in .env (env-only; do not commit keys to YAML)
+  telnyx_llm:
     enabled: true
-    api_key: "${OPENAI_API_KEY}"
-  # Add Telnyx as a separate provider entry
-  telnyx:
-    enabled: true
-    api_key: "${TELNYX_API_KEY}"
+    type: telnyx
+    capabilities: [llm]
+    chat_base_url: "https://api.telnyx.com/v2/ai"
+    # Telnyx-hosted default model (works with TELNYX_API_KEY only)
+    # Recommended for tool calling (auto tool choice supported)
+    chat_model: "Qwen/Qwen3-235B-A22B"
+    temperature: 0.7
+    response_timeout_sec: 30.0
 
 pipelines:
   # Use Telnyx for LLM with local STT/TTS
@@ -67,8 +72,10 @@ pipelines:
     tts: local_tts
     options:
       llm:
-        base_url: "https://api.telnyx.com/v2/ai"
-        model: "gpt-4o-mini"  # or claude-3-5-sonnet, llama-3.1-70b, etc.
+        # Telnyx-hosted models like meta-llama/* work with TELNYX_API_KEY only.
+        # External models like openai/* require telnyx_llm.api_key_ref (Integration Secret identifier).
+        # Recommended for tool calling (auto tool choice supported)
+        model: "Qwen/Qwen3-235B-A22B"
         temperature: 0.7
         max_tokens: 150
       stt:
@@ -84,17 +91,13 @@ pipelines:
 active_pipeline: telnyx_hybrid
 ```
 
-**Option B: Override OpenAI base_url for LLM**
+**Option B (Legacy): Override `openai_llm` base_url**
 
-When using `openai_llm` with Telnyx's OpenAI-compatible `base_url`, the API key is resolved from the `providers.openai.api_key` setting, NOT from a separate Telnyx provider block. You must set `providers.openai.api_key` to use your `TELNYX_API_KEY`:
+This can work, but `telnyx_llm` is recommended so:
+- `TELNYX_API_KEY` is used directly (no dependency on `OPENAI_API_KEY`)
+- Telnyx-specific options like `api_key_ref` are supported
 
 ```yaml
-providers:
-  openai:
-    enabled: true
-    # Use TELNYX_API_KEY when routing LLM requests to Telnyx
-    api_key: "${TELNYX_API_KEY}"
-
 pipelines:
   local_hybrid:
     stt: local_stt
@@ -104,30 +107,31 @@ pipelines:
       llm:
         # Change base_url to Telnyx
         base_url: "https://api.telnyx.com/v2/ai"
-        model: "gpt-4o-mini"
+        # IMPORTANT: Use a Telnyx model ID from /models (namespaced)
+        model: "Qwen/Qwen3-235B-A22B"
         temperature: 0.7
         max_tokens: 150
 ```
 
-**Key Point**: The `openai_llm` adapter reads `api_key` from the `providers.openai` configuration. Setting `base_url` to Telnyx only changes the endpoint - you must also ensure `providers.openai.api_key` points to your Telnyx API key.
-
 ### 4. Available Models
 
-Telnyx AI Inference provides access to 53+ models. Popular options:
+Telnyx AI Inference supports many model IDs. Popular Telnyx-hosted options:
 
 | Model | Description | Best For |
 |-------|-------------|----------|
-| `gpt-4o` | OpenAI's flagship multimodal model | Complex reasoning, high quality |
-| `gpt-4o-mini` | Fast, cost-effective GPT-4 class | Cost-sensitive deployments |
-| `claude-3-5-sonnet` | Anthropic's Claude via API | Nuanced conversations |
-| `llama-3.1-70b` | Meta's Llama 3.1 70B | Open model, self-hosted feel |
-| `mistral-large` | Mistral's flagship model | European data residency |
+| `Qwen/Qwen3-235B-A22B` | Excellent function calling | Tool-heavy voice workflows |
+| `meta-llama/Meta-Llama-3.1-8B-Instruct` | General-purpose open model | Low-latency, cost-sensitive calls (may vary by account/region) |
+| `meta-llama/Meta-Llama-3.1-70B-Instruct` | Higher-quality open model | Higher quality, more complex tasks |
 
 Check available models:
 ```bash
 curl -s "https://api.telnyx.com/v2/ai/models" \
   -H "Authorization: Bearer ${TELNYX_API_KEY}" | jq '.data[].id'
 ```
+
+**Important**:
+- Telnyx model IDs are *namespaced* (for example `meta-llama/Meta-Llama-3.1-8B-Instruct`).
+- Some IDs represent **external** providers (for example `openai/gpt-4o`). Those require `telnyx_llm.api_key_ref` to be set (Integration Secret identifier) or Telnyx will return `400` with "OpenAI API key required…".
 
 ### 5. Configure Asterisk Dialplan
 
@@ -137,7 +141,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 [from-ai-agent-telnyx]
 exten => s,1,NoOp(AI Voice Agent - Telnyx AI Inference)
 exten => s,n,Set(AI_CONTEXT=demo_telnyx)
-exten => s,n,Set(AI_PROVIDER=local)
+exten => s,n,Set(AI_PROVIDER=telnyx_hybrid)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
 ```
@@ -198,7 +202,11 @@ contexts:
 
 ## Pricing Comparison
 
-Telnyx AI Inference offers competitive pricing compared to direct provider access:
+Telnyx AI Inference supports:
+- **Telnyx-hosted open models** (work with `TELNYX_API_KEY` only)
+- **External providers** like OpenAI (require `api_key_ref` Integration Secrets)
+
+Pricing varies by model family and whether it’s hosted by Telnyx or routed to an external provider.
 
 | Model | Telnyx (per 1M tokens) | Direct Provider |
 |-------|------------------------|-----------------|
@@ -222,7 +230,7 @@ Telnyx AI Inference offers competitive pricing compared to direct provider acces
 - **Low latency**: Global edge infrastructure for fast inference
 
 ### Operational Benefits
-- **One API key**: Access multiple model families
+- **One API key**: Access Telnyx-hosted open models via `TELNYX_API_KEY`
 - **Unified monitoring**: Single dashboard for all AI usage
 - **24/7 support**: Enterprise-grade support included
 
@@ -256,7 +264,7 @@ SIP trunk configuration is handled natively by Asterisk/FreePBX and is separate 
 
 **Fix**:
 1. Check network connectivity to `api.telnyx.com`
-2. Consider using faster models like `gpt-4o-mini` for latency-sensitive calls
+2. Consider using smaller Telnyx-hosted models (for example `meta-llama/Meta-Llama-3.1-8B-Instruct`) for latency-sensitive calls
 3. Monitor response times in logs
 
 ### Issue: "Rate Limited"
@@ -278,7 +286,7 @@ SIP trunk configuration is handled natively by Asterisk/FreePBX and is separate 
 
 ### Cost Optimization
 - Choose the right model for each use case
-- Use `gpt-4o-mini` for simple queries, `gpt-4o` for complex reasoning
+- For Telnyx-hosted models, try `meta-llama/Meta-Llama-3.1-8B-Instruct` (fast) vs `meta-llama/Meta-Llama-3.1-70B-Instruct` (higher quality)
 - Monitor token usage per call
 - Set budget alerts in Telnyx Portal
 
