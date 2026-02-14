@@ -18,7 +18,7 @@ By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 - **Get recognized** — your name in our Contributors list, release notes, and Discord
 - **Shape YOUR tool** — contribute features YOU actually need in your day-to-day operations
 
-**New to open source?** See the [Operator Contributor Guide](docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — a step-by-step walkthrough for people who have never used GitHub before.
+**New to open source?** See the [Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — a step-by-step walkthrough for people who have never used GitHub before.
 
 ## What We're Looking For
 
@@ -78,7 +78,7 @@ cd Asterisk-AI-Voice-Agent
 ./scripts/setup-contributor.sh
 ```
 
-Then open the folder in [Windsurf](https://codeium.com/windsurf) and type "I want to contribute" in the chat. See the [Operator Contributor Guide](docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) for details.
+Then open the folder in [Windsurf](https://codeium.com/windsurf) and type "I want to contribute" in the chat. See the [Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) for details.
 
 ### Option B: Traditional Setup (For Developers)
 

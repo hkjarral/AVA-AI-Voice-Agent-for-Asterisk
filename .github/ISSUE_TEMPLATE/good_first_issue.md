@@ -41,4 +41,4 @@ Need help? We've got you covered:
 
 - **AVA (AI Assistant):** Open the project in [Windsurf](https://codeium.com/windsurf) and tell AVA: "I want to work on this issue"
 - **Discord:** Ask in [#contributing](https://discord.gg/ysg8fphxUe)
-- **Guide:** [Operator Contributor Guide](../../docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — step-by-step for first-time contributors
+- **Guide:** [Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — step-by-step for first-time contributors

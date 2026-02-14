@@ -13,25 +13,39 @@ jobs:
           fetch-depth: 0
 
       - name: Check for dev-only files
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Files/dirs that must stay on the develop branch only.
           # These are development artifacts (IDE rules, contributor guides,
           # templates, AI assistant configs) that should never reach
           # staging or main.
+          #
+          # Directory patterns use trailing / (prefix match).
+          # File patterns use $ (exact match) to avoid over-matching.
           DEV_PATTERNS=(
             ".windsurf/"
             ".cursor/"
             ".agent/"
-            "AVA.mdc"
-            "Agents.md"
+            "AVA.mdc$"
+            "Agents.md$"
             "examples/"
-            "docs/contributing/"
-            "scripts/setup-contributor.sh"
-            ".all-contributorsrc"
-            ".env.contributor"
+            "docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md$"
+            "docs/contributing/CODING_GUIDELINES.md$"
+            "docs/contributing/RECOGNITION.md$"
+            "docs/contributing/VIDEO_WALKTHROUGH.md$"
+            "docs/contributing/adding-full-agent-provider.md$"
+            "docs/contributing/adding-pipeline-adapter.md$"
+            "docs/contributing/pre-call-hooks-development.md$"
+            "docs/contributing/in-call-hooks-development.md$"
+            "docs/contributing/post-call-hooks-development.md$"
+            "scripts/setup-contributor.sh$"
+            ".all-contributorsrc$"
+            ".env.contributor$"
           )
 
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          # Only check added/modified files (allow deletions to clean up)
+          CHANGED=$(git diff --diff-filter=ACMR --name-only "origin/${BASE_REF}...HEAD")
           BLOCKED=""
 
           for pattern in "${DEV_PATTERNS[@]}"; do
@@ -42,7 +56,7 @@ jobs:
           done
 
           if [ -n "$BLOCKED" ]; then
-            echo "::error::Dev-only files detected in PR targeting ${{ github.base_ref }}:"
+            echo "::error::Dev-only files detected in PR targeting ${BASE_REF}:"
             echo "$BLOCKED"
             echo ""
             echo "These files must stay on the develop branch."

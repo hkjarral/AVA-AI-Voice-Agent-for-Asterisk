@@ -581,20 +581,20 @@ Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to con
 
 | Guide | For |
 |-------|-----|
-| **[Operator Contributor Guide](docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
+| **[Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
 | **[Contributing Guide](CONTRIBUTING.md)** | Full contribution guidelines and workflow |
-| **[Coding Guidelines](docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
+| **[Coding Guidelines](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
 | **[Roadmap](docs/ROADMAP.md)** | What to work on next (13+ beginner-friendly tasks) |
 
 ### 🔧 Build Something New
 
 | Area | Guide | Template |
 |------|-------|----------|
-| Full Agent Provider | [Guide](docs/contributing/adding-full-agent-provider.md) | [Template](examples/providers/template_full_agent.py) |
-| Pipeline Adapter (STT/LLM/TTS) | [Guide](docs/contributing/adding-pipeline-adapter.md) | [Templates](examples/pipelines/) |
-| Pre-Call Hook | [Guide](docs/contributing/pre-call-hooks-development.md) | [Template](examples/hooks/template_pre_call_hook.py) |
-| In-Call Hook | [Guide](docs/contributing/in-call-hooks-development.md) | [Template](examples/hooks/template_in_call_hook.py) |
-| Post-Call Hook | [Guide](docs/contributing/post-call-hooks-development.md) | [Template](examples/hooks/template_post_call_hook.py) |
+| Full Agent Provider | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-full-agent-provider.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/providers/template_full_agent.py) |
+| Pipeline Adapter (STT/LLM/TTS) | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-pipeline-adapter.md) | [Templates](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/tree/develop/examples/pipelines/) |
+| Pre-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/pre-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_pre_call_hook.py) |
+| In-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/in-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_in_call_hook.py) |
+| Post-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/post-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_post_call_hook.py) |
 
 ### 👩‍💻 For Developers
 - [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) - Project overview and first tasks
@@ -607,7 +607,7 @@ Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to con
   <img src="https://contrib.rocks/image?repo=hkjarral/Asterisk-AI-Voice-Agent" />
 </a>
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](docs/contributing/RECOGNITION.md) for how we recognize contributions.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/RECOGNITION.md) for how we recognize contributions.
 
 ---
 

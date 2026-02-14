@@ -268,8 +268,7 @@ dialplan_*.conf
 PRE_MERGE_CHECKLIST.md
 
 # IDE-specific rule files (tracked on develop, blocked from staging/main by CI gate)
-!Agents.md
-Gemini.md
+# (Agents.md already un-ignored above at line 238; Gemini.md already un-ignored at line 239)
 
 # Development-only documentation (Linear integration for contributors)
 docs/LINEAR_MCP_SETUP.md
