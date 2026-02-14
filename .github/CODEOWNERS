@@ -1,0 +1,24 @@
+# CODEOWNERS — Automatic PR review assignment
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: project maintainer reviews everything
+* @hkjarral
+
+# Core Python engine
+/src/ @hkjarral
+
+# Admin UI
+/admin_ui/ @hkjarral
+
+# CLI
+/cli/ @hkjarral
+
+# Documentation
+/docs/ @hkjarral
+
+# Configuration and baselines
+/config/ @hkjarral
+/docker-compose*.yml @hkjarral
+
+# CI/CD
+/.github/ @hkjarral

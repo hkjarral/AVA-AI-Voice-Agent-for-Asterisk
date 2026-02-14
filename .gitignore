@@ -128,13 +128,16 @@ cython_debug/
 *.bin
 *.safetensors
 
-# Cursor/Windsurf IDE
-.cursor/
-.windsurf/
-.cursor/rules/
-.cursor/rules/asterisk_ai_voice_agent.mdc
-.windsurf/rules/
-.windsurf/rules/asterisk_ai_voice_agent.md
+# Cursor/Windsurf IDE — ignore everything except rule files we track
+# (Must un-ignore directories first, then specific files)
+.cursor/*
+!.cursor/rules/
+.cursor/rules/*
+!.cursor/rules/asterisk_ai_voice_agent.mdc
+.windsurf/*
+!.windsurf/rules/
+.windsurf/rules/*
+!.windsurf/rules/asterisk_ai_voice_agent.md
 
 # Archives and old documentation
 Archived/
@@ -264,18 +267,20 @@ COMPLETE_*.md
 dialplan_*.conf
 PRE_MERGE_CHECKLIST.md
 
-# IDE-specific rule files (development only - not for GA/main branch)
-Agents.md
+# IDE-specific rule files (tracked on develop, blocked from staging/main by CI gate)
+!Agents.md
 Gemini.md
 
 # Development-only documentation (Linear integration for contributors)
 docs/LINEAR_MCP_SETUP.md
 docs/linear-issues-community-features.md
 
-# AI Persona and IDE rule files (keep local with dev server URLs, don't commit changes)
-AVA.mdc
-.cursor/rules/asterisk_ai_voice_agent.mdc
-.windsurf/rules/asterisk_ai_voice_agent.md
+# AI Persona and IDE rule files — tracked on develop, blocked from staging/main by CI gate
+# (Remove these ignores so develop can track them. The CI workflow
+#  .github/workflows/block-dev-artifacts.yml prevents them from reaching staging/main.)
+# AVA.mdc — already tracked
+# .cursor/rules/ — un-ignored above
+# .windsurf/rules/ — un-ignored above
 
 # Vite cache
 .vite/

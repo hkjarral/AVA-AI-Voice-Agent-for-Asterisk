@@ -562,15 +562,39 @@ The `preflight.sh` script handles initial setup:
 
 ## 🤝 Contributing
 
-Contributions are welcome! We value all contributions — code, documentation, bug reports, tests, and ideas.
+**You don't need to know how to code.** Our AI assistant AVA writes the code for you — just describe what you want to build.
 
-Please see our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+<!-- TODO: Add YouTube video link once recorded -->
+<!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->
 
-**Areas where we need help:**
-- New provider adapters (Azure, Anthropic Claude) — see [Roadmap](docs/ROADMAP.md)
-- Test coverage expansion (currently ~28%)
-- Admin UI improvements and accessibility
-- Documentation improvements
+### 🚀 Get Started in 3 Steps
+
+```bash
+git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
+cd Asterisk-AI-Voice-Agent
+./scripts/setup-contributor.sh
+```
+
+Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to contribute"**
+
+### 📖 Guides
+
+| Guide | For |
+|-------|-----|
+| **[Operator Contributor Guide](docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
+| **[Contributing Guide](CONTRIBUTING.md)** | Full contribution guidelines and workflow |
+| **[Coding Guidelines](docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
+| **[Roadmap](docs/ROADMAP.md)** | What to work on next (13+ beginner-friendly tasks) |
+
+### 🔧 Build Something New
+
+| Area | Guide | Template |
+|------|-------|----------|
+| Full Agent Provider | [Guide](docs/contributing/adding-full-agent-provider.md) | [Template](examples/providers/template_full_agent.py) |
+| Pipeline Adapter (STT/LLM/TTS) | [Guide](docs/contributing/adding-pipeline-adapter.md) | [Templates](examples/pipelines/) |
+| Pre-Call Hook | [Guide](docs/contributing/pre-call-hooks-development.md) | [Template](examples/hooks/template_pre_call_hook.py) |
+| In-Call Hook | [Guide](docs/contributing/in-call-hooks-development.md) | [Template](examples/hooks/template_in_call_hook.py) |
+| Post-Call Hook | [Guide](docs/contributing/post-call-hooks-development.md) | [Template](examples/hooks/template_post_call_hook.py) |
 
 ### 👩‍💻 For Developers
 - [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) - Project overview and first tasks
@@ -582,6 +606,8 @@ Please see our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_
 <a href="https://github.com/hkjarral/Asterisk-AI-Voice-Agent/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=hkjarral/Asterisk-AI-Voice-Agent" />
 </a>
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](docs/contributing/RECOGNITION.md) for how we recognize contributions.
 
 ---
 

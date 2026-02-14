@@ -39,7 +39,7 @@ For telephony changes, include:
 
 Which docs were updated (if any)?
 
-- [ ] `docs/Architecture.md`
+- [ ] `docs/contributing/architecture-deep-dive.md`
 - [ ] `docs/ROADMAP.md` / `docs/milestones/*`
 - [ ] `docs/TOOL_CALLING_GUIDE.md`
 - [ ] Provider/tool-specific docs

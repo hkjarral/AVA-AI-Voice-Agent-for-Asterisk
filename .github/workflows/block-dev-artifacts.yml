@@ -1,0 +1,53 @@
+name: Block dev-only artifacts
+
+on:
+  pull_request:
+    branches: [staging, main]
+
+jobs:
+  check-dev-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for dev-only files
+        run: |
+          # Files/dirs that must stay on the develop branch only.
+          # These are development artifacts (IDE rules, contributor guides,
+          # templates, AI assistant configs) that should never reach
+          # staging or main.
+          DEV_PATTERNS=(
+            ".windsurf/"
+            ".cursor/"
+            ".agent/"
+            "AVA.mdc"
+            "Agents.md"
+            "examples/"
+            "docs/contributing/"
+            "scripts/setup-contributor.sh"
+            ".all-contributorsrc"
+            ".env.contributor"
+          )
+
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          BLOCKED=""
+
+          for pattern in "${DEV_PATTERNS[@]}"; do
+            MATCHES=$(echo "$CHANGED" | grep "^${pattern}" || true)
+            if [ -n "$MATCHES" ]; then
+              BLOCKED="${BLOCKED}${MATCHES}"$'\n'
+            fi
+          done
+
+          if [ -n "$BLOCKED" ]; then
+            echo "::error::Dev-only files detected in PR targeting ${{ github.base_ref }}:"
+            echo "$BLOCKED"
+            echo ""
+            echo "These files must stay on the develop branch."
+            echo "Remove them from this PR or retarget to develop."
+            exit 1
+          fi
+
+          echo "✓ No dev-only artifacts found."

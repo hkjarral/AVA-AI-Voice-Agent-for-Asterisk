@@ -4,6 +4,22 @@ Thank you for your interest in contributing! All contributions are welcome — c
 
 By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
+<!-- TODO: Add YouTube video link once recorded -->
+<!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->
+
+## Why Contribute?
+
+**You don't need to know how to code.** Our AI assistant AVA writes the code for you.
+
+- **You know telephony better than most developers** — your Asterisk experience is rare and valuable
+- **AI does the coding** — Windsurf + AVA handle Python, React, Go — you just describe what you want
+- **Your server IS your test lab** — test features on your actual phone system with real calls
+- **One command to contribute** — run `scripts/setup-contributor.sh` once, then tell AVA to "submit a PR"
+- **Get recognized** — your name in our Contributors list, release notes, and Discord
+- **Shape YOUR tool** — contribute features YOU actually need in your day-to-day operations
+
+**New to open source?** See the [Operator Contributor Guide](docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — a step-by-step walkthrough for people who have never used GitHub before.
+
 ## What We're Looking For
 
 | Contribution Type | Examples | Good Starting Point? |
@@ -54,10 +70,20 @@ Releases are promoted from `staging` to `main` after golden baseline validation.
 
 ## Development Setup
 
-Docker and Docker Compose are recommended for a consistent dev environment:
+### Option A: AI-Assisted Setup (Recommended for Operators)
 
 ```bash
-git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
+git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
+cd Asterisk-AI-Voice-Agent
+./scripts/setup-contributor.sh
+```
+
+Then open the folder in [Windsurf](https://codeium.com/windsurf) and type "I want to contribute" in the chat. See the [Operator Contributor Guide](docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) for details.
+
+### Option B: Traditional Setup (For Developers)
+
+```bash
+git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
 cd Asterisk-AI-Voice-Agent
 ./install.sh   # guided setup; or follow README for manual steps
 ```

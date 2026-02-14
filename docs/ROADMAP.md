@@ -32,14 +32,30 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 
 ### Good First Issues (Beginner-Friendly)
 
-No Asterisk expertise needed for these — great for first-time contributors:
+Great for first-time contributors. **AVA helps you with all of these** — just open Windsurf and describe what you want to do. See the [Operator Contributor Guide](contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) to get started.
 
-| Task | Skills | Label |
-|------|--------|-------|
-| Test coverage expansion for `src/tools/` | Python, pytest | `good first issue` |
-| JSON Schema for `ai-agent.yaml` | JSON Schema, YAML | `good first issue` |
-| Admin UI accessibility audit (Lighthouse/axe) | React, CSS | `good first issue` |
-| CLI help text improvements | Go | `good first issue` |
+#### No-Code Tasks (Just Writing/Sharing)
+
+| Task | Skills Needed | Why YOU Can Do This |
+|------|---------------|---------------------|
+| Write a "How I Deploy AAVA" case study | Just writing | Share your real deployment story |
+| Document your FreePBX dialplan setup | Just writing | Copy your working dialplan + explain it |
+| Add your `ai-agent.yaml` as an example config | Just YAML | Copy your working config |
+| Report and document edge cases in call flows | Testing + writing | You make real calls every day |
+| Translate a setup guide to your language | Any language | Help non-English speakers |
+
+#### AI-Assisted Code Tasks (AVA Writes the Code)
+
+| Task | Contribution Area | Why YOU Can Do This |
+|------|-------------------|---------------------|
+| Add a new STT/TTS/LLM pipeline adapter | [Modular Providers](contributing/adding-pipeline-adapter.md) | You know which providers work best — AVA writes the adapter |
+| Add a pre-call CRM lookup hook | [Pre-Call Hooks](contributing/pre-call-hooks-development.md) | You have a CRM — AVA integrates it |
+| Add a post-call webhook (Slack, Discord, n8n) | [Post-Call Hooks](contributing/post-call-hooks-development.md) | You use these tools daily — AVA connects them |
+| Add an in-call appointment checker | [In-Call Hooks](contributing/in-call-hooks-development.md) | You book appointments by phone — AVA builds it |
+| Test coverage for `src/tools/telephony/` | Python, pytest | You understand voicemail — AVA writes the tests |
+| Improve error messages in `agent doctor` | Go CLI | You've seen the confusing errors — AVA fixes them |
+| Admin UI accessibility audit (Lighthouse/axe) | React, CSS | Run the audit, AVA fixes what it finds |
+| JSON Schema for `ai-agent.yaml` | JSON Schema, YAML | Define what's valid in the config you use daily |
 
 ---
 
