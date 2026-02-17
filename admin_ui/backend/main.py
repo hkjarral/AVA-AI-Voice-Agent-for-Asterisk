@@ -84,21 +84,27 @@ REST API for managing the Asterisk AI Voice Agent system.
 Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/login`.
 
 ## API Groups
-- **auth** — Login, password management, user info
-- **config** — YAML configuration, environment variables, provider settings
-- **system** — Container management, health checks, updates, ARI testing
-- **wizard** — Setup wizard, local AI model management
-- **local-ai** — Local AI server model switching, backends, capabilities
-- **calls** — Call history, transcripts, statistics, export
-- **outbound** — Campaign management, leads, recordings
-- **tools** — Tool catalog, HTTP tool testing, email templates
-- **logs** — Container logs and structured log events
-- **mcp** — MCP server status and testing (proxied from AI Engine)
-- **ollama** — Ollama connection testing and model listing
-- **documentation** — In-app documentation browser
+
+| Group | Description |
+|-------|-------------|
+| **auth** | Login, password management, user info |
+| **config** | YAML configuration, environment variables, provider settings |
+| **system** | Container management, health checks, updates, ARI testing |
+| **wizard** | Setup wizard, local AI model management |
+| **local-ai** | Local AI server model switching, backends, capabilities |
+| **calls** | Call history, transcripts, statistics, export |
+| **outbound** | Campaign management, leads, recordings |
+| **tools** | Tool catalog, HTTP tool testing, email templates |
+| **logs** | Container logs and structured log events |
+| **mcp** | MCP server status and testing (proxied from AI Engine) |
+| **ollama** | Ollama connection testing and model listing |
+| **documentation** | In-app documentation browser |
 
 ## Related Services
-- **AI Engine Health Server** (port 15000): `/health`, `/metrics`, `/live`, `/ready`, `/reload`
+
+| Service | Endpoints |
+|---------|-----------|
+| **AI Engine Health Server** (port 15000) | `/health`, `/metrics`, `/live`, `/ready`, `/reload` |
 """,
     version="6.2.0",
     docs_url="/docs",
