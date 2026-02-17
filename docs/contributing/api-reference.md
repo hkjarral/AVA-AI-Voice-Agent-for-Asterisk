@@ -17,9 +17,22 @@ The Admin UI Backend provides **OpenAPI 3.0** documentation via Swagger UI and R
 | `http://<host>:3003/redoc` | **ReDoc** — Clean, readable API reference |
 | `http://<host>:3003/openapi.json` | **OpenAPI spec** — Import into Postman, Insomnia, or SDK generators |
 
+### Disabling API Docs in Production
+
+For security-hardened deployments, you can disable API documentation endpoints by setting:
+
+```bash
+# In .env file
+ENABLE_API_DOCS=false
+```
+
+When disabled, `/docs`, `/redoc`, and `/openapi.json` will return 404. Default is `true` (enabled).
+
 ### Authentication
 
 Most Admin UI endpoints require JWT authentication:
+
+> ⚠️ **Security Note:** The credentials below (`admin/admin`) are initial defaults. Change the admin password immediately after first login and never use default credentials in production.
 
 ```bash
 # 1. Login to get a token
@@ -226,7 +239,7 @@ curl http://localhost:15000/health
 curl http://localhost:15000/metrics
 ```
 
-```
+```text
 # HELP aava_active_calls Number of active calls
 # TYPE aava_active_calls gauge
 aava_active_calls 2

@@ -75,6 +75,9 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
 from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs  # noqa: E402
 import auth  # noqa: E402
 
+# Allow disabling API docs in production for security hardening
+_enable_api_docs = os.getenv("ENABLE_API_DOCS", "true").lower() in ("1", "true", "yes")
+
 app = FastAPI(
     title="Asterisk AI Voice Agent Admin API",
     description="""
@@ -107,9 +110,9 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 | **AI Engine Health Server** (port 15000) | `/health`, `/metrics`, `/live`, `/ready`, `/reload` |
 """,
     version="6.2.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url="/docs" if _enable_api_docs else None,
+    redoc_url="/redoc" if _enable_api_docs else None,
+    openapi_url="/openapi.json" if _enable_api_docs else None,
     openapi_tags=[
         {"name": "auth", "description": "Authentication and user management"},
         {"name": "config", "description": "Configuration management (YAML, .env, providers)"},
