@@ -53,8 +53,8 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
     const fetchVertexData = useCallback(async () => {
         try {
             const [regionsRes, credsRes] = await Promise.all([
-                fetch('/api/config/vertex-ai/regions'),
-                fetch('/api/config/vertex-ai/credentials'),
+                fetch('/api/config/vertex-ai/regions', { credentials: 'include' }),
+                fetch('/api/config/vertex-ai/credentials', { credentials: 'include' }),
             ]);
             if (regionsRes.ok) {
                 const data = await regionsRes.json();
@@ -99,6 +99,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
             const res = await fetch('/api/config/vertex-ai/credentials', {
                 method: 'POST',
                 body: formData,
+                credentials: 'include',
             });
             const data = await res.json();
             if (res.ok) {
@@ -123,7 +124,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         if (!confirm('Delete the uploaded service account JSON? This cannot be undone.')) return;
 
         try {
-            const res = await fetch('/api/config/vertex-ai/credentials', { method: 'DELETE' });
+            const res = await fetch('/api/config/vertex-ai/credentials', { method: 'DELETE', credentials: 'include' });
             if (res.ok) {
                 setCredentials({ uploaded: false, filename: null, project_id: null, client_email: null, uploaded_at: null });
                 setVerifyResult(null);
@@ -139,7 +140,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         setVerifyResult(null);
 
         try {
-            const res = await fetch('/api/config/vertex-ai/verify', { method: 'POST' });
+            const res = await fetch('/api/config/vertex-ai/verify', { method: 'POST', credentials: 'include' });
             const data = await res.json();
             if (res.ok) {
                 setVerifyResult({ status: 'success', message: data.message || 'Credentials verified!' });
