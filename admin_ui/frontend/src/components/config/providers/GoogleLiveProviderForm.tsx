@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
+import axios from 'axios';
 import { AlertTriangle, Upload, Trash2, CheckCircle, XCircle, Loader2, FileJson } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import {
@@ -53,16 +54,14 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
     const fetchVertexData = useCallback(async () => {
         try {
             const [regionsRes, credsRes] = await Promise.all([
-                fetch('/api/config/vertex-ai/regions', { credentials: 'include' }),
-                fetch('/api/config/vertex-ai/credentials', { credentials: 'include' }),
+                axios.get('/api/config/vertex-ai/regions'),
+                axios.get('/api/config/vertex-ai/credentials'),
             ]);
-            if (regionsRes.ok) {
-                const data = await regionsRes.json();
-                setRegions(data.regions || []);
+            if (regionsRes.data) {
+                setRegions(regionsRes.data.regions || []);
             }
-            if (credsRes.ok) {
-                const data = await credsRes.json();
-                setCredentials(data);
+            if (credsRes.data) {
+                setCredentials(credsRes.data);
             }
         } catch (e) {
             console.error('Failed to fetch Vertex AI data:', e);
@@ -96,23 +95,16 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         formData.append('file', file);
 
         try {
-            const res = await fetch('/api/config/vertex-ai/credentials', {
-                method: 'POST',
-                body: formData,
-                credentials: 'include',
+            const res = await axios.post('/api/config/vertex-ai/credentials', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
             });
-            const data = await res.json();
-            if (res.ok) {
-                await fetchVertexData();
-                // Auto-fill project ID if empty
-                if (data.project_id && !config.vertex_project) {
-                    handleChange('vertex_project', data.project_id);
-                }
-            } else {
-                setUploadError(data.detail || 'Upload failed');
+            await fetchVertexData();
+            // Auto-fill project ID if empty
+            if (res.data.project_id && !config.vertex_project) {
+                handleChange('vertex_project', res.data.project_id);
             }
-        } catch (e) {
-            setUploadError('Upload failed: ' + (e as Error).message);
+        } catch (e: any) {
+            setUploadError(e.response?.data?.detail || 'Upload failed');
         } finally {
             setUploading(false);
             if (fileInputRef.current) fileInputRef.current.value = '';
@@ -124,11 +116,9 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         if (!confirm('Delete the uploaded service account JSON? This cannot be undone.')) return;
 
         try {
-            const res = await fetch('/api/config/vertex-ai/credentials', { method: 'DELETE', credentials: 'include' });
-            if (res.ok) {
-                setCredentials({ uploaded: false, filename: null, project_id: null, client_email: null, uploaded_at: null });
-                setVerifyResult(null);
-            }
+            await axios.delete('/api/config/vertex-ai/credentials');
+            setCredentials({ uploaded: false, filename: null, project_id: null, client_email: null, uploaded_at: null });
+            setVerifyResult(null);
         } catch (e) {
             console.error('Delete failed:', e);
         }
@@ -140,15 +130,10 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         setVerifyResult(null);
 
         try {
-            const res = await fetch('/api/config/vertex-ai/verify', { method: 'POST', credentials: 'include' });
-            const data = await res.json();
-            if (res.ok) {
-                setVerifyResult({ status: 'success', message: data.message || 'Credentials verified!' });
-            } else {
-                setVerifyResult({ status: 'error', message: data.detail || 'Verification failed' });
-            }
-        } catch (e) {
-            setVerifyResult({ status: 'error', message: 'Verification failed: ' + (e as Error).message });
+            const res = await axios.post('/api/config/vertex-ai/verify');
+            setVerifyResult({ status: 'success', message: res.data.message || 'Credentials verified!' });
+        } catch (e: any) {
+            setVerifyResult({ status: 'error', message: e.response?.data?.detail || 'Verification failed' });
         } finally {
             setVerifying(false);
         }
