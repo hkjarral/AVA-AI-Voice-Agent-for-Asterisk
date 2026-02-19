@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import axios from 'axios';
+import { toast } from 'sonner';
+import { useConfirmDialog } from '../../../hooks/useConfirmDialog';
 import { AlertTriangle, Upload, Trash2, CheckCircle, XCircle, Loader2, FileJson } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import {
@@ -28,6 +30,7 @@ interface GoogleLiveProviderFormProps {
 }
 
 const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config, onChange }) => {
+    const { confirm } = useConfirmDialog();
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -113,14 +116,21 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
 
     // Delete credentials
     const handleDeleteCredentials = async () => {
-        if (!confirm('Delete the uploaded service account JSON? This cannot be undone.')) return;
+        const confirmed = await confirm({
+            title: 'Delete Service Account JSON',
+            description: 'Delete the uploaded service account JSON? This cannot be undone.',
+            confirmText: 'Delete',
+            variant: 'destructive',
+        });
+        if (!confirmed) return;
 
         try {
             await axios.delete('/api/config/vertex-ai/credentials');
             setCredentials({ uploaded: false, filename: null, project_id: null, client_email: null, uploaded_at: null });
             setVerifyResult(null);
-        } catch (e) {
-            console.error('Delete failed:', e);
+            toast.success('Service account credentials deleted');
+        } catch (e: any) {
+            toast.error(e.response?.data?.detail || 'Failed to delete credentials');
         }
     };
 
