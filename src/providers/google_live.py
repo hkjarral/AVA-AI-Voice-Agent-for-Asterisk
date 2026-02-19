@@ -1970,16 +1970,23 @@ class GoogleLiveProvider(AIProviderInterface):
                         )
 
                 # Send tool response (camelCase per official API)
+                # Vertex AI doesn't accept "id" field in function responses (AAVA-191)
                 safe_result = self._build_tool_response_payload(func_name, result)
+                use_vertex = getattr(self.config, 'use_vertex_ai', False)
+                if use_vertex:
+                    func_response = {
+                        "name": func_name,
+                        "response": safe_result,
+                    }
+                else:
+                    func_response = {
+                        "id": call_id,
+                        "name": func_name,
+                        "response": safe_result,
+                    }
                 tool_response = {
                     "toolResponse": {
-                        "functionResponses": [
-                            {
-                                "id": call_id,
-                                "name": func_name,
-                                "response": safe_result,
-                            }
-                        ]
+                        "functionResponses": [func_response]
                     }
                 }
                 await self._send_message(tool_response)
