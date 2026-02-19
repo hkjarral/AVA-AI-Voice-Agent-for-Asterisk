@@ -1112,6 +1112,9 @@ class GoogleLiveProvider(AIProviderInterface):
         """
         Google Live can return 1011 internal errors if toolResponse payloads are too large or contain
         unexpected shapes. Keep responses minimal, JSON-serializable, and capped in size.
+        
+        For Vertex AI + hangup_call: include explicit instruction to speak the farewell,
+        since Vertex AI models may not automatically generate audio after tool responses.
         """
         if not isinstance(result, dict):
             payload: Dict[str, Any] = {"status": "success", "message": str(result)}
@@ -1124,6 +1127,13 @@ class GoogleLiveProvider(AIProviderInterface):
             # Always provide a message string (best-effort).
             if "message" not in payload:
                 payload["message"] = str(result.get("message") or "")
+            
+            # For hangup_call on Vertex AI: add explicit instruction to speak farewell
+            use_vertex = getattr(self.config, 'use_vertex_ai', False)
+            if use_vertex and tool_name == "hangup_call" and result.get("will_hangup"):
+                farewell = result.get("message", "")
+                if farewell:
+                    payload["instruction"] = f"Please say this farewell to the caller now: {farewell}"
             # Do NOT include raw MCP result blobs - they are commonly large/nested and cause
             # Google Live to stutter when generating audio. The `message` field already contains
             # the speech text extracted via speech_field/speech_template.
