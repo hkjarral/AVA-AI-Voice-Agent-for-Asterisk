@@ -1820,3 +1820,196 @@ async def get_provider_options(provider_type: str):
         return {"message": "Use /api/local-ai/models for dynamic local models"}
         
     return {"error": "Unknown provider type"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vertex AI Service Account JSON Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+VERTEX_CREDENTIALS_PATH = "/opt/asterisk-ai/secrets/gcp-service-account.json"
+VERTEX_REGIONS = [
+    {"value": "us-central1", "label": "US Central (Iowa)"},
+    {"value": "us-east1", "label": "US East (South Carolina)"},
+    {"value": "us-east4", "label": "US East (Northern Virginia)"},
+    {"value": "us-west1", "label": "US West (Oregon)"},
+    {"value": "us-west4", "label": "US West (Las Vegas)"},
+    {"value": "europe-west1", "label": "Europe West (Belgium)"},
+    {"value": "europe-west2", "label": "Europe West (London)"},
+    {"value": "europe-west3", "label": "Europe West (Frankfurt)"},
+    {"value": "europe-west4", "label": "Europe West (Netherlands)"},
+    {"value": "asia-east1", "label": "Asia East (Taiwan)"},
+    {"value": "asia-northeast1", "label": "Asia Northeast (Tokyo)"},
+    {"value": "asia-southeast1", "label": "Asia Southeast (Singapore)"},
+    {"value": "australia-southeast1", "label": "Australia (Sydney)"},
+]
+
+
+@router.get("/vertex-ai/regions")
+async def get_vertex_regions():
+    """Return available Vertex AI regions."""
+    return {"regions": VERTEX_REGIONS}
+
+
+@router.get("/vertex-ai/credentials")
+async def get_vertex_credentials_status():
+    """Check if Vertex AI credentials are uploaded and return metadata."""
+    import json
+    
+    if not os.path.exists(VERTEX_CREDENTIALS_PATH):
+        return {
+            "uploaded": False,
+            "filename": None,
+            "project_id": None,
+            "client_email": None,
+            "uploaded_at": None,
+        }
+    
+    try:
+        stat = os.stat(VERTEX_CREDENTIALS_PATH)
+        with open(VERTEX_CREDENTIALS_PATH, 'r') as f:
+            creds = json.load(f)
+        
+        return {
+            "uploaded": True,
+            "filename": "gcp-service-account.json",
+            "project_id": creds.get("project_id"),
+            "client_email": creds.get("client_email"),
+            "uploaded_at": stat.st_mtime,
+        }
+    except Exception as e:
+        logger.error(f"Error reading Vertex AI credentials: {e}")
+        return {
+            "uploaded": True,
+            "filename": "gcp-service-account.json",
+            "project_id": None,
+            "client_email": None,
+            "error": str(e),
+        }
+
+
+@router.post("/vertex-ai/credentials")
+async def upload_vertex_credentials(file: UploadFile = File(...)):
+    """Upload a GCP service account JSON file for Vertex AI authentication."""
+    import json
+    
+    if not file.filename.endswith('.json'):
+        raise HTTPException(status_code=400, detail="File must be a JSON file")
+    
+    try:
+        content = await file.read()
+        # Validate JSON structure
+        creds = json.loads(content)
+        
+        required_fields = ["type", "project_id", "private_key", "client_email"]
+        missing = [f for f in required_fields if f not in creds]
+        if missing:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid service account JSON. Missing fields: {', '.join(missing)}"
+            )
+        
+        if creds.get("type") != "service_account":
+            raise HTTPException(
+                status_code=400,
+                detail="JSON file must be a service account key (type: service_account)"
+            )
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(VERTEX_CREDENTIALS_PATH), exist_ok=True)
+        
+        # Write atomically
+        temp_path = VERTEX_CREDENTIALS_PATH + ".tmp"
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+        os.chmod(temp_path, 0o600)  # Restrict permissions
+        os.replace(temp_path, VERTEX_CREDENTIALS_PATH)
+        
+        logger.info(f"Vertex AI credentials uploaded: project={creds.get('project_id')}")
+        
+        return {
+            "status": "success",
+            "message": "Service account JSON uploaded successfully",
+            "project_id": creds.get("project_id"),
+            "client_email": creds.get("client_email"),
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON file")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading Vertex AI credentials: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/vertex-ai/credentials")
+async def delete_vertex_credentials():
+    """Delete the uploaded Vertex AI credentials file."""
+    if not os.path.exists(VERTEX_CREDENTIALS_PATH):
+        raise HTTPException(status_code=404, detail="No credentials file found")
+    
+    try:
+        os.remove(VERTEX_CREDENTIALS_PATH)
+        logger.info("Vertex AI credentials deleted")
+        return {"status": "success", "message": "Credentials deleted"}
+    except Exception as e:
+        logger.error(f"Error deleting Vertex AI credentials: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/vertex-ai/verify")
+async def verify_vertex_credentials():
+    """Verify Vertex AI credentials by attempting to get an access token."""
+    import json
+    
+    if not os.path.exists(VERTEX_CREDENTIALS_PATH):
+        raise HTTPException(status_code=400, detail="No credentials file uploaded")
+    
+    try:
+        # Try to use google-auth to verify credentials
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        
+        credentials = service_account.Credentials.from_service_account_file(
+            VERTEX_CREDENTIALS_PATH,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        
+        # Refresh to get a token (validates the credentials)
+        credentials.refresh(Request())
+        
+        # Read project info
+        with open(VERTEX_CREDENTIALS_PATH, 'r') as f:
+            creds_data = json.load(f)
+        
+        return {
+            "status": "success",
+            "message": "Credentials verified successfully",
+            "project_id": creds_data.get("project_id"),
+            "client_email": creds_data.get("client_email"),
+            "token_expiry": credentials.expiry.isoformat() if credentials.expiry else None,
+        }
+        
+    except ImportError:
+        # google-auth not installed in admin_ui - just validate JSON structure
+        try:
+            with open(VERTEX_CREDENTIALS_PATH, 'r') as f:
+                creds_data = json.load(f)
+            
+            required = ["type", "project_id", "private_key", "client_email"]
+            if all(k in creds_data for k in required):
+                return {
+                    "status": "success",
+                    "message": "Credentials file structure is valid (full verification requires google-auth)",
+                    "project_id": creds_data.get("project_id"),
+                    "client_email": creds_data.get("client_email"),
+                    "warning": "Install google-auth for full token verification",
+                }
+            else:
+                raise HTTPException(status_code=400, detail="Invalid credentials structure")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in credentials file")
+            
+    except Exception as e:
+        logger.error(f"Error verifying Vertex AI credentials: {e}")
+        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")

@@ -1,11 +1,25 @@
-import React, { useEffect, useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { AlertTriangle, Upload, Trash2, CheckCircle, XCircle, Loader2, FileJson } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
 import {
     GOOGLE_LIVE_MODEL_GROUPS,
     GOOGLE_LIVE_SUPPORTED_MODELS,
     normalizeGoogleLiveModelForUi,
 } from '../../../utils/googleLiveModels';
+
+interface VertexRegion {
+    value: string;
+    label: string;
+}
+
+interface CredentialsStatus {
+    uploaded: boolean;
+    filename: string | null;
+    project_id: string | null;
+    client_email: string | null;
+    uploaded_at: number | null;
+    error?: string;
+}
 
 interface GoogleLiveProviderFormProps {
     config: any;
@@ -26,6 +40,39 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         }
     });
 
+    // Vertex AI state
+    const [regions, setRegions] = useState<VertexRegion[]>([]);
+    const [credentials, setCredentials] = useState<CredentialsStatus | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [verifying, setVerifying] = useState(false);
+    const [verifyResult, setVerifyResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+    const [uploadError, setUploadError] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Fetch regions and credentials status
+    const fetchVertexData = useCallback(async () => {
+        try {
+            const [regionsRes, credsRes] = await Promise.all([
+                fetch('/api/config/vertex-ai/regions'),
+                fetch('/api/config/vertex-ai/credentials'),
+            ]);
+            if (regionsRes.ok) {
+                const data = await regionsRes.json();
+                setRegions(data.regions || []);
+            }
+            if (credsRes.ok) {
+                const data = await credsRes.json();
+                setCredentials(data);
+            }
+        } catch (e) {
+            console.error('Failed to fetch Vertex AI data:', e);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchVertexData();
+    }, [fetchVertexData]);
+
     useEffect(() => {
         try {
             window.localStorage.setItem(expertStorageKey, expertEnabled ? 'true' : 'false');
@@ -35,6 +82,76 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
     }, [expertEnabled]);
 
     const selectedModel = normalizeGoogleLiveModelForUi(config.llm_model);
+
+    // File upload handler
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setUploading(true);
+        setUploadError(null);
+        setVerifyResult(null);
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await fetch('/api/config/vertex-ai/credentials', {
+                method: 'POST',
+                body: formData,
+            });
+            const data = await res.json();
+            if (res.ok) {
+                await fetchVertexData();
+                // Auto-fill project ID if empty
+                if (data.project_id && !config.vertex_project) {
+                    handleChange('vertex_project', data.project_id);
+                }
+            } else {
+                setUploadError(data.detail || 'Upload failed');
+            }
+        } catch (e) {
+            setUploadError('Upload failed: ' + (e as Error).message);
+        } finally {
+            setUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    // Delete credentials
+    const handleDeleteCredentials = async () => {
+        if (!confirm('Delete the uploaded service account JSON? This cannot be undone.')) return;
+
+        try {
+            const res = await fetch('/api/config/vertex-ai/credentials', { method: 'DELETE' });
+            if (res.ok) {
+                setCredentials({ uploaded: false, filename: null, project_id: null, client_email: null, uploaded_at: null });
+                setVerifyResult(null);
+            }
+        } catch (e) {
+            console.error('Delete failed:', e);
+        }
+    };
+
+    // Verify credentials
+    const handleVerifyCredentials = async () => {
+        setVerifying(true);
+        setVerifyResult(null);
+
+        try {
+            const res = await fetch('/api/config/vertex-ai/verify', { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+                setVerifyResult({ status: 'success', message: data.message || 'Credentials verified!' });
+            } else {
+                setVerifyResult({ status: 'error', message: data.detail || 'Verification failed' });
+            }
+        } catch (e) {
+            setVerifyResult({ status: 'error', message: 'Verification failed: ' + (e as Error).message });
+        } finally {
+            setVerifying(false);
+        }
+    };
 
     return (
         <div className="space-y-6">
@@ -79,11 +196,81 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                     {/* Vertex AI project + location — shown when Vertex AI is ON */}
                     {config.use_vertex_ai && (
                         <div className="space-y-4 p-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10">
-                            <div className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
-                                <p className="font-medium">Vertex AI Authentication</p>
-                                <p>Set <code>GOOGLE_APPLICATION_CREDENTIALS</code> in your <strong>.env</strong> file pointing to your service account JSON key, then mount it into the container.</p>
-                                <p>Required IAM role: <code>roles/aiplatform.user</code></p>
+                            {/* Service Account JSON Upload */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <label className="text-sm font-medium">Service Account JSON</label>
+                                    {credentials?.uploaded && (
+                                        <button
+                                            type="button"
+                                            onClick={handleVerifyCredentials}
+                                            disabled={verifying}
+                                            className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+                                        >
+                                            {verifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                                            {verifying ? 'Verifying...' : 'Verify Credentials'}
+                                        </button>
+                                    )}
+                                </div>
+
+                                {credentials?.uploaded ? (
+                                    <div className="flex items-center gap-3 p-2 rounded border border-green-200 dark:border-green-800 bg-green-50/40 dark:bg-green-900/10">
+                                        <FileJson className="w-8 h-8 text-green-600" />
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium truncate">{credentials.filename}</p>
+                                            <p className="text-xs text-muted-foreground truncate">
+                                                {credentials.client_email || 'Service Account'}
+                                                {credentials.project_id && ` • ${credentials.project_id}`}
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleDeleteCredentials}
+                                            className="p-1.5 rounded hover:bg-red-100 dark:hover:bg-red-900/30 text-red-600"
+                                            title="Delete credentials"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept=".json"
+                                            onChange={handleFileUpload}
+                                            className="hidden"
+                                            id="vertex-json-upload"
+                                        />
+                                        <label
+                                            htmlFor="vertex-json-upload"
+                                            className={`flex items-center gap-2 px-3 py-2 rounded border border-dashed border-input cursor-pointer hover:bg-muted/50 ${uploading ? 'opacity-50 pointer-events-none' : ''}`}
+                                        >
+                                            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                                            <span className="text-sm">{uploading ? 'Uploading...' : 'Upload Service Account JSON'}</span>
+                                        </label>
+                                    </div>
+                                )}
+
+                                {uploadError && (
+                                    <p className="text-xs text-red-600 flex items-center gap-1">
+                                        <XCircle className="w-3 h-3" /> {uploadError}
+                                    </p>
+                                )}
+
+                                {verifyResult && (
+                                    <p className={`text-xs flex items-center gap-1 ${verifyResult.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+                                        {verifyResult.status === 'success' ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                                        {verifyResult.message}
+                                    </p>
+                                )}
+
+                                <p className="text-xs text-muted-foreground">
+                                    Upload your GCP service account JSON key. Required IAM role: <code>roles/aiplatform.user</code>
+                                </p>
                             </div>
+
+                            {/* Project ID and Region */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <label className="text-sm font-medium">GCP Project ID</label>
@@ -92,20 +279,33 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                         className="w-full p-2 rounded border border-input bg-background"
                                         value={config.vertex_project || ''}
                                         onChange={(e) => handleChange('vertex_project', e.target.value)}
-                                        placeholder="${GOOGLE_CLOUD_PROJECT}"
+                                        placeholder="my-project-123"
                                     />
-                                    <p className="text-xs text-muted-foreground">Your GCP project ID (e.g. my-project-123)</p>
+                                    <p className="text-xs text-muted-foreground">Auto-filled from JSON if empty</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-sm font-medium">GCP Location / Region</label>
-                                    <input
-                                        type="text"
+                                    <label className="text-sm font-medium">GCP Region</label>
+                                    <select
                                         className="w-full p-2 rounded border border-input bg-background"
                                         value={config.vertex_location || 'us-central1'}
                                         onChange={(e) => handleChange('vertex_location', e.target.value)}
-                                        placeholder="us-central1"
-                                    />
-                                    <p className="text-xs text-muted-foreground">Region for Vertex AI endpoint (e.g. us-central1)</p>
+                                    >
+                                        {regions.length > 0 ? (
+                                            regions.map((region) => (
+                                                <option key={region.value} value={region.value}>
+                                                    {region.label}
+                                                </option>
+                                            ))
+                                        ) : (
+                                            <>
+                                                <option value="us-central1">US Central (Iowa)</option>
+                                                <option value="us-east1">US East (South Carolina)</option>
+                                                <option value="europe-west1">Europe West (Belgium)</option>
+                                                <option value="asia-northeast1">Asia Northeast (Tokyo)</option>
+                                            </>
+                                        )}
+                                    </select>
+                                    <p className="text-xs text-muted-foreground">Region for Vertex AI endpoint</p>
                                 </div>
                             </div>
                         </div>
