@@ -33,6 +33,13 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
+try:
+    import google.auth
+    import google.auth.transport.requests
+    _GOOGLE_AUTH_AVAILABLE = True
+except ImportError:
+    _GOOGLE_AUTH_AVAILABLE = False
+
 from structlog import get_logger
 from prometheus_client import Gauge, Counter
 
@@ -714,36 +721,81 @@ class GoogleLiveProvider(AIProviderInterface):
                 call_id=call_id,
             )
 
-        # Build WebSocket URL with API key
-        api_key = self.config.api_key or ""
-        
-        # Debug: Check API key
-        if not api_key:
-            logger.error(
-                "GOOGLE_API_KEY not found! Cannot connect to Google Live API.",
-                call_id=call_id,
-            )
-            raise ValueError("GOOGLE_API_KEY is required for Google Live provider")
-        
-        api_key_preview = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "<too_short>"
-        endpoint = (self.config.websocket_endpoint or "").strip()
-        if not endpoint:
-            # Fallback to historical constant if config not populated
-            endpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        # Build WebSocket URL and headers — Vertex AI vs Developer API (AAVA-191)
+        use_vertex = getattr(self.config, 'use_vertex_ai', False)
+        ws_url: str
+        ws_extra_headers: dict = {}
 
-        logger.debug(
-            "Connecting to Google Live API",
-            call_id=call_id,
-            endpoint=endpoint,
-            api_key_preview=api_key_preview,
-        )
-        
-        ws_url = f"{endpoint}?key={api_key}"
+        if use_vertex:
+            # --- Vertex AI Live API ---
+            # Uses OAuth2/ADC bearer token; no API key in URL.
+            if not _GOOGLE_AUTH_AVAILABLE:
+                raise RuntimeError(
+                    "google-auth package is required for Vertex AI mode. "
+                    "Add google-auth>=2.0.0 to requirements.txt and rebuild the container."
+                )
+            vertex_location = (getattr(self.config, 'vertex_location', None) or "us-central1").strip()
+            vertex_project = (getattr(self.config, 'vertex_project', None) or "").strip()
+            if not vertex_project:
+                raise ValueError(
+                    "vertex_project is required for Vertex AI mode. "
+                    "Set GOOGLE_CLOUD_PROJECT in .env or vertex_project in ai-agent.yaml."
+                )
+
+            # Obtain OAuth2 bearer token via ADC (Application Default Credentials).
+            # Runs in executor to avoid blocking the event loop.
+            def _get_vertex_token() -> str:
+                credentials, _ = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+                auth_req = google.auth.transport.requests.Request()
+                credentials.refresh(auth_req)
+                return credentials.token
+
+            bearer_token = await asyncio.get_event_loop().run_in_executor(None, _get_vertex_token)
+            ws_extra_headers = {"Authorization": f"Bearer {bearer_token}"}
+
+            vertex_endpoint = (
+                f"wss://{vertex_location}-aiplatform.googleapis.com"
+                f"/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
+            )
+            ws_url = vertex_endpoint
+
+            logger.info(
+                "Connecting to Google Vertex AI Live API",
+                call_id=call_id,
+                endpoint=vertex_endpoint,
+                vertex_project=vertex_project,
+                vertex_location=vertex_location,
+            )
+        else:
+            # --- Developer API (default) ---
+            api_key = self.config.api_key or ""
+            if not api_key:
+                logger.error(
+                    "GOOGLE_API_KEY not found! Cannot connect to Google Live API.",
+                    call_id=call_id,
+                )
+                raise ValueError("GOOGLE_API_KEY is required for Google Live provider")
+
+            api_key_preview = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "<too_short>"
+            endpoint = (self.config.websocket_endpoint or "").strip()
+            if not endpoint:
+                endpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+
+            logger.debug(
+                "Connecting to Google Live API",
+                call_id=call_id,
+                endpoint=endpoint,
+                api_key_preview=api_key_preview,
+            )
+            ws_url = f"{endpoint}?key={api_key}"
 
         try:
             # Establish WebSocket connection
             self.websocket = await websockets.connect(
                 ws_url,
+                additional_headers=ws_extra_headers,
                 subprotocols=["gemini-live"],
                 max_size=10 * 1024 * 1024,  # 10MB max message size
                 # Disable library-level ping frames. We implement our own keepalive behavior
@@ -899,10 +951,17 @@ class GoogleLiveProvider(AIProviderInterface):
         model_name = self._normalize_model_name(self.config.llm_model)
         if model_name.startswith("models/"):
             model_name = model_name[7:]  # Remove "models/" prefix
-        
+
+        # Vertex AI uses a different model path format (AAVA-191)
+        use_vertex = getattr(self.config, 'use_vertex_ai', False)
+        if use_vertex:
+            model_path = f"publishers/google/models/{model_name}"
+        else:
+            model_path = f"models/{model_name}"
+
         setup_msg = {
             "setup": {
-                "model": f"models/{model_name}",
+                "model": model_path,
                 # Live API expects camelCase field names.
                 "generationConfig": generation_config,
             }

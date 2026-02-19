@@ -284,6 +284,15 @@ class GoogleProviderConfig(BaseModel):
     ws_keepalive_interval_sec: float = Field(default=15.0)
     ws_keepalive_idle_sec: float = Field(default=5.0)
 
+    # Google Vertex AI Live API support (AAVA-191)
+    # When use_vertex_ai=True, the provider connects to Vertex AI instead of the Developer API.
+    # Vertex AI uses OAuth2/ADC (Application Default Credentials) instead of an API key.
+    # Requires: GOOGLE_APPLICATION_CREDENTIALS or gcloud auth application-default login
+    # Vertex AI GA models fix the function calling 1008 bug present in Developer API preview models.
+    use_vertex_ai: bool = Field(default=False)
+    vertex_project: Optional[str] = None  # GCP project ID (GOOGLE_CLOUD_PROJECT)
+    vertex_location: str = Field(default="us-central1")  # GCP region (GOOGLE_CLOUD_LOCATION)
+
 
 class GroqSTTProviderConfig(BaseModel):
     """Groq Speech-to-Text (OpenAI-compatible audio/transcriptions + audio/translations)."""

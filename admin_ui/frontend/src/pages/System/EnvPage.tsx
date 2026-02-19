@@ -379,6 +379,7 @@ const EnvPage = () => {
         // AI Engine - API Keys
         'OPENAI_API_KEY', 'GROQ_API_KEY', 'DEEPGRAM_API_KEY', 'GOOGLE_API_KEY', 'TELNYX_API_KEY', 'RESEND_API_KEY',
         'ELEVENLABS_API_KEY', 'ELEVENLABS_AGENT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
+        'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION',
         // Email (SMTP)
         'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_TLS_MODE', 'SMTP_TLS_VERIFY',
         'SMTP_TIMEOUT_SECONDS',
@@ -684,7 +685,21 @@ const EnvPage = () => {
                             value={env['GOOGLE_APPLICATION_CREDENTIALS'] || ''}
                             onChange={(e) => updateEnv('GOOGLE_APPLICATION_CREDENTIALS', e.target.value)}
                             placeholder="/path/to/service-account-key.json"
-                            tooltip="Path to Google Cloud service account JSON key file (alternative to API key)."
+                            tooltip="Path to Google Cloud service account JSON key file. Required for Vertex AI mode."
+                        />
+                        <FormInput
+                            label="GCP Project ID (Vertex AI)"
+                            value={env['GOOGLE_CLOUD_PROJECT'] || ''}
+                            onChange={(e) => updateEnv('GOOGLE_CLOUD_PROJECT', e.target.value)}
+                            placeholder="my-gcp-project-id"
+                            tooltip="Google Cloud project ID. Required when using Vertex AI Live API (use_vertex_ai: true)."
+                        />
+                        <FormInput
+                            label="GCP Location (Vertex AI)"
+                            value={env['GOOGLE_CLOUD_LOCATION'] || ''}
+                            onChange={(e) => updateEnv('GOOGLE_CLOUD_LOCATION', e.target.value)}
+                            placeholder="us-central1"
+                            tooltip="Google Cloud region for Vertex AI endpoint. Defaults to us-central1."
                         />
                     </div>
                     </ConfigCard>

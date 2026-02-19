@@ -225,6 +225,13 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
         google_live_block = providers_block.get('google_live', {}) or {}
         if isinstance(google_live_block, dict):
             google_live_block['api_key'] = os.getenv('GOOGLE_API_KEY')
+            # Inject Vertex AI project/location when set (AAVA-191)
+            gcp_project = os.getenv('GOOGLE_CLOUD_PROJECT')
+            gcp_location = os.getenv('GOOGLE_CLOUD_LOCATION')
+            if gcp_project:
+                google_live_block.setdefault('vertex_project', gcp_project)
+            if gcp_location:
+                google_live_block.setdefault('vertex_location', gcp_location)
             providers_block['google_live'] = google_live_block
         
         config_data['providers'] = providers_block

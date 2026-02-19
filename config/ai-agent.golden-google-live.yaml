@@ -123,6 +123,21 @@ profiles:
       sample_rate_hz: 8000
 
 # Provider Configuration - Google Live
+#
+# ── Vertex AI mode (enterprise / fixed function calling) ──────────────────
+# To use Vertex AI instead of the Developer API, set use_vertex_ai: true
+# and configure your GCP project. See .env.example for auth setup.
+#
+# providers:
+#   google_live:
+#     use_vertex_ai: true
+#     vertex_project: ${GOOGLE_CLOUD_PROJECT}
+#     vertex_location: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+#     llm_model: gemini-live-2.5-flash-native-audio   # GA model (fixed function calling)
+#     # api_key is NOT used in Vertex AI mode; auth via GOOGLE_APPLICATION_CREDENTIALS
+#     ... (all other fields below remain the same)
+#
+# ── Developer API mode (default, API key) ─────────────────────────────────
 providers:
   google_live:
     api_key: ${GOOGLE_API_KEY}

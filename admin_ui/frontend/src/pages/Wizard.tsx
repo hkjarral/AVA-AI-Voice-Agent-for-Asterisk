@@ -1503,26 +1503,32 @@ exten => s,1,NoOp(AI Agent Call)
                         )}
 
                         {config.provider === 'google_live' && (
-                            <div className="space-y-2">
-                                <label className="text-sm font-medium">Google API Key</label>
-                                <div className="flex space-x-2">
-                                    <input
-                                        type="password"
-                                        className="w-full p-2 rounded-md border border-input bg-background"
-                                        value={config.google_key}
-                                        onChange={e => setConfig({ ...config, google_key: e.target.value })}
-                                        placeholder="AIza..."
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => handleTestKey('google', config.google_key || '')}
-                                        className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
-                                        disabled={loading}
-                                    >
-                                        Test
-                                    </button>
+                            <div className="space-y-4">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Google API Key</label>
+                                    <div className="flex space-x-2">
+                                        <input
+                                            type="password"
+                                            className="w-full p-2 rounded-md border border-input bg-background"
+                                            value={config.google_key}
+                                            onChange={e => setConfig({ ...config, google_key: e.target.value })}
+                                            placeholder="AIza..."
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => handleTestKey('google', config.google_key || '')}
+                                            className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                                            disabled={loading}
+                                        >
+                                            Test
+                                        </button>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">Required for Google Gemini Live provider.</p>
                                 </div>
-                                <p className="text-xs text-muted-foreground">Required for Google Gemini Live provider.</p>
+                                <div className="bg-blue-50/50 dark:bg-blue-900/10 p-3 rounded-md border border-blue-100 dark:border-blue-900/20 text-xs text-blue-700 dark:text-blue-400">
+                                    <p className="font-semibold mb-1">Using Google Cloud / Vertex AI?</p>
+                                    <p>For enterprise GCP deployments, Vertex AI offers GA models with improved function calling reliability. Configure Vertex AI via the <strong>Providers page</strong> after setup — it uses service account authentication instead of an API key.</p>
+                                </div>
                             </div>
                         )}
 

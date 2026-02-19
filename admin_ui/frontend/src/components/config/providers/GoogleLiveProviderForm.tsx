@@ -601,15 +601,76 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
             {/* Authentication Section */}
             <div>
                 <h4 className="font-semibold mb-3">Authentication</h4>
-                <div className="space-y-2">
-                    <label className="text-sm font-medium">API Key (Environment Variable)</label>
-                    <input
-                        type="text"
-                        className="w-full p-2 rounded border border-input bg-background"
-                        value={config.api_key || '${GOOGLE_API_KEY}'}
-                        onChange={(e) => handleChange('api_key', e.target.value)}
-                        placeholder="${GOOGLE_API_KEY}"
-                    />
+                <div className="space-y-4">
+                    {/* Vertex AI toggle */}
+                    <div className="flex items-start gap-3 p-3 rounded-md border border-input bg-muted/30">
+                        <input
+                            type="checkbox"
+                            id="use_vertex_ai"
+                            className="mt-1 rounded border-input"
+                            checked={config.use_vertex_ai ?? false}
+                            onChange={(e) => handleChange('use_vertex_ai', e.target.checked)}
+                        />
+                        <div>
+                            <label htmlFor="use_vertex_ai" className="text-sm font-medium cursor-pointer">
+                                Use Vertex AI (Enterprise / GCP)
+                            </label>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Connects to <code>aiplatform.googleapis.com</code> using OAuth2/ADC instead of an API key.
+                                Enables GA models with fixed function calling reliability.
+                                Requires <code>GOOGLE_APPLICATION_CREDENTIALS</code> and a GCP project.
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Developer API key — shown when Vertex AI is OFF */}
+                    {!config.use_vertex_ai && (
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">API Key (Environment Variable)</label>
+                            <input
+                                type="text"
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.api_key || '${GOOGLE_API_KEY}'}
+                                onChange={(e) => handleChange('api_key', e.target.value)}
+                                placeholder="${GOOGLE_API_KEY}"
+                            />
+                        </div>
+                    )}
+
+                    {/* Vertex AI project + location — shown when Vertex AI is ON */}
+                    {config.use_vertex_ai && (
+                        <div className="space-y-4 p-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-900/10">
+                            <div className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
+                                <p className="font-medium">Vertex AI Authentication</p>
+                                <p>Set <code>GOOGLE_APPLICATION_CREDENTIALS</code> in your <strong>.env</strong> file pointing to your service account JSON key, then mount it into the container.</p>
+                                <p>Required IAM role: <code>roles/aiplatform.user</code></p>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">GCP Project ID</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.vertex_project || ''}
+                                        onChange={(e) => handleChange('vertex_project', e.target.value)}
+                                        placeholder="${GOOGLE_CLOUD_PROJECT}"
+                                    />
+                                    <p className="text-xs text-muted-foreground">Your GCP project ID (e.g. my-project-123)</p>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">GCP Location / Region</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.vertex_location || 'us-central1'}
+                                        onChange={(e) => handleChange('vertex_location', e.target.value)}
+                                        placeholder="us-central1"
+                                    />
+                                    <p className="text-xs text-muted-foreground">Region for Vertex AI endpoint (e.g. us-central1)</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

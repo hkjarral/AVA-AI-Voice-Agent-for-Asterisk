@@ -29,3 +29,7 @@ numpy>=1.24.0
 
 # OpenAI for summary generation
 openai>=1.0.0
+
+# Google Auth for Vertex AI Live API OAuth2/ADC support (AAVA-191)
+# Only required when use_vertex_ai: true in provider config
+google-auth>=2.0.0
