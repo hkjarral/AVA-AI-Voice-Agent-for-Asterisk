@@ -1917,6 +1917,14 @@ class GoogleLiveProvider(AIProviderInterface):
                 func_args = func_call.get("args", {})
                 call_id = func_call.get("id")
 
+                # Guard: skip duplicate hangup_call if already pending
+                if func_name == "hangup_call" and self._hangup_after_response:
+                    logger.debug(
+                        "Skipping duplicate hangup_call - already pending",
+                        call_id=self._call_id,
+                    )
+                    continue
+
                 logger.info(
                     "Google Live tool call",
                     call_id=self._call_id,
