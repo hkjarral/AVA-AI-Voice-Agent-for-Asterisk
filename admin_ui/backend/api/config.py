@@ -1826,7 +1826,8 @@ async def get_provider_options(provider_type: str):
 # Vertex AI Service Account JSON Management
 # ─────────────────────────────────────────────────────────────────────────────
 
-VERTEX_CREDENTIALS_PATH = "/opt/asterisk-ai/secrets/gcp-service-account.json"
+# Store in project secrets dir - Admin UI has write access, ai_engine mounts it
+VERTEX_CREDENTIALS_PATH = "/app/project/secrets/gcp-service-account.json"
 VERTEX_REGIONS = [
     {"value": "us-central1", "label": "US Central (Iowa)"},
     {"value": "us-east1", "label": "US East (South Carolina)"},
