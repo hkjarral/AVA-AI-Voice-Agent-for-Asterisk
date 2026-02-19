@@ -953,9 +953,12 @@ class GoogleLiveProvider(AIProviderInterface):
             model_name = model_name[7:]  # Remove "models/" prefix
 
         # Vertex AI uses a different model path format (AAVA-191)
+        # Full resource path: projects/{project}/locations/{location}/publishers/google/models/{model}
         use_vertex = getattr(self.config, 'use_vertex_ai', False)
         if use_vertex:
-            model_path = f"publishers/google/models/{model_name}"
+            vertex_project = (getattr(self.config, 'vertex_project', None) or "").strip()
+            vertex_location = (getattr(self.config, 'vertex_location', None) or "us-central1").strip()
+            model_path = f"projects/{vertex_project}/locations/{vertex_location}/publishers/google/models/{model_name}"
         else:
             model_path = f"models/{model_name}"
 
