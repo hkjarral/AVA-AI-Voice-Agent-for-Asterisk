@@ -1363,6 +1363,64 @@ check_data_permissions() {
 }
 
 # ============================================================================
+# Secrets Directory Permissions (Vertex AI credentials, etc.)
+# ============================================================================
+check_secrets_permissions() {
+    local SECRETS_DIR="$SCRIPT_DIR/secrets"
+    local SHARED_GID
+    SHARED_GID="$(choose_shared_gid)"
+    local CONTAINER_UID="${CONTAINER_UID_DEFAULT}"
+
+    # Create secrets directory if it doesn't exist
+    if [ ! -d "$SECRETS_DIR" ]; then
+        if [ "$APPLY_FIXES" = true ]; then
+            mkdir -p "$SECRETS_DIR"
+            chown "$CONTAINER_UID:$SHARED_GID" "$SECRETS_DIR" 2>/dev/null || true
+            chmod 2770 "$SECRETS_DIR" 2>/dev/null || true
+            log_ok "Created secrets directory: $SECRETS_DIR"
+        else
+            log_warn "Secrets directory missing: $SECRETS_DIR"
+            log_info "  Required for Vertex AI service account JSON and other credentials"
+            log_info "  Run: sudo ./preflight.sh --apply-fixes to create it automatically"
+            FIX_CMDS+=("mkdir -p $SECRETS_DIR && chown $CONTAINER_UID:$SHARED_GID $SECRETS_DIR && chmod 2770 $SECRETS_DIR")
+        fi
+        return 0
+    fi
+
+    # Check directory permissions
+    local dir_uid dir_gid dir_mode
+    dir_uid="$(stat_uid "$SECRETS_DIR")"
+    dir_gid="$(stat_gid "$SECRETS_DIR")"
+    dir_mode="$(stat_mode "$SECRETS_DIR")"
+
+    local dir_needs_fix=false
+    if [ "$dir_uid" != "$CONTAINER_UID" ]; then
+        dir_needs_fix=true
+    fi
+
+    if [ "$dir_needs_fix" = true ]; then
+        log_warn "Secrets directory not aligned for containers (host): $SECRETS_DIR"
+        log_info "  Expected: owner UID $CONTAINER_UID, mode 2770 (recommended), group GID $SHARED_GID"
+        log_info "  Detected: uid=${dir_uid:-unknown} gid=${dir_gid:-unknown} mode=${dir_mode:-unknown}"
+        if [ "$APPLY_FIXES" = true ]; then
+            if sudo chown -R "$CONTAINER_UID:$SHARED_GID" "$SECRETS_DIR" 2>/dev/null && sudo chmod 2770 "$SECRETS_DIR" 2>/dev/null; then
+                # Also fix any files inside
+                find "$SECRETS_DIR" -type f -exec sudo chmod 660 {} \; 2>/dev/null || true
+                log_ok "Fixed secrets directory permissions for containers"
+            else
+                log_warn "Could not fix secrets directory permissions (may need sudo)"
+            fi
+        else
+            FIX_CMDS+=("sudo chown -R $CONTAINER_UID:$SHARED_GID $SECRETS_DIR")
+            FIX_CMDS+=("sudo chmod 2770 $SECRETS_DIR")
+            FIX_CMDS+=("sudo find $SECRETS_DIR -type f -exec chmod 660 {} \\;")
+        fi
+    else
+        log_ok "Secrets directory permissions: OK (writable by containers)"
+    fi
+}
+
+# ============================================================================
 # SELinux (RHEL family)
 # ============================================================================
 check_selinux() {
@@ -2313,6 +2371,7 @@ apply_fixes() {
         check_directories >/dev/null 2>&1
         check_project_permissions >/dev/null 2>&1
         check_data_permissions >/dev/null 2>&1
+        check_secrets_permissions >/dev/null 2>&1
         check_selinux >/dev/null 2>&1
         check_env >/dev/null 2>&1
         check_docker_gid >/dev/null 2>&1
@@ -2476,6 +2535,7 @@ main() {
     check_directories
     check_project_permissions
     check_data_permissions  # AAVA-150: Always runs, regardless of Asterisk location
+    check_secrets_permissions  # AAVA-191: Vertex AI credentials directory
     check_selinux
     check_env
     check_docker_gid
