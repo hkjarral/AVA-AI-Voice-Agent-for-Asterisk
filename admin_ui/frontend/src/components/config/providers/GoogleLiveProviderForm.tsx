@@ -48,7 +48,22 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             id="use_vertex_ai"
                             className="mt-1 rounded border-input"
                             checked={config.use_vertex_ai ?? false}
-                            onChange={(e) => handleChange('use_vertex_ai', e.target.checked)}
+                            onChange={(e) => {
+                                const useVertex = e.target.checked;
+                                // Auto-switch to a compatible model when toggling API mode
+                                const currentModel = config.llm_model || '';
+                                const isCurrentModelVertex = currentModel.startsWith('gemini-live-');
+                                const needsModelSwitch = useVertex ? !isCurrentModelVertex : isCurrentModelVertex;
+                                
+                                if (needsModelSwitch) {
+                                    const newModel = useVertex 
+                                        ? 'gemini-live-2.5-flash-native-audio'  // Default Vertex AI model
+                                        : 'gemini-2.5-flash-native-audio-latest';  // Default Developer API model
+                                    onChange({ ...config, use_vertex_ai: useVertex, llm_model: newModel });
+                                } else {
+                                    handleChange('use_vertex_ai', useVertex);
+                                }
+                            }}
                         />
                         <div>
                             <label htmlFor="use_vertex_ai" className="text-sm font-medium cursor-pointer">
@@ -146,15 +161,24 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             value={selectedModel}
                             onChange={(e) => handleChange('llm_model', e.target.value)}
                         >
-                            {GOOGLE_LIVE_MODEL_GROUPS.map((group) => (
-                                <optgroup key={group.label} label={group.label}>
-                                    {group.options.map((modelOption) => (
-                                        <option key={modelOption.value} value={modelOption.value}>
-                                            {modelOption.label}
-                                        </option>
-                                    ))}
-                                </optgroup>
-                            ))}
+                            {GOOGLE_LIVE_MODEL_GROUPS.map((group) => {
+                                const isVertexGroup = group.label === 'Vertex AI Live API';
+                                const isActiveGroup = config.use_vertex_ai ? isVertexGroup : !isVertexGroup;
+                                return (
+                                    <optgroup key={group.label} label={group.label}>
+                                        {group.options.map((modelOption) => (
+                                            <option 
+                                                key={modelOption.value} 
+                                                value={modelOption.value}
+                                                disabled={!isActiveGroup}
+                                                className={!isActiveGroup ? 'text-muted-foreground' : ''}
+                                            >
+                                                {modelOption.label}{!isActiveGroup ? ' (requires ' + (isVertexGroup ? 'Vertex AI' : 'Developer API') + ')' : ''}
+                                            </option>
+                                        ))}
+                                    </optgroup>
+                                );
+                            })}
                             {!GOOGLE_LIVE_SUPPORTED_MODELS.includes(selectedModel) && (
                                 <optgroup label="Custom">
                                     <option value={selectedModel}>{selectedModel}</option>
@@ -162,7 +186,9 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             )}
                         </select>
                         <p className="text-xs text-muted-foreground">
-                            Includes official Gemini Developer API and Vertex AI Live model names.
+                            {config.use_vertex_ai 
+                                ? 'Showing Vertex AI models. Developer API models are disabled.'
+                                : 'Showing Developer API models. Vertex AI models are disabled.'}
                             <a href="https://ai.google.dev/gemini-api/docs/live-guide" target="_blank" rel="noopener noreferrer" className="ml-1 text-blue-500 hover:underline">API Docs ↗</a>
                         </p>
                     </div>
