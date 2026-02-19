@@ -757,7 +757,7 @@ class GoogleLiveProvider(AIProviderInterface):
 
             vertex_endpoint = (
                 f"wss://{vertex_location}-aiplatform.googleapis.com"
-                f"/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
+                f"/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
             )
             ws_url = vertex_endpoint
 
