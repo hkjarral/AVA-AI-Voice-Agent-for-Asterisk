@@ -291,14 +291,15 @@ setup_secrets_directory() {
     CONTAINER_UID=1000
     AST_GID=$(id -g asterisk 2>/dev/null || echo 995)
 
-    if [ -d "$SECRETS_DIR" ]; then
-        print_success "Secrets directory already exists: $SECRETS_DIR"
-    else
+    if [ ! -d "$SECRETS_DIR" ]; then
         $SUDO mkdir -p "$SECRETS_DIR" 2>/dev/null || true
-        $SUDO chown "$CONTAINER_UID:$AST_GID" "$SECRETS_DIR" 2>/dev/null || true
-        $SUDO chmod 2770 "$SECRETS_DIR" 2>/dev/null || true
-        print_success "Created secrets directory: $SECRETS_DIR (mode 2770)"
+        print_success "Created secrets directory: $SECRETS_DIR"
     fi
+    # Always fix ownership/permissions — admin_ui runs as appuser (UID 1000)
+    # and must be able to write credential files via the upload endpoint.
+    $SUDO chown "$CONTAINER_UID:$AST_GID" "$SECRETS_DIR" 2>/dev/null || true
+    $SUDO chmod 2770 "$SECRETS_DIR" 2>/dev/null || true
+    print_success "Secrets directory ready: $SECRETS_DIR (owner=$CONTAINER_UID, mode=2770)"
 
     # Ensure COMPOSE_PROJECT_NAME is set for consistency with preflight.sh
     if [ -f .env ] && ! grep -qE '^COMPOSE_PROJECT_NAME=' .env; then
