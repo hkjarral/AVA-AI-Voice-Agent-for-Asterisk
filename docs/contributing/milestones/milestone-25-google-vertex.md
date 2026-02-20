@@ -74,7 +74,7 @@ Key changes:
 
 #### 4. Dependencies (`requirements.txt`)
 
-```
+```txt
 google-auth>=2.0.0
 ```
 

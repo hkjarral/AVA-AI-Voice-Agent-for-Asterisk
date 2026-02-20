@@ -1394,7 +1394,13 @@ check_secrets_permissions() {
     dir_mode="$(stat_mode "$SECRETS_DIR")"
 
     local dir_needs_fix=false
+    # Check UID, GID, and mode (setgid bit important for group inheritance)
     if [ "$dir_uid" != "$CONTAINER_UID" ]; then
+        dir_needs_fix=true
+    elif [ "$dir_gid" != "$SHARED_GID" ]; then
+        dir_needs_fix=true
+    elif [ "$dir_mode" != "2770" ] && [ "$dir_mode" != "2775" ] && [ "$dir_mode" != "770" ] && [ "$dir_mode" != "775" ]; then
+        # Allow 2770, 2775, 770, 775 as acceptable modes
         dir_needs_fix=true
     fi
 

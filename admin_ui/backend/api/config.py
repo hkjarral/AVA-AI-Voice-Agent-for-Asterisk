@@ -1887,7 +1887,7 @@ async def get_vertex_credentials_status():
             "filename": "gcp-service-account.json",
             "project_id": None,
             "client_email": None,
-            "error": str(e),
+            "error": "Failed to read credentials file",
         }
 
 
@@ -1943,7 +1943,7 @@ async def upload_vertex_credentials(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"Error uploading Vertex AI credentials: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to upload credentials")
 
 
 @router.delete("/vertex-ai/credentials")
@@ -1958,7 +1958,7 @@ async def delete_vertex_credentials():
         return {"status": "success", "message": "Credentials deleted"}
     except Exception as e:
         logger.error(f"Error deleting Vertex AI credentials: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete credentials")
 
 
 @router.post("/vertex-ai/verify")
@@ -2021,4 +2021,4 @@ async def verify_vertex_credentials():
             
     except Exception as e:
         logger.error(f"Error verifying Vertex AI credentials: {e}")
-        raise HTTPException(status_code=400, detail=f"Verification failed: {str(e)}")
+        raise HTTPException(status_code=400, detail="Verification failed - check credentials are valid")
