@@ -755,23 +755,39 @@ class GoogleLiveProvider(AIProviderInterface):
                 credentials.refresh(auth_req)
                 return credentials.token
 
-            bearer_token = await asyncio.get_event_loop().run_in_executor(None, _get_vertex_token)
-            ws_extra_headers = {"Authorization": f"Bearer {bearer_token}"}
+            try:
+                bearer_token = await asyncio.get_event_loop().run_in_executor(None, _get_vertex_token)
+            except Exception as vertex_err:
+                # ADC failed — fall back to Developer API if an API key exists
+                _fallback_key = (getattr(self.config, 'api_key', None) or "").strip()
+                if _fallback_key:
+                    logger.warning(
+                        "Vertex AI ADC failed; falling back to Developer API (api_key)",
+                        call_id=call_id,
+                        error=str(vertex_err),
+                    )
+                    use_vertex = False  # flip flag so downstream code uses API-key path
+                else:
+                    raise  # no fallback available — propagate original error
 
-            vertex_endpoint = (
-                f"wss://{vertex_location}-aiplatform.googleapis.com"
-                f"/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
-            )
-            ws_url = vertex_endpoint
+            if use_vertex:
+                ws_extra_headers = {"Authorization": f"Bearer {bearer_token}"}
 
-            logger.info(
-                "Connecting to Google Vertex AI Live API",
-                call_id=call_id,
-                endpoint=vertex_endpoint,
-                vertex_project=vertex_project,
-                vertex_location=vertex_location,
-            )
-        else:
+                vertex_endpoint = (
+                    f"wss://{vertex_location}-aiplatform.googleapis.com"
+                    f"/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+                )
+                ws_url = vertex_endpoint
+
+                logger.info(
+                    "Connecting to Google Vertex AI Live API",
+                    call_id=call_id,
+                    endpoint=vertex_endpoint,
+                    vertex_project=vertex_project,
+                    vertex_location=vertex_location,
+                )
+
+        if not use_vertex:
             # --- Developer API (default) ---
             api_key = self.config.api_key or ""
             if not api_key:
