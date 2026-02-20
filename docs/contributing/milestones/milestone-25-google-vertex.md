@@ -2,7 +2,7 @@
 
 **Status**: ✅ Complete  
 **Date**: February 19, 2026  
-**Version**: v4.3.0  
+**Version**: v6.2.1  
 **Branch**: `google-vertex-api`  
 **Linear**: [AAVA-191](https://linear.app/hkjarral/issue/AAVA-191)
 
