@@ -767,10 +767,12 @@ class GoogleLiveProvider(AIProviderInterface):
                         error=str(vertex_err),
                     )
                     use_vertex = False  # flip flag so downstream code uses API-key path
+                    self._vertex_active = False  # persist for downstream methods
                 else:
                     raise  # no fallback available — propagate original error
 
             if use_vertex:
+                self._vertex_active = True  # persist for downstream methods
                 ws_extra_headers = {"Authorization": f"Bearer {bearer_token}"}
 
                 vertex_endpoint = (
@@ -788,6 +790,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 )
 
         if not use_vertex:
+            self._vertex_active = False
             # --- Developer API (default) ---
             api_key = self.config.api_key or ""
             if not api_key:
@@ -973,7 +976,7 @@ class GoogleLiveProvider(AIProviderInterface):
 
         # Vertex AI uses a different model path format (AAVA-191)
         # Full resource path: projects/{project}/locations/{location}/publishers/google/models/{model}
-        use_vertex = getattr(self.config, 'use_vertex_ai', False)
+        use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
         if use_vertex:
             vertex_project = (getattr(self.config, 'vertex_project', None) or "").strip()
             vertex_location = (getattr(self.config, 'vertex_location', None) or "us-central1").strip()
@@ -1148,7 +1151,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 payload["message"] = str(result.get("message") or "")
             
             # For hangup_call on Vertex AI: add explicit instruction to speak farewell
-            use_vertex = getattr(self.config, 'use_vertex_ai', False)
+            use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
             if use_vertex and tool_name == "hangup_call" and result.get("will_hangup"):
                 farewell = result.get("message", "")
                 if farewell:
@@ -2009,7 +2012,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 # Send tool response (camelCase per official API)
                 # Vertex AI doesn't accept "id" field in function responses (AAVA-191)
                 safe_result = self._build_tool_response_payload(func_name, result)
-                use_vertex = getattr(self.config, 'use_vertex_ai', False)
+                use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
                 if use_vertex:
                     func_response = {
                         "name": func_name,
