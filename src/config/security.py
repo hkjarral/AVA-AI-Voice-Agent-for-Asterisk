@@ -238,11 +238,16 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
         # Case 1: env var not set at all → set it if the default file exists.
         # Case 2: env var set but points to a missing file → override with the
         #         default mount path so ADC doesn't blow up at call time.
+        # Case 3: env var set, file missing, AND no default fallback → unset the
+        #         var so google.auth.default() doesn't crash on a stale path.
         default_creds_path = "/app/project/secrets/gcp-service-account.json"
         current_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
         if not current_creds or not os.path.isfile(current_creds):
             if os.path.isfile(default_creds_path):
                 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = default_creds_path
+            elif current_creds:
+                # Stale pointer — remove so ADC falls back to API-key mode
+                os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
 
         config_data['providers'] = providers_block
     except Exception:
