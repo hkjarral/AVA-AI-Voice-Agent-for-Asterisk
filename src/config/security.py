@@ -234,11 +234,13 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
                 google_live_block.setdefault('vertex_location', gcp_location)
             providers_block['google_live'] = google_live_block
         
-        # Auto-set GOOGLE_APPLICATION_CREDENTIALS for Vertex AI ADC when the
-        # credentials file exists at the default mount path but the env var was
-        # not explicitly provided by the user (e.g. via .env or docker-compose).
-        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            default_creds_path = "/app/project/secrets/gcp-service-account.json"
+        # Auto-set GOOGLE_APPLICATION_CREDENTIALS for Vertex AI ADC.
+        # Case 1: env var not set at all → set it if the default file exists.
+        # Case 2: env var set but points to a missing file → override with the
+        #         default mount path so ADC doesn't blow up at call time.
+        default_creds_path = "/app/project/secrets/gcp-service-account.json"
+        current_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+        if not current_creds or not os.path.isfile(current_creds):
             if os.path.isfile(default_creds_path):
                 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = default_creds_path
 
