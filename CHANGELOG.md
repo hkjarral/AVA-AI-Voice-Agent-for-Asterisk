@@ -1434,6 +1434,9 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 
 ## Version History
 
+- **v6.2.2** (2026-02-20) - Vertex AI credentials auto-management, ADC graceful fallback, secrets dir permissions, install.sh YAML dupe fix, dashboard pipeline variant display
+- **v6.2.1** (2026-02-20) - Google Vertex AI Live API Support, credential upload/verify/delete, preflight secrets dir check
+- **v6.2.0** (2026-02-20) - Google Live API integration, Admin UI provider settings, golden baseline configs
 - **v5.3.1** (2026-02-01) - Phase Tools (HTTP + webhooks) + Deepgram language + Admin UI + RCA enhancements + stability fixes
 - **v5.2.5** (2026-01-28) - Stable Updates improvements + updater image publishing + AudioSocket default
 - **v5.2.4** (2026-01-26) - Admin UI Docker Services hardening + remove background update checks
@@ -1450,7 +1453,9 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.0...HEAD
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.2...HEAD
+[6.2.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.1...v6.2.2
+[6.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.0...v6.2.1
 [6.2.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.1.1...v6.2.0
 [6.1.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v6.1.1
 [6.0.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v6.0.0
