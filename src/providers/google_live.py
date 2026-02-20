@@ -2017,31 +2017,29 @@ class GoogleLiveProvider(AIProviderInterface):
 
                 if func_name == "hangup_call" and self._force_farewell_text:
                     self._post_hangup_output_detected = False
-                    # For Vertex AI: send farewell prompt immediately after tool response
-                    # since Vertex AI doesn't automatically generate audio from tool responses
-                    use_vertex = getattr(self.config, 'use_vertex_ai', False)
-                    if use_vertex:
-                        farewell = self._force_farewell_text
-                        farewell_msg = {
-                            "clientContent": {
-                                "turns": [
-                                    {
-                                        "role": "user",
-                                        "parts": [{"text": f"[SYSTEM: The hangup_call tool was executed. Please speak this farewell message to the caller verbatim, then stop speaking: \"{farewell}\"]"}],
-                                    }
-                                ],
-                                "turnComplete": True,
-                            }
+                    # Send farewell prompt immediately after tool response for both API modes.
+                    # The delayed approach (3s wait) was unreliable - WebSocket or call can close
+                    # before the farewell is sent. Immediate prompt works for both Developer API
+                    # and Vertex AI.
+                    farewell = self._force_farewell_text
+                    farewell_msg = {
+                        "clientContent": {
+                            "turns": [
+                                {
+                                    "role": "user",
+                                    "parts": [{"text": f"[SYSTEM: The hangup_call tool was executed. Please speak this farewell message to the caller verbatim, then stop speaking: \"{farewell}\"]"}],
+                                }
+                            ],
+                            "turnComplete": True,
                         }
-                        await self._send_message(farewell_msg)
-                        self._force_farewell_sent = True
-                        logger.info(
-                            "📢 Sent immediate farewell prompt for Vertex AI",
-                            call_id=self._call_id,
-                            farewell_preview=farewell[:60],
-                        )
-                    else:
-                        self._schedule_forced_farewell_if_needed()
+                    }
+                    await self._send_message(farewell_msg)
+                    self._force_farewell_sent = True
+                    logger.info(
+                        "📢 Sent immediate farewell prompt after hangup_call",
+                        call_id=self._call_id,
+                        farewell_preview=farewell[:60],
+                    )
                 
                 # Log tool call to session for call history (Milestone 21)
                 try:
