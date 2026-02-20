@@ -669,8 +669,11 @@ class GoogleLiveProvider(AIProviderInterface):
         return ["ulaw"]
 
     def is_ready(self) -> bool:
-        """Check if provider is properly configured with required API key."""
-        api_key = getattr(self.config, 'api_key', None) or ""
+        """Check if provider is properly configured with required credentials."""
+        # Vertex AI mode requires project ID, Developer API mode requires API key
+        if getattr(self.config, "use_vertex_ai", False):
+            return bool((getattr(self.config, "vertex_project", "") or "").strip())
+        api_key = getattr(self.config, "api_key", None) or ""
         return bool(api_key and str(api_key).strip())
 
     async def start_session(
