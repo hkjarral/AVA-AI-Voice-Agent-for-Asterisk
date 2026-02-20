@@ -283,6 +283,31 @@ setup_models_directory() {
     fi
 }
 
+setup_secrets_directory() {
+    print_info "Setting up secrets directory for credential files (e.g. Vertex AI service account)..."
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SECRETS_DIR="$SCRIPT_DIR/secrets"
+    CONTAINER_UID=1000
+    AST_GID=$(id -g asterisk 2>/dev/null || echo 995)
+
+    if [ -d "$SECRETS_DIR" ]; then
+        print_success "Secrets directory already exists: $SECRETS_DIR"
+    else
+        $SUDO mkdir -p "$SECRETS_DIR" 2>/dev/null || true
+        $SUDO chown "$CONTAINER_UID:$AST_GID" "$SECRETS_DIR" 2>/dev/null || true
+        $SUDO chmod 2770 "$SECRETS_DIR" 2>/dev/null || true
+        print_success "Created secrets directory: $SECRETS_DIR (mode 2770)"
+    fi
+
+    # Ensure COMPOSE_PROJECT_NAME is set for consistency with preflight.sh
+    if [ -f .env ] && ! grep -qE '^COMPOSE_PROJECT_NAME=' .env; then
+        upsert_env COMPOSE_PROJECT_NAME "asterisk-ai-voice-agent"
+        [ -f .env.bak ] && rm -f .env.bak || true
+        print_info "Set COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent in .env"
+    fi
+}
+
 print_success() {
     echo -e "${COLOR_GREEN}SUCCESS: $1${COLOR_RESET}"
 }
@@ -555,12 +580,46 @@ update_yaml_llm() {
             print_warning "yq update failed (check yq version >= 4.x). Using fallback method..."
         fi
     fi
-    # Fallback: append an llm block at end (last key wins in PyYAML)
+    # Fallback: update llm block without yq.  AAVA-192 — never append a duplicate
+    # root-level llm: key; the Admin UI YAML loader rejects duplicate keys.
     local G_ESC
     local R_ESC
     G_ESC=$(printf '%s' "$GREETING" | sed 's/"/\\"/g')
     R_ESC=$(printf '%s' "$AI_ROLE" | sed 's/"/\\"/g')
-    cat >> "$CFG_DST" <<EOF
+
+    # Preferred fallback: use Python + PyYAML (available inside the container and
+    # on most hosts with python3).
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import yaml" 2>/dev/null; then
+        if python3 - "$CFG_DST" "$G_ESC" "$R_ESC" <<'PYEOF'
+import sys, yaml
+cfg_path, greeting, role = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(cfg_path, "r") as f:
+    data = yaml.safe_load(f) or {}
+if not isinstance(data, dict):
+    sys.exit(1)
+llm = data.setdefault("llm", {})
+llm["initial_greeting"] = greeting
+llm["prompt"] = role
+llm.setdefault("model", "gpt-4o")
+with open(cfg_path, "w") as f:
+    yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+PYEOF
+        then
+            print_success "Updated llm.* in $CFG_DST via Python/PyYAML (fallback)."
+            return 0
+        fi
+        print_warning "Python/PyYAML fallback failed; trying sed..."
+    fi
+
+    # Last-resort: sed-based update or append (only append if no llm: block exists)
+    if grep -qE '^llm:' "$CFG_DST"; then
+        # Update existing llm block fields in-place
+        sed -i.bak -E "s|^(  initial_greeting:).*|\1 \"$G_ESC\"|" "$CFG_DST"
+        sed -i.bak -E "s|^(  prompt:).*|\1 \"$R_ESC\"|" "$CFG_DST"
+        [ -f "${CFG_DST}.bak" ] && rm -f "${CFG_DST}.bak" || true
+        print_success "Updated llm.* in $CFG_DST via sed (fallback)."
+    else
+        cat >> "$CFG_DST" <<EOF
 
 # llm block inserted by install.sh (fallback path)
 llm:
@@ -568,7 +627,8 @@ llm:
   prompt: "$R_ESC"
   model: "gpt-4o"
 EOF
-    print_success "Appended llm block to $CFG_DST (fallback)."
+        print_success "Appended llm block to $CFG_DST (fallback)."
+    fi
 }
 
 # --- Local model helpers ---
@@ -1752,6 +1812,7 @@ main() {
     setup_media_paths
     setup_data_directory
     setup_models_directory
+    setup_secrets_directory
     start_services
 }
 

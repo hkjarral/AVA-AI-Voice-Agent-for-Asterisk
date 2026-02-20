@@ -768,7 +768,7 @@ async def load_existing_config():
                 config["greeting"] = greeting
             
             active_pipeline = (yaml_config.get("active_pipeline") or "").strip()
-            if active_pipeline == "local_hybrid":
+            if active_pipeline == "local_hybrid" or active_pipeline.startswith("local_hybrid_"):
                 config["provider"] = "local_hybrid"
             elif default_ctx.get("provider"):
                 config["provider"] = default_ctx.get("provider")
@@ -2936,8 +2936,14 @@ async def save_setup_config(config: SetupConfig):
 
             elif config.provider == "local_hybrid":
                 # local_hybrid is a PIPELINE (Local STT + Cloud/Local LLM + Local TTS)
-                yaml_config["active_pipeline"] = "local_hybrid"
-                yaml_config["default_provider"] = "local"  # Fallback provider
+                # AAVA-185: Use variant-specific pipeline name so the dashboard
+                # correctly highlights the active pipeline (e.g. local_hybrid_groq).
+                llm_provider = (config.hybrid_llm_provider or "groq").lower()
+                pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
+                    "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
+                )
+                yaml_config["active_pipeline"] = pipeline_name
+                yaml_config["default_provider"] = pipeline_name  # Fallback provider
                 
                 # Configure local provider
                 providers.setdefault("local", {})["enabled"] = True
@@ -2963,7 +2969,6 @@ async def save_setup_config(config: SetupConfig):
                 if not provider_exists("local_tts"):
                     providers["local_tts"]["ws_url"] = "${LOCAL_WS_URL:-ws://127.0.0.1:8765}"
                 
-                llm_provider = (config.hybrid_llm_provider or "groq").lower()
                 if llm_provider == "openai":
                     providers.setdefault("openai_llm", {})["enabled"] = True
                     if not provider_exists("openai_llm"):
@@ -2999,14 +3004,14 @@ async def save_setup_config(config: SetupConfig):
                             "capabilities": ["llm"],
                         })
                 
-                # Define the pipeline
+                # Define the pipeline with variant-specific name (AAVA-185)
                 llm_component = "openai_llm"
                 if llm_provider == "groq":
                     llm_component = "groq_llm"
                 elif llm_provider == "ollama":
                     llm_component = "ollama_llm"
 
-                yaml_config.setdefault("pipelines", {})["local_hybrid"] = {
+                yaml_config.setdefault("pipelines", {})[pipeline_name] = {
                     "stt": "local_stt",
                     "llm": llm_component,
                     "tts": "local_tts"
@@ -3020,7 +3025,7 @@ async def save_setup_config(config: SetupConfig):
                 "profile": "telephony_ulaw_8k"
             }
             if config.provider == "local_hybrid":
-                default_context["pipeline"] = "local_hybrid"
+                default_context["pipeline"] = pipeline_name
             yaml_config.setdefault("contexts", {})["default"] = default_context
 
             # Canonical: ARI application name is YAML-owned (asterisk.app_name).

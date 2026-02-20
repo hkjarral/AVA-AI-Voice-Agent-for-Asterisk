@@ -234,6 +234,14 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
                 google_live_block.setdefault('vertex_location', gcp_location)
             providers_block['google_live'] = google_live_block
         
+        # Auto-set GOOGLE_APPLICATION_CREDENTIALS for Vertex AI ADC when the
+        # credentials file exists at the default mount path but the env var was
+        # not explicitly provided by the user (e.g. via .env or docker-compose).
+        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            default_creds_path = "/app/project/secrets/gcp-service-account.json"
+            if os.path.isfile(default_creds_path):
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = default_creds_path
+
         config_data['providers'] = providers_block
     except Exception:
         # Non-fatal; Pydantic may still raise if keys are missing

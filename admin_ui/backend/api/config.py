@@ -28,6 +28,41 @@ def _is_prefix(key: str, prefixes: tuple[str, ...]) -> bool:
     return any(key.startswith(p) for p in prefixes)
 
 
+def _running_container_names() -> set:
+    """Return a set of container names that are currently running."""
+    try:
+        import docker  # type: ignore
+        client = docker.from_env()
+        return {c.name for c in client.containers.list(filters={"status": "running"})}
+    except Exception:
+        return set()
+
+
+def _upsert_env_key(key: str, value: str) -> None:
+    """Insert or update a single key in the project .env file."""
+    env_path = settings.ENV_PATH
+    lines: list[str] = []
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip("# ").strip()
+        if stripped.startswith(f"{key}="):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append(f"{key}={value}\n")
+
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+
+
 def _ai_engine_env_key(key: str) -> bool:
     return (
         # Track .env-owned health settings that require ai_engine recreate when changed.
@@ -833,14 +868,19 @@ async def update_env(env_data: Dict[str, Optional[str]]):
         impacts_local_ai = any(_local_ai_env_key(k) for k in changed_keys)
         impacts_admin_ui = any(_admin_ui_env_key(k) for k in changed_keys)
 
+        # Only suggest restart for containers that are actually running.
+        # This avoids confusing "Apply Changes" prompts for e.g. local_ai_server
+        # when it is not deployed.
+        running = _running_container_names()
+
         apply_plan = []
         # NOTE: For ai_engine/local_ai_server, env_file (.env) changes require a force-recreate.
         # The frontend calls /restart?recreate=true for these services.
-        if impacts_ai_engine:
+        if impacts_ai_engine and "ai_engine" in running:
             apply_plan.append({"service": "ai_engine", "method": "recreate", "endpoint": "/api/system/containers/ai_engine/restart"})
-        if impacts_local_ai:
+        if impacts_local_ai and "local_ai_server" in running:
             apply_plan.append({"service": "local_ai_server", "method": "recreate", "endpoint": "/api/system/containers/local_ai_server/restart"})
-        if impacts_admin_ui:
+        if impacts_admin_ui and "admin_ui" in running:
             # Admin UI reads .env from disk at startup; a restart is sufficient in most cases.
             apply_plan.append({"service": "admin_ui", "method": "restart", "endpoint": "/api/system/containers/admin_ui/restart"})
 
@@ -898,10 +938,6 @@ async def get_env_status():
         except Exception:
             return {}
 
-    ai_env = _container_env("ai_engine")
-    local_env = _container_env("local_ai_server")
-    admin_env = _container_env("admin_ui")
-
     def _diff_keys(*, desired: Dict[str, str], actual: Dict[str, str], key_pred) -> list[str]:
         keys = set()
         keys.update([k for k in desired.keys() if key_pred(k)])
@@ -914,9 +950,18 @@ async def get_env_status():
                 diffs.append(k)
         return diffs
 
-    drift_ai = _diff_keys(desired=env_map, actual=ai_env, key_pred=_ai_engine_env_key)
-    drift_local = _diff_keys(desired=env_map, actual=local_env, key_pred=_local_ai_env_key)
-    drift_admin = _diff_keys(desired=env_map, actual=admin_env, key_pred=_admin_ui_env_key)
+    # Only compute drift for containers that are actually running.
+    # Comparing .env against a non-existent container yields false drift for
+    # every matching key (e.g. all LOCAL_* keys when local_ai_server is absent).
+    running = _running_container_names()
+
+    ai_env = _container_env("ai_engine") if "ai_engine" in running else {}
+    local_env = _container_env("local_ai_server") if "local_ai_server" in running else {}
+    admin_env = _container_env("admin_ui") if "admin_ui" in running else {}
+
+    drift_ai = _diff_keys(desired=env_map, actual=ai_env, key_pred=_ai_engine_env_key) if "ai_engine" in running else []
+    drift_local = _diff_keys(desired=env_map, actual=local_env, key_pred=_local_ai_env_key) if "local_ai_server" in running else []
+    drift_admin = _diff_keys(desired=env_map, actual=admin_env, key_pred=_admin_ui_env_key) if "admin_ui" in running else []
 
     apply_plan = []
     if drift_local:
@@ -1928,6 +1973,14 @@ async def upload_vertex_credentials(file: UploadFile = File(...)):
         os.chmod(temp_path, 0o600)  # Restrict permissions
         os.replace(temp_path, VERTEX_CREDENTIALS_PATH)
         
+        # Auto-upsert GOOGLE_APPLICATION_CREDENTIALS in .env so the env var
+        # persists across container recreates.  The container mount path is
+        # /app/project/secrets/gcp-service-account.json (see docker-compose.yml).
+        try:
+            _upsert_env_key("GOOGLE_APPLICATION_CREDENTIALS", "/app/project/secrets/gcp-service-account.json")
+        except Exception:
+            logger.warning("Could not auto-set GOOGLE_APPLICATION_CREDENTIALS in .env")
+
         logger.info(f"Vertex AI credentials uploaded: project={creds.get('project_id')}")
         
         return {
