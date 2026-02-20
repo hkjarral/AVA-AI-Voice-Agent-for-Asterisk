@@ -64,7 +64,10 @@ def test_vertex_endpoint_default_location():
 
 def test_vertex_endpoint_custom_location():
     url = _build_vertex_endpoint("europe-west4")
-    assert url.startswith("wss://europe-west4-aiplatform.googleapis.com/")
+    assert url == (
+        "wss://europe-west4-aiplatform.googleapis.com"
+        "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
+    )
 
 
 def test_vertex_endpoint_uses_v1beta1_not_v1beta():
@@ -75,12 +78,13 @@ def test_vertex_endpoint_uses_v1beta1_not_v1beta():
 
 def test_developer_api_endpoint_unchanged():
     """Developer API endpoint must remain unchanged for regression safety."""
-    developer_endpoint = (
+    # Test the actual production config default, not a local constant
+    cfg = GoogleProviderConfig()
+    expected = (
         "wss://generativelanguage.googleapis.com"
         "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     )
-    assert developer_endpoint.startswith("wss://generativelanguage.googleapis.com/")
-    assert "v1beta.GenerativeService" in developer_endpoint
+    assert cfg.websocket_endpoint == expected
 
 
 # ---------------------------------------------------------------------------
