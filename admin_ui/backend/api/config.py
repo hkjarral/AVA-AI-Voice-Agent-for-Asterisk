@@ -1896,7 +1896,7 @@ async def upload_vertex_credentials(file: UploadFile = File(...)):
     """Upload a GCP service account JSON file for Vertex AI authentication."""
     import json
     
-    if not file.filename.endswith('.json'):
+    if not file.filename or not file.filename.endswith('.json'):
         raise HTTPException(status_code=400, detail="File must be a JSON file")
     
     try:
@@ -1971,16 +1971,21 @@ async def verify_vertex_credentials():
     
     try:
         # Try to use google-auth to verify credentials
+        import asyncio
         from google.oauth2 import service_account
         from google.auth.transport.requests import Request
         
-        credentials = service_account.Credentials.from_service_account_file(
-            VERTEX_CREDENTIALS_PATH,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
+        def _refresh_credentials():
+            """Blocking credential refresh - run in thread to avoid blocking event loop."""
+            creds = service_account.Credentials.from_service_account_file(
+                VERTEX_CREDENTIALS_PATH,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            creds.refresh(Request())
+            return creds
         
-        # Refresh to get a token (validates the credentials)
-        credentials.refresh(Request())
+        # Run blocking credential refresh in thread pool
+        credentials = await asyncio.to_thread(_refresh_credentials)
         
         # Read project info
         with open(VERTEX_CREDENTIALS_PATH, 'r') as f:
