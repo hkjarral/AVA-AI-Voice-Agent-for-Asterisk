@@ -18,7 +18,7 @@ This directory contains optional helpers for contributors working from the `deve
 
 - `.cursor/rules/`
 - `.windsurf/rules/`
-- `Agents.md`, `Gemini.md`
+- `Agents.md`, `CLAUDE.md`, `Gemini.md`
 - Regression docs (`docs/resilience.md`, plus any long-form walkthroughs kept under `archived/regressions/`)
 - This `tools/ide/` directory
 

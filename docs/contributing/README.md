@@ -4,11 +4,17 @@ Welcome to Asterisk AI Voice Agent development! This directory contains everythi
 
 ## 🚀 Getting Started
 
-**New to the project?** Start here:
+**New to the project?** Choose your path:
 
+### For Operators (No Coding Required)
+1. **[Operator Contributor Guide](OPERATOR_CONTRIBUTOR_GUIDE.md)** - Zero-knowledge contributor walkthrough
+2. Run `scripts/setup-contributor.sh` and open in Windsurf
+3. Tell AVA: "I want to contribute"
+
+### For Developers
 1. **[Quick Start Guide](quickstart.md)** - Set up your dev environment in 15 minutes
 2. **[Architecture Overview](architecture-quickstart.md)** - Understand the system (10-minute read)
-3. **[Common Pitfalls](COMMON_PITFALLS.md)** - Avoid these mistakes ⚠️
+3. **[Common Pitfalls](COMMON_PITFALLS.md)** - Avoid these mistakes
 
 ## 🔧 Development Guides
 
@@ -17,6 +23,15 @@ Welcome to Asterisk AI Voice Agent development! This directory contains everythi
 - **[Tool Development](tool-development.md)** - Create telephony/business tools (hangup, transfer, email)
 - **[Provider Development](provider-development.md)** - Add STT/LLM/TTS providers (Azure, Google, etc.)
 - **[Pipeline Development](pipeline-development.md)** - Build custom audio processing pipelines
+- **[Coding Guidelines](CODING_GUIDELINES.md)** - Code standards for all contributions
+
+### Contribution Area Guides
+
+- **[Full Agent Providers](adding-full-agent-provider.md)** - Build monolithic STT+LLM+TTS providers
+- **[Pipeline Adapters](adding-pipeline-adapter.md)** - Build modular STT, LLM, or TTS adapters
+- **[Pre-Call Hooks](pre-call-hooks-development.md)** - Enrich calls with CRM/database lookups
+- **[In-Call Hooks](in-call-hooks-development.md)** - AI-invoked tools during conversation
+- **[Post-Call Hooks](post-call-hooks-development.md)** - Webhooks to Slack, Discord, CRM, etc.
 - **[Testing Guide](testing-guide.md)** - Test your changes with real calls
 - **[Testing Develop Branch](testing-develop-branch.md)** - Try new features while preserving your configs
 - **[Debugging Guide](debugging-guide.md)** - Debug with logs, RCA scripts, and agent CLI

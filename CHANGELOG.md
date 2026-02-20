@@ -12,29 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
-## [6.2.2] - 2026-02-20
-
-### Fixed
-
-- **Vertex AI Credentials Not Found**: Auto-inject `GOOGLE_APPLICATION_CREDENTIALS` env var when the service account JSON file exists at the default mount path (`/app/project/secrets/gcp-service-account.json`). Handles 3 cases: env var unset, env var pointing to missing file (override), and stale pointer with no fallback (unset to prevent ADC crash).
-- **Vertex AI ADC Graceful Fallback**: When `use_vertex_ai: true` but ADC fails (e.g. no service account uploaded), the Google Live provider now falls back to Developer API (api_key) mode instead of crashing the call with `DefaultCredentialsError`. Consistent `_vertex_active` instance flag ensures model path, tool responses, and connection URL all use the correct API format after fallback.
-- **Secrets Directory Permissions**: `setup_secrets_directory()` in `install.sh` now always fixes ownership to UID 1000 (appuser) with mode 2770, not just on creation. Fixes "Permission denied" when uploading Vertex AI credentials via Admin UI (backend runs as appuser via gosu).
-- **False "Apply Changes" for local_ai_server** (AAVA-192 related): Environment page no longer shows restart prompts for containers that aren't running — prevents confusing drift detection when `local_ai_server` is intentionally stopped.
-- **AAVA-192 — install.sh Duplicate YAML Keys**: Fallback path in `update_yaml_llm()` no longer blindly appends a duplicate `llm:` block. Uses Python/PyYAML or sed-based in-place update when the block already exists.
-- **AAVA-185 — Dashboard Pipeline Variant Display**: Wizard now sets `active_pipeline` and `default_provider` to the variant-specific name (e.g. `local_hybrid_groq`) when Groq LLM is selected. Dashboard topology adds defensive variant matching for backward compatibility.
-
-### Added
-
-- **Secrets Directory in install.sh**: `setup_secrets_directory()` creates `./secrets/` with correct permissions (2770) during installation, aligning with `preflight.sh`.
-- **COMPOSE_PROJECT_NAME Auto-set**: `install.sh` now ensures `COMPOSE_PROJECT_NAME=asterisk-ai-voice-agent` is set in `.env` for consistency with `preflight.sh`.
-- **Auto-upsert GOOGLE_APPLICATION_CREDENTIALS on Upload**: When Vertex AI credentials are uploaded via Admin UI, the env var is automatically added to `.env` for persistence across container recreates.
-
-### Migration from v6.2.1
-
-1. **No breaking changes.** All fixes are backward compatible.
-2. **Vertex AI users**: Credentials will be auto-detected on next container restart — no manual `.env` editing needed.
-3. **Docker rebuild required**: Run `docker compose up -d --build --force-recreate` to pick up all fixes.
-
 ## [6.2.1] - 2026-02-20
 
 ### Added

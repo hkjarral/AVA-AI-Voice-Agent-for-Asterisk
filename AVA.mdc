@@ -363,6 +363,132 @@ When Linear MCP is available:
 
 In all cases, keep local docs and code in sync with the latest agreed behavior, and help maintainers remember to update both Linear and the Discord community when plans change.
 
+## Playbook: First-Time Contributor Onboarding
+
+When someone says "I want to contribute", "what can I work on", "how do I help", or similar:
+
+1. **Welcome them warmly.** Tell them: "You don't need to know coding or GitHub — I'll handle everything."
+
+2. **Check their setup:**
+   - Is `gh` CLI installed? Run: `gh --version`
+   - Is the repo forked? Run: `git remote -v` and check for a fork remote
+   - If not set up, walk them through the one-time setup from `docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md`
+
+3. **Ask what they want to work on:**
+   - "Do you have a specific idea, or want me to suggest something?"
+   - If no idea, suggest from `docs/ROADMAP.md` Good First Issues based on their interest:
+     - Telephony operators: voicemail tests, dialplan docs, call flow edge cases
+     - Admin UI users: accessibility fixes, UI improvements
+     - General: case studies, config examples, translations
+   - For non-trivial features, check if it aligns with `docs/ROADMAP.md` planned milestones
+
+4. **Do the work:**
+   - Create/modify files as needed
+   - Follow all architecture rules from IDE rule files and `docs/contributing/CODING_GUIDELINES.md`
+   - For new features of milestone scope: create a milestone spec using `docs/contributing/milestones/TEMPLATE.md`
+   - Run tests locally: `PYTHONPATH=$(pwd) pytest tests/ -v`
+   - Help them test on their server if applicable
+
+5. **Deploy and test on their server (if telephony changes):**
+   - Check if `.env.contributor` has `CONTRIBUTOR_SERVER` set
+   - If so, help deploy: push to fork, then `ssh root@$SERVER "cd /path/to/AAVA && git pull && docker compose up -d --build"`
+   - Help them make a test call and interpret results via `agent doctor`
+
+6. **When done**, ask: "Ready to submit this as a contribution?"
+
+## Playbook: Submit a Pull Request
+
+When someone says "submit", "open a PR", "send my changes", or "contribute this":
+
+1. **Verify gh CLI is authenticated:**
+   ```bash
+   gh auth status
+   ```
+   If not authenticated, help them run `gh auth login`.
+
+2. **Ensure they have a fork:**
+   ```bash
+   gh repo fork hkjarral/Asterisk-AI-Voice-Agent --remote --remote-name fork
+   ```
+   (Idempotent — safe to run even if already forked.)
+
+3. **Create a feature branch from develop:**
+   ```bash
+   git checkout develop
+   git pull origin develop
+   git checkout -b contrib/<short-description>
+   ```
+
+4. **Stage and commit all changes:**
+   ```bash
+   git add -A
+   git commit -m "<descriptive message summarizing the change>"
+   ```
+
+5. **Push to their fork:**
+   ```bash
+   git push fork contrib/<short-description>
+   ```
+
+6. **Create the PR:**
+   ```bash
+   gh pr create \
+     --repo hkjarral/Asterisk-AI-Voice-Agent \
+     --base staging \
+     --title "<short title>" \
+     --body "## Summary
+   <1-3 bullet points describing the change>
+
+   ## Testing
+   <how it was tested, or 'N/A for docs changes'>
+
+   ---
+   Submitted via AVA (AI-assisted contribution)"
+   ```
+
+7. **Share the PR URL** with the contributor. Tell them:
+   "Your contribution has been submitted! A maintainer will review it. If they request changes, just tell me and I'll help you fix them."
+
+8. **For follow-up changes** after review feedback:
+   ```bash
+   git add -A
+   git commit -m "<fix description>"
+   git push fork contrib/<short-description>
+   ```
+   The PR updates automatically.
+
+## Quality Gates for All Contributions
+
+When a contributor wants to build something new, enforce these gates:
+
+1. **Check roadmap alignment:**
+   - Does it match a Planned Milestone in `docs/ROADMAP.md`?
+   - If yes: reference the milestone spec under `docs/contributing/milestones/`
+   - If new: help create a milestone spec using `docs/contributing/milestones/TEMPLATE.md` and submit as a Draft PR + GitHub Discussion (per `GOVERNANCE.md`)
+
+2. **Enforce coding guidelines:**
+   - All code must follow `docs/contributing/CODING_GUIDELINES.md`
+   - Tools: follow `docs/contributing/tool-development.md` pattern
+   - Providers/Pipelines: follow `docs/contributing/provider-development.md` pattern
+   - Common mistakes: check `docs/contributing/COMMON_PITFALLS.md`
+
+3. **Ensure documentation is complete:**
+   - New tools: update `docs/TOOL_CALLING_GUIDE.md`
+   - New providers: create `docs/Provider-<Name>-Setup.md`
+   - New config fields: update `docs/Configuration-Reference.md`
+   - New milestones: update `docs/ROADMAP.md` status
+   - Architecture changes: update `docs/contributing/architecture-deep-dive.md`
+
+4. **Run tests before PR:**
+   - `PYTHONPATH=$(pwd) pytest tests/ -v`
+   - For telephony changes: at least one real test call with call ID documented
+
+5. **PR must include:**
+   - Clear description of the change
+   - Reference to ROADMAP item or GitHub Issue
+   - Testing summary (test call IDs for telephony, pytest output for unit tests)
+   - Documentation updates listed
+
 ## Relationship to IDE Rule Files
 
 You own **what to build and how to orchestrate work** at a high level.

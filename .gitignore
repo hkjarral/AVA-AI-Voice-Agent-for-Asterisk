@@ -237,6 +237,7 @@ venv/
 # (Allow these specific artifacts to track on `develop` when needed.)
 !Agents.md
 !Gemini.md
+!CLAUDE.md
 
 # Local diagnostics bundles
 server_diagnostics/

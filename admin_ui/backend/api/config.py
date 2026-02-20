@@ -1973,14 +1973,6 @@ async def upload_vertex_credentials(file: UploadFile = File(...)):
         os.chmod(temp_path, 0o600)  # Restrict permissions
         os.replace(temp_path, VERTEX_CREDENTIALS_PATH)
         
-        # Auto-upsert GOOGLE_APPLICATION_CREDENTIALS in .env so the env var
-        # persists across container recreates.  The container mount path is
-        # /app/project/secrets/gcp-service-account.json (see docker-compose.yml).
-        try:
-            _upsert_env_key("GOOGLE_APPLICATION_CREDENTIALS", "/app/project/secrets/gcp-service-account.json")
-        except Exception:
-            logger.warning("Could not auto-set GOOGLE_APPLICATION_CREDENTIALS in .env")
-
         logger.info(f"Vertex AI credentials uploaded: project={creds.get('project_id')}")
         
         return {

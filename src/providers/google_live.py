@@ -755,42 +755,23 @@ class GoogleLiveProvider(AIProviderInterface):
                 credentials.refresh(auth_req)
                 return credentials.token
 
-            try:
-                bearer_token = await asyncio.get_event_loop().run_in_executor(None, _get_vertex_token)
-            except Exception as vertex_err:
-                # ADC failed — fall back to Developer API if an API key exists
-                _fallback_key = (getattr(self.config, 'api_key', None) or "").strip()
-                if _fallback_key:
-                    logger.warning(
-                        "Vertex AI ADC failed; falling back to Developer API (api_key)",
-                        call_id=call_id,
-                        error=str(vertex_err),
-                    )
-                    use_vertex = False  # flip flag so downstream code uses API-key path
-                    self._vertex_active = False  # persist for downstream methods
-                else:
-                    raise  # no fallback available — propagate original error
+            bearer_token = await asyncio.get_event_loop().run_in_executor(None, _get_vertex_token)
+            ws_extra_headers = {"Authorization": f"Bearer {bearer_token}"}
 
-            if use_vertex:
-                self._vertex_active = True  # persist for downstream methods
-                ws_extra_headers = {"Authorization": f"Bearer {bearer_token}"}
+            vertex_endpoint = (
+                f"wss://{vertex_location}-aiplatform.googleapis.com"
+                f"/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+            )
+            ws_url = vertex_endpoint
 
-                vertex_endpoint = (
-                    f"wss://{vertex_location}-aiplatform.googleapis.com"
-                    f"/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
-                )
-                ws_url = vertex_endpoint
-
-                logger.info(
-                    "Connecting to Google Vertex AI Live API",
-                    call_id=call_id,
-                    endpoint=vertex_endpoint,
-                    vertex_project=vertex_project,
-                    vertex_location=vertex_location,
-                )
-
-        if not use_vertex:
-            self._vertex_active = False
+            logger.info(
+                "Connecting to Google Vertex AI Live API",
+                call_id=call_id,
+                endpoint=vertex_endpoint,
+                vertex_project=vertex_project,
+                vertex_location=vertex_location,
+            )
+        else:
             # --- Developer API (default) ---
             api_key = self.config.api_key or ""
             if not api_key:
@@ -976,7 +957,7 @@ class GoogleLiveProvider(AIProviderInterface):
 
         # Vertex AI uses a different model path format (AAVA-191)
         # Full resource path: projects/{project}/locations/{location}/publishers/google/models/{model}
-        use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
+        use_vertex = getattr(self.config, 'use_vertex_ai', False)
         if use_vertex:
             vertex_project = (getattr(self.config, 'vertex_project', None) or "").strip()
             vertex_location = (getattr(self.config, 'vertex_location', None) or "us-central1").strip()
@@ -1151,7 +1132,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 payload["message"] = str(result.get("message") or "")
             
             # For hangup_call on Vertex AI: add explicit instruction to speak farewell
-            use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
+            use_vertex = getattr(self.config, 'use_vertex_ai', False)
             if use_vertex and tool_name == "hangup_call" and result.get("will_hangup"):
                 farewell = result.get("message", "")
                 if farewell:
@@ -2012,7 +1993,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 # Send tool response (camelCase per official API)
                 # Vertex AI doesn't accept "id" field in function responses (AAVA-191)
                 safe_result = self._build_tool_response_payload(func_name, result)
-                use_vertex = getattr(self, '_vertex_active', getattr(self.config, 'use_vertex_ai', False))
+                use_vertex = getattr(self.config, 'use_vertex_ai', False)
                 if use_vertex:
                     func_response = {
                         "name": func_name,

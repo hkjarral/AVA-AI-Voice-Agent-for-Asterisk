@@ -29,6 +29,8 @@ jobs:
             "\.agent/"
             "AVA\.mdc$"
             "Agents\.md$"
+            "CLAUDE\.md$"
+            "Gemini\.md$"
             "examples/"
             "docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE\.md$"
             "docs/contributing/CODING_GUIDELINES\.md$"
