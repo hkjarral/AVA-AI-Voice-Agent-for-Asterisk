@@ -520,14 +520,13 @@ export const SystemTopology = () => {
                   const activeCount = activePipelines.get(pipeline.name) || 0;
                   const isActive = activeCount > 0;
                   // Check both activePipeline and defaultProvider since default_provider can be a pipeline name.
-                  // AAVA-185: Also match pipeline variants (e.g. local_hybrid_groq matches
-                  // defaultProvider "local_hybrid" and vice-versa) for backward compatibility.
+                  // AAVA-185: Also match pipeline variants (e.g. pipeline card "local_hybrid_groq"
+                  // matches defaultProvider "local_hybrid"). Only forward direction — avoid marking
+                  // the base pipeline card as default when a variant is the actual default.
                   const isDefault = pipeline.name === state.activePipeline
                     || pipeline.name === state.defaultProvider
                     || (state.activePipeline && pipeline.name.startsWith(state.activePipeline + '_'))
-                    || (state.defaultProvider && pipeline.name.startsWith(state.defaultProvider + '_'))
-                    || (state.activePipeline && state.activePipeline.startsWith(pipeline.name + '_'))
-                    || (state.defaultProvider && state.defaultProvider.startsWith(pipeline.name + '_'));
+                    || (state.defaultProvider && pipeline.name.startsWith(state.defaultProvider + '_'));
                   
                   return (
                     <div key={pipeline.name} onClick={() => navigate('/pipelines')} title={`Configure ${pipeline.name.replace(/_/g, ' ')} →`} className="flex flex-col cursor-pointer hover:opacity-80">
