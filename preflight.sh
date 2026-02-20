@@ -1399,8 +1399,8 @@ check_secrets_permissions() {
         dir_needs_fix=true
     elif [ "$dir_gid" != "$SHARED_GID" ]; then
         dir_needs_fix=true
-    elif [ "$dir_mode" != "2770" ] && [ "$dir_mode" != "2775" ] && [ "$dir_mode" != "770" ] && [ "$dir_mode" != "775" ]; then
-        # Allow 2770, 2775, 770, 775 as acceptable modes
+    elif [ "$dir_mode" != "2770" ] && [ "$dir_mode" != "770" ]; then
+        # Only allow 2770 or 770 - secrets must NOT be world-readable
         dir_needs_fix=true
     fi
 

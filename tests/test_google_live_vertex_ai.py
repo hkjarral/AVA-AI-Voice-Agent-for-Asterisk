@@ -64,7 +64,7 @@ def test_vertex_endpoint_default_location():
 
 def test_vertex_endpoint_custom_location():
     url = _build_vertex_endpoint("europe-west4")
-    assert "europe-west4-aiplatform.googleapis.com" in url
+    assert url.startswith("wss://europe-west4-aiplatform.googleapis.com/")
 
 
 def test_vertex_endpoint_uses_v1beta1_not_v1beta():
@@ -79,7 +79,7 @@ def test_developer_api_endpoint_unchanged():
         "wss://generativelanguage.googleapis.com"
         "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     )
-    assert "generativelanguage.googleapis.com" in developer_endpoint
+    assert developer_endpoint.startswith("wss://generativelanguage.googleapis.com/")
     assert "v1beta.GenerativeService" in developer_endpoint
 
 
