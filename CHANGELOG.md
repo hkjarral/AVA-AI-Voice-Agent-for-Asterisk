@@ -12,6 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [6.2.1] - 2026-02-20
+
+### Added
+
+- **Google Vertex AI Live API Support**: Enterprise-grade authentication for Google Live API using GCP service accounts. Switch between Developer API (API key) and Vertex AI (OAuth2) modes via Admin UI toggle. Includes credential upload/verify/delete endpoints, environment injection, and preflight secrets directory validation ([PR #235](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/pull/235)).
+- **Admin UI Vertex AI Configuration**: New Vertex AI section in Google Live provider settings with project/location selectors, credential upload widget, and real-time verification status.
+- **Preflight Secrets Directory Check**: `preflight.sh` now validates and auto-creates `./secrets/` with correct ownership and permissions (2770) for service account JSON files.
+- **Golden Baseline Config**: `config/ai-agent.golden-google-live.yaml` updated with Vertex AI configuration examples.
+
+### Changed
+
+- **Google Live Provider**: Dual-mode endpoint construction — Vertex AI uses `{location}-aiplatform.googleapis.com` with OAuth2 bearer tokens; Developer API unchanged.
+- **Tool Response Format**: Removed `id` field from `functionResponses` when using Vertex AI (not supported by Vertex API).
+
+### Fixed
+
+- **Async Blocking Call**: `credentials.refresh()` now runs in thread pool to avoid blocking asyncio event loop.
+- **Exception Leaking**: Vertex AI endpoints no longer expose internal error details to clients.
+- **Null Filename Check**: `upload_vertex_credentials` validates `file.filename` before use.
+
+### Documentation
+
+- Milestone 25: Google Vertex AI Live API Support (`docs/contributing/milestones/milestone-25-google-vertex.md`)
+
+### Migration from v6.2.0
+
+1. **No breaking changes.** Vertex AI is opt-in; existing API key mode works unchanged.
+2. **Vertex AI users**: Upload service account JSON via Admin UI → Google Live → Vertex AI Configuration.
+3. **Docker rebuild required**: Run `docker compose up -d --build --force-recreate` for secrets volume mount.
+
 ## [6.2.0] - 2026-02-15
 
 ### Added
