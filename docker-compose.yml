@@ -39,6 +39,7 @@ services:
       - ./models:/app/models
       - ./asterisk_media:/mnt/asterisk_media
       - ./data:/app/data
+      - ./secrets:/app/project/secrets  # Vertex AI service account credentials
     env_file:
       - .env
     environment:

@@ -40,6 +40,9 @@ def _ai_engine_env_key(key: str) -> bool:
             "GROQ_API_KEY",
             "DEEPGRAM_API_KEY",
             "GOOGLE_API_KEY",
+            "GOOGLE_CLOUD_PROJECT",  # Vertex AI
+            "GOOGLE_CLOUD_LOCATION",  # Vertex AI
+            "GOOGLE_APPLICATION_CREDENTIALS",  # Vertex AI service account
             "TELNYX_API_KEY",
             "RESEND_API_KEY",
             "ELEVENLABS_API_KEY",
