@@ -1701,6 +1701,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                             </div>
                         </div>
                     )}
+                </div>
 
                 {/* Google Calendar */}
                 <div className="border border-border rounded-lg p-4 bg-card/50">
