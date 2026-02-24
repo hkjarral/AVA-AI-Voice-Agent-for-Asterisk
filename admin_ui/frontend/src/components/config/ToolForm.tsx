@@ -1701,6 +1701,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                             </div>
                         </div>
                     )}
+
+                {/* Google Calendar */}
+                <div className="border border-border rounded-lg p-4 bg-card/50">
+                    <FormSwitch
+                        label="Google Calendar"
+                        description="Enable the Google Calendar tool for listing events, creating events, and finding free slots."
+                        checked={config.google_calendar?.enabled ?? false}
+                        onChange={(e) => updateNestedConfig('google_calendar', 'enabled', e.target.checked)}
+                        className="mb-0 border-0 p-0 bg-transparent"
+                    />
                 </div>
             </div>
 

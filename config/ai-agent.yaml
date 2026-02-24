@@ -224,6 +224,7 @@ contexts:
       - leave_voicemail
       - send_email_summary
       - request_transcript
+      - google_calendar
   demo_google_live:
     greeting: >-
       Hi {caller_name}, I'm Multilingual Ava with the Google Gemini Live demo.
@@ -398,6 +399,7 @@ contexts:
       - leave_voicemail
       - send_email_summary
       - request_transcript
+      - google_calendar
   demo_outbound:
     greeting: >-
       Hi {caller_name}, this is Ava from Asterisk AI Voice Agent. Quick question:
@@ -1936,6 +1938,8 @@ tools:
       support_agent: null
       support_queue: null
       support_team: null
+    enabled: false
+  google_calendar:
     enabled: false
 mcp:
   enabled: false

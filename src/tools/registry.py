@@ -483,6 +483,12 @@ After outputting a tool call, provide a brief spoken response.
         except ImportError as e:
             logger.warning(f"Could not import RequestTranscriptTool: {e}")
         
+        try:
+            from src.tools.business.gcal_tool import GCalendarTool
+            self.register(GCalendarTool)
+        except ImportError as e:
+            logger.warning(f"Could not import GCalendarTool: {e}")
+        
         # Future tools will be registered here:
         # from src.tools.telephony.voicemail import SendToVoicemailTool
         # self.register(SendToVoicemailTool)

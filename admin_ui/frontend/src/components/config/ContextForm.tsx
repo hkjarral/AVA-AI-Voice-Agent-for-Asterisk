@@ -76,6 +76,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         'leave_voicemail',
         'send_email_summary',
         'request_transcript',
+        'google_calendar',
         'check_extension_status',
     ];
     const toolOptionsBase = (availableTools && availableTools.length > 0) ? availableTools : fallbackTools;
