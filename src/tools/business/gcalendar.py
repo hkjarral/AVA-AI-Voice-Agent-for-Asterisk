@@ -134,7 +134,7 @@ class GCalendar:
         """
         logger.debug(
             "create_event called",
-            summary=summary,
+            has_summary=bool(summary),
             start_datetime=start_datetime,
             end_datetime=end_datetime,
         )

@@ -274,8 +274,8 @@ class GCalendarTool(Tool):
                     {
                         "id": e.get("id"),
                         "summary": e.get("summary", "No Title"),
-                        "start": e.get("start", {}).get("dateTime"),
-                        "end": e.get("end", {}).get("dateTime"),
+                        "start": e.get("start", {}).get("dateTime") or e.get("start", {}).get("date"),
+                        "end": e.get("end", {}).get("dateTime") or e.get("end", {}).get("date"),
                     }
                     for e in events
                 ]
@@ -303,8 +303,8 @@ class GCalendarTool(Tool):
                     "id": event.get("id"),
                     "summary": event.get("summary"),
                     "description": event.get("description", ""),
-                    "start": event.get("start", {}).get("dateTime"),
-                    "end": event.get("end", {}).get("dateTime"),
+                    "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
+                    "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
                 }
                 logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                 return out
