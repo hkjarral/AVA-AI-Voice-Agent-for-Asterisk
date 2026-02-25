@@ -1730,10 +1730,20 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                             />
                             <FormInput
                                 label="Min Slot Duration (minutes)"
-                                value={config.google_calendar?.min_slot_duration_minutes || ''}
-                                onChange={(e) => updateNestedConfig('google_calendar', 'min_slot_duration_minutes', e.target.value ? parseInt(e.target.value, 10) : null)}
+                                value={config.google_calendar?.min_slot_duration_minutes ?? ''}
+                                onChange={(e) => {
+                                    const raw = e.target.value;
+                                    if (raw === '') {
+                                        updateNestedConfig('google_calendar', 'min_slot_duration_minutes', null);
+                                        return;
+                                    }
+                                    const n = Number(raw);
+                                    updateNestedConfig('google_calendar', 'min_slot_duration_minutes', Number.isFinite(n) ? Math.max(1, Math.floor(n)) : null);
+                                }}
                                 placeholder="15"
                                 type="number"
+                                min={1}
+                                step={1}
                                 tooltip="Default appointment duration in minutes for get_free_slots. Slot start times are aligned to multiples of this value (e.g., 30 → :00, :30)."
                             />
                         </div>

@@ -1,4 +1,5 @@
 import os
+import threading
 from datetime import datetime
 
 import structlog
@@ -19,8 +20,8 @@ def _get_timezone() -> str:
         local_tz = datetime.now().astimezone().tzinfo
         if local_tz is not None and getattr(local_tz, "key", None):
             return local_tz.key
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Could not resolve system timezone", error=str(exc))
     return "UTC"
 
 
@@ -34,6 +35,8 @@ class GCalendar:
         self.calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
         self.scopes = ["https://www.googleapis.com/auth/calendar"]
         self.service = None
+        self.creds = None
+        self._lock = threading.Lock()
 
         key_path = os.environ.get("GOOGLE_CALENDAR_CREDENTIALS")
         logger.debug("Using credentials path", key_path=key_path)
@@ -77,7 +80,7 @@ class GCalendar:
             items = []
             page_token = None
             while True:
-                events_result = self.service.events().list(
+                req = self.service.events().list(
                     calendarId=self.calendar_id,
                     timeMin=time_min,
                     timeMax=time_max,
@@ -85,7 +88,9 @@ class GCalendar:
                     orderBy="startTime",
                     maxResults=2500,
                     pageToken=page_token,
-                ).execute()
+                )
+                with self._lock:
+                    events_result = req.execute()
                 items.extend(events_result.get("items", []))
                 page_token = events_result.get("nextPageToken")
                 if not page_token:
@@ -111,10 +116,12 @@ class GCalendar:
 
         try:
             logger.debug("Sending request to Google Calendar API (events().get)")
-            event = self.service.events().get(
+            req = self.service.events().get(
                 calendarId=self.calendar_id,
                 eventId=event_id,
-            ).execute()
+            )
+            with self._lock:
+                event = req.execute()
 
             logger.info("Successfully fetched event details", event_id=event_id)
             return event
@@ -160,10 +167,12 @@ class GCalendar:
 
         try:
             logger.debug("Sending request to Google Calendar API (events().insert)")
-            event = self.service.events().insert(
+            req = self.service.events().insert(
                 calendarId=self.calendar_id,
                 body=event_body,
-            ).execute()
+            )
+            with self._lock:
+                event = req.execute()
 
             logger.info(
                 "Event successfully created in Google Calendar",

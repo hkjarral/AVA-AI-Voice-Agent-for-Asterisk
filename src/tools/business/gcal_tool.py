@@ -9,7 +9,6 @@ GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 """
 
 import asyncio
-import re
 import structlog
 from datetime import datetime, timedelta
 from typing import Dict, Any
@@ -85,7 +84,13 @@ class GCalendarTool(Tool):
     def __init__(self):
         super().__init__()
         logger.debug("Initializing GCalendarTool instance")
-        self.cal = GCalendar()
+        self._cal = None
+
+    @property
+    def cal(self) -> GCalendar:
+        if self._cal is None or self._cal.service is None:
+            self._cal = GCalendar()
+        return self._cal
 
     @property
     def definition(self) -> ToolDefinition:
@@ -106,16 +111,6 @@ class GCalendarTool(Tool):
         if iso_str.endswith('Z'):
             iso_str = iso_str[:-1] + '+00:00'
         return datetime.fromisoformat(iso_str)
-
-    @staticmethod
-    def _strip_tz_from_datetime_str(s: str) -> str:
-        """Remove timezone part from an ISO datetime string (Z or ±HH:MM)."""
-        if not s or not isinstance(s, str):
-            return s
-        s = s.strip()
-        if s.upper().endswith('Z'):
-            return s[:-1]
-        return re.sub(r'[-+]\d{2}:?\d{2}(:\d{2})?$', '', s)
 
     def _get_config(self, context: ToolExecutionContext) -> Dict[str, Any]:
         """
@@ -314,10 +309,11 @@ class GCalendarTool(Tool):
                 desc = parameters.get("description", "")
                 start_dt = parameters.get("start_datetime")
                 end_dt = parameters.get("end_datetime")
-                if start_dt:
-                    start_dt = self._strip_tz_from_datetime_str(start_dt)
-                if end_dt:
-                    end_dt = self._strip_tz_from_datetime_str(end_dt)
+                # Normalize UTC 'Z' suffix to +00:00 but preserve caller-provided offsets
+                if start_dt and start_dt.upper().endswith('Z'):
+                    start_dt = start_dt[:-1] + '+00:00'
+                if end_dt and end_dt.upper().endswith('Z'):
+                    end_dt = end_dt[:-1] + '+00:00'
                 if not summary or not start_dt or not end_dt:
                     error_msg = (
                         "Error: 'summary', 'start_datetime', and 'end_datetime' are required for create_event."
