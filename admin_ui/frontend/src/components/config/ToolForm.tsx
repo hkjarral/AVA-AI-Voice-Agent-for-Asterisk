@@ -1712,6 +1712,32 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                         onChange={(e) => updateNestedConfig('google_calendar', 'enabled', e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
                     />
+                    {config.google_calendar?.enabled && (
+                        <div className="mt-4 pl-4 border-l-2 border-border ml-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormInput
+                                label="Free Prefix"
+                                value={config.google_calendar?.free_prefix || ''}
+                                onChange={(e) => updateNestedConfig('google_calendar', 'free_prefix', e.target.value)}
+                                placeholder="Open"
+                                tooltip="Event title prefix that marks available time blocks (e.g., 'Open'). Used by get_free_slots to identify bookable windows."
+                            />
+                            <FormInput
+                                label="Busy Prefix"
+                                value={config.google_calendar?.busy_prefix || ''}
+                                onChange={(e) => updateNestedConfig('google_calendar', 'busy_prefix', e.target.value)}
+                                placeholder="Busy"
+                                tooltip="Event title prefix that marks booked appointments (e.g., 'Busy'). Used by get_free_slots to subtract occupied time."
+                            />
+                            <FormInput
+                                label="Min Slot Duration (minutes)"
+                                value={config.google_calendar?.min_slot_duration_minutes || ''}
+                                onChange={(e) => updateNestedConfig('google_calendar', 'min_slot_duration_minutes', e.target.value ? parseInt(e.target.value, 10) : null)}
+                                placeholder="15"
+                                type="number"
+                                tooltip="Default appointment duration in minutes for get_free_slots. Slot start times are aligned to multiples of this value (e.g., 30 → :00, :30)."
+                            />
+                        </div>
+                    )}
                 </div>
             </div>
 
