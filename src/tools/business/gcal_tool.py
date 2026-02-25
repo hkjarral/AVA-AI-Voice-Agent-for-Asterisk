@@ -8,6 +8,7 @@ Environment: GOOGLE_CALENDAR_CREDENTIALS (path to service account JSON);
 GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
 """
 
+import asyncio
 import re
 import structlog
 from datetime import datetime, timedelta
@@ -16,10 +17,7 @@ from typing import Dict, Any
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext
 
-try:
-    from src.tools.business.gcalendar import GCalendar
-except ImportError:
-    from gcalendar import GCalendar
+from src.tools.business.gcalendar import GCalendar
 
 logger = structlog.get_logger(__name__)
 
@@ -152,7 +150,7 @@ class GCalendarTool(Tool):
         """
         call_id = getattr(context, "call_id", None) or ""
         logger.info("GCalendarTool execution triggered by LLM", call_id=call_id)
-        logger.debug("Raw arguments received from LLM", call_id=call_id, parameters=parameters)
+        logger.debug("Raw arguments received from LLM", call_id=call_id, action=parameters.get("action"))
 
         config = self._get_config(context)
         if config.get("enabled") is False:
@@ -192,7 +190,7 @@ class GCalendarTool(Tool):
                     free_prefix=free_prefix,
                     busy_prefix=busy_prefix,
                 )
-                events = self.cal.list_events(time_min, time_max)
+                events = await asyncio.to_thread(self.cal.list_events, time_min, time_max)
 
                 free_blocks = []
                 busy_blocks = []
@@ -286,7 +284,7 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
                     return out
-                events = self.cal.list_events(time_min, time_max)
+                events = await asyncio.to_thread(self.cal.list_events, time_min, time_max)
                 simplified_events = [
                     {
                         "id": e.get("id"),
@@ -308,7 +306,7 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
                     return out
-                event = self.cal.get_event(event_id)
+                event = await asyncio.to_thread(self.cal.get_event, event_id)
                 if not event:
                     out = {"status": "error", "message": "Event not found."}
                     logger.warning("Event not found", call_id=call_id, event_id=event_id)
@@ -343,7 +341,7 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
                     return out
-                event = self.cal.create_event(summary, desc, start_dt, end_dt)
+                event = await asyncio.to_thread(self.cal.create_event, summary, desc, start_dt, end_dt)
                 if not event:
                     out = {"status": "error", "message": "Failed to create event."}
                     logger.error("Failed to create event", call_id=call_id)

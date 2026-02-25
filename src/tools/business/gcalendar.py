@@ -149,7 +149,7 @@ class GCalendar:
             },
         }
 
-        logger.debug("Prepared event payload for Google API", event_body=event_body)
+        logger.debug("Prepared event payload for Google API", start=start_datetime, end=end_datetime)
 
         try:
             logger.debug("Sending request to Google Calendar API (events().insert)")
