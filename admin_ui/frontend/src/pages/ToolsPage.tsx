@@ -196,7 +196,7 @@ const ToolsPage = () => {
         // This prevents silent config loss of custom/unknown tool entries.
         // Built-in tools that ToolForm manages: transfer, hangup_call, leave_voicemail, 
         // send_email_summary, request_transcript
-        const builtInToolKeys = ['transfer', 'attended_transfer', 'cancel_transfer', 'hangup_call', 'leave_voicemail', 'send_email_summary', 'request_transcript'];
+        const builtInToolKeys = ['transfer', 'attended_transfer', 'cancel_transfer', 'hangup_call', 'leave_voicemail', 'send_email_summary', 'request_transcript', 'google_calendar'];
         
         const existingTools = baseConfig.tools || {};
         const preservedTools: Record<string, any> = {};

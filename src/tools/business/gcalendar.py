@@ -9,9 +9,11 @@ from googleapiclient.discovery import build
 logger = structlog.get_logger(__name__)
 
 
-def _get_timezone() -> str:
-    """Resolve timezone: GOOGLE_CALENDAR_TZ if set, else TZ, else system local timezone."""
-    tz = os.environ.get("GOOGLE_CALENDAR_TZ", "").strip()
+def _get_timezone(config_tz: str = "") -> str:
+    """Resolve timezone: config value first, then GOOGLE_CALENDAR_TZ, TZ, system local, UTC."""
+    tz = (config_tz or "").strip()
+    if not tz:
+        tz = os.environ.get("GOOGLE_CALENDAR_TZ", "").strip()
     if not tz:
         tz = os.environ.get("TZ", "").strip()
     if tz:
@@ -26,19 +28,20 @@ def _get_timezone() -> str:
 
 
 class GCalendar:
-    def __init__(self):
+    def __init__(self, credentials_path: str = "", calendar_id: str = "", timezone: str = ""):
         """
         Initializes the connection to the Google Calendar API.
-        Uses GOOGLE_CALENDAR_CREDENTIALS for authentication.
+        Config params take precedence; falls back to env vars.
         """
         logger.debug("Initializing GCalendar instance")
-        self.calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+        self.calendar_id = (calendar_id or "").strip() or os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+        self.timezone = timezone
         self.scopes = ["https://www.googleapis.com/auth/calendar"]
         self.service = None
         self.creds = None
         self._lock = threading.Lock()
 
-        key_path = os.environ.get("GOOGLE_CALENDAR_CREDENTIALS")
+        key_path = (credentials_path or "").strip() or os.environ.get("GOOGLE_CALENDAR_CREDENTIALS")
         logger.debug("Using credentials path", key_path=key_path)
 
         if not key_path or not os.path.exists(key_path):
@@ -149,7 +152,7 @@ class GCalendar:
             logger.error("Calendar service is not initialized. Cannot create event.")
             return None
 
-        timezone = _get_timezone()
+        timezone = _get_timezone(self.timezone)
         event_body = {
             "summary": summary,
             "description": description,

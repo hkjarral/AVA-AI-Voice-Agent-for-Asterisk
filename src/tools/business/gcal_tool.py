@@ -85,11 +85,17 @@ class GCalendarTool(Tool):
         super().__init__()
         logger.debug("Initializing GCalendarTool instance")
         self._cal = None
+        self._cal_config_key = None
 
-    @property
-    def cal(self) -> GCalendar:
-        if self._cal is None or self._cal.service is None:
-            self._cal = GCalendar()
+    def _get_cal(self, config: Dict[str, Any]) -> GCalendar:
+        """Return a GCalendar instance, (re)creating if config changed or service is None."""
+        creds_path = config.get("credentials_path", "")
+        cal_id = config.get("calendar_id", "")
+        tz = config.get("timezone", "")
+        config_key = (creds_path, cal_id, tz)
+        if self._cal is None or self._cal.service is None or self._cal_config_key != config_key:
+            self._cal = GCalendar(credentials_path=creds_path, calendar_id=cal_id, timezone=tz)
+            self._cal_config_key = config_key
         return self._cal
 
     @property
@@ -146,6 +152,8 @@ class GCalendarTool(Tool):
             logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
             return out
 
+        cal = self._get_cal(config)
+
         try:
             if action == "get_free_slots":
                 # Prefixes: config (YAML/UI) takes precedence as defaults; LLM can override via parameters
@@ -170,7 +178,7 @@ class GCalendarTool(Tool):
                     free_prefix=free_prefix,
                     busy_prefix=busy_prefix,
                 )
-                events = await asyncio.to_thread(self.cal.list_events, time_min, time_max)
+                events = await asyncio.to_thread(cal.list_events, time_min, time_max)
 
                 free_blocks = []
                 busy_blocks = []
@@ -264,7 +272,7 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
-                events = await asyncio.to_thread(self.cal.list_events, time_min, time_max)
+                events = await asyncio.to_thread(cal.list_events, time_min, time_max)
                 simplified_events = [
                     {
                         "id": e.get("id"),
@@ -286,7 +294,7 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
-                event = await asyncio.to_thread(self.cal.get_event, event_id)
+                event = await asyncio.to_thread(cal.get_event, event_id)
                 if not event:
                     out = {"status": "error", "message": "Event not found."}
                     logger.warning("Event not found", call_id=call_id, event_id=event_id)
@@ -322,7 +330,7 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
-                event = await asyncio.to_thread(self.cal.create_event, summary, desc, start_dt, end_dt)
+                event = await asyncio.to_thread(cal.create_event, summary, desc, start_dt, end_dt)
                 if not event:
                     out = {"status": "error", "message": "Failed to create event."}
                     logger.error("Failed to create event", call_id=call_id)
