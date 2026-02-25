@@ -73,6 +73,14 @@ contexts:
 - **`gcal_tool.py`** -- Tool definition and execution (actions, config, slot logic).
 - **`gcalendar.py`** -- Low-level Google Calendar API client (`GCalendar`).
 
+## Dependencies
+
+The tool requires the `google-api-python-client` package. It is already listed in the project's `requirements.txt`, but if you are installing manually:
+
+```bash
+pip install google-api-python-client>=2.0.0
+```
+
 ## Environment
 
 | Variable | Description |

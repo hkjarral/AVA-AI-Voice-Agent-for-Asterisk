@@ -74,15 +74,22 @@ class GCalendar:
 
         try:
             logger.debug("Sending request to Google Calendar API (events().list)")
-            events_result = self.service.events().list(
-                calendarId=self.calendar_id,
-                timeMin=time_min,
-                timeMax=time_max,
-                singleEvents=True,
-                orderBy="startTime",
-            ).execute()
-
-            items = events_result.get("items", [])
+            items = []
+            page_token = None
+            while True:
+                events_result = self.service.events().list(
+                    calendarId=self.calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=2500,
+                    pageToken=page_token,
+                ).execute()
+                items.extend(events_result.get("items", []))
+                page_token = events_result.get("nextPageToken")
+                if not page_token:
+                    break
             logger.info("Successfully fetched events from Google Calendar", count=len(items))
             return items
         except Exception as e:

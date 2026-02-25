@@ -125,21 +125,6 @@ class GCalendarTool(Tool):
             return context.get_config_value("tools.google_calendar", {}) or {}
         return self._load_config()
 
-    def _load_config(self) -> Dict[str, Any]:
-        """
-        Load google_calendar config from ai-agent.yaml (fallback when context has no config).
-        """
-        try:
-            from src.config import load_config
-            config = load_config()
-            tools_config = getattr(config, "tools", None)
-            if not isinstance(tools_config, dict):
-                return {}
-            return tools_config.get("google_calendar", {})
-        except Exception as e:
-            logger.warning("Failed to load config for google_calendar", error=str(e))
-            return {}
-
     async def execute(
         self,
         parameters: Dict[str, Any],
@@ -163,7 +148,7 @@ class GCalendarTool(Tool):
             error_msg = "Error: 'action' parameter is missing."
             logger.warning("Missing action parameter", call_id=call_id)
             out = {"status": "error", "message": error_msg}
-            logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+            logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
             return out
 
         try:
@@ -181,7 +166,7 @@ class GCalendarTool(Tool):
                     )
                     logger.warning("Missing required parameters for get_free_slots", call_id=call_id)
                     out = {"status": "error", "message": error_msg}
-                    logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
 
                 logger.debug(
@@ -272,7 +257,7 @@ class GCalendarTool(Tool):
                 slot_starts.sort()
                 results = [t.strftime("%Y-%m-%d %H:%M") for t in slot_starts]
                 out = {"status": "success", "message": "Free slot starts: " + ", ".join(results)}
-                logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                 return out
 
             if action == "list_events":
@@ -282,7 +267,7 @@ class GCalendarTool(Tool):
                     error_msg = "Error: 'time_min' and 'time_max' parameters are required for list_events."
                     logger.warning("Missing time range for list_events", call_id=call_id)
                     out = {"status": "error", "message": error_msg}
-                    logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
                 events = await asyncio.to_thread(self.cal.list_events, time_min, time_max)
                 simplified_events = [
@@ -295,7 +280,7 @@ class GCalendarTool(Tool):
                     for e in events
                 ]
                 out = {"status": "success", "message": "Events listed.", "events": simplified_events}
-                logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                 return out
 
             if action == "get_event":
@@ -304,13 +289,13 @@ class GCalendarTool(Tool):
                     error_msg = "Error: 'event_id' parameter is required for get_event."
                     logger.warning("Missing event_id for get_event", call_id=call_id)
                     out = {"status": "error", "message": error_msg}
-                    logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
                 event = await asyncio.to_thread(self.cal.get_event, event_id)
                 if not event:
                     out = {"status": "error", "message": "Event not found."}
                     logger.warning("Event not found", call_id=call_id, event_id=event_id)
-                    logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
                 out = {
                     "status": "success",
@@ -321,7 +306,7 @@ class GCalendarTool(Tool):
                     "start": event.get("start", {}).get("dateTime"),
                     "end": event.get("end", {}).get("dateTime"),
                 }
-                logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                 return out
 
             if action == "create_event":
@@ -339,13 +324,13 @@ class GCalendarTool(Tool):
                     )
                     logger.warning("Missing required parameters for create_event", call_id=call_id)
                     out = {"status": "error", "message": error_msg}
-                    logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
                 event = await asyncio.to_thread(self.cal.create_event, summary, desc, start_dt, end_dt)
                 if not event:
                     out = {"status": "error", "message": "Failed to create event."}
                     logger.error("Failed to create event", call_id=call_id)
-                    logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
                 out = {
                     "status": "success",
@@ -353,13 +338,13 @@ class GCalendarTool(Tool):
                     "id": event.get("id"),
                     "link": event.get("htmlLink"),
                 }
-                logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+                logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                 return out
 
             error_msg = f"Error: Unknown action '{action}'."
             logger.warning("Unknown action", call_id=call_id, action=action)
             out = {"status": "error", "message": error_msg}
-            logger.info("Tool response to AI", call_id=call_id, action=action, response=out)
+            logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
             return out
 
         except Exception as e:
@@ -370,7 +355,7 @@ class GCalendarTool(Tool):
                 error=str(e),
                 exc_info=True,
             )
-            out = {"status": "error", "message": f"Calendar error: {str(e)}"}
-            logger.info("Tool response to AI", call_id=call_id, action=action or "?", response=out)
+            out = {"status": "error", "message": "An unexpected calendar error occurred."}
+            logger.info("Tool response to AI", call_id=call_id, action=action or "?", status=out.get("status"))
             return out
 
