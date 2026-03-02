@@ -140,6 +140,7 @@ class AvailableModels(BaseModel):
 
 class SwitchModelRequest(BaseModel):
     """Request to switch model."""
+    model_config = {"protected_namespaces": ()}
     model_type: str  # stt, tts, llm
     backend: Optional[str] = None  # For STT/TTS: vosk, sherpa, kroko, piper, kokoro
     model_path: Optional[str] = None  # For models with paths

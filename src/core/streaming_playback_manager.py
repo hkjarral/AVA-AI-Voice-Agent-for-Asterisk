@@ -825,6 +825,8 @@ class StreamingPlaybackManager:
         try:
             fallback_timeout = self.fallback_timeout_ms / 1000.0
             last_send_time = time.time()
+            last_upsert_time = time.time()
+            bytes_since_last_upsert = 0
             
             while True:
                 try:
@@ -843,6 +845,16 @@ class StreamingPlaybackManager:
                             sentinel_sent = True
                         except Exception:
                             pass
+                        
+                        if bytes_since_last_upsert > 0:
+                            try:
+                                sess = await self.session_store.get_by_call_id(call_id)
+                                if sess:
+                                    sess.streaming_bytes_sent += bytes_since_last_upsert
+                                    sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
+                                    await self.session_store.upsert_call(sess)
+                            except Exception:
+                                pass
                         break
 
                     # Update timing and metrics
@@ -857,11 +869,16 @@ class StreamingPlaybackManager:
                         # Track per-call queued total as well as segment-local queued_bytes
                         if info is not None:
                             info['queued_total_bytes'] = int(info.get('queued_total_bytes', 0) or 0) + len(chunk)
-                        sess = await self.session_store.get_by_call_id(call_id)
-                        if sess:
-                            sess.streaming_bytes_sent += len(chunk)
-                            sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
-                            await self.session_store.upsert_call(sess)
+                        
+                        bytes_since_last_upsert += len(chunk)
+                        if time.time() - last_upsert_time >= 1.0:
+                            sess = await self.session_store.get_by_call_id(call_id)
+                            if sess:
+                                sess.streaming_bytes_sent += bytes_since_last_upsert
+                                sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
+                                await self.session_store.upsert_call(sess)
+                            bytes_since_last_upsert = 0
+                            last_upsert_time = time.time()
                     except Exception:
                         logger.debug("Streaming metrics update failed", call_id=call_id)
 

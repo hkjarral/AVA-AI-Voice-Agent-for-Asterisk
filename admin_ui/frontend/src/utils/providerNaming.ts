@@ -88,6 +88,7 @@ export const REGISTERED_PROVIDER_TYPES = [
     'ollama',
     'telnyx',
     'telenyx',
+    'azure',
     // AAVA-182: Admin UI creates providers with type 'modular'
     'modular',
 ] as const;

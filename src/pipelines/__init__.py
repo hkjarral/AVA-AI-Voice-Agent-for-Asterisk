@@ -18,6 +18,11 @@ from .openai import (
 from .telnyx import (
     TelnyxLLMAdapter,
 )
+from .azure import (
+    AzureSTTFastAdapter,
+    AzureSTTRealtimeAdapter,
+    AzureTTSAdapter,
+)
 from .orchestrator import (
     PipelineOrchestrator,
     PipelineOrchestratorError,
@@ -35,6 +40,9 @@ __all__ = [
     "OpenAILLMAdapter",
     "OpenAITTSAdapter",
     "TelnyxLLMAdapter",
+    "AzureSTTFastAdapter",
+    "AzureSTTRealtimeAdapter",
+    "AzureTTSAdapter",
     "PipelineOrchestrator",
     "PipelineOrchestratorError",
     "PipelineResolution",

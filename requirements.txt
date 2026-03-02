@@ -33,3 +33,4 @@ google-auth>=2.0.0
 
 # Google Calendar API client for business calendar tool
 google-api-python-client>=2.0.0
+azure-cognitiveservices-speech>=1.41.0

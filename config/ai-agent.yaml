@@ -1491,6 +1491,36 @@ providers:
     target_sample_rate_hz: 8000
     chunk_size_ms: 20
     request_timeout_sec: 15
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Azure Speech Service — STT & TTS (REST API)
+  # Requires AZURE_SPEECH_KEY in .env and a valid Azure region below.
+  # ─────────────────────────────────────────────────────────────────────────────
+  azure_stt:
+    type: azure
+    capabilities:
+      - stt
+    enabled: false
+    # Azure region (e.g. eastus, westeurope, southeastasia)
+    region: eastus
+    # BCP-47 recognition language
+    language: en-US
+    # 'realtime' = one-shot STT REST | 'fast' = Fast Transcription API
+    variant: realtime
+    request_timeout_sec: 15.0
+  azure_tts:
+    type: azure
+    capabilities:
+      - tts
+    enabled: false
+    region: eastus
+    # Neural voice name — see https://aka.ms/speech/voices
+    voice_name: en-US-JennyNeural
+    # Azure output format — telephony-optimised (8 kHz µ-law)
+    output_format: raw-8khz-16bit-mono-pcm
+    target_encoding: mulaw
+    target_sample_rate_hz: 8000
+    chunk_size_ms: 20
+    request_timeout_sec: 15.0
   ollama_llm:
     capabilities:
       - llm

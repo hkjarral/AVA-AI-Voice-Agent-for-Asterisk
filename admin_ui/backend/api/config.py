@@ -1014,7 +1014,11 @@ async def test_provider_connection(request: ProviderTestRequest):
                     for line in f:
                         line = line.strip()
                         if line.startswith(f"{key_name}="):
-                            return line.split('=', 1)[1].strip()
+                            value = line.split('=', 1)[1].strip()
+                            # Strip surrounding single or double quotes (common .env convention)
+                            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                                value = value[1:-1]
+                            return value
             return ''
         
         # Helper to substitute environment variables in config values
@@ -1409,6 +1413,34 @@ async def test_provider_connection(request: ProviderTestRequest):
                 # If it's pure local without WS (e.g. wrapper), assume success if file paths exist?
                 return {"success": True, "message": "Provider configuration valid (No specific connection test available)"}
         
+        # ============================================================
+        # AZURE SPEECH SERVICE (STT / TTS)
+        # ============================================================
+        if provider_config.get('type') == 'azure' or 'azure' in provider_name:
+            api_key = get_env_key('AZURE_SPEECH_KEY') or os.getenv('AZURE_SPEECH_KEY') or ''
+            if not api_key:
+                return {"success": False, "message": "AZURE_SPEECH_KEY not set in .env file"}
+            region = provider_config.get('region', 'eastus')
+            # Hit the token endpoint — a 200 or 400 response proves the key is recognized
+            token_url = f"https://{region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        token_url,
+                        headers={"Ocp-Apim-Subscription-Key": api_key},
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200:
+                        capabilities = provider_config.get('capabilities', [])
+                        cap_str = '/'.join(str(c).upper() for c in capabilities) if capabilities else 'Speech'
+                        return {"success": True, "message": f"Connected to Azure Speech Service ({region}). {cap_str} key valid."}
+                    if response.status_code == 401:
+                        return {"success": False, "message": "Invalid AZURE_SPEECH_KEY (401 Unauthorized)"}
+                    return {"success": False, "message": f"Azure Speech API returned HTTP {response.status_code} for region '{region}'"}
+            except Exception as e:
+                logger.debug("Azure Speech provider validation failed", error=str(e), exc_info=True)
+                return {"success": False, "message": f"Cannot connect to Azure Speech Service at region '{region}' (see server logs)"}
+
         return {"success": False, "message": "Unknown provider type - cannot test"}
         
     except httpx.TimeoutException:

@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 from ..config import (
     AppConfig,
     PipelineEntry,
+    AzureSTTProviderConfig,
+    AzureTTSProviderConfig,
     DeepgramProviderConfig,
     ElevenLabsProviderConfig,
     GoogleProviderConfig,
@@ -37,6 +39,7 @@ from .ollama import OllamaLLMAdapter
 from .openai import OpenAISTTAdapter, OpenAILLMAdapter, OpenAITTSAdapter
 from .groq import GroqSTTAdapter, GroqTTSAdapter
 from .telnyx import TelnyxLLMAdapter
+from .azure import AzureSTTFastAdapter, AzureSTTRealtimeAdapter, AzureTTSAdapter
 
 logger = get_logger(__name__)
 
@@ -229,6 +232,8 @@ class PipelineOrchestrator:
         self._elevenlabs_provider_config: Optional[ElevenLabsProviderConfig] = self._hydrate_elevenlabs_config()
         self._groq_stt_provider_config: Optional[GroqSTTProviderConfig] = self._hydrate_groq_stt_config()
         self._groq_tts_provider_config: Optional[GroqTTSProviderConfig] = self._hydrate_groq_tts_config()
+        self._azure_stt_provider_config: Optional[AzureSTTProviderConfig] = self._hydrate_azure_stt_config()
+        self._azure_tts_provider_config: Optional[AzureTTSProviderConfig] = self._hydrate_azure_tts_config()
         self._register_builtin_factories()
 
         self._assignments: Dict[str, PipelineResolution] = {}
@@ -612,6 +617,43 @@ class PipelineOrchestrator:
         )
 
         self._register_openai_compatible_llm_factories()
+
+        # Azure STT adapters
+        if self._azure_stt_provider_config:
+            fast_factory = self._make_azure_stt_fast_factory(self._azure_stt_provider_config)
+            realtime_factory = self._make_azure_stt_realtime_factory(self._azure_stt_provider_config)
+
+            self.register_factory("azure_stt_fast", fast_factory)
+            self.register_factory("azure_stt_realtime", realtime_factory)
+
+            # The 'azure_stt' alias routes to fast or realtime based on provider config variant
+            variant = (self._azure_stt_provider_config.variant or "realtime").lower()
+            alias_factory = fast_factory if variant == "fast" else realtime_factory
+            self.register_factory("azure_stt", alias_factory)
+
+            logger.info(
+                "Azure STT pipeline adapters registered",
+                stt_fast_factory="azure_stt_fast",
+                stt_realtime_factory="azure_stt_realtime",
+                stt_alias=f"azure_stt -> azure_stt_{variant}",
+                region=self._azure_stt_provider_config.region,
+                language=self._azure_stt_provider_config.language,
+            )
+        else:
+            logger.debug("Azure STT pipeline adapters not registered - API key unavailable or config missing")
+
+        # Azure TTS adapter
+        if self._azure_tts_provider_config:
+            tts_factory = self._make_azure_tts_factory(self._azure_tts_provider_config)
+            self.register_factory("azure_tts", tts_factory)
+            logger.info(
+                "Azure TTS pipeline adapter registered",
+                tts_factory="azure_tts",
+                region=self._azure_tts_provider_config.region,
+                voice=self._azure_tts_provider_config.voice_name,
+            )
+        else:
+            logger.debug("Azure TTS pipeline adapter not registered - API key unavailable or config missing")
 
 
     def _register_openai_compatible_llm_factories(self) -> None:
@@ -1217,6 +1259,139 @@ class PipelineOrchestrator:
                 component_key,
                 self.config,
                 GroqTTSProviderConfig(**config_payload),
+                options,
+            )
+
+        return factory
+
+    # ------------------------------------------------------------------
+    # Azure Speech Service — hydration + factories
+    # ------------------------------------------------------------------
+
+    def _hydrate_azure_stt_config(self) -> Optional[AzureSTTProviderConfig]:
+        """Hydrate Azure STT provider config from YAML providers block."""
+        providers = getattr(self.config, "providers", {}) or {}
+        # Accept 'azure_stt', 'azure_stt_fast', 'azure_stt_realtime' as provider block names
+        raw_config = (
+            providers.get("azure_stt")
+            or providers.get("azure_stt_fast")
+            or providers.get("azure_stt_realtime")
+        )
+        if not raw_config:
+            return None
+        if isinstance(raw_config, AzureSTTProviderConfig):
+            config = raw_config
+        elif isinstance(raw_config, dict):
+            try:
+                config = AzureSTTProviderConfig(**raw_config)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to hydrate Azure STT provider config for pipelines",
+                    error=str(exc),
+                )
+                return None
+        else:
+            logger.warning(
+                "Unsupported Azure STT provider config type for pipelines",
+                config_type=type(raw_config).__name__,
+            )
+            return None
+
+        if not getattr(config, "enabled", True):
+            return None
+
+        if not config.api_key:
+            config.api_key = os.getenv("AZURE_SPEECH_KEY")
+
+        if not config.api_key:
+            logger.warning(
+                "Azure STT pipeline adapter requires AZURE_SPEECH_KEY; falling back to placeholder adapters"
+            )
+            return None
+
+        return config
+
+    def _hydrate_azure_tts_config(self) -> Optional[AzureTTSProviderConfig]:
+        """Hydrate Azure TTS provider config from YAML providers block."""
+        providers = getattr(self.config, "providers", {}) or {}
+        raw_config = providers.get("azure_tts")
+        if not raw_config:
+            return None
+        if isinstance(raw_config, AzureTTSProviderConfig):
+            config = raw_config
+        elif isinstance(raw_config, dict):
+            try:
+                config = AzureTTSProviderConfig(**raw_config)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to hydrate Azure TTS provider config for pipelines",
+                    error=str(exc),
+                )
+                return None
+        else:
+            logger.warning(
+                "Unsupported Azure TTS provider config type for pipelines",
+                config_type=type(raw_config).__name__,
+            )
+            return None
+
+        if not getattr(config, "enabled", True):
+            return None
+
+        if not config.api_key:
+            config.api_key = os.getenv("AZURE_SPEECH_KEY")
+
+        if not config.api_key:
+            logger.warning(
+                "Azure TTS pipeline adapter requires AZURE_SPEECH_KEY; falling back to placeholder adapters"
+            )
+            return None
+
+        return config
+
+    def _make_azure_stt_fast_factory(
+        self,
+        provider_config: AzureSTTProviderConfig,
+    ) -> ComponentFactory:
+        config_payload = provider_config.model_dump()
+
+        def factory(component_key: str, options: Dict[str, Any]) -> Component:
+            return AzureSTTFastAdapter(
+                component_key,
+                self.config,
+                AzureSTTProviderConfig(**config_payload),
+                options,
+            )
+
+        return factory
+
+    def _make_azure_stt_realtime_factory(
+        self,
+        provider_config: AzureSTTProviderConfig,
+    ) -> ComponentFactory:
+        config_payload = provider_config.model_dump()
+
+        def factory(component_key: str, options: Dict[str, Any]) -> Component:
+            return AzureSTTRealtimeAdapter(
+                component_key,
+                self.config,
+                AzureSTTProviderConfig(**config_payload),
+                options,
+            )
+
+        return factory
+
+    def _make_azure_tts_factory(
+        self,
+        provider_config: AzureTTSProviderConfig,
+    ) -> ComponentFactory:
+        config_payload = provider_config.model_dump()
+
+        def factory(component_key: str, options: Dict[str, Any]) -> Component:
+            return AzureTTSAdapter(
+                component_key,
+                self.config,
+                AzureTTSProviderConfig(**config_payload),
                 options,
             )
 

@@ -483,6 +483,7 @@ class OpenAILLMAdapter(LLMComponent):
             model=payload.get("model"),
             temperature=payload.get("temperature"),
             tools_count=len(payload.get("tools", [])),
+            messages=json.dumps(payload.get("messages", []), ensure_ascii=False),
         )
 
         retries = 1
