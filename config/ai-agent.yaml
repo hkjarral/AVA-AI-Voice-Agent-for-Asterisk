@@ -18,7 +18,7 @@ barge_in:
   pipeline_talk_detect_silence_ms: 1200
   pipeline_talk_detect_talking_threshold: 256
   post_tts_end_protection_ms: 250
-  greeting_protection_ms: 0
+  greeting_protection_ms: 5000
   provider_fallback_enabled: true
   provider_fallback_providers:
     - google_live
