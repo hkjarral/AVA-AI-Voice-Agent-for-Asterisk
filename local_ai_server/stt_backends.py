@@ -363,7 +363,7 @@ class SherpaOfflineSTTBackend:
         self.recognizer = None
         self._vad_config = None  # Stored for per-session VAD creation
         self._initialized = False
-        self._min_audio_length = int(sample_rate * 0.5)
+        self._min_audio_length = int(sample_rate * 0.25)
 
     def initialize(self) -> bool:
         try:
@@ -437,7 +437,7 @@ class SherpaOfflineSTTBackend:
             self._vad_config = sherpa_onnx.VadModelConfig()
             self._vad_config.silero_vad.model = self.vad_model_path
             self._vad_config.silero_vad.threshold = 0.5
-            self._vad_config.silero_vad.min_silence_duration = 0.25
+            self._vad_config.silero_vad.min_silence_duration = 0.5
             self._vad_config.silero_vad.min_speech_duration = 0.25
             self._vad_config.silero_vad.max_speech_duration = 20.0
             self._vad_config.sample_rate = self.sample_rate
@@ -534,19 +534,23 @@ class SherpaOfflineSTTBackend:
 
             vad.accept_waveform(float_samples)
 
-            if not vad.empty():
+            # Process ALL queued speech segments (not just the first).
+            texts = []
+            while not vad.empty():
                 speech_segment = vad.front
                 vad.pop()
 
                 speech_samples = np.array(speech_segment.samples, dtype=np.float32)
 
                 if len(speech_samples) < self._min_audio_length:
-                    return None
+                    continue
 
                 text = self._transcribe_segment(speech_samples)
-
                 if text:
-                    return {"type": "final", "text": text}
+                    texts.append(text)
+
+            if texts:
+                return {"type": "final", "text": " ".join(texts)}
 
             return None
 
