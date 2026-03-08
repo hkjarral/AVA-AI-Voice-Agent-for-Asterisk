@@ -434,6 +434,7 @@ class _FakeVAD:
     def empty(self):
         return len(self._segments) == 0
 
+    @property
     def front(self):
         return self._segments[0] if self._segments else None
 

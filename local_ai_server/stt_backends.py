@@ -499,7 +499,7 @@ class SherpaOfflineSTTBackend:
             vad.accept_waveform(float_samples)
 
             if not vad.empty():
-                speech_segment = vad.front()
+                speech_segment = vad.front
                 vad.pop()
 
                 speech_samples = np.array(speech_segment.samples, dtype=np.float32)
@@ -532,7 +532,7 @@ class SherpaOfflineSTTBackend:
 
             texts = []
             while not vad.empty():
-                speech_segment = vad.front()
+                speech_segment = vad.front
                 vad.pop()
 
                 speech_samples = np.array(speech_segment.samples, dtype=np.float32)
