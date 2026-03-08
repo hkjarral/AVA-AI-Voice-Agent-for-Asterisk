@@ -139,6 +139,7 @@ def build_status_response(server) -> Dict[str, Any]:
                 "path": stt_path,
                 "display": stt_display,
                 "language": _stt_language(server),
+                "sherpa_model_type": getattr(server, "sherpa_model_type", None) if server.stt_backend == "sherpa" else None,
             },
             "llm": {
                 "loaded": llm_loaded,

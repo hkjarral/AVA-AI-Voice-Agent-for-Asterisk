@@ -1018,7 +1018,7 @@ const ModelsPage = () => {
                                                         <label className="text-[10px] text-muted-foreground">Model Type</label>
                                                         <select
                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_model_type ? 'border-yellow-500' : 'border-border'}`}
-                                                            value={pendingSttExtra.sherpa_model_type || 'online'}
+                                                            value={pendingSttExtra.sherpa_model_type ?? (activeModels.stt as any).sherpa_model_type ?? 'online'}
                                                             onChange={(e) => {
                                                                 setPendingSttExtra(prev => ({ ...prev, sherpa_model_type: e.target.value }));
                                                                 if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
@@ -1029,7 +1029,7 @@ const ModelsPage = () => {
                                                             <option value="offline">Offline (VAD-gated)</option>
                                                         </select>
                                                     </div>
-                                                    {(pendingSttExtra.sherpa_model_type === 'offline') && (
+                                                    {((pendingSttExtra.sherpa_model_type ?? (activeModels.stt as any).sherpa_model_type) === 'offline') && (
                                                         <div>
                                                             <label className="text-[10px] text-muted-foreground">Silero VAD Path</label>
                                                             <input

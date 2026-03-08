@@ -667,7 +667,7 @@ export const HealthWidget = () => {
                                                 <label className="text-[10px] text-muted-foreground">Model Type</label>
                                                 <select
                                                     className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_model_type ? 'border-yellow-500' : 'border-border'}`}
-                                                    value={pendingChanges.stt?.sherpa_model_type || 'online'}
+                                                    value={pendingChanges.stt?.sherpa_model_type ?? health.local_ai_server.details.models?.stt?.sherpa_model_type ?? 'online'}
                                                     onChange={(e) => {
                                                         const existing = pendingChanges.stt || { backend: 'sherpa' };
                                                         queueChange('stt', { ...existing, backend: 'sherpa', sherpa_model_type: e.target.value });
@@ -678,7 +678,7 @@ export const HealthWidget = () => {
                                                     <option value="offline">Offline (VAD-gated)</option>
                                                 </select>
                                             </div>
-                                            {pendingChanges.stt?.sherpa_model_type === 'offline' && (
+                                            {(pendingChanges.stt?.sherpa_model_type ?? health.local_ai_server.details.models?.stt?.sherpa_model_type) === 'offline' && (
                                                 <div>
                                                     <label className="text-[10px] text-muted-foreground">Silero VAD Path</label>
                                                     <input
