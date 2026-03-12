@@ -293,8 +293,9 @@ async def test_minimax_llm_no_api_key_raises():
 
 
 @pytest.mark.asyncio
-async def test_minimax_llm_retry_without_tools_on_400():
-    """Adapter retries without tools when first attempt returns 400."""
+@pytest.mark.parametrize("error_status", [400, 422])
+async def test_minimax_llm_retry_without_tools(error_status):
+    """Adapter retries without tools when first attempt returns 400 or 422."""
     app_config = _build_app_config()
     provider_config = MiniMaxLLMProviderConfig(**app_config.providers["minimax_llm"])
 
@@ -305,8 +306,8 @@ async def test_minimax_llm_retry_without_tools_on_400():
     }).encode("utf-8")
 
     fake_session = _SequencedFakeSession([
-        (error_body, 400),   # First call with tools -> 400
-        (success_body, 200), # Retry without tools -> success
+        (error_body, error_status),  # First call with tools -> error
+        (success_body, 200),         # Retry without tools -> success
     ])
 
     # Create a fake tool so the adapter can build tool schemas.

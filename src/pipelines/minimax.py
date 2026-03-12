@@ -173,7 +173,12 @@ class MiniMaxLLMAdapter(LLMComponent):
                 self._pipeline_defaults.get("max_tokens", getattr(self._provider_defaults, "max_tokens", None)),
             ),
             "timeout_sec": _safe_float(
-                runtime_options.get("timeout_sec", self._pipeline_defaults.get("timeout_sec", self._default_timeout)),
+                runtime_options.get(
+                    "response_timeout_sec",
+                    runtime_options.get("timeout_sec",
+                        self._pipeline_defaults.get("response_timeout_sec",
+                            self._pipeline_defaults.get("timeout_sec", self._default_timeout))),
+                ),
                 self._default_timeout,
             ),
             "tools": runtime_options.get("tools", self._pipeline_defaults.get("tools", [])),
@@ -245,28 +250,28 @@ class MiniMaxLLMAdapter(LLMComponent):
         headers = _make_http_headers(str(api_key))
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    endpoint, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)
-                ) as resp:
-                    if resp.status in (401, 403):
-                        return {
-                            "healthy": False,
-                            "error": f"Auth failed (HTTP {resp.status})",
-                            "details": {"endpoint": endpoint},
-                        }
-                    if resp.status >= 400:
-                        body = await resp.text()
-                        return {
-                            "healthy": False,
-                            "error": f"API error: HTTP {resp.status}",
-                            "details": {"endpoint": endpoint, "body_preview": body[:200]},
-                        }
+            await self._ensure_session()
+            async with self._session.get(
+                endpoint, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)
+            ) as resp:
+                if resp.status in (401, 403):
                     return {
-                        "healthy": True,
-                        "error": None,
-                        "details": {"endpoint": endpoint, "protocol": "https"},
+                        "healthy": False,
+                        "error": f"Auth failed (HTTP {resp.status})",
+                        "details": {"endpoint": endpoint},
                     }
+                if resp.status >= 400:
+                    body = await resp.text()
+                    return {
+                        "healthy": False,
+                        "error": f"API error: HTTP {resp.status}",
+                        "details": {"endpoint": endpoint, "body_preview": body[:200]},
+                    }
+                return {
+                    "healthy": True,
+                    "error": None,
+                    "details": {"endpoint": endpoint, "protocol": "https"},
+                }
         except Exception as exc:
             logger.debug("MiniMax connectivity validation failed", error=str(exc), exc_info=True)
             return {

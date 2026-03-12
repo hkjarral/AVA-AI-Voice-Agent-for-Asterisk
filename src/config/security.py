@@ -210,8 +210,9 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
                 if not isinstance(provider_cfg, dict):
                     continue
                 name_lower = str(provider_name).lower()
+                cfg_type = str(provider_cfg.get("type", "")).lower()
                 chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
-                if name_lower.startswith("minimax") or chat_host in ("api.minimax.io", "api.minimaxi.com"):
+                if name_lower.startswith("minimax") or cfg_type == "minimax" or chat_host in ("api.minimax.io", "api.minimaxi.com"):
                     provider_cfg["api_key"] = minimax_key
                     providers_block[provider_name] = provider_cfg
 
