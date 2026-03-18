@@ -17,7 +17,9 @@ class TestLiveAgentTransferTool:
         assert d.name == "live_agent_transfer"
         assert d.category.value == "telephony"
         assert d.requires_channel is True
-        assert len(d.parameters) == 0
+        assert len(d.parameters) == 1
+        assert d.parameters[0].name == "target"
+        assert d.parameters[0].required is False
 
     @pytest.mark.asyncio
     async def test_uses_explicit_live_agent_destination_key(self, tool, tool_context, mock_ari_client):
@@ -37,6 +39,87 @@ class TestLiveAgentTransferTool:
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
         assert call_args["params"]["extension"] == "6000"
+
+    @pytest.mark.asyncio
+    async def test_explicit_target_extension_overrides_default_resolution(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"] = {
+            "internal": {
+                "2765": {
+                    "name": "Live Agent 2",
+                    "aliases": ["haider"],
+                    "dial_string": "PJSIP/2765",
+                    "transfer": True,
+                },
+                "6000": {
+                    "name": "Live Agent",
+                    "aliases": ["support"],
+                    "dial_string": "SIP/6000",
+                    "transfer": True,
+                },
+            }
+        }
+
+        result = await tool.execute({"target": "2765"}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["destination"] == "2765"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
+        assert call_args["params"]["extension"] == "2765"
+
+    @pytest.mark.asyncio
+    async def test_explicit_target_alias_routes_to_matching_extension(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"] = {
+            "internal": {
+                "2765": {
+                    "name": "Live Agent 2",
+                    "aliases": ["haider"],
+                    "dial_string": "PJSIP/2765",
+                    "transfer": True,
+                },
+                "6000": {
+                    "name": "Support Team",
+                    "aliases": ["support"],
+                    "dial_string": "SIP/6000",
+                    "transfer": True,
+                },
+            }
+        }
+
+        result = await tool.execute({"target": "support"}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["destination"] == "6000"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["params"]["extension"] == "6000"
+
+    @pytest.mark.asyncio
+    async def test_explicit_target_fails_when_not_configured(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"] = {
+            "internal": {
+                "6000": {"name": "Live Agent", "dial_string": "SIP/6000", "transfer": True},
+            }
+        }
+
+        result = await tool.execute({"target": "2765"}, tool_context)
+
+        assert result["status"] == "failed"
+        assert "not configured" in result["message"]
+        mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_target_fails_when_transfer_disabled(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"] = {
+            "internal": {
+                "6000": {"name": "Live Agent", "dial_string": "SIP/6000", "transfer": False},
+            }
+        }
+
+        result = await tool.execute({"target": "6000"}, tool_context)
+
+        assert result["status"] == "failed"
+        assert "not enabled for transfers" in result["message"]
+        mock_ari_client.send_command.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_falls_back_to_live_agent_key_when_config_not_set(self, tool, tool_context, mock_ari_client):

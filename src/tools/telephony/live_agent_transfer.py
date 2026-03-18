@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple, List, Mapping
 
 import structlog
 
-from src.tools.base import Tool, ToolCategory, ToolDefinition
+from src.tools.base import Tool, ToolCategory, ToolDefinition, ToolParameter
 from src.tools.context import ToolExecutionContext
 from src.tools.telephony.unified_transfer import UnifiedTransferTool
 
@@ -30,12 +30,23 @@ class LiveAgentTransferTool(Tool):
             description=(
                 "Transfer the caller to a live (human) agent. "
                 "By default routes to Tools -> Live Agents. Optionally, an advanced/legacy "
-                "override can route live-agent requests via a transfer destination."
+                "override can route live-agent requests via a transfer destination. "
+                "An optional target can specify the desired live agent extension, name, or alias."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,
             max_execution_time=30,
-            parameters=[],
+            parameters=[
+                ToolParameter(
+                    name="target",
+                    type="string",
+                    description=(
+                        "Optional target live agent extension number, configured name, or alias "
+                        "(for example '6000', 'Live Agent 2', or 'support')."
+                    ),
+                    required=False,
+                ),
+            ],
         )
 
     @staticmethod
@@ -174,12 +185,138 @@ class LiveAgentTransferTool(Tool):
 
         return None
 
+    @classmethod
+    def _resolve_explicit_target_extension(
+        cls,
+        *,
+        target: str,
+        extensions_cfg: Dict[str, Any],
+    ) -> Tuple[Optional[str], Dict[str, Any], str]:
+        if not isinstance(extensions_cfg, dict) or not extensions_cfg:
+            return None, {}, "extensions.internal.empty"
+
+        normalized_target = cls._normalize_text(target)
+        if not normalized_target:
+            return None, {}, "parameter.target.empty"
+
+        def _extension_key(key: Any) -> Optional[str]:
+            ext = str(key or "").strip()
+            if ext and ext.isdigit():
+                return ext
+            return None
+
+        direct_numeric = str(target or "").strip()
+        if direct_numeric.isdigit():
+            cfg = extensions_cfg.get(direct_numeric)
+            if isinstance(cfg, dict):
+                if cfg.get("transfer") is False:
+                    return None, {}, "extensions.internal.target_transfer_disabled"
+                return direct_numeric, dict(cfg), "parameter.target.extension"
+
+        name_matches: List[Tuple[str, Dict[str, Any]]] = []
+        alias_matches: List[Tuple[str, Dict[str, Any]]] = []
+
+        for key, cfg in extensions_cfg.items():
+            extension = _extension_key(key)
+            if not extension or not isinstance(cfg, dict):
+                continue
+            if cfg.get("transfer") is False:
+                continue
+
+            name = cls._normalize_text(cfg.get("name"))
+            if name and name == normalized_target:
+                name_matches.append((extension, dict(cfg)))
+
+            aliases = cfg.get("aliases")
+            alias_values = aliases if isinstance(aliases, list) else [aliases] if aliases is not None else []
+            for alias in alias_values:
+                if cls._normalize_text(alias) == normalized_target:
+                    alias_matches.append((extension, dict(cfg)))
+                    break
+
+        if len(name_matches) == 1:
+            ext, cfg = name_matches[0]
+            return ext, cfg, "extensions.internal.target_name"
+        if len(name_matches) > 1:
+            return None, {}, "extensions.internal.target_name_ambiguous"
+
+        if len(alias_matches) == 1:
+            ext, cfg = alias_matches[0]
+            return ext, cfg, "extensions.internal.target_alias"
+        if len(alias_matches) > 1:
+            return None, {}, "extensions.internal.target_alias_ambiguous"
+
+        return None, {}, "extensions.internal.target_unconfigured"
+
     async def execute(self, parameters: Dict[str, Any], context: ToolExecutionContext) -> Dict[str, Any]:
-        _ = parameters
         unified = UnifiedTransferTool()
         transfer_cfg = context.get_config_value("tools.transfer") or {}
         if isinstance(transfer_cfg, dict) and transfer_cfg.get("enabled") is False:
             return {"status": "failed", "message": "Transfer service is disabled"}
+
+        target = str((parameters or {}).get("target", "") or "").strip()
+        extensions_cfg = context.get_config_value("tools.extensions.internal") or {}
+
+        # 0) Explicit target: transfer to the chosen configured live agent/extension.
+        if target:
+            extension, ext_entry, ext_source = self._resolve_explicit_target_extension(
+                target=target,
+                extensions_cfg=extensions_cfg,
+            )
+            if extension:
+                display_name = str(ext_entry.get("name", "") or "").strip()
+                display_desc = str(ext_entry.get("description", "") or "").strip()
+                description = display_name or display_desc or f"Extension {extension}"
+
+                logger.info(
+                    "Executing live agent transfer via explicit target",
+                    call_id=context.call_id,
+                    target=target,
+                    extension=extension,
+                    resolution_source=ext_source,
+                )
+                return await unified._transfer_to_extension(context, extension, description)
+
+            if ext_source.endswith("_ambiguous"):
+                logger.warning(
+                    "Explicit live agent target is ambiguous",
+                    call_id=context.call_id,
+                    target=target,
+                    resolution_source=ext_source,
+                )
+                return {
+                    "status": "failed",
+                    "message": (
+                        f"'{target}' matches multiple Live Agents. Please specify the extension number "
+                        "or a more specific configured name."
+                    ),
+                }
+
+            if ext_source.endswith("_transfer_disabled"):
+                logger.warning(
+                    "Explicit live agent target is not transfer-enabled",
+                    call_id=context.call_id,
+                    target=target,
+                    resolution_source=ext_source,
+                )
+                return {
+                    "status": "failed",
+                    "message": f"Live agent target '{target}' is configured but not enabled for transfers.",
+                }
+
+            logger.warning(
+                "Explicit live agent target not configured",
+                call_id=context.call_id,
+                target=target,
+                resolution_source=ext_source,
+            )
+            return {
+                "status": "failed",
+                "message": (
+                    f"Live agent target '{target}' is not configured. "
+                    "Use a configured extension number, name, or alias from Tools -> Live Agents."
+                ),
+            }
 
         # 1) Explicit override: if an operator configured a live_agent_destination_key, use it.
         configured_key = str(transfer_cfg.get("live_agent_destination_key") or "").strip() if isinstance(transfer_cfg, dict) else ""
@@ -201,7 +338,6 @@ class LiveAgentTransferTool(Tool):
             )
 
         # 2) Default: route to Live Agents (tools.extensions.internal) if configured.
-        extensions_cfg = context.get_config_value("tools.extensions.internal") or {}
         extension, ext_entry, ext_source = self._resolve_live_agent_extension_from_internal_config(extensions_cfg)
         if extension:
             display_name = str(ext_entry.get("name", "") or "").strip()
