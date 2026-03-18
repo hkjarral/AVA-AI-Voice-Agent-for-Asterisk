@@ -8,6 +8,7 @@ The engine then:
   - bridges caller <-> destination and removes AI media on accept.
 """
 
+import asyncio
 from typing import Any, Dict, Optional
 import time
 import structlog
@@ -104,6 +105,13 @@ class AttendedTransferTool(Tool):
 
         dial_timeout_sec = int(cfg.get("dial_timeout_seconds", 30) or 30)
         moh_class = str(cfg.get("moh_class", "default") or "default")
+        screening_mode = self._resolve_screening_mode(cfg)
+        caller_screening_prompt = str(
+            cfg.get("caller_screening_prompt")
+            or "Before I connect you, please say your name and the reason for your call."
+        ).strip()
+        caller_screening_max_seconds = float(cfg.get("caller_screening_max_seconds", 6) or 6)
+        caller_screening_silence_ms = int(cfg.get("caller_screening_silence_ms", 1200) or 1200)
 
         session = await context.get_session()
         call_id = session.call_id
@@ -116,17 +124,6 @@ class AttendedTransferTool(Tool):
             dial_endpoint=dial_endpoint,
         )
 
-        # Start MOH for caller while we dial the agent.
-        try:
-            await context.ari_client.send_command(
-                method="POST",
-                resource=f"channels/{context.caller_channel_id}/moh",
-                params={"mohClass": moh_class},
-            )
-        except Exception:
-            logger.warning("Failed to start MOH for attended transfer", call_id=call_id, exc_info=True)
-
-        # Record current_action for cancel/engine handlers.
         session.current_action = {
             "type": "attended_transfer",
             "destination_key": destination,
@@ -140,68 +137,53 @@ class AttendedTransferTool(Tool):
             "answered": False,
             "decision": None,
             "decision_digit": None,
+            "screening_mode": screening_mode,
         }
-        # Disable capture while caller is on MOH (prevents MOH audio feeding STT/providers).
-        try:
-            session.audio_capture_enabled = False
-        except Exception:
-            pass
         await context.session_store.upsert_call(session)
 
-        caller_id = self._build_ai_caller_id(context)
-        app = str(context.get_config_value("asterisk.app_name", "asterisk-ai-voice-agent") or "asterisk-ai-voice-agent")
+        if screening_mode == "caller_recording":
+            session.current_action["screening_status"] = "pending"
+            session.current_action["caller_screening_prompt"] = caller_screening_prompt
+            session.current_action["caller_screening_max_seconds"] = caller_screening_max_seconds
+            session.current_action["caller_screening_silence_ms"] = caller_screening_silence_ms
+            await context.session_store.upsert_call(session)
 
-        try:
-            result = await context.ari_client.send_command(
-                method="POST",
-                resource="channels",
-                data={
-                    "endpoint": dial_endpoint,
-                    "callerId": caller_id,
-                    "timeout": dial_timeout_sec,
-                    "variables": {
-                        "AGENT_ACTION": "attended_transfer",
-                        "AGENT_CALL_ID": call_id,
-                        "AGENT_TARGET": extension,
-                        "AAVA_TRANSFER_DESTINATION_KEY": destination,
-                    },
-                },
-                params={"app": app, "appArgs": f"attended-transfer,{call_id},{destination}"},
+            engine = getattr(context.ari_client, "engine", None)
+            workflow = self._complete_caller_recording_transfer(
+                context=context,
+                destination=destination,
+                extension=extension,
+                description=description,
+                dial_endpoint=dial_endpoint,
+                dial_timeout_sec=dial_timeout_sec,
+                moh_class=moh_class,
+                screening_max_seconds=caller_screening_max_seconds,
+                screening_silence_ms=caller_screening_silence_ms,
             )
-        except Exception:
-            result = None
-            logger.error("Failed to originate attended transfer agent leg", call_id=call_id, exc_info=True)
+            if engine and hasattr(engine, "_fire_and_forget_for_call"):
+                engine._fire_and_forget_for_call(call_id, workflow, name=f"attx-screening-{call_id}")
+            else:
+                asyncio.create_task(workflow)
+            return {
+                "status": "success",
+                "message": caller_screening_prompt,
+                "destination": destination,
+                "type": "attended_transfer",
+            }
 
-        if not result or not isinstance(result, dict) or not result.get("id"):
-            # Originate failed: stop MOH and clear action.
-            await self._cleanup_failed_originate(context, call_id)
+        result = await self._originate_attended_transfer_leg(
+            context=context,
+            destination=destination,
+            extension=extension,
+            dial_endpoint=dial_endpoint,
+            dial_timeout_sec=dial_timeout_sec,
+            moh_class=moh_class,
+        )
+        if not result:
             return {
                 "status": "failed",
                 "message": f"Unable to place the transfer call to {description}.",
             }
-
-        agent_channel_id = result["id"]
-        session = await context.get_session()
-        if session.current_action and session.current_action.get("type") == "attended_transfer":
-            session.current_action["agent_channel_id"] = agent_channel_id
-            await context.session_store.upsert_call(session)
-
-        # Best-effort: register agent channel for DTMF routing and schedule no-answer cleanup.
-        try:
-            engine = getattr(context.ari_client, "engine", None)
-            if engine and hasattr(engine, "register_attended_transfer_agent_channel"):
-                engine.register_attended_transfer_agent_channel(call_id, agent_channel_id)
-            if engine and hasattr(engine, "start_attended_transfer_timeout_guard"):
-                engine.start_attended_transfer_timeout_guard(call_id, agent_channel_id, timeout_sec=dial_timeout_sec)
-        except Exception:
-            logger.debug("Failed to register attended transfer runtime helpers", call_id=call_id, exc_info=True)
-
-        logger.info(
-            "📞 Attended transfer agent leg originated",
-            call_id=call_id,
-            agent_channel_id=agent_channel_id,
-            destination_key=destination,
-        )
 
         return {
             "status": "success",
@@ -314,6 +296,159 @@ class AttendedTransferTool(Tool):
         ai_name = str(context.get_config_value("tools.ai_identity.name", "AI Agent") or "AI Agent")
         ai_number = str(context.get_config_value("tools.ai_identity.number", "6789") or "6789")
         return f"\"{ai_name}\" <{ai_number}>"
+
+    def _resolve_screening_mode(self, attended_cfg: Dict[str, Any]) -> str:
+        raw_mode = str((attended_cfg or {}).get("screening_mode") or "").strip().lower()
+        if raw_mode in {"basic_tts", "caller_recording", "ai_summary"}:
+            return raw_mode
+        if bool((attended_cfg or {}).get("pass_caller_info_to_context", False)):
+            return "ai_summary"
+        return "basic_tts"
+
+    async def _start_moh(self, context: ToolExecutionContext, moh_class: str) -> None:
+        await context.ari_client.send_command(
+            method="POST",
+            resource=f"channels/{context.caller_channel_id}/moh",
+            params={"mohClass": moh_class},
+        )
+
+    async def _originate_attended_transfer_leg(
+        self,
+        *,
+        context: ToolExecutionContext,
+        destination: str,
+        extension: str,
+        dial_endpoint: str,
+        dial_timeout_sec: int,
+        moh_class: str,
+    ) -> Optional[Dict[str, Any]]:
+        call_id = context.call_id
+        try:
+            await self._start_moh(context, moh_class)
+        except Exception:
+            logger.warning("Failed to start MOH for attended transfer", call_id=call_id, exc_info=True)
+
+        try:
+            session = await context.get_session()
+            if session.current_action and session.current_action.get("type") == "attended_transfer":
+                session.current_action["screening_status"] = session.current_action.get("screening_status") or "skipped"
+            session.audio_capture_enabled = False
+            await context.session_store.upsert_call(session)
+        except Exception:
+            logger.debug("Failed to update session before attended transfer originate", call_id=call_id, exc_info=True)
+
+        caller_id = self._build_ai_caller_id(context)
+        app = str(context.get_config_value("asterisk.app_name", "asterisk-ai-voice-agent") or "asterisk-ai-voice-agent")
+
+        try:
+            result = await context.ari_client.send_command(
+                method="POST",
+                resource="channels",
+                data={
+                    "endpoint": dial_endpoint,
+                    "callerId": caller_id,
+                    "timeout": dial_timeout_sec,
+                    "variables": {
+                        "AGENT_ACTION": "attended_transfer",
+                        "AGENT_CALL_ID": call_id,
+                        "AGENT_TARGET": extension,
+                        "AAVA_TRANSFER_DESTINATION_KEY": destination,
+                    },
+                },
+                params={"app": app, "appArgs": f"attended-transfer,{call_id},{destination}"},
+            )
+        except Exception:
+            result = None
+            logger.error("Failed to originate attended transfer agent leg", call_id=call_id, exc_info=True)
+
+        if not result or not isinstance(result, dict) or not result.get("id"):
+            await self._cleanup_failed_originate(context, call_id)
+            return None
+
+        agent_channel_id = result["id"]
+        try:
+            session = await context.get_session()
+            if session.current_action and session.current_action.get("type") == "attended_transfer":
+                session.current_action["agent_channel_id"] = agent_channel_id
+                session.current_action["screening_status"] = session.current_action.get("screening_status") or "skipped"
+                await context.session_store.upsert_call(session)
+        except Exception:
+            logger.debug("Failed to persist attended transfer originate state", call_id=call_id, exc_info=True)
+
+        try:
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "register_attended_transfer_agent_channel"):
+                engine.register_attended_transfer_agent_channel(call_id, agent_channel_id)
+            if engine and hasattr(engine, "start_attended_transfer_timeout_guard"):
+                engine.start_attended_transfer_timeout_guard(call_id, agent_channel_id, timeout_sec=dial_timeout_sec)
+        except Exception:
+            logger.debug("Failed to register attended transfer runtime helpers", call_id=call_id, exc_info=True)
+
+        logger.info(
+            "📞 Attended transfer agent leg originated",
+            call_id=call_id,
+            agent_channel_id=agent_channel_id,
+            destination_key=destination,
+        )
+        return result
+
+    async def _complete_caller_recording_transfer(
+        self,
+        *,
+        context: ToolExecutionContext,
+        destination: str,
+        extension: str,
+        description: str,
+        dial_endpoint: str,
+        dial_timeout_sec: int,
+        moh_class: str,
+        screening_max_seconds: float,
+        screening_silence_ms: int,
+    ) -> None:
+        call_id = context.call_id
+        engine = getattr(context.ari_client, "engine", None)
+        screening_result = None
+        if engine and hasattr(engine, "collect_attended_transfer_screening"):
+            screening_result = await engine.collect_attended_transfer_screening(
+                call_id=call_id,
+                max_seconds=screening_max_seconds,
+                silence_ms=screening_silence_ms,
+            )
+
+        try:
+            session = await context.get_session()
+        except Exception:
+            return
+
+        action = session.current_action or {}
+        if action.get("type") != "attended_transfer":
+            return
+
+        if screening_result and screening_result.get("audio_ulaw"):
+            action["screening_status"] = "captured"
+            action["screening_payload"] = {
+                "kind": "caller_recording",
+                "audio_ulaw": screening_result.get("audio_ulaw"),
+                "duration_ms": int(screening_result.get("duration_ms") or 0),
+            }
+        else:
+            action["screening_status"] = "fallback"
+            action.pop("screening_payload", None)
+        session.current_action = action
+        await context.session_store.upsert_call(session)
+
+        result = await self._originate_attended_transfer_leg(
+            context=context,
+            destination=destination,
+            extension=extension,
+            dial_endpoint=dial_endpoint,
+            dial_timeout_sec=dial_timeout_sec,
+            moh_class=moh_class,
+        )
+        if result:
+            return
+
+        logger.warning("Caller-recording attended transfer fell back before origination", call_id=call_id, destination=description)
 
     async def _cleanup_failed_originate(self, context: ToolExecutionContext, call_id: str) -> None:
         try:

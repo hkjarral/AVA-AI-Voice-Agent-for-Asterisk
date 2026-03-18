@@ -350,3 +350,78 @@ def test_attended_transfer_template_substitution_keeps_unknown_placeholders():
     )
 
     assert rendered == "Hi John about billing. Unknown={unknown_var}"
+
+
+def test_attended_transfer_screening_mode_resolution_prefers_explicit_mode():
+    engine = _build_engine({"enabled": True})
+    assert engine._resolve_attended_transfer_screening_mode({"screening_mode": "caller_recording"}) == "caller_recording"
+    assert engine._resolve_attended_transfer_screening_mode({"pass_caller_info_to_context": True}) == "ai_summary"
+    assert engine._resolve_attended_transfer_screening_mode({"screening_mode": "basic_tts"}) == "basic_tts"
+    assert engine._resolve_attended_transfer_screening_mode({}) == "basic_tts"
+
+
+@pytest.mark.asyncio
+async def test_attended_transfer_caller_recording_mode_streams_intro_clip_and_prompt(monkeypatch):
+    engine = _build_engine(
+        {
+            "enabled": True,
+            "delivery_mode": "stream",
+            "stream_fallback_to_file": True,
+            "screening_mode": "caller_recording",
+            "accept_digit": "1",
+            "decline_digit": "2",
+        }
+    )
+
+    session = CallSession(
+        call_id="call-recording-mode",
+        caller_channel_id="caller-recording-mode",
+        caller_name="Caller ID",
+        caller_number="15550009999",
+        context_name="support",
+    )
+    session.current_action = {
+        "type": "attended_transfer",
+        "screening_mode": "caller_recording",
+        "screening_payload": {
+            "kind": "caller_recording",
+            "audio_ulaw": b"\xff" * 1600,
+            "duration_ms": 200,
+        },
+    }
+    await engine.session_store.upsert_call(session)
+
+    tts_texts = []
+    stream_lengths = []
+
+    async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
+        return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
+
+    async def fake_tts(*, call_id, text, timeout_sec):
+        tts_texts.append(text)
+        return b"\xff" * 320
+
+    async def fake_stream(agent_channel_id, audio_bytes, *, frame_ms=20):
+        stream_lengths.append(len(audio_bytes))
+        return True
+
+    async def fake_wait_dtmf(agent_channel_id, *, timeout_sec):
+        return "1"
+
+    async def fake_finalize(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(engine, "_start_attended_transfer_helper_media", fake_start_helper)
+    monkeypatch.setattr(engine, "_local_ai_server_tts", fake_tts)
+    monkeypatch.setattr(engine, "_stream_attended_transfer_audio", fake_stream)
+    monkeypatch.setattr(engine, "_wait_for_attended_transfer_dtmf", fake_wait_dtmf)
+    monkeypatch.setattr(engine, "_attended_transfer_finalize_bridge", fake_finalize)
+
+    await engine._handle_attended_transfer_answered(
+        "agent-recording-mode",
+        ["attended-transfer", "call-recording-mode", "support_agent"],
+    )
+
+    assert tts_texts[0] == "Hi, this is Ava. Here is the caller's screening."
+    assert tts_texts[1] == "Press 1 to accept this transfer, or 2 to decline."
+    assert stream_lengths == [320, 1600, 320]

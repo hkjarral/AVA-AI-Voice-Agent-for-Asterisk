@@ -231,6 +231,7 @@ class Engine:
         self._attended_transfer_agent_channel_to_call_id: Dict[str, str] = {}
         self._attended_transfer_helper_state_by_agent_channel: Dict[str, Dict[str, Any]] = {}
         self._attended_transfer_helper_external_media_to_agent_channel: Dict[str, str] = {}
+        self._attended_transfer_screening_state_by_call: Dict[str, Dict[str, Any]] = {}
         self._attended_transfer_helper_rtp_lock = asyncio.Lock()
         # Per-call transcript timing cache for latency histograms
         self._last_transcript_ts: Dict[str, float] = {}
@@ -3972,6 +3973,137 @@ class Engine:
             "screened_reason_display": screened_call_reason or context_name,
         }
 
+    @staticmethod
+    def _resolve_attended_transfer_screening_mode(attended_cfg: Optional[Dict[str, Any]]) -> str:
+        cfg = attended_cfg if isinstance(attended_cfg, dict) else {}
+        raw_mode = str(cfg.get("screening_mode") or "").strip().lower()
+        if raw_mode in {"basic_tts", "caller_recording", "ai_summary"}:
+            return raw_mode
+        if bool(cfg.get("pass_caller_info_to_context", False)):
+            return "ai_summary"
+        return "basic_tts"
+
+    @staticmethod
+    def _pcm16_to_ulaw8k(audio_bytes: bytes, sample_rate: int) -> bytes:
+        if not audio_bytes:
+            return b""
+        pcm_bytes = audio_bytes
+        state = None
+        if int(sample_rate or 0) != 8000:
+            pcm_bytes, _state = audioop.ratecv(audio_bytes, 2, 1, int(sample_rate or 16000), 8000, state)
+        return audioop.lin2ulaw(pcm_bytes, 2)
+
+    async def collect_attended_transfer_screening(
+        self,
+        *,
+        call_id: str,
+        max_seconds: float,
+        silence_ms: int,
+    ) -> Optional[Dict[str, Any]]:
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or not session.current_action or session.current_action.get("type") != "attended_transfer":
+            return None
+
+        now = time.time()
+        state: Dict[str, Any] = {
+            "armed_at": now,
+            "first_speech_ts": 0.0,
+            "last_voice_ts": 0.0,
+            "speech_started": False,
+            "silence_accum_ms": 0,
+            "sample_rate": 8000,
+            "ulaw_audio": bytearray(),
+            "max_seconds": max(1.0, float(max_seconds or 6.0)),
+            "silence_ms": max(300, int(silence_ms or 1200)),
+            "energy_threshold": 450,
+        }
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        state["future"] = future
+        self._attended_transfer_screening_state_by_call[call_id] = state
+
+        try:
+            result = await asyncio.wait_for(future, timeout=max(4.0, state["max_seconds"] + 6.0))
+            if isinstance(result, dict):
+                return result
+            return None
+        except asyncio.TimeoutError:
+            logger.info("Attended transfer caller screening timed out", call_id=call_id)
+            return None
+        finally:
+            self._attended_transfer_screening_state_by_call.pop(call_id, None)
+
+    def _consume_attended_transfer_screening_audio(self, call_id: str, pcm16: bytes, sample_rate: int) -> bool:
+        state = self._attended_transfer_screening_state_by_call.get(call_id)
+        if not state:
+            return False
+        fut = state.get("future")
+        if fut and fut.done():
+            return False
+        if not pcm16:
+            return True
+
+        try:
+            now = time.time()
+            energy = int(audioop.rms(pcm16, 2)) if pcm16 else 0
+            voiced = energy >= int(state.get("energy_threshold", 450))
+            frame_ms = int((len(pcm16) / max(1, int(sample_rate or 8000)) / 2) * 1000)
+            ulaw_chunk = self._pcm16_to_ulaw8k(pcm16, int(sample_rate or state.get("sample_rate") or 8000))
+            state["sample_rate"] = 8000
+            current_audio: bytearray = state.setdefault("ulaw_audio", bytearray())
+            max_bytes = int(max(1.0, float(state.get("max_seconds", 6.0))) * 8000)
+
+            if voiced:
+                if not state.get("speech_started"):
+                    state["speech_started"] = True
+                    state["first_speech_ts"] = now
+                state["last_voice_ts"] = now
+                state["silence_accum_ms"] = 0
+                if ulaw_chunk:
+                    current_audio.extend(ulaw_chunk)
+                    if len(current_audio) > max_bytes:
+                        del current_audio[max_bytes:]
+            elif state.get("speech_started") and ulaw_chunk and len(current_audio) < max_bytes:
+                state["silence_accum_ms"] = int(state.get("silence_accum_ms", 0)) + max(20, frame_ms)
+                current_audio.extend(ulaw_chunk)
+                if len(current_audio) > max_bytes:
+                    del current_audio[max_bytes:]
+
+            should_finish = False
+            if state.get("speech_started"):
+                if len(current_audio) >= max_bytes:
+                    should_finish = True
+                elif int(state.get("silence_accum_ms", 0)) >= int(state.get("silence_ms", 1200)):
+                    should_finish = True
+
+            if should_finish and fut and not fut.done():
+                payload = bytes(current_audio)
+                if len(payload) < 800:
+                    fut.set_result(None)
+                else:
+                    fut.set_result(
+                        {
+                            "audio_ulaw": payload,
+                            "duration_ms": int(len(payload) / 8),
+                        }
+                    )
+            return True
+        except Exception:
+            logger.debug("Attended transfer caller screening audio handling failed", call_id=call_id, exc_info=True)
+            if fut and not fut.done():
+                fut.set_result(None)
+            self._attended_transfer_screening_state_by_call.pop(call_id, None)
+            return True
+
+    def _cancel_attended_transfer_screening(self, call_id: str, *, reason: str) -> None:
+        state = self._attended_transfer_screening_state_by_call.pop(call_id, None)
+        if not state:
+            return
+        fut = state.get("future")
+        if fut and not fut.done():
+            fut.set_result(None)
+        logger.info("Attended transfer caller screening cancelled", call_id=call_id, reason=reason)
+
     async def _wait_for_attended_transfer_dtmf(
         self,
         agent_channel_id: str,
@@ -4249,7 +4381,8 @@ class Engine:
         else:
             dest_desc = str(destination_key)
 
-        pass_caller_info = bool(attended_cfg.get("pass_caller_info_to_context", False))
+        screening_mode = self._resolve_attended_transfer_screening_mode(attended_cfg)
+        pass_caller_info = screening_mode == "ai_summary"
         briefing_timeout = 2.0
         briefing: Dict[str, str] = {}
         if pass_caller_info:
@@ -4271,13 +4404,19 @@ class Engine:
             destination_description=dest_desc,
         )
 
-        announcement_template = str(
-            attended_cfg.get(
-                "announcement_template",
-                "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}.",
-            )
-            or ""
+        screening_payload = None
+        try:
+            if session.current_action and session.current_action.get("type") == "attended_transfer":
+                screening_payload = dict(session.current_action.get("screening_payload") or {})
+        except Exception:
+            screening_payload = None
+
+        default_announcement_template = (
+            "Hi, this is Ava. Here is the caller's screening."
+            if screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording"
+            else "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
         )
+        announcement_template = str(attended_cfg.get("announcement_template", default_announcement_template) or "")
         prompt_template = str(
             (
                 attended_cfg.get("agent_accept_prompt_template")
@@ -4303,7 +4442,10 @@ class Engine:
 
         # Treat blank templates as "use defaults" (UI may persist empty strings).
         if not announcement_template.strip():
-            announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
+            if screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
+                announcement_template = "Hi, this is Ava. Here is the caller's screening."
+            else:
+                announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
         if not prompt_template.strip():
             prompt_template = "Press 1 to accept, or 2 to decline."
 
@@ -4367,6 +4509,35 @@ class Engine:
             logger.warning("Attended transfer announcement delivery failed; aborting", call_id=caller_id)
             await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
             return
+
+        recorded_screening_audio = None
+        if screening_mode == "caller_recording" and isinstance(screening_payload, dict):
+            if screening_payload.get("kind") == "caller_recording":
+                recorded_screening_audio = screening_payload.get("audio_ulaw")
+                if isinstance(recorded_screening_audio, bytearray):
+                    recorded_screening_audio = bytes(recorded_screening_audio)
+                if not isinstance(recorded_screening_audio, (bytes, bytearray)) or not recorded_screening_audio:
+                    recorded_screening_audio = None
+
+        if recorded_screening_audio:
+            screening_ok = True
+            if use_streaming:
+                screening_ok = await self._stream_attended_transfer_audio(channel_id, bytes(recorded_screening_audio))
+                if not screening_ok and stream_fallback_to_file:
+                    await self._cleanup_attended_transfer_helper_media(channel_id)
+                    use_streaming = False
+            if not use_streaming:
+                played_id = await self._play_ulaw_bytes_on_channel_and_wait(
+                    channel_id=channel_id,
+                    audio_bytes=bytes(recorded_screening_audio),
+                    playback_id_prefix="attx-screen",
+                    timeout_sec=8.0,
+                )
+                screening_ok = bool(played_id)
+            if not screening_ok:
+                logger.warning("Attended transfer screening clip delivery failed; aborting", call_id=caller_id)
+                await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
+                return
 
         # Step B: Collect DTMF acceptance/decline (early digits during announcement are honored).
         digit = self._attended_transfer_dtmf_digits.get(channel_id)
@@ -5159,6 +5330,11 @@ class Engine:
                 await self.streaming_playback_manager.stop_streaming_playback(call_id)
             except Exception:
                 logger.debug("Streaming playback stop failed during cleanup", call_id=call_id, exc_info=True)
+
+            try:
+                self._cancel_attended_transfer_screening(call_id, reason="call-cleanup")
+            except Exception:
+                logger.debug("Attended transfer screening cleanup failed", call_id=call_id, exc_info=True)
 
             # Stop background music if playing (AAVA-89)
             try:
@@ -6068,6 +6244,9 @@ class Engine:
                     self.audio_capture.append_pcm16(session.call_id, "caller_inbound", pcm_bytes, pcm_rate)
             except Exception:
                 logger.debug("Inbound diagnostics update failed", call_id=caller_channel_id, exc_info=True)
+
+            if self._consume_attended_transfer_screening_audio(session.call_id, pcm_bytes, pcm_rate):
+                return
 
             # CRITICAL FIX: Check for pipeline mode FIRST before routing to monolithic providers
             if self._pipeline_forced.get(caller_channel_id):
@@ -7566,6 +7745,8 @@ class Engine:
             # Check for pipeline mode FIRST (before continuous_input provider routing)
             # Pipeline adapters need audio in their queue, not sent to monolithic providers
             pipeline_forced = self._pipeline_forced.get(caller_channel_id)
+            if self._consume_attended_transfer_screening_audio(session.call_id, pcm_16k, int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000)):
+                return
             logger.debug(
                 "RTP audio routing check",
                 call_id=caller_channel_id,

@@ -5,9 +5,10 @@ from src.tools.telephony.attended_transfer import AttendedTransferTool
 
 
 class _FakeAriClient:
-    def __init__(self, *, originate_response=None):
+    def __init__(self, *, originate_response=None, engine=None):
         self.calls = []
         self._originate_response = originate_response
+        self.engine = engine
 
     async def send_command(self, *, method: str, resource: str, data=None, params=None):
         self.calls.append(
@@ -34,6 +35,7 @@ class _FakeSessionStore:
 class _FakeContext:
     def __init__(self, *, config: dict, caller_channel_id: str, ari_client: _FakeAriClient, session: CallSession):
         self._config = config
+        self.call_id = session.call_id
         self.caller_channel_id = caller_channel_id
         self.ari_client = ari_client
         self.session_store = _FakeSessionStore()
@@ -52,6 +54,16 @@ class _FakeContext:
 
     async def get_session(self) -> CallSession:
         return self._session
+
+
+class _FakeEngine:
+    def __init__(self):
+        self.tasks = []
+
+    def _fire_and_forget_for_call(self, call_id, coro, *, name=None):
+        self.tasks.append((call_id, name, coro))
+        coro.close()
+        return None
 
 
 def test_destination_key_resolution_prefers_exact_and_target_matches():
@@ -191,3 +203,51 @@ async def test_execute_originate_failure_stops_moh_and_clears_action():
     # Cleanup issued a MOH stop.
     assert any(c["method"] == "DELETE" and c["resource"].endswith(f"channels/{call_id}/moh") for c in ari.calls)
     assert session.current_action is None
+
+
+@pytest.mark.asyncio
+async def test_execute_caller_recording_mode_stages_transfer_before_originate():
+    tool = AttendedTransferTool()
+    call_id = "1760000000.0002"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    engine = _FakeEngine()
+    ari = _FakeAriClient(originate_response={"id": "agent-chan-2"}, engine=engine)
+    context = _FakeContext(
+        config={
+            "asterisk": {"app_name": "asterisk-ai-voice-agent"},
+            "tools": {
+                "attended_transfer": {
+                    "enabled": True,
+                    "screening_mode": "caller_recording",
+                    "caller_screening_prompt": "Please say your name and reason.",
+                    "caller_screening_max_seconds": 6,
+                    "caller_screening_silence_ms": 1200,
+                },
+                "transfer": {
+                    "technology": "SIP",
+                    "destinations": {
+                        "support_agent": {
+                            "type": "extension",
+                            "target": "6000",
+                            "description": "Support agent",
+                            "attended_allowed": True,
+                        }
+                    },
+                },
+            },
+        },
+        caller_channel_id=call_id,
+        ari_client=ari,
+        session=session,
+    )
+
+    result = await tool.execute({"destination": "support_agent"}, context)
+
+    assert result["status"] == "success"
+    assert result["message"] == "Please say your name and reason."
+    assert session.current_action is not None
+    assert session.current_action.get("screening_mode") == "caller_recording"
+    assert session.current_action.get("screening_status") == "pending"
+    assert not any(c["resource"].endswith(f"channels/{call_id}/moh") for c in ari.calls)
+    assert not any(c["resource"] == "channels" and c["method"] == "POST" for c in ari.calls)
+    assert engine.tasks

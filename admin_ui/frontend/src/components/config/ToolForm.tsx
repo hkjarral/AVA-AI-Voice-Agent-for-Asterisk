@@ -488,6 +488,12 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.dial_timeout_seconds == null) next.dial_timeout_seconds = 30;
             if (next.accept_timeout_seconds == null) next.accept_timeout_seconds = 15;
             if (next.tts_timeout_seconds == null) next.tts_timeout_seconds = 8;
+            if (next.delivery_mode == null) next.delivery_mode = 'stream';
+            if (next.stream_fallback_to_file == null) next.stream_fallback_to_file = true;
+            if (next.screening_mode == null) next.screening_mode = 'basic_tts';
+            if (next.caller_screening_prompt == null) next.caller_screening_prompt = 'Before I connect you, please say your name and the reason for your call.';
+            if (next.caller_screening_max_seconds == null) next.caller_screening_max_seconds = 6;
+            if (next.caller_screening_silence_ms == null) next.caller_screening_silence_ms = 1200;
             if (next.pass_caller_info_to_context == null) next.pass_caller_info_to_context = false;
             if (next.accept_digit == null) next.accept_digit = '1';
             if (next.decline_digit == null) next.decline_digit = '2';
@@ -698,6 +704,26 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                     {config.attended_transfer?.enabled && (
                         <div className="mt-4 pl-4 border-l-2 border-border ml-2 space-y-4">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <FormSelect
+                                    label="Announcement Delivery"
+                                    value={config.attended_transfer?.delivery_mode || 'stream'}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'delivery_mode', e.target.value)}
+                                    options={[
+                                        { value: 'stream', label: 'Stream via ExternalMedia' },
+                                        { value: 'file', label: 'File Playback' },
+                                    ]}
+                                    tooltip="Stream avoids shared-storage dependency for the called extension leg. File playback keeps the legacy behavior."
+                                />
+                                <FormSelect
+                                    label="Screening Mode"
+                                    value={config.attended_transfer?.screening_mode || 'basic_tts'}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'screening_mode', e.target.value)}
+                                    options={[
+                                        { value: 'basic_tts', label: 'Basic TTS' },
+                                        { value: 'caller_recording', label: 'Caller Recording' },
+                                    ]}
+                                    tooltip="Basic TTS uses caller ID and context. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
+                                />
                                 <FormInput
                                     label="MOH Class"
                                     value={config.attended_transfer?.moh_class || 'default'}
@@ -725,13 +751,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'tts_timeout_seconds', parseInt(e.target.value) || 8)}
                                     tooltip="Max time to wait for Local AI Server TTS per prompt."
                                 />
-                                <FormSwitch
-                                    label="Pass Caller Info To Context"
-                                    description="Extract transcript-derived caller name and call reason for attended-transfer announcements."
-                                    checked={config.attended_transfer?.pass_caller_info_to_context ?? false}
-                                    onChange={(e) => updateNestedConfig('attended_transfer', 'pass_caller_info_to_context', e.target.checked)}
-                                    className="md:col-span-2 mb-0 border border-input rounded-md px-3 py-2 bg-background"
-                                />
                                 <FormInput
                                     label="Accept Digit"
                                     value={config.attended_transfer?.accept_digit || '1'}
@@ -742,47 +761,88 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     value={config.attended_transfer?.decline_digit || '2'}
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'decline_digit', e.target.value)}
                                 />
+                                {config.attended_transfer?.screening_mode === 'caller_recording' && (
+                                    <>
+                                        <div className="md:col-span-2 space-y-2">
+                                            <FormLabel tooltip="Spoken to the caller before screening capture begins. The AI/provider speaks this prompt, then the engine records the next caller utterance.">
+                                                Caller Screening Prompt
+                                            </FormLabel>
+                                            <textarea
+                                                className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                                value={config.attended_transfer?.caller_screening_prompt || 'Before I connect you, please say your name and the reason for your call.'}
+                                                onChange={(e) => updateNestedConfig('attended_transfer', 'caller_screening_prompt', e.target.value)}
+                                                placeholder="Before I connect you, please say your name and the reason for your call."
+                                            />
+                                        </div>
+                                        <FormInput
+                                            label="Max Recording Seconds"
+                                            type="number"
+                                            value={config.attended_transfer?.caller_screening_max_seconds ?? 6}
+                                            onChange={(e) => updateNestedConfig('attended_transfer', 'caller_screening_max_seconds', parseInt(e.target.value) || 6)}
+                                            tooltip="Maximum length of the caller screening clip before it is finalized."
+                                        />
+                                        <FormInput
+                                            label="Silence Timeout (ms)"
+                                            type="number"
+                                            value={config.attended_transfer?.caller_screening_silence_ms ?? 1200}
+                                            onChange={(e) => updateNestedConfig('attended_transfer', 'caller_screening_silence_ms', parseInt(e.target.value) || 1200)}
+                                            tooltip="How much trailing silence ends the screening capture."
+                                        />
+                                    </>
+                                )}
                             </div>
 
-                            <div className="space-y-2">
-                                <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
-                                    Agent Announcement Template
-                                </FormLabel>
-                                <textarea
-                                    className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[100px] focus:outline-none focus:ring-1 focus:ring-ring"
-                                    value={config.attended_transfer?.announcement_template ?? DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE}
-                                    onChange={(e) => updateNestedConfig('attended_transfer', 'announcement_template', e.target.value)}
-                                    placeholder="Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
+                            {config.attended_transfer?.screening_mode !== 'caller_recording' && (
+                                <div className="space-y-2">
+                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
+                                        Agent Announcement Template
+                                    </FormLabel>
+                                    <textarea
+                                        className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[100px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                        value={config.attended_transfer?.announcement_template ?? DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE}
+                                        onChange={(e) => updateNestedConfig('attended_transfer', 'announcement_template', e.target.value)}
+                                        placeholder="Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
+                                    />
+                                </div>
+                            )}
+
+                            <div className="border border-border rounded-lg p-4 bg-background/40 space-y-4">
+                                <div className="text-sm font-medium">Advanced Prompts</div>
+                                <FormSwitch
+                                    label="Fallback To File Playback"
+                                    description="If helper streaming is unavailable, reuse the legacy file-based playback path for the called extension."
+                                    checked={config.attended_transfer?.stream_fallback_to_file ?? true}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'stream_fallback_to_file', e.target.checked)}
+                                    className="mb-0 border-0 p-0 bg-transparent"
+                                />
+                                <div className="space-y-2">
+                                    <FormLabel tooltip="Spoken to the destination agent to request acceptance/decline (DTMF). Supports the same placeholders as the announcement template.">
+                                        Agent DTMF Prompt Template
+                                    </FormLabel>
+                                    <textarea
+                                        className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                        value={config.attended_transfer?.agent_accept_prompt_template ?? DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE}
+                                        onChange={(e) => updateNestedConfig('attended_transfer', 'agent_accept_prompt_template', e.target.value)}
+                                        placeholder="Press 1 to accept this transfer, or 2 to decline."
+                                    />
+                                </div>
+
+                                <FormInput
+                                    label="Caller Connected Prompt (Optional)"
+                                    value={config.attended_transfer?.caller_connected_prompt ?? DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'caller_connected_prompt', e.target.value)}
+                                    tooltip="Optional phrase spoken to the caller right before bridging to the destination (e.g., 'Connecting you now.')."
+                                    placeholder="Connecting you now."
+                                />
+
+                                <FormInput
+                                    label="Caller Declined Prompt (Optional)"
+                                    value={config.attended_transfer?.caller_declined_prompt ?? DEFAULT_ATTENDED_CALLER_DECLINED_PROMPT}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'caller_declined_prompt', e.target.value)}
+                                    tooltip="Spoken to the caller when the destination declines or the attended transfer times out (keeps the conversation moving)."
+                                    placeholder="I’m not able to complete that transfer right now. Would you like me to take a message?"
                                 />
                             </div>
-
-                            <div className="space-y-2">
-                                <FormLabel tooltip="Spoken to the destination agent to request acceptance/decline (DTMF). Supports the same placeholders as the announcement template.">
-                                    Agent DTMF Prompt Template
-                                </FormLabel>
-                                <textarea
-                                    className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
-                                    value={config.attended_transfer?.agent_accept_prompt_template ?? DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE}
-                                    onChange={(e) => updateNestedConfig('attended_transfer', 'agent_accept_prompt_template', e.target.value)}
-                                    placeholder="Press 1 to accept this transfer, or 2 to decline."
-                                />
-                            </div>
-
-                            <FormInput
-                                label="Caller Connected Prompt (Optional)"
-                                value={config.attended_transfer?.caller_connected_prompt ?? DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT}
-                                onChange={(e) => updateNestedConfig('attended_transfer', 'caller_connected_prompt', e.target.value)}
-                                tooltip="Optional phrase spoken to the caller right before bridging to the destination (e.g., 'Connecting you now.')."
-                                placeholder="Connecting you now."
-                            />
-
-                            <FormInput
-                                label="Caller Declined Prompt (Optional)"
-                                value={config.attended_transfer?.caller_declined_prompt ?? DEFAULT_ATTENDED_CALLER_DECLINED_PROMPT}
-                                onChange={(e) => updateNestedConfig('attended_transfer', 'caller_declined_prompt', e.target.value)}
-                                tooltip="Spoken to the caller when the destination declines or the attended transfer times out (keeps the conversation moving)."
-                                placeholder="I’m not able to complete that transfer right now. Would you like me to take a message?"
-                            />
                         </div>
                     )}
                 </div>

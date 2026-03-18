@@ -112,6 +112,11 @@ class CancelTransferTool(Tool):
             except Exception:
                 pass
             await context.session_store.upsert_call(session)
+            try:
+                if engine and hasattr(engine, "_cancel_attended_transfer_screening"):
+                    engine._cancel_attended_transfer_screening(context.call_id, reason="cancel-transfer")
+            except Exception:
+                pass
             
             logger.info("✅ Transfer cancelled", call_id=context.call_id)
             
