@@ -1039,14 +1039,18 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     const title = titleParts.join(' • ');
 
                                     return (
-	                            <div key={rowId} className="grid grid-cols-1 md:grid-cols-12 gap-2 p-3 border rounded bg-background/50 items-center">
-	                                <div className="md:col-span-1">
+	                            <div key={rowId} className="flex flex-col gap-3 p-4 border rounded bg-background/50">
+                                
+                                {/* Core Info Row */}
+                                <div className="flex flex-col lg:flex-row gap-3 items-start">
+	                                <div className="w-full lg:w-24 shrink-0">
+                                        <label className="block text-xs font-medium text-muted-foreground mb-1">Ext</label>
                                         {(() => {
                                             const derived = extractNumericExtensionKeyFromDialString(ext?.dial_string || '');
                                             const displayKey = isNumericKey(key) ? key : derived;
                                             return (
 	                                            <input
-	                                                className="w-full border rounded px-2 py-1 text-sm bg-muted text-muted-foreground"
+	                                                className="w-full border rounded px-2 py-1.5 text-sm bg-muted text-muted-foreground"
 	                                                placeholder="Auto"
 	                                                value={displayKey || ''}
 	                                                disabled
@@ -1055,9 +1059,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                             );
                                         })()}
 	                                </div>
-	                                <div className="md:col-span-2">
+	                                <div className="w-full lg:w-48 shrink-0">
+                                        <label className="block text-xs font-medium text-muted-foreground mb-1">Agent Name</label>
 	                                    <input
-	                                        className="w-full border rounded px-2 py-1 text-sm"
+	                                        className="w-full border rounded px-2 py-1.5 text-sm"
 	                                        placeholder="Name"
                                         value={ext.name || ''}
                                         onChange={(e) => {
@@ -1068,10 +1073,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                         title="Agent Name"
                                     />
                                 </div>
-	                                <div className="md:col-span-2">
+	                                <div className="w-full lg:w-48 shrink-0">
+                                        <label className="block text-xs font-medium text-muted-foreground mb-1">Dial String</label>
 	                                    <input
-	                                        className="w-full border rounded px-2 py-1 text-sm"
-	                                        placeholder="Dial String"
+	                                        className="w-full border rounded px-2 py-1.5 text-sm"
+	                                        placeholder="Optionally e.g. SIP/6000"
 	                                        value={ext.dial_string || ''}
 	                                        onChange={(e) => {
                                                 const nextDial = e.target.value;
@@ -1113,27 +1119,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                        title="PJSIP/..."
 	                                    />
 	                                </div>
-                                <div className="md:col-span-2">
-                                    <select
-                                        className="w-full border rounded px-2 py-1 text-sm bg-background"
-                                        value={ext.device_state_tech || 'auto'}
-                                        onChange={(e) => {
-                                            const updated = { ...(config.extensions?.internal || {}) };
-                                            updated[key] = { ...ext, device_state_tech: e.target.value };
-                                            updateNestedConfig('extensions', 'internal', updated);
-                                        }}
-                                        title="Device state technology for availability checks"
-                                    >
-                                        <option value="auto">Device Tech: auto</option>
-                                        <option value="PJSIP">PJSIP</option>
-                                        <option value="SIP">SIP</option>
-                                        <option value="IAX2">IAX2</option>
-                                        <option value="DAHDI">DAHDI</option>
-                                    </select>
-                                </div>
-                                <div className="md:col-span-2">
+                                <div className="flex-1 min-w-[150px]">
+                                    <label className="block text-xs font-medium text-muted-foreground mb-1">Description</label>
                                     <input
-                                        className="w-full border rounded px-2 py-1 text-sm"
+                                        className="w-full border rounded px-2 py-1.5 text-sm"
                                         placeholder="Description"
                                         value={ext.description || ''}
                                         onChange={(e) => {
@@ -1144,10 +1133,34 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                        title="Description"
 	                                    />
 	                                </div>
-                                    <>
-                                        <div className="md:col-span-2">
+                                </div>
+
+                                {/* Expert Row */}
+                                {showLiveAgentsExpert && (
+                                    <div className="flex flex-col lg:flex-row gap-3 items-start p-3 bg-secondary/20 border border-border/40 rounded mt-1">
+                                        <div className="w-full lg:w-32 shrink-0">
+                                            <label className="block text-xs font-medium text-muted-foreground mb-1">Device Tech</label>
                                             <select
-                                                className="w-full border rounded px-2 py-1 text-sm bg-background disabled:cursor-not-allowed disabled:opacity-50"
+                                                className="w-full border rounded px-2 py-1.5 text-sm bg-background"
+                                                value={ext.device_state_tech || 'auto'}
+                                                onChange={(e) => {
+                                                    const updated = { ...(config.extensions?.internal || {}) };
+                                                    updated[key] = { ...ext, device_state_tech: e.target.value };
+                                                    updateNestedConfig('extensions', 'internal', updated);
+                                                }}
+                                                title="Device state technology for availability checks"
+                                            >
+                                                <option value="auto">auto</option>
+                                                <option value="PJSIP">PJSIP</option>
+                                                <option value="SIP">SIP</option>
+                                                <option value="IAX2">IAX2</option>
+                                                <option value="DAHDI">DAHDI</option>
+                                            </select>
+                                        </div>
+                                        <div className="w-full lg:w-40 shrink-0">
+                                            <label className="block text-xs font-medium text-muted-foreground mb-1">Action Type</label>
+                                            <select
+                                                className="w-full border rounded px-2 py-1.5 text-sm bg-background disabled:cursor-not-allowed disabled:opacity-50"
                                                 value={ext.action_type || 'transfer'}
                                                 onChange={(e) => {
                                                     const updated = { ...(config.extensions?.internal || {}) };
@@ -1157,16 +1170,17 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                                 title="Action type used when transfer tool resolves this target"
                                                 disabled={!showLiveAgentsExpert}
                                             >
-                                                <option value="transfer">action_type: transfer</option>
-                                                <option value="voicemail">action_type: voicemail</option>
-                                                <option value="queue">action_type: queue</option>
-                                                <option value="ringgroup">action_type: ringgroup</option>
+                                                <option value="transfer">transfer</option>
+                                                <option value="voicemail">voicemail</option>
+                                                <option value="queue">queue</option>
+                                                <option value="ringgroup">ringgroup</option>
                                             </select>
                                         </div>
-	                                        <div className="md:col-span-2">
+	                                        <div className="flex-1 min-w-[200px]">
+                                                <label className="block text-xs font-medium text-muted-foreground mb-1">Aliases (comma-separated)</label>
 	                                            <input
-	                                                className="w-full border rounded px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-	                                                placeholder="Aliases (comma-separated)"
+	                                                className="w-full border rounded px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+	                                                placeholder="e.g. support, agent"
 	                                                value={internalAliasesDraftByRowId[rowId] ?? (Array.isArray(ext.aliases) ? ext.aliases.join(', ') : (ext.aliases || ''))}
 	                                                onChange={(e) => {
 	                                                    const raw = String(e.target.value || '');
@@ -1191,7 +1205,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                                disabled={!showLiveAgentsExpert}
 	                                            />
 	                                        </div>
-                                        <div className="md:col-span-2">
+                                        <div className="shrink-0 flex items-center pt-6">
                                             <FormSwitch
                                                 label="Pass Caller Info"
                                                 description="Include caller name/number and last transcript in transfer context."
@@ -1202,24 +1216,33 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                                     updateNestedConfig('extensions', 'internal', updated);
                                                 }}
                                                 disabled={!showLiveAgentsExpert}
+                                                className="mb-0"
                                             />
                                         </div>
-                                    </>
-	                                <div className="md:col-span-3 flex justify-end items-center gap-3 min-w-0 overflow-hidden">
+                                    </div>
+                                )}
+
+                                {/* Footer Row */}
+                                <div className="flex justify-between items-center mt-2 pt-3 border-t border-border/50">
+                                    <div className="flex items-center">
                                         <button
                                             type="button"
-                                            className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border ${pillClass} hover:bg-accent/40 transition-colors min-w-0 max-w-[150px] overflow-hidden`}
+                                            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border ${pillClass} hover:bg-accent/40 transition-colors max-w-[200px]`}
                                             title={title}
                                             onClick={() => checkLiveAgentStatus(rowId, key, ext)}
                                         >
                                             {loading ? (
-                                                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                                                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                                             ) : (
                                                 <span className={`w-2 h-2 rounded-full ${dotClass} shrink-0`} />
                                             )}
-                                            <span className="truncate whitespace-nowrap">{label}</span>
+                                            <span className="truncate">{label}</span>
                                         </button>
-                                        <div className="shrink-0">
+                                    </div>
+                                    
+	                                <div className="flex items-center gap-6">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-medium text-muted-foreground mt-0.5">Enabled</span>
 	                                        <FormSwitch
 	                                            checked={ext.transfer ?? true}
 	                                            onChange={(e) => {
@@ -1227,12 +1250,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                                updated[key] = { ...ext, transfer: e.target.checked };
 	                                                updateNestedConfig('extensions', 'internal', updated);
 	                                            }}
-	                                            className="mb-0 border-0 p-0 bg-transparent"
+	                                            className="mb-0 border-0 p-0 bg-transparent flex-shrink-0"
 	                                            label=""
 	                                            description=""
 	                                        />
                                         </div>
-                                        <div className="shrink-0">
 	                                        <button
 	                                            onClick={() => {
 	                                                const updated = { ...(config.extensions?.internal || {}) };
@@ -1245,8 +1267,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                        >
 	                                            <Trash2 className="w-4 h-4" />
 	                                        </button>
-                                        </div>
 	                                </div>
+                                </div>
 	                            </div>
                                     );
                                 })()
