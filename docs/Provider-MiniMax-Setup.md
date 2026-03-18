@@ -2,14 +2,14 @@
 
 ## Overview
 
-MiniMax provides OpenAI-compatible Chat Completions for its M2.5 family of models with 204K context windows. Suitable for AI voice agents needing large-context LLM capabilities with tool calling support.
+MiniMax provides OpenAI-compatible Chat Completions for its M2.7 family of models with enhanced reasoning and coding capabilities. Suitable for AI voice agents needing large-context LLM capabilities with tool calling support.
 
 **Performance**: 204K context window | OpenAI-compatible API | Tool calling supported
 
 **Why MiniMax?**
 - **Large context**: 204K token context window for complex conversations
 - **OpenAI-compatible**: Standard Chat Completions API format
-- **Speed option**: `MiniMax-M2.5-highspeed` variant for latency-sensitive calls
+- **Speed option**: `MiniMax-M2.7-highspeed` variant for latency-sensitive calls
 - **Tool calling**: Native function calling via OpenAI-style `tools` parameter
 
 If you used the Admin UI Setup Wizard, you may not need to follow this guide end-to-end. For first-call onboarding and transport selection, see:
@@ -50,7 +50,7 @@ providers:
     capabilities: [llm]
     chat_base_url: "https://api.minimax.io/v1"
     # For China domestic access: https://api.minimaxi.com/v1
-    chat_model: MiniMax-M2.5
+    chat_model: MiniMax-M2.7
     temperature: 1.0
     response_timeout_sec: 30
 
@@ -61,7 +61,7 @@ pipelines:
     tts: local_tts
     options:
       llm:
-        model: MiniMax-M2.5
+        model: MiniMax-M2.7
         temperature: 1.0
         max_tokens: 150
       stt:
@@ -81,8 +81,10 @@ active_pipeline: minimax_hybrid
 
 | Model | Description | Best For |
 |-------|-------------|----------|
-| `MiniMax-M2.5` | Default, 204K context | General-purpose voice workflows |
-| `MiniMax-M2.5-highspeed` | Same performance, lower latency | Latency-sensitive calls |
+| `MiniMax-M2.7` | Default, latest flagship with enhanced reasoning | General-purpose voice workflows |
+| `MiniMax-M2.7-highspeed` | High-speed version of M2.7 | Latency-sensitive calls |
+| `MiniMax-M2.5` | Previous generation, 204K context | Legacy compatibility |
+| `MiniMax-M2.5-highspeed` | Previous generation, lower latency | Legacy latency-sensitive calls |
 
 ### 5. Tool Calling
 
@@ -119,7 +121,7 @@ asterisk -rx "dialplan reload"
 1. Navigate to the Admin UI provider configuration page
 2. Add a new LLM provider with type `minimax`
 3. Set the API key (or reference `MINIMAX_API_KEY` from `.env`)
-4. Select model (`MiniMax-M2.5` or `MiniMax-M2.5-highspeed`)
+4. Select model (`MiniMax-M2.7`, `MiniMax-M2.7-highspeed`, `MiniMax-M2.5`, or `MiniMax-M2.5-highspeed`)
 5. Create or update a pipeline to use `minimax_llm` as the LLM component
 
 ### 9. Test Call
@@ -150,7 +152,7 @@ Route a test call to the custom destination and verify:
 
 ### Issue: High latency
 
-**Fix**: Switch to `MiniMax-M2.5-highspeed` for faster responses. Reduce `max_tokens` if responses are longer than needed.
+**Fix**: Switch to `MiniMax-M2.7-highspeed` for faster responses. Reduce `max_tokens` if responses are longer than needed.
 
 ## See Also
 

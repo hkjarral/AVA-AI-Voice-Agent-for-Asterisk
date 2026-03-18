@@ -166,7 +166,7 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 ### ☁️ New Providers (v6.3.2)
 - **Microsoft Azure Speech Service**: Full modular STT & TTS pipeline adapters — Fast REST batch, Realtime WebSocket with VAD, and SSML synthesis with streaming. Admin UI forms, quick-add templates, and security key injection.
-- **MiniMax LLM**: M2.5 models with 204K context window via OpenAI-compatible API. Tool-calling support and Admin UI integration.
+- **MiniMax LLM**: M2.7 models (latest flagship with enhanced reasoning and coding) via OpenAI-compatible API. Tool-calling support and Admin UI integration.
 
 ### 🎧 Admin UI (v6.3.2)
 - **Call Recording Playback**: Play back Asterisk call recordings directly from the Call Details modal, auto-matched by channel unique ID.
@@ -283,9 +283,9 @@ For full release notes, see [CHANGELOG.md](CHANGELOG.md).
 ### Additional LLM Providers
 
 - **MiniMax LLM** (High-Performance Cost-Effective)
-   - Local STT/TTS + MiniMax M2.5 LLM with 204K context window.
+   - Local STT/TTS + MiniMax M2.7 LLM with enhanced reasoning and coding.
    - OpenAI-compatible API with tool-calling support.
-   - Models: `MiniMax-M2.5` (peak performance) and `MiniMax-M2.5-highspeed` (faster).
+   - Models: `MiniMax-M2.7` (default, latest flagship), `MiniMax-M2.7-highspeed` (low-latency), `MiniMax-M2.5`, `MiniMax-M2.5-highspeed`.
    - Activate: set `MINIMAX_API_KEY` in `.env`, then configure `providers.minimax_llm` in `config/ai-agent.yaml` (see the `minimax_llm` section with `enabled: true`).
    - *Best for: Long-context conversations, cost-effective high-performance LLM.*
 

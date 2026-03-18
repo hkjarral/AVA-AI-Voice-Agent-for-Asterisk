@@ -19,7 +19,7 @@ def _build_app_config() -> AppConfig:
         "minimax_llm": {
             "api_key": "test-minimax-key",
             "chat_base_url": "https://api.minimax.io/v1",
-            "chat_model": "MiniMax-M2.5",
+            "chat_model": "MiniMax-M2.7",
             "temperature": 1.0,
             "response_timeout_sec": 10.0,
             "type": "minimax",
@@ -39,7 +39,7 @@ def _build_app_config() -> AppConfig:
         default_provider="minimax",
         providers=providers,
         asterisk={"host": "127.0.0.1", "username": "ari", "password": "secret"},
-        llm={"initial_greeting": "hi", "prompt": "You are a helpful assistant.", "model": "MiniMax-M2.5"},
+        llm={"initial_greeting": "hi", "prompt": "You are a helpful assistant.", "model": "MiniMax-M2.7"},
         audio_transport="audiosocket",
         downstream_mode="stream",
         pipelines=pipelines,
@@ -158,7 +158,7 @@ async def test_minimax_llm_chat_completion():
     assert response.tool_calls == []
 
     request = fake_session.requests[0]
-    assert request["json"]["model"] == "MiniMax-M2.5"
+    assert request["json"]["model"] == "MiniMax-M2.7"
     assert request["url"] == "https://api.minimax.io/v1/chat/completions"
     assert request["headers"]["Authorization"] == "Bearer test-minimax-key"
 
@@ -248,10 +248,10 @@ async def test_minimax_llm_strips_thinking():
 
 @pytest.mark.asyncio
 async def test_minimax_llm_highspeed_model():
-    """Adapter works with the MiniMax-M2.5-highspeed model."""
+    """Adapter works with the MiniMax-M2.7-highspeed model."""
     app_config = _build_app_config()
     config_data = dict(app_config.providers["minimax_llm"])
-    config_data["chat_model"] = "MiniMax-M2.5-highspeed"
+    config_data["chat_model"] = "MiniMax-M2.7-highspeed"
     provider_config = MiniMaxLLMProviderConfig(**config_data)
     body = json.dumps({
         "choices": [{"message": {"content": "fast response"}}],
@@ -268,7 +268,7 @@ async def test_minimax_llm_highspeed_model():
     await adapter.start()
     response = await adapter.generate("call-1", "hi", {}, {})
     assert response.text == "fast response"
-    assert fake_session.requests[0]["json"]["model"] == "MiniMax-M2.5-highspeed"
+    assert fake_session.requests[0]["json"]["model"] == "MiniMax-M2.7-highspeed"
 
 
 @pytest.mark.asyncio
