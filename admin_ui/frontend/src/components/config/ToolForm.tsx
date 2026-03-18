@@ -26,6 +26,8 @@ const DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE =
 const DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT = "Connecting you now.";
 const DEFAULT_ATTENDED_CALLER_DECLINED_PROMPT =
     "I’m not able to complete that transfer right now. Would you like me to take a message, or is there anything else I can help with?";
+const DEFAULT_ATTENDED_DELIVERY_MODE = 'file';
+const DEFAULT_ATTENDED_STREAM_FALLBACK = true;
 const DEFAULT_HANGUP_POLICY_MODE = 'normal';
 const DEFAULT_HANGUP_END_CALL_MARKERS = [
     "no transcript",
@@ -306,6 +308,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
         onChange(next);
     };
 
+    const updateAttendedTransferHelperConfig = (field: string, value: any) => {
+        const helper = config.attended_transfer?.external_media_helper || {};
+        updateNestedConfig('attended_transfer', 'external_media_helper', {
+            ...helper,
+            [field]: value,
+        });
+    };
+
     const updateByContextMap = (section: string, key: string, contextName: string, value: string) => {
         const next = { ...config };
         const toolCfg = { ...(next[section] || {}) };
@@ -490,10 +500,21 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.tts_timeout_seconds == null) next.tts_timeout_seconds = 8;
             if (next.accept_digit == null) next.accept_digit = '1';
             if (next.decline_digit == null) next.decline_digit = '2';
+            if (next.delivery_mode == null) next.delivery_mode = DEFAULT_ATTENDED_DELIVERY_MODE;
+            if (next.stream_fallback_to_file == null) next.stream_fallback_to_file = DEFAULT_ATTENDED_STREAM_FALLBACK;
             if (next.announcement_template == null) next.announcement_template = DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE;
             if (next.agent_accept_prompt_template == null) next.agent_accept_prompt_template = DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE;
             if (next.caller_connected_prompt == null) next.caller_connected_prompt = DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT;
             if (next.caller_declined_prompt == null) next.caller_declined_prompt = DEFAULT_ATTENDED_CALLER_DECLINED_PROMPT;
+            if (next.external_media_helper == null) {
+                next.external_media_helper = {
+                    bind_host: '',
+                    advertise_host: '',
+                    port_range: '',
+                    allowed_remote_hosts: [],
+                    endpoint_wait_ms: 1000,
+                };
+            }
         }
         onChange({ ...config, attended_transfer: next });
     };
@@ -689,7 +710,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Attended Transfer (Warm)"
-                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS."
+                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Local AI Server still generates TTS; delivery can use file playback or streamed helper media."
                         checked={config.attended_transfer?.enabled ?? false}
                         onChange={(e) => handleAttendedTransferToggle(e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -734,7 +755,82 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     value={config.attended_transfer?.decline_digit || '2'}
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'decline_digit', e.target.value)}
                                 />
+                                <FormSelect
+                                    label="Announcement Delivery"
+                                    value={config.attended_transfer?.delivery_mode || DEFAULT_ATTENDED_DELIVERY_MODE}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'delivery_mode', e.target.value)}
+                                    options={[
+                                        { value: 'file', label: 'File Playback' },
+                                        { value: 'stream', label: 'Stream via ExternalMedia' },
+                                    ]}
+                                    tooltip="File playback requires Asterisk-visible generated media. Stream mode sends the Local AI Server TTS result directly to the answered extension leg and avoids shared storage."
+                                />
                             </div>
+
+                            {String(config.attended_transfer?.delivery_mode || DEFAULT_ATTENDED_DELIVERY_MODE) === 'stream' && (
+                                <div className="space-y-4 rounded-lg border border-border/60 bg-background/40 p-4">
+                                    <FormSwitch
+                                        label="Fallback To File Playback"
+                                        description="If helper RTP/ExternalMedia cannot establish, reuse the legacy file-based playback path instead of aborting the transfer."
+                                        checked={config.attended_transfer?.stream_fallback_to_file ?? DEFAULT_ATTENDED_STREAM_FALLBACK}
+                                        onChange={(e) => updateNestedConfig('attended_transfer', 'stream_fallback_to_file', e.target.checked)}
+                                        className="mb-0 border-0 p-0 bg-transparent"
+                                    />
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <FormInput
+                                            label="Helper Bind Host"
+                                            value={config.attended_transfer?.external_media_helper?.bind_host || ''}
+                                            onChange={(e) => updateAttendedTransferHelperConfig('bind_host', e.target.value)}
+                                            tooltip="Optional override for the helper RTP listener bind address. Leave blank to inherit the main ExternalMedia bind host."
+                                            placeholder="inherit from external_media.rtp_host"
+                                        />
+                                        <FormInput
+                                            label="Helper Advertise Host"
+                                            value={config.attended_transfer?.external_media_helper?.advertise_host || ''}
+                                            onChange={(e) => updateAttendedTransferHelperConfig('advertise_host', e.target.value)}
+                                            tooltip="Optional host/IP Asterisk should send helper RTP to. Leave blank to inherit the main ExternalMedia advertise host."
+                                            placeholder="inherit from external_media.advertise_host"
+                                        />
+                                        <FormInput
+                                            label="Helper Port Range"
+                                            value={config.attended_transfer?.external_media_helper?.port_range || ''}
+                                            onChange={(e) => updateAttendedTransferHelperConfig('port_range', e.target.value)}
+                                            tooltip="Optional helper RTP port or range (for example 18180-18220). Leave blank to auto-allocate a helper range offset from the main ExternalMedia RTP port."
+                                            placeholder="18180-18220"
+                                        />
+                                        <FormInput
+                                            label="Endpoint Wait (ms)"
+                                            type="number"
+                                            value={config.attended_transfer?.external_media_helper?.endpoint_wait_ms ?? 1000}
+                                            onChange={(e) => updateAttendedTransferHelperConfig('endpoint_wait_ms', parseInt(e.target.value) || 1000)}
+                                            tooltip="How long to wait for the helper ExternalMedia RTP endpoint to establish before falling back."
+                                        />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <FormLabel tooltip="Optional comma-separated RTP source allowlist for the helper transport. Leave blank to inherit the main ExternalMedia allowlist or default to the Asterisk host.">
+                                            Helper Allowed Remote Hosts
+                                        </FormLabel>
+                                        <textarea
+                                            className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                            value={Array.isArray(config.attended_transfer?.external_media_helper?.allowed_remote_hosts)
+                                                ? config.attended_transfer.external_media_helper.allowed_remote_hosts.join(', ')
+                                                : String(config.attended_transfer?.external_media_helper?.allowed_remote_hosts || '')}
+                                            onChange={(e) =>
+                                                updateAttendedTransferHelperConfig(
+                                                    'allowed_remote_hosts',
+                                                    e.target.value
+                                                        .split(',')
+                                                        .map((item) => item.trim())
+                                                        .filter(Boolean)
+                                                )
+                                            }
+                                            placeholder="10.10.10.5, 10.10.10.6"
+                                        />
+                                    </div>
+                                </div>
+                            )}
 
                             <div className="space-y-2">
                                 <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}.">

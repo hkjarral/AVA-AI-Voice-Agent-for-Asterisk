@@ -228,6 +228,9 @@ class Engine:
         self._attended_transfer_dtmf_waiters: Dict[str, asyncio.Future] = {}
         self._attended_transfer_dtmf_digits: Dict[str, str] = {}
         self._attended_transfer_agent_channel_to_call_id: Dict[str, str] = {}
+        self._attended_transfer_helper_state_by_agent_channel: Dict[str, Dict[str, Any]] = {}
+        self._attended_transfer_helper_external_media_to_agent_channel: Dict[str, str] = {}
+        self._attended_transfer_helper_rtp_lock = asyncio.Lock()
         # Per-call transcript timing cache for latency histograms
         self._last_transcript_ts: Dict[str, float] = {}
 
@@ -399,6 +402,7 @@ class Engine:
         self.audio_buffers: Dict[str, bytes] = {}
         self.buffer_size = 1600  # 200ms of audio at 8kHz (1600 bytes of ulaw)
         self.rtp_server: Optional[Any] = None
+        self.attended_transfer_rtp_server: Optional[RTPServer] = None
         self.headless_sessions: Dict[str, Dict[str, Any]] = {}
         # Bridge and Local channel tracking for Local Channel Bridge pattern
         self.bridges: Dict[str, str] = {}  # channel_id -> bridge_id
@@ -803,6 +807,18 @@ class Engine:
                 logger.error("Failed to start ExternalMedia RTP transport", error=str(exc), exc_info=True)
                 self.rtp_server = None
 
+        # Prepare helper RTP runtime for attended-transfer streaming even when the
+        # main call transport is AudioSocket.
+        if self._attended_transfer_streaming_enabled():
+            try:
+                await self._ensure_attended_transfer_helper_rtp_server_started()
+            except Exception as exc:
+                logger.error(
+                    "Failed to start attended transfer helper RTP transport",
+                    error=str(exc),
+                    exc_info=True,
+                )
+
         # 6) Start ARI reconnect supervisor (initial connect happens in the background).
         # This avoids a startup race after host reboot where Asterisk/ARI isn't ready yet.
         self.ari_client.add_event_handler("PlaybackFinished", self._on_playback_finished)
@@ -870,6 +886,84 @@ class Engine:
                 fallback=fallback_port,
             )
             return (int(fallback_port), int(fallback_port))
+
+    def _get_attended_transfer_config(self) -> Dict[str, Any]:
+        tools_cfg = getattr(self.config, "tools", {}) or {}
+        attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
+        return attended_cfg if isinstance(attended_cfg, dict) else {}
+
+    def _attended_transfer_streaming_enabled(self, attended_cfg: Optional[Dict[str, Any]] = None) -> bool:
+        cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
+        delivery_mode = str(cfg.get("delivery_mode", "file") or "file").strip().lower()
+        return delivery_mode == "stream"
+
+    def _get_attended_transfer_helper_settings(self, attended_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
+        helper_cfg = cfg.get("external_media_helper") if isinstance(cfg.get("external_media_helper"), dict) else {}
+        global_external = getattr(self.config, "external_media", None)
+
+        bind_host = str(
+            helper_cfg.get("bind_host")
+            or getattr(global_external, "rtp_host", None)
+            or "0.0.0.0"
+        ).strip() or "0.0.0.0"
+        advertise_host = str(
+            helper_cfg.get("advertise_host")
+            or getattr(global_external, "advertise_host", None)
+            or bind_host
+        ).strip() or bind_host
+        if advertise_host in {"0.0.0.0", "::"}:
+            advertise_host = "127.0.0.1"
+
+        main_rtp_port = int(getattr(global_external, "rtp_port", 18080) or 18080)
+        helper_rtp_port = int(helper_cfg.get("rtp_port") or (main_rtp_port + 100))
+
+        raw_port_range = helper_cfg.get("port_range")
+        if raw_port_range is None:
+            main_port_range = self._parse_port_range(
+                getattr(global_external, "port_range", None),
+                main_rtp_port,
+            )
+            helper_width = max(0, int(main_port_range[1]) - int(main_port_range[0]))
+            port_range = (int(helper_rtp_port), int(helper_rtp_port) + helper_width)
+        else:
+            port_range = self._parse_port_range(raw_port_range, helper_rtp_port)
+
+        allowed_remote_hosts = helper_cfg.get("allowed_remote_hosts")
+        if isinstance(allowed_remote_hosts, str):
+            allowed_remote_hosts = [
+                item.strip() for item in allowed_remote_hosts.split(",") if item.strip()
+            ]
+        if not allowed_remote_hosts:
+            allowed_remote_hosts = getattr(global_external, "allowed_remote_hosts", None)
+        if isinstance(allowed_remote_hosts, str):
+            allowed_remote_hosts = [
+                item.strip() for item in allowed_remote_hosts.split(",") if item.strip()
+            ]
+        if not allowed_remote_hosts:
+            try:
+                ipaddress.ip_address(str(self.config.asterisk.host))
+                allowed_remote_hosts = [str(self.config.asterisk.host)]
+            except Exception:
+                allowed_remote_hosts = None
+
+        endpoint_wait_ms = int(helper_cfg.get("endpoint_wait_ms", 1000) or 1000)
+        lock_remote_endpoint = bool(helper_cfg.get("lock_remote_endpoint", True))
+        direction = str(helper_cfg.get("direction", "both") or "both").strip() or "both"
+
+        return {
+            "bind_host": bind_host,
+            "advertise_host": advertise_host,
+            "rtp_port": helper_rtp_port,
+            "port_range": port_range,
+            "allowed_remote_hosts": allowed_remote_hosts,
+            "endpoint_wait_ms": max(100, endpoint_wait_ms),
+            "lock_remote_endpoint": lock_remote_endpoint,
+            "direction": direction,
+            "format": "ulaw",
+            "codec": "ulaw",
+            "sample_rate": 8000,
+        }
 
     # ------------------------------------------------------------------
     # Outbound Campaign Dialer (Milestone 22)
@@ -1901,6 +1995,9 @@ class Engine:
         # Stop RTP server if running
         if hasattr(self, 'rtp_server') and self.rtp_server:
             await self.rtp_server.stop()
+        if self.attended_transfer_rtp_server:
+            await self.attended_transfer_rtp_server.stop()
+            self.attended_transfer_rtp_server = None
         # Stop health server
         if self.audio_socket_server:
             await self.audio_socket_server.stop()
@@ -2348,9 +2445,274 @@ class Engine:
                     direction=direction)
         return channel_id
 
+    async def _on_attended_transfer_helper_rtp_audio(self, call_id: str, ssrc: int, audio_data: bytes) -> None:
+        """Helper-leg RTP audio is currently ignored; DTMF stays on the SIP/PJSIP agent channel."""
+        return
+
+    async def _ensure_attended_transfer_helper_rtp_server_started(self) -> Optional[RTPServer]:
+        if self.attended_transfer_rtp_server and getattr(self.attended_transfer_rtp_server, "running", False):
+            return self.attended_transfer_rtp_server
+        if not self._attended_transfer_streaming_enabled():
+            return None
+
+        async with self._attended_transfer_helper_rtp_lock:
+            if self.attended_transfer_rtp_server and getattr(self.attended_transfer_rtp_server, "running", False):
+                return self.attended_transfer_rtp_server
+
+            helper_settings = self._get_attended_transfer_helper_settings()
+            server = RTPServer(
+                host=helper_settings["bind_host"],
+                port=int(helper_settings["rtp_port"]),
+                engine_callback=self._on_attended_transfer_helper_rtp_audio,
+                codec=helper_settings["codec"],
+                format=helper_settings["format"],
+                sample_rate=int(helper_settings["sample_rate"]),
+                port_range=helper_settings["port_range"],
+                allowed_remote_hosts=helper_settings["allowed_remote_hosts"],
+                lock_remote_endpoint=helper_settings["lock_remote_endpoint"],
+            )
+            await server.start()
+            self.attended_transfer_rtp_server = server
+            logger.info(
+                "Attended transfer helper RTP server started",
+                host=helper_settings["bind_host"],
+                advertise_host=helper_settings["advertise_host"],
+                port_range=helper_settings["port_range"],
+                allowed_remote_hosts=helper_settings["allowed_remote_hosts"],
+            )
+            return self.attended_transfer_rtp_server
+
+    async def _attach_attended_transfer_helper_external_media(self, external_media_id: str) -> bool:
+        agent_channel_id = self._attended_transfer_helper_external_media_to_agent_channel.get(external_media_id)
+        if not agent_channel_id:
+            return False
+
+        state = self._attended_transfer_helper_state_by_agent_channel.get(agent_channel_id) or {}
+        bridge_id = state.get("bridge_id")
+        if not bridge_id:
+            return False
+
+        success = await self.ari_client.add_channel_to_bridge(bridge_id, external_media_id)
+        if success:
+            state["external_media_attached"] = True
+            self._attended_transfer_helper_state_by_agent_channel[agent_channel_id] = state
+            return True
+        return False
+
+    async def _start_attended_transfer_helper_media(
+        self,
+        *,
+        call_id: str,
+        agent_channel_id: str,
+        attended_cfg: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        server = await self._ensure_attended_transfer_helper_rtp_server_started()
+        if not server:
+            logger.warning(
+                "Attended transfer helper RTP server unavailable",
+                call_id=call_id,
+                agent_channel_id=agent_channel_id,
+            )
+            return None
+
+        existing = self._attended_transfer_helper_state_by_agent_channel.get(agent_channel_id)
+        if existing:
+            return existing
+
+        helper_settings = self._get_attended_transfer_helper_settings(attended_cfg)
+        helper_session_id = f"attx:{call_id}:{agent_channel_id}"
+        bridge_id: Optional[str] = None
+        external_media_id: Optional[str] = None
+
+        try:
+            port = await server.allocate_session(helper_session_id)
+            bridge_id = await self.ari_client.create_bridge("mixing")
+            if not bridge_id:
+                raise RuntimeError("Failed to create attended transfer helper bridge")
+
+            if not await self.ari_client.add_channel_to_bridge(bridge_id, agent_channel_id):
+                raise RuntimeError("Failed to add agent channel to helper bridge")
+
+            external_host = f"{helper_settings['advertise_host']}:{port}"
+            response = await self.ari_client.create_external_media_channel(
+                app=self.config.asterisk.app_name,
+                external_host=external_host,
+                format=helper_settings["codec"],
+                direction=helper_settings["direction"],
+                encapsulation="rtp",
+            )
+            external_media_id = response.get("id") if isinstance(response, dict) else None
+            if not external_media_id:
+                raise RuntimeError("Failed to create attended transfer helper ExternalMedia channel")
+
+            state = {
+                "call_id": call_id,
+                "agent_channel_id": agent_channel_id,
+                "bridge_id": bridge_id,
+                "external_media_id": external_media_id,
+                "rtp_session_id": helper_session_id,
+                "rtp_port": port,
+                "external_host": external_host,
+                "external_media_attached": False,
+            }
+            self._attended_transfer_helper_state_by_agent_channel[agent_channel_id] = state
+            self._attended_transfer_helper_external_media_to_agent_channel[external_media_id] = agent_channel_id
+
+            attach_deadline = time.time() + max(0.2, float(helper_settings["endpoint_wait_ms"]) / 1000.0)
+            attached = False
+            while time.time() < attach_deadline:
+                if await self._attach_attended_transfer_helper_external_media(external_media_id):
+                    attached = True
+                    break
+                await asyncio.sleep(0.05)
+            if not attached:
+                raise RuntimeError("Failed to attach helper ExternalMedia channel to bridge")
+
+            await self._kick_rtp_flow(bridge_id, helper_session_id)
+
+            endpoint_deadline = time.time() + max(0.2, float(helper_settings["endpoint_wait_ms"]) / 1000.0)
+            while time.time() < endpoint_deadline:
+                if server.has_remote_endpoint(helper_session_id):
+                    return self._attended_transfer_helper_state_by_agent_channel.get(agent_channel_id)
+                await asyncio.sleep(0.05)
+
+            raise RuntimeError("Timed out waiting for attended transfer helper RTP endpoint")
+        except Exception as exc:
+            logger.warning(
+                "Failed to start attended transfer helper media",
+                call_id=call_id,
+                agent_channel_id=agent_channel_id,
+                external_media_id=external_media_id,
+                error=str(exc),
+                exc_info=True,
+            )
+            await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+            return None
+
+    async def _stream_attended_transfer_audio(
+        self,
+        agent_channel_id: str,
+        audio_bytes: bytes,
+        *,
+        frame_ms: int = 20,
+    ) -> bool:
+        if not audio_bytes:
+            return True
+
+        state = self._attended_transfer_helper_state_by_agent_channel.get(agent_channel_id)
+        server = self.attended_transfer_rtp_server
+        if not state or not server:
+            return False
+
+        helper_session_id = state.get("rtp_session_id")
+        if not helper_session_id:
+            return False
+
+        frame_size = max(1, int(8000 * (max(1, int(frame_ms)) / 1000.0)))
+        for offset in range(0, len(audio_bytes), frame_size):
+            if self._attended_transfer_dtmf_digits.get(agent_channel_id):
+                logger.info(
+                    "Attended transfer helper stream interrupted by early DTMF",
+                    agent_channel_id=agent_channel_id,
+                    helper_session_id=helper_session_id,
+                )
+                return True
+
+            chunk = audio_bytes[offset:offset + frame_size]
+            if len(chunk) < frame_size:
+                chunk = chunk + (b"\xff" * (frame_size - len(chunk)))
+            if not await server.send_audio(helper_session_id, chunk):
+                logger.warning(
+                    "Attended transfer helper RTP send failed",
+                    agent_channel_id=agent_channel_id,
+                    helper_session_id=helper_session_id,
+                    offset=offset,
+                    chunk_size=len(chunk),
+                )
+                return False
+            await asyncio.sleep(max(0.01, float(frame_ms) / 1000.0))
+        return True
+
+    async def _cleanup_attended_transfer_helper_media(self, agent_channel_id: str) -> None:
+        state = self._attended_transfer_helper_state_by_agent_channel.pop(agent_channel_id, None)
+        if not state:
+            return
+
+        external_media_id = state.get("external_media_id")
+        bridge_id = state.get("bridge_id")
+        helper_session_id = state.get("rtp_session_id")
+
+        if external_media_id:
+            self._attended_transfer_helper_external_media_to_agent_channel.pop(external_media_id, None)
+
+        try:
+            if bridge_id and external_media_id:
+                await self.ari_client.remove_channel_from_bridge(bridge_id, external_media_id)
+        except Exception:
+            logger.debug(
+                "Failed to detach attended transfer helper ExternalMedia channel",
+                agent_channel_id=agent_channel_id,
+                external_media_id=external_media_id,
+                bridge_id=bridge_id,
+                exc_info=True,
+            )
+
+        try:
+            if bridge_id:
+                await self.ari_client.remove_channel_from_bridge(bridge_id, agent_channel_id)
+        except Exception:
+            logger.debug(
+                "Failed to detach agent channel from attended transfer helper bridge",
+                agent_channel_id=agent_channel_id,
+                bridge_id=bridge_id,
+                exc_info=True,
+            )
+
+        try:
+            if external_media_id:
+                await self.ari_client.hangup_channel(external_media_id)
+        except Exception:
+            logger.debug(
+                "Failed to hang up attended transfer helper ExternalMedia channel",
+                agent_channel_id=agent_channel_id,
+                external_media_id=external_media_id,
+                exc_info=True,
+            )
+
+        try:
+            if bridge_id:
+                await self.ari_client.destroy_bridge(bridge_id)
+        except Exception:
+            logger.debug(
+                "Failed to destroy attended transfer helper bridge",
+                agent_channel_id=agent_channel_id,
+                bridge_id=bridge_id,
+                exc_info=True,
+            )
+
+        try:
+            if helper_session_id and self.attended_transfer_rtp_server:
+                await self.attended_transfer_rtp_server.cleanup_session(helper_session_id)
+        except Exception:
+            logger.debug(
+                "Failed to clean up attended transfer helper RTP session",
+                agent_channel_id=agent_channel_id,
+                helper_session_id=helper_session_id,
+                exc_info=True,
+            )
+
     async def _handle_external_media_stasis_start(self, external_media_id: str, channel: dict):
         """Handle ExternalMedia channel entering Stasis."""
         try:
+            if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
+                if await self._attach_attended_transfer_helper_external_media(external_media_id):
+                    logger.info(
+                        "Attended transfer helper ExternalMedia channel entered Stasis",
+                        external_media_id=external_media_id,
+                        agent_channel_id=self._attended_transfer_helper_external_media_to_agent_channel.get(external_media_id),
+                    )
+                    return
+
             # Find session by external_media_id
             session = await self.session_store.get_by_channel_id(external_media_id)
             if not session:
@@ -2470,6 +2832,16 @@ class Engine:
         """
         for attempt in range(1, max(1, attempts) + 1):
             try:
+                if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
+                    if await self._attach_attended_transfer_helper_external_media(external_media_id):
+                        logger.info(
+                            "Attended transfer helper ExternalMedia channel attached after retry",
+                            external_media_id=external_media_id,
+                            agent_channel_id=self._attended_transfer_helper_external_media_to_agent_channel.get(external_media_id),
+                            attempt=attempt,
+                        )
+                        return
+
                 session = await self.session_store.get_by_channel_id(external_media_id)
                 if not session:
                     sessions = await self.session_store.get_all_sessions()
@@ -3741,6 +4113,8 @@ class Engine:
             or 15
         )
         tts_timeout = float(attended_cfg.get("tts_timeout_seconds", 8) or 8)
+        stream_fallback_to_file = bool(attended_cfg.get("stream_fallback_to_file", True))
+        use_streaming = self._attended_transfer_streaming_enabled(attended_cfg)
 
         # Treat blank templates as "use defaults" (UI may persist empty strings).
         if not announcement_template.strip():
@@ -3764,6 +4138,23 @@ class Engine:
             destination_key=destination_key,
         )
 
+        if use_streaming:
+            helper_ready = await self._start_attended_transfer_helper_media(
+                call_id=caller_id,
+                agent_channel_id=channel_id,
+                attended_cfg=attended_cfg,
+            )
+            if not helper_ready and stream_fallback_to_file:
+                logger.warning(
+                    "Attended transfer helper streaming unavailable; falling back to file playback",
+                    call_id=caller_id,
+                    channel_id=channel_id,
+                )
+                use_streaming = False
+            elif not helper_ready:
+                await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
+                return
+
         # Step A: Play one-way announcement to agent (hard requirement: Local AI Server TTS).
         announcement_audio = await self._local_ai_server_tts(call_id=caller_id, text=announcement_text, timeout_sec=tts_timeout)
         if not announcement_audio:
@@ -3771,12 +4162,24 @@ class Engine:
             await self._attended_transfer_abort_and_resume(session, channel_id, reason="tts-unavailable")
             return
 
-        await self._play_ulaw_bytes_on_channel_and_wait(
-            channel_id=channel_id,
-            audio_bytes=announcement_audio,
-            playback_id_prefix="attx-ann",
-            timeout_sec=max(3.0, tts_timeout * 4),
-        )
+        announcement_ok = True
+        if use_streaming:
+            announcement_ok = await self._stream_attended_transfer_audio(channel_id, announcement_audio)
+            if not announcement_ok and stream_fallback_to_file:
+                await self._cleanup_attended_transfer_helper_media(channel_id)
+                use_streaming = False
+        if not use_streaming:
+            played_id = await self._play_ulaw_bytes_on_channel_and_wait(
+                channel_id=channel_id,
+                audio_bytes=announcement_audio,
+                playback_id_prefix="attx-ann",
+                timeout_sec=max(3.0, tts_timeout * 4),
+            )
+            announcement_ok = bool(played_id)
+        if not announcement_ok:
+            logger.warning("Attended transfer announcement delivery failed; aborting", call_id=caller_id)
+            await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
+            return
 
         # Step B: Collect DTMF acceptance/decline (early digits during announcement are honored).
         digit = self._attended_transfer_dtmf_digits.get(channel_id)
@@ -3786,12 +4189,24 @@ class Engine:
                 logger.warning("Attended transfer prompt TTS failed; aborting", call_id=caller_id)
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="tts-unavailable")
                 return
-            await self._play_ulaw_bytes_on_channel_and_wait(
-                channel_id=channel_id,
-                audio_bytes=prompt_audio,
-                playback_id_prefix="attx-prompt",
-                timeout_sec=max(3.0, tts_timeout * 4),
-            )
+            prompt_ok = True
+            if use_streaming:
+                prompt_ok = await self._stream_attended_transfer_audio(channel_id, prompt_audio)
+                if not prompt_ok and stream_fallback_to_file:
+                    await self._cleanup_attended_transfer_helper_media(channel_id)
+                    use_streaming = False
+            if not use_streaming:
+                played_id = await self._play_ulaw_bytes_on_channel_and_wait(
+                    channel_id=channel_id,
+                    audio_bytes=prompt_audio,
+                    playback_id_prefix="attx-prompt",
+                    timeout_sec=max(3.0, tts_timeout * 4),
+                )
+                prompt_ok = bool(played_id)
+            if not prompt_ok:
+                logger.warning("Attended transfer prompt delivery failed; aborting", call_id=caller_id)
+                await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
+                return
             digit = await self._wait_for_attended_transfer_dtmf(channel_id, timeout_sec=accept_timeout)
 
         accepted = digit == accept_digit
@@ -3823,6 +4238,10 @@ class Engine:
 
     async def _attended_transfer_abort_and_resume(self, session: "CallSession", agent_channel_id: str, *, reason: str) -> None:
         call_id = session.call_id
+        try:
+            await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+        except Exception:
+            logger.debug("Failed to clean up attended transfer helper media on abort", call_id=call_id, agent_channel_id=agent_channel_id, exc_info=True)
         # IMPORTANT: unregister mapping before hanging up the agent leg so that the resulting
         # ChannelDestroyed/StasisEnd does not get resolved back to the caller session and tear down the call.
         self._unregister_attended_transfer_agent_channel(agent_channel_id)
@@ -3910,6 +4329,11 @@ class Engine:
                     playback_id_prefix="attx-caller",
                     timeout_sec=max(3.0, float(tts_timeout) * 4),
                 )
+
+        try:
+            await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+        except Exception:
+            logger.debug("Failed to clean up attended transfer helper media before bridge finalize", call_id=call_id, agent_channel_id=agent_channel_id, exc_info=True)
 
         # Remove AI media from bridge and stop provider session (best effort).
         try:
@@ -4588,6 +5012,17 @@ class Engine:
                         action_channels.append(str(action.get("channel_id")))
             except Exception:
                 action_channels = []
+
+            for agent_channel_id in dict.fromkeys(action_channels):
+                try:
+                    await self._cleanup_attended_transfer_helper_media(agent_channel_id)
+                except Exception:
+                    logger.debug(
+                        "Attended transfer helper cleanup failed during call cleanup",
+                        call_id=call_id,
+                        agent_channel_id=agent_channel_id,
+                        exc_info=True,
+                    )
 
             for channel_id in filter(
                 None,
