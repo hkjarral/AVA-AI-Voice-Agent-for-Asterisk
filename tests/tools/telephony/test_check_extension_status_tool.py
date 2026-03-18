@@ -110,6 +110,34 @@ class TestCheckExtensionStatusTool:
         assert result["available"] is True
 
     @pytest.mark.asyncio
+    async def test_falls_back_to_list_endpoints_and_device_states(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"] = {
+            "6000": {
+                "name": "Live Agent",
+                "dial_string": "SIP/6000",
+                "device_state_tech": "auto",
+            }
+        }
+
+        async def send_command_side_effect(method, resource, data=None, params=None):
+            if method == "GET" and resource == "endpoints/SIP/6000":
+                raise Exception("404 Not Found")
+            if method == "GET" and resource == "endpoints":
+                return [{"technology": "SIP", "resource": "6000", "state": "online", "channel_ids": []}]
+            if method == "GET" and resource == "deviceStates/SIP%2F6000":
+                raise Exception("404 Not Found")
+            if method == "GET" and resource == "deviceStates":
+                return [{"name": "SIP/6000", "state": "NOT_INUSE"}]
+            raise Exception(f"Unexpected ARI call: {method} {resource}")
+
+        mock_ari_client.send_command = AsyncMock(side_effect=send_command_side_effect)
+
+        result = await tool.execute({"extension": "6000"}, tool_context)
+        assert result["status"] == "success"
+        assert result["device_state_id"] == "SIP/6000"
+        assert result["available"] is True
+
+    @pytest.mark.asyncio
     async def test_resolves_transfer_destination_key_to_extension(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "destinations": {

@@ -210,6 +210,44 @@ async def _probe_endpoint(
     return resp
 
 
+async def _list_device_states(
+    *,
+    context: ToolExecutionContext,
+) -> List[Dict[str, Any]]:
+    if not context.ari_client:
+        return []
+    try:
+        resp = await context.ari_client.send_command(
+            method="GET",
+            resource="deviceStates",
+        )
+    except Exception:
+        logger.debug("ARI device states list failed", exc_info=True)
+        return []
+    if not isinstance(resp, list):
+        return []
+    return [item for item in resp if isinstance(item, dict)]
+
+
+async def _list_endpoints(
+    *,
+    context: ToolExecutionContext,
+) -> List[Dict[str, Any]]:
+    if not context.ari_client:
+        return []
+    try:
+        resp = await context.ari_client.send_command(
+            method="GET",
+            resource="endpoints",
+        )
+    except Exception:
+        logger.debug("ARI endpoints list failed", exc_info=True)
+        return []
+    if not isinstance(resp, list):
+        return []
+    return [item for item in resp if isinstance(item, dict)]
+
+
 class CheckExtensionStatusTool(Tool):
     @property
     def definition(self) -> ToolDefinition:
@@ -324,6 +362,17 @@ class CheckExtensionStatusTool(Tool):
                 if endpoint:
                     endpoint_info = endpoint
                     used_tech = inferred_tech
+                else:
+                    for item in await _list_endpoints(context=context):
+                        if (
+                            str(item.get("technology", "") or "").upper() == inferred_tech.upper()
+                            and str(item.get("resource", "") or "") == extension
+                        ):
+                            endpoint_info = item
+                            used_tech = inferred_tech
+                            if not source:
+                                source = "ari.endpoints.list"
+                            break
 
         if not resolved_id and not endpoint_info:
             logger.warning(
@@ -356,13 +405,21 @@ class CheckExtensionStatusTool(Tool):
         except Exception as exc:
             device_state_error = str(exc)
             logger.warning(
-                "ARI device state query failed; will fall back to endpoint state if available",
+                "ARI device state query failed; will fall back to list lookup if available",
                 call_id=context.call_id,
                 target=target,
                 extension=extension,
                 device_state_id=resolved_id,
                 error=device_state_error,
             )
+
+        if encoded and (not isinstance(device_state_resp, dict) or "state" not in device_state_resp):
+            for item in await _list_device_states(context=context):
+                if str(item.get("name", "") or "") == resolved_id:
+                    device_state_resp = item
+                    if not source:
+                        source = "ari.deviceStates.list"
+                    break
 
         # Common ARI response: {"name":"PJSIP/2765","state":"NOT_INUSE"}
         state = ""
@@ -396,6 +453,11 @@ class CheckExtensionStatusTool(Tool):
                             exc_info=True,
                         )
                         continue
+                    if not isinstance(candidate_resp, dict) or "state" not in candidate_resp:
+                        for item in await _list_device_states(context=context):
+                            if str(item.get("name", "") or "") == candidate_id:
+                                candidate_resp = item
+                                break
                     if isinstance(candidate_resp, dict):
                         cstate = str(candidate_resp.get("state", "") or "").strip().upper()
                         if cstate and cstate != "INVALID":
