@@ -922,95 +922,94 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     onChange={(e) => setShowHangupExpert(e.target.checked)}
                                     className="mb-0 border-0 p-0 bg-transparent"
                                 />
-                                <p className={`text-xs mt-2 ${showHangupExpert ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
-                                    {showHangupExpert
-                                        ? 'Warning: these values directly influence hangup intent matching and fallback behavior.'
-                                        : 'Expert values are shown with defaults and are read-only until enabled.'}
-                                </p>
-                                <p className="text-xs text-muted-foreground mt-2">
-                                    These markers are global defaults. Pipelines can override end-of-call markers per pipeline under <code>Pipelines</code> → <code>LLM Expert Settings</code>.
-                                </p>
-                                {hangupUsage && (
-                                    <div className="mt-3 text-xs text-muted-foreground space-y-1">
-                                        <div className="font-medium text-foreground">Usage</div>
-                                        <div>
-                                            Google Live marker heuristics:{' '}
-                                            <span className="font-mono">
-                                                {hangupUsage.googleLiveMarkersEnabled === null
-                                                    ? 'unknown'
-                                                    : hangupUsage.googleLiveMarkersEnabled
-                                                        ? 'enabled'
-                                                        : 'disabled'}
-                                            </span>
+                                {showHangupExpert && (
+                                    <div className="mt-4 pt-4 border-t border-amber-300/20">
+                                        <p className="text-xs text-amber-700 dark:text-amber-400">
+                                            Warning: these values directly influence hangup intent matching and fallback behavior.
+                                        </p>
+                                        <p className="text-xs text-muted-foreground mt-2">
+                                            These markers are global defaults. Pipelines can override end-of-call markers per pipeline under <code>Pipelines</code> → <code>LLM Expert Settings</code>.
+                                        </p>
+                                        {hangupUsage && (
+                                            <div className="mt-3 text-xs text-muted-foreground space-y-1">
+                                                <div className="font-medium text-foreground">Usage</div>
+                                                <div>
+                                                    Google Live marker heuristics:{' '}
+                                                    <span className="font-mono">
+                                                        {hangupUsage.googleLiveMarkersEnabled === null
+                                                            ? 'unknown'
+                                                            : hangupUsage.googleLiveMarkersEnabled
+                                                                ? 'enabled'
+                                                                : 'disabled'}
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    Pipelines overriding end-call markers:{' '}
+                                                    {hangupUsage.pipelineEndCallOverrides.length > 0
+                                                        ? hangupUsage.pipelineEndCallOverrides.join(', ')
+                                                        : 'none'}
+                                                </div>
+                                                <div>
+                                                    Pipelines overriding guardrail mode:{' '}
+                                                    {hangupUsage.pipelineModeOverrides.length > 0
+                                                        ? hangupUsage.pipelineModeOverrides.map((p) => `${p.name}=${p.mode}`).join(', ')
+                                                        : 'none'}
+                                                </div>
+                                                <div>
+                                                    Pipelines overriding guardrail enabled:{' '}
+                                                    {hangupUsage.pipelineGuardrailOverrides.length > 0
+                                                        ? hangupUsage.pipelineGuardrailOverrides
+                                                            .map((p) => `${p.name}=${p.enabled ? 'on' : 'off'}`)
+                                                            .join(', ')
+                                                        : 'none'}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <FormSelect
+                                                label="Hangup Guardrail Mode"
+                                                value={config.hangup_call?.policy?.mode || DEFAULT_HANGUP_POLICY_MODE}
+                                                onChange={(e) => updateHangupPolicy('mode', e.target.value)}
+                                                tooltip="Controls how strict the engine is when matching end-of-call intent from text: Relaxed matches broader phrasing, Normal balances false positives vs misses, Strict requires stronger matches."
+                                                options={[
+                                                    { value: 'relaxed', label: 'Relaxed' },
+                                                    { value: 'normal', label: 'Normal' },
+                                                    { value: 'strict', label: 'Strict' },
+                                                ]}
+                                            />
                                         </div>
-                                        <div>
-                                            Pipelines overriding end-call markers:{' '}
-                                            {hangupUsage.pipelineEndCallOverrides.length > 0
-                                                ? hangupUsage.pipelineEndCallOverrides.join(', ')
-                                                : 'none'}
-                                        </div>
-                                        <div>
-                                            Pipelines overriding guardrail mode:{' '}
-                                            {hangupUsage.pipelineModeOverrides.length > 0
-                                                ? hangupUsage.pipelineModeOverrides.map((p) => `${p.name}=${p.mode}`).join(', ')
-                                                : 'none'}
-                                        </div>
-                                        <div>
-                                            Pipelines overriding guardrail enabled:{' '}
-                                            {hangupUsage.pipelineGuardrailOverrides.length > 0
-                                                ? hangupUsage.pipelineGuardrailOverrides
-                                                    .map((p) => `${p.name}=${p.enabled ? 'on' : 'off'}`)
-                                                    .join(', ')
-                                                : 'none'}
+                                        <div className="mt-1 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                                <FormLabel tooltip="Caller-side phrases that indicate they want to end the call. If a transcript contains one of these markers, the hangup guardrail is more likely to allow call termination.">
+                                                    End Call Markers
+                                                </FormLabel>
+                                                <textarea
+                                                    className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px]"
+                                                    value={endCallMarkerDraft}
+                                                    onChange={(e) => setEndCallMarkerDraft(e.target.value)}
+                                                    onBlur={() => updateHangupMarkers('end_call', parseMarkerList(endCallMarkerDraft))}
+                                                />
+                                                <p className="text-xs text-muted-foreground">
+                                                    One phrase per line. Focus on user intent language (for example, "that&apos;s all", "no thanks", "end call").
+                                                </p>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <FormLabel tooltip="Assistant-side phrases used to recognize that the AI has delivered a farewell. Helps fallback logic avoid hanging up before the closing message is complete.">
+                                                    Assistant Farewell Markers
+                                                </FormLabel>
+                                                <textarea
+                                                    className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px]"
+                                                    value={assistantFarewellMarkerDraft}
+                                                    onChange={(e) => setAssistantFarewellMarkerDraft(e.target.value)}
+                                                    onBlur={() => updateHangupMarkers('assistant_farewell', parseMarkerList(assistantFarewellMarkerDraft))}
+                                                />
+                                                <p className="text-xs text-muted-foreground">
+                                                    One phrase per line. Include common assistant closings (for example, "goodbye", "thank you for calling").
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
                                 )}
-                                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <FormSelect
-                                        label="Hangup Guardrail Mode"
-                                        value={config.hangup_call?.policy?.mode || DEFAULT_HANGUP_POLICY_MODE}
-                                        onChange={(e) => updateHangupPolicy('mode', e.target.value)}
-                                        tooltip="Controls how strict the engine is when matching end-of-call intent from text: Relaxed matches broader phrasing, Normal balances false positives vs misses, Strict requires stronger matches."
-                                        options={[
-                                            { value: 'relaxed', label: 'Relaxed' },
-                                            { value: 'normal', label: 'Normal' },
-                                            { value: 'strict', label: 'Strict' },
-                                        ]}
-                                        disabled={!showHangupExpert}
-                                    />
-                                </div>
-                                <div className="mt-1 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <FormLabel tooltip="Caller-side phrases that indicate they want to end the call. If a transcript contains one of these markers, the hangup guardrail is more likely to allow call termination.">
-                                            End Call Markers
-                                        </FormLabel>
-                                        <textarea
-                                            className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
-                                            value={endCallMarkerDraft}
-                                            onChange={(e) => setEndCallMarkerDraft(e.target.value)}
-                                            onBlur={() => updateHangupMarkers('end_call', parseMarkerList(endCallMarkerDraft))}
-                                            disabled={!showHangupExpert}
-                                        />
-                                        <p className="text-xs text-muted-foreground">
-                                            One phrase per line. Focus on user intent language (for example, "that&apos;s all", "no thanks", "end call").
-                                        </p>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <FormLabel tooltip="Assistant-side phrases used to recognize that the AI has delivered a farewell. Helps fallback logic avoid hanging up before the closing message is complete.">
-                                            Assistant Farewell Markers
-                                        </FormLabel>
-                                        <textarea
-                                            className="w-full p-2 rounded border border-input bg-background text-sm min-h-[120px] disabled:cursor-not-allowed disabled:opacity-50"
-                                            value={assistantFarewellMarkerDraft}
-                                            onChange={(e) => setAssistantFarewellMarkerDraft(e.target.value)}
-                                            onBlur={() => updateHangupMarkers('assistant_farewell', parseMarkerList(assistantFarewellMarkerDraft))}
-                                            disabled={!showHangupExpert}
-                                        />
-                                        <p className="text-xs text-muted-foreground">
-                                            One phrase per line. Include common assistant closings (for example, "goodbye", "thank you for calling").
-                                        </p>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     )}
