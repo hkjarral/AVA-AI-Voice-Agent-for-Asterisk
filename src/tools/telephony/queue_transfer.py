@@ -72,6 +72,13 @@ class TransferToQueueTool(Tool):
         """
         await self.validate_parameters(parameters)
 
+        logger.warning(
+            "Deprecated telephony tool in use",
+            call_id=context.call_id,
+            tool="transfer_to_queue",
+            replacement="blind_transfer",
+        )
+
         tool_cfg = context.get_config_value("tools.transfer_to_queue") or {}
         if isinstance(tool_cfg, dict) and tool_cfg.get("enabled") is False:
             return {

@@ -894,6 +894,16 @@ class Engine:
         attended_cfg = tools_cfg.get("attended_transfer") if isinstance(tools_cfg, dict) else None
         return attended_cfg if isinstance(attended_cfg, dict) else {}
 
+    @staticmethod
+    def _session_was_transferred(session: Optional["CallSession"]) -> bool:
+        if not session:
+            return False
+        return bool(
+            getattr(session, "transfer_active", False)
+            or getattr(session, "transfer_state", None)
+            or getattr(session, "transfer_destination", None)
+        )
+
     def _attended_transfer_streaming_enabled(self, attended_cfg: Optional[Dict[str, Any]] = None) -> bool:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
         delivery_mode = str(cfg.get("delivery_mode", "file") or "file").strip().lower()
@@ -4386,6 +4396,12 @@ class Engine:
         briefing_timeout = 2.0
         briefing: Dict[str, str] = {}
         if pass_caller_info:
+            logger.warning(
+                "Deprecated attended transfer ai_summary path executed",
+                call_id=caller_id,
+                config_key="tools.attended_transfer.pass_caller_info_to_context",
+                replacement="tools.attended_transfer.screening_mode=caller_recording",
+            )
             briefing = await self._extract_attended_transfer_briefing(session=session, timeout_sec=briefing_timeout)
             if briefing:
                 try:
@@ -5309,8 +5325,7 @@ class Engine:
             # Determine call outcome based on session state
             call_outcome = "caller_hangup"  # Default: caller hung up
             try:
-                # Check transfer state - UnifiedTransferTool sets transfer_active/transfer_state
-                if getattr(session, 'transfer_active', False) or getattr(session, 'transfer_state', None):
+                if self._session_was_transferred(session):
                     call_outcome = "transferred"
                 elif getattr(session, 'cleanup_after_tts', False):
                     call_outcome = "agent_hangup"  # AI agent initiated hangup via hangup_call tool
@@ -5675,7 +5690,7 @@ class Engine:
                     provider_name=getattr(session, "provider_name", None) or "",
                     pipeline_name=getattr(session, "pipeline_name", None) or "",
                     audio_transport=getattr(self.config, "audio_transport", "") or "",
-                    transferred=bool(getattr(session, "transfer_active", False) or getattr(session, "transfer_state", None)),
+                    transferred=self._session_was_transferred(session),
                     transfer_destination=getattr(session, "transfer_destination", None) or getattr(session, "transfer_target", None) or "",
                     media_rx_confirmed=bool(getattr(session, "media_rx_confirmed", False)),
                 )
@@ -5713,7 +5728,7 @@ class Engine:
             outcome = "completed"
             if session.error_message:
                 outcome = "error"
-            elif session.transfer_destination:
+            elif self._session_was_transferred(session):
                 outcome = "transferred"
             elif not session.conversation_history:
                 outcome = "abandoned"
@@ -5777,7 +5792,7 @@ class Engine:
                             final_outcome = "answered_human"
                             if session.error_message:
                                 final_outcome = "error"
-                            elif session.transfer_destination:
+                            elif self._session_was_transferred(session):
                                 final_outcome = "transferred"
 
                             await self.outbound_store.finish_attempt(

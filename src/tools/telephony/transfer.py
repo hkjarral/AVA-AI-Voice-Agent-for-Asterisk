@@ -81,11 +81,18 @@ class TransferCallTool(Tool):
             }
         """
         await self.validate_parameters(parameters)
-        
+
         target = parameters['target']
         # AI can suggest a mode, but YAML config takes precedence
         ai_suggested_mode = parameters.get('mode', 'warm')
-        
+
+        logger.warning(
+            "Deprecated telephony tool in use",
+            call_id=context.call_id,
+            tool="transfer_call",
+            replacement="blind_transfer / attended_transfer / live_agent_transfer",
+        )
+
         logger.info(f"🔀 Transfer requested: {target} ({ai_suggested_mode} mode suggested by AI)", 
                    call_id=context.call_id)
         

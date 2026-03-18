@@ -192,6 +192,16 @@ def test_attended_transfer_helper_defaults_use_offset_port_range():
     assert helper["port_range"] == (18180, 18190)
 
 
+def test_session_was_transferred_recognizes_attended_transfer_destination():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(call_id="call-transfer", caller_channel_id="caller-transfer")
+
+    assert engine._session_was_transferred(session) is False
+
+    session.transfer_destination = "Sales agent"
+    assert engine._session_was_transferred(session) is True
+
+
 @pytest.mark.asyncio
 async def test_attended_transfer_screened_briefing_populates_templates(monkeypatch):
     engine = _build_engine(

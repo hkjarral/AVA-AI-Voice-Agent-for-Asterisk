@@ -494,7 +494,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.caller_screening_prompt == null) next.caller_screening_prompt = 'Before I connect you, please say your name and the reason for your call.';
             if (next.caller_screening_max_seconds == null) next.caller_screening_max_seconds = 6;
             if (next.caller_screening_silence_ms == null) next.caller_screening_silence_ms = 1200;
-            if (next.pass_caller_info_to_context == null) next.pass_caller_info_to_context = false;
             if (next.accept_digit == null) next.accept_digit = '1';
             if (next.decline_digit == null) next.decline_digit = '2';
             if (next.announcement_template == null) next.announcement_template = DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE;
@@ -867,6 +866,22 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                     )}
                 </div>
 
+                {/* Check Extension Status */}
+                <div className="border border-border rounded-lg p-4 bg-card/50">
+                    <div className="space-y-2">
+                        <FormLabel tooltip="Controls whether availability checks are limited to extensions explicitly configured under Live Agents or Transfer Destinations. Disable only if you intentionally want the model to probe arbitrary extension numbers.">
+                            Check Extension Status
+                        </FormLabel>
+                        <FormSwitch
+                            label="Restrict To Configured Extensions"
+                            description="Recommended safety guardrail. Prevents the AI from checking arbitrary extension numbers that are not configured under Tools."
+                            checked={config.check_extension_status?.restrict_to_configured_extensions ?? true}
+                            onChange={(e) => updateNestedConfig('check_extension_status', 'restrict_to_configured_extensions', e.target.checked)}
+                            className="mb-0 border-0 p-0 bg-transparent"
+                        />
+                    </div>
+                </div>
+
                 {/* Hangup Call */}
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
@@ -1029,14 +1044,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                            onClick={() => {
 	                                const existing = config.extensions?.internal || {};
 	                                let idx = Object.keys(existing).length + 1;
-                                let key = `ext_${idx}`;
+	                                let key = `ext_${idx}`;
 	                                while (Object.prototype.hasOwnProperty.call(existing, key)) {
 	                                    idx += 1;
 	                                    key = `ext_${idx}`;
 	                                }
                                     const rowId = getInternalExtRowId(key);
                                     getInternalExtRowMeta(rowId).autoDerivedKey = true;
-	                                updateNestedConfig('extensions', 'internal', { ...existing, [key]: { name: '', description: '', dial_string: '', transfer: true, device_state_tech: 'auto', action_type: 'transfer', aliases: [], pass_caller_info: false } });
+	                                updateNestedConfig('extensions', 'internal', { ...existing, [key]: { name: '', description: '', dial_string: '', transfer: true, device_state_tech: 'auto', action_type: 'transfer', aliases: [] } });
 	                            }}
 	                            className="text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors"
 	                        >

@@ -106,6 +106,14 @@ class AttendedTransferTool(Tool):
         dial_timeout_sec = int(cfg.get("dial_timeout_seconds", 30) or 30)
         moh_class = str(cfg.get("moh_class", "default") or "default")
         screening_mode = self._resolve_screening_mode(cfg)
+        if screening_mode == "ai_summary":
+            logger.warning(
+                "Deprecated attended transfer screening mode in use",
+                call_id=context.call_id,
+                screening_mode=screening_mode,
+                config_key="tools.attended_transfer.pass_caller_info_to_context",
+                replacement="tools.attended_transfer.screening_mode=caller_recording",
+            )
         caller_screening_prompt = str(
             cfg.get("caller_screening_prompt")
             or "Before I connect you, please say your name and the reason for your call."

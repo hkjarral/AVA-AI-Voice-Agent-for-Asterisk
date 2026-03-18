@@ -1848,9 +1848,10 @@ tools:
   #     customer_email: "contact.email"
   #     account_status: "contact.status"
   cancel_transfer:
-    allow_after_answer: false
     allow_during_ring: true
     enabled: false
+  check_extension_status:
+    restrict_to_configured_extensions: true
   default_action_timeout: 30
   enabled: true
   extensions:
@@ -1873,7 +1874,6 @@ tools:
         dial_string: SIP/6000
         mode: warm
         name: Live Agent
-        pass_caller_info: true
         timeout: 30
         transfer: true
   hangup_call:

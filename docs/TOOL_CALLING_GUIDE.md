@@ -870,12 +870,17 @@ tools:
     caller_declined_prompt: "I’m not able to complete that transfer right now. Would you like me to take a message?"  # Optional
 
   # ----------------------------------------------------------------------------
+  # CHECK_EXTENSION_STATUS - Availability checks for configured targets
+  # ----------------------------------------------------------------------------
+  check_extension_status:
+    restrict_to_configured_extensions: true  # Recommended safety guardrail
+
+  # ----------------------------------------------------------------------------
   # CANCEL_TRANSFER - Cancel in-progress transfer
   # ----------------------------------------------------------------------------
   cancel_transfer:
     enabled: true
     allow_during_ring: true            # Cancel while ringing
-    allow_after_answer: false          # Can't cancel after agent picks up
   
   # ----------------------------------------------------------------------------
   # HANGUP_CALL - Gracefully end call
