@@ -114,12 +114,42 @@ def _resolve_transfer_destination_extension(
     return ext, dict(dest), "config.transfer.destinations"
 
 
+def _allowed_configured_extensions(
+    *,
+    extensions_config: Dict[str, Any],
+    destinations: Dict[str, Any],
+) -> List[str]:
+    allowed: set[str] = set()
+
+    if isinstance(extensions_config, dict):
+        for key, cfg in extensions_config.items():
+            extension = str(key or "").strip()
+            if not _looks_like_extension_number(extension):
+                continue
+            if isinstance(cfg, dict) and cfg.get("transfer") is False:
+                continue
+            allowed.add(extension)
+
+    if isinstance(destinations, dict):
+        for cfg in destinations.values():
+            if not isinstance(cfg, dict):
+                continue
+            if str(cfg.get("type", "") or "").strip().lower() != "extension":
+                continue
+            extension = str(cfg.get("target", "") or "").strip()
+            if _looks_like_extension_number(extension):
+                allowed.add(extension)
+
+    return sorted(allowed)
+
+
 def _resolve_device_state_id(
     *,
     extension: str,
     extensions_config: Dict[str, Any],
     tech: str = "",
     device_state_id: str = "",
+    default_technology: str = "",
 ) -> Tuple[str, str]:
     """
     Resolve the ARI deviceStateName to query.
@@ -166,6 +196,9 @@ def _resolve_device_state_id(
 
     if tech:
         return f"{tech.upper()}/{extension}", "parameter.tech"
+
+    if default_technology:
+        return f"{str(default_technology).upper()}/{extension}", "config.transfer.technology"
 
     return "", ""
 
@@ -256,7 +289,7 @@ class CheckExtensionStatusTool(Tool):
             description=(
                 "Check if an internal extension is available by querying Asterisk device state. "
                 "Use this before attempting a transfer to a live agent. "
-                "When runtime prompt/context lists configured live-agent targets, only check those exact extensions."
+                "Only check extension numbers configured under Tools unless the guardrail is explicitly disabled."
             ),
             category=ToolCategory.TELEPHONY,
             phase=ToolPhase.IN_CALL,
@@ -295,8 +328,15 @@ class CheckExtensionStatusTool(Tool):
         tech = str(parameters.get("tech", "") or "").strip()
         device_state_id = str(parameters.get("device_state_id", "") or "").strip()
 
+        tool_cfg = context.get_config_value("tools.check_extension_status", {}) or {}
         extensions_cfg = context.get_config_value("tools.extensions.internal", {}) or {}
         transfer_destinations = context.get_config_value("tools.transfer.destinations", {}) or {}
+        transfer_cfg = context.get_config_value("tools.transfer", {}) or {}
+        restrict_to_configured = bool(tool_cfg.get("restrict_to_configured_extensions", True))
+        allowed_extensions = _allowed_configured_extensions(
+            extensions_config=extensions_cfg,
+            destinations=transfer_destinations,
+        )
 
         # Resolve what the caller/model provided into a real extension number.
         resolved_ext = ""
@@ -322,12 +362,35 @@ class CheckExtensionStatusTool(Tool):
 
         extension = resolved_ext or target
 
+        if restrict_to_configured and not device_state_id and allowed_extensions:
+            normalized_extension = str(extension or "").strip()
+            if _looks_like_extension_number(normalized_extension) and normalized_extension not in allowed_extensions:
+                logger.warning(
+                    "Blocked status check for unconfigured extension",
+                    call_id=context.call_id,
+                    requested_extension=target,
+                    resolved_extension=normalized_extension,
+                    allowed_extensions=allowed_extensions,
+                )
+                return {
+                    "status": "failed",
+                    "message": (
+                        f"Extension {normalized_extension} is not configured. "
+                        f"Allowed extensions: {', '.join(allowed_extensions)}."
+                    ),
+                    "extension": normalized_extension,
+                    "available": False,
+                    "guardrail_blocked": True,
+                    "allowed_extensions": allowed_extensions,
+                }
+
         # Resolve device_state_id/tech using config + parameters.
         resolved_id, source = _resolve_device_state_id(
             extension=extension,
             extensions_config=extensions_cfg,
             tech=tech,
             device_state_id=device_state_id,
+            default_technology=str((transfer_cfg or {}).get("technology", "") or "").strip(),
         )
 
         # If not resolvable via config/params, attempt auto-tech detection via ARI endpoints.
