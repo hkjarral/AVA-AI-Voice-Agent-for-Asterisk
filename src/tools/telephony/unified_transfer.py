@@ -33,7 +33,8 @@ class UnifiedTransferTool(Tool):
             description=(
                 "Blind transfer the caller to another destination. "
                 "Use a configured destination key from Tools -> Transfer Destinations. "
-                "The system validates that the destination exists before transferring."
+                "The system validates that the destination exists before transferring. "
+                "Prefer exact destination keys exposed in the runtime prompt/context instead of inventing names."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,

@@ -255,7 +255,8 @@ class CheckExtensionStatusTool(Tool):
             name="check_extension_status",
             description=(
                 "Check if an internal extension is available by querying Asterisk device state. "
-                "Use this before attempting a transfer to a live agent."
+                "Use this before attempting a transfer to a live agent. "
+                "When runtime prompt/context lists configured live-agent targets, only check those exact extensions."
             ),
             category=ToolCategory.TELEPHONY,
             phase=ToolPhase.IN_CALL,

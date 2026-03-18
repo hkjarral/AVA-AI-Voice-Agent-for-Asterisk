@@ -26,7 +26,8 @@ class AttendedTransferTool(Tool):
             description=(
                 "Warm transfer to a configured extension with a one-way announcement to the agent, "
                 "then DTMF acceptance (1=accept, 2=decline). Caller is placed on MOH while the agent is contacted. "
-                "Use when you must brief a human before connecting the caller."
+                "Use when you must brief a human before connecting the caller. "
+                "Use exact configured destination keys exposed in the runtime prompt/context."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,

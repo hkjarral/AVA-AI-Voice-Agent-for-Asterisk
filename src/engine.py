@@ -12246,6 +12246,36 @@ class Engine:
                             provider_context['prompt'] = context_config.prompt
                             provider_context['instructions'] = context_config.prompt  # Alias for ElevenLabs
 
+                        try:
+                            from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+
+                            runtime_tool_guidance = build_in_call_tool_runtime_guidance(
+                                self.config.dict(),
+                                provider_context.get("tools") or [],
+                            )
+                            if runtime_tool_guidance:
+                                base_prompt = str(
+                                    provider_context.get("prompt")
+                                    or provider_context.get("instructions")
+                                    or ""
+                                ).strip()
+                                combined_prompt = (
+                                    f"{base_prompt}\n\n{runtime_tool_guidance}".strip()
+                                    if base_prompt
+                                    else runtime_tool_guidance
+                                )
+                                provider_context["prompt"] = combined_prompt
+                                provider_context["instructions"] = combined_prompt
+                                provider_context["tool_runtime_guidance"] = runtime_tool_guidance
+                                logger.debug(
+                                    "Injected runtime tool guidance into provider prompt",
+                                    call_id=call_id,
+                                    tool_count=len(provider_context.get("tools") or []),
+                                    guidance_length=len(runtime_tool_guidance),
+                                )
+                        except Exception:
+                            logger.debug("Failed to inject runtime tool guidance", call_id=call_id, exc_info=True)
+
                         if isinstance(greeting_override, str) and greeting_override.strip():
                             provider_context["greeting"] = greeting_override
                         elif hasattr(context_config, 'greeting') and context_config.greeting:

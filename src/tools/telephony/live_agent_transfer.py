@@ -31,7 +31,9 @@ class LiveAgentTransferTool(Tool):
                 "Transfer the caller to a live (human) agent. "
                 "By default routes to Tools -> Live Agents. Optionally, an advanced/legacy "
                 "override can route live-agent requests via a transfer destination. "
-                "An optional target can specify the desired live agent extension, name, or alias."
+                "An optional target can specify the desired live agent extension, name, or alias. "
+                "Use only configured live-agent targets exposed in the runtime prompt/context; "
+                "never invent extension numbers."
             ),
             category=ToolCategory.TELEPHONY,
             requires_channel=True,
