@@ -1012,8 +1012,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                            <div key={rowId} className="flex flex-col gap-4 p-5 border border-border/60 rounded-lg bg-card/40 hover:bg-card/60 transition-colors shadow-sm">
 
                                 {/* Core Info Row */}
-                                <div className="flex flex-col lg:flex-row gap-4 items-start w-full">
-	                                <div className="w-full lg:w-24 shrink-0">
+                                <div className="flex flex-col xl:flex-row gap-4 xl:items-end items-start w-full">
+	                                <div className="w-full xl:w-24 shrink-0">
                                         <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Ext</label>
 	                                    <input
 	                                        className="w-full border rounded-md px-3 py-2 text-sm bg-muted/50 text-muted-foreground focus:ring-0 cursor-not-allowed"
@@ -1026,7 +1026,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                        title="Auto-derived from dial string (e.g. PJSIP/2765 -> 2765). Numeric keys are locked to prevent accidental renames."
 	                                    />
 	                                </div>
-	                                <div className="w-full lg:flex-1 shrink-0">
+	                                <div className="w-full xl:w-64 shrink-0">
                                         <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Agent Name</label>
 	                                    <input
 	                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
@@ -1040,7 +1040,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                             title="Agent Name"
                                         />
                                     </div>
-	                                <div className="w-full lg:flex-1 shrink-0">
+	                                <div className="w-full xl:flex-1 shrink-0">
                                         <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Dial String</label>
 	                                    <input
 	                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
@@ -1086,6 +1086,51 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                        title="PJSIP/..."
 	                                    />
 	                                </div>
+
+                                    {/* Action Buttons Compacted into Row 1 */}
+                                    <div className="flex items-center gap-3 shrink-0 w-full xl:w-auto xl:justify-end mt-2 xl:mt-0 xl:pb-[1px]">
+                                        <button
+                                            type="button"
+                                            className={`inline-flex items-center justify-center gap-2 px-4 py-2 h-[38px] rounded-md text-xs font-semibold border shadow-sm ${pillClass} hover:opacity-80 transition-opacity`}
+                                            title={title}
+                                            onClick={() => checkLiveAgentStatus(rowId, key, ext)}
+                                        >
+                                            {loading ? (
+                                                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                                            ) : (
+                                                <span className={`w-2 h-2 rounded-full ${dotClass} shadow-sm shrink-0`} />
+                                            )}
+                                            <span className="truncate max-w-[120px]">{label}</span>
+                                        </button>
+                                        
+                                        <div className="flex items-center gap-2.5 bg-secondary/30 px-3 py-1.5 h-[38px] rounded-md border border-border/50 shadow-sm shrink-0">
+                                            <span className="text-[10px] font-bold tracking-wide uppercase text-muted-foreground pt-[1px]">Enabled</span>
+	                                        <FormSwitch
+	                                            checked={ext.transfer ?? true}
+	                                            onChange={(e) => {
+	                                                const updated = { ...(config.extensions?.internal || {}) };
+	                                                updated[key] = { ...ext, transfer: e.target.checked };
+	                                                updateNestedConfig('extensions', 'internal', updated);
+	                                            }}
+	                                            className="mb-0 border-0 p-0 bg-transparent flex-shrink-0"
+	                                            label=""
+	                                            description=""
+	                                        />
+                                        </div>
+
+                                        <button
+                                            onClick={() => {
+                                                const updated = { ...(config.extensions?.internal || {}) };
+                                                delete updated[key];
+                                                deleteInternalExtRowId(key);
+                                                updateNestedConfig('extensions', 'internal', updated);
+                                            }}
+                                            className="h-[38px] w-[38px] flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors shrink-0"
+                                            title="Delete Extension"
+                                        >
+                                            <Trash2 className="w-4.5 h-4.5" />
+                                        </button>
+                                    </div>
                                 </div>
 
                                 {/* Full width description row */}
@@ -1195,55 +1240,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                         </div>
                                     </div>
                                 )}
-
-                                {/* Footer Row */}
-                                <div className="flex justify-between items-center mt-3 pt-4 border-t border-border/60">
-                                    <div className="flex items-center">
-                                        <button
-                                            type="button"
-                                            className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold border shadow-sm ${pillClass} hover:opacity-80 transition-opacity max-w-[200px]`}
-                                            title={title}
-                                            onClick={() => checkLiveAgentStatus(rowId, key, ext)}
-                                        >
-                                            {loading ? (
-                                                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                                            ) : (
-                                                <span className={`w-2.5 h-2.5 rounded-full ${dotClass} shadow-sm shrink-0`} />
-                                            )}
-                                            <span className="truncate">{label}</span>
-                                        </button>
-                                    </div>
-                                    
-	                                <div className="flex items-center gap-5">
-                                        <div className="flex items-center gap-3 bg-secondary/30 px-4 py-1.5 rounded-full border border-border/50 shadow-sm">
-                                            <span className="text-xs font-bold tracking-wide uppercase text-muted-foreground pt-[1px]">Enabled</span>
-	                                        <FormSwitch
-	                                            checked={ext.transfer ?? true}
-	                                            onChange={(e) => {
-	                                                const updated = { ...(config.extensions?.internal || {}) };
-	                                                updated[key] = { ...ext, transfer: e.target.checked };
-	                                                updateNestedConfig('extensions', 'internal', updated);
-	                                            }}
-	                                            className="mb-0 border-0 p-0 bg-transparent flex-shrink-0"
-	                                            label=""
-	                                            description=""
-	                                        />
-                                        </div>
-                                        <div className="w-px h-6 bg-border/60 hidden sm:block"></div>
-                                        <button
-                                            onClick={() => {
-                                                const updated = { ...(config.extensions?.internal || {}) };
-                                                delete updated[key];
-                                                deleteInternalExtRowId(key);
-                                                updateNestedConfig('extensions', 'internal', updated);
-                                            }}
-                                            className="p-2.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
-                                            title="Delete Extension"
-                                        >
-                                            <Trash2 className="w-4.5 h-4.5" />
-                                        </button>
-	                                </div>
-                                </div>
 	                            </div>
                                     );
                                 })()
