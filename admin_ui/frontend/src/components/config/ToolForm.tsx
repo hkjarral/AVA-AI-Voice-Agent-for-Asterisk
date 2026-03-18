@@ -237,20 +237,22 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (status === 'busy') return 'Busy';
             return 'Unknown';
         };
-
-        const checkLiveAgentStatus = async (rowId: string, key: string, ext: any) => {
+        const checkLiveAgentStatus = async (rowId: string, key: string, ext: any, isAuto: boolean = false) => {
             const dialString = String(ext?.dial_string || '');
             const tech = String(ext?.device_state_tech || 'auto');
             const numericKey = isNumericKey(key) ? String(key).trim() : extractNumericExtensionKeyFromDialString(dialString);
             if (!numericKey) {
-                toast.error('Set a numeric extension or dial string (e.g. PJSIP/2765) before checking status.');
+                if (!isAuto) toast.error('Set a numeric extension or dial string (e.g. PJSIP/2765) before checking status.');
                 return;
             }
 
-            setInternalExtStatusByRowId((prev) => ({
-                ...prev,
-                [rowId]: { ...(prev[rowId] || {}), loading: true, error: '' },
-            }));
+            // In auto-mode, skip showing loading to avoid UI flicker
+            if (!isAuto) {
+                setInternalExtStatusByRowId((prev) => ({
+                    ...prev,
+                    [rowId]: { ...(prev[rowId] || {}), loading: true, error: '' },
+                }));
+            }
 
             try {
                 const res = await axios.get('/api/system/ari/extension-status', {
@@ -269,7 +271,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                         error: String(data.error || ''),
                     },
                 }));
-                if (!data.success && data.error) {
+                if (!data.success && data.error && !isAuto) {
                     toast.error(String(data.error));
                 }
             } catch (e: any) {
@@ -278,9 +280,41 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                     ...prev,
                     [rowId]: { ...(prev[rowId] || {}), loading: false, success: false, status: 'unknown', error: String(err) },
                 }));
-                toast.error(String(err));
+                if (!isAuto) {
+                    toast.error(String(err));
+                }
             }
         };
+
+        const checkLiveAgentStatusRef = useRef(checkLiveAgentStatus);
+        const internalExtsRef = useRef(config.extensions?.internal || {});
+
+        useEffect(() => {
+            checkLiveAgentStatusRef.current = checkLiveAgentStatus;
+            internalExtsRef.current = config.extensions?.internal || {};
+        });
+
+        useEffect(() => {
+            let mounted = true;
+
+            const poll = () => {
+                if (!mounted) return;
+                const extensions = internalExtsRef.current;
+                Object.entries(extensions).forEach(([key, ext]) => {
+                    const rowId = getInternalExtRowId(key);
+                    checkLiveAgentStatusRef.current(rowId, key, ext, true);
+                });
+            };
+
+            const initialTimer = setTimeout(poll, 1500);
+            const intervalTimer = setInterval(poll, 60000);
+
+            return () => {
+                mounted = false;
+                clearTimeout(initialTimer);
+                clearInterval(intervalTimer);
+            };
+        }, []);
 
     const updateConfig = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
