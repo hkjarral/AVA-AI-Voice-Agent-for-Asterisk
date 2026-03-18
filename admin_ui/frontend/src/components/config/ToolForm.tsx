@@ -1009,36 +1009,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     const title = titleParts.join(' • ');
 
                                     return (
-	                            <div key={rowId} className="grid grid-cols-1 md:grid-cols-12 gap-2 p-3 border rounded bg-background/50 items-center">
-	                                <div className="md:col-span-1">
-                                        {(() => {
-                                            const derived = extractNumericExtensionKeyFromDialString(ext?.dial_string || '');
-                                            const displayKey = isNumericKey(key) ? key : derived;
-                                            return (
-	                                            <input
-	                                                className="w-full border rounded px-2 py-1 text-sm bg-muted text-muted-foreground"
-	                                                placeholder="Auto"
-	                                                value={displayKey || ''}
-	                                                disabled
-	                                                title="Auto-derived from dial string (e.g. PJSIP/2765 -> 2765). Numeric keys are locked to prevent accidental renames."
-	                                            />
-                                            );
-                                        })()}
-	                                </div>
-	                                <div className="md:col-span-2">
-	                                    <input
-	                                        className="w-full border rounded px-2 py-1 text-sm"
-	                                        placeholder="Name"
-                                        value={ext.name || ''}
-                                        onChange={(e) => {
-                                            const updated = { ...(config.extensions?.internal || {}) };
-                                            updated[key] = { ...ext, name: e.target.value };
-                                            updateNestedConfig('extensions', 'internal', updated);
-                                        }}
-                                        title="Agent Name"
-                                    />
-                                </div>
-                                
+	                            <div key={rowId} className="flex flex-col gap-4 p-5 border border-border/60 rounded-lg bg-card/40 hover:bg-card/60 transition-colors shadow-sm">
+
                                 {/* Core Info Row */}
                                 <div className="flex flex-col lg:flex-row gap-4 items-start w-full">
 	                                <div className="w-full lg:w-24 shrink-0">
