@@ -64,6 +64,10 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
         llm_model: GOOGLE_LIVE_SUGGESTED_MODELS,
         tts_voice_name: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr'],
     },
+    minimax: {
+        chat_model: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],
+        model: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],
+    },
 };
 
 const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onChange, isNew }) => {

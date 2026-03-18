@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Microsoft Azure Speech Service STT & TTS**: Full modular pipeline support with three adapters — `AzureSTTFastAdapter` (REST batch transcription), `AzureSTTRealtimeAdapter` (WebSocket streaming with VAD), and `AzureTTSAdapter` (SSML synthesis with streaming and non-streaming modes). Includes Admin UI forms, quick-add templates, security key injection, A-law/μ-law passthrough, and validated config in `ai-agent.yaml`. Contributed by [@egorky](https://github.com/egorky).
-- **MiniMax LLM Pipeline Adapter**: New LLM provider supporting MiniMax M2.5 models with 204K context window via OpenAI-compatible API. Includes tool-calling support, Admin UI integration, and full test suite. Contributed by [@octo-patch](https://github.com/octo-patch).
+- **MiniMax LLM Pipeline Adapter**: New LLM provider supporting MiniMax M2.7 models (latest flagship with enhanced reasoning and coding) via OpenAI-compatible API. Includes tool-calling support, Admin UI integration, and full test suite. Contributed by [@octo-patch](https://github.com/octo-patch).
 - **Call Recording Playback**: Play back Asterisk/FreePBX call recordings directly from the Call Details modal in the Admin UI. Recordings are auto-matched by channel unique ID from the monitor directory (`YYYY/MM/DD/` layout). Includes play/pause controls, seek bar, time display, filename, and file size. Empty WAV files (header-only) are shown as "no audio captured". Configurable via `ASTERISK_RECORDING_PATH` env var.
 - **Google Calendar delete()**: Full delete event implementation with timezone handling fixes and code quality improvements. Contributed by [@gcsuri](https://github.com/gcsuri).
 

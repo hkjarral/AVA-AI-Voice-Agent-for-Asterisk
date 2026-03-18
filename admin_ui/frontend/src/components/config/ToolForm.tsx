@@ -26,8 +26,6 @@ const DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE =
 const DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT = "Connecting you now.";
 const DEFAULT_ATTENDED_CALLER_DECLINED_PROMPT =
     "I’m not able to complete that transfer right now. Would you like me to take a message, or is there anything else I can help with?";
-const DEFAULT_ATTENDED_DELIVERY_MODE = 'file';
-const DEFAULT_ATTENDED_STREAM_FALLBACK = true;
 const DEFAULT_HANGUP_POLICY_MODE = 'normal';
 const DEFAULT_HANGUP_END_CALL_MARKERS = [
     "no transcript",
@@ -492,8 +490,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.tts_timeout_seconds == null) next.tts_timeout_seconds = 8;
             if (next.accept_digit == null) next.accept_digit = '1';
             if (next.decline_digit == null) next.decline_digit = '2';
-            if (next.delivery_mode == null) next.delivery_mode = DEFAULT_ATTENDED_DELIVERY_MODE;
-            if (next.stream_fallback_to_file == null) next.stream_fallback_to_file = DEFAULT_ATTENDED_STREAM_FALLBACK;
             if (next.announcement_template == null) next.announcement_template = DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE;
             if (next.agent_accept_prompt_template == null) next.agent_accept_prompt_template = DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE;
             if (next.caller_connected_prompt == null) next.caller_connected_prompt = DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT;
@@ -693,7 +689,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Attended Transfer (Warm)"
-                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Local AI Server still generates TTS; delivery can use file playback or streamed helper media."
+                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS."
                         checked={config.attended_transfer?.enabled ?? false}
                         onChange={(e) => handleAttendedTransferToggle(e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -738,33 +734,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     value={config.attended_transfer?.decline_digit || '2'}
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'decline_digit', e.target.value)}
                                 />
-                                <FormSelect
-                                    label="Announcement Delivery"
-                                    value={config.attended_transfer?.delivery_mode || DEFAULT_ATTENDED_DELIVERY_MODE}
-                                    onChange={(e) => updateNestedConfig('attended_transfer', 'delivery_mode', e.target.value)}
-                                    options={[
-                                        { value: 'file', label: 'File Playback' },
-                                        { value: 'stream', label: 'Stream via ExternalMedia' },
-                                    ]}
-                                    tooltip="File playback requires Asterisk-visible generated media. Stream mode sends the Local AI Server TTS result directly to the answered extension leg and reuses the project's existing ExternalMedia transport settings."
-                                />
                             </div>
-
-                            {String(config.attended_transfer?.delivery_mode || DEFAULT_ATTENDED_DELIVERY_MODE) === 'stream' && (
-                                <div className="space-y-4 rounded-lg border border-border/60 bg-background/40 p-4">
-                                    <FormSwitch
-                                        label="Fallback To File Playback"
-                                        description="If helper RTP/ExternalMedia cannot establish, reuse the legacy file-based playback path instead of aborting the transfer."
-                                        checked={config.attended_transfer?.stream_fallback_to_file ?? DEFAULT_ATTENDED_STREAM_FALLBACK}
-                                        onChange={(e) => updateNestedConfig('attended_transfer', 'stream_fallback_to_file', e.target.checked)}
-                                        className="mb-0 border-0 p-0 bg-transparent"
-                                    />
-                                    <p className="text-sm text-muted-foreground">
-                                        Stream mode inherits the project&apos;s existing ExternalMedia networking settings.
-                                        No extra helper transport fields are required for normal setup.
-                                    </p>
-                                </div>
-                            )}
 
                             <div className="space-y-2">
                                 <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}.">
@@ -1039,18 +1009,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     const title = titleParts.join(' • ');
 
                                     return (
-	                            <div key={rowId} className="flex flex-col gap-3 p-4 border rounded bg-background/50">
-                                
-                                {/* Core Info Row */}
-                                <div className="flex flex-col lg:flex-row gap-3 items-start">
-	                                <div className="w-full lg:w-24 shrink-0">
-                                        <label className="block text-xs font-medium text-muted-foreground mb-1">Ext</label>
+	                            <div key={rowId} className="grid grid-cols-1 md:grid-cols-12 gap-2 p-3 border rounded bg-background/50 items-center">
+	                                <div className="md:col-span-1">
                                         {(() => {
                                             const derived = extractNumericExtensionKeyFromDialString(ext?.dial_string || '');
                                             const displayKey = isNumericKey(key) ? key : derived;
                                             return (
 	                                            <input
-	                                                className="w-full border rounded px-2 py-1.5 text-sm bg-muted text-muted-foreground"
+	                                                className="w-full border rounded px-2 py-1 text-sm bg-muted text-muted-foreground"
 	                                                placeholder="Auto"
 	                                                value={displayKey || ''}
 	                                                disabled
@@ -1059,10 +1025,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                             );
                                         })()}
 	                                </div>
-	                                <div className="w-full lg:w-48 shrink-0">
-                                        <label className="block text-xs font-medium text-muted-foreground mb-1">Agent Name</label>
+	                                <div className="md:col-span-2">
 	                                    <input
-	                                        className="w-full border rounded px-2 py-1.5 text-sm"
+	                                        className="w-full border rounded px-2 py-1 text-sm"
 	                                        placeholder="Name"
                                         value={ext.name || ''}
                                         onChange={(e) => {
@@ -1073,11 +1038,41 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                         title="Agent Name"
                                     />
                                 </div>
-	                                <div className="w-full lg:w-48 shrink-0">
-                                        <label className="block text-xs font-medium text-muted-foreground mb-1">Dial String</label>
+                                
+                                {/* Core Info Row */}
+                                <div className="flex flex-col lg:flex-row gap-4 items-start w-full">
+	                                <div className="w-full lg:w-24 shrink-0">
+                                        <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Ext</label>
 	                                    <input
-	                                        className="w-full border rounded px-2 py-1.5 text-sm"
-	                                        placeholder="Optionally e.g. SIP/6000"
+	                                        className="w-full border rounded-md px-3 py-2 text-sm bg-muted/50 text-muted-foreground focus:ring-0 cursor-not-allowed"
+	                                        placeholder="Auto"
+	                                        value={(() => {
+                                                const derived = extractNumericExtensionKeyFromDialString(ext?.dial_string || '');
+                                                return isNumericKey(key) ? key : derived || '';
+                                            })()}
+	                                        disabled
+	                                        title="Auto-derived from dial string (e.g. PJSIP/2765 -> 2765). Numeric keys are locked to prevent accidental renames."
+	                                    />
+	                                </div>
+	                                <div className="w-full lg:flex-1 shrink-0">
+                                        <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Agent Name</label>
+	                                    <input
+	                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
+	                                        placeholder="E.g. Support Team"
+                                            value={ext.name || ''}
+                                            onChange={(e) => {
+                                                const updated = { ...(config.extensions?.internal || {}) };
+                                                updated[key] = { ...ext, name: e.target.value };
+                                                updateNestedConfig('extensions', 'internal', updated);
+                                            }}
+                                            title="Agent Name"
+                                        />
+                                    </div>
+	                                <div className="w-full lg:flex-1 shrink-0">
+                                        <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Dial String</label>
+	                                    <input
+	                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
+	                                        placeholder="E.g. PJSIP/6000"
 	                                        value={ext.dial_string || ''}
 	                                        onChange={(e) => {
                                                 const nextDial = e.target.value;
@@ -1119,96 +1114,103 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                        title="PJSIP/..."
 	                                    />
 	                                </div>
-                                <div className="flex-1 min-w-[150px]">
-                                    <label className="block text-xs font-medium text-muted-foreground mb-1">Description</label>
+                                </div>
+
+                                {/* Full width description row */}
+                                <div className="w-full mt-2">
+                                    <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Description</label>
                                     <input
-                                        className="w-full border rounded px-2 py-1.5 text-sm"
-                                        placeholder="Description"
+                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
+                                        placeholder="Describe this extension..."
                                         value={ext.description || ''}
                                         onChange={(e) => {
                                             const updated = { ...(config.extensions?.internal || {}) };
                                             updated[key] = { ...ext, description: e.target.value };
                                             updateNestedConfig('extensions', 'internal', updated);
                                         }}
-	                                        title="Description"
-	                                    />
-	                                </div>
+                                        title="Description"
+                                    />
                                 </div>
 
                                 {/* Expert Row */}
                                 {showLiveAgentsExpert && (
-                                    <div className="flex flex-col lg:flex-row gap-3 items-start p-3 bg-secondary/20 border border-border/40 rounded mt-1">
-                                        <div className="w-full lg:w-32 shrink-0">
-                                            <label className="block text-xs font-medium text-muted-foreground mb-1">Device Tech</label>
-                                            <select
-                                                className="w-full border rounded px-2 py-1.5 text-sm bg-background"
-                                                value={ext.device_state_tech || 'auto'}
-                                                onChange={(e) => {
-                                                    const updated = { ...(config.extensions?.internal || {}) };
-                                                    updated[key] = { ...ext, device_state_tech: e.target.value };
-                                                    updateNestedConfig('extensions', 'internal', updated);
-                                                }}
-                                                title="Device state technology for availability checks"
-                                            >
-                                                <option value="auto">auto</option>
-                                                <option value="PJSIP">PJSIP</option>
-                                                <option value="SIP">SIP</option>
-                                                <option value="IAX2">IAX2</option>
-                                                <option value="DAHDI">DAHDI</option>
-                                            </select>
+                                    <div className="flex flex-col gap-4 p-5 bg-secondary/30 border border-border/50 rounded-lg mt-3 relative">
+                                        <div className="absolute -top-3 left-4 bg-background px-2.5 text-[10px] font-bold text-amber-600 dark:text-amber-500 tracking-wider uppercase rounded-full border border-amber-200 dark:border-amber-900/50 shadow-sm">
+                                            Advanced Routing
                                         </div>
-                                        <div className="w-full lg:w-40 shrink-0">
-                                            <label className="block text-xs font-medium text-muted-foreground mb-1">Action Type</label>
-                                            <select
-                                                className="w-full border rounded px-2 py-1.5 text-sm bg-background disabled:cursor-not-allowed disabled:opacity-50"
-                                                value={ext.action_type || 'transfer'}
-                                                onChange={(e) => {
-                                                    const updated = { ...(config.extensions?.internal || {}) };
-                                                    updated[key] = { ...ext, action_type: e.target.value };
-                                                    updateNestedConfig('extensions', 'internal', updated);
-                                                }}
-                                                title="Action type used when transfer tool resolves this target"
-                                                disabled={!showLiveAgentsExpert}
-                                            >
-                                                <option value="transfer">transfer</option>
-                                                <option value="voicemail">voicemail</option>
-                                                <option value="queue">queue</option>
-                                                <option value="ringgroup">ringgroup</option>
-                                            </select>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-start mt-1">
+                                            <div>
+                                                <label className="block text-[11px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Device Tech</label>
+                                                <select
+                                                    className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
+                                                    value={ext.device_state_tech || 'auto'}
+                                                    onChange={(e) => {
+                                                        const updated = { ...(config.extensions?.internal || {}) };
+                                                        updated[key] = { ...ext, device_state_tech: e.target.value };
+                                                        updateNestedConfig('extensions', 'internal', updated);
+                                                    }}
+                                                    title="Device state technology for availability checks"
+                                                >
+                                                    <option value="auto">auto</option>
+                                                    <option value="PJSIP">PJSIP</option>
+                                                    <option value="SIP">SIP</option>
+                                                    <option value="IAX2">IAX2</option>
+                                                    <option value="DAHDI">DAHDI</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Action Type</label>
+                                                <select
+                                                    className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
+                                                    value={ext.action_type || 'transfer'}
+                                                    onChange={(e) => {
+                                                        const updated = { ...(config.extensions?.internal || {}) };
+                                                        updated[key] = { ...ext, action_type: e.target.value };
+                                                        updateNestedConfig('extensions', 'internal', updated);
+                                                    }}
+                                                    title="Action type used when transfer tool resolves this target"
+                                                    disabled={!showLiveAgentsExpert}
+                                                >
+                                                    <option value="transfer">transfer</option>
+                                                    <option value="voicemail">voicemail</option>
+                                                    <option value="queue">queue</option>
+                                                    <option value="ringgroup">ringgroup</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Aliases (comma-separated)</label>
+                                                <input
+                                                    className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow disabled:cursor-not-allowed disabled:opacity-50"
+                                                    placeholder="e.g. support, agent"
+                                                    value={internalAliasesDraftByRowId[rowId] ?? (Array.isArray(ext.aliases) ? ext.aliases.join(', ') : (ext.aliases || ''))}
+                                                    onChange={(e) => {
+                                                        const raw = String(e.target.value || '');
+                                                        setInternalAliasesDraftByRowId((prev) => ({ ...prev, [rowId]: raw }));
+                                                    }}
+                                                    onBlur={() => {
+                                                        const raw = internalAliasesDraftByRowId[rowId] ?? '';
+                                                        const aliases = String(raw)
+                                                            .split(',')
+                                                            .map((s) => s.trim())
+                                                            .filter(Boolean);
+                                                        const committed = aliases.join(', ');
+
+                                                        internalAliasesCommittedRef.current[rowId] = committed;
+                                                        setInternalAliasesDraftByRowId((prev) => ({ ...prev, [rowId]: committed }));
+
+                                                        const updated = { ...(config.extensions?.internal || {}) };
+                                                        updated[key] = { ...ext, aliases };
+                                                        updateNestedConfig('extensions', 'internal', updated);
+                                                    }}
+                                                    title="Alternative names users can say to target this live agent"
+                                                    disabled={!showLiveAgentsExpert}
+                                                />
+                                            </div>
                                         </div>
-	                                        <div className="flex-1 min-w-[200px]">
-                                                <label className="block text-xs font-medium text-muted-foreground mb-1">Aliases (comma-separated)</label>
-	                                            <input
-	                                                className="w-full border rounded px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-	                                                placeholder="e.g. support, agent"
-	                                                value={internalAliasesDraftByRowId[rowId] ?? (Array.isArray(ext.aliases) ? ext.aliases.join(', ') : (ext.aliases || ''))}
-	                                                onChange={(e) => {
-	                                                    const raw = String(e.target.value || '');
-	                                                    setInternalAliasesDraftByRowId((prev) => ({ ...prev, [rowId]: raw }));
-	                                                }}
-	                                                onBlur={() => {
-	                                                    const raw = internalAliasesDraftByRowId[rowId] ?? '';
-	                                                    const aliases = String(raw)
-	                                                        .split(',')
-	                                                        .map((s) => s.trim())
-	                                                        .filter(Boolean);
-	                                                    const committed = aliases.join(', ');
-
-	                                                    internalAliasesCommittedRef.current[rowId] = committed;
-	                                                    setInternalAliasesDraftByRowId((prev) => ({ ...prev, [rowId]: committed }));
-
-	                                                    const updated = { ...(config.extensions?.internal || {}) };
-	                                                    updated[key] = { ...ext, aliases };
-	                                                    updateNestedConfig('extensions', 'internal', updated);
-	                                                }}
-	                                                title="Alternative names users can say to target this live agent"
-	                                                disabled={!showLiveAgentsExpert}
-	                                            />
-	                                        </div>
-                                        <div className="shrink-0 flex items-center pt-6">
+                                        <div className="pt-2 border-t border-border/40 mt-1">
                                             <FormSwitch
-                                                label="Pass Caller Info"
-                                                description="Include caller name/number and last transcript in transfer context."
+                                                label="Pass Caller Info to Context"
+                                                description="Include caller name/number and last transcript in the transfer context details"
                                                 checked={ext.pass_caller_info ?? false}
                                                 onChange={(e) => {
                                                     const updated = { ...(config.extensions?.internal || {}) };
@@ -1216,33 +1218,33 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                                     updateNestedConfig('extensions', 'internal', updated);
                                                 }}
                                                 disabled={!showLiveAgentsExpert}
-                                                className="mb-0"
+                                                className="mb-0 bg-transparent p-0 border-0"
                                             />
                                         </div>
                                     </div>
                                 )}
 
                                 {/* Footer Row */}
-                                <div className="flex justify-between items-center mt-2 pt-3 border-t border-border/50">
+                                <div className="flex justify-between items-center mt-3 pt-4 border-t border-border/60">
                                     <div className="flex items-center">
                                         <button
                                             type="button"
-                                            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border ${pillClass} hover:bg-accent/40 transition-colors max-w-[200px]`}
+                                            className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold border shadow-sm ${pillClass} hover:opacity-80 transition-opacity max-w-[200px]`}
                                             title={title}
                                             onClick={() => checkLiveAgentStatus(rowId, key, ext)}
                                         >
                                             {loading ? (
                                                 <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                                             ) : (
-                                                <span className={`w-2 h-2 rounded-full ${dotClass} shrink-0`} />
+                                                <span className={`w-2.5 h-2.5 rounded-full ${dotClass} shadow-sm shrink-0`} />
                                             )}
                                             <span className="truncate">{label}</span>
                                         </button>
                                     </div>
                                     
-	                                <div className="flex items-center gap-6">
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-sm font-medium text-muted-foreground mt-0.5">Enabled</span>
+	                                <div className="flex items-center gap-5">
+                                        <div className="flex items-center gap-3 bg-secondary/30 px-4 py-1.5 rounded-full border border-border/50 shadow-sm">
+                                            <span className="text-xs font-bold tracking-wide uppercase text-muted-foreground pt-[1px]">Enabled</span>
 	                                        <FormSwitch
 	                                            checked={ext.transfer ?? true}
 	                                            onChange={(e) => {
@@ -1255,18 +1257,19 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                            description=""
 	                                        />
                                         </div>
-	                                        <button
-	                                            onClick={() => {
-	                                                const updated = { ...(config.extensions?.internal || {}) };
-	                                                delete updated[key];
-                                                    deleteInternalExtRowId(key);
-	                                                updateNestedConfig('extensions', 'internal', updated);
-	                                            }}
-	                                            className="p-2 text-destructive hover:bg-destructive/10 rounded"
-	                                            title="Delete Extension"
-	                                        >
-	                                            <Trash2 className="w-4 h-4" />
-	                                        </button>
+                                        <div className="w-px h-6 bg-border/60 hidden sm:block"></div>
+                                        <button
+                                            onClick={() => {
+                                                const updated = { ...(config.extensions?.internal || {}) };
+                                                delete updated[key];
+                                                deleteInternalExtRowId(key);
+                                                updateNestedConfig('extensions', 'internal', updated);
+                                            }}
+                                            className="p-2.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
+                                            title="Delete Extension"
+                                        >
+                                            <Trash2 className="w-4.5 h-4.5" />
+                                        </button>
 	                                </div>
                                 </div>
 	                            </div>

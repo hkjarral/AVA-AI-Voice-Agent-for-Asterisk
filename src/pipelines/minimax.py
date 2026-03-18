@@ -1,13 +1,15 @@
 """
 MiniMax LLM pipeline adapter (OpenAI-compatible Chat Completions).
 
-MiniMax provides OpenAI-compatible endpoints for its M2.5 family of models.
+MiniMax provides OpenAI-compatible endpoints for its M2.7 family of models.
 This adapter uses the OpenAI Chat Completions format with MiniMax-specific
 constraints (e.g. temperature must be in (0.0, 1.0], response_format unsupported).
 
 Supported models:
-  - MiniMax-M2.5        (default, 204K context)
-  - MiniMax-M2.5-highspeed  (same performance, faster)
+  - MiniMax-M2.7            (default, latest flagship with enhanced reasoning)
+  - MiniMax-M2.7-highspeed  (high-speed version for low-latency scenarios)
+  - MiniMax-M2.5            (previous generation, 204K context)
+  - MiniMax-M2.5-highspeed  (previous generation, faster)
 
 API docs: https://platform.minimax.io/docs/api-reference/text-openai-api
 """

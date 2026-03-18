@@ -21,7 +21,7 @@
 - **[ElevenLabs Agent Setup](Provider-ElevenLabs-Setup.md)** - ElevenLabs Conversational AI with premium voices
 - **[Telnyx AI Inference Setup](Provider-Telnyx-Setup.md)** - OpenAI-compatible LLM via Telnyx
 - **[Azure Speech Service Setup](Provider-Azure-Setup.md)** - Azure STT & TTS pipeline adapters
-- **[MiniMax LLM Setup](Provider-MiniMax-Setup.md)** - MiniMax M2.5 LLM via OpenAI-compatible API
+- **[MiniMax LLM Setup](Provider-MiniMax-Setup.md)** - MiniMax M2.7 LLM via OpenAI-compatible API
 
 ## Local AI & GPU Setup
 
