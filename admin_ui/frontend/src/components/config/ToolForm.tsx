@@ -63,7 +63,7 @@ const hasLiveAgentExpertSettings = (ext: any) => {
     const aliases = Array.isArray(ext?.aliases)
         ? ext.aliases.map((item: any) => String(item || '').trim()).filter(Boolean)
         : [];
-    return actionType !== 'transfer' || Boolean(ext?.pass_caller_info) || aliases.length > 0;
+    return actionType !== 'transfer' || aliases.length > 0;
 };
 
 const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFormProps) => {
@@ -488,6 +488,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.dial_timeout_seconds == null) next.dial_timeout_seconds = 30;
             if (next.accept_timeout_seconds == null) next.accept_timeout_seconds = 15;
             if (next.tts_timeout_seconds == null) next.tts_timeout_seconds = 8;
+            if (next.pass_caller_info_to_context == null) next.pass_caller_info_to_context = false;
             if (next.accept_digit == null) next.accept_digit = '1';
             if (next.decline_digit == null) next.decline_digit = '2';
             if (next.announcement_template == null) next.announcement_template = DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE;
@@ -724,6 +725,13 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'tts_timeout_seconds', parseInt(e.target.value) || 8)}
                                     tooltip="Max time to wait for Local AI Server TTS per prompt."
                                 />
+                                <FormSwitch
+                                    label="Pass Caller Info To Context"
+                                    description="Extract transcript-derived caller name and call reason for attended-transfer announcements."
+                                    checked={config.attended_transfer?.pass_caller_info_to_context ?? false}
+                                    onChange={(e) => updateNestedConfig('attended_transfer', 'pass_caller_info_to_context', e.target.checked)}
+                                    className="md:col-span-2 mb-0 border border-input rounded-md px-3 py-2 bg-background"
+                                />
                                 <FormInput
                                     label="Accept Digit"
                                     value={config.attended_transfer?.accept_digit || '1'}
@@ -737,7 +745,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                             </div>
 
                             <div className="space-y-2">
-                                <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}.">
+                                <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
                                     Agent Announcement Template
                                 </FormLabel>
                                 <textarea
@@ -749,7 +757,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                             </div>
 
                             <div className="space-y-2">
-                                <FormLabel tooltip="Spoken to the destination agent to request acceptance/decline (DTMF).">
+                                <FormLabel tooltip="Spoken to the destination agent to request acceptance/decline (DTMF). Supports the same placeholders as the announcement template.">
                                     Agent DTMF Prompt Template
                                 </FormLabel>
                                 <textarea
@@ -1223,20 +1231,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                                     disabled={!showLiveAgentsExpert}
                                                 />
                                             </div>
-                                        </div>
-                                        <div className="pt-2 border-t border-border/40 mt-1">
-                                            <FormSwitch
-                                                label="Pass Caller Info to Context"
-                                                description="Include caller name/number and last transcript in the transfer context details"
-                                                checked={ext.pass_caller_info ?? false}
-                                                onChange={(e) => {
-                                                    const updated = { ...(config.extensions?.internal || {}) };
-                                                    updated[key] = { ...ext, pass_caller_info: e.target.checked };
-                                                    updateNestedConfig('extensions', 'internal', updated);
-                                                }}
-                                                disabled={!showLiveAgentsExpert}
-                                                className="mb-0 bg-transparent p-0 border-0"
-                                            />
                                         </div>
                                     </div>
                                 )}

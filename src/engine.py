@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import random
+import re
 import signal
 import struct
 import time
@@ -3811,7 +3812,12 @@ class Engine:
         except Exception:
             return base
 
-    def _apply_prompt_template_substitution(self, text: str, session: CallSession) -> str:
+    def _apply_prompt_template_substitution(
+        self,
+        text: str,
+        session: CallSession,
+        extra_substitutions: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Apply template variable substitution to prompts and greetings.
         
         Available variables (with defaults if not available):
@@ -3849,6 +3855,12 @@ class Engine:
             # Don't override built-in variables
             if key not in substitutions:
                 substitutions[key] = str(value) if value else ""
+
+        if isinstance(extra_substitutions, dict):
+            for key, value in extra_substitutions.items():
+                if value is None:
+                    continue
+                substitutions[str(key)] = str(value)
         
         def replace_match(match):
             key = match.group(1)
@@ -3871,6 +3883,94 @@ class Engine:
                 error=str(e),
             )
             return text
+
+    def _build_attended_transfer_briefing_prompt(self, session: CallSession) -> str:
+        recent_messages = list(getattr(session, "conversation_history", []) or [])[-8:]
+        transcript_lines = []
+        for message in recent_messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "unknown").strip().lower() or "unknown"
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            transcript_lines.append(f"{role}: {content}")
+
+        last_transcript = str(getattr(session, "last_transcript", "") or "").strip()
+        caller_name = str(getattr(session, "caller_name", "") or "").strip()
+        caller_number = str(getattr(session, "caller_number", "") or "").strip()
+        context_name = str(getattr(session, "context_name", "") or "").strip()
+
+        transcript_block = "\n".join(transcript_lines) if transcript_lines else "(none)"
+        return (
+            "Return JSON only with keys screened_caller_name and screened_call_reason.\n"
+            "Use the conversation to infer the caller's self-identified name and the short reason for transfer.\n"
+            "Prefer what the caller said over caller ID.\n"
+            "If uncertain, use an empty string instead of guessing.\n"
+            "Keep screened_call_reason short, ideally one phrase.\n\n"
+            f"Caller ID name: {caller_name or '(unknown)'}\n"
+            f"Caller number: {caller_number or '(unknown)'}\n"
+            f"Context: {context_name or '(unknown)'}\n"
+            f"Last transcript: {last_transcript or '(none)'}\n"
+            "Recent conversation:\n"
+            f"{transcript_block}\n"
+        )
+
+    def _parse_attended_transfer_briefing_response(self, response_text: str) -> Dict[str, str]:
+        raw = str(response_text or "").strip()
+        if not raw:
+            return {}
+
+        candidates = [raw]
+        if "```" in raw:
+            fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
+            candidates.extend(fenced)
+        brace_match = re.search(r"(\{.*\})", raw, flags=re.DOTALL)
+        if brace_match:
+            candidates.append(brace_match.group(1))
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            return {
+                "screened_caller_name": str(parsed.get("screened_caller_name") or "").strip(),
+                "screened_call_reason": str(parsed.get("screened_call_reason") or "").strip(),
+            }
+        return {}
+
+    def _build_attended_transfer_template_vars(
+        self,
+        session: CallSession,
+        *,
+        destination_description: Optional[str] = None,
+    ) -> Dict[str, str]:
+        caller_display = session.caller_name or session.caller_number or "the caller"
+        context_name = getattr(session, "context_name", None) or "support"
+        briefing = {}
+        try:
+            if session.current_action and session.current_action.get("type") == "attended_transfer":
+                briefing = dict(session.current_action.get("briefing") or {})
+        except Exception:
+            briefing = {}
+
+        screened_caller_name = str(briefing.get("screened_caller_name") or "").strip()
+        screened_call_reason = str(briefing.get("screened_call_reason") or "").strip()
+
+        return {
+            "caller_name": session.caller_name or "",
+            "caller_number": session.caller_number or "",
+            "caller_display": caller_display,
+            "context_name": context_name,
+            "destination_description": str(destination_description or "").strip(),
+            "screened_caller_name": screened_caller_name,
+            "screened_call_reason": screened_call_reason,
+            "screened_caller_display": screened_caller_name or caller_display,
+            "screened_reason_display": screened_call_reason or context_name,
+        }
 
     async def _wait_for_attended_transfer_dtmf(
         self,
@@ -3923,6 +4023,79 @@ class Engine:
                 pass
 
         return mode, timeout_sec
+
+    async def _local_ai_server_llm_request(
+        self,
+        *,
+        call_id: str,
+        text: str,
+        timeout_sec: float,
+    ) -> Optional[str]:
+        try:
+            import websockets
+
+            providers = getattr(self.config, "providers", {}) or {}
+            local_cfg = providers.get("local") if isinstance(providers, dict) else None
+            if not isinstance(local_cfg, dict) or not bool(local_cfg.get("enabled", True)):
+                return None
+            ws_url = str(local_cfg.get("base_url") or local_cfg.get("ws_url") or "").strip()
+            if not ws_url:
+                return None
+            auth_token = str(local_cfg.get("auth_token") or "").strip() or None
+
+            async with websockets.connect(ws_url, open_timeout=float(timeout_sec), ping_interval=None) as ws:
+                if auth_token:
+                    await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "llm_request",
+                            "text": text,
+                            "call_id": call_id,
+                            "mode": "llm",
+                        }
+                    )
+                )
+                deadline = time.time() + max(0.1, float(timeout_sec))
+                while time.time() < deadline:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=max(0.1, float(deadline - time.time())))
+                    if isinstance(msg, bytes):
+                        continue
+                    try:
+                        data = json.loads(msg)
+                    except Exception:
+                        continue
+                    if data.get("type") == "llm_response":
+                        return str(data.get("text") or "").strip()
+                return None
+        except Exception:
+            logger.debug("Local AI Server LLM request failed", call_id=call_id, exc_info=True)
+            return None
+
+    async def _extract_attended_transfer_briefing(
+        self,
+        *,
+        session: CallSession,
+        timeout_sec: float,
+    ) -> Dict[str, str]:
+        response_text = await self._local_ai_server_llm_request(
+            call_id=session.call_id,
+            text=self._build_attended_transfer_briefing_prompt(session),
+            timeout_sec=timeout_sec,
+        )
+        if not response_text:
+            return {}
+
+        briefing = self._parse_attended_transfer_briefing_response(response_text)
+        if briefing:
+            return briefing
+
+        logger.warning(
+            "Attended transfer briefing extraction returned invalid JSON",
+            call_id=session.call_id,
+            preview=response_text[:160],
+        )
+        return {}
 
     async def _local_ai_server_tts(self, *, call_id: str, text: str, timeout_sec: float) -> Optional[bytes]:
         """Synthesize μ-law 8k audio via local-ai-server (hard requirement for attended transfer)."""
@@ -4076,15 +4249,27 @@ class Engine:
         else:
             dest_desc = str(destination_key)
 
-        caller_display = session.caller_name or session.caller_number or "the caller"
-        context_name = getattr(session, "context_name", None) or "support"
-        template_vars = {
-            "caller_name": session.caller_name or "",
-            "caller_number": session.caller_number or "",
-            "caller_display": caller_display,
-            "context_name": context_name,
-            "destination_description": dest_desc,
-        }
+        pass_caller_info = bool(attended_cfg.get("pass_caller_info_to_context", False))
+        briefing_timeout = 2.0
+        briefing: Dict[str, str] = {}
+        if pass_caller_info:
+            briefing = await self._extract_attended_transfer_briefing(session=session, timeout_sec=briefing_timeout)
+            if briefing:
+                try:
+                    session.current_action = dict(session.current_action or {})
+                    session.current_action["briefing"] = {
+                        "screened_caller_name": briefing.get("screened_caller_name", ""),
+                        "screened_call_reason": briefing.get("screened_call_reason", ""),
+                        "source": "local_ai_server",
+                        "extracted_at": time.time(),
+                    }
+                    await self._save_session(session)
+                except Exception:
+                    logger.debug("Failed to persist attended transfer briefing", call_id=caller_id, exc_info=True)
+        template_vars = self._build_attended_transfer_template_vars(
+            session,
+            destination_description=dest_desc,
+        )
 
         announcement_template = str(
             attended_cfg.get(
@@ -4122,14 +4307,16 @@ class Engine:
         if not prompt_template.strip():
             prompt_template = "Press 1 to accept, or 2 to decline."
 
-        try:
-            announcement_text = announcement_template.format(**template_vars)
-        except Exception:
-            announcement_text = "Hi, this is Ava. I'm transferring the caller."
-        try:
-            prompt_text = prompt_template.format(**template_vars)
-        except Exception:
-            prompt_text = "Press 1 to accept, or 2 to decline."
+        announcement_text = self._apply_prompt_template_substitution(
+            announcement_template,
+            session,
+            extra_substitutions=template_vars,
+        )
+        prompt_text = self._apply_prompt_template_substitution(
+            prompt_template,
+            session,
+            extra_substitutions=template_vars,
+        )
 
         logger.info(
             "🔀 ATTENDED TRANSFER - Agent answered, starting announcement",
@@ -4234,6 +4421,7 @@ class Engine:
             destination_description=dest_desc,
             caller_connected_prompt=caller_connected_prompt,
             tts_timeout=tts_timeout,
+            template_vars=template_vars,
         )
 
     async def _attended_transfer_abort_and_resume(self, session: "CallSession", agent_channel_id: str, *, reason: str) -> None:
@@ -4268,12 +4456,18 @@ class Engine:
                 )
                 tts_timeout = float(attended_cfg.get("tts_timeout_seconds", 8) or 8)
                 if caller_prompt.strip():
+                    template_vars = self._build_attended_transfer_template_vars(session)
                     # Keep capture disabled while we play this prompt so we don't feed it back into STT.
                     try:
                         session.audio_capture_enabled = False
                     except Exception:
                         pass
-                    prompt_audio = await self._local_ai_server_tts(call_id=call_id, text=caller_prompt.strip(), timeout_sec=tts_timeout)
+                    prompt_text = self._apply_prompt_template_substitution(
+                        caller_prompt.strip(),
+                        session,
+                        extra_substitutions=template_vars,
+                    )
+                    prompt_audio = await self._local_ai_server_tts(call_id=call_id, text=prompt_text, timeout_sec=tts_timeout)
                     if prompt_audio:
                         await self._play_ulaw_bytes_on_channel_and_wait(
                             channel_id=session.caller_channel_id,
@@ -4307,6 +4501,7 @@ class Engine:
         destination_description: str,
         caller_connected_prompt: str,
         tts_timeout: float,
+        template_vars: Optional[Dict[str, Any]] = None,
     ) -> None:
         call_id = session.call_id
 
@@ -4317,9 +4512,14 @@ class Engine:
             pass
 
         if caller_connected_prompt.strip():
+            prompt_text = self._apply_prompt_template_substitution(
+                caller_connected_prompt.strip(),
+                session,
+                extra_substitutions=template_vars or self._build_attended_transfer_template_vars(session),
+            )
             prompt_audio = await self._local_ai_server_tts(
                 call_id=call_id,
-                text=caller_connected_prompt.strip(),
+                text=prompt_text,
                 timeout_sec=float(tts_timeout),
             )
             if prompt_audio:
