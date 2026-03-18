@@ -408,7 +408,7 @@ const ToolsPage = () => {
             {activePhase === 'catalog' && (
                 <ConfigSection
                     title="Tool Catalog (Read-only)"
-                    description="Reference for all tools currently registered in the AI Engine, including built-in, HTTP, and MCP tools. This does not change tool behavior."
+                    description="Reference for all tools currently registered in the AI Engine, including built-in, HTTP, and MCP tools. This reflects tool schemas and descriptions, not every runtime config option or per-tool setting."
                 >
                     <ConfigCard>
                         <div className="space-y-4">
