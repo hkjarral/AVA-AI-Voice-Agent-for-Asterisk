@@ -13,6 +13,7 @@ ARG INCLUDE_FASTER_WHISPER=false
 ARG INCLUDE_WHISPER_CPP=false
 ARG INCLUDE_PIPER=true
 ARG INCLUDE_KOKORO=true
+ARG INCLUDE_KITTENTTS=true
 ARG INCLUDE_MELOTTS=false
 ARG INCLUDE_LLAMA=true
 ARG MELOTTS_GIT_REF=209145371cff8fc3bd60d7be902ea69cbdb7965a
@@ -72,6 +73,11 @@ RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
         echo "📦 Installing Kokoro TTS..." && \
         pip install --no-cache-dir "kokoro>=0.9.2"; \
+    fi
+
+RUN if [ "$INCLUDE_KITTENTTS" = "true" ]; then \
+        echo "📦 Installing KittenTTS..." && \
+        pip install --no-cache-dir https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl; \
     fi
 
 RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \

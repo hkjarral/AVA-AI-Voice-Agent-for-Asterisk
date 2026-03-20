@@ -533,6 +533,20 @@ KOKORO_TTS_MODELS = [
      }},
 ]
 
+KITTENTTS_MODELS = [
+    {"id": "kittentts_micro", "name": "KittenTTS Micro (40M)", "language": "en-US", "region": "global", "backend": "kittentts",
+     "size_mb": 41, "size_display": "41 MB", "model_path": "KittenML/kitten-tts-micro-0.8",
+     "download_url": "https://huggingface.co/KittenML/kitten-tts-micro-0.8",
+     "voices": ["Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo"],
+     "recommended": True,
+     "note": "CPU-friendly ONNX TTS, 24 kHz"},
+    {"id": "kittentts_mini", "name": "KittenTTS Mini (80M)", "language": "en-US", "region": "global", "backend": "kittentts",
+     "size_mb": 80, "size_display": "80 MB", "model_path": "KittenML/kitten-tts-mini-0.8",
+     "download_url": "https://huggingface.co/KittenML/kitten-tts-mini-0.8",
+     "voices": ["Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo"],
+     "note": "Higher quality, still CPU-friendly"},
+]
+
 MELOTTS_MODELS = [
     # MeloTTS - lightweight CPU-optimized TTS with multiple English accents
     # Requires: docker build --build-arg INCLUDE_MELOTTS=true
@@ -674,7 +688,7 @@ def get_full_catalog():
     """Get the complete model catalog organized by type."""
     return {
         "stt": VOSK_STT_MODELS + SHERPA_STT_MODELS + KROKO_STT_MODELS + FASTER_WHISPER_STT_MODELS + WHISPER_CPP_STT_MODELS,
-        "tts": PIPER_TTS_MODELS + KOKORO_TTS_MODELS + MELOTTS_MODELS,
+        "tts": PIPER_TTS_MODELS + KOKORO_TTS_MODELS + KITTENTTS_MODELS + MELOTTS_MODELS,
         "llm": LLM_MODELS,
     }
 
