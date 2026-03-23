@@ -21,6 +21,8 @@ interface ToolFormProps {
 
 const DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE =
     "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}.";
+const DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE =
+    "Hi, this is Ava. Here is a short summary of the caller.";
 const DEFAULT_ATTENDED_AGENT_DTMF_PROMPT_TEMPLATE =
     "Press 1 to accept this transfer, or 2 to decline.";
 const DEFAULT_ATTENDED_CALLER_CONNECTED_PROMPT = "Connecting you now.";
@@ -525,6 +527,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.delivery_mode == null) next.delivery_mode = 'stream';
             if (next.stream_fallback_to_file == null) next.stream_fallback_to_file = true;
             if (next.screening_mode == null) next.screening_mode = 'basic_tts';
+            if (next.ai_briefing_timeout_seconds == null) next.ai_briefing_timeout_seconds = 2;
+            if (next.ai_briefing_intro_template == null) next.ai_briefing_intro_template = DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE;
             if (next.caller_screening_prompt == null) next.caller_screening_prompt = 'Before I connect you, please say your name and the reason for your call.';
             if (next.caller_screening_max_seconds == null) next.caller_screening_max_seconds = 6;
             if (next.caller_screening_silence_ms == null) next.caller_screening_silence_ms = 1200;
@@ -729,7 +733,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Attended Transfer (Warm)"
-                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS."
+                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS. AI Briefing mode also requires Local AI Server LLM capability; otherwise it falls back to Basic TTS."
                         checked={config.attended_transfer?.enabled ?? false}
                         onChange={(e) => handleAttendedTransferToggle(e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -753,9 +757,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'screening_mode', e.target.value)}
                                     options={[
                                         { value: 'basic_tts', label: 'Basic TTS' },
+                                        { value: 'ai_briefing', label: 'AI Briefing' },
                                         { value: 'caller_recording', label: 'Caller Recording' },
                                     ]}
-                                    tooltip="Basic TTS uses caller ID and context. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
+                                    tooltip="Basic TTS uses caller ID and context. AI Briefing generates a short AI-written summary from the live conversation. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
                                 />
                                 <FormInput
                                     label="MOH Class"
@@ -823,11 +828,33 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                         />
                                     </>
                                 )}
+                                {config.attended_transfer?.screening_mode === 'ai_briefing' && (
+                                    <>
+                                        <div className="md:col-span-2 space-y-2">
+                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing requires Local AI Server LLM capability and falls back to Basic TTS when summary generation is unavailable.">
+                                                AI Briefing Intro Template
+                                            </FormLabel>
+                                            <textarea
+                                                className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                                value={config.attended_transfer?.ai_briefing_intro_template ?? DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE}
+                                                onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_intro_template', e.target.value)}
+                                                placeholder={DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE}
+                                            />
+                                        </div>
+                                        <FormInput
+                                            label="AI Briefing Timeout (seconds)"
+                                            type="number"
+                                            value={config.attended_transfer?.ai_briefing_timeout_seconds ?? 2}
+                                            onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_timeout_seconds', parseFloat(e.target.value) || 2)}
+                                            tooltip="Maximum time to wait for Local AI Server LLM to generate the briefing before falling back to Basic TTS."
+                                        />
+                                    </>
+                                )}
                             </div>
 
-                            {config.attended_transfer?.screening_mode !== 'caller_recording' && (
+                            {config.attended_transfer?.screening_mode === 'basic_tts' && (
                                 <div className="space-y-2">
-                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
+                                    <FormLabel tooltip="Spoken to the destination agent (one-way) before requesting DTMF acceptance. Placeholders: {caller_display}, {caller_name}, {caller_number}, {context_name}, {destination_description}, {screening_summary}, {screened_caller_name}, {screened_call_reason}, {screened_caller_display}, {screened_reason_display}.">
                                         Agent Announcement Template
                                     </FormLabel>
                                     <textarea

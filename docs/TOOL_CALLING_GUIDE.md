@@ -862,12 +862,23 @@ tools:
     dial_timeout_seconds: 30
     accept_timeout_seconds: 15
     tts_timeout_seconds: 8
+    screening_mode: "basic_tts"       # basic_tts | ai_briefing | caller_recording
+    ai_briefing_timeout_seconds: 2.0  # Local AI Server LLM summary timeout; falls back to basic_tts on failure
+    ai_briefing_intro_template: "Hi, this is Ava. Here is a short summary of the caller."
+    caller_screening_prompt: "Before I connect you, please say your name and the reason for your call."
+    caller_screening_max_seconds: 6
+    caller_screening_silence_ms: 1200
     accept_digit: "1"
     decline_digit: "2"
     announcement_template: "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
     agent_accept_prompt_template: "Press 1 to accept this transfer, or 2 to decline."
     caller_connected_prompt: "Connecting you now."  # Optional
     caller_declined_prompt: "I’m not able to complete that transfer right now. Would you like me to take a message?"  # Optional
+    # Local AI Server dependency notes:
+    # - basic_tts: requires Local AI Server TTS
+    # - caller_recording: requires Local AI Server TTS for intro/prompt
+    # - ai_briefing: requires Local AI Server TTS and Local AI Server LLM capability
+    #                 falls back to basic_tts if summary generation is unavailable
 
   # ----------------------------------------------------------------------------
   # CHECK_EXTENSION_STATUS - Availability checks for configured targets

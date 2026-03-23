@@ -203,15 +203,15 @@ def test_session_was_transferred_recognizes_attended_transfer_destination():
 
 
 @pytest.mark.asyncio
-async def test_attended_transfer_screened_briefing_populates_templates(monkeypatch):
+async def test_attended_transfer_ai_briefing_generates_intro_summary_and_prompt(monkeypatch):
     engine = _build_engine(
         {
             "enabled": True,
             "delivery_mode": "stream",
             "stream_fallback_to_file": True,
-            "pass_caller_info_to_context": True,
-            "announcement_template": "Transfer {screened_caller_display} regarding {screened_reason_display}.",
-            "agent_accept_prompt_template": "Press 1 for {screened_caller_name} and {screened_call_reason}.",
+            "screening_mode": "ai_briefing",
+            "ai_briefing_intro_template": "Here is a short summary of the caller.",
+            "agent_accept_prompt_template": "Press 1 to accept this transfer, or 2 to decline.",
             "accept_digit": "1",
             "decline_digit": "2",
         }
@@ -238,11 +238,8 @@ async def test_attended_transfer_screened_briefing_populates_templates(monkeypat
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
 
-    async def fake_extract(*, session, timeout_sec):
-        return {
-            "screened_caller_name": "John",
-            "screened_call_reason": "billing help",
-        }
+    async def fake_generate(*, session, destination_description, timeout_sec):
+        return "John needs billing help."
 
     async def fake_tts(*, call_id, text, timeout_sec):
         tts_texts.append(text)
@@ -258,7 +255,7 @@ async def test_attended_transfer_screened_briefing_populates_templates(monkeypat
         finalize_calls.append(kwargs)
 
     monkeypatch.setattr(engine, "_start_attended_transfer_helper_media", fake_start_helper)
-    monkeypatch.setattr(engine, "_extract_attended_transfer_briefing", fake_extract)
+    monkeypatch.setattr(engine, "_generate_attended_transfer_briefing_text", fake_generate)
     monkeypatch.setattr(engine, "_local_ai_server_tts", fake_tts)
     monkeypatch.setattr(engine, "_stream_attended_transfer_audio", fake_stream)
     monkeypatch.setattr(engine, "_wait_for_attended_transfer_dtmf", fake_wait_dtmf)
@@ -269,24 +266,25 @@ async def test_attended_transfer_screened_briefing_populates_templates(monkeypat
         ["attended-transfer", "call-screened", "support_agent"],
     )
 
-    assert tts_texts[0] == "Transfer John regarding billing help."
-    assert tts_texts[1] == "Press 1 for John and billing help."
+    assert tts_texts[0] == "Here is a short summary of the caller."
+    assert tts_texts[1] == "John needs billing help."
+    assert tts_texts[2] == "Press 1 to accept this transfer, or 2 to decline."
     updated = await engine.session_store.get_by_call_id("call-screened")
     assert updated is not None
     assert updated.current_action is not None
-    assert updated.current_action.get("briefing", {}).get("screened_caller_name") == "John"
-    assert updated.current_action.get("briefing", {}).get("screened_call_reason") == "billing help"
+    assert updated.current_action.get("screening_payload", {}).get("kind") == "ai_briefing"
+    assert updated.current_action.get("screening_payload", {}).get("text") == "John needs billing help."
     assert finalize_calls
 
 
 @pytest.mark.asyncio
-async def test_attended_transfer_screened_briefing_disabled_skips_extraction(monkeypatch):
+async def test_attended_transfer_basic_tts_skips_ai_briefing_generation(monkeypatch):
     engine = _build_engine(
         {
             "enabled": True,
             "delivery_mode": "stream",
             "stream_fallback_to_file": True,
-            "pass_caller_info_to_context": False,
+            "screening_mode": "basic_tts",
             "accept_digit": "1",
             "decline_digit": "2",
         }
@@ -305,8 +303,8 @@ async def test_attended_transfer_screened_briefing_disabled_skips_extraction(mon
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
 
-    async def unexpected_extract(*, session, timeout_sec):
-        raise AssertionError("screened extraction should not run when disabled")
+    async def unexpected_generate(*, session, destination_description, timeout_sec):
+        raise AssertionError("AI briefing generation should not run for basic_tts")
 
     async def fake_tts(*, call_id, text, timeout_sec):
         return b"\xff" * 160
@@ -321,7 +319,7 @@ async def test_attended_transfer_screened_briefing_disabled_skips_extraction(mon
         return None
 
     monkeypatch.setattr(engine, "_start_attended_transfer_helper_media", fake_start_helper)
-    monkeypatch.setattr(engine, "_extract_attended_transfer_briefing", unexpected_extract)
+    monkeypatch.setattr(engine, "_generate_attended_transfer_briefing_text", unexpected_generate)
     monkeypatch.setattr(engine, "_local_ai_server_tts", fake_tts)
     monkeypatch.setattr(engine, "_stream_attended_transfer_audio", fake_stream)
     monkeypatch.setattr(engine, "_wait_for_attended_transfer_dtmf", fake_wait_dtmf)
@@ -344,14 +342,14 @@ def test_attended_transfer_template_substitution_keeps_unknown_placeholders():
     )
     session.current_action = {
         "type": "attended_transfer",
-        "briefing": {
-            "screened_caller_name": "John",
-            "screened_call_reason": "billing",
+        "screening_payload": {
+            "kind": "ai_briefing",
+            "text": "Billing issue",
         },
     }
 
     rendered = engine._apply_prompt_template_substitution(
-        "Hi {screened_caller_display} about {screened_reason_display}. Unknown={unknown_var}",
+        "Hi {caller_display} about {screened_reason_display}. Summary={screening_summary}. Unknown={unknown_var}",
         session,
         extra_substitutions=engine._build_attended_transfer_template_vars(
             session,
@@ -359,15 +357,79 @@ def test_attended_transfer_template_substitution_keeps_unknown_placeholders():
         ),
     )
 
-    assert rendered == "Hi John about billing. Unknown={unknown_var}"
+    assert rendered == "Hi Caller ID Name about Billing issue. Summary=Billing issue. Unknown={unknown_var}"
 
 
 def test_attended_transfer_screening_mode_resolution_prefers_explicit_mode():
     engine = _build_engine({"enabled": True})
     assert engine._resolve_attended_transfer_screening_mode({"screening_mode": "caller_recording"}) == "caller_recording"
-    assert engine._resolve_attended_transfer_screening_mode({"pass_caller_info_to_context": True}) == "ai_summary"
+    assert engine._resolve_attended_transfer_screening_mode({"screening_mode": "ai_briefing"}) == "ai_briefing"
+    assert engine._resolve_attended_transfer_screening_mode({"screening_mode": "ai_summary"}) == "ai_briefing"
+    assert engine._resolve_attended_transfer_screening_mode({"pass_caller_info_to_context": True}) == "ai_briefing"
     assert engine._resolve_attended_transfer_screening_mode({"screening_mode": "basic_tts"}) == "basic_tts"
     assert engine._resolve_attended_transfer_screening_mode({}) == "basic_tts"
+
+
+@pytest.mark.asyncio
+async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_generation_unavailable(monkeypatch):
+    engine = _build_engine(
+        {
+            "enabled": True,
+            "delivery_mode": "stream",
+            "stream_fallback_to_file": True,
+            "screening_mode": "ai_briefing",
+            "announcement_template": "Transfer {caller_display} regarding {context_name}.",
+            "agent_accept_prompt_template": "Press 1 to accept this transfer, or 2 to decline.",
+            "accept_digit": "1",
+            "decline_digit": "2",
+        }
+    )
+
+    session = CallSession(
+        call_id="call-ai-briefing-fallback",
+        caller_channel_id="caller-ai-briefing-fallback",
+        caller_name="Caller ID Name",
+        caller_number="15550112222",
+        context_name="support",
+    )
+    session.current_action = {"type": "attended_transfer"}
+    await engine.session_store.upsert_call(session)
+
+    tts_texts = []
+
+    async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
+        return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
+
+    async def fake_generate(*, session, destination_description, timeout_sec):
+        return None
+
+    async def fake_tts(*, call_id, text, timeout_sec):
+        tts_texts.append(text)
+        return b"\xff" * 320
+
+    async def fake_stream(agent_channel_id, audio_bytes, *, frame_ms=20):
+        return True
+
+    async def fake_wait_dtmf(agent_channel_id, *, timeout_sec):
+        return "1"
+
+    async def fake_finalize(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(engine, "_start_attended_transfer_helper_media", fake_start_helper)
+    monkeypatch.setattr(engine, "_generate_attended_transfer_briefing_text", fake_generate)
+    monkeypatch.setattr(engine, "_local_ai_server_tts", fake_tts)
+    monkeypatch.setattr(engine, "_stream_attended_transfer_audio", fake_stream)
+    monkeypatch.setattr(engine, "_wait_for_attended_transfer_dtmf", fake_wait_dtmf)
+    monkeypatch.setattr(engine, "_attended_transfer_finalize_bridge", fake_finalize)
+
+    await engine._handle_attended_transfer_answered(
+        "agent-ai-briefing-fallback",
+        ["attended-transfer", "call-ai-briefing-fallback", "support_agent"],
+    )
+
+    assert tts_texts[0] == "Transfer Caller ID Name regarding support."
+    assert tts_texts[1] == "Press 1 to accept this transfer, or 2 to decline."
 
 
 @pytest.mark.asyncio

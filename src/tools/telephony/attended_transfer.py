@@ -27,7 +27,7 @@ class AttendedTransferTool(Tool):
             description=(
                 "Warm transfer to a configured extension with a one-way announcement to the agent, "
                 "then DTMF acceptance (1=accept, 2=decline). Caller is placed on MOH while the agent is contacted. "
-                "The screening payload can be a basic TTS briefing or a caller-recorded screening clip, depending on config. "
+                "The screening payload can be a basic TTS briefing, an AI-generated summary, or a caller-recorded screening clip, depending on config. "
                 "Use when you must brief a human before connecting the caller. "
                 "Use exact configured destination keys exposed in the runtime prompt/context."
             ),
@@ -107,13 +107,16 @@ class AttendedTransferTool(Tool):
         dial_timeout_sec = int(cfg.get("dial_timeout_seconds", 30) or 30)
         moh_class = str(cfg.get("moh_class", "default") or "default")
         screening_mode = self._resolve_screening_mode(cfg)
-        if screening_mode == "ai_summary":
+        raw_screening_mode = str((cfg or {}).get("screening_mode") or "").strip().lower()
+        if screening_mode == "ai_briefing" and (
+            raw_screening_mode == "ai_summary" or bool((cfg or {}).get("pass_caller_info_to_context", False))
+        ):
             logger.warning(
-                "Deprecated attended transfer screening mode in use",
+                "Deprecated attended transfer ai_summary config mapped to ai_briefing",
                 call_id=context.call_id,
-                screening_mode=screening_mode,
+                screening_mode=raw_screening_mode or "pass_caller_info_to_context",
                 config_key="tools.attended_transfer.pass_caller_info_to_context",
-                replacement="tools.attended_transfer.screening_mode=caller_recording",
+                replacement="tools.attended_transfer.screening_mode=ai_briefing",
             )
         caller_screening_prompt = str(
             cfg.get("caller_screening_prompt")
@@ -308,10 +311,12 @@ class AttendedTransferTool(Tool):
 
     def _resolve_screening_mode(self, attended_cfg: Dict[str, Any]) -> str:
         raw_mode = str((attended_cfg or {}).get("screening_mode") or "").strip().lower()
-        if raw_mode in {"basic_tts", "caller_recording", "ai_summary"}:
+        if raw_mode in {"basic_tts", "caller_recording", "ai_briefing"}:
             return raw_mode
+        if raw_mode == "ai_summary":
+            return "ai_briefing"
         if bool((attended_cfg or {}).get("pass_caller_info_to_context", False)):
-            return "ai_summary"
+            return "ai_briefing"
         return "basic_tts"
 
     async def _start_moh(self, context: ToolExecutionContext, moh_class: str) -> None:

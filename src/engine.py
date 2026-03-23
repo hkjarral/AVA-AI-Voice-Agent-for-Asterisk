@@ -3895,7 +3895,12 @@ class Engine:
             )
             return text
 
-    def _build_attended_transfer_briefing_prompt(self, session: CallSession) -> str:
+    def _build_attended_transfer_ai_briefing_prompt(
+        self,
+        session: CallSession,
+        *,
+        destination_description: Optional[str] = None,
+    ) -> str:
         recent_messages = list(getattr(session, "conversation_history", []) or [])[-8:]
         transcript_lines = []
         for message in recent_messages:
@@ -3911,47 +3916,50 @@ class Engine:
         caller_name = str(getattr(session, "caller_name", "") or "").strip()
         caller_number = str(getattr(session, "caller_number", "") or "").strip()
         context_name = str(getattr(session, "context_name", "") or "").strip()
+        destination_name = str(destination_description or "").strip()
 
         transcript_block = "\n".join(transcript_lines) if transcript_lines else "(none)"
         return (
-            "Return JSON only with keys screened_caller_name and screened_call_reason.\n"
-            "Use the conversation to infer the caller's self-identified name and the short reason for transfer.\n"
+            "Write a short attended-transfer briefing for the callee.\n"
+            "Return plain text only.\n"
+            "Use the caller's spoken name if clearly stated; otherwise omit the name.\n"
             "Prefer what the caller said over caller ID.\n"
-            "If uncertain, use an empty string instead of guessing.\n"
-            "Keep screened_call_reason short, ideally one phrase.\n\n"
+            "Summarize the reason for the call in one short sentence.\n"
+            "Do not use markdown, JSON, bullet points, quotes, or filler.\n"
+            "Maximum 25 words.\n\n"
             f"Caller ID name: {caller_name or '(unknown)'}\n"
             f"Caller number: {caller_number or '(unknown)'}\n"
             f"Context: {context_name or '(unknown)'}\n"
+            f"Destination description: {destination_name or '(unknown)'}\n"
             f"Last transcript: {last_transcript or '(none)'}\n"
             "Recent conversation:\n"
             f"{transcript_block}\n"
         )
 
-    def _parse_attended_transfer_briefing_response(self, response_text: str) -> Dict[str, str]:
+    def _sanitize_attended_transfer_briefing_text(self, response_text: str) -> Optional[str]:
         raw = str(response_text or "").strip()
         if not raw:
-            return {}
+            return None
 
-        candidates = [raw]
-        if "```" in raw:
-            fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
-            candidates.extend(fenced)
-        brace_match = re.search(r"(\{.*\})", raw, flags=re.DOTALL)
-        if brace_match:
-            candidates.append(brace_match.group(1))
+        text = raw
+        if "```" in text:
+            fenced = re.findall(r"```(?:text)?\s*(.*?)\s*```", text, flags=re.DOTALL)
+            if fenced:
+                text = str(fenced[0]).strip()
 
-        for candidate in candidates:
-            try:
-                parsed = json.loads(candidate)
-            except Exception:
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            return {
-                "screened_caller_name": str(parsed.get("screened_caller_name") or "").strip(),
-                "screened_call_reason": str(parsed.get("screened_call_reason") or "").strip(),
-            }
-        return {}
+        # Collapse whitespace and strip obvious quoting wrappers.
+        text = re.sub(r"\s+", " ", text).strip().strip('"').strip("'")
+        if not text:
+            return None
+
+        # Treat JSON-like responses as unusable for this mode.
+        if text.startswith("{") and text.endswith("}"):
+            return None
+
+        words = text.split()
+        if len(words) > 25:
+            text = " ".join(words[:25]).rstrip(" ,;:-")
+        return text or None
 
     def _build_attended_transfer_template_vars(
         self,
@@ -3962,14 +3970,22 @@ class Engine:
         caller_display = session.caller_name or session.caller_number or "the caller"
         context_name = getattr(session, "context_name", None) or "support"
         briefing = {}
+        screening_payload = {}
         try:
             if session.current_action and session.current_action.get("type") == "attended_transfer":
                 briefing = dict(session.current_action.get("briefing") or {})
+                screening_payload = dict(session.current_action.get("screening_payload") or {})
         except Exception:
             briefing = {}
+            screening_payload = {}
 
         screened_caller_name = str(briefing.get("screened_caller_name") or "").strip()
         screened_call_reason = str(briefing.get("screened_call_reason") or "").strip()
+        screening_summary = ""
+        if str(screening_payload.get("kind") or "").strip() == "ai_briefing":
+            screening_summary = str(screening_payload.get("text") or "").strip()
+        if screening_summary and not screened_call_reason:
+            screened_call_reason = screening_summary
 
         return {
             "caller_name": session.caller_name or "",
@@ -3980,17 +3996,20 @@ class Engine:
             "screened_caller_name": screened_caller_name,
             "screened_call_reason": screened_call_reason,
             "screened_caller_display": screened_caller_name or caller_display,
-            "screened_reason_display": screened_call_reason or context_name,
+            "screened_reason_display": screened_call_reason or screening_summary or context_name,
+            "screening_summary": screening_summary,
         }
 
     @staticmethod
     def _resolve_attended_transfer_screening_mode(attended_cfg: Optional[Dict[str, Any]]) -> str:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else {}
         raw_mode = str(cfg.get("screening_mode") or "").strip().lower()
-        if raw_mode in {"basic_tts", "caller_recording", "ai_summary"}:
+        if raw_mode in {"basic_tts", "caller_recording", "ai_briefing"}:
             return raw_mode
+        if raw_mode == "ai_summary":
+            return "ai_briefing"
         if bool(cfg.get("pass_caller_info_to_context", False)):
-            return "ai_summary"
+            return "ai_briefing"
         return "basic_tts"
 
     @staticmethod
@@ -4214,30 +4233,34 @@ class Engine:
             logger.debug("Local AI Server LLM request failed", call_id=call_id, exc_info=True)
             return None
 
-    async def _extract_attended_transfer_briefing(
+    async def _generate_attended_transfer_briefing_text(
         self,
         *,
         session: CallSession,
+        destination_description: Optional[str],
         timeout_sec: float,
-    ) -> Dict[str, str]:
+    ) -> Optional[str]:
         response_text = await self._local_ai_server_llm_request(
             call_id=session.call_id,
-            text=self._build_attended_transfer_briefing_prompt(session),
+            text=self._build_attended_transfer_ai_briefing_prompt(
+                session,
+                destination_description=destination_description,
+            ),
             timeout_sec=timeout_sec,
         )
         if not response_text:
-            return {}
+            return None
 
-        briefing = self._parse_attended_transfer_briefing_response(response_text)
-        if briefing:
-            return briefing
+        briefing_text = self._sanitize_attended_transfer_briefing_text(response_text)
+        if briefing_text:
+            return briefing_text
 
         logger.warning(
-            "Attended transfer briefing extraction returned invalid JSON",
+            "Attended transfer AI briefing returned unusable text",
             call_id=session.call_id,
             preview=response_text[:160],
         )
-        return {}
+        return None
 
     async def _local_ai_server_tts(self, *, call_id: str, text: str, timeout_sec: float) -> Optional[bytes]:
         """Synthesize μ-law 8k audio via local-ai-server (hard requirement for attended transfer)."""
@@ -4392,29 +4415,41 @@ class Engine:
             dest_desc = str(destination_key)
 
         screening_mode = self._resolve_attended_transfer_screening_mode(attended_cfg)
-        pass_caller_info = screening_mode == "ai_summary"
-        briefing_timeout = 2.0
-        briefing: Dict[str, str] = {}
-        if pass_caller_info:
+        raw_screening_mode = str(attended_cfg.get("screening_mode") or "").strip().lower()
+        ai_briefing_timeout = float(attended_cfg.get("ai_briefing_timeout_seconds", 2.0) or 2.0)
+        if screening_mode == "ai_briefing" and (
+            raw_screening_mode == "ai_summary" or bool(attended_cfg.get("pass_caller_info_to_context", False))
+        ):
             logger.warning(
-                "Deprecated attended transfer ai_summary path executed",
+                "Deprecated attended transfer ai_summary config mapped to ai_briefing",
                 call_id=caller_id,
                 config_key="tools.attended_transfer.pass_caller_info_to_context",
-                replacement="tools.attended_transfer.screening_mode=caller_recording",
+                replacement="tools.attended_transfer.screening_mode=ai_briefing",
             )
-            briefing = await self._extract_attended_transfer_briefing(session=session, timeout_sec=briefing_timeout)
-            if briefing:
+        if screening_mode == "ai_briefing":
+            briefing_text = await self._generate_attended_transfer_briefing_text(
+                session=session,
+                destination_description=dest_desc,
+                timeout_sec=ai_briefing_timeout,
+            )
+            if briefing_text:
                 try:
                     session.current_action = dict(session.current_action or {})
-                    session.current_action["briefing"] = {
-                        "screened_caller_name": briefing.get("screened_caller_name", ""),
-                        "screened_call_reason": briefing.get("screened_call_reason", ""),
+                    session.current_action["screening_payload"] = {
+                        "kind": "ai_briefing",
+                        "text": briefing_text,
                         "source": "local_ai_server",
-                        "extracted_at": time.time(),
+                        "generated_at": time.time(),
                     }
                     await self._save_session(session)
                 except Exception:
-                    logger.debug("Failed to persist attended transfer briefing", call_id=caller_id, exc_info=True)
+                    logger.debug("Failed to persist attended transfer AI briefing", call_id=caller_id, exc_info=True)
+            else:
+                logger.warning(
+                    "Attended transfer AI briefing unavailable; falling back to basic_tts",
+                    call_id=caller_id,
+                    destination_key=destination_key,
+                )
         template_vars = self._build_attended_transfer_template_vars(
             session,
             destination_description=dest_desc,
@@ -4427,12 +4462,22 @@ class Engine:
         except Exception:
             screening_payload = None
 
-        default_announcement_template = (
-            "Hi, this is Ava. Here is the caller's screening."
-            if screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording"
-            else "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
-        )
-        announcement_template = str(attended_cfg.get("announcement_template", default_announcement_template) or "")
+        effective_screening_mode = screening_mode
+        if screening_mode == "ai_briefing":
+            if not (isinstance(screening_payload, dict) and screening_payload.get("kind") == "ai_briefing" and str(screening_payload.get("text") or "").strip()):
+                effective_screening_mode = "basic_tts"
+
+        default_announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
+        if effective_screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
+            default_announcement_template = "Hi, this is Ava. Here is the caller's screening."
+
+        if effective_screening_mode == "ai_briefing":
+            announcement_template = str(
+                attended_cfg.get("ai_briefing_intro_template")
+                or "Hi, this is Ava. Here is a short summary of the caller."
+            )
+        else:
+            announcement_template = str(attended_cfg.get("announcement_template", default_announcement_template) or "")
         prompt_template = str(
             (
                 attended_cfg.get("agent_accept_prompt_template")
@@ -4458,8 +4503,10 @@ class Engine:
 
         # Treat blank templates as "use defaults" (UI may persist empty strings).
         if not announcement_template.strip():
-            if screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
+            if effective_screening_mode == "caller_recording" and screening_payload and screening_payload.get("kind") == "caller_recording":
                 announcement_template = "Hi, this is Ava. Here is the caller's screening."
+            elif effective_screening_mode == "ai_briefing":
+                announcement_template = "Hi, this is Ava. Here is a short summary of the caller."
             else:
                 announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
         if not prompt_template.strip():
@@ -4527,13 +4574,18 @@ class Engine:
             return
 
         recorded_screening_audio = None
-        if screening_mode == "caller_recording" and isinstance(screening_payload, dict):
+        if effective_screening_mode == "caller_recording" and isinstance(screening_payload, dict):
             if screening_payload.get("kind") == "caller_recording":
                 recorded_screening_audio = screening_payload.get("audio_ulaw")
                 if isinstance(recorded_screening_audio, bytearray):
                     recorded_screening_audio = bytes(recorded_screening_audio)
                 if not isinstance(recorded_screening_audio, (bytes, bytearray)) or not recorded_screening_audio:
                     recorded_screening_audio = None
+
+        ai_briefing_text = None
+        if effective_screening_mode == "ai_briefing" and isinstance(screening_payload, dict):
+            if screening_payload.get("kind") == "ai_briefing":
+                ai_briefing_text = str(screening_payload.get("text") or "").strip() or None
 
         if recorded_screening_audio:
             screening_ok = True
@@ -4554,6 +4606,27 @@ class Engine:
                 logger.warning("Attended transfer screening clip delivery failed; aborting", call_id=caller_id)
                 await self._attended_transfer_abort_and_resume(session, channel_id, reason="stream-unavailable")
                 return
+        elif ai_briefing_text:
+            briefing_audio = await self._local_ai_server_tts(call_id=caller_id, text=ai_briefing_text, timeout_sec=tts_timeout)
+            if briefing_audio:
+                briefing_ok = True
+                if use_streaming:
+                    briefing_ok = await self._stream_attended_transfer_audio(channel_id, briefing_audio)
+                    if not briefing_ok and stream_fallback_to_file:
+                        await self._cleanup_attended_transfer_helper_media(channel_id)
+                        use_streaming = False
+                if not use_streaming:
+                    played_id = await self._play_ulaw_bytes_on_channel_and_wait(
+                        channel_id=channel_id,
+                        audio_bytes=briefing_audio,
+                        playback_id_prefix="attx-brief",
+                        timeout_sec=max(3.0, tts_timeout * 4),
+                    )
+                    briefing_ok = bool(played_id)
+                if not briefing_ok:
+                    logger.warning("Attended transfer AI briefing delivery failed; continuing with prompt", call_id=caller_id)
+            else:
+                logger.warning("Attended transfer AI briefing TTS failed; continuing with prompt", call_id=caller_id)
 
         # Step B: Collect DTMF acceptance/decline (early digits during announcement are honored).
         digit = self._attended_transfer_dtmf_digits.get(channel_id)
