@@ -370,6 +370,32 @@ def test_attended_transfer_screening_mode_resolution_prefers_explicit_mode():
     assert engine._resolve_attended_transfer_screening_mode({}) == "basic_tts"
 
 
+def test_attended_transfer_pending_session_detection():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(call_id="call-pending", caller_channel_id="caller-pending")
+
+    assert engine._session_has_pending_attended_transfer(session) is False
+
+    session.current_action = {"type": "attended_transfer"}
+    assert engine._session_has_pending_attended_transfer(session) is True
+
+    session.current_action["decision"] = "accepted"
+    assert engine._session_has_pending_attended_transfer(session) is False
+
+    session.current_action["decision"] = "declined"
+    assert engine._session_has_pending_attended_transfer(session) is False
+
+
+def test_attended_transfer_ai_briefing_rejects_local_ai_fallback_text():
+    engine = _build_engine({"enabled": True})
+    assert (
+        engine._sanitize_attended_transfer_briefing_text(
+            "I'm here to help you. How can I assist you today?"
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_generation_unavailable(monkeypatch):
     engine = _build_engine(

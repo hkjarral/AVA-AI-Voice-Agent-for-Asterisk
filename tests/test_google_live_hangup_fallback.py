@@ -8,6 +8,7 @@ class _DummySession:
     def __init__(self):
         self.conversation_history = []
         self.cleanup_after_tts = False
+        self.current_action = None
 
 
 class _DummySessionStore:
@@ -106,3 +107,47 @@ async def test_google_live_flushes_pending_transcriptions_on_disconnect():
 
     assert provider._input_transcription_buffer == ""
     assert provider._output_transcription_buffer == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_google_live_blocks_hangup_tool_during_pending_attended_transfer(monkeypatch):
+    provider = GoogleLiveProvider(config=GoogleProviderConfig(), on_event=lambda e: None)
+    provider._call_id = "call-1"
+    provider._session_store = _DummySessionStore()
+    provider._session_store.session.current_action = {"type": "attended_transfer"}
+    provider._caller_channel_id = "caller-1"
+    provider._bridge_id = "bridge-1"
+    provider._full_config = {}
+    provider._allowed_tools = ["hangup_call", "cancel_transfer"]
+
+    send_messages = []
+
+    async def fake_send_message(payload):
+        send_messages.append(payload)
+
+    async def unexpected_execute_tool(*args, **kwargs):
+        raise AssertionError("Tool execution should be blocked during pending attended transfer")
+
+    monkeypatch.setattr(provider, "_send_message", fake_send_message)
+    monkeypatch.setattr(provider._tool_adapter, "execute_tool", unexpected_execute_tool)
+
+    await provider._handle_tool_call(
+        {
+            "toolCall": {
+                "functionCalls": [
+                    {
+                        "id": "tc-1",
+                        "name": "hangup_call",
+                        "args": {"farewell_message": "Bye"},
+                    }
+                ]
+            }
+        }
+    )
+
+    assert provider._hangup_after_response is False
+    assert len(send_messages) == 1
+    response = send_messages[0]["toolResponse"]["functionResponses"][0]["response"]
+    assert response["status"] == "error"
+    assert "attended transfer is pending" in response["message"].lower()

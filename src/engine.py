@@ -3956,6 +3956,14 @@ class Engine:
         if text.startswith("{") and text.endswith("}"):
             return None
 
+        normalized = text.casefold()
+        unusable_exact = {
+            "i'm here to help you. how can i assist you today?",
+            "im here to help you. how can i assist you today?",
+        }
+        if normalized in unusable_exact:
+            return None
+
         words = text.split()
         if len(words) > 25:
             text = " ".join(words[:25]).rstrip(" ,;:-")
@@ -4011,6 +4019,18 @@ class Engine:
         if bool(cfg.get("pass_caller_info_to_context", False)):
             return "ai_briefing"
         return "basic_tts"
+
+    @staticmethod
+    def _session_has_pending_attended_transfer(session: Optional[CallSession]) -> bool:
+        if not session:
+            return False
+        action = getattr(session, "current_action", None) or {}
+        if not isinstance(action, dict):
+            return False
+        if action.get("type") != "attended_transfer":
+            return False
+        decision = str(action.get("decision") or "").strip().lower()
+        return decision not in {"accepted", "declined"}
 
     @staticmethod
     def _pcm16_to_ulaw8k(audio_bytes: bytes, sample_rate: int) -> bytes:
@@ -6336,6 +6356,14 @@ class Engine:
             if self._consume_attended_transfer_screening_audio(session.call_id, pcm_bytes, pcm_rate):
                 return
 
+            if self._session_has_pending_attended_transfer(session):
+                logger.debug(
+                    "Suspending provider audio during pending attended transfer",
+                    call_id=caller_channel_id,
+                    source="audiosocket",
+                )
+                return
+
             # CRITICAL FIX: Check for pipeline mode FIRST before routing to monolithic providers
             if self._pipeline_forced.get(caller_channel_id):
                 # AAVA-28: Check gating to prevent agent from hearing its own TTS output
@@ -7834,6 +7862,13 @@ class Engine:
             # Pipeline adapters need audio in their queue, not sent to monolithic providers
             pipeline_forced = self._pipeline_forced.get(caller_channel_id)
             if self._consume_attended_transfer_screening_audio(session.call_id, pcm_16k, int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000)):
+                return
+            if self._session_has_pending_attended_transfer(session):
+                logger.debug(
+                    "Suspending provider audio during pending attended transfer",
+                    call_id=caller_channel_id,
+                    source="externalmedia",
+                )
                 return
             logger.debug(
                 "RTP audio routing check",
