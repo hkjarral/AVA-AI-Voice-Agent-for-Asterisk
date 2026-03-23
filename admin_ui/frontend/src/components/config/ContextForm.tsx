@@ -37,10 +37,18 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         onChange({ ...config, ...patch });
     };
 
+    const matchesHttpToolPhase = (tool: any, phase: 'pre_call' | 'post_call' | 'in_call') => {
+        if (!tool || typeof tool !== 'object' || !tool.kind) return false;
+        if (phase === 'in_call') {
+            return tool.phase === 'in_call' || tool.kind === 'in_call_http_lookup';
+        }
+        return tool.phase === phase;
+    };
+
     const getHttpToolsByPhase = (phase: 'pre_call' | 'post_call' | 'in_call') => {
         if (!httpTools) return [];
         return Object.entries(httpTools)
-            .filter(([_, tool]) => tool?.phase === phase && tool?.enabled !== false)
+            .filter(([_, tool]) => matchesHttpToolPhase(tool, phase) && tool?.enabled !== false)
             .map(([name, tool]) => ({ name, ...tool }));
     };
 

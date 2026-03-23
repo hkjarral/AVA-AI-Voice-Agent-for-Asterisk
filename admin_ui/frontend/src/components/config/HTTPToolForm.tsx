@@ -104,10 +104,18 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     const [showAllMappings, setShowAllMappings] = useState(false);
     const variableTokenClass = "font-mono text-emerald-700";
 
+    const matchesPhase = (value: any) => {
+        if (!value || typeof value !== 'object' || !value.kind) return false;
+        if (phase === 'in_call') {
+            return value.phase === 'in_call' || value.kind === 'in_call_http_lookup';
+        }
+        return value.phase === phase;
+    };
+
     const getHTTPTools = () => {
         const tools: Record<string, HTTPToolConfig> = {};
         Object.entries(config || {}).forEach(([key, value]: [string, any]) => {
-            if (value && typeof value === 'object' && value.kind && value.phase === phase) {
+            if (matchesPhase(value)) {
                 tools[key] = value as HTTPToolConfig;
             }
         });
