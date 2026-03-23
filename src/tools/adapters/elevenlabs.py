@@ -5,6 +5,7 @@ Handles tool schema conversion and execution for ElevenLabs Conversational AI.
 """
 import logging
 from typing import Any, Callable, Dict, List, Optional
+from src.tools.context import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -144,9 +145,31 @@ class ElevenLabsToolAdapter:
                     "success": False,
                     "error": f"Tool '{tool_name}' not found",
                 }
+
+            exec_context = context
+            if isinstance(context, dict):
+                exec_context = ToolExecutionContext(
+                    call_id=context["call_id"],
+                    caller_channel_id=context.get("caller_channel_id"),
+                    bridge_id=context.get("bridge_id"),
+                    called_number=context.get("called_number"),
+                    session_store=context.get("session_store"),
+                    ari_client=context.get("ari_client"),
+                    config=context.get("config"),
+                    provider_name="elevenlabs",
+                    user_input=context.get("user_input"),
+                )
+
+            if isinstance(exec_context, ToolExecutionContext):
+                block_result = await exec_context.get_tool_block_response(tool_name)
+                if block_result:
+                    return {
+                        "success": False,
+                        "result": block_result,
+                    }
             
             # Execute the tool
-            result = await tool.execute(parameters, context)
+            result = await tool.execute(parameters, exec_context)
             return {
                 "success": True,
                 "result": result,

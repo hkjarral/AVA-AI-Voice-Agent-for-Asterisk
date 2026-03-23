@@ -45,6 +45,19 @@ class ToolExecutionContext:
     user_input: Optional[str] = None  # Original user utterance
     detected_intent: Optional[str] = None
     confidence: Optional[float] = None
+
+    @staticmethod
+    def is_pending_attended_transfer(session: Any) -> bool:
+        """Return True when an attended transfer is awaiting a callee decision."""
+        current_action = getattr(session, "current_action", None) or {}
+        if not isinstance(current_action, dict):
+            return False
+
+        if current_action.get("type") != "attended_transfer":
+            return False
+
+        decision = str(current_action.get("decision") or "").strip().lower()
+        return decision not in {"accepted", "declined"}
     
     async def get_session(self):
         """
@@ -88,6 +101,39 @@ class ToolExecutionContext:
         
         await self.session_store.upsert_call(session)
         logger.debug(f"Updated session {self.call_id}: {kwargs}")
+
+    async def get_tool_block_response(self, tool_name: Optional[str]) -> Optional[Dict[str, Any]]:
+        """
+        Return a standardized error result when a pending attended transfer should
+        block tool execution for the active call.
+        """
+        if tool_name == "cancel_transfer":
+            return None
+
+        try:
+            session = await self.get_session()
+        except Exception:
+            logger.debug(
+                "Unable to load session while checking pending attended transfer guard for call_id=%s tool=%s",
+                self.call_id,
+                tool_name,
+                exc_info=True,
+            )
+            return None
+
+        if not self.is_pending_attended_transfer(session):
+            return None
+
+        logger.warning(
+            "Blocking tool call during pending attended transfer for call_id=%s tool=%s provider=%s",
+            self.call_id,
+            tool_name,
+            self.provider_name,
+        )
+        return {
+            "status": "error",
+            "message": "Tool calls are blocked while an attended transfer is pending. Wait for the transfer to complete or use cancel_transfer.",
+        }
     
     def get_config_value(self, key: str, default: Any = None) -> Any:
         """

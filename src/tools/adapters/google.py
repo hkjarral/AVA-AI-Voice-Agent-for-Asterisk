@@ -201,6 +201,10 @@ class GoogleToolAdapter:
                 "status": "error",
                 "message": error_msg
             }
+
+        block_result = await context.get_tool_block_response(function_name)
+        if block_result:
+            return block_result
         
         # Execute tool
         try:
