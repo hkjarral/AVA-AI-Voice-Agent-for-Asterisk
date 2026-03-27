@@ -125,3 +125,18 @@ def test_sanitize_for_llm_strips_timestamp():
     assert sanitized[0] == {"role": "user", "content": "hi"}
     assert sanitized[2] == {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]}
     assert sanitized[3] == {"role": "tool", "content": "ok", "tool_call_id": "c1"}
+
+
+def test_sanitize_for_llm_skips_malformed_entries():
+    """Verify _sanitize_for_llm skips non-dict entries and entries missing role."""
+    history = [
+        {"role": "user", "content": "hi", "timestamp": 1.0},
+        "not a dict",
+        None,
+        {"content": "missing role", "timestamp": 2.0},
+        {"role": "assistant", "content": "ok"},
+    ]
+    sanitized = _sanitize_for_llm(history)
+    assert len(sanitized) == 2
+    assert sanitized[0] == {"role": "user", "content": "hi"}
+    assert sanitized[1] == {"role": "assistant", "content": "ok"}

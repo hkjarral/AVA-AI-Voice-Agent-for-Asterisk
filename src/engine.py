@@ -208,7 +208,14 @@ _LLM_MSG_KEYS = {"role", "content", "name", "tool_calls", "tool_call_id"}
 
 def _sanitize_for_llm(history: list) -> list:
     """Strip non-standard keys (e.g. timestamp) before sending to LLM adapters."""
-    return [{k: v for k, v in msg.items() if k in _LLM_MSG_KEYS} for msg in history]
+    sanitized = []
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        filtered = {k: v for k, v in msg.items() if k in _LLM_MSG_KEYS}
+        if "role" in filtered:
+            sanitized.append(filtered)
+    return sanitized
 
 
 class Engine:
