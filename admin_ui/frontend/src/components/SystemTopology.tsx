@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Phone, Cpu, Server, Mic, MessageSquare, Volume2, Zap, Radio, CheckCircle2, XCircle, Layers } from 'lucide-react';
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { FullscreenPanel } from './ui/FullscreenPanel';
 
 interface CallState {
   call_id: string;
@@ -290,13 +291,15 @@ export const SystemTopology = () => {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card overflow-hidden mb-6">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+    <FullscreenPanel
+      className="mb-6"
+      titleNode={
         <div className="flex items-center gap-2">
           <Radio className={`w-4 h-4 ${hasActiveCalls ? 'text-green-500 animate-pulse' : 'text-muted-foreground'}`} />
           <span className="text-sm font-medium">Live System Topology</span>
         </div>
+      }
+      headerRight={
         <div className="flex items-center gap-3 text-xs">
           <div className="flex items-center gap-1">
             <Phone className={`w-3.5 h-3.5 ${hasActiveCalls ? 'text-green-500' : 'text-muted-foreground'}`} />
@@ -305,9 +308,9 @@ export const SystemTopology = () => {
             </span>
           </div>
         </div>
-      </div>
-
-      <div className="p-4">
+      }
+    >
+      <div>
         {/* Grid Layout for proper alignment */}
         <div className="relative grid grid-cols-[160px_48px_160px_48px_200px] gap-y-4 justify-center items-center py-4">
 
@@ -771,7 +774,7 @@ export const SystemTopology = () => {
           animation: flow-dash 0.5s linear infinite;
         }
       `}</style>
-    </div>
+    </FullscreenPanel>
   );
 };
 

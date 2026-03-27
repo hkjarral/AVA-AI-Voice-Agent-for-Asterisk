@@ -194,6 +194,13 @@ _cleanup_completed_at: dict = {}  # call_id -> epoch seconds (best-effort dedupe
 _cleanup_lock = asyncio.Lock()  # Lock to make cleanup guard atomic (AAVA-148)
 
 
+def _ts_msg(role: str, content, **extra) -> dict:
+    """Build a conversation-history entry with an automatic timestamp."""
+    msg = {"role": role, "content": content, "timestamp": time.time()}
+    msg.update(extra)
+    return msg
+
+
 class Engine:
     """The main application engine."""
 
@@ -8808,7 +8815,7 @@ class Engine:
                     # Add to conversation history
                     if not hasattr(session, 'conversation_history') or session.conversation_history is None:
                         session.conversation_history = []
-                    session.conversation_history.append({"role": "user", "content": text})
+                    session.conversation_history.append(_ts_msg("user", text))
                     await self.session_store.upsert_call(session)
                     logger.debug("Added user transcript to history", call_id=call_id, text_preview=text[:50])
             
@@ -8819,7 +8826,7 @@ class Engine:
                     # Add to conversation history
                     if not hasattr(session, 'conversation_history') or session.conversation_history is None:
                         session.conversation_history = []
-                    session.conversation_history.append({"role": "assistant", "content": text})
+                    session.conversation_history.append(_ts_msg("assistant", text))
                     await self.session_store.upsert_call(session)
                     logger.debug("Added agent transcript to history", call_id=call_id, text_preview=text[:50])
             
@@ -9151,7 +9158,7 @@ class Engine:
                             else:
                                 # AAVA-85: Persist greeting to session history so it appears in email summary
                                 try:
-                                    session.conversation_history.append({"role": "assistant", "content": greeting})
+                                    session.conversation_history.append(_ts_msg("assistant", greeting))
                                     await self.session_store.upsert_call(session)
                                     logger.info("Persisted initial greeting to session history", call_id=call_id)
                                 except Exception as e:
@@ -9172,12 +9179,12 @@ class Engine:
                                 
                                 # AAVA-85: Persist greeting to session history so it appears in email summary
                                 try:
-                                    session.conversation_history.append({"role": "assistant", "content": greeting})
+                                    session.conversation_history.append(_ts_msg("assistant", greeting))
                                     await self.session_store.upsert_call(session)
                                     logger.info("Persisted initial greeting to session history", call_id=call_id)
                                 except Exception as e:
                                     logger.warning("Failed to persist greeting history", call_id=call_id, error=str(e))
-                                
+
                         break
                     except RuntimeError as exc:
                         error_text = str(exc).lower()
@@ -9614,11 +9621,11 @@ class Engine:
                         return
                     
                     # Update conversation history
-                    conversation_history.append({"role": "user", "content": transcript_text})
+                    conversation_history.append(_ts_msg("user", transcript_text))
                     if response_text:
-                        conversation_history.append({"role": "assistant", "content": response_text})
+                        conversation_history.append(_ts_msg("assistant", response_text))
                     elif tool_calls:
-                        conversation_history.append({"role": "assistant", "content": "(tool execution)"})
+                        conversation_history.append(_ts_msg("assistant", "(tool execution)"))
                     
                     # AAVA-85: Persist session history so tools (email) can access it
                     session.conversation_history = list(conversation_history)
@@ -9867,7 +9874,7 @@ class Engine:
                                         farewell = result.get("message")
                                         if farewell:
                                             # Add farewell to conversation history for email
-                                            conversation_history.append({"role": "assistant", "content": farewell})
+                                            conversation_history.append(_ts_msg("assistant", farewell))
                                             session.conversation_history = list(conversation_history)
                                             await self.session_store.upsert_call(session)
                                             logger.info("Farewell added to conversation history", call_id=call_id)
@@ -9914,16 +9921,14 @@ class Engine:
                                     if not result.get("will_hangup") and canonical_tool not in ("blind_transfer", "live_agent_transfer"):
                                         tool_result_msg = result.get("message", f"Tool {name} executed successfully.")
                                         # Add tool result to conversation history
-                                        conversation_history.append({
-                                            "role": "assistant",
-                                            "content": None,
-                                            "tool_calls": [{"id": f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
-                                        })
-                                        conversation_history.append({
-                                            "role": "tool",
-                                            "tool_call_id": f"call_{name}",
-                                            "content": tool_result_msg
-                                        })
+                                        conversation_history.append(_ts_msg(
+                                            "assistant", None,
+                                            tool_calls=[{"id": f"call_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
+                                        ))
+                                        conversation_history.append(_ts_msg(
+                                            "tool", tool_result_msg,
+                                            tool_call_id=f"call_{name}"
+                                        ))
                                         logger.info("Tool result added to conversation, triggering LLM continuation", tool=name, call_id=call_id)
                                         
                                         # Trigger LLM to generate follow-up response
@@ -9940,7 +9945,7 @@ class Engine:
                                                 if getattr(llm_response, 'text', None):
                                                     response_text = llm_response.text.strip()
                                                     if response_text:
-                                                        conversation_history.append({"role": "assistant", "content": response_text})
+                                                        conversation_history.append(_ts_msg("assistant", response_text))
                                                         logger.info("LLM continuation response", preview=response_text[:80], call_id=call_id)
                                                         
                                                         # Synthesize and play TTS
@@ -10003,7 +10008,7 @@ class Engine:
                                                             next_result = await next_task
                                                             if next_result.get("will_hangup"):
                                                                 farewell = next_result.get("message", "Goodbye!")
-                                                                conversation_history.append({"role": "assistant", "content": farewell})
+                                                                conversation_history.append(_ts_msg("assistant", farewell))
                                                                 session.conversation_history = list(conversation_history)
                                                                 await self.session_store.upsert_call(session)
                                                                 fw_bytes = bytearray()

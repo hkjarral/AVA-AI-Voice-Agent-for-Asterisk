@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Conversation timestamps (#277)**: All conversation history entries now include per-message timestamps. Added `_ts_msg()` helper in engine to ensure every `conversation_history.append()` site (12 total) attaches `time.time()`. Fixed frontend epoch-seconds-to-milliseconds conversion so timestamps display correctly in the Call Log UI.
+
+### Added
+
+- **Fullscreen toggle for UI panels (#278)**: New `FullscreenPanel` reusable component with `Maximize2`/`Minimize2` toggle, portal-based fullscreen overlay at `z-[60]`, and safe body-scroll restore. Applied to Live System Topology (Dashboard), Call Statistics grid, and Call History table with pagination.
+
 ### Planned
 
 - Additional provider integrations

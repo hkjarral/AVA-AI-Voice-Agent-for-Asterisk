@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { FullscreenPanel } from '../components/ui/FullscreenPanel';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import { useLocation } from 'react-router-dom';
 
@@ -31,7 +32,7 @@ interface CallRecordSummary {
 
 interface CallRecordDetail extends CallRecordSummary {
     pipeline_components: Record<string, string>;
-    conversation_history: Array<{ role: string; content: string; timestamp?: string }>;
+    conversation_history: Array<{ role: string; content: string; timestamp?: number | string }>;
     transfer_destination: string | null;
     tool_calls: Array<{ name: string; params: any; result: string; message?: string; timestamp: string; duration_ms: number }>;
     max_turn_latency_ms: number;
@@ -495,62 +496,64 @@ const CallHistoryPage = () => {
 
             {/* Stats Dashboard */}
             {showStats && stats && (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <div className="bg-card border rounded-lg p-4">
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                            <Phone className="w-4 h-4" />
-                            Total Calls
+                <FullscreenPanel title="Call Statistics">
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                        <div className="bg-card border rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                <Phone className="w-4 h-4" />
+                                Total Calls
+                            </div>
+                            <div className="text-2xl font-bold mt-1">{stats.total_calls}</div>
                         </div>
-                        <div className="text-2xl font-bold mt-1">{stats.total_calls}</div>
+                        <div className="bg-card border rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                <PieChart className="w-4 h-4" />
+                                Success / Failed
+                            </div>
+                            <div className="text-2xl font-bold mt-1">
+                                {stats.outcomes?.completed || 0} / {stats.outcomes?.error || 0}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                                {stats.total_calls > 0
+                                    ? Math.round(((stats.outcomes?.completed || 0) / stats.total_calls) * 100)
+                                    : 0}% success rate
+                            </div>
+                        </div>
+                        <div className="bg-card border rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                <Activity className="w-4 h-4" />
+                                Active Calls
+                            </div>
+                            <div className="text-2xl font-bold mt-1">{stats.active_calls || 0}</div>
+                        </div>
+                        <div className="bg-card border rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                <Timer className="w-4 h-4" />
+                                Avg Duration
+                            </div>
+                            <div className="text-2xl font-bold mt-1">{formatDuration(stats.avg_duration_seconds)}</div>
+                        </div>
+                        <div className="bg-card border rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                <TrendingUp className="w-4 h-4" />
+                                Top Provider
+                            </div>
+                            <div className="text-lg font-bold mt-1 truncate">
+                                {Object.entries(stats.providers || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '-'}
+                            </div>
+                        </div>
+                        <div className="bg-card border rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                <Wrench className="w-4 h-4" />
+                                Top Tool
+                            </div>
+                            <div className="text-lg font-bold mt-1 truncate">
+                                {Object.entries(stats.top_tools || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '-'}
+                            </div>
+                            <div className="text-xs text-muted-foreground">{stats.calls_with_tools} calls used tools</div>
+                        </div>
                     </div>
-                    <div className="bg-card border rounded-lg p-4">
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                            <PieChart className="w-4 h-4" />
-                            Success / Failed
-                        </div>
-                        <div className="text-2xl font-bold mt-1">
-                            {stats.outcomes?.completed || 0} / {stats.outcomes?.error || 0}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                            {stats.total_calls > 0 
-                                ? Math.round(((stats.outcomes?.completed || 0) / stats.total_calls) * 100) 
-                                : 0}% success rate
-                        </div>
-                    </div>
-                    <div className="bg-card border rounded-lg p-4">
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                            <Activity className="w-4 h-4" />
-                            Active Calls
-                        </div>
-                        <div className="text-2xl font-bold mt-1">{stats.active_calls || 0}</div>
-                    </div>
-                    <div className="bg-card border rounded-lg p-4">
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                            <Timer className="w-4 h-4" />
-                            Avg Duration
-                        </div>
-                        <div className="text-2xl font-bold mt-1">{formatDuration(stats.avg_duration_seconds)}</div>
-                    </div>
-                    <div className="bg-card border rounded-lg p-4">
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                            <TrendingUp className="w-4 h-4" />
-                            Top Provider
-                        </div>
-                        <div className="text-lg font-bold mt-1 truncate">
-                            {Object.entries(stats.providers || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '-'}
-                        </div>
-                    </div>
-                    <div className="bg-card border rounded-lg p-4">
-                        <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                            <Wrench className="w-4 h-4" />
-                            Top Tool
-                        </div>
-                        <div className="text-lg font-bold mt-1 truncate">
-                            {Object.entries(stats.top_tools || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '-'}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{stats.calls_with_tools} calls used tools</div>
-                    </div>
-                </div>
+                </FullscreenPanel>
             )}
 
             {/* Filters Panel */}
@@ -690,7 +693,7 @@ const CallHistoryPage = () => {
 
             {/* Call List */}
             {!loading && !error && calls.length > 0 && (
-                <>
+                <FullscreenPanel title="Call History">
                     <div className="bg-card border rounded-lg overflow-x-auto">
                         <table className="w-full min-w-[1000px]">
                             <thead className="bg-muted/50">
@@ -773,7 +776,7 @@ const CallHistoryPage = () => {
                             </button>
                         </div>
                     </div>
-                </>
+                </FullscreenPanel>
             )}
 
             {/* Call Detail Modal */}
@@ -980,7 +983,7 @@ const CallHistoryPage = () => {
                                                         <div className="text-sm">{msg.content}</div>
                                                         {msg.timestamp && (
                                                             <div className="text-xs text-muted-foreground mt-1">
-                                                                {new Date(msg.timestamp).toLocaleTimeString()}
+                                                                {new Date(typeof msg.timestamp === 'number' && msg.timestamp < 1e12 ? msg.timestamp * 1000 : msg.timestamp).toLocaleTimeString()}
                                                             </div>
                                                         )}
                                                     </div>
