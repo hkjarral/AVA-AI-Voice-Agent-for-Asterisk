@@ -1,6 +1,25 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { createPortal } from 'react-dom';
+
+// Shared ref-counted body scroll lock so multiple overlays compose correctly.
+let scrollLockCount = 0;
+let savedOverflow = '';
+
+function acquireScrollLock() {
+    if (scrollLockCount === 0) {
+        savedOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+    }
+    scrollLockCount++;
+}
+
+function releaseScrollLock() {
+    scrollLockCount = Math.max(0, scrollLockCount - 1);
+    if (scrollLockCount === 0) {
+        document.body.style.overflow = savedOverflow;
+    }
+}
 
 interface FullscreenPanelProps {
     title?: string;
@@ -12,7 +31,6 @@ interface FullscreenPanelProps {
 
 export const FullscreenPanel = ({ title, titleNode, headerRight, children, className = '' }: FullscreenPanelProps) => {
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const prevOverflowRef = useRef<string>('');
 
     const exitFullscreen = useCallback(() => setIsFullscreen(false), []);
 
@@ -23,13 +41,12 @@ export const FullscreenPanel = ({ title, titleNode, headerRight, children, class
             if (e.key === 'Escape') exitFullscreen();
         };
 
-        prevOverflowRef.current = document.body.style.overflow;
-        document.body.style.overflow = 'hidden';
+        acquireScrollLock();
         document.addEventListener('keydown', handleEscape);
 
         return () => {
             document.removeEventListener('keydown', handleEscape);
-            document.body.style.overflow = prevOverflowRef.current;
+            releaseScrollLock();
         };
     }, [isFullscreen, exitFullscreen]);
 
@@ -53,7 +70,7 @@ export const FullscreenPanel = ({ title, titleNode, headerRight, children, class
 
     if (isFullscreen) {
         return createPortal(
-            <div className="fixed inset-0 z-[60] bg-background flex flex-col animate-in fade-in duration-200">
+            <div className="fixed inset-0 z-40 bg-background flex flex-col animate-in fade-in duration-200">
                 {headerContent}
                 <div className="flex-1 overflow-y-auto p-6">
                     {children}

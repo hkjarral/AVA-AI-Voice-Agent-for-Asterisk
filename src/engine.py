@@ -196,9 +196,19 @@ _cleanup_lock = asyncio.Lock()  # Lock to make cleanup guard atomic (AAVA-148)
 
 def _ts_msg(role: str, content, **extra) -> dict:
     """Build a conversation-history entry with an automatic timestamp."""
+    extra.pop("timestamp", None)
     msg = {"role": role, "content": content, "timestamp": time.time()}
     msg.update(extra)
     return msg
+
+
+# Keys that LLM chat-completion APIs accept in message objects.
+_LLM_MSG_KEYS = {"role", "content", "name", "tool_calls", "tool_call_id"}
+
+
+def _sanitize_for_llm(history: list) -> list:
+    """Strip non-standard keys (e.g. timestamp) before sending to LLM adapters."""
+    return [{k: v for k, v in msg.items() if k in _LLM_MSG_KEYS} for msg in history]
 
 
 class Engine:
@@ -9467,7 +9477,7 @@ class Engine:
                     
                     # Build context with conversation history
                     # System prompt only in first turn (when history is empty)
-                    context_for_llm = {"prior_messages": list(conversation_history)}
+                    context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
                     
                     try:
                         llm_result = await pipeline.llm_adapter.generate(
@@ -9933,7 +9943,7 @@ class Engine:
                                         
                                         # Trigger LLM to generate follow-up response
                                         try:
-                                            context_for_llm = {"prior_messages": list(conversation_history)}
+                                            context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
                                             llm_response = await pipeline.llm_adapter.generate(
                                                 call_id,
                                                 "",  # Empty transcript - tool result already in context

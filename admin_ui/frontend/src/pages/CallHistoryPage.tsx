@@ -983,7 +983,12 @@ const CallHistoryPage = () => {
                                                         <div className="text-sm">{msg.content}</div>
                                                         {msg.timestamp && (
                                                             <div className="text-xs text-muted-foreground mt-1">
-                                                                {new Date(typeof msg.timestamp === 'number' && msg.timestamp < 1e12 ? msg.timestamp * 1000 : msg.timestamp).toLocaleTimeString()}
+                                                                {(() => {
+                                                                    const raw = msg.timestamp!;
+                                                                    const n = typeof raw === 'number' ? raw : (typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : NaN);
+                                                                    const ms = !isNaN(n) && n < 1e12 ? n * 1000 : (!isNaN(n) ? n : raw);
+                                                                    return new Date(ms).toLocaleTimeString();
+                                                                })()}
                                                             </div>
                                                         )}
                                                     </div>

@@ -4,7 +4,7 @@ import pytest
 
 from src.core.models import CallSession
 from src.core.session_store import SessionStore
-from src.engine import Engine, _ts_msg
+from src.engine import Engine, _ts_msg, _sanitize_for_llm
 
 
 @pytest.mark.asyncio
@@ -102,3 +102,26 @@ def test_ts_msg_helper_extra_kwargs():
     assert msg["content"] == "result text"
     assert msg["tool_call_id"] == "call_foo"
     assert "timestamp" in msg
+
+
+def test_ts_msg_rejects_timestamp_override():
+    """Verify _ts_msg ignores caller-supplied timestamp to preserve invariants."""
+    msg = _ts_msg("user", "hello", timestamp=0)
+    assert msg["timestamp"] != 0, "caller must not override the auto-generated timestamp"
+    assert msg["timestamp"] > 0
+
+
+def test_sanitize_for_llm_strips_timestamp():
+    """Verify _sanitize_for_llm removes non-standard keys before LLM adapter."""
+    history = [
+        {"role": "user", "content": "hi", "timestamp": 1234567890.0},
+        {"role": "assistant", "content": "hello", "timestamp": 1234567891.0},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}], "timestamp": 1234567892.0},
+        {"role": "tool", "content": "ok", "tool_call_id": "c1", "timestamp": 1234567893.0},
+    ]
+    sanitized = _sanitize_for_llm(history)
+    for msg in sanitized:
+        assert "timestamp" not in msg, f"timestamp leaked into LLM message: {msg}"
+    assert sanitized[0] == {"role": "user", "content": "hi"}
+    assert sanitized[2] == {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]}
+    assert sanitized[3] == {"role": "tool", "content": "ok", "tool_call_id": "c1"}
