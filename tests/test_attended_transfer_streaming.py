@@ -24,7 +24,7 @@ def _build_engine(attended_transfer_cfg: dict) -> Engine:
         "active_pipeline": "local_only",
         "audio_transport": "audiosocket",
         "external_media": {
-            "rtp_host": "0.0.0.0",
+            "rtp_host": "127.0.0.1",
             "rtp_port": 18080,
             "advertise_host": "127.0.0.1",
             "port_range": "18080-18090",
@@ -32,7 +32,7 @@ def _build_engine(attended_transfer_cfg: dict) -> Engine:
             "format": "slin16",
             "sample_rate": 16000,
         },
-        "audiosocket": {"host": "0.0.0.0", "port": 9092, "format": "ulaw"},
+        "audiosocket": {"host": "127.0.0.1", "port": 9092, "format": "ulaw"},
         "tools": {
             "attended_transfer": attended_transfer_cfg,
             "transfer": {
@@ -302,6 +302,10 @@ async def test_attended_transfer_basic_tts_skips_ai_briefing_generation(monkeypa
     )
     session.current_action = {"type": "attended_transfer"}
     await engine.session_store.upsert_call(session)
+    tts_texts = []
+    stream_payloads = []
+    decisions = []
+    finalized = []
 
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
@@ -310,15 +314,19 @@ async def test_attended_transfer_basic_tts_skips_ai_briefing_generation(monkeypa
         raise AssertionError("AI briefing generation should not run for basic_tts")
 
     async def fake_tts(*, call_id, text, timeout_sec):
+        tts_texts.append(text)
         return b"\xff" * 160
 
     async def fake_stream(agent_channel_id, audio_bytes, *, frame_ms=20):
+        stream_payloads.append((agent_channel_id, audio_bytes, frame_ms))
         return True
 
     async def fake_wait_dtmf(agent_channel_id, *, timeout_sec):
+        decisions.append((agent_channel_id, timeout_sec))
         return "1"
 
     async def fake_finalize(*args, **kwargs):
+        finalized.append((args, kwargs))
         return None
 
     monkeypatch.setattr(engine, "_start_attended_transfer_helper_media", fake_start_helper)
@@ -332,6 +340,16 @@ async def test_attended_transfer_basic_tts_skips_ai_briefing_generation(monkeypa
         "agent-no-screened",
         ["attended-transfer", "call-no-screened", "support_agent"],
     )
+
+    assert any("Press 1 to accept this transfer" in text for text in tts_texts)
+    assert stream_payloads
+    assert all(payload == b"\xff" * 160 for _, payload, _ in stream_payloads)
+    assert decisions and decisions[0][0] == "agent-no-screened"
+    assert finalized
+    updated = await engine.session_store.get_by_call_id("call-no-screened")
+    assert updated is not None
+    assert updated.current_action is not None
+    assert updated.current_action.get("decision") == "accepted"
 
 
 def test_attended_transfer_template_substitution_keeps_unknown_placeholders():
@@ -465,7 +483,7 @@ async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_genera
 async def test_local_ai_server_llm_request_waits_for_auth_success(monkeypatch):
     engine = _build_engine({"enabled": True})
     engine.config.providers["local"]["base_url"] = "ws://local-ai.test/ws"
-    engine.config.providers["local"]["auth_token"] = "secret"
+    engine.config.providers["local"]["auth_token"] = "FAKE_TEST_TOKEN"  # noqa: S105 - test-only token
 
     class FakeWebSocket:
         def __init__(self):
@@ -510,7 +528,7 @@ async def test_local_ai_server_llm_request_waits_for_auth_success(monkeypatch):
 async def test_local_ai_server_llm_request_stops_on_auth_failure(monkeypatch):
     engine = _build_engine({"enabled": True})
     engine.config.providers["local"]["base_url"] = "ws://local-ai.test/ws"
-    engine.config.providers["local"]["auth_token"] = "secret"
+    engine.config.providers["local"]["auth_token"] = "FAKE_TEST_TOKEN"  # noqa: S105 - test-only token
 
     class FakeWebSocket:
         def __init__(self):

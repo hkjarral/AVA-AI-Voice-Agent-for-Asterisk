@@ -925,7 +925,7 @@ class Engine:
         try:
             ipaddress.ip_address(fallback)
             return [fallback]
-        except Exception:
+        except ValueError:
             pass
 
         try:
@@ -935,13 +935,38 @@ class Engine:
                 if info and len(info) >= 5 and info[4]
             }
             return sorted(resolved)
-        except Exception:
+        except (socket.gaierror, OSError):
             logger.warning(
                 "Failed to resolve allowed_remote_hosts fallback host; helper RTP allowlist will remain empty",
                 fallback_host=fallback,
                 exc_info=True,
             )
             return []
+
+    def _derive_routable_advertise_host(self, bind_host: str) -> str:
+        candidate = str(bind_host or "").strip()
+        if candidate and candidate not in {"0.0.0.0", "::"}:
+            try:
+                ipaddress.ip_address(candidate)
+                return candidate
+            except ValueError:
+                pass
+
+        try:
+            family = socket.AF_INET6 if ":" in candidate and candidate != "0.0.0.0" else socket.AF_INET
+            probe_target = ("2001:4860:4860::8888", 53) if family == socket.AF_INET6 else ("8.8.8.8", 53)
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.connect(probe_target)
+                derived = str(sock.getsockname()[0] or "").strip()
+                if derived and derived not in {"0.0.0.0", "::"}:
+                    return derived
+        except OSError:
+            logger.error(
+                "Unable to derive routable advertise_host for attended transfer helper media",
+                bind_host=bind_host,
+                exc_info=True,
+            )
+        return ""
 
     def _get_attended_transfer_helper_settings(self, attended_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
@@ -959,7 +984,7 @@ class Engine:
             or bind_host
         ).strip() or bind_host
         if advertise_host in {"0.0.0.0", "::"}:
-            advertise_host = "127.0.0.1"
+            advertise_host = self._derive_routable_advertise_host(bind_host)
 
         main_rtp_port = int(getattr(global_external, "rtp_port", 18080) or 18080)
         helper_rtp_port = int(helper_cfg.get("rtp_port") or (main_rtp_port + 100))
@@ -2561,6 +2586,13 @@ class Engine:
             return existing
 
         helper_settings = self._get_attended_transfer_helper_settings(attended_cfg)
+        if not str(helper_settings.get("advertise_host") or "").strip():
+            logger.error(
+                "Attended transfer helper streaming disabled because advertise_host could not be derived",
+                call_id=call_id,
+                agent_channel_id=agent_channel_id,
+            )
+            return None
         helper_session_id = f"attx:{call_id}:{agent_channel_id}"
         bridge_id: Optional[str] = None
         external_media_id: Optional[str] = None
@@ -3972,7 +4004,7 @@ class Engine:
 
         text = raw
         if "```" in text:
-            fenced = re.findall(r"```(?:text)?\s*(.*?)\s*```", text, flags=re.DOTALL)
+            fenced = re.findall(r"```(?:[\w-]+)?\s*(.*?)\s*```", text, flags=re.DOTALL)
             if fenced:
                 text = str(fenced[0]).strip()
 
@@ -3982,7 +4014,7 @@ class Engine:
             return None
 
         # Treat JSON-like responses as unusable for this mode.
-        if text.startswith("{") and text.endswith("}"):
+        if "```" in text or (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]")):
             return None
 
         normalized = text.casefold()
@@ -4278,7 +4310,13 @@ class Engine:
                         continue
                     try:
                         data = json.loads(msg)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(
+                            "Received malformed Local AI Server LLM response",
+                            call_id=call_id,
+                            message_preview=str(msg)[:200],
+                            error=str(e),
+                        )
                         continue
                     if data.get("type") == "llm_response":
                         return str(data.get("text") or "").strip()

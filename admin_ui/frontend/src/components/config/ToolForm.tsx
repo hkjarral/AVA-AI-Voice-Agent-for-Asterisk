@@ -62,10 +62,11 @@ const renderMarkerList = (value: string[] | undefined, fallback: string[]) =>
 
 const hasLiveAgentExpertSettings = (ext: any) => {
     const actionType = String(ext?.action_type || 'transfer').trim() || 'transfer';
+    const deviceStateTech = String(ext?.device_state_tech || 'auto').trim() || 'auto';
     const aliases = Array.isArray(ext?.aliases)
         ? ext.aliases.map((item: any) => String(item || '').trim()).filter(Boolean)
         : [];
-    return actionType !== 'transfer' || aliases.length > 0;
+    return actionType !== 'transfer' || deviceStateTech !== 'auto' || aliases.length > 0;
 };
 
 const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFormProps) => {
@@ -187,6 +188,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
         const internalExtRowMetaRef = useRef<Record<string, { autoDerivedKey: boolean }>>({});
         const internalExtRenameToastKeyRef = useRef<string>('');
         const [internalExtStatusByRowId, setInternalExtStatusByRowId] = useState<Record<string, any>>({});
+        const internalExtStatusControllersRef = useRef<Record<string, AbortController>>({});
+        const internalExtStatusTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
         const liveAgentsCount = Object.keys(config.extensions?.internal || {}).length;
         const hasLiveAgents = liveAgentsCount > 0;
         const hasLiveAgentDestinationOverride = Boolean((config.transfer?.live_agent_destination_key || '').trim());
@@ -318,6 +321,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 return;
             }
 
+            internalExtStatusControllersRef.current[rowId]?.abort();
+            const previousTimeout = internalExtStatusTimeoutsRef.current[rowId];
+            if (previousTimeout) {
+                clearTimeout(previousTimeout);
+                delete internalExtStatusTimeoutsRef.current[rowId];
+            }
+            const controller = new AbortController();
+            internalExtStatusControllersRef.current[rowId] = controller;
+            internalExtStatusTimeoutsRef.current[rowId] = setTimeout(() => controller.abort(), 10000);
+
             // In auto-mode, skip showing loading to avoid UI flicker
             if (!isAuto) {
                 setInternalExtStatusByRowId((prev) => ({
@@ -329,7 +342,9 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             try {
                 const res = await axios.get('/api/system/ari/extension-status', {
                     params: { key: numericKey, device_state_tech: tech, dial_string: dialString },
+                    signal: controller.signal,
                 });
+                if (internalExtStatusControllersRef.current[rowId] !== controller) return;
                 const data = res?.data || {};
                 setInternalExtStatusByRowId((prev) => ({
                     ...prev,
@@ -347,6 +362,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                     toast.error(String(data.error));
                 }
             } catch (e: any) {
+                if (controller.signal.aborted || e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED' || axios.isCancel?.(e)) {
+                    if (internalExtStatusControllersRef.current[rowId] === controller) {
+                        setInternalExtStatusByRowId((prev) => ({
+                            ...prev,
+                            [rowId]: { ...(prev[rowId] || {}), loading: false },
+                        }));
+                    }
+                    return;
+                }
+                if (internalExtStatusControllersRef.current[rowId] !== controller) return;
                 const err = e?.response?.data?.detail || e?.message || 'Status check failed.';
                 setInternalExtStatusByRowId((prev) => ({
                     ...prev,
@@ -354,6 +379,15 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 }));
                 if (!isAuto) {
                     toast.error(String(err));
+                }
+            } finally {
+                if (internalExtStatusControllersRef.current[rowId] === controller) {
+                    delete internalExtStatusControllersRef.current[rowId];
+                }
+                const timeoutId = internalExtStatusTimeoutsRef.current[rowId];
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                    delete internalExtStatusTimeoutsRef.current[rowId];
                 }
             }
         };
@@ -385,6 +419,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 mounted = false;
                 clearTimeout(initialTimer);
                 clearInterval(intervalTimer);
+                Object.values(internalExtStatusControllersRef.current).forEach((controller) => controller.abort());
+                Object.values(internalExtStatusTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
+                internalExtStatusControllersRef.current = {};
+                internalExtStatusTimeoutsRef.current = {};
             };
         }, []);
 
