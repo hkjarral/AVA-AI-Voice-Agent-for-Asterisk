@@ -402,7 +402,7 @@ exten => s,1,NoOp(AI Agent Call)
                 if (sameTtsBackendModels.length > 0) {
                     const autoModel = sameTtsBackendModels[0];
                     setConfig(prev => {
-                        const updates: Partial<WizardConfig> = { local_tts_model: autoModel.id };
+                        const updates: Partial<SetupConfig> = { local_tts_model: autoModel.id };
                         if (autoModel.backend === 'silero') {
                             updates.silero_speaker = autoModel.speaker;
                             const lang = (autoModel.language || '').split('-')[0];
@@ -413,7 +413,7 @@ exten => s,1,NoOp(AI Agent Call)
                 } else {
                     const autoModel = ttsModels[0];
                     setConfig(prev => {
-                        const updates: Partial<WizardConfig> = {
+                        const updates: Partial<SetupConfig> = {
                             local_tts_model: autoModel.id,
                             local_tts_backend: autoModel.backend,
                         };
@@ -1405,7 +1405,7 @@ exten => s,1,NoOp(AI Agent Call)
                                                             return langOk && (m.backend || '').toLowerCase() === String(nextBackend).toLowerCase();
                                                         });
                                                         const picked = candidates[0];
-                                                        const updates: Partial<WizardConfig> = {
+                                                        const updates: Partial<SetupConfig> = {
                                                             local_tts_backend: nextBackend,
                                                             kokoro_mode: nextKokoroMode,
                                                             local_tts_model: picked?.id || '',
@@ -1435,7 +1435,7 @@ exten => s,1,NoOp(AI Agent Call)
                                                     onChange={e => {
                                                         const modelId = e.target.value;
                                                         const picked = (modelCatalog.tts || []).find((m: any) => m.id === modelId);
-                                                        const updates: Partial<WizardConfig> = {
+                                                        const updates: Partial<SetupConfig> = {
                                                             local_tts_model: modelId,
                                                             local_tts_backend: picked?.backend || config.local_tts_backend,
                                                         };
@@ -1446,7 +1446,7 @@ exten => s,1,NoOp(AI Agent Call)
                                                         }
                                                         setConfig({ ...config, ...updates });
                                                     }}
-                                                    disabled={['melotts', 'silero'].includes((config.local_tts_backend || '').toLowerCase())}
+                                                    disabled={['melotts'].includes((config.local_tts_backend || '').toLowerCase())}
                                                 >
                                                     {(() => {
                                                         const backend = (config.local_tts_backend || 'piper').toLowerCase();
@@ -2015,7 +2015,7 @@ exten => s,1,NoOp(AI Agent Call)
                                                         const val = e.target.value;
                                                         const model = modelCatalog?.tts?.find((m: any) => m.id === val);
                                                         if (model) {
-                                                            const updates: Partial<WizardConfig> = {
+                                                            const updates: Partial<SetupConfig> = {
                                                                 local_tts_backend: model.backend,
                                                                 local_tts_model: model.id,
                                                             };

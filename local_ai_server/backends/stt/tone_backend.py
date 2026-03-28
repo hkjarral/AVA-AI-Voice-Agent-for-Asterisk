@@ -42,7 +42,7 @@ class ToneBackend(STTBackendInterface):
         self._model = None
 
     def process_audio(self, audio_bytes: bytes) -> Optional[str]:
-        return None
+        raise NotImplementedError("ToneBackend is a registry stub; use ToneSTTBackend from stt_backends.py")
 
     def status(self) -> Dict[str, Any]:
         return {"backend": "tone", "loaded": self._model is not None}

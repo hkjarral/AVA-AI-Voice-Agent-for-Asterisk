@@ -352,6 +352,8 @@ class SileroTTSBackend:
             # Direct torch.hub cache to the configured model path
             torch.hub.set_dir(self.model_path)
 
+            # trust_repo=True is safe here: the hub cache is baked into the
+            # Docker image at build time, so no network fetch occurs at runtime.
             model, _ = torch.hub.load(
                 repo_or_dir="snakers4/silero-models",
                 model="silero_tts",

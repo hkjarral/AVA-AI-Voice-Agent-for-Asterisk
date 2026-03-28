@@ -724,7 +724,10 @@ export const HealthWidget = () => {
                                                     className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.tone_decoder_type ? 'border-yellow-500' : 'border-border'}`}
                                                     value={pendingChanges.stt?.tone_decoder_type ?? 'beam_search'}
                                                     onChange={(e) => {
-                                                        const existing = pendingChanges.stt || { backend: 'tone', modelPath: health.local_ai_server.details.models?.stt?.path };
+                                                        const currentPath = health.local_ai_server.details.models?.stt?.backend === 'tone'
+                                                            ? health.local_ai_server.details.models?.stt?.path
+                                                            : undefined;
+                                                        const existing = pendingChanges.stt || { backend: 'tone', modelPath: currentPath };
                                                         queueChange('stt', { ...existing, backend: 'tone', tone_decoder_type: e.target.value });
                                                     }}
                                                     disabled={applyingChanges}
@@ -741,7 +744,10 @@ export const HealthWidget = () => {
                                                         className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.tone_kenlm_path ? 'border-yellow-500' : 'border-border'}`}
                                                         value={pendingChanges.stt?.tone_kenlm_path || ''}
                                                         onChange={(e) => {
-                                                            const existing = pendingChanges.stt || { backend: 'tone', modelPath: health.local_ai_server.details.models?.stt?.path };
+                                                            const currentPath = health.local_ai_server.details.models?.stt?.backend === 'tone'
+                                                                ? health.local_ai_server.details.models?.stt?.path
+                                                                : undefined;
+                                                            const existing = pendingChanges.stt || { backend: 'tone', modelPath: currentPath };
                                                             queueChange('stt', { ...existing, backend: 'tone', tone_kenlm_path: e.target.value });
                                                         }}
                                                         placeholder="/app/models/stt/t-one/kenlm.bin"

@@ -199,3 +199,4 @@ def test_env_and_yaml_updates_silero_with_model_path() -> None:
     assert env_updates["LOCAL_TTS_BACKEND"] == "silero"
     assert env_updates["SILERO_SPEAKER"] == "xenia"
     assert env_updates["SILERO_MODEL_PATH"] == "/custom/silero/path"
+    assert yaml_updates["silero_model_path"] == "/custom/silero/path"

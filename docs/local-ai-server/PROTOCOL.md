@@ -366,7 +366,7 @@ Response:
   "type": "status_response",
   "status": "ok",
   "stt_backend": "vosk|kroko|sherpa|faster_whisper|whisper_cpp",
-  "tts_backend": "piper|kokoro|melotts",
+  "tts_backend": "piper|kokoro|melotts|silero",
   "models": {
     "stt": { "loaded": true, "path": "/app/models/stt/...", "display": "vosk-model-en-us-0.22" },
     "llm": {
@@ -443,6 +443,10 @@ Request (examples):
 ```
 
 ```json
+{ "type": "switch_model", "tts_backend": "silero", "silero_speaker": "xenia", "silero_language": "ru", "silero_model_id": "v3_1_ru" }
+```
+
+```json
 { "type": "switch_model", "tts_backend": "kokoro", "kokoro_voice": "af_heart" }
 ```
 
@@ -512,10 +516,10 @@ Optional fields:
 
 Accepted payload shapes:
 
-- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, `faster_whisper_language`, `whisper_cpp_language`, `stt_model_path`, `tts_model_path`.
+- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, `faster_whisper_language`, `whisper_cpp_language`, `stt_model_path`, `tts_model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`.
 - Nested config objects:
   - `stt_config`: `model`, `device`, `compute_type`, `faster_whisper_language`, `whisper_cpp_language`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
-  - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`
+  - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`
   - `llm_config`: `model_path`, `threads`, `context`, `batch`, `max_tokens`, `temperature`, `top_p`, `repeat_penalty`, `gpu_layers`, `system_prompt`, `use_mlock`, `chat_format`
 
 Notes:
@@ -550,6 +554,7 @@ Response:
     "piper": true,
     "kokoro": true,
     "melotts": false,
+    "silero": true,
     "llama": true
   }
 }
@@ -560,6 +565,7 @@ Notes:
 - `kroko_embedded`: `true` only if `/usr/local/bin/kroko-server` exists (requires `INCLUDE_KROKO_EMBEDDED=true` at build time)
 - `tone`: `true` only if the T-one package is installed (requires `INCLUDE_TONE=true` at build time)
 - `kokoro`: `true` if Kokoro package is installed, or `KOKORO_API_BASE_URL` is set, or model files exist on disk
+- `silero`: `true` if the Silero TTS package is installed
 - `vosk`, `piper`, `llama`: Reported as `true` in default/full Docker images (assumes standard dependencies are installed)
 - Used by Admin UI `/api/local-ai/capabilities` endpoint to filter available options
 

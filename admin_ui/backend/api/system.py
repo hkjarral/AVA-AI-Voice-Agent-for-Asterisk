@@ -1365,7 +1365,9 @@ async def get_system_health():
                             data["kokoro_mode"] = kokoro_mode
                             data["kokoro_voice"] = kokoro_voice
 
-                            silero = data.get("silero") or {}
+                            silero = data.get("silero")
+                            if not isinstance(silero, dict):
+                                silero = {}
                             data["silero_language"] = silero.get("language")
                             data["silero_speaker"] = silero.get("speaker")
                             data["silero_model_id"] = silero.get("model_id")

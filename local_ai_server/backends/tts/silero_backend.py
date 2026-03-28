@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from backends.interface import TTSBackendInterface
 
@@ -40,8 +40,8 @@ class SileroBackend(TTSBackendInterface):
     def shutdown(self) -> None:
         self._model = None
 
-    def synthesize(self, text: str) -> bytes:
-        return b""
+    def synthesize(self, text: str) -> Optional[bytes]:
+        raise NotImplementedError("SileroBackend is a registry stub; use SileroTTSBackend from tts_backends.py")
 
     def status(self) -> Dict[str, Any]:
         return {"backend": "silero", "loaded": self._model is not None}

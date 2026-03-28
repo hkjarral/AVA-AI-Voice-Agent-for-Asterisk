@@ -790,6 +790,8 @@ class LocalAIServer:
         self.buffer_timeout_ms = self.config.stt_idle_ms
         # Track startup-only auto-tuning so reload_models() doesn't re-run it.
         self._startup_tuning_applied = False
+        # Ingress RMS logging counter (hot audio path).
+        self._ingress_rms_count: int = 0
         # Best-effort metadata for UI/status.
         self._llm_auto_ctx_meta: Dict[str, Any] = {}
         self._llm_tool_capability_meta: Dict[str, Any] = {
@@ -1249,7 +1251,7 @@ class LocalAIServer:
                     logging.info("📥 SHERPA-OFFLINE - Downloading Silero VAD model to %s …", vad_path)
                     try:
                         import urllib.request
-                        urllib.request.urlretrieve(vad_url, vad_path)
+                        await asyncio.to_thread(urllib.request.urlretrieve, vad_url, vad_path)
                         logging.info("✅ SHERPA-OFFLINE - Silero VAD downloaded successfully (%d bytes)", os.path.getsize(vad_path))
                     except Exception as dl_exc:
                         logging.error("❌ SHERPA-OFFLINE - Failed to download Silero VAD: %s", dl_exc)
@@ -3169,7 +3171,31 @@ class LocalAIServer:
                         (0, max(0, ToneSTTBackend.CHUNK_SAMPLES - len(remainder))),
                         mode="constant",
                     )[: ToneSTTBackend.CHUNK_SAMPLES]
-                    self.tone_backend.process_audio(session.tone_state, padded)
+                    chunk_updates = self.tone_backend.process_audio(session.tone_state, padded)
+                    if chunk_updates:
+                        meta = session.last_request_meta or {}
+                        mode = meta.get("mode", "stt")
+                        request_id = meta.get("request_id")
+                        for upd in chunk_updates:
+                            txt = (upd.get("text") or "").strip()
+                            if not txt:
+                                continue
+                            logging.info(
+                                "📝 T-ONE - Emitting trailing chunk speech: '%s' call_id=%s mode=%s",
+                                txt,
+                                session.call_id,
+                                mode,
+                            )
+                            await self._emit_stt_result(
+                                websocket,
+                                txt,
+                                session,
+                                request_id,
+                                source_mode=mode,
+                                is_final=True,
+                                is_partial=False,
+                                confidence=upd.get("confidence"),
+                            )
                 session.tone_buffer_8k = b""
 
             updates = self.tone_backend.finalize(session.tone_state)
@@ -4479,7 +4505,8 @@ class LocalAIServer:
             await self._send_bytes(websocket, audio_bytes)
 
     def _arm_whisper_stt_suppression(self, session: SessionContext, audio_bytes: Optional[bytes], *, source: str) -> None:
-        if self.stt_backend not in {"faster_whisper", "whisper_cpp"}:
+        _sherpa_offline = self.stt_backend == "sherpa" and getattr(self, "sherpa_model_type", "online") == "offline"
+        if self.stt_backend not in {"faster_whisper", "whisper_cpp"} and not _sherpa_offline:
             return
         if not audio_bytes:
             return
@@ -4502,7 +4529,8 @@ class LocalAIServer:
         )
 
     def _clear_whisper_stt_suppression(self, session: SessionContext, *, reason: str) -> None:
-        if self.stt_backend not in {"faster_whisper", "whisper_cpp"}:
+        _sherpa_offline = self.stt_backend == "sherpa" and getattr(self, "sherpa_model_type", "online") == "offline"
+        if self.stt_backend not in {"faster_whisper", "whisper_cpp"} and not _sherpa_offline:
             return
         current_until = float(getattr(session, "stt_suppress_until", 0.0) or 0.0)
         if current_until <= monotonic():
@@ -4912,8 +4940,6 @@ class LocalAIServer:
             ingress_rms = _audioop.rms(audio_bytes, 2)
         except Exception:
             ingress_rms = -1
-        if not hasattr(self, '_ingress_rms_count'):
-            self._ingress_rms_count = 0
         self._ingress_rms_count += 1
         if ingress_rms > 50 or self._ingress_rms_count % 100 == 1:
             logging.debug(

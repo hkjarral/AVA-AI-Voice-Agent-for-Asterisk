@@ -41,6 +41,12 @@ The branch has moved beyond analysis and now implements the core Russian-STT-ena
     - Local provider configuration form
     - `System -> Environment`
   - Local AI status/protocol surfaces now expose STT language and Sherpa model type.
+- **T-one STT backend**
+  - T-one recognition pipeline is wired end-to-end: `TONE_MODEL_PATH`, `TONE_DECODER_TYPE`, `TONE_KENLM_PATH` are exposed in Admin UI switch API, persisted in env, and applied at runtime.
+  - Trailing-chunk flush ensures no audio is silently dropped at session close.
+- **Silero TTS backend**
+  - `SILERO_SPEAKER`, `SILERO_LANGUAGE`, `SILERO_MODEL_ID`, `SILERO_SAMPLE_RATE`, and `SILERO_MODEL_PATH` are wired through Admin UI, switch API, and runtime.
+  - Model-path override allows custom Silero model files outside the default catalog location.
 - **Model catalog**
   - Added:
     - `sherpa-onnx-zipformer-en-2023-06-26`

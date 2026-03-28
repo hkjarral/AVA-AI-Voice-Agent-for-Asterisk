@@ -605,7 +605,7 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         # Chunk-correlated RMS at engine egress (int16 scale, width=2)
         try:
             egress_rms = audioop.rms(pcm16, 2)
-        except Exception:
+        except (audioop.error, ValueError, TypeError):
             egress_rms = -1
         
         logger.debug(

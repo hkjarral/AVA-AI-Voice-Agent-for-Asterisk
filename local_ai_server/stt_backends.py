@@ -379,6 +379,7 @@ class SherpaOfflineSTTBackend:
             "yes",
             "on",
         }
+        self._vad_chunk_count = 0
 
     def initialize(self) -> bool:
         try:
@@ -654,8 +655,6 @@ class SherpaOfflineSTTBackend:
             float_samples = samples.astype(np.float32) / 32768.0
 
             rms = float(np.sqrt(np.mean(float_samples ** 2)))
-            if not hasattr(self, '_vad_chunk_count'):
-                self._vad_chunk_count = 0
             self._vad_chunk_count += 1
             if rms > 0.002 or self._vad_chunk_count % 100 == 1:
                 logging.debug(

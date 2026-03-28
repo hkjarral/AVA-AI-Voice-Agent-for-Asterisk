@@ -442,7 +442,16 @@ const EnvPage = () => {
         // Hidden/Internal (added to suppress from Other)
         'COMPOSE_PROJECT_NAME', 'GREETING', 'AI_GREETING', 'AI_NAME', 'AI_ROLE', 'HOST_PROJECT_ROOT', 'PROJECT_ROOT', 'GPU_AVAILABLE', 'INCLUDE_WHISPER_CPP',
         // Deprecated/Legacy
-        'CARTESIA_API_KEY', 'LOCAL_FASTER_WHISPER_COMPUTE'
+        'CARTESIA_API_KEY', 'LOCAL_FASTER_WHISPER_COMPUTE',
+        // Local AI Server - Sherpa offline/VAD
+        'SHERPA_MODEL_TYPE', 'SHERPA_VAD_MODEL_PATH', 'SHERPA_VAD_THRESHOLD',
+        'SHERPA_VAD_MIN_SILENCE_MS', 'SHERPA_VAD_MIN_SPEECH_MS', 'SHERPA_OFFLINE_PREROLL_MS',
+        'SHERPA_OFFLINE_DEBUG_SEGMENTS',
+        // Local AI Server - Tone STT
+        'TONE_MODEL_PATH', 'TONE_DECODER_TYPE', 'TONE_KENLM_PATH', 'INCLUDE_TONE',
+        // Local AI Server - Silero TTS
+        'INCLUDE_SILERO', 'SILERO_SPEAKER', 'SILERO_LANGUAGE', 'SILERO_MODEL_ID',
+        'SILERO_SAMPLE_RATE', 'SILERO_MODEL_PATH'
     ];
 
     const otherSettings = Object.keys(env).filter(k => !knownKeys.includes(k));
@@ -1284,7 +1293,20 @@ const EnvPage = () => {
                                 <FormSelect
                                     label="Sherpa Model Type"
                                     value={env['SHERPA_MODEL_TYPE'] || 'online'}
-                                    onChange={(e) => updateEnv('SHERPA_MODEL_TYPE', e.target.value)}
+                                    onChange={(e) => {
+                                        const newType = e.target.value;
+                                        const oldType = env['SHERPA_MODEL_TYPE'] || 'online';
+                                        updateEnv('SHERPA_MODEL_TYPE', newType);
+                                        // Reset model path to the new type's default if it still matches the old type's default
+                                        const offlineDefault = '/app/models/stt/sherpa-onnx-zipformer-en-2023-06-26';
+                                        const onlineDefault = '/app/models/stt/sherpa-onnx-streaming-zipformer-en-2023-06-26';
+                                        const currentPath = env['SHERPA_MODEL_PATH'] || (oldType === 'offline' ? offlineDefault : onlineDefault);
+                                        if (newType === 'offline' && currentPath === onlineDefault) {
+                                            updateEnv('SHERPA_MODEL_PATH', offlineDefault);
+                                        } else if (newType === 'online' && currentPath === offlineDefault) {
+                                            updateEnv('SHERPA_MODEL_PATH', onlineDefault);
+                                        }
+                                    }}
                                     options={[
                                         { value: 'online', label: 'Online (Streaming)' },
                                         { value: 'offline', label: 'Offline (VAD-Gated)' },

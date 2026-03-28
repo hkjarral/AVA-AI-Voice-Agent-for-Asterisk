@@ -95,6 +95,9 @@ RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
         python -c "from melo.api import TTS; print('MeloTTS package ready')"; \
     fi
 
+# Ensure cache dir exists so COPY --from=builder never fails
+RUN mkdir -p /opt/silero-cache
+
 RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
         echo "📦 Installing Silero TTS dependencies..." && \
         if ! python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then \
@@ -102,7 +105,7 @@ RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
         fi && \
         pip install --no-cache-dir omegaconf && \
         echo "📦 Pre-caching Silero Russian model (best effort)..." && \
-        python3 -c "import torch; torch.hub.set_dir('/app/models/tts/silero'); torch.hub.load('snakers4/silero-models', 'silero_tts', language='ru', speaker='v3_1_ru', trust_repo=True)" || true && \
+        python3 -c "import torch; torch.hub.set_dir('/opt/silero-cache'); torch.hub.load('snakers4/silero-models:v5.5', 'silero_tts', language='ru', speaker='v3_1_ru', trust_repo=True)" || true && \
         echo "✅ Silero TTS ready"; \
     fi
 
@@ -176,6 +179,7 @@ USER appuser
 
 # Copy the virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder --chown=appuser:appuser /opt/silero-cache /app/models/tts/silero
 
 # Copy application source code
 COPY --chown=appuser:appuser . .

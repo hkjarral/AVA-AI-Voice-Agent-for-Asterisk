@@ -16,6 +16,24 @@ def _parse_bool(raw: Optional[str], default: bool = False) -> bool:
     return default
 
 
+def _parse_float(raw: Optional[str], default: float = 0.0) -> float:
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_int(raw: Optional[str], default: int = 0) -> int:
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 @dataclass(frozen=True)
 class LocalAIConfig:
     runtime_mode: str = "full"
@@ -176,10 +194,10 @@ class LocalAIConfig:
             sherpa_model_path=os.getenv("SHERPA_MODEL_PATH", "/app/models/stt/sherpa"),
             sherpa_model_type=(os.getenv("SHERPA_MODEL_TYPE", "online") or "online").strip().lower(),
             sherpa_vad_model_path=os.getenv("SHERPA_VAD_MODEL_PATH", ""),
-            sherpa_vad_threshold=float(os.getenv("SHERPA_VAD_THRESHOLD", "0.35")),
-            sherpa_vad_min_silence_ms=int(os.getenv("SHERPA_VAD_MIN_SILENCE_MS", "700")),
-            sherpa_vad_min_speech_ms=int(os.getenv("SHERPA_VAD_MIN_SPEECH_MS", "200")),
-            sherpa_offline_preroll_ms=int(os.getenv("SHERPA_OFFLINE_PREROLL_MS", "350")),
+            sherpa_vad_threshold=_parse_float(os.getenv("SHERPA_VAD_THRESHOLD"), 0.35),
+            sherpa_vad_min_silence_ms=_parse_int(os.getenv("SHERPA_VAD_MIN_SILENCE_MS"), 700),
+            sherpa_vad_min_speech_ms=_parse_int(os.getenv("SHERPA_VAD_MIN_SPEECH_MS"), 200),
+            sherpa_offline_preroll_ms=_parse_int(os.getenv("SHERPA_OFFLINE_PREROLL_MS"), 350),
             tone_model_path=os.getenv("TONE_MODEL_PATH", "/app/models/stt/t-one"),
             tone_decoder_type=(os.getenv("TONE_DECODER_TYPE", "beam_search") or "beam_search").strip().lower(),
             tone_kenlm_path=os.getenv("TONE_KENLM_PATH", ""),
@@ -245,7 +263,7 @@ class LocalAIConfig:
             silero_speaker=os.getenv("SILERO_SPEAKER", "xenia"),
             silero_language=os.getenv("SILERO_LANGUAGE", "ru"),
             silero_model_id=os.getenv("SILERO_MODEL_ID", "v3_1_ru"),
-            silero_sample_rate=int(os.getenv("SILERO_SAMPLE_RATE", "8000")),
+            silero_sample_rate=_parse_int(os.getenv("SILERO_SAMPLE_RATE"), 8000),
             silero_model_path=os.getenv("SILERO_MODEL_PATH", "/app/models/tts/silero"),
             stt_idle_ms=int(stt_idle_ms_raw),
             stt_segment_energy_threshold=int(os.getenv("LOCAL_STT_SEGMENT_ENERGY_THRESHOLD", "1200")),
