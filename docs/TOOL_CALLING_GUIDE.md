@@ -862,8 +862,8 @@ tools:
     dial_timeout_seconds: 30
     accept_timeout_seconds: 15
     tts_timeout_seconds: 8
-    screening_mode: "basic_tts"       # basic_tts | ai_briefing | caller_recording
-    ai_briefing_timeout_seconds: 2.0  # Local AI Server LLM summary timeout; falls back to basic_tts on failure
+    screening_mode: "basic_tts"       # basic_tts | ai_briefing (experimental) | caller_recording
+    ai_briefing_timeout_seconds: 2.0  # Experimental Local AI Server LLM summary timeout; falls back to basic_tts on failure
     ai_briefing_intro_template: "Hi, this is Ava. Here is a short summary of the caller."
     caller_screening_prompt: "Before I connect you, please say your name and the reason for your call."
     caller_screening_max_seconds: 6
@@ -877,8 +877,8 @@ tools:
     # Local AI Server dependency notes:
     # - basic_tts: requires Local AI Server TTS
     # - caller_recording: requires Local AI Server TTS for intro/prompt
-    # - ai_briefing: requires Local AI Server TTS and Local AI Server LLM capability
-    #                 falls back to basic_tts if summary generation is unavailable
+    # - ai_briefing (experimental): requires Local AI Server TTS and Local AI Server LLM capability
+    #                               falls back to basic_tts if summary generation is unavailable
 
   # ----------------------------------------------------------------------------
   # CHECK_EXTENSION_STATUS - Availability checks for configured targets

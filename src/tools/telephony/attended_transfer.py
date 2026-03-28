@@ -27,7 +27,7 @@ class AttendedTransferTool(Tool):
             description=(
                 "Warm transfer to a configured extension with a one-way announcement to the agent, "
                 "then DTMF acceptance (1=accept, 2=decline). Caller is placed on MOH while the agent is contacted. "
-                "The screening payload can be a basic TTS briefing, an AI-generated summary, or a caller-recorded screening clip, depending on config. "
+                "The screening payload can be a basic TTS briefing, an experimental AI-generated summary, or a caller-recorded screening clip, depending on config. "
                 "Use when you must brief a human before connecting the caller. "
                 "Use exact configured destination keys exposed in the runtime prompt/context."
             ),

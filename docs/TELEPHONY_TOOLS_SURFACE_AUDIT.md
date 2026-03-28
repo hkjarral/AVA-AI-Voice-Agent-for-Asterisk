@@ -8,7 +8,7 @@ This document captures the first cleanup tranche for telephony tools and their U
 | --- | --- | --- | --- | --- |
 | `tools.transfer` | surfaced | active | keep | canonical blind transfer config |
 | `tools.attended_transfer.delivery_mode` | surfaced | active | keep | operator-facing, required for shared-storage-free callee streaming |
-| `tools.attended_transfer.screening_mode` | surfaced | active | keep | `basic_tts`, `ai_briefing`, and `caller_recording` are the supported modes |
+| `tools.attended_transfer.screening_mode` | surfaced | active | keep | `basic_tts`, experimental `ai_briefing`, and `caller_recording` are the supported modes |
 | `tools.attended_transfer.pass_caller_info_to_context` | hidden | compat-only | deprecate | stop writing from UI, keep read-compat for one release |
 | `screened_*` attended-transfer placeholders | hidden in docs/tooltips only | compat-only | deprecate | remove with `ai_summary` after compat window |
 | `extensions.internal.*.pass_caller_info` | not surfaced | legacy-only | deprecate | stop creating on new rows, keep read-compat for one release |

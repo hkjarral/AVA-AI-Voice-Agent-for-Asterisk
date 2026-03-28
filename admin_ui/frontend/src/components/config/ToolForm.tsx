@@ -733,7 +733,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Attended Transfer (Warm)"
-                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS. AI Briefing mode also requires Local AI Server LLM capability; otherwise it falls back to Basic TTS."
+                        description="Warm transfer with MOH, one-way announcement to the agent, and DTMF accept/decline. Requires Local AI Server for TTS. AI Briefing is experimental, requires Local AI Server LLM capability, and falls back to Basic TTS when unavailable."
                         checked={config.attended_transfer?.enabled ?? false}
                         onChange={(e) => handleAttendedTransferToggle(e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -757,10 +757,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                     onChange={(e) => updateNestedConfig('attended_transfer', 'screening_mode', e.target.value)}
                                     options={[
                                         { value: 'basic_tts', label: 'Basic TTS' },
-                                        { value: 'ai_briefing', label: 'AI Briefing' },
+                                        { value: 'ai_briefing', label: 'AI Briefing (Experimental)' },
                                         { value: 'caller_recording', label: 'Caller Recording' },
                                     ]}
-                                    tooltip="Basic TTS uses caller ID and context. AI Briefing generates a short AI-written summary from the live conversation. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
+                                    tooltip="Basic TTS uses caller ID and context. AI Briefing is experimental and generates a short AI-written summary from the live conversation using Local AI Server LLM. Caller Recording asks the caller to state their name and reason, then plays that clip to the destination agent."
                                 />
                                 <FormInput
                                     label="MOH Class"
@@ -831,8 +831,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                 {config.attended_transfer?.screening_mode === 'ai_briefing' && (
                                     <>
                                         <div className="md:col-span-2 space-y-2">
-                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing requires Local AI Server LLM capability and falls back to Basic TTS when summary generation is unavailable.">
-                                                AI Briefing Intro Template
+                                            <FormLabel tooltip="Spoken to the destination agent before the AI-generated summary. AI Briefing is experimental, requires Local AI Server LLM capability, and falls back to Basic TTS when summary generation is unavailable.">
+                                                AI Briefing Intro Template (Experimental)
                                             </FormLabel>
                                             <textarea
                                                 className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
@@ -842,11 +842,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                             />
                                         </div>
                                         <FormInput
-                                            label="AI Briefing Timeout (seconds)"
+                                            label="AI Briefing Timeout (seconds, Experimental)"
                                             type="number"
                                             value={config.attended_transfer?.ai_briefing_timeout_seconds ?? 2}
                                             onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_timeout_seconds', parseFloat(e.target.value) || 2)}
-                                            tooltip="Maximum time to wait for Local AI Server LLM to generate the briefing before falling back to Basic TTS."
+                                            tooltip="Maximum time to wait for the experimental Local AI Server LLM briefing before falling back to Basic TTS."
                                         />
                                     </>
                                 )}
