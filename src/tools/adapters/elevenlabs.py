@@ -149,7 +149,7 @@ class ElevenLabsToolAdapter:
             exec_context = context
             if isinstance(context, dict):
                 exec_context = ToolExecutionContext(
-                    call_id=context["call_id"],
+                    call_id=str(context.get("call_id") or ""),
                     caller_channel_id=context.get("caller_channel_id"),
                     bridge_id=context.get("bridge_id"),
                     caller_number=context.get("caller_number"),

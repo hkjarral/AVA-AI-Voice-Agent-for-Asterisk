@@ -2524,6 +2524,8 @@ class Engine:
             return False
 
         state = self._attended_transfer_helper_state_by_agent_channel.get(agent_channel_id) or {}
+        if state.get("external_media_attached"):
+            return True
         bridge_id = state.get("bridge_id")
         if not bridge_id:
             return False
@@ -2532,6 +2534,9 @@ class Engine:
         if success:
             state["external_media_attached"] = True
             self._attended_transfer_helper_state_by_agent_channel[agent_channel_id] = state
+            return True
+        latest_state = self._attended_transfer_helper_state_by_agent_channel.get(agent_channel_id) or {}
+        if latest_state.get("external_media_attached"):
             return True
         return False
 

@@ -877,6 +877,8 @@ tools:
     # Local AI Server dependency notes:
     # - basic_tts: requires Local AI Server TTS
     # - caller_recording: requires Local AI Server TTS for intro/prompt
+    #                     operators are responsible for meeting local caller notice/consent requirements
+    #                     screening audio is used transiently for the transfer workflow, not as a retained recording feature
     # - ai_briefing (experimental): requires Local AI Server TTS and Local AI Server LLM capability
     #                               falls back to basic_tts if summary generation is unavailable
 

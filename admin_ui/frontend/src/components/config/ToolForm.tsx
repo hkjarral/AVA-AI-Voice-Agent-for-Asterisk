@@ -805,7 +805,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                 {config.attended_transfer?.screening_mode === 'caller_recording' && (
                                     <>
                                         <div className="md:col-span-2 space-y-2">
-                                            <FormLabel tooltip="Spoken to the caller before screening capture begins. The AI/provider speaks this prompt, then the engine records the next caller utterance.">
+                                            <FormLabel tooltip="Spoken to the caller before screening capture begins. The AI/provider speaks this prompt, then the engine records the next caller utterance. Ensure your deployment satisfies any local caller notice or consent requirements before enabling caller recording.">
                                                 Caller Screening Prompt
                                             </FormLabel>
                                             <textarea
