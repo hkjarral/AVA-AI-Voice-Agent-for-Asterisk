@@ -49,6 +49,50 @@ def _build_live_agent_lines(config: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _build_check_extension_status_lines(config: Dict[str, Any]) -> List[str]:
+    tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}
+    internal = ((tools_cfg or {}).get("extensions") or {}).get("internal") or {}
+    transfer_cfg = (tools_cfg or {}).get("transfer") or {}
+    destinations = (transfer_cfg or {}).get("destinations") or {}
+
+    allowed: Dict[str, Dict[str, Any]] = {}
+
+    if isinstance(internal, dict):
+        for key, raw_cfg in internal.items():
+            extension = str(key or "").strip()
+            cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+            if not extension.isdigit():
+                continue
+            if cfg.get("transfer") is False:
+                continue
+            allowed[extension] = cfg
+
+    if isinstance(destinations, dict):
+        for raw_cfg in destinations.values():
+            cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+            if str(cfg.get("type") or "").strip().lower() != "extension":
+                continue
+            extension = str(cfg.get("target") or "").strip()
+            if not extension.isdigit():
+                continue
+            allowed.setdefault(extension, {})
+
+    lines: List[str] = []
+    for extension in sorted(allowed.keys(), key=lambda v: int(v)):
+        cfg = allowed.get(extension) or {}
+        name = str(cfg.get("name") or "").strip()
+        aliases = cfg.get("aliases")
+        alias_values = aliases if isinstance(aliases, list) else [aliases] if aliases is not None else []
+        pieces = [f"- `{extension}`"]
+        if name:
+            pieces.append(f"name: {name}")
+        alias_text = _stringify_list(alias_values)
+        if alias_text:
+            pieces.append(f"aliases: {alias_text}")
+        lines.append(", ".join(pieces))
+    return lines
+
+
 def _build_transfer_destination_lines(config: Dict[str, Any]) -> List[str]:
     tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}
     transfer_cfg = (tools_cfg or {}).get("transfer") or {}
@@ -126,24 +170,43 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
     ]
     sections.append("\n".join(header))
 
-    if "live_agent_transfer" in allowed or "check_extension_status" in allowed:
+    if "live_agent_transfer" in allowed:
         live_agent_lines = _build_live_agent_lines(config)
         if live_agent_lines:
             lines = [
                 "Configured live agents:",
                 *live_agent_lines,
             ]
-            if "live_agent_transfer" in allowed:
-                lines.append("- Use `live_agent_transfer.target` with one of the listed extensions, names, or aliases.")
-            if "check_extension_status" in allowed:
-                lines.append("- For live-agent availability checks, only query the listed live-agent extensions.")
+            lines.append("- Use `live_agent_transfer.target` with one of the listed extensions, names, or aliases.")
             sections.append("\n".join(lines))
-        elif "live_agent_transfer" in allowed:
+        else:
             sections.append(
                 "\n".join(
                     [
                         "Configured live agents:",
                         "- None configured. Do not call `live_agent_transfer` unless a live agent is configured.",
+                    ]
+                )
+            )
+
+    if "check_extension_status" in allowed:
+        check_lines = _build_check_extension_status_lines(config)
+        if check_lines:
+            sections.append(
+                "\n".join(
+                    [
+                        "Configured extensions allowed for `check_extension_status`:",
+                        *check_lines,
+                        "- Only query the listed configured extensions or transfer-destination extension targets.",
+                    ]
+                )
+            )
+        else:
+            sections.append(
+                "\n".join(
+                    [
+                        "Configured extensions allowed for `check_extension_status`:",
+                        "- None configured. Do not call `check_extension_status` unless a live agent or transfer destination is configured.",
                     ]
                 )
             )

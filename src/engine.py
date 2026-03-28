@@ -7,6 +7,7 @@ import os
 import random
 import re
 import signal
+import socket
 import struct
 import time
 import uuid
@@ -702,17 +703,15 @@ class Engine:
                     getattr(self.config.external_media, "port_range", None),
                     rtp_port,
                 )
-                allowed_remote_hosts = getattr(self.config.external_media, "allowed_remote_hosts", None)
-                if not allowed_remote_hosts:
-                    try:
-                        ipaddress.ip_address(str(self.config.asterisk.host))
-                        allowed_remote_hosts = [str(self.config.asterisk.host)]
-                        logger.info(
-                            "ExternalMedia RTP allowlist defaulted to Asterisk host IP",
-                            allowed_remote_hosts=allowed_remote_hosts,
-                        )
-                    except Exception:
-                        allowed_remote_hosts = None
+                allowed_remote_hosts = self._resolve_allowed_remote_hosts(
+                    getattr(self.config.external_media, "allowed_remote_hosts", None),
+                    getattr(self.config.asterisk, "host", None),
+                )
+                if allowed_remote_hosts:
+                    logger.info(
+                        "ExternalMedia RTP allowlist resolved",
+                        allowed_remote_hosts=allowed_remote_hosts,
+                    )
                 lock_remote_endpoint = bool(
                     getattr(self.config.external_media, "lock_remote_endpoint", True)
                 )
@@ -909,6 +908,41 @@ class Engine:
         delivery_mode = str(cfg.get("delivery_mode", "file") or "file").strip().lower()
         return delivery_mode == "stream"
 
+    def _resolve_allowed_remote_hosts(self, configured_hosts: Any, fallback_host: Any) -> Optional[List[str]]:
+        hosts: List[str] = []
+        if isinstance(configured_hosts, str):
+            hosts = [item.strip() for item in configured_hosts.split(",") if item.strip()]
+        elif isinstance(configured_hosts, (list, tuple, set)):
+            hosts = [str(item).strip() for item in configured_hosts if str(item).strip()]
+
+        if hosts:
+            return hosts
+
+        fallback = str(fallback_host or "").strip()
+        if not fallback:
+            return []
+
+        try:
+            ipaddress.ip_address(fallback)
+            return [fallback]
+        except Exception:
+            pass
+
+        try:
+            resolved = {
+                info[4][0]
+                for info in socket.getaddrinfo(fallback, None)
+                if info and len(info) >= 5 and info[4]
+            }
+            return sorted(resolved)
+        except Exception:
+            logger.warning(
+                "Failed to resolve allowed_remote_hosts fallback host; helper RTP allowlist will remain empty",
+                fallback_host=fallback,
+                exc_info=True,
+            )
+            return []
+
     def _get_attended_transfer_helper_settings(self, attended_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
         helper_cfg = cfg.get("external_media_helper") if isinstance(cfg.get("external_media_helper"), dict) else {}
@@ -941,23 +975,13 @@ class Engine:
         else:
             port_range = self._parse_port_range(raw_port_range, helper_rtp_port)
 
-        allowed_remote_hosts = helper_cfg.get("allowed_remote_hosts")
-        if isinstance(allowed_remote_hosts, str):
-            allowed_remote_hosts = [
-                item.strip() for item in allowed_remote_hosts.split(",") if item.strip()
-            ]
-        if not allowed_remote_hosts:
-            allowed_remote_hosts = getattr(global_external, "allowed_remote_hosts", None)
-        if isinstance(allowed_remote_hosts, str):
-            allowed_remote_hosts = [
-                item.strip() for item in allowed_remote_hosts.split(",") if item.strip()
-            ]
-        if not allowed_remote_hosts:
-            try:
-                ipaddress.ip_address(str(self.config.asterisk.host))
-                allowed_remote_hosts = [str(self.config.asterisk.host)]
-            except Exception:
-                allowed_remote_hosts = None
+        helper_allowed_remote_hosts = helper_cfg.get("allowed_remote_hosts")
+        if not helper_allowed_remote_hosts:
+            helper_allowed_remote_hosts = getattr(global_external, "allowed_remote_hosts", None)
+        allowed_remote_hosts = self._resolve_allowed_remote_hosts(
+            helper_allowed_remote_hosts,
+            getattr(self.config.asterisk, "host", None),
+        )
 
         endpoint_wait_ms = int(helper_cfg.get("endpoint_wait_ms", 1000) or 1000)
         lock_remote_endpoint = bool(helper_cfg.get("lock_remote_endpoint", True))
@@ -12758,16 +12782,23 @@ class Engine:
                                 provider_context.get("tools") or [],
                             )
                             if runtime_tool_guidance:
+                                runtime_tool_guidance = str(runtime_tool_guidance).strip()
                                 base_prompt = str(
                                     provider_context.get("prompt")
                                     or provider_context.get("instructions")
                                     or ""
                                 ).strip()
-                                combined_prompt = (
-                                    f"{base_prompt}\n\n{runtime_tool_guidance}".strip()
-                                    if base_prompt
-                                    else runtime_tool_guidance
-                                )
+                                existing_guidance = str(provider_context.get("tool_runtime_guidance") or "").strip()
+                                if existing_guidance == runtime_tool_guidance or (
+                                    base_prompt and runtime_tool_guidance and runtime_tool_guidance in base_prompt
+                                ):
+                                    combined_prompt = base_prompt
+                                else:
+                                    combined_prompt = (
+                                        f"{base_prompt}\n\n{runtime_tool_guidance}".strip()
+                                        if base_prompt
+                                        else runtime_tool_guidance
+                                    )
                                 provider_context["prompt"] = combined_prompt
                                 provider_context["instructions"] = combined_prompt
                                 provider_context["tool_runtime_guidance"] = runtime_tool_guidance

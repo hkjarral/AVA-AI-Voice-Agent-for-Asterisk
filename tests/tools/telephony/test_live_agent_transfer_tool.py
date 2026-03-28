@@ -68,6 +68,57 @@ class TestLiveAgentTransferTool:
         assert call_args["params"]["extension"] == "2765"
 
     @pytest.mark.asyncio
+    async def test_explicit_target_numeric_string_matches_integer_extension_key(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"] = {
+            "internal": {
+                6000: {
+                    "name": "Live Agent",
+                    "aliases": ["support"],
+                    "dial_string": "SIP/6000",
+                    "transfer": True,
+                },
+            }
+        }
+
+        result = await tool.execute({"target": "6000"}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["destination"] == "6000"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["params"]["extension"] == "6000"
+
+    @pytest.mark.asyncio
+    async def test_destination_override_takes_precedence_over_explicit_target(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["transfer"] = {
+            "enabled": True,
+            "live_agent_destination_key": "tier2_live",
+            "destinations": {
+                "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
+            },
+        }
+        tool_context.config["tools"]["extensions"] = {
+            "internal": {
+                "2765": {
+                    "name": "Live Agent 2",
+                    "dial_string": "PJSIP/2765",
+                    "transfer": True,
+                },
+                "6000": {
+                    "name": "Tier 2",
+                    "dial_string": "SIP/6000",
+                    "transfer": True,
+                },
+            }
+        }
+
+        result = await tool.execute({"target": "2765"}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["destination"] == "6000"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["params"]["extension"] == "6000"
+
+    @pytest.mark.asyncio
     async def test_explicit_target_alias_routes_to_matching_extension(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["extensions"] = {
             "internal": {

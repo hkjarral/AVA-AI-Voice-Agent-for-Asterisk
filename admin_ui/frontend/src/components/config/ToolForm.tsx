@@ -218,6 +218,32 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             delete internalExtRowIdsRef.current[k];
         };
 
+        const renameInternalExtensionKey = (fromKey: string, rawNextKey: string) => {
+            const nextKey = (rawNextKey || '').trim();
+            if (!nextKey || nextKey === fromKey) return;
+            if (!isNumericKey(nextKey)) {
+                toast.error('Live Agent extension keys must be numeric.');
+                return;
+            }
+
+            const existing = { ...(config.extensions?.internal || {}) };
+            if (Object.prototype.hasOwnProperty.call(existing, nextKey)) {
+                toast.error(`An extension with key '${nextKey}' already exists.`);
+                return;
+            }
+
+            const rowId = getInternalExtRowId(fromKey);
+            getInternalExtRowMeta(rowId).autoDerivedKey = false;
+
+            const renamed: Record<string, any> = {};
+            Object.entries(existing).forEach(([k, v]) => {
+                if (k === fromKey) renamed[nextKey] = v;
+                else renamed[k] = v;
+            });
+            moveInternalExtRowId(fromKey, nextKey);
+            updateNestedConfig('extensions', 'internal', renamed);
+        };
+
         const _statusDotClass = (status: string, loading: boolean) => {
             if (loading) return 'bg-muted animate-pulse';
             if (status === 'available') return 'bg-emerald-500';
@@ -574,29 +600,6 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
         const destinations = { ...(config.transfer?.destinations || {}) };
         delete destinations[key];
         updateNestedConfig('transfer', 'destinations', destinations);
-    };
-
-    const renameInternalExtensionKey = (fromKey: string, toKeyRaw: string) => {
-        const toKey = (toKeyRaw || '').trim();
-        if (!toKey) {
-            toast.error('Extension key cannot be empty.');
-            return;
-        }
-        if (toKey === fromKey) return;
-
-        const existing = { ...(config.extensions?.internal || {}) };
-        if (Object.prototype.hasOwnProperty.call(existing, toKey)) {
-            toast.error(`An extension with key '${toKey}' already exists.`);
-            return;
-        }
-
-        const renamed: Record<string, any> = {};
-        Object.entries(existing).forEach(([k, v]) => {
-            if (k === fromKey) renamed[toKey] = v;
-            else renamed[k] = v;
-        });
-        moveInternalExtRowId(fromKey, toKey);
-        updateNestedConfig('extensions', 'internal', renamed);
     };
 
     return (
@@ -1159,14 +1162,11 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                <div className="w-full xl:w-24 shrink-0">
                                         <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 ml-1">Ext</label>
 	                                    <input
-	                                        className="w-full border rounded-md px-3 py-2 text-sm bg-muted/50 text-muted-foreground focus:ring-0 cursor-not-allowed"
-	                                        placeholder="Auto"
-	                                        value={(() => {
-                                                const derived = extractNumericExtensionKeyFromDialString(ext?.dial_string || '');
-                                                return isNumericKey(key) ? key : derived || '';
-                                            })()}
-	                                        disabled
-	                                        title="Auto-derived from dial string (e.g. PJSIP/2765 -> 2765). Numeric keys are locked to prevent accidental renames."
+	                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
+	                                        placeholder="E.g. 6000"
+	                                        value={String(key || '')}
+	                                        onChange={(e) => renameInternalExtensionKey(key, e.target.value)}
+	                                        title="Numeric extension key used for Live Agent routing. New placeholder keys can be renamed here or auto-derived from the dial string."
 	                                    />
 	                                </div>
 	                                <div className="w-full xl:w-64 shrink-0">

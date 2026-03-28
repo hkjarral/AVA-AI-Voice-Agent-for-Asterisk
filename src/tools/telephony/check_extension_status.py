@@ -143,6 +143,13 @@ def _allowed_configured_extensions(
     return sorted(allowed)
 
 
+def _extract_extension_from_device_state_id(device_state_id: str) -> str:
+    raw = str(device_state_id or "").strip()
+    if "/" not in raw:
+        return ""
+    return raw.split("/", 1)[1].strip()
+
+
 def _resolve_device_state_id(
     *,
     extension: str,
@@ -197,7 +204,7 @@ def _resolve_device_state_id(
     if tech:
         return f"{tech.upper()}/{extension}", "parameter.tech"
 
-    if default_technology:
+    if default_technology and _looks_like_extension_number(extension):
         return f"{str(default_technology).upper()}/{extension}", "config.transfer.technology"
 
     return "", ""
@@ -362,11 +369,72 @@ class CheckExtensionStatusTool(Tool):
 
         extension = resolved_ext or target
 
-        if restrict_to_configured and not device_state_id and allowed_extensions:
+        if restrict_to_configured:
             normalized_extension = str(extension or "").strip()
-            if _looks_like_extension_number(normalized_extension) and normalized_extension not in allowed_extensions:
+            extension_for_guardrail = normalized_extension
+            if device_state_id:
+                extracted_extension = _extract_extension_from_device_state_id(device_state_id)
+                if extracted_extension:
+                    extension_for_guardrail = extracted_extension
+
+            if not allowed_extensions:
+                logger.warning(
+                    "Blocked status check because no configured extensions are available",
+                    call_id=context.call_id,
+                    requested_extension=target,
+                    device_state_id=device_state_id,
+                )
+                return {
+                    "status": "failed",
+                    "message": "No configured extensions are available for status checks.",
+                    "extension": extension_for_guardrail or normalized_extension or target,
+                    "available": False,
+                    "guardrail_blocked": True,
+                    "allowed_extensions": allowed_extensions,
+                }
+
+            if _looks_like_extension_number(extension_for_guardrail) and extension_for_guardrail not in allowed_extensions:
                 logger.warning(
                     "Blocked status check for unconfigured extension",
+                    call_id=context.call_id,
+                    requested_extension=target,
+                    resolved_extension=extension_for_guardrail,
+                    device_state_id=device_state_id or None,
+                    allowed_extensions=allowed_extensions,
+                )
+                return {
+                    "status": "failed",
+                    "message": (
+                        f"Extension {extension_for_guardrail} is not configured. "
+                        f"Allowed extensions: {', '.join(allowed_extensions)}."
+                    ),
+                    "extension": extension_for_guardrail,
+                    "available": False,
+                    "guardrail_blocked": True,
+                    "allowed_extensions": allowed_extensions,
+                }
+            if device_state_id and not _looks_like_extension_number(extension_for_guardrail):
+                logger.warning(
+                    "Blocked status check for non-numeric device_state_id while configured-only guardrail is enabled",
+                    call_id=context.call_id,
+                    requested_extension=target,
+                    device_state_id=device_state_id,
+                    allowed_extensions=allowed_extensions,
+                )
+                return {
+                    "status": "failed",
+                    "message": (
+                        f"Device state id '{device_state_id}' is not allowed. "
+                        f"Allowed extensions: {', '.join(allowed_extensions)}."
+                    ),
+                    "extension": extension_for_guardrail or normalized_extension or target,
+                    "available": False,
+                    "guardrail_blocked": True,
+                    "allowed_extensions": allowed_extensions,
+                }
+            if not device_state_id and not resolved_ext and not _looks_like_extension_number(normalized_extension):
+                logger.warning(
+                    "Blocked status check for unresolved configured-only target",
                     call_id=context.call_id,
                     requested_extension=target,
                     resolved_extension=normalized_extension,
@@ -375,10 +443,10 @@ class CheckExtensionStatusTool(Tool):
                 return {
                     "status": "failed",
                     "message": (
-                        f"Extension {normalized_extension} is not configured. "
+                        f"Extension target '{normalized_extension or target}' is not configured. "
                         f"Allowed extensions: {', '.join(allowed_extensions)}."
                     ),
-                    "extension": normalized_extension,
+                    "extension": normalized_extension or target,
                     "available": False,
                     "guardrail_blocked": True,
                     "allowed_extensions": allowed_extensions,

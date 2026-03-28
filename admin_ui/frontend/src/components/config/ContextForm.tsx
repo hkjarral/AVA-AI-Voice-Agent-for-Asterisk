@@ -40,7 +40,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
     const matchesHttpToolPhase = (tool: any, phase: 'pre_call' | 'post_call' | 'in_call') => {
         if (!tool || typeof tool !== 'object' || !tool.kind) return false;
         if (phase === 'in_call') {
-            return tool.phase === 'in_call' || tool.kind === 'in_call_http_lookup';
+            return tool.phase === 'in_call' || (!tool.phase && tool.kind === 'in_call_http_lookup');
         }
         return tool.phase === phase;
     };

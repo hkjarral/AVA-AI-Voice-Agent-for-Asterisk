@@ -2005,45 +2005,20 @@ class GoogleLiveProvider(AIProviderInterface):
                     provider_name="google_live",
                 )
 
-                session = None
-                try:
-                    session_store = getattr(self, "_session_store", None)
-                    if session_store and self._call_id:
-                        session = await session_store.get_by_call_id(self._call_id)
-                except Exception:
-                    logger.debug("Failed to load session before Google tool call", call_id=self._call_id, exc_info=True)
-
-                current_action = getattr(session, "current_action", None) or {}
-                attended_transfer_pending = (
-                    isinstance(current_action, dict)
-                    and current_action.get("type") == "attended_transfer"
-                    and str(current_action.get("decision") or "").strip().lower() not in {"accepted", "declined"}
-                )
-                if attended_transfer_pending and func_name != "cancel_transfer":
-                    logger.warning(
-                        "Rejecting provider tool call during pending attended transfer",
-                        call_id=self._call_id,
-                        function=func_name,
-                    )
+                block_result = await tool_context.get_tool_block_response(func_name)
+                if block_result:
+                    result = block_result
+                elif not self._allowed_tools or not tool_registry.is_tool_allowed(func_name, self._allowed_tools):
                     result = {
                         "status": "error",
-                        "message": "Tool calls are blocked while an attended transfer is pending. Wait for the transfer to complete or use cancel_transfer.",
+                        "message": f"Tool '{func_name}' not allowed for this call",
                     }
                 else:
-
-                    # Enforce allowlist from context
-                    if not self._allowed_tools or not tool_registry.is_tool_allowed(func_name, self._allowed_tools):
-                        result = {
-                            "status": "error",
-                            "message": f"Tool '{func_name}' not allowed for this call",
-                        }
-                    else:
-                        # Execute tool
-                        result = await self._tool_adapter.execute_tool(
-                            func_name,
-                            func_args,
-                            tool_context,
-                        )
+                    result = await self._tool_adapter.execute_tool(
+                        func_name,
+                        func_args,
+                        tool_context,
+                    )
 
                 # Check for hangup intent (like OpenAI Realtime pattern)
                 if func_name == "hangup_call" and result:

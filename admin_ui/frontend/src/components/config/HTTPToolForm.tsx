@@ -107,7 +107,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     const matchesPhase = (value: any) => {
         if (!value || typeof value !== 'object' || !value.kind) return false;
         if (phase === 'in_call') {
-            return value.phase === 'in_call' || value.kind === 'in_call_http_lookup';
+            return value.phase === 'in_call' || (!value.phase && value.kind === 'in_call_http_lookup');
         }
         return value.phase === phase;
     };

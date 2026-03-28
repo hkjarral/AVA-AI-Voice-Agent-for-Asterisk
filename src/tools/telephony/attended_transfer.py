@@ -175,7 +175,8 @@ class AttendedTransferTool(Tool):
             if engine and hasattr(engine, "_fire_and_forget_for_call"):
                 engine._fire_and_forget_for_call(call_id, workflow, name=f"attx-screening-{call_id}")
             else:
-                asyncio.create_task(workflow)
+                task = asyncio.create_task(workflow, name=f"attx-screening-{call_id}")
+                task.add_done_callback(self._log_screening_task_result(call_id))
             return {
                 "status": "success",
                 "message": caller_screening_prompt,
@@ -319,6 +320,53 @@ class AttendedTransferTool(Tool):
             return "ai_briefing"
         return "basic_tts"
 
+    @staticmethod
+    def _log_screening_task_result(call_id: str):
+        def _callback(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                logger.error(
+                    "Attended transfer screening background task failed",
+                    call_id=call_id,
+                    error=str(exc),
+                    exc_info=exc,
+                )
+        return _callback
+
+    async def _clear_pending_attended_transfer_state(
+        self,
+        context: ToolExecutionContext,
+        *,
+        clear_current_action: bool,
+        restore_audio_capture: bool,
+        reason: str,
+    ) -> None:
+        try:
+            session = await context.get_session()
+        except Exception:
+            logger.debug("Failed to load session while clearing attended transfer state", call_id=context.call_id, reason=reason, exc_info=True)
+            return
+
+        action = session.current_action or {}
+        if not isinstance(action, dict) or action.get("type") != "attended_transfer":
+            return
+
+        prior_audio_capture = action.pop("pre_transfer_audio_capture_enabled", None)
+        if clear_current_action:
+            session.current_action = None
+        else:
+            session.current_action = action
+
+        if restore_audio_capture and prior_audio_capture is not None:
+            session.audio_capture_enabled = bool(prior_audio_capture)
+
+        try:
+            await context.session_store.upsert_call(session)
+        except Exception:
+            logger.debug("Failed to persist cleared attended transfer state", call_id=context.call_id, reason=reason, exc_info=True)
+
     async def _start_moh(self, context: ToolExecutionContext, moh_class: str) -> None:
         await context.ari_client.send_command(
             method="POST",
@@ -345,6 +393,9 @@ class AttendedTransferTool(Tool):
         try:
             session = await context.get_session()
             if session.current_action and session.current_action.get("type") == "attended_transfer":
+                session.current_action["pre_transfer_audio_capture_enabled"] = bool(
+                    getattr(session, "audio_capture_enabled", True)
+                )
                 session.current_action["screening_status"] = session.current_action.get("screening_status") or "skipped"
             session.audio_capture_enabled = False
             await context.session_store.upsert_call(session)
@@ -422,34 +473,40 @@ class AttendedTransferTool(Tool):
         call_id = context.call_id
         engine = getattr(context.ari_client, "engine", None)
         screening_result = None
-        if engine and hasattr(engine, "collect_attended_transfer_screening"):
-            screening_result = await engine.collect_attended_transfer_screening(
-                call_id=call_id,
-                max_seconds=screening_max_seconds,
-                silence_ms=screening_silence_ms,
-            )
-
         try:
+            if engine and hasattr(engine, "collect_attended_transfer_screening"):
+                screening_result = await engine.collect_attended_transfer_screening(
+                    call_id=call_id,
+                    max_seconds=screening_max_seconds,
+                    silence_ms=screening_silence_ms,
+                )
+
             session = await context.get_session()
+            action = session.current_action or {}
+            if action.get("type") != "attended_transfer":
+                return
+
+            if screening_result and screening_result.get("audio_ulaw"):
+                action["screening_status"] = "captured"
+                action["screening_payload"] = {
+                    "kind": "caller_recording",
+                    "audio_ulaw": screening_result.get("audio_ulaw"),
+                    "duration_ms": int(screening_result.get("duration_ms") or 0),
+                }
+            else:
+                action["screening_status"] = "fallback"
+                action.pop("screening_payload", None)
+            session.current_action = action
+            await context.session_store.upsert_call(session)
         except Exception:
+            logger.error("Caller-recording attended transfer screening failed", call_id=call_id, exc_info=True)
+            await self._clear_pending_attended_transfer_state(
+                context,
+                clear_current_action=True,
+                restore_audio_capture=True,
+                reason="screening-failed",
+            )
             return
-
-        action = session.current_action or {}
-        if action.get("type") != "attended_transfer":
-            return
-
-        if screening_result and screening_result.get("audio_ulaw"):
-            action["screening_status"] = "captured"
-            action["screening_payload"] = {
-                "kind": "caller_recording",
-                "audio_ulaw": screening_result.get("audio_ulaw"),
-                "duration_ms": int(screening_result.get("duration_ms") or 0),
-            }
-        else:
-            action["screening_status"] = "fallback"
-            action.pop("screening_payload", None)
-        session.current_action = action
-        await context.session_store.upsert_call(session)
 
         result = await self._originate_attended_transfer_leg(
             context=context,
@@ -473,10 +530,9 @@ class AttendedTransferTool(Tool):
         except Exception:
             logger.debug("Failed to stop MOH after originate failure", call_id=call_id, exc_info=True)
 
-        try:
-            session = await context.get_session()
-            if session.current_action and session.current_action.get("type") == "attended_transfer":
-                session.current_action = None
-                await context.session_store.upsert_call(session)
-        except Exception:
-            logger.debug("Failed to clear current_action after originate failure", call_id=call_id, exc_info=True)
+        await self._clear_pending_attended_transfer_state(
+            context,
+            clear_current_action=True,
+            restore_audio_capture=True,
+            reason="originate-failed",
+        )

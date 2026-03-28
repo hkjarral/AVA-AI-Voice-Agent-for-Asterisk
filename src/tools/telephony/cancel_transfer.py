@@ -116,7 +116,11 @@ class CancelTransferTool(Tool):
                 if engine and hasattr(engine, "_cancel_attended_transfer_screening"):
                     engine._cancel_attended_transfer_screening(context.call_id, reason="cancel-transfer")
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to cancel attended-transfer screening hook",
+                    call_id=context.call_id,
+                    exc_info=True,
+                )
             
             logger.info("✅ Transfer cancelled", call_id=context.call_id)
             

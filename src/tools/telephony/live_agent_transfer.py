@@ -209,8 +209,9 @@ class LiveAgentTransferTool(Tool):
 
         direct_numeric = str(target or "").strip()
         if direct_numeric.isdigit():
-            cfg = extensions_cfg.get(direct_numeric)
-            if isinstance(cfg, dict):
+            for key, cfg in extensions_cfg.items():
+                if str(key or "").strip() != direct_numeric or not isinstance(cfg, dict):
+                    continue
                 if cfg.get("transfer") is False:
                     return None, {}, "extensions.internal.target_transfer_disabled"
                 return direct_numeric, dict(cfg), "parameter.target.extension"
@@ -259,7 +260,26 @@ class LiveAgentTransferTool(Tool):
         target = str((parameters or {}).get("target", "") or "").strip()
         extensions_cfg = context.get_config_value("tools.extensions.internal") or {}
 
-        # 0) Explicit target: transfer to the chosen configured live agent/extension.
+        # 0) Explicit override: if an operator configured a live_agent_destination_key, use it.
+        configured_key = str(transfer_cfg.get("live_agent_destination_key") or "").strip() if isinstance(transfer_cfg, dict) else ""
+        if configured_key:
+            destination_key, source = self._resolve_live_agent_destination_key(transfer_cfg)
+            if destination_key:
+                logger.info(
+                    "Executing live agent transfer via configured destination override",
+                    call_id=context.call_id,
+                    destination_key=destination_key,
+                    resolution_source=source,
+                )
+                return await unified.execute({"destination": destination_key}, context)
+            logger.warning(
+                "Live agent destination override misconfigured; falling back to Live Agents",
+                call_id=context.call_id,
+                configured_key=configured_key,
+                resolution_source=source,
+            )
+
+        # 1) Explicit target: transfer to the chosen configured live agent/extension.
         if target:
             extension, ext_entry, ext_source = self._resolve_explicit_target_extension(
                 target=target,
@@ -319,25 +339,6 @@ class LiveAgentTransferTool(Tool):
                     "Use a configured extension number, name, or alias from Tools -> Live Agents."
                 ),
             }
-
-        # 1) Explicit override: if an operator configured a live_agent_destination_key, use it.
-        configured_key = str(transfer_cfg.get("live_agent_destination_key") or "").strip() if isinstance(transfer_cfg, dict) else ""
-        if configured_key:
-            destination_key, source = self._resolve_live_agent_destination_key(transfer_cfg)
-            if destination_key:
-                logger.info(
-                    "Executing live agent transfer via configured destination override",
-                    call_id=context.call_id,
-                    destination_key=destination_key,
-                    resolution_source=source,
-                )
-                return await unified.execute({"destination": destination_key}, context)
-            logger.warning(
-                "Live agent destination override misconfigured; falling back to Live Agents",
-                call_id=context.call_id,
-                configured_key=configured_key,
-                resolution_source=source,
-            )
 
         # 2) Default: route to Live Agents (tools.extensions.internal) if configured.
         extension, ext_entry, ext_source = self._resolve_live_agent_extension_from_internal_config(extensions_cfg)

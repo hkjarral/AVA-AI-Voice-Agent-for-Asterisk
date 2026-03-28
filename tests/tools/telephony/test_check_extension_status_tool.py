@@ -56,12 +56,21 @@ class TestCheckExtensionStatusTool:
 
     @pytest.mark.asyncio
     async def test_device_state_id_override(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["check_extension_status"] = {"restrict_to_configured_extensions": False}
         mock_ari_client.send_command = AsyncMock(return_value={"name": "Custom/agentA", "state": "NOT_INUSE"})
 
         result = await tool.execute({"extension": "ignored", "device_state_id": "Custom/agentA"}, tool_context)
         assert result["status"] == "success"
         assert result["device_state_id"] == "Custom/agentA"
         assert result["available"] is True
+
+    @pytest.mark.asyncio
+    async def test_blocks_device_state_id_override_when_guardrail_enabled(self, tool, tool_context, mock_ari_client):
+        result = await tool.execute({"extension": "ignored", "device_state_id": "Custom/agentA"}, tool_context)
+
+        assert result["status"] == "failed"
+        assert result["guardrail_blocked"] is True
+        mock_ari_client.send_command.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resolves_extension_by_alias(self, tool, tool_context, mock_ari_client):
@@ -190,6 +199,26 @@ class TestCheckExtensionStatusTool:
         assert result["guardrail_blocked"] is True
         assert result["extension"] == "2766"
         assert "Allowed extensions:" in result["message"]
+        mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blocks_when_no_configured_extensions_exist(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["extensions"]["internal"] = {}
+        tool_context.config["tools"]["transfer"] = {"destinations": {}}
+
+        result = await tool.execute({"extension": "2765"}, tool_context)
+
+        assert result["status"] == "failed"
+        assert result["guardrail_blocked"] is True
+        assert "No configured extensions" in result["message"]
+        mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blocks_unresolved_non_numeric_target_when_guardrail_enabled(self, tool, tool_context, mock_ari_client):
+        result = await tool.execute({"extension": "supportx"}, tool_context)
+
+        assert result["status"] == "failed"
+        assert result["guardrail_blocked"] is True
         mock_ari_client.send_command.assert_not_called()
 
     @pytest.mark.asyncio

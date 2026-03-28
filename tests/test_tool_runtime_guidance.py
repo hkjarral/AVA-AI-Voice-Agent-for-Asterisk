@@ -74,6 +74,32 @@ def test_runtime_guidance_warns_when_transfer_tools_have_no_configured_targets()
 
 
 @pytest.mark.unit
+def test_runtime_guidance_includes_check_extension_status_allowlist_from_transfer_destinations():
+    from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+
+    config = {
+        "tools": {
+            "extensions": {"internal": {}},
+            "transfer": {
+                "destinations": {
+                    "sales_agent": {
+                        "type": "extension",
+                        "target": "6000",
+                        "description": "Sales Agent",
+                    },
+                }
+            },
+        }
+    }
+
+    guidance = build_in_call_tool_runtime_guidance(config, ["check_extension_status"])
+
+    assert "Configured extensions allowed for `check_extension_status`:" in guidance
+    assert "`6000`" in guidance
+    assert "Only query the listed configured extensions" in guidance
+
+
+@pytest.mark.unit
 def test_runtime_guidance_omits_unrelated_sections():
     from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
 
