@@ -1,3 +1,6 @@
+import sys
+import types
+
 import pytest
 
 from src.config import AppConfig
@@ -456,6 +459,94 @@ async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_genera
 
     assert tts_texts[0] == "Transfer Caller ID Name regarding support."
     assert tts_texts[1] == "Press 1 to accept this transfer, or 2 to decline."
+
+
+@pytest.mark.asyncio
+async def test_local_ai_server_llm_request_waits_for_auth_success(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    engine.config.providers["local"]["base_url"] = "ws://local-ai.test/ws"
+    engine.config.providers["local"]["auth_token"] = "secret"
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self._responses = [
+                '{"type":"auth_response","status":"ok"}',
+                '{"type":"llm_response","text":"Short caller summary."}',
+            ]
+
+        async def send(self, message):
+            self.sent.append(message)
+
+        async def recv(self):
+            return self._responses.pop(0)
+
+    class FakeConnect:
+        def __init__(self, ws):
+            self.ws = ws
+
+        async def __aenter__(self):
+            return self.ws
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    fake_ws = FakeWebSocket()
+    monkeypatch.setitem(sys.modules, "websockets", types.SimpleNamespace(connect=lambda *args, **kwargs: FakeConnect(fake_ws)))
+
+    result = await engine._local_ai_server_llm_request(
+        call_id="call-auth-ok",
+        text="summarize",
+        timeout_sec=1.0,
+    )
+
+    assert result == "Short caller summary."
+    assert len(fake_ws.sent) == 2
+    assert '"type": "auth"' in fake_ws.sent[0]
+    assert '"type": "llm_request"' in fake_ws.sent[1]
+
+
+@pytest.mark.asyncio
+async def test_local_ai_server_llm_request_stops_on_auth_failure(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    engine.config.providers["local"]["base_url"] = "ws://local-ai.test/ws"
+    engine.config.providers["local"]["auth_token"] = "secret"
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self._responses = [
+                '{"type":"auth_response","status":"error","message":"invalid_auth_token"}',
+            ]
+
+        async def send(self, message):
+            self.sent.append(message)
+
+        async def recv(self):
+            return self._responses.pop(0)
+
+    class FakeConnect:
+        def __init__(self, ws):
+            self.ws = ws
+
+        async def __aenter__(self):
+            return self.ws
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    fake_ws = FakeWebSocket()
+    monkeypatch.setitem(sys.modules, "websockets", types.SimpleNamespace(connect=lambda *args, **kwargs: FakeConnect(fake_ws)))
+
+    result = await engine._local_ai_server_llm_request(
+        call_id="call-auth-failed",
+        text="summarize",
+        timeout_sec=1.0,
+    )
+
+    assert result is None
+    assert len(fake_ws.sent) == 1
+    assert '"type": "auth"' in fake_ws.sent[0]
 
 
 @pytest.mark.asyncio

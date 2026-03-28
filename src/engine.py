@@ -4252,10 +4252,16 @@ class Engine:
             if not ws_url:
                 return None
             auth_token = str(local_cfg.get("auth_token") or "").strip() or None
+            deadline = time.time() + max(0.1, float(timeout_sec))
 
             async with websockets.connect(ws_url, open_timeout=float(timeout_sec), ping_interval=None) as ws:
-                if auth_token:
-                    await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+                if not await self._authenticate_local_ai_server_ws(
+                    ws=ws,
+                    call_id=call_id,
+                    auth_token=auth_token,
+                    deadline=deadline,
+                ):
+                    return None
                 await ws.send(
                     json.dumps(
                         {
@@ -4266,7 +4272,6 @@ class Engine:
                         }
                     )
                 )
-                deadline = time.time() + max(0.1, float(timeout_sec))
                 while time.time() < deadline:
                     msg = await asyncio.wait_for(ws.recv(), timeout=max(0.1, float(deadline - time.time())))
                     if isinstance(msg, bytes):
@@ -4326,10 +4331,16 @@ class Engine:
             if not ws_url:
                 return None
             auth_token = str(local_cfg.get("auth_token") or "").strip() or None
+            deadline = time.time() + max(0.1, float(timeout_sec))
 
             async with websockets.connect(ws_url, open_timeout=float(timeout_sec), ping_interval=None) as ws:
-                if auth_token:
-                    await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+                if not await self._authenticate_local_ai_server_ws(
+                    ws=ws,
+                    call_id=call_id,
+                    auth_token=auth_token,
+                    deadline=deadline,
+                ):
+                    return None
                 await ws.send(
                     json.dumps(
                         {
@@ -4340,7 +4351,6 @@ class Engine:
                         }
                     )
                 )
-                deadline = time.time() + max(0.1, float(timeout_sec))
                 while time.time() < deadline:
                     msg = await asyncio.wait_for(ws.recv(), timeout=max(0.1, float(deadline - time.time())))
                     if isinstance(msg, bytes):
@@ -4355,6 +4365,44 @@ class Engine:
         except Exception:
             logger.debug("Local AI Server TTS failed", call_id=call_id, exc_info=True)
             return None
+
+    async def _authenticate_local_ai_server_ws(
+        self,
+        *,
+        ws: Any,
+        call_id: str,
+        auth_token: Optional[str],
+        deadline: float,
+    ) -> bool:
+        if not auth_token:
+            return True
+
+        await ws.send(json.dumps({"type": "auth", "auth_token": auth_token}))
+
+        while time.time() < deadline:
+            msg = await asyncio.wait_for(ws.recv(), timeout=max(0.1, float(deadline - time.time())))
+            if isinstance(msg, bytes):
+                continue
+            try:
+                data = json.loads(msg)
+            except Exception:
+                continue
+
+            if data.get("type") != "auth_response":
+                continue
+            if data.get("status") == "ok":
+                return True
+
+            logger.warning(
+                "Local AI Server auth failed",
+                call_id=call_id,
+                status=data.get("status"),
+                message=data.get("message"),
+            )
+            return False
+
+        logger.warning("Local AI Server auth timed out", call_id=call_id)
+        return False
 
     async def _play_ulaw_bytes_on_channel_and_wait(
         self,

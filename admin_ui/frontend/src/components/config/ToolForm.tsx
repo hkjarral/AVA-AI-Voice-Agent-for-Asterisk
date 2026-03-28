@@ -79,6 +79,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	        const [templateModalTool, setTemplateModalTool] = useState<'send_email_summary' | 'request_transcript'>('send_email_summary');
 	        const [internalAliasesDraftByRowId, setInternalAliasesDraftByRowId] = useState<Record<string, string>>({});
 	        const internalAliasesCommittedRef = useRef<Record<string, string>>({});
+	        const [internalExtKeyDraftByRowId, setInternalExtKeyDraftByRowId] = useState<Record<string, string>>({});
+	        const internalExtKeyCommittedRef = useRef<Record<string, string>>({});
 	        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => {
 	            try {
 	                const v = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
@@ -134,6 +136,34 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                        ensureNext();
 	                        delete next![rowId];
 	                        delete internalAliasesCommittedRef.current[rowId];
+	                    }
+	                });
+
+	                return next ?? prev;
+	            });
+
+	            setInternalExtKeyDraftByRowId((prev) => {
+	                let next: Record<string, string> | null = null;
+	                const ensureNext = () => (next ??= { ...prev });
+
+	                Object.entries(internal).forEach(([key]) => {
+	                    const rowId = getInternalExtRowId(key);
+	                    rowIdsInUse.add(rowId);
+
+	                    const prevCommitted = internalExtKeyCommittedRef.current[rowId];
+	                    const draft = prev[rowId];
+	                    internalExtKeyCommittedRef.current[rowId] = key;
+
+	                    if (draft === undefined || (prevCommitted !== undefined && draft === prevCommitted && draft !== key)) {
+	                        ensureNext()[rowId] = key;
+	                    }
+	                });
+
+	                Object.keys(prev).forEach((rowId) => {
+	                    if (!rowIdsInUse.has(rowId)) {
+	                        ensureNext();
+	                        delete next![rowId];
+	                        delete internalExtKeyCommittedRef.current[rowId];
 	                    }
 	                });
 
@@ -242,6 +272,20 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             });
             moveInternalExtRowId(fromKey, nextKey);
             updateNestedConfig('extensions', 'internal', renamed);
+        };
+
+        const commitInternalExtensionKeyDraft = (rowId: string, fromKey: string) => {
+            const nextKey = String(internalExtKeyDraftByRowId[rowId] ?? fromKey).trim();
+            if (!nextKey || nextKey === fromKey) {
+                setInternalExtKeyDraftByRowId((prev) => ({ ...prev, [rowId]: fromKey }));
+                return;
+            }
+            if (!isNumericKey(nextKey)) {
+                toast.error('Live Agent extension keys must be numeric.');
+                setInternalExtKeyDraftByRowId((prev) => ({ ...prev, [rowId]: fromKey }));
+                return;
+            }
+            renameInternalExtensionKey(fromKey, nextKey);
         };
 
         const _statusDotClass = (status: string, loading: boolean) => {
@@ -1164,8 +1208,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
 	                                    <input
 	                                        className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:ring-1 focus:ring-ring focus:outline-none transition-shadow"
 	                                        placeholder="E.g. 6000"
-	                                        value={String(key || '')}
-	                                        onChange={(e) => renameInternalExtensionKey(key, e.target.value)}
+	                                        value={internalExtKeyDraftByRowId[rowId] ?? String(key || '')}
+	                                        onChange={(e) => setInternalExtKeyDraftByRowId((prev) => ({ ...prev, [rowId]: e.target.value }))}
+	                                        onBlur={() => commitInternalExtensionKeyDraft(rowId, key)}
+	                                        onKeyDown={(e) => {
+	                                            if (e.key === 'Enter') {
+	                                                e.preventDefault();
+	                                                commitInternalExtensionKeyDraft(rowId, key);
+	                                                (e.target as HTMLInputElement).blur();
+	                                            }
+	                                        }}
 	                                        title="Numeric extension key used for Live Agent routing. New placeholder keys can be renamed here or auto-derived from the dial string."
 	                                    />
 	                                </div>
