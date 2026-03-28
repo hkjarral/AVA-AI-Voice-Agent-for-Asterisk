@@ -422,6 +422,65 @@ class TestPathExtraction:
         result = tool._extract_path(data, "")
         assert result == data
 
+    def test_extract_wildcard_all_elements(self, tool):
+        """Test [*] wildcard returns all array elements."""
+        data = {"items": [{"name": "A"}, {"name": "B"}]}
+        result = tool._extract_path(data, "items[*].name")
+        assert result == ["A", "B"]
+
+    def test_extract_wildcard_full_array(self, tool):
+        """Test [*] without further path returns full array."""
+        data = {"items": [1, 2, 3]}
+        result = tool._extract_path(data, "items[*]")
+        assert result == [1, 2, 3]
+
+
+class TestOutputVariablesSerialization:
+    """Tests for JSON serialization of output variables including arrays."""
+
+    def test_array_output_serialized_as_json(self):
+        """Wildcard output variables should be JSON-serialized, not Python repr."""
+        config = HTTPLookupConfig(
+            name="serial_test",
+            output_variables={"names": "users[*].name"},
+        )
+        tool = GenericHTTPLookupTool(config)
+        data = {"users": [{"name": "Alice"}, {"name": "Bob"}]}
+        results = tool._extract_output_variables(data)
+        assert results["names"] == '["Alice", "Bob"]'
+
+    def test_dict_output_serialized_as_json(self):
+        config = HTTPLookupConfig(
+            name="serial_test",
+            output_variables={"info": "contact"},
+        )
+        tool = GenericHTTPLookupTool(config)
+        data = {"contact": {"name": "Alice", "email": "a@b.com"}}
+        results = tool._extract_output_variables(data)
+        import json
+        parsed = json.loads(results["info"])
+        assert parsed == {"name": "Alice", "email": "a@b.com"}
+
+    def test_scalar_output_not_json_wrapped(self):
+        config = HTTPLookupConfig(
+            name="serial_test",
+            output_variables={"name": "name", "count": "count"},
+        )
+        tool = GenericHTTPLookupTool(config)
+        data = {"name": "Alice", "count": 42}
+        results = tool._extract_output_variables(data)
+        assert results["name"] == "Alice"
+        assert results["count"] == "42"
+
+    def test_missing_output_returns_empty_string(self):
+        config = HTTPLookupConfig(
+            name="serial_test",
+            output_variables={"missing": "no_such_field"},
+        )
+        tool = GenericHTTPLookupTool(config)
+        results = tool._extract_output_variables({"other": 1})
+        assert results["missing"] == ""
+
 
 # --- Factory Function Tests ---
 

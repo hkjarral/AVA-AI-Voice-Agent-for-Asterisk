@@ -13,6 +13,8 @@ import time
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
+from src.tools.http.path_utils import extract_path
+
 import aiohttp
 
 from src.tools.base import Tool, ToolDefinition, ToolCategory, ToolPhase, ToolParameter
@@ -515,60 +517,33 @@ class InCallHTTPTool(Tool):
     def _extract_output_variables(self, data: Any) -> Dict[str, Any]:
         """
         Extract output variables from JSON response.
+
+        List/dict results are JSON-serialized; scalars preserved as-is.
         """
         results = {}
-        
+
         for var_name, path in self.config.output_variables.items():
             try:
                 value = self._extract_path(data, path)
-                results[var_name] = value if value is not None else ""
+                if value is None:
+                    results[var_name] = ""
+                elif isinstance(value, (list, dict)):
+                    results[var_name] = json.dumps(value)
+                else:
+                    results[var_name] = value
             except Exception as e:
                 logger.debug(f"Failed to extract variable {var_name}: {e}")
                 results[var_name] = ""
-        
+
         return results
-    
+
     def _extract_path(self, data: Any, path: str) -> Any:
+        """Extract value from nested data using dot notation path.
+
+        Delegates to the shared ``extract_path`` utility which supports
+        simple keys, numeric indices, and ``[*]`` wildcards.
         """
-        Extract value from nested data using dot notation path.
-        
-        Examples:
-        - "name" -> data["name"]
-        - "contact.email" -> data["contact"]["email"]
-        - "items[0].name" -> data["items"][0]["name"]
-        """
-        if not path:
-            return data
-        
-        current = data
-        segments = re.split(r'\.(?![^\[]*\])', path)
-        
-        for segment in segments:
-            if current is None:
-                return None
-            
-            # Check for array access: field[index]
-            array_match = re.match(r'^(\w+)\[(\d+)\]$', segment)
-            if array_match:
-                field_name = array_match.group(1)
-                index = int(array_match.group(2))
-                
-                if isinstance(current, dict) and field_name in current:
-                    arr = current[field_name]
-                    if isinstance(arr, list) and len(arr) > index:
-                        current = arr[index]
-                    else:
-                        return None
-                else:
-                    return None
-            else:
-                # Simple field access
-                if isinstance(current, dict) and segment in current:
-                    current = current[segment]
-                else:
-                    return None
-        
-        return current
+        return extract_path(data, path)
     
     def _build_result_message(self, data: Dict[str, Any]) -> str:
         """
@@ -580,7 +555,7 @@ class InCallHTTPTool(Tool):
         # Simple key-value format
         parts = []
         for key, value in data.items():
-            if value:
+            if value is not None and value != "":
                 readable_key = key.replace('_', ' ').title()
                 parts.append(f"{readable_key}: {value}")
         

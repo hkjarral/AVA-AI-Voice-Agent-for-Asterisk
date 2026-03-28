@@ -25,7 +25,7 @@ def sanitize_tool_result_for_json_string(
     result: Any,
     *,
     max_bytes: int = 12000,
-    keep_keys: Tuple[str, ...] = ("status", "message", "will_hangup", "transferred", "transfer_mode", "extension", "destination", "error"),
+    keep_keys: Tuple[str, ...] = ("status", "message", "data", "will_hangup", "transferred", "transfer_mode", "extension", "destination", "error"),
 ) -> Dict[str, Any]:
     """Return a JSON-serializable, size-capped tool result dict for providers that require JSON-string payloads."""
     if not isinstance(result, dict):
@@ -41,23 +41,29 @@ def sanitize_tool_result_for_json_string(
         if "result" in result and "result" not in payload:
             payload["result"] = _safe_jsonable(result.get("result"), max_depth=3, max_items=20)
 
-    # Cap size; drop structured data first, then truncate message.
-    try:
-        encoded = json.dumps(payload, ensure_ascii=False)
-        if len(encoded.encode("utf-8")) <= max_bytes:
-            return payload
-    except Exception:
-        pass
+    # Cap size; drop structured keys progressively, then truncate message.
+    def _fits() -> bool:
+        try:
+            return len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= max_bytes
+        except Exception:
+            return False
 
+    if _fits():
+        return payload
+
+    # Drop "result" first (secondary structured payload).
     if "result" in payload:
         payload.pop("result", None)
-        try:
-            encoded = json.dumps(payload, ensure_ascii=False)
-            if len(encoded.encode("utf-8")) <= max_bytes:
-                return payload
-        except Exception:
-            pass
+        if _fits():
+            return payload
 
+    # Drop "data" next (extracted output variables — message still carries a summary).
+    if "data" in payload:
+        payload.pop("data", None)
+        if _fits():
+            return payload
+
+    # Last resort: truncate message.
     msg = str(payload.get("message") or "")
     payload["message"] = msg[:800]
     return payload

@@ -13,6 +13,8 @@ import time
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
+from src.tools.http.path_utils import extract_path
+
 import aiohttp
 
 from src.tools.base import PreCallTool, ToolDefinition, ToolCategory, ToolPhase
@@ -340,21 +342,20 @@ class GenericHTTPLookupTool(PreCallTool):
     
     def _extract_output_variables(self, data: Any) -> Dict[str, str]:
         """
-        Extract output variables from JSON response using simple dot notation.
-        
-        Supports:
-        - Simple paths: "firstName", "contact.name"
-        - Array access: "contacts[0].email"
-        - Fallback to empty string on missing/null
+        Extract output variables from JSON response using dot notation.
+
+        Supports simple paths, numeric indices, and [*] wildcards.
+        List/dict results are JSON-serialized; scalars use str().
         """
         results = {}
-        
+
         for var_name, path in self.config.output_variables.items():
             try:
                 value = self._extract_path(data, path)
-                # Convert to string, handle None
                 if value is None:
                     results[var_name] = ""
+                elif isinstance(value, (list, dict)):
+                    results[var_name] = json.dumps(value)
                 elif isinstance(value, str):
                     results[var_name] = value
                 else:
@@ -368,52 +369,16 @@ class GenericHTTPLookupTool(PreCallTool):
                     exc_info=True,
                 )
                 results[var_name] = ""
-        
+
         return results
-    
+
     def _extract_path(self, data: Any, path: str) -> Any:
+        """Extract value from nested data using dot notation path.
+
+        Delegates to the shared ``extract_path`` utility which supports
+        simple keys, numeric indices, and ``[*]`` wildcards.
         """
-        Extract value from nested data using dot notation path.
-        
-        Examples:
-        - "name" -> data["name"]
-        - "contact.email" -> data["contact"]["email"]
-        - "contacts[0].name" -> data["contacts"][0]["name"]
-        """
-        if not path:
-            return data
-        
-        current = data
-        
-        # Parse path segments
-        segments = re.split(r'\.(?![^\[]*\])', path)
-        
-        for segment in segments:
-            if current is None:
-                return None
-            
-            # Check for array access: field[index]
-            array_match = re.match(r'^(\w+)\[(\d+)\]$', segment)
-            if array_match:
-                field_name = array_match.group(1)
-                index = int(array_match.group(2))
-                
-                if isinstance(current, dict) and field_name in current:
-                    arr = current[field_name]
-                    if isinstance(arr, list) and len(arr) > index:
-                        current = arr[index]
-                    else:
-                        return None
-                else:
-                    return None
-            else:
-                # Simple field access
-                if isinstance(current, dict) and segment in current:
-                    current = current[segment]
-                else:
-                    return None
-        
-        return current
+        return extract_path(data, path)
     
     def _redact_url(self, url: str) -> str:
         """Redact sensitive parts of URL for logging."""

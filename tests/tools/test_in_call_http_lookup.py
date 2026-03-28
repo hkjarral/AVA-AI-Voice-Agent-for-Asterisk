@@ -536,6 +536,42 @@ class TestInCallPathExtraction:
         result = tool._extract_path(data, "")
         assert result == data
 
+    def test_extract_wildcard_all_elements(self, tool):
+        """Test [*] wildcard returns all array elements."""
+        data = {"slots": [{"time": "09:00"}, {"time": "10:00"}]}
+        result = tool._extract_path(data, "slots[*].time")
+        assert result == ["09:00", "10:00"]
+
+    def test_extract_wildcard_full_array(self, tool):
+        """Test [*] without further path returns full array."""
+        data = {"slots": [{"time": "09:00"}, {"time": "10:00"}]}
+        result = tool._extract_path(data, "slots[*]")
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+
+class TestInCallOutputVariablesSerialization:
+    """Tests for JSON serialization of output variables including arrays."""
+
+    def test_array_output_serialized_as_json(self):
+        config = InCallHTTPConfig(
+            name="serial_test",
+            output_variables={"times": "slots[*].time"},
+        )
+        tool = InCallHTTPTool(config)
+        data = {"slots": [{"time": "09:00"}, {"time": "10:00"}]}
+        results = tool._extract_output_variables(data)
+        assert results["times"] == '["09:00", "10:00"]'
+
+    def test_scalar_output_preserved(self):
+        config = InCallHTTPConfig(
+            name="serial_test",
+            output_variables={"avail": "available"},
+        )
+        tool = InCallHTTPTool(config)
+        results = tool._extract_output_variables({"available": True})
+        assert results["avail"] is True
+
 
 # --- Result Message Tests ---
 
@@ -565,9 +601,21 @@ class TestBuildResultMessage:
         """Test that empty values are skipped."""
         data = {"available": "yes", "empty_field": ""}
         result = tool._build_result_message(data)
-        
+
         assert "yes" in result
         assert "empty_field" not in result.lower()
+
+    def test_preserves_falsy_zero(self, tool):
+        """Test that 0 is not dropped from result message."""
+        data = {"count": 0}
+        result = tool._build_result_message(data)
+        assert "0" in result
+
+    def test_preserves_falsy_false(self, tool):
+        """Test that False is not dropped from result message."""
+        data = {"available": False}
+        result = tool._build_result_message(data)
+        assert "False" in result
 
 
 # --- URL Redaction Tests ---
