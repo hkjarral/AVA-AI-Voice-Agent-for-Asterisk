@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Conversation timestamps (#277)**: All conversation history entries now include per-message timestamps. Added `_ts_msg()` helper in engine to ensure every `conversation_history.append()` site (12 total) attaches `time.time()`. Fixed frontend epoch-seconds-to-milliseconds conversion so timestamps display correctly in the Call Log UI.
+- **HTTP tool output variable array extraction (#281)**: JSONPath wildcards like `records[*].fields.name` now correctly return arrays instead of empty strings. Extracted duplicated `_extract_path` logic into shared `path_utils.extract_path()` with support for `[*]` wildcards, bare `[0]`/`[*]` on root arrays, hyphenated field names (e.g. `line-items[*].sku`), and explicit null-vs-missing semantics. Array/dict results are now JSON-serialized via `json.dumps` instead of Python `str()`. Added `"data"` to sanitizer `keep_keys` so extracted variables reach OpenAI/Deepgram providers, with progressive byte-cap enforcement (drop `result` → `data` → binary-search trim `message`). Fixed `_build_result_message` dropping falsy scalars (`0`, `False`).
 
 ### Added
 
