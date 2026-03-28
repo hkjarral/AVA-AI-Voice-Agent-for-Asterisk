@@ -5,6 +5,19 @@ from typing import Any, Dict, Optional, Tuple
 
 from constants import DEBUG_AUDIO_FLOW, _level_name
 
+def _stt_language(server) -> Optional[str]:
+    backend = server.stt_backend
+    if backend == "kroko":
+        return getattr(server, "kroko_language", None)
+    if backend == "tone":
+        return "ru"
+    if backend == "faster_whisper":
+        return getattr(server, "faster_whisper_language", None)
+    if backend == "whisper_cpp":
+        return getattr(server, "whisper_cpp_language", None)
+    return None
+
+
 def _stt_status(server) -> Tuple[bool, Optional[str], Optional[str]]:
     if server.stt_backend == "vosk":
         loaded = server.mock_models or server.stt_model is not None
@@ -23,17 +36,29 @@ def _stt_status(server) -> Tuple[bool, Optional[str], Optional[str]]:
     if server.stt_backend == "sherpa":
         loaded = server.mock_models or server.sherpa_backend is not None
         path = server.sherpa_model_path
-        display = os.path.basename(server.sherpa_model_path)
+        model_type = getattr(server, "sherpa_model_type", "online")
+        display = f"Sherpa ({os.path.basename(server.sherpa_model_path)}, {model_type})"
+        return loaded, path, display
+    if server.stt_backend == "tone":
+        loaded = server.mock_models or getattr(server, "tone_backend", None) is not None
+        path = getattr(server, "tone_model_path", None)
+        decoder = getattr(server, "tone_decoder_type", "beam_search")
+        display = f"T-one ({os.path.basename(path or 't-one')}, {decoder})"
         return loaded, path, display
     if server.stt_backend == "faster_whisper":
         loaded = server.mock_models or server.faster_whisper_backend is not None
         path = server.faster_whisper_model
-        display = f"Faster-Whisper ({server.faster_whisper_model})"
+        lang = getattr(server, "faster_whisper_language", "en")
+        display = f"Faster-Whisper ({server.faster_whisper_model}, {lang})"
         return loaded, path, display
     if server.stt_backend == "whisper_cpp":
         loaded = server.mock_models or server.whisper_cpp_backend is not None
         path = getattr(server, "whisper_cpp_model_path", None)
-        display = "Whisper.cpp" if loaded else "Whisper.cpp (not loaded)"
+        lang = getattr(server, "whisper_cpp_language", "en")
+        if loaded:
+            display = f"Whisper.cpp ({lang})"
+        else:
+            display = "Whisper.cpp (not loaded)"
         return loaded, path, display
     return False, None, None
 
@@ -63,6 +88,15 @@ def _tts_status(server) -> Tuple[bool, Optional[str], Optional[str]]:
         loaded = server.mock_models or server.melotts_backend is not None
         path = server.melotts_voice
         display = f"MeloTTS ({server.melotts_voice})"
+        return loaded, path, display
+    if server.tts_backend == "silero":
+        loaded = server.mock_models or server.silero_backend is not None
+        # Path must match the dropdown option format: "speaker:model_id"
+        # (e.g. "es_0:v3_es") so the UI can select the correct entry.
+        speaker = getattr(server, "silero_speaker", "xenia")
+        model_id = getattr(server, "silero_model_id", "v3_1_ru")
+        path = f"{speaker}:{model_id}"
+        display = f"Silero ({server.silero_language}/{speaker})"
         return loaded, path, display
     return False, None, None
 
@@ -121,6 +155,9 @@ def build_status_response(server) -> Dict[str, Any]:
                 "loaded": stt_loaded,
                 "path": stt_path,
                 "display": stt_display,
+                "language": _stt_language(server),
+                "sherpa_model_type": getattr(server, "sherpa_model_type", None) if server.stt_backend == "sherpa" else None,
+                "tone_decoder_type": getattr(server, "tone_decoder_type", None) if server.stt_backend == "tone" else None,
             },
             "llm": {
                 "loaded": llm_loaded,
@@ -164,6 +201,13 @@ def build_status_response(server) -> Dict[str, Any]:
             "model_path": server.kokoro_model_path,
             "api_base_url": server.kokoro_api_base_url,
             "api_key_set": bool(server.kokoro_api_key),
+        },
+        "silero": {
+            "language": getattr(server, "silero_language", "ru"),
+            "speaker": getattr(server, "silero_speaker", "xenia"),
+            "model_id": getattr(server, "silero_model_id", "v3_1_ru"),
+            "model_path": getattr(server, "silero_model_path", "/app/models/tts/silero"),
+            "sample_rate": getattr(server, "silero_sample_rate", 8000),
         },
         "gpu": gpu_status,
         "config": {

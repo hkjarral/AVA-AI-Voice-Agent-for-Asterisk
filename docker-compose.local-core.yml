@@ -12,4 +12,5 @@ services:
         INCLUDE_LLAMA: "true"
         INCLUDE_SHERPA: "false"
         INCLUDE_KOKORO: "false"
+        INCLUDE_SILERO: "false"
         INCLUDE_KROKO_EMBEDDED: "false"

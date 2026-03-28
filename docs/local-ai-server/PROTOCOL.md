@@ -479,6 +479,27 @@ Request (examples):
 }
 ```
 
+```json
+{ "type": "switch_model", "stt_backend": "faster_whisper", "faster_whisper_language": "ru" }
+```
+
+```json
+{ "type": "switch_model", "stt_backend": "whisper_cpp", "whisper_cpp_language": "ru", "stt_model_path": "/app/models/stt/ggml-base.bin" }
+```
+
+```json
+{ "type": "switch_model", "stt_backend": "sherpa", "sherpa_model_type": "offline", "sherpa_model_path": "/app/models/stt/sherpa-onnx-zipformer-en-2023-06-26", "sherpa_vad_model_path": "/app/models/vad/silero_vad.onnx" }
+```
+
+```json
+{ "type": "switch_model", "stt_backend": "tone", "tone_model_path": "/app/models/stt/t-one", "tone_decoder_type": "beam_search", "tone_kenlm_path": "/app/models/stt/t-one/kenlm.bin" }
+```
+
+Notes:
+- `sherpa_model_type=online` expects a streaming Sherpa model directory such as `sherpa-onnx-streaming-zipformer-en-2023-06-26`
+- `sherpa_model_type=offline` expects a non-streaming Sherpa transducer model directory such as `sherpa-onnx-zipformer-en-2023-06-26`
+- Offline mode will reject streaming Sherpa model directories
+
 Response:
 
 ```json
@@ -491,9 +512,9 @@ Optional fields:
 
 Accepted payload shapes:
 
-- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `stt_model_path`, `tts_model_path`.
+- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, `faster_whisper_language`, `whisper_cpp_language`, `stt_model_path`, `tts_model_path`.
 - Nested config objects:
-  - `stt_config`: `model`, `device`, `compute_type`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
+  - `stt_config`: `model`, `device`, `compute_type`, `faster_whisper_language`, `whisper_cpp_language`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
   - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`
   - `llm_config`: `model_path`, `threads`, `context`, `batch`, `max_tokens`, `temperature`, `top_p`, `repeat_penalty`, `gpu_layers`, `system_prompt`, `use_mlock`, `chat_format`
 
@@ -523,6 +544,7 @@ Response:
     "vosk": true,
     "sherpa": true,
     "kroko_embedded": true,
+    "tone": false,
     "faster_whisper": true,
     "whisper_cpp": false,
     "piper": true,
@@ -536,6 +558,7 @@ Response:
 Notes:
 
 - `kroko_embedded`: `true` only if `/usr/local/bin/kroko-server` exists (requires `INCLUDE_KROKO_EMBEDDED=true` at build time)
+- `tone`: `true` only if the T-one package is installed (requires `INCLUDE_TONE=true` at build time)
 - `kokoro`: `true` if Kokoro package is installed, or `KOKORO_API_BASE_URL` is set, or model files exist on disk
 - `vosk`, `piper`, `llama`: Reported as `true` in default/full Docker images (assumes standard dependencies are installed)
 - Used by Admin UI `/api/local-ai/capabilities` endpoint to filter available options
@@ -679,6 +702,14 @@ Server-side (see `local_ai_server/config.py`, `local_ai_server/server.py`):
   - `LOCAL_TOOL_GATEWAY_ENABLED` (default `1`)
 - STT:
   - Backend select: `LOCAL_STT_BACKEND`
+  - Sherpa: `SHERPA_MODEL_PATH`, `SHERPA_MODEL_TYPE`, `SHERPA_VAD_MODEL_PATH`
+  - T-one: `TONE_MODEL_PATH`, `TONE_DECODER_TYPE`, `TONE_KENLM_PATH`
+  - Sherpa offline tuning:
+    - `SHERPA_VAD_THRESHOLD` (default `0.35`)
+    - `SHERPA_VAD_MIN_SILENCE_MS` (default `700`)
+    - `SHERPA_VAD_MIN_SPEECH_MS` (default `200`)
+    - `SHERPA_OFFLINE_PREROLL_MS` (default `350`)
+    - `SHERPA_OFFLINE_DEBUG_SEGMENTS` (default `false`; debug only)
   - Whisper.cpp: `WHISPER_CPP_MODEL_PATH` (legacy alias: `LOCAL_WHISPER_CPP_MODEL_PATH`), `WHISPER_CPP_LANGUAGE`
   - Faster-Whisper: `FASTER_WHISPER_MODEL`, `FASTER_WHISPER_DEVICE`, `FASTER_WHISPER_COMPUTE_TYPE`, `FASTER_WHISPER_LANGUAGE`
   - Kroko: `KROKO_EMBEDDED`, `KROKO_MODEL_PATH`, `KROKO_PORT`, `KROKO_URL`, `KROKO_API_KEY`, `KROKO_LANGUAGE`

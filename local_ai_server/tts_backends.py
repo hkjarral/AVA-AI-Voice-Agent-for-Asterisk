@@ -288,3 +288,131 @@ class MeloTTSBackend:
         self.speaker_ids = None
         self._initialized = False
         logging.info("🛑 MELOTTS - TTS shutdown")
+
+
+class SileroTTSBackend:
+    """
+    Silero TTS backend — CPU-friendly, multi-language text-to-speech.
+
+    Key advantage: native 8kHz output for telephony (no resampling needed).
+    Supports Russian (primary), English, German, Spanish, French, Ukrainian.
+
+    Docs: https://github.com/snakers4/silero-models
+    """
+
+    # Valid speakers per language (v3 model family)
+    # See: https://github.com/snakers4/silero-models
+    SPEAKERS = {
+        "ru": ["aidar", "baya", "kseniya", "xenia", "eugene"],
+        "en": ["en_0", "en_1", "en_2", "en_3", "en_4", "en_5"],
+        "de": ["bernd_ungerer", "eva_k", "friedrich", "hokuspokus", "karlsson"],
+        "es": ["es_0", "es_1", "es_2"],
+        "fr": ["fr_0", "fr_1", "fr_2", "fr_3", "fr_4", "fr_5"],
+        "ua": ["mykyta"],
+    }
+
+    # Default model IDs per language (the 'speaker' param in torch.hub.load)
+    MODEL_IDS = {
+        "ru": "v3_1_ru",
+        "en": "v3_en",
+        "de": "v3_de",
+        "es": "v3_es",
+        "fr": "v3_fr",
+        "ua": "v3_ua",
+    }
+
+    def __init__(
+        self,
+        speaker: str = "xenia",
+        language: str = "ru",
+        model_id: str = "",
+        sample_rate: int = 8000,
+        model_path: str = "/app/models/tts/silero",
+    ):
+        self.speaker = speaker
+        self.language = language
+        self.model_id = model_id or self.MODEL_IDS.get(language, "v3_1_ru")
+        self.sample_rate = sample_rate
+        self.model_path = model_path
+        self.model = None
+        self._initialized = False
+
+    def initialize(self) -> bool:
+        try:
+            import torch
+
+            logging.info(
+                "🎙️ SILERO - Initializing TTS (language=%s, model_id=%s, speaker=%s, rate=%d)",
+                self.language,
+                self.model_id,
+                self.speaker,
+                self.sample_rate,
+            )
+
+            # Direct torch.hub cache to the configured model path
+            torch.hub.set_dir(self.model_path)
+
+            model, _ = torch.hub.load(
+                repo_or_dir="snakers4/silero-models",
+                model="silero_tts",
+                language=self.language,
+                speaker=self.model_id,
+                trust_repo=True,
+            )
+
+            self.model = model
+
+            # Validate speaker for the selected language
+            valid_speakers = self.SPEAKERS.get(self.language, [])
+            if valid_speakers and self.speaker not in valid_speakers:
+                logging.warning(
+                    "⚠️ SILERO - Speaker '%s' not valid for language '%s', available: %s. Using '%s'.",
+                    self.speaker,
+                    self.language,
+                    valid_speakers,
+                    valid_speakers[0],
+                )
+                self.speaker = valid_speakers[0]
+
+            self._initialized = True
+            logging.info("✅ SILERO - TTS initialized successfully")
+            return True
+        except ImportError as exc:
+            logging.error("❌ SILERO - Import failed (torch not installed?): %s", exc)
+            return False
+        except Exception as exc:
+            logging.error("❌ SILERO - Failed to initialize: %s", exc)
+            return False
+
+    def synthesize(self, text: str) -> bytes:
+        if not self._initialized or self.model is None:
+            logging.error("❌ SILERO - Not initialized")
+            return b""
+
+        try:
+            import numpy as np
+
+            audio = self.model.apply_tts(
+                text=text,
+                speaker=self.speaker,
+                sample_rate=self.sample_rate,
+            )
+
+            # Convert torch tensor to int16 PCM bytes
+            audio_np = audio.numpy() if hasattr(audio, "numpy") else audio
+            audio_int16 = (audio_np * 32767).astype(np.int16)
+
+            logging.debug(
+                "🎙️ SILERO - Generated %d samples at %dHz",
+                len(audio_int16),
+                self.sample_rate,
+            )
+            return audio_int16.tobytes()
+        except Exception as exc:
+            logging.error("❌ SILERO - Synthesis failed: %s", exc)
+            return b""
+
+    def shutdown(self) -> None:
+        self.model = None
+        self._initialized = False
+        logging.info("🛑 SILERO - TTS shutdown")

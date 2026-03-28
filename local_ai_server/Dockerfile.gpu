@@ -6,9 +6,11 @@ ARG INCLUDE_VOSK=true
 ARG INCLUDE_SHERPA=true
 ARG INCLUDE_FASTER_WHISPER=true
 ARG INCLUDE_WHISPER_CPP=true
+ARG INCLUDE_TONE=false
 ARG INCLUDE_PIPER=true
 ARG INCLUDE_KOKORO=true
 ARG INCLUDE_MELOTTS=false
+ARG INCLUDE_SILERO=false
 ARG INCLUDE_LLAMA=true
 ARG MELOTTS_GIT_REF=209145371cff8fc3bd60d7be902ea69cbdb7965a
 
@@ -63,6 +65,10 @@ RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
         pip install --no-cache-dir pywhispercpp==1.2.0; \
     fi
 
+RUN if [ "$INCLUDE_TONE" = "true" ]; then \
+        pip install --no-cache-dir "git+https://github.com/voicekit-team/T-one.git@3c5b6c015038173840e62cea99e10cdb1c759116#egg=tone"; \
+    fi
+
 RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
         pip install --no-cache-dir piper-tts==1.2.0; \
     fi
@@ -87,6 +93,17 @@ RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
         python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng', download_dir='/opt/venv/nltk_data')" || true && \
         python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('bert-base-uncased')" || true && \
         python -c "from melo.api import TTS; print('MeloTTS package ready')"; \
+    fi
+
+RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
+        echo "📦 Installing Silero TTS dependencies..." && \
+        if ! python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then \
+            pip install --no-cache-dir torch==2.5.1; \
+        fi && \
+        pip install --no-cache-dir omegaconf && \
+        echo "📦 Pre-caching Silero Russian model (best effort)..." && \
+        python3 -c "import torch; torch.hub.set_dir('/app/models/tts/silero'); torch.hub.load('snakers4/silero-models', 'silero_tts', language='ru', speaker='v3_1_ru', trust_repo=True)" || true && \
+        echo "✅ Silero TTS ready"; \
     fi
 
 RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \

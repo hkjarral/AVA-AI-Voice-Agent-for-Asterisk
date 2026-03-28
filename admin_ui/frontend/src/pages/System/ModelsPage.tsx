@@ -55,7 +55,7 @@ interface DownloadProgress {
 }
 
 interface ActiveModels {
-    stt: { backend: string; path: string; loaded: boolean; display?: string };
+    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; sherpa_model_type?: string | null; tone_decoder_type?: string | null };
     tts: { backend: string; path: string; loaded: boolean; display?: string };
     llm: {
         path: string;
@@ -96,6 +96,7 @@ interface AvailableModels {
 
 interface BackendCapabilities {
     stt?: {
+        tone?: { available: boolean; reason?: string };
         faster_whisper?: { available: boolean; reason?: string };
         kroko_embedded?: { available: boolean; reason?: string };
         whisper_cpp?: { available: boolean; reason?: string };
@@ -152,6 +153,7 @@ const ModelsPage = () => {
     const [serverStatus, setServerStatus] = useState<'connected' | 'error' | 'loading'>('loading');
     const [restarting, setRestarting] = useState(false);
     const [pendingChanges, setPendingChanges] = useState<{ stt?: string; tts?: string; llm?: string }>({});
+    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
     const [pendingLlmConfig, setPendingLlmConfig] = useState<{ context?: number; max_tokens?: number }>({});
     const [startingServer, setStartingServer] = useState(false);
     const [capabilities, setCapabilities] = useState<BackendCapabilities | null>(null);
@@ -352,7 +354,10 @@ const ModelsPage = () => {
                         backend: localAI.details?.models?.stt?.backend || 'unknown',
                         path: localAI.details?.models?.stt?.path || '',
                         loaded: localAI.details?.models?.stt?.loaded || false,
-                        display: localAI.details?.models?.stt?.display || ''
+                        display: localAI.details?.models?.stt?.display || '',
+                        language: localAI.details?.models?.stt?.language || null,
+                        sherpa_model_type: localAI.details?.models?.stt?.sherpa_model_type || null,
+                        tone_decoder_type: localAI.details?.models?.stt?.tone_decoder_type || null,
                     },
                     tts: {
                         backend: localAI.details?.models?.tts?.backend || 'unknown',
@@ -395,14 +400,19 @@ const ModelsPage = () => {
         modelType: 'stt' | 'tts' | 'llm',
         backend: string,
         modelPath: string,
-        forceIncompatibleApplyRequest = false
+        forceIncompatibleApplyRequest = false,
+        extra?: Record<string, any>
     ) => {
-        return axios.post('/api/local-ai/switch', {
+        const payload: any = {
             model_type: modelType,
             backend: backend,
             model_path: modelPath,
             force_incompatible_apply: forceIncompatibleApplyRequest
-        });
+        };
+        if (extra) {
+            Object.assign(payload, extra);
+        }
+        return axios.post('/api/local-ai/switch', payload);
     };
 
     // Get model name from path
@@ -581,6 +591,7 @@ const ModelsPage = () => {
         if (!b) return true;
         if (b === 'faster_whisper') return !!capabilities?.stt?.faster_whisper?.available;
         if (b === 'whisper_cpp') return !!capabilities?.stt?.whisper_cpp?.available;
+        if (b === 'tone') return !!capabilities?.stt?.tone?.available;
         if (b === 'kroko') return true; // cloud always available; embedded availability is checked separately at apply time
         if (b === 'vosk') return true;
         if (b === 'sherpa') return true;
@@ -606,6 +617,13 @@ const ModelsPage = () => {
                 requiresRebuild: true
             });
         }
+        if (sttSel.backend === 'tone' && capabilities && !capabilities.stt?.tone?.available) {
+            issues.push({
+                key: 'tone_rebuild',
+                message: 'T-one is not installed in this Local AI image. Full container rebuild is required.',
+                requiresRebuild: true
+            });
+        }
         if (sttSel.backend === 'kroko' && capabilities && !capabilities.stt?.kroko_embedded?.available) {
             issues.push({
                 key: 'kroko_rebuild',
@@ -617,6 +635,13 @@ const ModelsPage = () => {
             issues.push({
                 key: 'melotts_rebuild',
                 message: 'MeloTTS is not installed in this Local AI image. Full container rebuild is required.',
+                requiresRebuild: true
+            });
+        }
+        if (ttsSel.backend === 'silero' && capabilities && !capabilities.tts?.silero?.available) {
+            issues.push({
+                key: 'silero_rebuild',
+                message: 'Silero TTS is not installed in this Local AI image. Full container rebuild with INCLUDE_SILERO=true is required.',
                 requiresRebuild: true
             });
         }
@@ -657,9 +682,11 @@ const ModelsPage = () => {
         fasterWhisper: compatibilityIssues.some(issue => issue.key === 'fw_rebuild'),
         meloTts: compatibilityIssues.some(issue => issue.key === 'melotts_rebuild'),
         krokoEmbedded: compatibilityIssues.some(issue => issue.key === 'kroko_rebuild'),
-        whisperCpp: compatibilityIssues.some(issue => issue.key === 'whispercpp_rebuild')
+        whisperCpp: compatibilityIssues.some(issue => issue.key === 'whispercpp_rebuild'),
+        tone: compatibilityIssues.some(issue => issue.key === 'tone_rebuild'),
+        silero: compatibilityIssues.some(issue => issue.key === 'silero_rebuild')
     };
-    const requiresAnyRebuild = requiresRebuild.fasterWhisper || requiresRebuild.whisperCpp || requiresRebuild.meloTts || requiresRebuild.krokoEmbedded;
+    const requiresAnyRebuild = requiresRebuild.fasterWhisper || requiresRebuild.whisperCpp || requiresRebuild.tone || requiresRebuild.meloTts || requiresRebuild.krokoEmbedded || requiresRebuild.silero;
 
     const applyPendingChanges = async () => {
         const hasModelChanges = Object.keys(pendingChanges).length > 0;
@@ -709,23 +736,42 @@ const ModelsPage = () => {
                 const sttSel = parseSelection(remainingChanges.stt);
                 const ttsSel = parseSelection(remainingChanges.tts);
 
+                // For Silero, parse speaker and model_id from the synthetic path "silero:<speaker>:<model_id>"
+                let sileroSpeaker: string | undefined;
+                let sileroLanguage: string | undefined;
+                let sileroModelId: string | undefined;
+                if (ttsSel.backend === 'silero' && ttsSel.modelPath) {
+                    const parts = ttsSel.modelPath.split(':');
+                    sileroSpeaker = parts[0];
+                    sileroModelId = parts[1];
+                    // Derive language from model_id: v3_1_ru -> ru, v3_en -> en, etc.
+                    const modelIdParts = (sileroModelId || '').split('_');
+                    sileroLanguage = modelIdParts[modelIdParts.length - 1];
+                }
+
                 const rebuildRes = await axios.post('/api/local-ai/rebuild', {
                     include_faster_whisper: requiresRebuild.fasterWhisper,
                     include_whisper_cpp: requiresRebuild.whisperCpp,
+                    include_tone: requiresRebuild.tone,
                     include_melotts: requiresRebuild.meloTts,
                     include_kroko_embedded: requiresRebuild.krokoEmbedded,
+                    include_silero: requiresRebuild.silero,
                     stt_backend: sttSel.backend || undefined,
                     stt_model: sttSel.modelPath || undefined,
                     tts_backend: ttsSel.backend || undefined,
                     tts_voice: (() => {
                         if (!ttsSel.backend) return undefined;
                         if (ttsSel.backend === 'kokoro') {
-                            // Kokoro selection in this dropdown refers to the model directory; voice is configured separately.
-                            // Preserve existing voice (or default).
                             return (envConfig.KOKORO_VOICE || 'af_heart').trim();
                         }
+                        if (ttsSel.backend === 'silero') {
+                            return sileroSpeaker || undefined;
+                        }
                         return ttsSel.modelPath || undefined;
-                    })()
+                    })(),
+                    silero_speaker: sileroSpeaker,
+                    silero_language: sileroLanguage,
+                    silero_model_id: sileroModelId,
                 });
 
                 if (!rebuildRes.data?.success) {
@@ -735,7 +781,7 @@ const ModelsPage = () => {
                 showToast(rebuildRes.data?.message || 'Local AI rebuild completed.', 'success');
 
                 if (requiresRebuild.fasterWhisper) delete remainingChanges.stt;
-                if (requiresRebuild.meloTts) delete remainingChanges.tts;
+                if (requiresRebuild.meloTts || requiresRebuild.silero) delete remainingChanges.tts;
             }
 
             // Apply LLM changes (model and/or tuning) in one request to avoid multiple reloads.
@@ -772,11 +818,35 @@ const ModelsPage = () => {
                 if (!value) continue;
                 updateApplyProgress('switching', 88, `Applying ${type.toUpperCase()} change...`, `Switching ${type} backend/model`);
                 const [backend, ...pathParts] = value.split(':');
-                await handleModelSwitch(type as 'stt' | 'tts', backend, pathParts.join(':'), forceIncompatibleApply);
+                const extra: Record<string, any> = {};
+                if (type === 'stt') {
+                    if (backend === 'faster_whisper' && pendingSttExtra.language) {
+                        extra.faster_whisper_language = pendingSttExtra.language;
+                    } else if (backend === 'whisper_cpp' && pendingSttExtra.language) {
+                        extra.whisper_cpp_language = pendingSttExtra.language;
+                    } else if (backend === 'sherpa') {
+                        if (pendingSttExtra.sherpa_model_type) extra.sherpa_model_type = pendingSttExtra.sherpa_model_type;
+                        if (pendingSttExtra.sherpa_vad_model_path) extra.sherpa_vad_model_path = pendingSttExtra.sherpa_vad_model_path;
+                    } else if (backend === 'tone') {
+                        if (pendingSttExtra.tone_decoder_type) extra.tone_decoder_type = pendingSttExtra.tone_decoder_type;
+                        if (pendingSttExtra.tone_kenlm_path) extra.tone_kenlm_path = pendingSttExtra.tone_kenlm_path;
+                    }
+                }
+                if (type === 'tts' && backend === 'silero') {
+                    // Parse Silero fields from synthetic path "speaker:model_id"
+                    const silParts = pathParts.join(':').split(':');
+                    extra.silero_speaker = silParts[0];
+                    extra.silero_model_id = silParts[1];
+                    // Derive language from model_id: v3_1_ru -> ru, v3_en -> en
+                    const midParts = (silParts[1] || '').split('_');
+                    extra.silero_language = midParts[midParts.length - 1];
+                }
+                await handleModelSwitch(type as 'stt' | 'tts', backend, pathParts.join(':'), forceIncompatibleApply, Object.keys(extra).length > 0 ? extra : undefined);
             }
 
             showToast(requiresAnyRebuild ? 'Compatibility override applied. Local AI has been rebuilt/restarted.' : 'Model switch requested. Server will restart.', 'success');
             setPendingChanges({});
+            setPendingSttExtra({});
             setPendingLlmConfig({});
             setForceIncompatibleApply(false);
             updateApplyProgress('verifying', 95, 'Waiting for Local AI to come back online...', 'Refreshing active model status');
@@ -954,6 +1024,13 @@ const ModelsPage = () => {
                                                 </optgroup>
                                             )
                                         ))}
+                                        {!availableModels?.stt?.tone && (
+                                            <optgroup label="T-one">
+                                                <option value="tone:/app/models/stt/t-one">
+                                                    T-one Russian {!capabilities?.stt?.tone?.available ? '(requires rebuild)' : ''}
+                                                </option>
+                                            </optgroup>
+                                        )}
                                         <optgroup label="Faster Whisper">
                                             <option value="faster_whisper:base">
                                                 Whisper Base {!capabilities?.stt?.faster_whisper?.available ? '(requires rebuild)' : ''}
@@ -965,6 +1042,108 @@ const ModelsPage = () => {
                                     <div className="mt-2 text-xs text-muted-foreground truncate" title={activeModels.stt.display || activeModels.stt.path}>
                                         {activeModels.stt.display || getModelName(activeModels.stt.path)}
                                     </div>
+                                    {activeModels.stt.language && (
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            Language: <span className="font-medium">{activeModels.stt.language}</span>
+                                        </div>
+                                    )}
+                                    {/* Language / mode quick-switch for STT backends that support it */}
+                                    {(() => {
+                                        const selectedStt = pendingChanges.stt || `${activeModels.stt.backend}:${activeModels.stt.path}`;
+                                        const selectedBackend = selectedStt.split(':')[0];
+                                        if (selectedBackend === 'faster_whisper' || selectedBackend === 'whisper_cpp') {
+                                            return (
+                                                <div className="mt-2">
+                                                    <label className="text-[10px] text-muted-foreground">Language (ISO 639-1)</label>
+                                                    <input
+                                                        type="text"
+                                                        className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.language ? 'border-yellow-500' : 'border-border'}`}
+                                                        value={pendingSttExtra.language ?? (activeModels.stt.language || 'en')}
+                                                        onChange={(e) => {
+                                                            const lang = e.target.value.trim().toLowerCase();
+                                                            setPendingSttExtra(prev => ({ ...prev, language: lang }));
+                                                            if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                        }}
+                                                        placeholder="en"
+                                                        disabled={restarting}
+                                                    />
+                                                </div>
+                                            );
+                                        }
+                                        if (selectedBackend === 'sherpa') {
+                                            return (
+                                                <div className="mt-2 space-y-1.5">
+                                                    <div>
+                                                        <label className="text-[10px] text-muted-foreground">Model Type</label>
+                                                        <select
+                                                            className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_model_type ? 'border-yellow-500' : 'border-border'}`}
+                                                            value={pendingSttExtra.sherpa_model_type ?? (activeModels.stt as any).sherpa_model_type ?? 'online'}
+                                                            onChange={(e) => {
+                                                                setPendingSttExtra(prev => ({ ...prev, sherpa_model_type: e.target.value }));
+                                                                if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                            }}
+                                                            disabled={restarting}
+                                                        >
+                                                            <option value="online">Online (Streaming)</option>
+                                                            <option value="offline">Offline (VAD-gated)</option>
+                                                        </select>
+                                                    </div>
+                                                    {((pendingSttExtra.sherpa_model_type ?? (activeModels.stt as any).sherpa_model_type) === 'offline') && (
+                                                        <div>
+                                                            <label className="text-[10px] text-muted-foreground">Silero VAD Path</label>
+                                                            <input
+                                                                type="text"
+                                                                className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_vad_model_path ? 'border-yellow-500' : 'border-border'}`}
+                                                                value={pendingSttExtra.sherpa_vad_model_path || ''}
+                                                                onChange={(e) => {
+                                                                    setPendingSttExtra(prev => ({ ...prev, sherpa_vad_model_path: e.target.value }));
+                                                                }}
+                                                                placeholder="/app/models/vad/silero_vad.onnx"
+                                                                disabled={restarting}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        }
+                                        if (selectedBackend === 'tone') {
+                                            return (
+                                                <div className="mt-2 space-y-1.5">
+                                                    <div>
+                                                        <label className="text-[10px] text-muted-foreground">Decoder</label>
+                                                        <select
+                                                            className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.tone_decoder_type ? 'border-yellow-500' : 'border-border'}`}
+                                                            value={pendingSttExtra.tone_decoder_type ?? (activeModels.stt as any).tone_decoder_type ?? 'beam_search'}
+                                                            onChange={(e) => {
+                                                                setPendingSttExtra(prev => ({ ...prev, tone_decoder_type: e.target.value }));
+                                                                if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                            }}
+                                                            disabled={restarting}
+                                                        >
+                                                            <option value="beam_search">Beam Search</option>
+                                                            <option value="greedy">Greedy</option>
+                                                        </select>
+                                                    </div>
+                                                    {(pendingSttExtra.tone_decoder_type ?? (activeModels.stt as any).tone_decoder_type ?? 'beam_search') === 'beam_search' && (
+                                                        <div>
+                                                            <label className="text-[10px] text-muted-foreground">KenLM Path</label>
+                                                            <input
+                                                                type="text"
+                                                                className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.tone_kenlm_path ? 'border-yellow-500' : 'border-border'}`}
+                                                                value={pendingSttExtra.tone_kenlm_path || ''}
+                                                                onChange={(e) => {
+                                                                    setPendingSttExtra(prev => ({ ...prev, tone_kenlm_path: e.target.value }));
+                                                                }}
+                                                                placeholder="/app/models/stt/t-one/kenlm.bin"
+                                                                disabled={restarting}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
                                 </div>
 
                                 {/* LLM Model */}

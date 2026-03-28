@@ -37,6 +37,8 @@ interface SetupConfig {
     kokoro_voice?: string;
     kokoro_api_key?: string;
     kokoro_api_base_url?: string;
+    silero_speaker?: string;
+    silero_language?: string;
     local_llm_model?: string;
     local_llm_custom_url?: string;
     local_llm_custom_filename?: string;
@@ -398,16 +400,30 @@ exten => s,1,NoOp(AI Agent Call)
                     (m: any) => (m.backend || '').toLowerCase() === currentTtsBackend
                 );
                 if (sameTtsBackendModels.length > 0) {
-                    setConfig(prev => ({
-                        ...prev,
-                        local_tts_model: sameTtsBackendModels[0].id,
-                    }));
+                    const autoModel = sameTtsBackendModels[0];
+                    setConfig(prev => {
+                        const updates: Partial<WizardConfig> = { local_tts_model: autoModel.id };
+                        if (autoModel.backend === 'silero') {
+                            updates.silero_speaker = autoModel.speaker;
+                            const lang = (autoModel.language || '').split('-')[0];
+                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
+                        }
+                        return { ...prev, ...updates };
+                    });
                 } else {
-                    setConfig(prev => ({
-                        ...prev,
-                        local_tts_model: ttsModels[0].id,
-                        local_tts_backend: ttsModels[0].backend
-                    }));
+                    const autoModel = ttsModels[0];
+                    setConfig(prev => {
+                        const updates: Partial<WizardConfig> = {
+                            local_tts_model: autoModel.id,
+                            local_tts_backend: autoModel.backend,
+                        };
+                        if (autoModel.backend === 'silero') {
+                            updates.silero_speaker = autoModel.speaker;
+                            const lang = (autoModel.language || '').split('-')[0];
+                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
+                        }
+                        return { ...prev, ...updates };
+                    });
                 }
             }
         }
@@ -649,6 +665,15 @@ exten => s,1,NoOp(AI Agent Call)
         setLocalAIStatus(prev => ({ ...prev, downloading: true, downloadOutput: [], downloadProgress: null }));
 
         try {
+            // Derive Silero speaker/language from the selected catalog entry
+            const selectedTtsEntry = (modelCatalog?.tts || []).find((m: any) => m.id === config.local_tts_model);
+            const sileroSpeaker = selectedTtsEntry?.backend === 'silero' ? selectedTtsEntry.speaker : undefined;
+            const sileroLang = selectedTtsEntry?.backend === 'silero'
+                ? (selectedTtsEntry.language || '').split('-')[0]  // "ru-RU" -> "ru", "uk-UA" -> "uk" -> remap to "ua"
+                : undefined;
+            // Silero uses "ua" internally for Ukrainian, not "uk"
+            const sileroLanguage = sileroLang === 'uk' ? 'ua' : sileroLang;
+
             const startRes = await axios.post('/api/wizard/local/download-selected-models', {
                 stt: config.local_stt_backend,
                 llm: config.local_llm_model || pickRecommendedLlmId(),
@@ -664,6 +689,8 @@ exten => s,1,NoOp(AI Agent Call)
                 llm_model_path: config.local_llm_custom_filename,
                 kokoro_api_base_url: config.kokoro_api_base_url,
                 kokoro_api_key: config.kokoro_api_key,
+                silero_speaker: sileroSpeaker,
+                silero_language: sileroLanguage,
                 skip_llm_download: skipLlmDownload
             });
 
@@ -1377,18 +1404,25 @@ exten => s,1,NoOp(AI Agent Call)
                                                             const langOk = m.language === selectedLanguage || m.language === 'multi';
                                                             return langOk && (m.backend || '').toLowerCase() === String(nextBackend).toLowerCase();
                                                         });
-                                                        setConfig({
-                                                            ...config,
+                                                        const picked = candidates[0];
+                                                        const updates: Partial<WizardConfig> = {
                                                             local_tts_backend: nextBackend,
                                                             kokoro_mode: nextKokoroMode,
-                                                            local_tts_model: candidates[0]?.id || ''
-                                                        });
+                                                            local_tts_model: picked?.id || '',
+                                                        };
+                                                        if (picked?.backend === 'silero') {
+                                                            updates.silero_speaker = picked.speaker;
+                                                            const lang = (picked.language || '').split('-')[0];
+                                                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
+                                                        }
+                                                        setConfig({ ...config, ...updates });
                                                     }}
                                                 >
                                                     <option value="piper">Piper (Local)</option>
                                                     <option value="kokoro_local">Kokoro (Local)</option>
                                                     <option value="kokoro_cloud">Kokoro (Cloud/API)</option>
                                                     <option value="melotts">MeloTTS (Local/CPU)</option>
+                                                    <option value="silero">Silero (Local/Multi-language)</option>
                                                 </select>
                                             </div></div>
 
@@ -1401,18 +1435,26 @@ exten => s,1,NoOp(AI Agent Call)
                                                     onChange={e => {
                                                         const modelId = e.target.value;
                                                         const picked = (modelCatalog.tts || []).find((m: any) => m.id === modelId);
-                                                        setConfig({
-                                                            ...config,
+                                                        const updates: Partial<WizardConfig> = {
                                                             local_tts_model: modelId,
-                                                            local_tts_backend: picked?.backend || config.local_tts_backend
-                                                        });
+                                                            local_tts_backend: picked?.backend || config.local_tts_backend,
+                                                        };
+                                                        if (picked?.backend === 'silero') {
+                                                            updates.silero_speaker = picked.speaker;
+                                                            const lang = (picked.language || '').split('-')[0];
+                                                            updates.silero_language = lang === 'uk' ? 'ua' : lang;
+                                                        }
+                                                        setConfig({ ...config, ...updates });
                                                     }}
-                                                    disabled={(config.local_tts_backend || '').toLowerCase() === 'melotts'}
+                                                    disabled={['melotts', 'silero'].includes((config.local_tts_backend || '').toLowerCase())}
                                                 >
                                                     {(() => {
                                                         const backend = (config.local_tts_backend || 'piper').toLowerCase();
                                                         if (backend === 'melotts') {
                                                             return <option value="">MeloTTS (no downloadable model)</option>;
+                                                        }
+                                                        if (backend === 'silero') {
+                                                            return <option value="">Silero (auto-download via torch.hub)</option>;
                                                         }
                                                         const candidates = (modelCatalog.tts || []).filter((m: any) => {
                                                             const langOk = m.language === selectedLanguage || m.language === 'multi';
@@ -1973,11 +2015,16 @@ exten => s,1,NoOp(AI Agent Call)
                                                         const val = e.target.value;
                                                         const model = modelCatalog?.tts?.find((m: any) => m.id === val);
                                                         if (model) {
-                                                            setConfig({
-                                                                ...config,
+                                                            const updates: Partial<WizardConfig> = {
                                                                 local_tts_backend: model.backend,
                                                                 local_tts_model: model.id,
-                                                            });
+                                                            };
+                                                            if (model.backend === 'silero') {
+                                                                updates.silero_speaker = model.speaker;
+                                                                const lang = (model.language || '').split('-')[0];
+                                                                updates.silero_language = lang === 'uk' ? 'ua' : lang;
+                                                            }
+                                                            setConfig({ ...config, ...updates });
                                                         }
                                                     }}
                                                 >
@@ -1986,7 +2033,8 @@ exten => s,1,NoOp(AI Agent Call)
                                                         m.language === selectedLanguage || m.language === 'multi'
                                                     ).map((model: any) => {
                                                         const needsRebuild =
-                                                            (model.backend === 'melotts' && backendCaps && !backendCaps.tts?.melotts?.available);
+                                                            (model.backend === 'melotts' && backendCaps && !backendCaps.tts?.melotts?.available) ||
+                                                            (model.backend === 'silero' && backendCaps && !backendCaps.tts?.silero?.available);
                                                         return (
                                                             <option key={model.id} value={model.id}>
                                                                 {model.name} ({model.backend}) - {model.size_display}{needsRebuild ? ' (requires rebuild)' : ''}
@@ -2001,6 +2049,7 @@ exten => s,1,NoOp(AI Agent Call)
                                                                 <option value="piper">Piper (Local)</option>
                                                                 <option value="kokoro">Kokoro (Premium)</option>
                                                                 <option value="melotts">MeloTTS (Local)</option>
+                                                                <option value="silero">Silero (Local/Multi-language)</option>
                                                             </>
                                                         )}
                                                 </select>

@@ -28,7 +28,7 @@ from services.fs import upsert_env_vars, atomic_write_text
 from api.models_catalog import (
     get_full_catalog, get_models_by_language, get_available_languages,
     LANGUAGE_NAMES, REGION_NAMES, VOSK_STT_MODELS, SHERPA_STT_MODELS,
-    KROKO_STT_MODELS, PIPER_TTS_MODELS, KOKORO_TTS_MODELS, LLM_MODELS
+    KROKO_STT_MODELS, PIPER_TTS_MODELS, KOKORO_TTS_MODELS, SILERO_TTS_MODELS, LLM_MODELS
 )
 from api.rebuild_jobs import (
     start_rebuild_job, get_rebuild_job, get_enabled_backends,
@@ -1570,6 +1570,9 @@ class ModelSelection(BaseModel):
     kokoro_voice: Optional[str] = "af_heart"
     kokoro_api_base_url: Optional[str] = None
     kokoro_api_key: Optional[str] = None
+    # Silero TTS
+    silero_speaker: Optional[str] = "xenia"
+    silero_language: Optional[str] = "ru"
     # Local Hybrid support: download/apply only STT/TTS (skip LLM model download/config)
     skip_llm_download: Optional[bool] = False
     # New fields for exact model selection
@@ -1944,11 +1947,14 @@ async def download_selected_models(selection: ModelSelection):
             _BACKEND_TO_INCLUDE = {
                 "faster_whisper": "INCLUDE_FASTER_WHISPER",
                 "whisper_cpp":    "INCLUDE_WHISPER_CPP",
+                "tone":           "INCLUDE_TONE",
                 "melotts":        "INCLUDE_MELOTTS",
                 "sherpa":         "INCLUDE_SHERPA",
                 "vosk":           "INCLUDE_VOSK",
+                "llama":          "INCLUDE_LLAMA",
                 "piper":          "INCLUDE_PIPER",
                 "kokoro":         "INCLUDE_KOKORO",
+                "silero":         "INCLUDE_SILERO",
             }
             for backend_key, include_flag in _BACKEND_TO_INCLUDE.items():
                 if resolved_stt_backend == backend_key or resolved_tts_backend == backend_key:
@@ -1991,9 +1997,23 @@ async def download_selected_models(selection: ModelSelection):
                     env_updates.append(f"KOKORO_MODEL_PATH={tts_path}")
                 elif tts_backend == "melotts":
                     env_updates.append(f"MELOTTS_VOICE={tts_model['model_path']}")
+                elif tts_backend == "silero":
+                    # Silero models auto-download via torch.hub; set speaker/language config
+                    pass
                 elif tts_model.get("download_url"):
                     tts_path = _safe_join_under_dir("/app/models/tts", tts_model["model_path"])
                     env_updates.append(f"LOCAL_TTS_MODEL_PATH={tts_path}")
+
+            # Silero config: speaker + language + model_id
+            if (tts_model.get("backend") or selection.tts) == "silero":
+                _SILERO_MODEL_IDS = {"ru": "v3_1_ru", "en": "v3_en", "de": "v3_de", "es": "v3_es", "fr": "v3_fr", "ua": "v3_ua"}
+                silero_speaker = tts_model.get("speaker") or selection.silero_speaker or "xenia"
+                silero_lang = selection.silero_language or "ru"
+                # Prefer catalog entry's model_id (authoritative), fall back to language lookup
+                silero_model_id = tts_model.get("silero_model_id") or _SILERO_MODEL_IDS.get(silero_lang, "v3_1_ru")
+                env_updates.append(f"SILERO_SPEAKER={silero_speaker}")
+                env_updates.append(f"SILERO_LANGUAGE={silero_lang}")
+                env_updates.append(f"SILERO_MODEL_ID={silero_model_id}")
 
             # Kokoro mode: local vs api/hf (no local files required)
             if (tts_model.get("backend") or selection.tts) == "kokoro":
@@ -2866,6 +2886,8 @@ class SetupConfig(BaseModel):
     kokoro_voice: Optional[str] = "af_heart"
     kokoro_api_key: Optional[str] = None
     kokoro_api_base_url: Optional[str] = None
+    silero_speaker: Optional[str] = "xenia"
+    silero_language: Optional[str] = "ru"
     local_llm_model: Optional[str] = None
     local_llm_custom_url: Optional[str] = None
     local_llm_custom_filename: Optional[str] = None
@@ -2968,11 +2990,14 @@ async def save_setup_config(config: SetupConfig):
             _BACKEND_INCLUDE_MAP = {
                 "faster_whisper": "INCLUDE_FASTER_WHISPER",
                 "whisper_cpp": "INCLUDE_WHISPER_CPP",
+                "tone": "INCLUDE_TONE",
                 "melotts": "INCLUDE_MELOTTS",
                 "sherpa": "INCLUDE_SHERPA",
                 "vosk": "INCLUDE_VOSK",
+                "llama": "INCLUDE_LLAMA",
                 "piper": "INCLUDE_PIPER",
                 "kokoro": "INCLUDE_KOKORO",
+                "silero": "INCLUDE_SILERO",
             }
             for bk, inc_flag in _BACKEND_INCLUDE_MAP.items():
                 if stt_backend == bk or tts_backend == bk:
@@ -3011,6 +3036,14 @@ async def save_setup_config(config: SetupConfig):
             elif tts_backend == "melotts":
                 if tts_model_path:
                     env_updates["MELOTTS_VOICE"] = tts_model_path
+            elif tts_backend == "silero":
+                _SILERO_MODEL_IDS = {"ru": "v3_1_ru", "en": "v3_en", "de": "v3_de", "es": "v3_es", "fr": "v3_fr", "ua": "v3_ua"}
+                silero_speaker = (tts_model or {}).get("speaker") or config.silero_speaker or "xenia"
+                silero_lang = config.silero_language or "ru"
+                silero_model_id = (tts_model or {}).get("silero_model_id") or _SILERO_MODEL_IDS.get(silero_lang, "v3_1_ru")
+                env_updates["SILERO_SPEAKER"] = silero_speaker
+                env_updates["SILERO_LANGUAGE"] = silero_lang
+                env_updates["SILERO_MODEL_ID"] = silero_model_id
             elif tts_model_path:
                 env_updates["LOCAL_TTS_MODEL_PATH"] = _safe_join_under_dir("/app/models/tts", tts_model_path)
 

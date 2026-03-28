@@ -93,7 +93,12 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
     const getModelPathPlaceholder = (backend: string, type: 'stt' | 'tts') => {
         if (loading) return "Loading...";
         if (backend === 'vosk') return '/app/models/stt/vosk-model-en-us-0.22';
-        if (backend === 'sherpa') return '/app/models/stt/sherpa-onnx-streaming-zipformer-en-2023-06-26';
+        if (backend === 'sherpa') {
+            return config.sherpa_model_type === 'offline'
+                ? '/app/models/stt/sherpa-onnx-zipformer-en-2023-06-26'
+                : '/app/models/stt/sherpa-onnx-streaming-zipformer-en-2023-06-26';
+        }
+        if (backend === 'tone') return '/app/models/stt/t-one';
         if (backend === 'piper') return '/app/models/tts/en_US-lessac-medium.onnx';
         if (backend === 'kokoro') return '/app/models/tts/kokoro';
         return '';
@@ -430,6 +435,7 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                         <option value="vosk">Vosk (Local)</option>
                                         <option value="kroko">Kroko</option>
                                         <option value="sherpa">Sherpa-ONNX (Local)</option>
+                                        <option value="tone">T-one</option>
                                     </>
                                 )}
                             </select>
@@ -468,29 +474,141 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
 
                         {/* Sherpa settings */}
                         {config.stt_backend === 'sherpa' && (
+                            <>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Sherpa Model Path</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.sherpa_model_path || ''}
+                                        onChange={(e) => handleChange('sherpa_model_path', e.target.value)}
+                                        placeholder={getModelPathPlaceholder('sherpa', 'stt')}
+                                    />
+                                    {modelCatalog.stt.some((m: any) => m.backend === 'sherpa') && (
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            Available: {modelCatalog.stt.filter((m: any) => m.backend === 'sherpa').map((m: any) => (
+                                                <button
+                                                    key={m.id || m.path}
+                                                    type="button"
+                                                    className="underline mr-2 text-primary"
+                                                    onClick={() => handleChange('sherpa_model_path', m.path)}
+                                                >
+                                                    {m.path}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Model Type</label>
+                                    <select
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.sherpa_model_type || 'online'}
+                                        onChange={(e) => handleChange('sherpa_model_type', e.target.value)}
+                                    >
+                                        <option value="online">Online (Streaming)</option>
+                                        <option value="offline">Offline (VAD-gated, e.g. GigaAM)</option>
+                                    </select>
+                                </div>
+                                {config.sherpa_model_type === 'offline' && (
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">Silero VAD Model Path</label>
+                                        <input
+                                            type="text"
+                                            className="w-full p-2 rounded border border-input bg-background"
+                                            value={config.sherpa_vad_model_path || ''}
+                                            onChange={(e) => handleChange('sherpa_vad_model_path', e.target.value)}
+                                            placeholder="/app/models/vad/silero_vad.onnx"
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Required for offline mode. Download from sherpa-onnx releases.
+                                        </p>
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {config.stt_backend === 'tone' && (
+                            <>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">T-one Model Path</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.tone_model_path || ''}
+                                        onChange={(e) => handleChange('tone_model_path', e.target.value)}
+                                        placeholder={getModelPathPlaceholder('tone', 'stt')}
+                                    />
+                                    {modelCatalog.stt.some((m: any) => m.backend === 'tone') && (
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            Available: {modelCatalog.stt.filter((m: any) => m.backend === 'tone' && !String(m.path || '').endsWith('kenlm.bin')).map((m: any) => (
+                                                <button
+                                                    key={m.id || m.path}
+                                                    type="button"
+                                                    className="underline mr-2 text-primary"
+                                                    onClick={() => handleChange('tone_model_path', m.path)}
+                                                >
+                                                    {m.path}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Decoder</label>
+                                    <select
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.tone_decoder_type || 'beam_search'}
+                                        onChange={(e) => handleChange('tone_decoder_type', e.target.value)}
+                                    >
+                                        <option value="beam_search">Beam Search</option>
+                                        <option value="greedy">Greedy</option>
+                                    </select>
+                                </div>
+                                {(config.tone_decoder_type || 'beam_search') === 'beam_search' && (
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">KenLM Path</label>
+                                        <input
+                                            type="text"
+                                            className="w-full p-2 rounded border border-input bg-background"
+                                            value={config.tone_kenlm_path || ''}
+                                            onChange={(e) => handleChange('tone_kenlm_path', e.target.value)}
+                                            placeholder="/app/models/stt/t-one/kenlm.bin"
+                                        />
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {config.stt_backend === 'faster_whisper' && (
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">Sherpa Model Path</label>
+                                <label className="text-sm font-medium">Language</label>
                                 <input
                                     type="text"
                                     className="w-full p-2 rounded border border-input bg-background"
-                                    value={config.sherpa_model_path || ''}
-                                    onChange={(e) => handleChange('sherpa_model_path', e.target.value)}
-                                    placeholder={getModelPathPlaceholder('sherpa', 'stt')}
+                                    value={config.faster_whisper_language || 'en'}
+                                    onChange={(e) => handleChange('faster_whisper_language', e.target.value)}
+                                    placeholder="en"
                                 />
-                                {modelCatalog.stt.some((m: any) => m.backend === 'sherpa') && (
-                                    <div className="mt-1 text-xs text-muted-foreground">
-                                        Available: {modelCatalog.stt.filter((m: any) => m.backend === 'sherpa').map((m: any) => (
-                                            <button
-                                                key={m.id || m.path}
-                                                type="button"
-                                                className="underline mr-2 text-primary"
-                                                onClick={() => handleChange('sherpa_model_path', m.path)}
-                                            >
-                                                {m.path}
-                                            </button>
-                                        ))}
-                                    </div>
-                                )}
+                                <p className="text-xs text-muted-foreground">
+                                    ISO 639-1 code (e.g. en, ru, es). Leave as &quot;en&quot; for English.
+                                </p>
+                            </div>
+                        )}
+
+                        {config.stt_backend === 'whisper_cpp' && (
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Language</label>
+                                <input
+                                    type="text"
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={config.whisper_cpp_language || 'en'}
+                                    onChange={(e) => handleChange('whisper_cpp_language', e.target.value)}
+                                    placeholder="en"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    ISO 639-1 code (e.g. en, ru, es). Leave as &quot;en&quot; for English.
+                                </p>
                             </div>
                         )}
 

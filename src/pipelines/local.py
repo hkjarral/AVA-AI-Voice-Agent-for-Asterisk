@@ -602,11 +602,18 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
             )
             return
         
+        # Chunk-correlated RMS at engine egress (int16 scale, width=2)
+        try:
+            egress_rms = audioop.rms(pcm16, 2)
+        except Exception:
+            egress_rms = -1
+        
         logger.debug(
             "🎤 STT audio converted and sending to server",
             component=self.component_key,
             call_id=call_id,
             pcm16_bytes=len(pcm16),
+            egress_rms_int16=egress_rms,
             base64_size=len(base64.b64encode(pcm16).decode("ascii")),
         )
         

@@ -293,5 +293,7 @@ class WebSocketProtocol:
         except Exception as exc:
             logging.error("❌ WebSocket handler error: %s", exc, exc_info=True)
         finally:
+            await self._server._flush_sherpa_offline_trailing(websocket, session)
+            await self._server._flush_tone_trailing(websocket, session)
             self._server._reset_stt_session(session)
             logging.debug("🔌 Connection closed: %s", websocket.remote_address)

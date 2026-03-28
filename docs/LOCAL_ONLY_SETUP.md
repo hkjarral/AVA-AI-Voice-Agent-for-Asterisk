@@ -551,9 +551,35 @@ Models are **not bundled** in Docker images. Download them via:
 - `vosk-model-nl-0.22` (Dutch)
 - See [Vosk Models](https://alphacephei.com/vosk/models)
 
-**Sherpa-ONNX** (streaming, lower latency):
+**Sherpa-ONNX Streaming** (lower latency):
 - `sherpa-onnx-streaming-zipformer-en-2023-06-26` (English)
+- Use with `SHERPA_MODEL_TYPE=online`
+- Best fit for the existing online Sherpa backend
+
+**Sherpa-ONNX Offline Transducer** (VAD-gated):
+- `sherpa-onnx-zipformer-en-2023-06-26` (English verification model)
+- `sherpa-onnx-zipformer-gigaspeech-2023-12-12` (English fallback)
+- `sherpa-onnx-zipformer-ru-2024-09-18` (Russian follow-up after English passes)
+- Use with `SHERPA_MODEL_TYPE=offline`
+- Offline mode requires a non-streaming transducer model. Do not point offline mode at `sherpa-onnx-streaming-*` models.
+- Typical offline tuning knobs:
+  - `SHERPA_VAD_MODEL_PATH=/app/models/vad/silero_vad.onnx`
+  - `SHERPA_VAD_THRESHOLD=0.35`
+  - `SHERPA_VAD_MIN_SILENCE_MS=700`
+  - `SHERPA_VAD_MIN_SPEECH_MS=200`
+  - `SHERPA_OFFLINE_PREROLL_MS=350`
+  - `SHERPA_OFFLINE_DEBUG_SEGMENTS=true` for targeted diagnostics only
 - See [Sherpa-ONNX Models](https://github.com/k2-fsa/sherpa-onnx/releases)
+
+**T-one** (Russian telephony streaming CTC):
+- Requires rebuild: `docker compose build --build-arg INCLUDE_TONE=true local_ai_server`
+- Set `LOCAL_STT_BACKEND=tone`
+- Provide:
+  - `TONE_MODEL_PATH=/app/models/stt/t-one`
+  - `TONE_DECODER_TYPE=beam_search` or `greedy`
+  - `TONE_KENLM_PATH=/app/models/stt/t-one/kenlm.bin` when using `beam_search`
+- T-one expects 8 kHz audio internally; `local_ai_server` handles 16 kHz to 8 kHz conversion and 300 ms chunk framing.
+- Recommended for Russian community validation when you want the upstream T-one path instead of Sherpa/Whisper.
 
 **Kroko Embedded** (optional, requires rebuild):
 - `docker compose build --build-arg INCLUDE_KROKO_EMBEDDED=true local_ai_server`

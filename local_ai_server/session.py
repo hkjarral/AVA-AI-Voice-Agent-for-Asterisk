@@ -31,6 +31,10 @@ class SessionContext:
     kroko_connected: bool = False
     # Sherpa-onnx session state
     sherpa_stream: Optional[Any] = None
+    sherpa_offline_vad: Optional[Any] = None  # Per-session Silero VAD for offline mode
+    # T-one session state
+    tone_state: Optional[Any] = None
+    tone_buffer_8k: bytes = b""
     # Optional auth state (enabled if LOCAL_WS_AUTH_TOKEN set)
     authenticated: bool = False
     # Whisper-only echo guard: suppress STT while Local AI Server is emitting TTS audio.

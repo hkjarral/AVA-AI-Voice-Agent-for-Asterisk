@@ -334,6 +334,625 @@ class SherpaONNXSTTBackend:
         logging.info("🛑 SHERPA - Recognizer shutdown")
 
 
+class SherpaOfflineSTTBackend:
+    """
+    Offline (non-streaming) STT backend using sherpa-onnx OfflineRecognizer + Silero VAD.
+
+    Used for models that only support offline/batch inference (e.g., GigaAM for Russian).
+    Silero VAD detects speech segments, and each complete segment is transcribed via
+    OfflineRecognizer.from_transducer().
+
+    The OfflineRecognizer is shared across sessions (thread-safe for decode_stream).
+    VAD instances are per-session to prevent cross-session contamination — create one
+    via ``create_session_vad()`` and pass it into ``process_audio()`` / ``finalize()``.
+
+    Requires:
+      - Transducer model files (tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx)
+      - Silero VAD model (silero_vad.onnx)
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        vad_model_path: str,
+        sample_rate: int = PCM16_TARGET_RATE,
+        preroll_ms: int = 0,
+        vad_threshold: float = 0.5,
+        vad_min_silence_ms: int = 500,
+        vad_min_speech_ms: int = 250,
+    ):
+        self.model_path = model_path
+        self.vad_model_path = vad_model_path
+        self.sample_rate = sample_rate
+        self.preroll_ms = max(0, int(preroll_ms))
+        self._preroll_samples = int(self.sample_rate * (self.preroll_ms / 1000.0))
+        self.vad_threshold = max(0.0, min(1.0, float(vad_threshold)))
+        self.vad_min_silence_ms = max(0, int(vad_min_silence_ms))
+        self.vad_min_speech_ms = max(0, int(vad_min_speech_ms))
+        self.recognizer = None
+        self._vad_config = None  # Stored for per-session VAD creation
+        self._initialized = False
+        self._min_audio_length = int(sample_rate * 0.25)
+        self._debug_segments = str(os.getenv("SHERPA_OFFLINE_DEBUG_SEGMENTS", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def initialize(self) -> bool:
+        try:
+            import sherpa_onnx
+
+            if not os.path.exists(self.model_path):
+                logging.error("❌ SHERPA-OFFLINE - Model not found at %s", self.model_path)
+                return False
+
+            if not self.vad_model_path or not os.path.exists(self.vad_model_path):
+                logging.error(
+                    "❌ SHERPA-OFFLINE - Silero VAD model not found at %s. "
+                    "Download from: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+                    self.vad_model_path,
+                )
+                return False
+
+            tokens_file = self._find_file("tokens.txt", ".txt")
+            encoder_file = self._find_onnx("encoder")
+            decoder_file = self._find_onnx("decoder")
+            joiner_file = self._find_onnx("joiner")
+
+            if not all([tokens_file, encoder_file, decoder_file, joiner_file]):
+                missing = []
+                if not tokens_file:
+                    missing.append("tokens.txt")
+                if not encoder_file:
+                    missing.append("encoder*.onnx")
+                if not decoder_file:
+                    missing.append("decoder*.onnx")
+                if not joiner_file:
+                    missing.append("joiner*.onnx")
+                logging.error("❌ SHERPA-OFFLINE - Missing model files: %s", ", ".join(missing))
+                return False
+
+            # Offline mode only supports non-streaming transducer models. Streaming
+            # zipformer models belong in SherpaONNXSTTBackend.
+            encoder_name = os.path.basename(encoder_file).lower()
+            model_name = os.path.basename(os.path.normpath(self.model_path)).lower()
+            is_streaming = "chunk" in encoder_name or "streaming" in model_name
+
+            logging.info("📁 SHERPA-OFFLINE - Model files found:")
+            logging.info("   tokens: %s", tokens_file)
+            logging.info("   encoder: %s", encoder_file)
+            logging.info("   decoder: %s", decoder_file)
+            logging.info("   joiner: %s", joiner_file)
+            logging.info("   vad: %s", self.vad_model_path)
+            logging.info("   model type: %s", "streaming" if is_streaming else "offline")
+
+            if is_streaming:
+                logging.error(
+                    "❌ SHERPA-OFFLINE - Offline mode requires a non-streaming Sherpa transducer model. "
+                    "Got streaming model at %s. Use SHERPA_MODEL_TYPE=online for streaming models "
+                    "or switch SHERPA_MODEL_PATH to an offline model such as sherpa-onnx-zipformer-en-2023-06-26.",
+                    self.model_path,
+                )
+                return False
+
+            self.recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                tokens=tokens_file,
+                encoder=encoder_file,
+                decoder=decoder_file,
+                joiner=joiner_file,
+                num_threads=2,
+                sample_rate=self.sample_rate,
+                decoding_method="greedy_search",
+            )
+
+            # Store VAD config for per-session creation (no shared VAD instance).
+            self._vad_config = sherpa_onnx.VadModelConfig()
+            self._vad_config.silero_vad.model = self.vad_model_path
+            self._vad_config.silero_vad.threshold = self.vad_threshold
+            self._vad_config.silero_vad.min_silence_duration = self.vad_min_silence_ms / 1000.0
+            self._vad_config.silero_vad.min_speech_duration = self.vad_min_speech_ms / 1000.0
+            self._vad_config.silero_vad.max_speech_duration = 20.0
+            self._vad_config.sample_rate = self.sample_rate
+
+            # Validate VAD config by creating (and discarding) a test instance.
+            _test_vad = sherpa_onnx.VoiceActivityDetector(self._vad_config, buffer_size_in_seconds=30)
+            del _test_vad
+
+            self._initialized = True
+            logging.info(
+                "✅ SHERPA-OFFLINE - OfflineRecognizer + Silero VAD initialized with model %s "
+                "(preroll_ms=%d threshold=%.2f min_silence_ms=%d min_speech_ms=%d)",
+                self.model_path,
+                self.preroll_ms,
+                self.vad_threshold,
+                self.vad_min_silence_ms,
+                self.vad_min_speech_ms,
+            )
+            return True
+        except ImportError:
+            logging.error("❌ SHERPA-OFFLINE - sherpa-onnx not installed")
+            return False
+        except Exception as exc:
+            logging.error("❌ SHERPA-OFFLINE - Failed to initialize: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Per-session VAD lifecycle
+    # ------------------------------------------------------------------
+
+    def create_session_vad(self) -> Optional[Any]:
+        """Create a per-session Silero VAD instance. Returns None on failure."""
+        if not self._initialized or self._vad_config is None:
+            return None
+        try:
+            import sherpa_onnx
+            return sherpa_onnx.VoiceActivityDetector(self._vad_config, buffer_size_in_seconds=30)
+        except Exception as exc:
+            logging.error("❌ SHERPA-OFFLINE - Failed to create session VAD: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------
+    # File helpers
+    # ------------------------------------------------------------------
+
+    def _find_file(self, name: str, suffix: str) -> str:
+        search_dir = self.model_path if os.path.isdir(self.model_path) else os.path.dirname(self.model_path)
+        path = os.path.join(search_dir, name)
+        if os.path.exists(path):
+            return path
+        return ""
+
+    def _find_onnx(self, prefix: str) -> str:
+        search_dir = self.model_path if os.path.isdir(self.model_path) else os.path.dirname(self.model_path)
+        if not os.path.isdir(search_dir):
+            return ""
+        exact = os.path.join(search_dir, f"{prefix}.onnx")
+        if os.path.exists(exact):
+            return exact
+        for filename in os.listdir(search_dir):
+            if filename.startswith(prefix) and filename.endswith(".int8.onnx"):
+                return os.path.join(search_dir, filename)
+        for filename in os.listdir(search_dir):
+            if filename.startswith(prefix) and filename.endswith(".onnx"):
+                return os.path.join(search_dir, filename)
+        return ""
+
+    # ------------------------------------------------------------------
+    # Audio processing (all methods require a per-session VAD)
+    # ------------------------------------------------------------------
+
+    def _transcribe_segment(self, speech_samples: np.ndarray) -> str:
+        """Transcribe a single speech segment using a non-streaming recognizer."""
+        stream = self.recognizer.create_stream()
+        stream.accept_waveform(self.sample_rate, speech_samples)
+        self.recognizer.decode_stream(stream)
+        return stream.result.text.strip() if hasattr(stream.result, "text") else str(stream.result).strip()
+
+    def _copy_segment_samples(self, speech_segment: Any) -> np.ndarray:
+        """Materialize VAD output into Python-owned float32 memory before pop/decode."""
+        samples = list(speech_segment.samples)
+        return np.asarray(samples, dtype=np.float32).copy()
+
+    def _segment_stats(self, speech_samples: np.ndarray) -> Dict[str, Any]:
+        if len(speech_samples) == 0:
+            return {
+                "samples": 0,
+                "duration_ms": 0,
+                "rms": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "max_abs": 0.0,
+                "first5": [],
+            }
+
+        speech64 = speech_samples.astype(np.float64, copy=False)
+        return {
+            "samples": len(speech_samples),
+            "duration_ms": int(len(speech_samples) / self.sample_rate * 1000),
+            "rms": float(np.sqrt(np.mean(speech64 ** 2))),
+            "min": float(np.min(speech_samples)),
+            "max": float(np.max(speech_samples)),
+            "max_abs": float(np.max(np.abs(speech_samples))),
+            "first5": speech_samples[:5].tolist() if len(speech_samples) >= 5 else speech_samples.tolist(),
+        }
+
+    def _pcm16_to_float32(self, pcm16_audio: bytes) -> np.ndarray:
+        if not pcm16_audio:
+            return np.array([], dtype=np.float32)
+        samples = np.frombuffer(pcm16_audio, dtype=np.int16)
+        return samples.astype(np.float32) / 32768.0
+
+    def _merge_preroll(
+        self,
+        speech_samples: np.ndarray,
+        preroll_pcm16: Optional[bytes],
+    ) -> np.ndarray:
+        if self._preroll_samples <= 0 or not preroll_pcm16:
+            return speech_samples
+
+        preroll_samples = self._pcm16_to_float32(preroll_pcm16)
+        if len(preroll_samples) == 0:
+            return speech_samples
+
+        # Keep only the requested preroll window and remove any exact overlap with
+        # the segment prefix so we don't duplicate audio when the VAD already kept
+        # part of the utterance.
+        preroll_samples = preroll_samples[-self._preroll_samples:]
+        max_overlap = min(len(preroll_samples), len(speech_samples))
+        overlap = 0
+        for candidate in range(max_overlap, 0, -1):
+            if np.allclose(preroll_samples[-candidate:], speech_samples[:candidate], atol=1e-4):
+                overlap = candidate
+                break
+
+        if overlap:
+            preroll_samples = preroll_samples[:-overlap]
+
+        if len(preroll_samples) == 0:
+            return speech_samples
+
+        return np.concatenate([preroll_samples, speech_samples]).astype(np.float32, copy=False)
+
+    def _validate_segment_samples(self, speech_samples: np.ndarray) -> Optional[str]:
+        if len(speech_samples) == 0:
+            return "empty"
+        if not np.isfinite(speech_samples).all():
+            return "non-finite samples"
+        max_abs = float(np.max(np.abs(speech_samples)))
+        if max_abs > 1.5:
+            return f"out-of-range samples (max_abs={max_abs:.6f})"
+        return None
+
+    def _log_segment(self, seg_idx: int, stats: Dict[str, Any], validation_error: Optional[str]) -> None:
+        level = logging.warning if validation_error else logging.info
+        suffix = f" validation={validation_error}" if validation_error else " validation=ok"
+        if self._debug_segments:
+            level(
+                "🔍 SHERPA-OFFLINE VAD segment[%d] - samples=%d duration_ms=%d rms=%.6f "
+                "min=%.6f max=%.6f max_abs=%.6f first5=%s min_required=%d%s",
+                seg_idx,
+                stats["samples"],
+                stats["duration_ms"],
+                stats["rms"],
+                stats["min"],
+                stats["max"],
+                stats["max_abs"],
+                stats["first5"],
+                self._min_audio_length,
+                suffix,
+            )
+            return
+
+        level(
+            "🔍 SHERPA-OFFLINE VAD segment[%d] - samples=%d duration_ms=%d rms=%.6f "
+            "min=%.6f max=%.6f max_abs=%.6f min_required=%d%s",
+            seg_idx,
+            stats["samples"],
+            stats["duration_ms"],
+            stats["rms"],
+            stats["min"],
+            stats["max"],
+            stats["max_abs"],
+            self._min_audio_length,
+            suffix,
+        )
+
+    def process_audio(
+        self,
+        vad: Any,
+        pcm16_audio: bytes,
+        preroll_pcm16: Optional[bytes] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Feed audio through a per-session VAD; transcribe complete speech segments."""
+        if not self._initialized or self.recognizer is None or vad is None:
+            return None
+
+        try:
+            samples = np.frombuffer(pcm16_audio, dtype=np.int16)
+            float_samples = samples.astype(np.float32) / 32768.0
+
+            rms = float(np.sqrt(np.mean(float_samples ** 2)))
+            if not hasattr(self, '_vad_chunk_count'):
+                self._vad_chunk_count = 0
+            self._vad_chunk_count += 1
+            if rms > 0.002 or self._vad_chunk_count % 100 == 1:
+                logging.debug(
+                    "🔍 SHERPA-OFFLINE VAD - chunk=%d samples=%d rms=%.6f speech=%s",
+                    self._vad_chunk_count, len(float_samples), rms, rms > 0.002,
+                )
+
+            vad.accept_waveform(float_samples)
+
+            has_segments = not vad.empty()
+            if has_segments:
+                logging.info(
+                    "🔍 SHERPA-OFFLINE VAD - Speech segment(s) detected at chunk=%d",
+                    self._vad_chunk_count,
+                )
+
+            # Process ALL queued speech segments (not just the first).
+            texts = []
+            seg_idx = 0
+            while not vad.empty():
+                speech_segment = vad.front
+                speech_samples = self._copy_segment_samples(speech_segment)
+                vad.pop()
+                speech_samples = self._merge_preroll(speech_samples, preroll_pcm16)
+                validation_error = self._validate_segment_samples(speech_samples)
+                stats = self._segment_stats(speech_samples)
+                self._log_segment(seg_idx, stats, validation_error)
+                seg_idx += 1
+
+                if validation_error:
+                    logging.warning(
+                        "⚠️ SHERPA-OFFLINE - Segment[%d] rejected before decode: %s",
+                        seg_idx - 1,
+                        validation_error,
+                    )
+                    continue
+
+                if len(speech_samples) < self._min_audio_length:
+                    logging.info(
+                        "🔍 SHERPA-OFFLINE VAD segment skipped (too short): %d < %d samples",
+                        len(speech_samples), self._min_audio_length,
+                    )
+                    continue
+
+                text = self._transcribe_segment(speech_samples)
+                logging.info(
+                    "🔍 SHERPA-OFFLINE transcribe seg[%d] result: '%s' (empty=%s)",
+                    seg_idx - 1, text or "", text is None or text == "",
+                )
+                if text:
+                    texts.append(text)
+
+            if texts:
+                return {"type": "final", "text": " ".join(texts)}
+
+            return None
+
+        except Exception as exc:
+            logging.error("❌ SHERPA-OFFLINE - Process error: %s", exc)
+            return None
+
+    def finalize(self, vad: Any) -> Optional[Dict[str, Any]]:
+        """Flush remaining speech from a per-session VAD and transcribe it."""
+        if not self._initialized or self.recognizer is None or vad is None:
+            return None
+
+        try:
+            vad.flush()
+
+            texts = []
+            seg_idx = 0
+            while not vad.empty():
+                speech_segment = vad.front
+                speech_samples = self._copy_segment_samples(speech_segment)
+                vad.pop()
+                validation_error = self._validate_segment_samples(speech_samples)
+                stats = self._segment_stats(speech_samples)
+                self._log_segment(seg_idx, stats, validation_error)
+                seg_idx += 1
+                if validation_error:
+                    logging.warning(
+                        "⚠️ SHERPA-OFFLINE - Finalize segment[%d] rejected before decode: %s",
+                        seg_idx - 1,
+                        validation_error,
+                    )
+                    continue
+                if len(speech_samples) < self._min_audio_length:
+                    continue
+
+                text = self._transcribe_segment(speech_samples)
+                if text:
+                    texts.append(text)
+
+            if texts:
+                return {"type": "final", "text": " ".join(texts)}
+            return None
+
+        except Exception as exc:
+            logging.error("❌ SHERPA-OFFLINE - Finalize error: %s", exc)
+            return None
+
+    def transcribe_pcm16(self, pcm16_audio: bytes) -> Optional[Dict[str, Any]]:
+        """Direct transcription without VAD (for pre-segmented audio)."""
+        if not self._initialized or self.recognizer is None:
+            return None
+
+        try:
+            samples = np.frombuffer(pcm16_audio, dtype=np.int16)
+            float_samples = samples.astype(np.float32) / 32768.0
+
+            text = self._transcribe_segment(float_samples)
+            if text:
+                return {"type": "final", "text": text}
+            return None
+
+        except Exception as exc:
+            logging.error("❌ SHERPA-OFFLINE - Transcribe error: %s", exc)
+            return None
+
+    def shutdown(self) -> None:
+        self.recognizer = None
+        self._vad_config = None
+        self._initialized = False
+        logging.info("🛑 SHERPA-OFFLINE - Recognizer shutdown")
+
+
+class ToneSTTBackend:
+    """
+    Native T-one streaming CTC backend.
+
+    T-one expects:
+    - 8 kHz mono audio
+    - 300 ms chunks (2400 samples)
+    - int32 samples in the int16 range
+    - per-session streaming state
+    """
+
+    CHUNK_SAMPLES = 2400
+    SAMPLE_RATE = 8000
+
+    def __init__(
+        self,
+        model_path: str,
+        decoder_type: str = "beam_search",
+        kenlm_path: str = "",
+    ):
+        self.model_path = model_path
+        self.decoder_type = (decoder_type or "beam_search").strip().lower()
+        self.kenlm_path = kenlm_path or ""
+        self.pipeline = None
+        self._initialized = False
+
+    def initialize(self) -> bool:
+        try:
+            from tone.decoder import BeamSearchCTCDecoder, DecoderType
+            from tone.logprob_splitter import StreamingLogprobSplitter
+            from tone.onnx_wrapper import StreamingCTCModel
+            from tone.pipeline import StreamingCTCPipeline
+
+            model_file = os.path.join(self.model_path, "model.onnx")
+            if not os.path.isfile(model_file):
+                logging.error("❌ T-ONE - model.onnx not found at %s", model_file)
+                return False
+
+            if self.decoder_type not in {"beam_search", "greedy"}:
+                logging.error("❌ T-ONE - Unsupported decoder type: %s", self.decoder_type)
+                return False
+
+            if self.decoder_type == "beam_search":
+                kenlm_path = self.kenlm_path or os.path.join(self.model_path, "kenlm.bin")
+                if not os.path.isfile(kenlm_path):
+                    logging.error(
+                        "❌ T-ONE - beam_search requires kenlm.bin at %s (set TONE_KENLM_PATH if stored elsewhere)",
+                        kenlm_path,
+                    )
+                    return False
+                decoder = BeamSearchCTCDecoder.from_local(kenlm_path)
+                self.kenlm_path = kenlm_path
+            else:
+                decoder = None
+
+            model = StreamingCTCModel.from_local(model_file)
+            splitter = StreamingLogprobSplitter()
+            if decoder is None:
+                from tone.decoder import GreedyCTCDecoder
+
+                decoder = GreedyCTCDecoder()
+
+            self.pipeline = StreamingCTCPipeline(model, splitter, decoder)
+            self._initialized = True
+            logging.info(
+                "✅ T-ONE - Initialized (model=%s decoder=%s kenlm=%s)",
+                self.model_path,
+                self.decoder_type,
+                self.kenlm_path or "(not used)",
+            )
+            return True
+        except ImportError:
+            logging.error("❌ T-ONE - tone package not installed")
+            return False
+        except Exception as exc:
+            logging.error("❌ T-ONE - Failed to initialize: %s", exc)
+            return False
+
+    def create_session_state(self) -> Optional[Dict[str, Any]]:
+        if not self._initialized or self.pipeline is None:
+            return None
+        return {"pipeline_state": None, "last_partial": ""}
+
+    def _decode_partial_text(self, state: Optional[Dict[str, Any]]) -> str:
+        if not state or self.pipeline is None:
+            return ""
+        try:
+            pipeline_state = state.get("pipeline_state")
+            if not pipeline_state:
+                return ""
+            logprob_state = pipeline_state[1]
+            past_logprobs = getattr(logprob_state, "past_logprobs", None)
+            if past_logprobs is None or len(past_logprobs) == 0:
+                return ""
+            text = self.pipeline.decoder.forward(past_logprobs)
+            return (text or "").strip()
+        except Exception:
+            return ""
+
+    def process_audio(self, state: Dict[str, Any], chunk_samples: np.ndarray) -> List[Dict[str, Any]]:
+        if not self._initialized or self.pipeline is None:
+            return []
+        if chunk_samples.shape != (self.CHUNK_SAMPLES,):
+            raise ValueError(
+                f"T-one expects {self.CHUNK_SAMPLES} samples per chunk, got {chunk_samples.shape}"
+            )
+
+        phrases, next_state = self.pipeline.forward(chunk_samples, state.get("pipeline_state"))
+        state["pipeline_state"] = next_state
+
+        updates: List[Dict[str, Any]] = []
+        for phrase in phrases:
+            text = (getattr(phrase, "text", "") or "").strip()
+            if not text:
+                continue
+            updates.append(
+                {
+                    "text": text,
+                    "is_final": True,
+                    "is_partial": False,
+                    "confidence": None,
+                }
+            )
+            state["last_partial"] = ""
+
+        partial_text = self._decode_partial_text(state)
+        last_partial = (state.get("last_partial") or "").strip()
+        if partial_text and partial_text != last_partial:
+            state["last_partial"] = partial_text
+            updates.append(
+                {
+                    "text": partial_text,
+                    "is_final": False,
+                    "is_partial": True,
+                    "confidence": None,
+                }
+            )
+
+        return updates
+
+    def finalize(self, state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not self._initialized or self.pipeline is None or not state:
+            return []
+        try:
+            phrases, next_state = self.pipeline.finalize(state.get("pipeline_state"))
+            state["pipeline_state"] = next_state
+            state["last_partial"] = ""
+            updates: List[Dict[str, Any]] = []
+            for phrase in phrases:
+                text = (getattr(phrase, "text", "") or "").strip()
+                if not text:
+                    continue
+                updates.append(
+                    {
+                        "text": text,
+                        "is_final": True,
+                        "is_partial": False,
+                        "confidence": None,
+                    }
+                )
+            return updates
+        except Exception as exc:
+            logging.error("❌ T-ONE - Finalize failed: %s", exc)
+            return []
+
+    def shutdown(self) -> None:
+        self.pipeline = None
+        self._initialized = False
+        logging.info("🛑 T-ONE - Pipeline shutdown")
+
+
 class FasterWhisperSTTBackend:
     """
     Faster-Whisper STT backend using CTranslate2-optimized Whisper.
@@ -671,7 +1290,7 @@ class WhisperCppSTTBackend:
                 return None
             
             # Transcribe the buffered audio
-            segments = self.model.transcribe(self._audio_buffer)
+            segments = self.model.transcribe(self._audio_buffer, language=self.language)
             
             # Collect all segment texts
             text = " ".join(seg.text.strip() for seg in segments if seg.text)
@@ -717,7 +1336,7 @@ class WhisperCppSTTBackend:
                 return None
             
             # Transcribe remaining audio
-            segments = self.model.transcribe(self._audio_buffer)
+            segments = self.model.transcribe(self._audio_buffer, language=self.language)
             
             text = " ".join(seg.text.strip() for seg in segments if seg.text)
             
@@ -752,7 +1371,7 @@ class WhisperCppSTTBackend:
         try:
             samples = np.frombuffer(pcm16_audio, dtype=np.int16)
             float_samples = samples.astype(np.float32) / 32768.0
-            segments = self.model.transcribe(float_samples)
+            segments = self.model.transcribe(float_samples, language=self.language)
             text = " ".join(seg.text.strip() for seg in segments if getattr(seg, "text", None))
             text = (text or "").strip()
             if text and self._is_hallucination(text):

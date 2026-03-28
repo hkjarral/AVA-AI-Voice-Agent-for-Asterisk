@@ -1364,6 +1364,11 @@ async def get_system_health():
                             data["kroko_port"] = kroko_port
                             data["kokoro_mode"] = kokoro_mode
                             data["kokoro_voice"] = kokoro_voice
+
+                            silero = data.get("silero") or {}
+                            data["silero_language"] = silero.get("language")
+                            data["silero_speaker"] = silero.get("speaker")
+                            data["silero_model_id"] = silero.get("model_id")
                             
                             warning = None
                             if env_uri and uri != env_uri:

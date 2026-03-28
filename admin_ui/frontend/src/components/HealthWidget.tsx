@@ -31,7 +31,7 @@ interface AvailableModels {
 }
 
 interface PendingChanges {
-    stt?: { backend: string; modelPath?: string; embedded?: boolean };
+    stt?: { backend: string; modelPath?: string; embedded?: boolean; language?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string };
     tts?: { backend: string; modelPath?: string; voice?: string; mode?: string };
     llm?: { modelPath: string };
 }
@@ -42,6 +42,7 @@ interface BackendCapabilities {
         sherpa: { available: boolean; reason: string };
         kroko_embedded: { available: boolean; reason: string };
         kroko_cloud: { available: boolean; reason: string };
+        tone: { available: boolean; reason: string };
         faster_whisper: { available: boolean; reason: string };
     };
     tts: {
@@ -219,6 +220,20 @@ export const HealthWidget = () => {
                     if (modelType === 'stt' && change.backend === 'kroko') {
                         payload.kroko_embedded = change.embedded;
                     }
+                    if (modelType === 'stt' && change.backend === 'faster_whisper' && change.language) {
+                        payload.faster_whisper_language = change.language;
+                    }
+                    if (modelType === 'stt' && change.backend === 'whisper_cpp' && change.language) {
+                        payload.whisper_cpp_language = change.language;
+                    }
+                    if (modelType === 'stt' && change.backend === 'sherpa') {
+                        if (change.sherpa_model_type) payload.sherpa_model_type = change.sherpa_model_type;
+                        if (change.sherpa_vad_model_path) payload.sherpa_vad_model_path = change.sherpa_vad_model_path;
+                    }
+                    if (modelType === 'stt' && change.backend === 'tone') {
+                        if (change.tone_decoder_type) payload.tone_decoder_type = change.tone_decoder_type;
+                        if (change.tone_kenlm_path) payload.tone_kenlm_path = change.tone_kenlm_path;
+                    }
                     if (modelType === 'tts' && change.backend === 'kokoro') {
                         payload.kokoro_mode = change.mode;
                     }
@@ -268,9 +283,11 @@ export const HealthWidget = () => {
     const needsRebuild = () => {
         const needsFasterWhisper = pendingChanges.stt?.backend === 'faster_whisper' && 
             capabilities && !capabilities.stt?.faster_whisper?.available;
+        const needsTone = pendingChanges.stt?.backend === 'tone' &&
+            capabilities && !capabilities.stt?.tone?.available;
         const needsMeloTTS = pendingChanges.tts?.backend === 'melotts' && 
             capabilities && !capabilities.tts?.melotts?.available;
-        return { needsFasterWhisper, needsMeloTTS, any: needsFasterWhisper || needsMeloTTS };
+        return { needsFasterWhisper, needsTone, needsMeloTTS, any: needsFasterWhisper || needsTone || needsMeloTTS };
     };
 
     // Rebuild and enable new backends
@@ -284,6 +301,7 @@ export const HealthWidget = () => {
         try {
             const res = await axios.post('/api/local-ai/rebuild', {
                 include_faster_whisper: rebuild.needsFasterWhisper,
+                include_tone: rebuild.needsTone,
                 include_melotts: rebuild.needsMeloTTS,
                 stt_backend: pendingChanges.stt?.backend,
                 stt_model: pendingChanges.stt?.modelPath || 'base',
@@ -578,6 +596,9 @@ export const HealthWidget = () => {
                                             // Only show Sherpa if available and has models
                                             if (!capabilities?.stt?.sherpa?.available || models.length === 0) return null;
                                         }
+                                        if (backend === 'tone') {
+                                            if (models.length === 0 && !capabilities?.stt?.tone?.available) return null;
+                                        }
                                         if (backend === 'faster_whisper') {
                                             // Show Faster-Whisper option (requires rebuild)
                                             return (
@@ -609,16 +630,130 @@ export const HealthWidget = () => {
                                             <option key="faster_whisper_small" value="faster_whisper:small">Whisper Small</option>
                                         </optgroup>
                                     )}
+                                    {!availableModels?.stt?.tone && (
+                                        <optgroup key="tone" label="T-one">
+                                            <option key="tone_default" value="tone:/app/models/stt/t-one">
+                                                T-one Russian {!capabilities?.stt?.tone?.available ? '(requires rebuild)' : ''}
+                                            </option>
+                                        </optgroup>
+                                    )}
                                 </select>
                             </div>
                             <div className="text-xs text-muted-foreground bg-muted/50 p-2 rounded border border-border/50 truncate flex justify-between">
                                 <span>{getModelDisplay(health.local_ai_server.details.models?.stt)}</span>
-                                {health.local_ai_server.details.stt_backend === 'kroko' && (
-                                    <span className="opacity-75">
-                                        {(health.local_ai_server.details.kroko?.embedded ?? health.local_ai_server.details.kroko_embedded) ? `Embedded (Port ${health.local_ai_server.details.kroko?.port || health.local_ai_server.details.kroko_port || 6006})` : 'Cloud API'}
-                                    </span>
-                                )}
+                                <span className="opacity-75 flex gap-2">
+                                    {health.local_ai_server.details.models?.stt?.language && (
+                                        <span>Lang: {health.local_ai_server.details.models.stt.language}</span>
+                                    )}
+                                    {health.local_ai_server.details.stt_backend === 'kroko' && (
+                                        <span>
+                                            {(health.local_ai_server.details.kroko?.embedded ?? health.local_ai_server.details.kroko_embedded) ? `Embedded (Port ${health.local_ai_server.details.kroko?.port || health.local_ai_server.details.kroko_port || 6006})` : 'Cloud API'}
+                                        </span>
+                                    )}
+                                </span>
                             </div>
+                            {/* Language / mode quick-switch for STT backends that support it */}
+                            {(() => {
+                                const currentBackend = pendingChanges.stt?.backend || health.local_ai_server.details.models?.stt?.backend || health.local_ai_server.details.stt_backend || '';
+                                const currentLang = health.local_ai_server.details.models?.stt?.language || 'en';
+                                if (currentBackend === 'faster_whisper' || currentBackend === 'whisper_cpp') {
+                                    return (
+                                        <div className="flex gap-2 items-end">
+                                            <div className="flex-1">
+                                                <label className="text-[10px] text-muted-foreground">Language</label>
+                                                <input
+                                                    type="text"
+                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.language ? 'border-yellow-500' : 'border-border'}`}
+                                                    value={pendingChanges.stt?.language ?? currentLang}
+                                                    onChange={(e) => {
+                                                        const lang = e.target.value.trim().toLowerCase();
+                                                        const backend = currentBackend;
+                                                        const existing = pendingChanges.stt || { backend };
+                                                        queueChange('stt', { ...existing, backend, language: lang });
+                                                    }}
+                                                    placeholder="en"
+                                                    disabled={applyingChanges}
+                                                />
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                                if (currentBackend === 'sherpa') {
+                                    return (
+                                        <div className="space-y-1.5">
+                                            <div>
+                                                <label className="text-[10px] text-muted-foreground">Model Type</label>
+                                                <select
+                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_model_type ? 'border-yellow-500' : 'border-border'}`}
+                                                    value={pendingChanges.stt?.sherpa_model_type ?? health.local_ai_server.details.models?.stt?.sherpa_model_type ?? 'online'}
+                                                    onChange={(e) => {
+                                                        const existing = pendingChanges.stt || { backend: 'sherpa' };
+                                                        queueChange('stt', { ...existing, backend: 'sherpa', sherpa_model_type: e.target.value });
+                                                    }}
+                                                    disabled={applyingChanges}
+                                                >
+                                                    <option value="online">Online (Streaming)</option>
+                                                    <option value="offline">Offline (VAD-gated)</option>
+                                                </select>
+                                            </div>
+                                            {(pendingChanges.stt?.sherpa_model_type ?? health.local_ai_server.details.models?.stt?.sherpa_model_type) === 'offline' && (
+                                                <div>
+                                                    <label className="text-[10px] text-muted-foreground">Silero VAD Path</label>
+                                                    <input
+                                                        type="text"
+                                                        className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.sherpa_vad_model_path ? 'border-yellow-500' : 'border-border'}`}
+                                                        value={pendingChanges.stt?.sherpa_vad_model_path || ''}
+                                                        onChange={(e) => {
+                                                            const existing = pendingChanges.stt || { backend: 'sherpa' };
+                                                            queueChange('stt', { ...existing, backend: 'sherpa', sherpa_vad_model_path: e.target.value });
+                                                        }}
+                                                        placeholder="/app/models/vad/silero_vad.onnx"
+                                                        disabled={applyingChanges}
+                                                    />
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                }
+                                if (currentBackend === 'tone') {
+                                    return (
+                                        <div className="space-y-1.5">
+                                            <div>
+                                                <label className="text-[10px] text-muted-foreground">Decoder</label>
+                                                <select
+                                                    className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.tone_decoder_type ? 'border-yellow-500' : 'border-border'}`}
+                                                    value={pendingChanges.stt?.tone_decoder_type ?? 'beam_search'}
+                                                    onChange={(e) => {
+                                                        const existing = pendingChanges.stt || { backend: 'tone', modelPath: health.local_ai_server.details.models?.stt?.path };
+                                                        queueChange('stt', { ...existing, backend: 'tone', tone_decoder_type: e.target.value });
+                                                    }}
+                                                    disabled={applyingChanges}
+                                                >
+                                                    <option value="beam_search">Beam Search</option>
+                                                    <option value="greedy">Greedy</option>
+                                                </select>
+                                            </div>
+                                            {(pendingChanges.stt?.tone_decoder_type ?? 'beam_search') === 'beam_search' && (
+                                                <div>
+                                                    <label className="text-[10px] text-muted-foreground">KenLM Path</label>
+                                                    <input
+                                                        type="text"
+                                                        className={`w-full text-xs p-1.5 rounded border bg-background ${pendingChanges.stt?.tone_kenlm_path ? 'border-yellow-500' : 'border-border'}`}
+                                                        value={pendingChanges.stt?.tone_kenlm_path || ''}
+                                                        onChange={(e) => {
+                                                            const existing = pendingChanges.stt || { backend: 'tone', modelPath: health.local_ai_server.details.models?.stt?.path };
+                                                            queueChange('stt', { ...existing, backend: 'tone', tone_kenlm_path: e.target.value });
+                                                        }}
+                                                        placeholder="/app/models/stt/t-one/kenlm.bin"
+                                                        disabled={applyingChanges}
+                                                    />
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                }
+                                return null;
+                            })()}
                             {/* Warning when Kroko embedded not available */}
                             {capabilities && !capabilities.stt?.kroko_embedded?.available && (
                                 <div className="text-xs p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 space-y-1">
