@@ -59,7 +59,7 @@ jobs:
       run: docker build -t local-ai-server-full:${{ github.sha }} ./local_ai_server
 
     - name: Scan ai-engine image
-      uses: aquasecurity/trivy-action@0.33.1
+      uses: aquasecurity/trivy-action@0.35.0
       with:
         image-ref: 'ai-engine:${{ github.sha }}'
         format: 'sarif'
@@ -73,7 +73,7 @@ jobs:
 
     - name: Scan local-ai-server image
       if: github.event_name != 'schedule'
-      uses: aquasecurity/trivy-action@0.33.1
+      uses: aquasecurity/trivy-action@0.35.0
       with:
         image-ref: 'local-ai-server:${{ github.sha }}'
         format: 'sarif'
@@ -87,7 +87,7 @@ jobs:
 
     - name: Scan local-ai-server image (full, scheduled)
       if: github.event_name == 'schedule'
-      uses: aquasecurity/trivy-action@0.33.1
+      uses: aquasecurity/trivy-action@0.35.0
       with:
         image-ref: 'local-ai-server-full:${{ github.sha }}'
         format: 'sarif'
