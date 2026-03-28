@@ -457,7 +457,6 @@ class TestOutputVariablesSerialization:
         tool = GenericHTTPLookupTool(config)
         data = {"contact": {"name": "Alice", "email": "a@b.com"}}
         results = tool._extract_output_variables(data)
-        import json
         parsed = json.loads(results["info"])
         assert parsed == {"name": "Alice", "email": "a@b.com"}
 

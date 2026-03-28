@@ -268,6 +268,54 @@ class TestNestedWildcards:
         result = extract_path(data, "groups[*].members[*].name")
         assert result == [[], ["X"]]
 
+    def test_double_wildcard_missing_inner_preserves_slot(self):
+        """Missing nested wildcard field produces [] to preserve positional alignment."""
+        data = {
+            "groups": [
+                {"members": [{"name": "A"}]},
+                {},
+                {"members": [{"name": "C"}]},
+            ]
+        }
+        result = extract_path(data, "groups[*].members[*].name")
+        assert result == [["A"], [], ["C"]]
+
+
+# ---------------------------------------------------------------------------
+# Non-word JSON keys (hyphens, spaces — common in third-party APIs)
+# ---------------------------------------------------------------------------
+
+class TestNonWordKeys:
+    def test_hyphenated_field_wildcard(self):
+        data = {"line-items": [{"sku": "A"}, {"sku": "B"}]}
+        assert extract_path(data, "line-items[*].sku") == ["A", "B"]
+
+    def test_hyphenated_field_index(self):
+        data = {"line-items": [{"sku": "A"}, {"sku": "B"}]}
+        assert extract_path(data, "line-items[0].sku") == "A"
+
+    def test_simple_hyphenated_field(self):
+        data = {"first-name": "Alice"}
+        assert extract_path(data, "first-name") == "Alice"
+
+
+# ---------------------------------------------------------------------------
+# Traversal through null in wildcard context
+# ---------------------------------------------------------------------------
+
+class TestNullTraversalInWildcard:
+    def test_intermediate_null_included_as_none(self):
+        """When an intermediate field is null (not missing), the item contributes None."""
+        data = {"items": [{"a": None}, {"a": {"b": "x"}}]}
+        result = extract_path(data, "items[*].a.b")
+        assert result == [None, "x"]
+
+    def test_intermediate_null_vs_missing(self):
+        """null intermediate → None in result; missing intermediate → excluded."""
+        data = {"items": [{"a": None}, {}, {"a": {"b": "y"}}]}
+        result = extract_path(data, "items[*].a.b")
+        assert result == [None, "y"]
+
 
 # ---------------------------------------------------------------------------
 # Adapter-level sanitization — prove "data" key survives to providers
@@ -330,3 +378,15 @@ class TestSanitizerPreservesData:
         assert "data" not in sanitized
         # message should still be present
         assert "message" in sanitized
+
+    def test_multibyte_message_truncated_within_budget(self):
+        """Multibyte text in message must not exceed max_bytes after truncation."""
+        # Each emoji is 4 bytes in UTF-8
+        tool_result = {
+            "status": "success",
+            "message": "\U0001f600" * 500,
+        }
+        max_bytes = 200
+        sanitized = sanitize_tool_result_for_json_string(tool_result, max_bytes=max_bytes)
+        encoded = json.dumps(sanitized, ensure_ascii=False)
+        assert len(encoded.encode("utf-8")) <= max_bytes

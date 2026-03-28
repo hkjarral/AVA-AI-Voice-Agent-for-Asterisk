@@ -63,8 +63,17 @@ def sanitize_tool_result_for_json_string(
         if _fits():
             return payload
 
-    # Last resort: truncate message.
+    # Last resort: binary-search trim message to fit within the byte budget.
     msg = str(payload.get("message") or "")
-    payload["message"] = msg[:800]
+    low, high, best = 0, min(len(msg), 800), ""
+    while low <= high:
+        mid = (low + high) // 2
+        payload["message"] = msg[:mid]
+        if _fits():
+            best = payload["message"]
+            low = mid + 1
+        else:
+            high = mid - 1
+    payload["message"] = best
     return payload
 
