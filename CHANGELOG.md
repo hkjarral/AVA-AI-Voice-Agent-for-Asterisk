@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Additional provider integrations
 - Enhanced monitoring features
 
+## [6.4.1] - Pending community verification
+
+### Fixed
+
+- **Sherpa offline transducer crash on startup (#296)**: Wizard never wrote `SHERPA_MODEL_TYPE` to `.env`, so offline transducer models were loaded by the online (streaming) recognizer (`SherpaONNXSTTBackend`). The online recognizer calls `OnlineRecognizer.from_transducer()` against offline model files that lack the `encoder_dims` metadata field, causing an immediate crash and Docker restart loop. Fix: added `model_type` field (`"online"` / `"offline"`) to all `SHERPA_STT_MODELS` catalog entries and updated both wizard code paths (`download_selected_models` and `save_setup_config`) to emit `SHERPA_MODEL_TYPE` alongside `SHERPA_MODEL_PATH`.
+- **Whisper Large v3 Turbo STT model init failure (#297)**: `FASTER_WHISPER_STT_MODELS` listed `model_path: "large-v3-turbo"` but `faster-whisper` uses `"turbo"` as the model size identifier, causing `WhisperModel` initialization to fail with an unsupported size error. Fix: corrected `model_path` to `"turbo"` in the models catalog.
+
 ## [6.4.0] - 2026-03-28
 
 ### Added
