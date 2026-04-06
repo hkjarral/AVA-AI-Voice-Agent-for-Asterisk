@@ -3985,6 +3985,7 @@ class Engine:
         session: CallSession,
         *,
         destination_description: Optional[str] = None,
+        briefing_language: Optional[str] = None,
     ) -> str:
         recent_messages = list(getattr(session, "conversation_history", []) or [])[-8:]
         transcript_lines = []
@@ -4002,8 +4003,10 @@ class Engine:
         caller_number = str(getattr(session, "caller_number", "") or "").strip()
         context_name = str(getattr(session, "context_name", "") or "").strip()
         destination_name = str(destination_description or "").strip()
+        language = str(briefing_language or "").strip()
 
         transcript_block = "\n".join(transcript_lines) if transcript_lines else "(none)"
+        language_instruction = f"Write the briefing in {language}.\n" if language else ""
         return (
             "Write a short attended-transfer briefing for the callee.\n"
             "Return plain text only.\n"
@@ -4011,7 +4014,9 @@ class Engine:
             "Prefer what the caller said over caller ID.\n"
             "Summarize the reason for the call in one short sentence.\n"
             "Do not use markdown, JSON, bullet points, quotes, or filler.\n"
-            "Maximum 25 words.\n\n"
+            "Maximum 25 words.\n"
+            f"{language_instruction}"
+            "\n"
             f"Caller ID name: {caller_name or '(unknown)'}\n"
             f"Caller number: {caller_number or '(unknown)'}\n"
             f"Context: {context_name or '(unknown)'}\n"
@@ -4355,12 +4360,14 @@ class Engine:
         session: CallSession,
         destination_description: Optional[str],
         timeout_sec: float,
+        briefing_language: Optional[str] = None,
     ) -> Optional[str]:
         response_text = await self._local_ai_server_llm_request(
             call_id=session.call_id,
             text=self._build_attended_transfer_ai_briefing_prompt(
                 session,
                 destination_description=destination_description,
+                briefing_language=briefing_language,
             ),
             timeout_sec=timeout_sec,
         )
@@ -4576,6 +4583,7 @@ class Engine:
         screening_mode = self._resolve_attended_transfer_screening_mode(attended_cfg)
         raw_screening_mode = str(attended_cfg.get("screening_mode") or "").strip().lower()
         ai_briefing_timeout = float(attended_cfg.get("ai_briefing_timeout_seconds", 2.0) or 2.0)
+        ai_briefing_language = str(attended_cfg.get("ai_briefing_language", "") or "").strip()
         if screening_mode == "ai_briefing" and (
             raw_screening_mode == "ai_summary" or bool(attended_cfg.get("pass_caller_info_to_context", False))
         ):
@@ -4590,6 +4598,7 @@ class Engine:
                 session=session,
                 destination_description=dest_desc,
                 timeout_sec=ai_briefing_timeout,
+                briefing_language=ai_briefing_language or None,
             )
             if briefing_text:
                 try:

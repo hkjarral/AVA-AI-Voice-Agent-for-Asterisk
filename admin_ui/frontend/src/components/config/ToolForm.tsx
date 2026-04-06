@@ -636,6 +636,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
             if (next.stream_fallback_to_file == null) next.stream_fallback_to_file = true;
             if (next.screening_mode == null) next.screening_mode = 'basic_tts';
             if (next.ai_briefing_timeout_seconds == null) next.ai_briefing_timeout_seconds = 2;
+            if (next.ai_briefing_language == null) next.ai_briefing_language = '';
             if (next.ai_briefing_intro_template == null) next.ai_briefing_intro_template = DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE;
             if (next.caller_screening_prompt == null) next.caller_screening_prompt = 'Before I connect you, please say your name and the reason for your call.';
             if (next.caller_screening_max_seconds == null) next.caller_screening_max_seconds = 6;
@@ -926,6 +927,14 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                                                 placeholder={DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE}
                                             />
                                         </div>
+                                        <FormInput
+                                            label="Briefing Language"
+                                            type="text"
+                                            value={config.attended_transfer?.ai_briefing_language ?? ''}
+                                            onChange={(e) => updateNestedConfig('attended_transfer', 'ai_briefing_language', e.target.value)}
+                                            placeholder="e.g. German, French, Spanish (leave blank for English)"
+                                            tooltip="Language for the AI-generated briefing text. Must match the language your Local AI Server TTS voice speaks. Leave blank for English."
+                                        />
                                         <FormInput
                                             label="AI Briefing Timeout (seconds, Experimental)"
                                             type="number"
