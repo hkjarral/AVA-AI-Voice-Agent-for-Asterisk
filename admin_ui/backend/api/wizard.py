@@ -1976,6 +1976,7 @@ async def download_selected_models(selection: ModelSelection):
                 if stt_backend == "sherpa":
                     stt_path = _safe_join_under_dir("/app/models/stt", stt_model["model_path"])
                     env_updates.append(f"SHERPA_MODEL_PATH={stt_path}")
+                    env_updates.append(f"SHERPA_MODEL_TYPE={stt_model.get('model_type', 'online')}")
                 elif stt_backend == "kroko":
                     if selection.kroko_embedded:
                         stt_path = _safe_join_under_dir("/app/models/kroko", stt_model["model_path"])
@@ -3008,6 +3009,7 @@ async def save_setup_config(config: SetupConfig):
             stt_model_path = (stt_model or {}).get("model_path")
             if stt_backend == "sherpa" and stt_model_path:
                 env_updates["SHERPA_MODEL_PATH"] = _safe_join_under_dir("/app/models/stt", stt_model_path)
+                env_updates["SHERPA_MODEL_TYPE"] = (stt_model or {}).get("model_type", "online")
             elif stt_backend == "kroko":
                 env_updates["KROKO_EMBEDDED"] = "1" if config.kroko_embedded else "0"
                 if config.kroko_api_key:

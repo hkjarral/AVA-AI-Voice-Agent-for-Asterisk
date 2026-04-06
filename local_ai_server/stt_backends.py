@@ -959,9 +959,9 @@ class FasterWhisperSTTBackend:
     Provides high-accuracy transcription with good performance on both CPU and GPU.
     Uses chunked processing for pseudo-streaming (Whisper is not natively streaming).
     
-    Model sizes: tiny, base, small, medium, large-v2, large-v3
+    Model sizes: tiny, base, small, medium, large-v2, large-v3, turbo
     """
-    
+
     def __init__(
         self,
         model_size: str = "base",
@@ -972,9 +972,9 @@ class FasterWhisperSTTBackend:
     ):
         """
         Initialize Faster-Whisper backend.
-        
+
         Args:
-            model_size: Model size (tiny, base, small, medium, large-v2, large-v3)
+            model_size: Model size (tiny, base, small, medium, large-v2, large-v3, turbo)
             device: Device to use (cpu, cuda, auto)
             compute_type: Computation type (int8, float16, float32)
             language: Language code for transcription
