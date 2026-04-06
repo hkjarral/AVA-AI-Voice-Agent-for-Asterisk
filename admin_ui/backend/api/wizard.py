@@ -2431,11 +2431,17 @@ async def get_local_server_logs():
         ready = "Enhanced Local AI Server started" in all_logs or \
                 "All models loaded successfully" in all_logs or \
                 "models loaded" in all_logs.lower()
-        
+
+        # Detect first-run HuggingFace model downloads so the frontend can extend
+        # its polling timeout beyond the normal 2-minute window.
+        _DOWNLOAD_MARKERS = ("Downloading ", "huggingface_hub", "from_pretrained", "fetching model")
+        downloading = (not ready) and any(m.lower() in all_logs.lower() for m in _DOWNLOAD_MARKERS)
+
         return {
             "logs": lines[-20:],
             "ready": ready,
-            "phase": "running" if ready else "starting"
+            "phase": "running" if ready else ("downloading" if downloading else "starting"),
+            "downloading": downloading,
         }
     except subprocess.TimeoutExpired:
         return {"logs": [], "ready": False, "error": "Timeout getting logs"}

@@ -592,14 +592,22 @@ exten => s,1,NoOp(AI Agent Call)
             setStartingLocalServer(false);
         }
 
-        // AAVA-177: Use 60-minute timeout for image builds, 2-minute for normal starts
-        const pollTimeoutMs = isBuilding ? 3_600_000 : 120_000;
+        // AAVA-177: Timeout tiers:
+        //   60 min  — Docker image build (isBuilding)
+        //   10 min  — First-run HuggingFace model download (bumped dynamically when detected)
+        //    2 min  — Normal container startup (pre-downloaded models)
+        const NORMAL_TIMEOUT_MS   = 120_000;
+        const DOWNLOAD_TIMEOUT_MS = 600_000;
+        const BUILD_TIMEOUT_MS    = 3_600_000;
+        // Use a ref so the active timeout ceiling can be raised mid-poll without
+        // restarting the loop (e.g. when a model download is detected on the first tick).
+        const effectiveTimeoutRef = { current: isBuilding ? BUILD_TIMEOUT_MS : NORMAL_TIMEOUT_MS };
 
         const pollLogs = async () => {
             if (localServerPollRef.current.cancelled) return;
             const startedAt = localServerPollRef.current.startedAt || Date.now();
             const elapsed = Date.now() - startedAt;
-            if (elapsed >= pollTimeoutMs) {
+            if (elapsed >= effectiveTimeoutRef.current) {
                 setLocalAIStatus((prev) => ({
                     ...prev,
                     serverLogs: [...prev.serverLogs, "Polling timed out after maximum wait time."],
@@ -608,10 +616,18 @@ exten => s,1,NoOp(AI Agent Call)
             }
             try {
                 const logRes = await axios.get('/api/wizard/local/server-logs');
+                // If the server reports an active model download, bump the ceiling to
+                // 10 minutes so large HuggingFace downloads (distil-large-v3, turbo,
+                // large-v3, etc.) aren't cut off by the normal 2-minute window.
+                if (logRes.data.downloading && !isBuilding) {
+                    effectiveTimeoutRef.current = DOWNLOAD_TIMEOUT_MS;
+                }
                 if (!localServerPollRef.current.cancelled) {
                     setLocalAIStatus((prev) => ({
                         ...prev,
-                        serverLogs: logRes.data.logs || [],
+                        serverLogs: logRes.data.downloading && !prev.serverLogs.includes("⬇️ Downloading model from HuggingFace, please wait…")
+                            ? [...(logRes.data.logs || []), "⬇️ Downloading model from HuggingFace, please wait…"]
+                            : logRes.data.logs || [],
                         serverReady: logRes.data.ready,
                         serverPhase: logRes.data.phase || (logRes.data.ready ? 'running' : 'starting')
                     }));
