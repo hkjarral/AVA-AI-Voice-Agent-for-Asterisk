@@ -1423,11 +1423,19 @@ func applyDockerActions(ctx *updateContext) error {
 		for svc := range runningServices {
 			targets[svc] = true
 		}
+		// Only include rebuild/restart targets that are already running in the --no-build step.
+		// Services not yet running will be started by the explicit --build step below, so including
+		// them here would cause a "no such image" failure for services the operator never built
+		// (e.g., local_ai_server on deployments that don't use Local AI).
 		for svc := range ctx.servicesToRebuild {
-			targets[svc] = true
+			if runningServices[svc] {
+				targets[svc] = true
+			}
 		}
 		for svc := range ctx.servicesToRestart {
-			targets[svc] = true
+			if runningServices[svc] {
+				targets[svc] = true
+			}
 		}
 
 		// If admin_ui updates are excluded, ensure we never recreate/restart it as part of the
@@ -1455,8 +1463,17 @@ func applyDockerActions(ctx *updateContext) error {
 		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
 	}
 
+	// Don't rebuild services that the operator never started — auto-detection of changed files in
+	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
+	// runningServices is non-empty whenever the query succeeded, so this guard is safe.
+	if len(runningServices) > 0 {
+		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
 	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
-	// attempt (restart would fail anyway). We'll still allow the rebuild path to start it.
+	// attempt (restart would fail anyway).
 	if len(restartServices) > 0 {
 		restartServices = filterSlice(restartServices, func(svc string) bool {
 			return runningServices[svc]
