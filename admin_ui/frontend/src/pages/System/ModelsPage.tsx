@@ -19,6 +19,7 @@ interface ModelInfo {
     download_url?: string;
     config_url?: string;  // For TTS models that need JSON config
     voice_files?: Record<string, string>;  // For Kokoro TTS voice files
+    vocoder_url?: string;  // For Matcha TTS vocoder
     installed?: boolean;
     quality?: string;
     gender?: string;
@@ -446,7 +447,8 @@ const ModelsPage = () => {
                 download_url: model.download_url,
                 model_path: model.model_path,
                 config_url: model.config_url,  // For TTS models (Piper JSON config)
-                voice_files: model.voice_files  // For Kokoro TTS voice files
+                voice_files: model.voice_files,  // For Kokoro TTS voice files
+                vocoder_url: model.vocoder_url  // For Matcha TTS vocoder
             });
             const jobId = startRes.data?.job_id;
             const diskWarning = startRes.data?.disk_warning;

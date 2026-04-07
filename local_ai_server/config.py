@@ -123,8 +123,8 @@ class LocalAIConfig:
     silero_model_path: str = "/app/models/tts/silero"
 
     # Matcha-TTS (via sherpa-onnx) — fast, high-quality CPU TTS
-    matcha_model_path: str = "/app/models/tts/matcha/model.onnx"
-    matcha_vocoder_path: str = "/app/models/tts/matcha/vocos.onnx"
+    matcha_model_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx"
+    matcha_vocoder_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/hifigan_v2.onnx"
     matcha_speed: float = 1.0
     matcha_sid: int = 0
 

@@ -787,7 +787,7 @@ MATCHA_TTS_MODELS = [
      "size_mb": 80, "size_display": "~80 MB (model + vocoder)",
      "path": "/app/models/tts/matcha-icefall-en_US-ljspeech",
      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2",
-     "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+     "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/hifigan_v2.onnx",
      "recommended": True,
      "description": "Fast, high-quality English TTS via flow matching (RTF ~0.015 on CPU). Requires Vocos vocoder.",
      "note": "Requires sherpa-onnx (INCLUDE_SHERPA=true). Download model + vocoder to use."},
@@ -795,7 +795,7 @@ MATCHA_TTS_MODELS = [
      "size_mb": 80, "size_display": "~80 MB (model + vocoder)",
      "path": "/app/models/tts/matcha-icefall-zh-baker",
      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
-     "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+     "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/hifigan_v2.onnx",
      "description": "Fast Chinese TTS via flow matching. Requires Vocos vocoder.",
      "note": "Requires sherpa-onnx (INCLUDE_SHERPA=true). Download model + vocoder to use."},
 ]

@@ -826,7 +826,7 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                         className="w-full p-2 rounded border border-input bg-background"
                                         value={config.matcha_model_path || ''}
                                         onChange={(e) => handleChange('matcha_model_path', e.target.value)}
-                                        placeholder="/app/models/tts/matcha/model.onnx"
+                                        placeholder="/app/models/tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx"
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -836,7 +836,7 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                         className="w-full p-2 rounded border border-input bg-background"
                                         value={config.matcha_vocoder_path || ''}
                                         onChange={(e) => handleChange('matcha_vocoder_path', e.target.value)}
-                                        placeholder="/app/models/tts/matcha/vocos.onnx"
+                                        placeholder="/app/models/tts/matcha-icefall-en_US-ljspeech/hifigan_v2.onnx"
                                     />
                                 </div>
                                 <div className="space-y-2">

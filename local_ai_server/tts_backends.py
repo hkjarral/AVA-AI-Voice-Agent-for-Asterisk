@@ -429,8 +429,8 @@ class MatchaTTSBackend:
 
     def __init__(
         self,
-        model_path: str = "/app/models/tts/matcha/model.onnx",
-        vocoder_path: str = "/app/models/tts/matcha/vocos.onnx",
+        model_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
+        vocoder_path: str = "/app/models/tts/matcha-icefall-en_US-ljspeech/hifigan_v2.onnx",
         tokens_path: str = "",
         data_dir: str = "",
         speed: float = 1.0,

@@ -1327,6 +1327,7 @@ class SingleModelDownload(BaseModel):
     model_path: Optional[str] = None
     config_url: Optional[str] = None  # For TTS models that need JSON config
     voice_files: Optional[Dict[str, str]] = None  # For Kokoro TTS voice files
+    vocoder_url: Optional[str] = None  # For Matcha TTS vocoder
     expected_sha256: Optional[str] = None  # Optional integrity check
 
 
@@ -1467,6 +1468,22 @@ async def download_single_model(request: SingleModelDownload):
                 # Clean up archive file after extraction
                 os.remove(temp_file)
                 _job_output(job.id, "🧹 Cleaned up archive file")
+
+                # Download vocoder for Matcha TTS models
+                if request.vocoder_url and request.type == "tts":
+                    vocoder_dir = os.path.join(target_dir, root_folder) if root_folder else target_dir
+                    vocoder_filename = os.path.basename(request.vocoder_url)
+                    vocoder_dest = os.path.join(vocoder_dir, vocoder_filename)
+                    _job_output(job.id, f"📥 Downloading vocoder: {vocoder_filename}...")
+                    try:
+                        tmp_voc = vocoder_dest + f".{uuid.uuid4().hex}.part"
+                        urllib.request.urlretrieve(request.vocoder_url, tmp_voc)
+                        voc_sha = _sha256_file(tmp_voc)
+                        shutil.move(tmp_voc, vocoder_dest)
+                        _write_sha256_sidecar(vocoder_dest, voc_sha)
+                        _job_output(job.id, f"✅ Vocoder saved to {vocoder_dest}")
+                    except Exception as voc_err:
+                        _job_output(job.id, f"⚠️ Vocoder download failed: {voc_err}")
             else:
                 # Single file - rename to model_path or keep original name
                 # Special handling for Kokoro which uses a directory structure
