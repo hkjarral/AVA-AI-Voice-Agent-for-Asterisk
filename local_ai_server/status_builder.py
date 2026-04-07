@@ -89,6 +89,11 @@ def _tts_status(server) -> Tuple[bool, Optional[str], Optional[str]]:
         path = server.melotts_voice
         display = f"MeloTTS ({server.melotts_voice})"
         return loaded, path, display
+    if server.tts_backend == "matcha":
+        loaded = server.mock_models or getattr(server, "matcha_backend", None) is not None
+        path = server.config.matcha_model_path
+        display = f"Matcha ({os.path.basename(os.path.dirname(path))})"
+        return loaded, path, display
     if server.tts_backend == "silero":
         loaded = server.mock_models or server.silero_backend is not None
         # Path must match the dropdown option format: "speaker:model_id"
