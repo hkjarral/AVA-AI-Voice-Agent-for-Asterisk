@@ -5,6 +5,9 @@ import HelpTooltip from '../../ui/HelpTooltip';
 import { FormInput, FormSelect, FormLabel, FormSwitch } from '../../ui/FormComponents';
 import { Capability, ensureModularKey, isRegisteredProvider, getUnregisteredReason, REGISTERED_PROVIDER_TYPES } from '../../../utils/providerNaming';
 import { GOOGLE_LIVE_MODEL_OPTIONS } from '../../../utils/googleLiveModels';
+import { MODULAR_SUBTYPES, inferSubtype } from '../../../config/modularProviderSubtypes';
+import type { ProviderSubtype, Capability as SubtypeCapability } from '../../../config/modularProviderSubtypes';
+import ModularSubtypeForm from './ModularSubtypeForm';
 
 interface GenericProviderFormProps {
     config: any;
@@ -73,6 +76,15 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
 const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onChange, isNew }) => {
     const [customFields, setCustomFields] = useState<{ key: string; value: string }[]>([]);
     const [nameLocked, setNameLocked] = useState<boolean>(false);
+    const [selectedSubtype, setSelectedSubtype] = useState<ProviderSubtype | undefined>(undefined);
+
+    // On mount or when config changes, try to infer the subtype from existing config
+    useEffect(() => {
+        if (!selectedSubtype) {
+            const inferred = inferSubtype(config);
+            if (inferred) setSelectedSubtype(inferred);
+        }
+    }, [config.type, config.capabilities]);
 
     // Initialize custom fields from config on mount
     useEffect(() => {
@@ -176,6 +188,30 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
         // Lock name once a capability is chosen (still allow programmatic suffix swap)
         setNameLocked(true);
         updateConfig(updates);
+    };
+
+    const handleSubtypeChange = (subtypeId: string) => {
+        const cap = (config.capabilities || [])[0] as SubtypeCapability | undefined;
+        if (!cap) return;
+        const subtypes = MODULAR_SUBTYPES[cap] || [];
+        const subtype = subtypes.find(s => s.id === subtypeId);
+        if (!subtype) {
+            setSelectedSubtype(undefined);
+            return;
+        }
+        setSelectedSubtype(subtype);
+        // Set the YAML type and apply defaults
+        const defaults: Record<string, any> = { type: subtype.yamlType };
+        subtype.fields.forEach(f => {
+            if (f.default !== undefined && (config[f.key] === undefined || config[f.key] === '')) {
+                defaults[f.key] = f.default;
+            }
+        });
+        updateConfig(defaults);
+    };
+
+    const handleSubtypeFieldChange = (key: string, value: any) => {
+        updateConfig({ [key]: value });
     };
 
     const handleFieldChange = (index: number, field: 'key' | 'value', value: string) => {
@@ -372,54 +408,67 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
                 )}
             </div>
 
-            {/* Connection Details */}
-            <div className="space-y-4 border-b border-border pb-6">
-                <h4 className="font-semibold flex items-center gap-2">
-                    Connection Settings
-                </h4>
+            {/* Modular Provider Subtype Selection + Fields */}
+            {config.type !== 'full' && (config.capabilities || []).length === 1 && (() => {
+                const cap = (config.capabilities || [])[0] as SubtypeCapability;
+                const subtypes = MODULAR_SUBTYPES[cap] || [];
+                return (
+                    <div className="space-y-4 border-b border-border pb-6">
+                        <h4 className="font-semibold flex items-center gap-2">
+                            Provider Configuration
+                            <HelpTooltip content="Select the type of provider to see its specific settings." />
+                        </h4>
 
-                {(config.type || 'modular') === 'full' ? (
-                    <div className="space-y-3">
-                        <FormInput
-                            label="Base URL / WebSocket URL"
-                            value={config.base_url || ''}
-                            onChange={(e) => updateConfig({ base_url: e.target.value })}
-                            placeholder="wss://api.provider.com/v1/realtime"
-                            tooltip="Required for full agents. Used for combined STT/LLM/TTS APIs."
+                        <FormSelect
+                            label={`${cap.toUpperCase()} Provider Type`}
+                            options={[
+                                { value: '', label: 'Select provider type...' },
+                                ...subtypes.map(s => ({ value: s.id, label: s.label })),
+                            ]}
+                            value={selectedSubtype?.id || ''}
+                            onChange={(e) => handleSubtypeChange(e.target.value)}
+                            tooltip="Choose which type of provider this is. This determines the available settings and correct YAML field names."
                         />
-                    </div>
-                ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {(config.capabilities || []).includes('stt') && (
-                            <FormInput
-                                label="STT Base URL"
-                                value={config.base_url_stt || ''}
-                                onChange={(e) => updateConfig({ base_url_stt: e.target.value })}
-                                placeholder="https://api.provider.com/stt"
+
+                        {selectedSubtype && (
+                            <ModularSubtypeForm
+                                subtype={selectedSubtype}
+                                config={config}
+                                onChange={handleSubtypeFieldChange}
                             />
                         )}
-                        {(config.capabilities || []).includes('tts') && (
-                            <FormInput
-                                label="TTS Base URL"
-                                value={config.base_url_tts || ''}
-                                onChange={(e) => updateConfig({ base_url_tts: e.target.value })}
-                                placeholder="https://api.provider.com/tts"
-                            />
-                        )}
-                        {(config.capabilities || []).includes('llm') && (
-                            <FormInput
-                                label="LLM Base URL"
-                                value={config.base_url_llm || ''}
-                                onChange={(e) => updateConfig({ base_url_llm: e.target.value })}
-                                placeholder="https://api.provider.com/v1"
-                            />
-                        )}
-                        {(config.capabilities || []).length === 0 && (
-                            <p className="text-sm text-muted-foreground">Select a capability to configure base URLs.</p>
+
+                        {!selectedSubtype && subtypes.length > 0 && (
+                            <p className="text-sm text-muted-foreground italic">
+                                Select a provider type above to configure connection settings.
+                            </p>
                         )}
                     </div>
-                )}
-            </div>
+                );
+            })()}
+
+            {/* Connection Details — only for Full Agents (modular providers use subtype form above) */}
+            {(config.type === 'full' || (config.type !== 'full' && (config.capabilities || []).length !== 1)) && (
+                <div className="space-y-4 border-b border-border pb-6">
+                    <h4 className="font-semibold flex items-center gap-2">
+                        Connection Settings
+                    </h4>
+
+                    {(config.type || 'modular') === 'full' ? (
+                        <div className="space-y-3">
+                            <FormInput
+                                label="Base URL / WebSocket URL"
+                                value={config.base_url || ''}
+                                onChange={(e) => updateConfig({ base_url: e.target.value })}
+                                placeholder="wss://api.provider.com/v1/realtime"
+                                tooltip="Required for full agents. Used for combined STT/LLM/TTS APIs."
+                            />
+                        </div>
+                    ) : (
+                        <p className="text-sm text-muted-foreground">Select a capability to configure connection settings.</p>
+                    )}
+                </div>
+            )}
 
             {/* Dynamic Configuration */}
             <div className="space-y-4">

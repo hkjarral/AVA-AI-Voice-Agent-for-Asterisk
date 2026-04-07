@@ -576,6 +576,16 @@ const ProvidersPage: React.FC = () => {
         // Check provider name for specific forms, fallback to type
         const providerName = (providerForm.name || '').toLowerCase();
 
+        // --- MODULAR GUARD ---
+        // Modular providers (single capability) always use GenericProviderForm,
+        // which handles subtype selection (OpenAI-compatible, Ollama, etc.)
+        // This prevents modular type=openai from routing to the full OpenAI agent form.
+        const caps = providerForm.capabilities || [];
+        const isModular = Array.isArray(caps) && caps.length === 1;
+        if (isModular) {
+            return <GenericProviderForm config={providerForm} onChange={updateForm} isNew={isNewProvider} />;
+        }
+
         // Local provider (including full agent mode) uses LocalProviderForm
         if (providerForm.type === 'local' || providerName === 'local' || providerName.includes('local')) {
             return <LocalProviderForm config={providerForm} onChange={updateForm} />;
@@ -602,7 +612,7 @@ const ProvidersPage: React.FC = () => {
             return <TelnyxProviderForm config={providerForm} onChange={updateForm} />;
         }
 
-        // Fall back to type-based selection
+        // Fall back to type-based selection (for full agents only at this point)
         switch (providerForm.type) {
             case 'openai_realtime':
                 return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} />;
