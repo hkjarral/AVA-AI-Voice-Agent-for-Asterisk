@@ -780,13 +780,33 @@ LLM_MODELS = [
      "download_url": None, "model_path": None, "requires_api_key": True, "api_key_name": "GROQ_API_KEY"},
 ]
 
+# ============== Matcha-TTS Models (via sherpa-onnx) ==============
+
+MATCHA_TTS_MODELS = [
+    {"id": "matcha_en_ljspeech", "name": "Matcha LJSpeech (en, Female)", "language": "en-US", "region": "global", "backend": "matcha",
+     "size_mb": 80, "size_display": "~80 MB (model + vocoder)",
+     "path": "/app/models/tts/matcha-icefall-en_US-ljspeech",
+     "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2",
+     "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+     "recommended": True,
+     "description": "Fast, high-quality English TTS via flow matching (RTF ~0.015 on CPU). Requires Vocos vocoder.",
+     "note": "Requires sherpa-onnx (INCLUDE_SHERPA=true). Download model + vocoder to use."},
+    {"id": "matcha_zh_baker", "name": "Matcha Baker (zh, Female)", "language": "zh-CN", "region": "asia", "backend": "matcha",
+     "size_mb": 80, "size_display": "~80 MB (model + vocoder)",
+     "path": "/app/models/tts/matcha-icefall-zh-baker",
+     "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
+     "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+     "description": "Fast Chinese TTS via flow matching. Requires Vocos vocoder.",
+     "note": "Requires sherpa-onnx (INCLUDE_SHERPA=true). Download model + vocoder to use."},
+]
+
 # ============== Combined Catalog ==============
 
 def get_full_catalog():
     """Get the complete model catalog organized by type."""
     return {
         "stt": VOSK_STT_MODELS + SHERPA_STT_MODELS + KROKO_STT_MODELS + TONE_STT_MODELS + FASTER_WHISPER_STT_MODELS + WHISPER_CPP_STT_MODELS,
-        "tts": PIPER_TTS_MODELS + KOKORO_TTS_MODELS + MELOTTS_MODELS + SILERO_TTS_MODELS,
+        "tts": PIPER_TTS_MODELS + KOKORO_TTS_MODELS + MELOTTS_MODELS + SILERO_TTS_MODELS + MATCHA_TTS_MODELS,
         "llm": LLM_MODELS,
     }
 

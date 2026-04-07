@@ -1989,13 +1989,15 @@ class LocalAIServer:
             )
 
     async def _load_tts_model(self):
-        """Load TTS model based on configured backend (piper, kokoro, melotts, or silero)."""
+        """Load TTS model based on configured backend (piper, kokoro, melotts, silero, or matcha)."""
         if self.tts_backend == "kokoro":
             await self._load_kokoro_backend()
         elif self.tts_backend == "melotts":
             await self._load_melotts_backend()
         elif self.tts_backend == "silero":
             await self._load_silero_backend()
+        elif self.tts_backend == "matcha":
+            await self._load_matcha_backend()
         else:
             await self._load_piper_backend()
 
@@ -2817,6 +2819,8 @@ class LocalAIServer:
             return await self._process_tts_melotts(text)
         elif self.tts_backend == "silero":
             return await self._process_tts_silero(text)
+        elif self.tts_backend == "matcha":
+            return await self._process_tts_matcha(text)
         else:
             return await self._process_tts_piper(text)
 
@@ -3073,6 +3077,83 @@ class LocalAIServer:
 
         except Exception as exc:
             logging.error("Silero TTS processing failed: %s", exc, exc_info=True)
+            return b""
+
+    async def _load_matcha_backend(self):
+        """Load Matcha-TTS model via sherpa-onnx."""
+        try:
+            from tts_backends import MatchaTTSBackend
+
+            logging.info("🎙️ TTS backend: Matcha (via sherpa-onnx)")
+            self.matcha_backend = MatchaTTSBackend(
+                model_path=self.config.matcha_model_path,
+                vocoder_path=self.config.matcha_vocoder_path,
+                speed=self.config.matcha_speed,
+                sid=self.config.matcha_sid,
+            )
+            success = await asyncio.to_thread(self.matcha_backend.initialize)
+            if not success:
+                logging.error("❌ Failed to initialize Matcha TTS backend")
+                self.matcha_backend = None
+            else:
+                logging.info(
+                    "✅ TTS backend: Matcha initialized (%dHz native)",
+                    self.matcha_backend.sample_rate,
+                )
+        except ImportError:
+            logging.error(
+                "❌ Matcha TTS backend requested but sherpa-onnx not installed"
+            )
+            self.matcha_backend = None
+        except Exception as exc:
+            logging.error("❌ Matcha TTS init failed: %s", exc, exc_info=True)
+            self.matcha_backend = None
+
+    async def _process_tts_matcha(self, text: str) -> bytes:
+        """Process TTS using Matcha backend (22kHz output via sherpa-onnx)."""
+        try:
+            if not self.matcha_backend:
+                logging.error("Matcha TTS backend not loaded")
+                return b""
+
+            logging.info(
+                "📢 TTS request received (Matcha) text_preview=%s",
+                text[:50] if text else "",
+            )
+
+            pcm16_data = await asyncio.to_thread(
+                self.matcha_backend.synthesize, text
+            )
+
+            if not pcm16_data:
+                logging.error("Matcha TTS returned no audio")
+                return b""
+
+            # Wrap raw PCM16 in WAV for convert_to_ulaw_8k
+            import io
+            import wave
+
+            sample_rate = self.matcha_backend.sample_rate
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(pcm16_data)
+            wav_data = wav_io.getvalue()
+
+            ulaw_data = await asyncio.to_thread(
+                self.audio_processor.convert_to_ulaw_8k, wav_data, sample_rate
+            )
+
+            logging.info(
+                "🔊 TTS RESULT - Matcha generated uLaw 8kHz audio: %s bytes",
+                len(ulaw_data),
+            )
+            return ulaw_data
+
+        except Exception as exc:
+            logging.error("Matcha TTS processing failed: %s", exc, exc_info=True)
             return b""
 
     def _cancel_idle_timer(self, session: SessionContext) -> None:

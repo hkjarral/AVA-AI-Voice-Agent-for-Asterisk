@@ -815,6 +815,45 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                 </div>
                             </>
                         )}
+
+                        {/* Matcha settings */}
+                        {config.tts_backend === 'matcha' && (
+                            <>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Model Path</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.matcha_model_path || ''}
+                                        onChange={(e) => handleChange('matcha_model_path', e.target.value)}
+                                        placeholder="/app/models/tts/matcha/model.onnx"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Vocoder Path</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.matcha_vocoder_path || ''}
+                                        onChange={(e) => handleChange('matcha_vocoder_path', e.target.value)}
+                                        placeholder="/app/models/tts/matcha/vocos.onnx"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Speed</label>
+                                    <input
+                                        type="number"
+                                        step="0.1"
+                                        min="0.5"
+                                        max="2.0"
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={config.matcha_speed || 1.0}
+                                        onChange={(e) => handleChange('matcha_speed', parseFloat(e.target.value))}
+                                    />
+                                    <p className="text-xs text-muted-foreground">1.0 = normal speed</p>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             )}

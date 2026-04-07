@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import audioop
+import io
 import logging
 import os
 import subprocess
 import tempfile
+import wave
 
 from constants import ULAW_SAMPLE_RATE
 
 
 class AudioProcessor:
-    """Handles audio format conversions for MVP uLaw 8kHz pipeline."""
+    """Handles audio format conversions for MVP uLaw 8kHz pipeline.
+
+    Primary path uses Python's audioop (in-process, no temp files).
+    Falls back to sox subprocess if audioop conversion fails.
+    """
 
     @staticmethod
     def resample_audio(
@@ -19,7 +26,20 @@ class AudioProcessor:
         input_format: str = "raw",
         output_format: str = "raw",
     ) -> bytes:
-        """Resample audio using sox (blocking)."""
+        """Resample raw PCM16 mono audio in-process via audioop.
+
+        Falls back to sox subprocess on failure.
+        """
+        if input_rate == output_rate:
+            return input_data
+
+        try:
+            resampled, _ = audioop.ratecv(input_data, 2, 1, input_rate, output_rate, None)
+            return resampled
+        except Exception as exc:
+            logging.warning("audioop resample failed (%s), falling back to sox", exc)
+
+        # ── sox fallback ──
         try:
             with tempfile.NamedTemporaryFile(
                 suffix=f".{input_format}", delete=False
@@ -34,25 +54,16 @@ class AudioProcessor:
 
             cmd = [
                 "sox",
-                "-t",
-                "raw",
-                "-r",
-                str(input_rate),
-                "-e",
-                "signed-integer",
-                "-b",
-                "16",
-                "-c",
-                "1",
+                "-t", "raw",
+                "-r", str(input_rate),
+                "-e", "signed-integer",
+                "-b", "16",
+                "-c", "1",
                 input_path,
-                "-r",
-                str(output_rate),
-                "-c",
-                "1",
-                "-e",
-                "signed-integer",
-                "-b",
-                "16",
+                "-r", str(output_rate),
+                "-c", "1",
+                "-e", "signed-integer",
+                "-b", "16",
                 output_path,
             ]
 
@@ -67,12 +78,48 @@ class AudioProcessor:
             return resampled_data
 
         except Exception as exc:  # pragma: no cover
-            logging.error("Audio resampling failed: %s", exc)
+            logging.error("Audio resampling failed (sox fallback): %s", exc)
             return input_data
 
     @staticmethod
     def convert_to_ulaw_8k(input_data: bytes, input_rate: int) -> bytes:
-        """Convert audio to uLaw 8kHz format for ARI playback (blocking)."""
+        """Convert WAV audio to 8 kHz µ-law in-process via audioop.
+
+        Falls back to sox subprocess on failure.
+        """
+        try:
+            # Parse WAV header to extract raw PCM
+            wav_io = io.BytesIO(input_data)
+            with wave.open(wav_io, "rb") as wf:
+                pcm_data = wf.readframes(wf.getnframes())
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
+
+            # Stereo → mono
+            if channels > 1:
+                pcm_data = audioop.tomono(pcm_data, sampwidth, 1, 1)
+
+            # Ensure 16-bit samples
+            if sampwidth != 2:
+                pcm_data = audioop.lin2lin(pcm_data, sampwidth, 2)
+
+            # Resample to 8 kHz
+            if framerate != ULAW_SAMPLE_RATE:
+                pcm_data, _ = audioop.ratecv(
+                    pcm_data, 2, 1, framerate, ULAW_SAMPLE_RATE, None
+                )
+
+            # PCM16 → µ-law
+            ulaw_data = audioop.lin2ulaw(pcm_data, 2)
+            return ulaw_data
+
+        except Exception as exc:
+            logging.warning(
+                "audioop uLaw conversion failed (%s), falling back to sox", exc
+            )
+
+        # ── sox fallback ──
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as input_file:
                 input_file.write(input_data)
@@ -84,14 +131,10 @@ class AudioProcessor:
             cmd = [
                 "sox",
                 input_path,
-                "-r",
-                str(ULAW_SAMPLE_RATE),
-                "-c",
-                "1",
-                "-e",
-                "mu-law",
-                "-t",
-                "raw",
+                "-r", str(ULAW_SAMPLE_RATE),
+                "-c", "1",
+                "-e", "mu-law",
+                "-t", "raw",
                 output_path,
             ]
 
@@ -106,6 +149,5 @@ class AudioProcessor:
             return ulaw_data
 
         except Exception as exc:  # pragma: no cover
-            logging.error("uLaw conversion failed: %s", exc)
+            logging.error("uLaw conversion failed (sox fallback): %s", exc)
             return input_data
-

@@ -122,6 +122,12 @@ class LocalAIConfig:
     silero_sample_rate: int = 8000
     silero_model_path: str = "/app/models/tts/silero"
 
+    # Matcha-TTS (via sherpa-onnx) — fast, high-quality CPU TTS
+    matcha_model_path: str = "/app/models/tts/matcha/model.onnx"
+    matcha_vocoder_path: str = "/app/models/tts/matcha/vocos.onnx"
+    matcha_speed: float = 1.0
+    matcha_sid: int = 0
+
     stt_idle_ms: int = 5000
     # Telephony-friendly utterance segmentation for batch STT backends (Whisper family).
     # These are intentionally separate from stt_idle_ms (which is used by some streaming backends)
@@ -265,6 +271,10 @@ class LocalAIConfig:
             silero_model_id=os.getenv("SILERO_MODEL_ID", "v3_1_ru"),
             silero_sample_rate=_parse_int(os.getenv("SILERO_SAMPLE_RATE"), 8000),
             silero_model_path=os.getenv("SILERO_MODEL_PATH", "/app/models/tts/silero"),
+            matcha_model_path=os.getenv("MATCHA_MODEL_PATH", "/app/models/tts/matcha/model.onnx"),
+            matcha_vocoder_path=os.getenv("MATCHA_VOCODER_PATH", "/app/models/tts/matcha/vocos.onnx"),
+            matcha_speed=float(os.getenv("MATCHA_SPEED", "1.0")),
+            matcha_sid=int(os.getenv("MATCHA_SID", "0")),
             stt_idle_ms=int(stt_idle_ms_raw),
             stt_segment_energy_threshold=int(os.getenv("LOCAL_STT_SEGMENT_ENERGY_THRESHOLD", "1200")),
             stt_segment_preroll_ms=int(os.getenv("LOCAL_STT_SEGMENT_PREROLL_MS", "200")),
