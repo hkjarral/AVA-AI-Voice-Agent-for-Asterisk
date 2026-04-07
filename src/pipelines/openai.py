@@ -534,6 +534,14 @@ class OpenAILLMAdapter(LLMComponent):
                     message = choices[0].get("message") or {}
                     content = message.get("content", "")
                     tool_calls = message.get("tool_calls") or []
+
+                    # Strip <think>...</think> blocks from content (Qwen3 thinking mode)
+                    if content and "<think>" in content:
+                        import re
+                        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                    # Fallback: if content is empty but reasoning_content exists, use it
+                    if not content.strip() and message.get("reasoning_content"):
+                        content = ""  # Don't use reasoning as response — it's internal thinking
                     
                     # Log response
                     log_ctx = {
