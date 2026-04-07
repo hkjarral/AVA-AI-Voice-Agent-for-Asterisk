@@ -226,7 +226,7 @@ def apply_switch_model_request(
 
     if "tts_backend" in data:
         backend = (data["tts_backend"] or "").strip().lower()
-        if backend in ("piper", "kokoro", "melotts", "silero"):
+        if backend in ("piper", "kokoro", "melotts", "silero", "matcha"):
             new_config = replace(new_config, tts_backend=backend)
             changed.append(f"tts_backend={backend}")
 
@@ -286,5 +286,15 @@ def apply_switch_model_request(
         value = data["silero_model_path"]
         new_config = replace(new_config, silero_model_path=value)
         changed.append(f"silero_model_path={value}")
+
+    if "matcha_model_path" in data:
+        value = data["matcha_model_path"]
+        new_config = replace(new_config, matcha_model_path=value)
+        changed.append(f"matcha_model_path={os.path.basename(value)}")
+
+    if "matcha_vocoder_path" in data:
+        value = data["matcha_vocoder_path"]
+        new_config = replace(new_config, matcha_vocoder_path=value)
+        changed.append(f"matcha_vocoder_path={os.path.basename(value)}")
 
     return new_config, changed
