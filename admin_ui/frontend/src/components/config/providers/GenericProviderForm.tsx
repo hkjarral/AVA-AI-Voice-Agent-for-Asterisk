@@ -211,7 +211,10 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     };
 
     const handleSubtypeFieldChange = (key: string, value: any) => {
-        updateConfig({ [key]: value });
+        // Directly merge into config without going through getBaseConfig()
+        // which strips subtype-specific keys like chat_base_url, chat_model, etc.
+        const updated = { ...config, [key]: value };
+        onChange(updated);
     };
 
     const handleFieldChange = (index: number, field: 'key' | 'value', value: string) => {
