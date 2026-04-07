@@ -359,6 +359,20 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 if kokoro_model_path:
                     env_updates["KOKORO_MODEL_PATH"] = kokoro_model_path
                     yaml_updates["kokoro_model_path"] = kokoro_model_path
+            elif request.backend == "matcha":
+                if request.model_path:
+                    env_updates["MATCHA_MODEL_PATH"] = request.model_path
+                    yaml_updates["matcha_model_path"] = request.model_path
+                    # Auto-detect vocoder in the same directory
+                    model_dir = os.path.dirname(request.model_path)
+                    for voc_name in ("hifigan_v2.onnx", "vocos.onnx"):
+                        voc_path = os.path.join(model_dir, voc_name)
+                        # Use the container path for env (model_path is already /app/models/...)
+                        env_updates["MATCHA_VOCODER_PATH"] = os.path.join(
+                            os.path.dirname(request.model_path), voc_name
+                        )
+                        yaml_updates["matcha_vocoder_path"] = env_updates["MATCHA_VOCODER_PATH"]
+                        break
 
     elif request.model_type == "llm":
         if request.model_path:
@@ -463,6 +477,15 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
             payload["kokoro_api_key"] = request.kokoro_api_key
         if request.kokoro_api_model:
             payload["kokoro_api_model"] = request.kokoro_api_model
+    if request.backend == "matcha":
+        if request.model_path:
+            payload["matcha_model_path"] = request.model_path
+            # Auto-detect vocoder in the same directory
+            for voc_name in ("hifigan_v2.onnx", "vocos.onnx"):
+                payload["matcha_vocoder_path"] = os.path.join(
+                    os.path.dirname(request.model_path), voc_name
+                )
+                break
     return payload
 
 
@@ -514,7 +537,8 @@ async def list_available_models():
         "piper": [],
         "kokoro": [],
         "melotts": [],
-        "silero": []
+        "silero": [],
+        "matcha": []
     }
     llm_models: List[ModelInfo] = []
     
@@ -644,6 +668,30 @@ async def list_available_models():
             size_mb=entry.get("size_mb", 100),
         ))
     
+    # Scan Matcha TTS models (directories matching matcha-icefall-*)
+    if os.path.exists(tts_dir):
+        for item in os.listdir(tts_dir):
+            item_path = os.path.join(tts_dir, item)
+            if os.path.isdir(item_path) and item.startswith("matcha-icefall-"):
+                # Find the acoustic model ONNX file
+                model_onnx = None
+                for f in os.listdir(item_path):
+                    if f.endswith(".onnx") and "model" in f.lower():
+                        model_onnx = f
+                        break
+                if model_onnx:
+                    from api.models_catalog import MATCHA_TTS_MODELS
+                    catalog_match = next((m for m in MATCHA_TTS_MODELS if m.get("path", "").endswith(item)), None)
+                    display_name = catalog_match["name"] if catalog_match else f"Matcha ({item})"
+                    tts_models["matcha"].append(ModelInfo(
+                        id=f"matcha_{item}",
+                        name=display_name,
+                        path=f"/app/models/tts/{item}/{model_onnx}",
+                        type="tts",
+                        backend="matcha",
+                        size_mb=get_dir_size_mb(item_path)
+                    ))
+
     # Scan LLM models — enrich with chat_format from catalog
     from api.models_catalog import LLM_MODELS as _LLM_CATALOG
     _catalog_by_path = {m.get("model_path", ""): m for m in _LLM_CATALOG if m.get("model_path")}
@@ -1049,6 +1097,7 @@ async def switch_model(request: SwitchModelRequest):
         "SILERO_SPEAKER", "SILERO_LANGUAGE", "SILERO_MODEL_ID", "SILERO_SAMPLE_RATE", "SILERO_MODEL_PATH",
         "KOKORO_MODE", "KOKORO_VOICE", "KOKORO_MODEL_PATH",
         "KOKORO_API_BASE_URL", "KOKORO_API_KEY", "KOKORO_API_MODEL",
+        "MATCHA_MODEL_PATH", "MATCHA_VOCODER_PATH",
         "MELOTTS_VOICE", "MELOTTS_DEVICE", "FASTER_WHISPER_MODEL", "FASTER_WHISPER_DEVICE",
         "TONE_MODEL_PATH", "TONE_DECODER_TYPE", "TONE_KENLM_PATH",
         "SHERPA_MODEL_TYPE", "SHERPA_VAD_MODEL_PATH",
