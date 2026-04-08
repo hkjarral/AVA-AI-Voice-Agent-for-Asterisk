@@ -960,7 +960,7 @@ class FasterWhisperSTTBackend:
     Uses chunked processing for pseudo-streaming (Whisper is not natively streaming).
     
     Model sizes: tiny, base, small, medium, large-v2, large-v3, distil-large-v3
-    Also accepts HuggingFace repo IDs (e.g. Systran/faster-whisper-large-v3-turbo).
+    Also accepts HuggingFace repo IDs (e.g. deepdml/faster-whisper-large-v3-turbo-ct2).
     """
 
     def __init__(

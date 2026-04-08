@@ -282,7 +282,7 @@ FASTER_WHISPER_STT_MODELS = [
      "description": "Best accuracy, requires GPU for acceptable speed.",
      "note": "Requires INCLUDE_FASTER_WHISPER=true in Docker build"},
     {"id": "faster_whisper_large_v3_turbo", "name": "Whisper Large v3 Turbo (809M)", "language": "multi", "region": "global", "backend": "faster_whisper",
-     "size_mb": 1600, "size_display": "1.6 GB", "model_path": "Systran/faster-whisper-large-v3-turbo",
+     "size_mb": 1600, "size_display": "1.6 GB", "model_path": "deepdml/faster-whisper-large-v3-turbo-ct2",
      "download_url": None, "auto_download": True,
      "description": "Pruned large-v3, best speed/quality ratio. Recommended for GPU.",
      "note": "Requires INCLUDE_FASTER_WHISPER=true in Docker build"},
