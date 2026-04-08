@@ -10550,6 +10550,9 @@ class Engine:
                     context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
 
                     # ── Pipeline filler audio: instant ack before LLM ──
+                    # Uses fire-and-forget: synthesize filler, push all chunks, send
+                    # EOS sentinel, then stop_streaming_playback so the slot is free
+                    # for the real LLM→TTS streaming overlap that follows.
                     _streaming_cfg = getattr(self.config, "streaming", None)
                     _filler_enabled = getattr(_streaming_cfg, "pipeline_filler_enabled", False) if _streaming_cfg else False
                     if _filler_enabled and pipeline.tts_adapter:
@@ -10586,16 +10589,23 @@ class Engine:
                                     try:
                                         _filler_q.put_nowait(None)
                                     except asyncio.QueueFull:
-                                        asyncio.create_task(_filler_q.put(None))
+                                        await _filler_q.put(None)
                                     logger.info(
                                         "Pipeline filler audio emitted",
                                         call_id=call_id,
                                         phrase=_filler_text,
                                     )
+                                    # Wait for filler playback to finish, then release the
+                                    # streaming slot so the real LLM→TTS overlap can use it.
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
                                 if _old_pn is not None:
                                     session.provider_name = _old_pn
                             except Exception:
                                 logger.debug("Pipeline filler audio failed", call_id=call_id, exc_info=True)
+                                try:
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                except Exception:
+                                    pass
 
                     # ── Streaming overlap: LLM tokens → sentence split → TTS ──
                     # Works even when tools are configured: if the LLM returns a tool
