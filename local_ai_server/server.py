@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import audioop
 import base64
+import io
 import json
 import logging
 import os
+import random
+import re
 import shutil
 import subprocess
 import sys
@@ -783,9 +786,15 @@ class LocalAIServer:
         self.model_manager = ModelManager(self)
         self.ws_protocol = WebSocketProtocol(self)
 
+        # Filler audio cache (pre-synthesized µ-law bytes, keyed by phrase text)
+        self._filler_cache: dict[str, bytes] = {}
+
+        # TTS phrase cache (keyed by backend:model:text)
+        self._tts_cache: dict[str, bytes] = {}
+
         # Audio buffering for STT (20ms chunks need to be buffered for effective STT)
         self.audio_buffer = b""
-        self.buffer_size_bytes = PCM16_TARGET_RATE * 2 * 1.0  # 1 second at 16kHz (32000 bytes)
+        self.buffer_size_bytes = PCM16_TARGET_RATE * 2 * 0.5  # 500ms at 16kHz (16000 bytes) — halved for lower latency
         # Process buffer after N ms of silence (idle finalizer).
         self.buffer_timeout_ms = self.config.stt_idle_ms
         # Track startup-only auto-tuning so reload_models() doesn't re-run it.
@@ -1128,6 +1137,50 @@ class LocalAIServer:
             await self._load_llm_model(allow_auto_ctx=bool(startup))
             await self.run_startup_latency_check()
         await self._load_tts_model()
+        await self._presynthesize_fillers()
+
+        # ── Filler audio pre-synthesis ──
+
+    async def _presynthesize_fillers(self) -> None:
+        """Pre-synthesize filler phrases via eSpeak NG at startup.
+
+        Filler audio is emitted instantly before LLM inference to eliminate
+        perceived dead air on the call.  Synthesis is intentionally done at
+        startup so that there is zero TTS latency when a filler is needed.
+        """
+        if not self.config.enable_filler_audio:
+            return
+
+        try:
+            from tts_backends import EspeakNGBackend
+        except ImportError:
+            logging.warning("EspeakNGBackend not available; filler audio disabled")
+            return
+
+        backend = EspeakNGBackend(
+            voice=self.config.filler_voice,
+            speed=self.config.filler_speed,
+        )
+
+        if not backend.is_available():
+            logging.warning("espeak-ng not installed; filler audio disabled")
+            return
+
+        self._filler_cache.clear()
+        for phrase in self.config.filler_phrases:
+            try:
+                audio = await asyncio.to_thread(backend.synthesize, phrase)
+                if audio:
+                    self._filler_cache[phrase] = audio
+                    logging.debug("Filler cached: '%s' (%d bytes)", phrase, len(audio))
+            except Exception as exc:
+                logging.warning("Failed to pre-synthesize filler '%s': %s", phrase, exc)
+
+        logging.info(
+            "Pre-synthesized %d filler phrases (%d bytes total)",
+            len(self._filler_cache),
+            sum(len(v) for v in self._filler_cache.values()),
+        )
 
         if self.startup_errors:
             logging.warning(
@@ -2258,6 +2311,10 @@ class LocalAIServer:
             logging.warning("🧪 MOCK MODELS - reload_models is a no-op")
             return
         try:
+            # Clear TTS phrase cache (voice/model may have changed)
+            if self._tts_cache:
+                logging.info("🔄 Clearing TTS phrase cache (%d entries)", len(self._tts_cache))
+                self._tts_cache.clear()
             await self._cleanup_kroko_backend()
             await self.initialize_models(startup=False)
             logging.info("✅ Models reloaded successfully")
@@ -2535,9 +2592,79 @@ class LocalAIServer:
                 logging.error("LLM chat processing failed: %s", exc, exc_info=True)
                 return "I'm here to help you. How can I assist you today?"
 
+    async def process_llm_chat_streaming(
+        self, messages: list[dict[str, str]]
+    ):
+        """Yield LLM tokens one-by-one via create_chat_completion(stream=True).
+
+        The ``_llm_lock`` is held for the entire streaming session because
+        llama-cpp is NOT thread-safe.  TTS synthesis for completed sentences
+        can run concurrently in a separate thread pool via ``asyncio.to_thread``.
+        """
+        async with self._llm_lock:
+            if not self.llm_model:
+                logging.warning("LLM model not loaded, yielding fallback")
+                yield "I'm here to help you. How can I assist you today?"
+                return
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+
+            # create_chat_completion with stream=True returns a generator.
+            # We run the blocking generator in a thread and pull tokens via a queue.
+            token_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+            def _stream_worker():
+                try:
+                    gen = self.llm_model.create_chat_completion(
+                        messages=messages,
+                        max_tokens=self.llm_max_tokens,
+                        stop=self.llm_stop_tokens,
+                        temperature=self.llm_temperature,
+                        top_p=self.llm_top_p,
+                        repeat_penalty=self.llm_repeat_penalty,
+                        stream=True,
+                    )
+                    for chunk in gen:
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                loop.call_soon_threadsafe(token_queue.put_nowait, content)
+                except Exception as exc:
+                    logging.error("LLM streaming failed: %s", exc, exc_info=True)
+                finally:
+                    loop.call_soon_threadsafe(token_queue.put_nowait, None)
+
+            thread_task = loop.run_in_executor(None, _stream_worker)
+
+            token_count = 0
+            idle_timeout = self.config.llm_infer_timeout_sec
+            while True:
+                try:
+                    token = await asyncio.wait_for(token_queue.get(), timeout=idle_timeout)
+                except asyncio.TimeoutError:
+                    logging.warning(
+                        "🧠 LLM STREAMING TIMEOUT - No token in %ss, aborting",
+                        idle_timeout,
+                    )
+                    break
+                if token is None:
+                    break
+                token_count += 1
+                yield token
+
+            await thread_task  # ensure thread cleanup
+            latency_ms = round((loop.time() - started) * 1000.0, 2)
+            logging.info(
+                "🤖 LLM RESULT (streaming) - Completed in %s ms tokens=%d",
+                latency_ms, token_count,
+            )
+
     async def process_llm(self, prompt: str) -> str:
         """Run LLM inference using a raw prompt string (legacy Phi-style path).
-        
+
         Uses a lock to serialize inference calls - llama-cpp is NOT thread-safe
         and will segfault if multiple threads try to use the model simultaneously.
         """
@@ -2811,18 +2938,55 @@ class LocalAIServer:
         session.llm_user_turns = [m.get("content", "") for m in trimmed_messages if (m.get("role") or "").lower() == "user"]
         return prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages
 
+    def _tts_cache_key(self, text: str) -> str:
+        """Build a cache key from TTS backend + model path + voice params + text."""
+        model_path = getattr(self, "tts_model_path", "") or ""
+        # Include voice-specific params to avoid serving stale audio after config change
+        speaker = getattr(self, "silero_speaker", "") or ""
+        voice = getattr(self, "kokoro_voice", "") or ""
+        return f"{self.tts_backend}:{model_path}:{speaker}:{voice}:{text.strip()}"
+
     async def process_tts(self, text: str) -> bytes:
-        """Process TTS with 8kHz uLaw generation - routes to appropriate backend."""
+        """Process TTS with 8kHz uLaw generation - routes to appropriate backend.
+
+        Optionally caches short phrases to avoid re-synthesis.
+        """
+        # TTS phrase cache: return cached audio for repeated short phrases
+        if self.config.tts_phrase_cache_enabled and len(text) <= self.config.tts_phrase_cache_max_text_len:
+            cache_key = self._tts_cache_key(text)
+            cached = self._tts_cache.get(cache_key)
+            if cached is not None:
+                logging.debug("🔊 TTS CACHE HIT - text=%s bytes=%d", text[:40], len(cached))
+                return cached
+
         if self.tts_backend == "kokoro":
-            return await self._process_tts_kokoro(text)
+            result = await self._process_tts_kokoro(text)
         elif self.tts_backend == "melotts":
-            return await self._process_tts_melotts(text)
+            result = await self._process_tts_melotts(text)
         elif self.tts_backend == "silero":
-            return await self._process_tts_silero(text)
+            result = await self._process_tts_silero(text)
         elif self.tts_backend == "matcha":
-            return await self._process_tts_matcha(text)
+            result = await self._process_tts_matcha(text)
         else:
-            return await self._process_tts_piper(text)
+            result = await self._process_tts_piper(text)
+
+        # Cache short phrases (LRU eviction at 256 entries)
+        if (
+            self.config.tts_phrase_cache_enabled
+            and result
+            and len(text) <= self.config.tts_phrase_cache_max_text_len
+        ):
+            _MAX_TTS_CACHE = 256
+            if len(self._tts_cache) >= _MAX_TTS_CACHE:
+                # Evict oldest entry (first key in insertion-ordered dict)
+                try:
+                    oldest_key = next(iter(self._tts_cache))
+                    del self._tts_cache[oldest_key]
+                except StopIteration:
+                    pass
+            self._tts_cache[self._tts_cache_key(text)] = result
+
+        return result
 
     async def _process_tts_melotts(self, text: str) -> bytes:
         """Process TTS using MeloTTS backend (44100Hz output)."""
@@ -2840,24 +3004,10 @@ class LocalAIServer:
                 logging.warning("⚠️ MeloTTS returned empty audio")
                 return b""
 
-            # Write to temp WAV file for conversion
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
-                wav_path = wav_file.name
-
-            with wave.open(wav_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(44100)  # MeloTTS native rate
-                wav_file.writeframes(pcm16_data)
-
-            with open(wav_path, "rb") as wav_file:
-                wav_data = wav_file.read()
-
-            # Convert 44100Hz to 8kHz uLaw
+            # Convert PCM16 44100Hz directly to 8kHz uLaw (no temp WAV file)
             ulaw_data = await asyncio.to_thread(
-                self.audio_processor.convert_to_ulaw_8k, wav_data, 44100
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 44100
             )
-            os.unlink(wav_path)
 
             logging.info("🔊 TTS RESULT - MeloTTS generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
             return ulaw_data
@@ -2875,13 +3025,11 @@ class LocalAIServer:
 
             logging.debug("🔊 TTS INPUT - Generating 22kHz audio for: '%s'", text)
 
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
-                wav_path = wav_file.name
-
-            # Write WAV data either by letting Piper stream into the wave writer
-            # or by consuming a generator for backward compatibility.
-            with wave.open(wav_path, "wb") as wav_file:
-                # Mono, 16-bit, 22.05 kHz (typical Piper voice rate)
+            # Collect PCM16 data in memory (no temp WAV file).
+            # Use an in-memory WAV as the synthesis target since Piper's API
+            # expects a wave.open()-compatible writer.
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, "wb") as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(22050)
@@ -2899,13 +3047,14 @@ class LocalAIServer:
                             if data:
                                 wav_file.writeframes(data)
 
-            with open(wav_path, "rb") as wav_file:
-                wav_data = wav_file.read()
+            # Extract raw PCM16 from the in-memory WAV and convert directly
+            wav_buf.seek(0)
+            with wave.open(wav_buf, "rb") as wf:
+                pcm16_data = wf.readframes(wf.getnframes())
 
             ulaw_data = await asyncio.to_thread(
-                self.audio_processor.convert_to_ulaw_8k, wav_data, 22050
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 22050
             )
-            os.unlink(wav_path)
 
             logging.info("🔊 TTS RESULT - Piper generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
             return ulaw_data
@@ -2933,24 +3082,10 @@ class LocalAIServer:
                 logging.warning("⚠️ Kokoro returned empty audio")
                 return b""
 
-            # Write to temp WAV file for conversion
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
-                wav_path = wav_file.name
-
-            with wave.open(wav_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(24000)
-                wav_file.writeframes(pcm16_data)
-
-            with open(wav_path, "rb") as wav_file:
-                wav_data = wav_file.read()
-
-            # Convert 24kHz WAV to 8kHz uLaw
+            # Convert PCM16 24kHz directly to 8kHz uLaw (no temp WAV file)
             ulaw_data = await asyncio.to_thread(
-                self.audio_processor.convert_to_ulaw_8k, wav_data, 24000
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 24000
             )
-            os.unlink(wav_path)
 
             logging.info("🔊 TTS RESULT - Kokoro generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
             return ulaw_data
@@ -3048,29 +3183,10 @@ class LocalAIServer:
                 logging.warning("⚠️ Silero returned empty audio")
                 return b""
 
-            # Write to temp WAV file for conversion
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
-                wav_path = wav_file.name
-
-            with wave.open(wav_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(self.silero_sample_rate)
-                wav_file.writeframes(pcm16_data)
-
-            with open(wav_path, "rb") as wav_file:
-                wav_data = wav_file.read()
-
-            # Convert to 8kHz uLaw (at 8kHz native, sox only does PCM->ulaw encoding)
-            try:
-                ulaw_data = await asyncio.to_thread(
-                    self.audio_processor.convert_to_ulaw_8k, wav_data, self.silero_sample_rate
-                )
-            finally:
-                try:
-                    os.unlink(wav_path)
-                except OSError:
-                    pass
+            # Convert PCM16 directly to 8kHz uLaw (no temp WAV file)
+            ulaw_data = await asyncio.to_thread(
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, self.silero_sample_rate
+            )
 
             logging.info("🔊 TTS RESULT - Silero generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
             return ulaw_data
@@ -3129,21 +3245,10 @@ class LocalAIServer:
                 logging.error("Matcha TTS returned no audio")
                 return b""
 
-            # Wrap raw PCM16 in WAV for convert_to_ulaw_8k
-            import io
-            import wave
-
+            # Convert PCM16 directly to 8kHz uLaw (no temp WAV file)
             sample_rate = self.matcha_backend.sample_rate
-            wav_io = io.BytesIO()
-            with wave.open(wav_io, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(sample_rate)
-                wf.writeframes(pcm16_data)
-            wav_data = wav_io.getvalue()
-
             ulaw_data = await asyncio.to_thread(
-                self.audio_processor.convert_to_ulaw_8k, wav_data, sample_rate
+                self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, sample_rate
             )
 
             logging.info(
@@ -4560,6 +4665,10 @@ class LocalAIServer:
         request_id: Optional[str],
         *,
         source_mode: str,
+        utterance_id: Optional[str] = None,
+        chunk_index: Optional[int] = None,
+        is_final_chunk: Optional[bool] = None,
+        is_streaming: bool = False,
     ) -> None:
         # Sherpa offline: flush any trailing speech before we suppress STT.
         await self._flush_sherpa_offline_trailing(websocket, session)
@@ -4568,7 +4677,9 @@ class LocalAIServer:
         # re-captured via telephony mixing/echo and immediately re-transcribed by
         # Whisper-family STT, causing talk-loops. We proactively suppress STT for
         # (estimated playback duration + small grace) whenever we emit agent audio.
-        self._arm_whisper_stt_suppression(session, audio_bytes, source=source_mode)
+        self._arm_whisper_stt_suppression(
+            session, audio_bytes, source=source_mode, is_streaming=is_streaming,
+        )
         if request_id:
             # Milestone7: emit metadata event for selective TTS while keeping binary transport.
             metadata = {
@@ -4580,12 +4691,26 @@ class LocalAIServer:
                 "sample_rate_hz": ULAW_SAMPLE_RATE,
                 "byte_length": len(audio_bytes or b""),
             }
+            # Multi-chunk streaming metadata (v2 extension, backward-compatible)
+            if utterance_id is not None:
+                metadata["utterance_id"] = utterance_id
+            if chunk_index is not None:
+                metadata["chunk_index"] = chunk_index
+            if is_final_chunk is not None:
+                metadata["is_final"] = is_final_chunk
             if not await self._send_json(websocket, metadata):
                 return
         if audio_bytes:
             await self._send_bytes(websocket, audio_bytes)
 
-    def _arm_whisper_stt_suppression(self, session: SessionContext, audio_bytes: Optional[bytes], *, source: str) -> None:
+    def _arm_whisper_stt_suppression(
+        self,
+        session: SessionContext,
+        audio_bytes: Optional[bytes],
+        *,
+        source: str,
+        is_streaming: bool = False,
+    ) -> None:
         _sherpa_offline = self.stt_backend == "sherpa" and getattr(self, "sherpa_model_type", "online") == "offline"
         if self.stt_backend not in {"faster_whisper", "whisper_cpp"} and not _sherpa_offline:
             return
@@ -4594,7 +4719,13 @@ class LocalAIServer:
 
         duration_s = float(len(audio_bytes)) / float(max(1, ULAW_SAMPLE_RATE))
         grace_s = 0.25
-        until = monotonic() + duration_s + grace_s
+        if is_streaming:
+            # For multi-chunk streaming, stack chunk durations on top of existing
+            # suppression so the total window covers the full playback queue.
+            base = max(session.stt_suppress_until, monotonic())
+            until = base + duration_s + grace_s
+        else:
+            until = monotonic() + duration_s + grace_s
         if until <= session.stt_suppress_until:
             return
 
@@ -4796,6 +4927,39 @@ class LocalAIServer:
             prompt_text[:120],
         )
 
+        # ── Filler audio: emit instant ack before LLM thinking ──
+        if mode == "full" and self._filler_cache and self.config.enable_filler_audio:
+            filler_phrase = random.choice(list(self._filler_cache.keys()))
+            filler_audio = self._filler_cache[filler_phrase]
+            logging.info(
+                "🗣️ FILLER - Emitting '%s' (%d bytes) before LLM call_id=%s",
+                filler_phrase, len(filler_audio), session.call_id,
+            )
+            await self._emit_tts_audio(
+                websocket, filler_audio, session, request_id,
+                source_mode="filler",
+            )
+
+        # ── Streaming pipeline: overlap LLM token generation with TTS ──
+        # Only available for chat-format LLMs in "full" mode with the flag enabled.
+        use_streaming_pipeline = (
+            mode == "full"
+            and use_chat_path
+            and self.config.llm_streaming_tts_overlap
+            and self.llm_model is not None
+        )
+
+        if use_streaming_pipeline:
+            logging.info(
+                "🧠 LLM START (streaming) - call_id=%s mode=%s preview=%s",
+                session.call_id, mode, prompt_text[:80],
+            )
+            await self._process_full_pipeline_streaming(
+                websocket, session, request_id, chat_messages, clean_text,
+            )
+            return
+
+        # ── Serial pipeline (legacy / non-chat / streaming disabled) ──
         infer_timeout = self.config.llm_infer_timeout_sec
         try:
             logging.info(
@@ -4914,6 +5078,166 @@ class LocalAIServer:
                 request_id,
                 source_mode="full",
             )
+
+    async def _process_full_pipeline_streaming(
+        self,
+        websocket,
+        session: SessionContext,
+        request_id: Optional[str],
+        chat_messages: list[dict[str, str]],
+        clean_text: str,
+    ) -> None:
+        """Stream LLM tokens → split into sentences → synthesize + emit each chunk.
+
+        Replaces the serial LLM-wait → TTS-wait → single-blob pipeline with
+        overlapped sentence-by-sentence streaming.  Each sentence is synthesized
+        via ``process_tts`` in a thread pool while the LLM continues generating.
+        """
+        from time import monotonic as _mono
+
+        # Semantic front-loading: nudge the LLM to start with a brief ack clause
+        # so the first TTS chunk is meaningful and arrives quickly.
+        _front_load_hint = (
+            " Always begin your response with a brief acknowledgment clause "
+            "(3-8 words) followed by a period, then provide the detailed answer."
+        )
+        streaming_messages = list(chat_messages)
+        if streaming_messages and streaming_messages[0].get("role") == "system":
+            streaming_messages[0] = dict(streaming_messages[0])
+            streaming_messages[0]["content"] = streaming_messages[0]["content"] + _front_load_hint
+        else:
+            streaming_messages.insert(0, {"role": "system", "content": _front_load_hint.strip()})
+        chat_messages = streaming_messages
+
+        sentence_buffer = ""
+        full_response = ""
+        chunk_index = 0
+        utterance_id = f"utt-{session.call_id}-{int(_mono() * 1000)}"
+        _SENTENCE_RE = re.compile(r"[.!?]\s+")
+
+        try:
+            async for token in self.process_llm_chat_streaming(chat_messages):
+                sentence_buffer += token
+                full_response += token
+
+                # Check for sentence boundary: .!? followed by whitespace
+                match = _SENTENCE_RE.search(sentence_buffer)
+                if match:
+                    # Split at the first sentence boundary
+                    split_pos = match.end()
+                    to_speak = sentence_buffer[:split_pos].strip()
+                    sentence_buffer = sentence_buffer[split_pos:]
+
+                    if to_speak:
+                        tts_text = self._strip_tool_calls_for_tts(to_speak)
+                        if tts_text:
+                            audio = await self.process_tts(tts_text)
+                            if audio:
+                                await self._emit_tts_audio(
+                                    websocket, audio, session, request_id,
+                                    source_mode="full",
+                                    utterance_id=utterance_id,
+                                    chunk_index=chunk_index,
+                                    is_final_chunk=False,
+                                    is_streaming=True,
+                                )
+                                chunk_index += 1
+
+            # Flush remaining text
+            remainder = sentence_buffer.strip()
+            if remainder:
+                tts_text = self._strip_tool_calls_for_tts(remainder)
+                if tts_text:
+                    audio = await self.process_tts(tts_text)
+                    if audio:
+                        await self._emit_tts_audio(
+                            websocket, audio, session, request_id,
+                            source_mode="full",
+                            utterance_id=utterance_id,
+                            chunk_index=chunk_index,
+                            is_final_chunk=True,
+                            is_streaming=True,
+                        )
+                        chunk_index += 1
+
+            # If we emitted chunks but the last one wasn't marked final, mark it now
+            if chunk_index > 0 and not remainder:
+                # Re-emit a zero-byte final marker so the client knows the utterance ended
+                await self._emit_tts_audio(
+                    websocket, b"", session, request_id,
+                    source_mode="full",
+                    utterance_id=utterance_id,
+                    chunk_index=chunk_index,
+                    is_final_chunk=True,
+                    is_streaming=True,
+                )
+
+            # If no chunks were emitted (e.g. very short response with no sentence boundary),
+            # synthesize and emit the full response as a single blob
+            if chunk_index == 0 and full_response.strip():
+                tts_text = self._strip_tool_calls_for_tts(full_response)
+                if tts_text:
+                    audio = await self.process_tts(tts_text)
+                    if audio:
+                        await self._emit_tts_audio(
+                            websocket, audio, session, request_id,
+                            source_mode="full",
+                        )
+
+        except Exception as exc:
+            logging.error(
+                "🧠 STREAMING PIPELINE ERROR - call_id=%s error=%s",
+                session.call_id, exc, exc_info=True,
+            )
+            # Fallback: if we have accumulated text but streaming failed,
+            # try the non-streaming path for whatever we have
+            if full_response.strip() and chunk_index == 0:
+                tts_text = self._strip_tool_calls_for_tts(full_response)
+                if tts_text:
+                    audio = await self.process_tts(tts_text)
+                    if audio:
+                        await self._emit_tts_audio(
+                            websocket, audio, session, request_id,
+                            source_mode="full",
+                        )
+
+        # Record full response for history and emit llm_response event
+        llm_response = full_response.strip()
+        if llm_response:
+            # Hangup tool call guardrail (same as serial path)
+            if self._text_has_hangup_tool_call(llm_response):
+                if not self._text_has_end_call_intent(clean_text):
+                    logging.warning(
+                        "⚠️ STREAMING: LLM emitted hangup_call without end-of-call intent call_id=%s",
+                        session.call_id,
+                    )
+                    # For streaming, we can't retry — the audio is already sent.
+                    # Just strip the tool call from the recorded response.
+                    llm_response = self._strip_tool_calls_for_tts(llm_response)
+
+            assistant_text = self._strip_tool_calls_for_tts(llm_response).strip()
+            if assistant_text:
+                session.llm_messages.append({"role": "assistant", "content": assistant_text})
+                session.llm_user_turns = [
+                    m.get("content", "")
+                    for m in session.llm_messages
+                    if (m.get("role") or "").strip().lower() == "user"
+                ]
+
+            await self._emit_llm_response(
+                websocket, llm_response, session, request_id,
+                source_mode="llm",
+            )
+        else:
+            await self._emit_llm_response(
+                websocket, None, session, request_id,
+                source_mode="llm",
+            )
+
+        logging.info(
+            "🤖 STREAMING PIPELINE COMPLETE - call_id=%s chunks=%d total_chars=%d",
+            session.call_id, chunk_index, len(full_response),
+        )
 
     def _schedule_idle_finalizer(
         self,

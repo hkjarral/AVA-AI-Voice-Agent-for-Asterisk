@@ -128,6 +128,39 @@ class LocalAIConfig:
     matcha_speed: float = 1.0
     matcha_sid: int = 0
 
+    # ── Latency optimization settings ──
+
+    # Silero 8kHz direct µ-law: skip resampling when native rate matches telephony.
+    # WARNING: Silero TTS community models use CC-NC-BY licensing.
+    # Verify compatibility with your deployment's commercial terms before enabling.
+    silero_direct_mulaw: bool = True
+
+    # Filler audio: emit a fast eSpeak NG phrase before LLM inference.
+    enable_filler_audio: bool = False
+    filler_phrases: List[str] = field(default_factory=lambda: [
+        "One moment please.",
+        "Let me check on that.",
+        "Sure thing.",
+        "Just a moment.",
+    ])
+    filler_voice: str = "en"
+    filler_speed: int = 160
+
+    # LLM streaming → TTS overlap: stream LLM tokens sentence-by-sentence to TTS.
+    llm_streaming_tts_overlap: bool = True
+
+    # TTS phrase cache: cache TTS output for repeated short phrases.
+    tts_phrase_cache_enabled: bool = False
+    tts_phrase_cache_max_text_len: int = 200
+
+    # Speculative LLM on stable partial transcripts.
+    speculative_llm_enabled: bool = False
+    speculative_llm_max_tokens: int = 32
+    speculative_llm_stability_ms: int = 300
+
+    # Comfort noise: send low-level noise frames instead of silence during gaps.
+    comfort_noise_enabled: bool = False
+
     stt_idle_ms: int = 5000
     # Telephony-friendly utterance segmentation for batch STT backends (Whisper family).
     # These are intentionally separate from stt_idle_ms (which is used by some streaming backends)
@@ -275,6 +308,24 @@ class LocalAIConfig:
             matcha_vocoder_path=os.getenv("MATCHA_VOCODER_PATH", "/app/models/tts/matcha/vocos.onnx"),
             matcha_speed=float(os.getenv("MATCHA_SPEED", "1.0")),
             matcha_sid=int(os.getenv("MATCHA_SID", "0")),
+            silero_direct_mulaw=_parse_bool(os.getenv("SILERO_DIRECT_MULAW", "1"), default=True),
+            enable_filler_audio=_parse_bool(os.getenv("LOCAL_ENABLE_FILLER_AUDIO", "0")),
+            filler_phrases=[
+                p.strip()
+                for p in (
+                    os.getenv("LOCAL_FILLER_PHRASES", "One moment please.,Let me check on that.,Sure thing.,Just a moment.") or ""
+                ).split(",")
+                if p.strip()
+            ] or ["One moment please.", "Let me check on that.", "Sure thing.", "Just a moment."],
+            filler_voice=os.getenv("LOCAL_FILLER_VOICE", "en"),
+            filler_speed=_parse_int(os.getenv("LOCAL_FILLER_SPEED"), 160),
+            llm_streaming_tts_overlap=_parse_bool(os.getenv("LOCAL_LLM_STREAMING_TTS_OVERLAP", "1"), default=True),
+            tts_phrase_cache_enabled=_parse_bool(os.getenv("LOCAL_TTS_PHRASE_CACHE", "0")),
+            tts_phrase_cache_max_text_len=_parse_int(os.getenv("LOCAL_TTS_PHRASE_CACHE_MAX_LEN"), 200),
+            speculative_llm_enabled=_parse_bool(os.getenv("LOCAL_SPECULATIVE_LLM", "0")),
+            speculative_llm_max_tokens=_parse_int(os.getenv("LOCAL_SPECULATIVE_LLM_MAX_TOKENS"), 32),
+            speculative_llm_stability_ms=_parse_int(os.getenv("LOCAL_SPECULATIVE_LLM_STABILITY_MS"), 300),
+            comfort_noise_enabled=_parse_bool(os.getenv("LOCAL_COMFORT_NOISE", "0")),
             stt_idle_ms=int(stt_idle_ms_raw),
             stt_segment_energy_threshold=int(os.getenv("LOCAL_STT_SEGMENT_ENERGY_THRESHOLD", "1200")),
             stt_segment_preroll_ms=int(os.getenv("LOCAL_STT_SEGMENT_PREROLL_MS", "200")),

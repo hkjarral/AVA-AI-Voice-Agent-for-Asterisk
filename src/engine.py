@@ -10539,6 +10539,7 @@ class Engine:
                     nonlocal conversation_history
                     response_text = ""
                     tool_calls = []
+                    _streaming_handled = False  # Set True when streaming overlap played audio + recorded history
                     turn_start_time = time.time()  # Track turn latency for call history
                     
                     pipeline_label = getattr(session, 'pipeline_name', None) or 'none'
@@ -10548,25 +10549,275 @@ class Engine:
                     # Build context with conversation history
                     # System prompt only in first turn (when history is empty)
                     context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
-                    
-                    try:
-                        llm_result = await pipeline.llm_adapter.generate(
-                            call_id,
-                            transcript_text,
-                            context_for_llm,  # Include conversation history
-                            llm_options,  # Use context-injected options (includes system_prompt)
-                        )
-                    except Exception:
-                        logger.debug("LLM generate failed", call_id=call_id, exc_info=True)
-                        return
 
-                    # Handle structured LLM response with tool calls
-                    if isinstance(llm_result, LLMResponse):
-                        response_text = (llm_result.text or "").strip()
-                        tool_calls = llm_result.tool_calls
+                    # ── Pipeline filler audio: instant ack before LLM ──
+                    # Uses fire-and-forget: synthesize filler, push all chunks, send
+                    # EOS sentinel, then stop_streaming_playback so the slot is free
+                    # for the real LLM→TTS streaming overlap that follows.
+                    _streaming_cfg = getattr(self.config, "streaming", None)
+                    _filler_enabled = getattr(_streaming_cfg, "pipeline_filler_enabled", False) if _streaming_cfg else False
+                    if _filler_enabled and pipeline.tts_adapter:
+                        _filler_phrases = getattr(_streaming_cfg, "pipeline_filler_phrases", None) or []
+                        if _filler_phrases:
+                            import random as _rnd
+                            _filler_text = _rnd.choice(_filler_phrases)
+                            try:
+                                _filler_q: asyncio.Queue = asyncio.Queue(maxsize=64)
+                                _old_pn = getattr(session, "provider_name", None)
+                                session.provider_name = "pipeline"
+
+                                _tts_fmt = (pipeline.tts_options or {}).get("format")
+                                if not isinstance(_tts_fmt, dict):
+                                    _tts_fmt = (pipeline.tts_options or {}).get("target_format")
+                                if not isinstance(_tts_fmt, dict):
+                                    _tts_fmt = {}
+                                _filler_enc = str(_tts_fmt.get("encoding") or _tts_fmt.get("format") or "mulaw")
+                                try:
+                                    _filler_rate = int(_tts_fmt.get("sample_rate") or _tts_fmt.get("sample_rate_hz") or 8000)
+                                except Exception:
+                                    _filler_rate = 8000
+
+                                _filler_sid = await self.streaming_playback_manager.start_streaming_playback(
+                                    call_id, _filler_q,
+                                    playback_type="pipeline-tts-filler",
+                                    source_encoding=_filler_enc,
+                                    source_sample_rate=_filler_rate,
+                                )
+                                if _filler_sid:
+                                    async for _fc in pipeline.tts_adapter.synthesize(call_id, _filler_text, pipeline.tts_options):
+                                        if _fc:
+                                            await _filler_q.put(_fc)
+                                    try:
+                                        _filler_q.put_nowait(None)
+                                    except asyncio.QueueFull:
+                                        await _filler_q.put(None)
+                                    logger.info(
+                                        "Pipeline filler audio emitted",
+                                        call_id=call_id,
+                                        phrase=_filler_text,
+                                    )
+                                    # Wait for filler playback to finish, then release the
+                                    # streaming slot so the real LLM→TTS overlap can use it.
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                    # Backdate tts_ended_ts so the post_tts_end_protection_ms
+                                    # window has already expired. This avoids blocking barge-in
+                                    # between filler and real response, while keeping the echo
+                                    # protection mechanism intact for future TTS emissions.
+                                    _post_guard = getattr(self.config, "barge_in", None)
+                                    _post_ms = getattr(_post_guard, "post_tts_end_protection_ms", 250) if _post_guard else 250
+                                    session.tts_ended_ts = time.time() - (_post_ms / 1000.0) - 0.01
+                                if _old_pn is not None:
+                                    session.provider_name = _old_pn
+                            except Exception:
+                                logger.debug("Pipeline filler audio failed", call_id=call_id, exc_info=True)
+                                try:
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                except Exception:
+                                    pass
+
+                    # ── Streaming overlap: LLM tokens → sentence split → TTS ──
+                    # Works even when tools are configured: if the LLM returns a tool
+                    # call instead of text, generate_stream() yields nothing and we
+                    # fall through to the serial path for tool execution.
+                    _streaming_cfg = getattr(self.config, "streaming", None)
+                    _overlap_enabled = getattr(_streaming_cfg, "pipeline_streaming_overlap", False) if _streaming_cfg else False
+                    _adapter_supports_streaming = getattr(pipeline.llm_adapter, "supports_streaming", False)
+
+                    _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
+                    if _tts_dm_override == "stream":
+                        _use_streaming_pb = True
+                    elif _tts_dm_override == "file":
+                        _use_streaming_pb = False
                     else:
-                        response_text = (str(llm_result) or "").strip()
-                        tool_calls = []
+                        _use_streaming_pb = self.config.downstream_mode != "file"
+
+                    if (
+                        _overlap_enabled
+                        and _adapter_supports_streaming
+                        and _use_streaming_pb
+                    ):
+                        logger.info(
+                            "Pipeline streaming overlap active",
+                            call_id=call_id,
+                            pipeline=pipeline_label,
+                            tools_configured=bool((llm_options or {}).get("tools")),
+                        )
+                        _SENTENCE_RE = re.compile(r"[.!?]\s+")
+                        sentence_buffer = ""
+                        full_response_text = ""
+                        first_tts_ts: Optional[float] = None
+
+                        stream_q: asyncio.Queue = asyncio.Queue(maxsize=256)
+                        old_provider_name = getattr(session, "provider_name", None)
+                        try:
+                            session.provider_name = "pipeline"
+                            await self.session_store.upsert_call(session)
+                        except Exception:
+                            pass
+
+                        try:
+                            tts_format = (pipeline.tts_options or {}).get("format")
+                            if not isinstance(tts_format, dict):
+                                tts_format = (pipeline.tts_options or {}).get("target_format")
+                            if not isinstance(tts_format, dict):
+                                tts_format = {}
+                            tts_encoding = str(tts_format.get("encoding") or tts_format.get("format") or "mulaw")
+                            try:
+                                tts_rate = int(tts_format.get("sample_rate") or tts_format.get("sample_rate_hz") or 8000)
+                            except Exception:
+                                tts_rate = 8000
+
+                            stream_id = await self.streaming_playback_manager.start_streaming_playback(
+                                call_id,
+                                stream_q,
+                                playback_type="pipeline-tts",
+                                source_encoding=tts_encoding,
+                                source_sample_rate=tts_rate,
+                            )
+                            if not stream_id:
+                                raise RuntimeError("start_streaming_playback returned no stream_id")
+
+                            async for token in pipeline.llm_adapter.generate_stream(
+                                call_id, transcript_text, context_for_llm, llm_options,
+                            ):
+                                sentence_buffer += token
+                                full_response_text += token
+
+                                match = _SENTENCE_RE.search(sentence_buffer)
+                                if match:
+                                    split_pos = match.end()
+                                    to_speak = sentence_buffer[:split_pos].strip()
+                                    sentence_buffer = sentence_buffer[split_pos:]
+
+                                    if to_speak:
+                                        async for tts_chunk in pipeline.tts_adapter.synthesize(
+                                            call_id, to_speak, pipeline.tts_options,
+                                        ):
+                                            if tts_chunk:
+                                                if first_tts_ts is None:
+                                                    first_tts_ts = time.time()
+                                                    turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                                    session.turn_latencies_ms.append(turn_latency_ms)
+                                                    try:
+                                                        if t_start is not None:
+                                                            _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(
+                                                                max(0.0, first_tts_ts - t_start)
+                                                            )
+                                                    except Exception:
+                                                        pass
+                                                await stream_q.put(tts_chunk)
+
+                            # Flush remaining sentence buffer
+                            remainder = sentence_buffer.strip()
+                            if remainder:
+                                async for tts_chunk in pipeline.tts_adapter.synthesize(
+                                    call_id, remainder, pipeline.tts_options,
+                                ):
+                                    if tts_chunk:
+                                        if first_tts_ts is None:
+                                            first_tts_ts = time.time()
+                                            turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                            session.turn_latencies_ms.append(turn_latency_ms)
+                                        await stream_q.put(tts_chunk)
+
+                            # End-of-segment sentinel
+                            try:
+                                stream_q.put_nowait(None)
+                            except asyncio.QueueFull:
+                                asyncio.create_task(stream_q.put(None))
+                            try:
+                                if t_start is not None:
+                                    _TURN_RESPONSE_SECONDS.labels(pipeline_label, provider_label).observe(
+                                        max(0.0, time.time() - t_start)
+                                    )
+                            except Exception:
+                                pass
+
+                        except Exception:
+                            logger.error(
+                                "Pipeline streaming overlap failed; falling through to serial path",
+                                call_id=call_id,
+                                exc_info=True,
+                            )
+                            try:
+                                await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                            except Exception:
+                                pass
+                            # Don't return — fall through to serial path below
+                            full_response_text = ""
+                        finally:
+                            try:
+                                if old_provider_name is not None:
+                                    session.provider_name = old_provider_name
+                                    await self.session_store.upsert_call(session)
+                            except Exception:
+                                pass
+
+                        if full_response_text.strip():
+                            response_text = full_response_text.strip()
+                            _streaming_handled = True
+                            conversation_history.append(_ts_msg("user", transcript_text))
+                            conversation_history.append(_ts_msg("assistant", response_text))
+                            session.conversation_history = list(conversation_history)
+                            await self.session_store.upsert_call(session)
+
+                            # Check for tool calls detected during streaming
+                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls_by_call", {}).get(call_id) or []
+                            if _pending_tools:
+                                logger.info(
+                                    "Streaming path executing pending tool calls",
+                                    call_id=call_id,
+                                    tool_count=len(_pending_tools),
+                                    tools=[tc.get("name") for tc in _pending_tools],
+                                )
+                                tool_calls = list(_pending_tools)
+                                pipeline.llm_adapter._pending_tool_calls_by_call.pop(call_id, None)
+                                # Jump to tool execution (reuse serial path's tool handling)
+                                # by setting response_text and tool_calls, then breaking out
+                            else:
+                                return
+
+                            # Fall through to tool execution below if tool calls were found
+                        else:
+                            # Streaming produced no text — likely a tool-call-only response.
+                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls_by_call", {}).get(call_id) or []
+                            if _pending_tools:
+                                tool_calls = list(_pending_tools)
+                                pipeline.llm_adapter._pending_tool_calls_by_call.pop(call_id, None)
+                                response_text = ""
+                                logger.info(
+                                    "Streaming produced tool calls only; executing",
+                                    call_id=call_id,
+                                    tools=[tc.get("name") for tc in tool_calls],
+                                )
+                            else:
+                                # No text and no tools — fall through to serial path
+                                logger.info(
+                                    "Pipeline streaming produced no text; falling to serial path",
+                                    call_id=call_id,
+                                )
+
+                    # ── Serial path (original) ──
+                    # Skip if streaming path already set tool_calls
+                    if not tool_calls:
+                        try:
+                            llm_result = await pipeline.llm_adapter.generate(
+                                call_id,
+                                transcript_text,
+                                context_for_llm,  # Include conversation history
+                                llm_options,  # Use context-injected options (includes system_prompt)
+                            )
+                        except Exception:
+                            logger.debug("LLM generate failed", call_id=call_id, exc_info=True)
+                            return
+
+                        # Handle structured LLM response with tool calls
+                        if isinstance(llm_result, LLMResponse):
+                            response_text = (llm_result.text or "").strip()
+                            tool_calls = llm_result.tool_calls
+                        else:
+                            response_text = (str(llm_result) or "").strip()
+                            tool_calls = []
 
                     # Contexts are the source of truth for tool allowlisting: enforce at execution time too.
                     allowed_tools: set[str] = set()
@@ -10699,22 +10950,24 @@ class Engine:
 
                     if not response_text and not tool_calls:
                         return
-                    
-                    # Update conversation history
-                    conversation_history.append(_ts_msg("user", transcript_text))
-                    if response_text:
-                        conversation_history.append(_ts_msg("assistant", response_text))
-                    elif tool_calls:
-                        conversation_history.append(_ts_msg("assistant", "(tool execution)"))
-                    
-                    # AAVA-85: Persist session history so tools (email) can access it
-                    session.conversation_history = list(conversation_history)
-                    await self.session_store.upsert_call(session)
+
+                    # Update conversation history (skip if streaming path already did this)
+                    if not _streaming_handled:
+                        conversation_history.append(_ts_msg("user", transcript_text))
+                        if response_text:
+                            conversation_history.append(_ts_msg("assistant", response_text))
+                        elif tool_calls:
+                            conversation_history.append(_ts_msg("assistant", "(tool execution)"))
+
+                        # AAVA-85: Persist session history so tools (email) can access it
+                        session.conversation_history = list(conversation_history)
+                        await self.session_store.upsert_call(session)
 
                     playback_id = None
-                    
+
                     # 1. Synthesize and Play Text (if any)
-                    if response_text:
+                    # Skip TTS if streaming path already played audio
+                    if response_text and not _streaming_handled:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
                         logger.debug(f"TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")

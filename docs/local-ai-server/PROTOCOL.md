@@ -166,6 +166,29 @@ Example events:
 
 If `request_id` is set, the server emits `tts_audio` metadata before the binary audio. If `request_id` is omitted, you will only receive the binary audio bytes.
 
+### Multi-Chunk Streaming TTS (v2 extension)
+
+When `llm_streaming_tts_overlap` is enabled, the server may emit multiple `tts_audio` + binary pairs per utterance instead of a single blob. This allows the client to begin playback while the LLM is still generating.
+
+Additional fields in the `tts_audio` metadata:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `utterance_id` | string | Groups chunks belonging to the same utterance |
+| `chunk_index` | integer | Zero-based chunk sequence number |
+| `is_final` | boolean | `true` on the last chunk of an utterance |
+
+Example (streaming 2-chunk utterance):
+
+```json
+{ "type": "tts_audio", "call_id": "c1", "mode": "full", "request_id": "r1", "encoding": "mulaw", "sample_rate_hz": 8000, "byte_length": 8000, "utterance_id": "utt-c1-1712345678", "chunk_index": 0, "is_final": false }
+<binary: 8000 bytes μ-law audio>
+{ "type": "tts_audio", "call_id": "c1", "mode": "full", "request_id": "r1", "encoding": "mulaw", "sample_rate_hz": 8000, "byte_length": 6400, "utterance_id": "utt-c1-1712345678", "chunk_index": 1, "is_final": true }
+<binary: 6400 bytes μ-law audio>
+```
+
+Backward compatibility: if `utterance_id`, `chunk_index`, and `is_final` are absent, treat as a single-blob response (v1 behavior). Clients should queue chunks for sequential playback and only signal playback completion after receiving `is_final: true`.
+
 ### Binary audio example (stt-only)
 
 1) Set mode:

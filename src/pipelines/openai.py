@@ -381,6 +381,9 @@ def _pcm16le_to_wav(audio_pcm16: bytes, sample_rate_hz: int) -> bytes:
 class OpenAILLMAdapter(LLMComponent):
     """# Milestone7: OpenAI LLM adapter supporting Chat Completions and Realtime."""
 
+    supports_streaming = True
+    _pending_tool_calls_by_call: dict  # call_id -> list of tool calls
+
     def __init__(
         self,
         component_key: str,
@@ -397,6 +400,7 @@ class OpenAILLMAdapter(LLMComponent):
         self._session_factory = session_factory
         self._session: Optional[aiohttp.ClientSession] = None
         self._default_timeout = float(self._pipeline_defaults.get("response_timeout_sec", provider_config.response_timeout_sec))
+        self._pending_tool_calls_by_call: dict = {}
 
     async def start(self) -> None:
         logger.debug(
@@ -638,6 +642,126 @@ class OpenAILLMAdapter(LLMComponent):
         finally:
             await websocket.close()
         return ""
+
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream tokens from OpenAI Chat Completions API.
+
+        Tool calls detected in the stream are accumulated per-call in
+        ``self._pending_tool_calls_by_call[call_id]`` so the engine can
+        retrieve them after streaming completes (thread-safe for concurrent calls).
+
+        Falls back to non-streaming generate() for realtime transport mode.
+        """
+        self._pending_tool_calls_by_call[call_id] = []
+        merged = self._compose_options(options)
+        if not merged["api_key"]:
+            raise RuntimeError("OpenAI LLM requires an API key")
+
+        # Realtime transport doesn't support Chat Completions streaming
+        if bool(merged.get("use_realtime")):
+            result = await self.generate(call_id, transcript, context, options)
+            text = result.text if isinstance(result, LLMResponse) else str(result)
+            if text:
+                yield text
+            return
+
+        await self._ensure_session()
+        assert self._session
+        payload = self._build_chat_payload(transcript, context, merged)
+        payload["stream"] = True
+
+        # Include tools in streaming request so the LLM can return tool calls
+        tools_list = merged.get("tools")
+        tool_schemas = []
+        if tools_list and isinstance(tools_list, list):
+            from src.tools.registry import tool_registry
+            for tool_name in tools_list:
+                tool = tool_registry.get(tool_name)
+                if tool:
+                    tool_schemas.append(tool.definition.to_openai_schema())
+        if tool_schemas:
+            payload["tools"] = tool_schemas
+            payload["tool_choice"] = "auto"
+
+        headers = _make_http_headers(merged)
+        url = merged["chat_base_url"].rstrip("/") + "/chat/completions"
+
+        # Accumulate tool call deltas across chunks
+        _tool_call_accum: dict = {}  # index -> {id, name, arguments}
+
+        try:
+            async with self._session.post(url, json=payload, headers=headers, timeout=merged["timeout_sec"]) as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    logger.error("OpenAI streaming failed", call_id=call_id, status=response.status, body_preview=body[:128])
+                    return
+
+                async for line in response.content:
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str or not line_str.startswith("data: "):
+                        continue
+                    data_str = line_str[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yield content
+
+                            # Accumulate tool call deltas
+                            for tc_delta in delta.get("tool_calls", []):
+                                idx = tc_delta.get("index", 0)
+                                if idx not in _tool_call_accum:
+                                    _tool_call_accum[idx] = {
+                                        "id": tc_delta.get("id", ""),
+                                        "name": "",
+                                        "arguments": "",
+                                        "type": tc_delta.get("type", "function"),
+                                    }
+                                entry = _tool_call_accum[idx]
+                                if tc_delta.get("id"):
+                                    entry["id"] = tc_delta["id"]
+                                func = tc_delta.get("function", {})
+                                if func.get("name"):
+                                    entry["name"] = func["name"]
+                                if func.get("arguments"):
+                                    entry["arguments"] += func["arguments"]
+                    except json.JSONDecodeError:
+                        continue
+
+            # Parse accumulated tool calls
+            if _tool_call_accum:
+                for idx in sorted(_tool_call_accum):
+                    entry = _tool_call_accum[idx]
+                    try:
+                        params = json.loads(entry["arguments"]) if entry["arguments"] else {}
+                    except json.JSONDecodeError:
+                        params = {}
+                    self._pending_tool_calls_by_call[call_id].append({
+                        "id": entry["id"],
+                        "name": entry["name"],
+                        "parameters": params,
+                        "type": entry.get("type", "function"),
+                    })
+                logger.info(
+                    "OpenAI streaming detected tool calls",
+                    call_id=call_id,
+                    tool_count=len(self._pending_tool_calls_by_call[call_id]),
+                    tools=[tc["name"] for tc in self._pending_tool_calls_by_call[call_id]],
+                )
+
+        except aiohttp.ClientError as e:
+            logger.error("OpenAI streaming connection error", call_id=call_id, error=str(e))
 
     async def _ensure_session(self) -> None:
         if self._session and not self._session.closed:

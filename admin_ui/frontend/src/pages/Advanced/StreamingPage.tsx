@@ -324,6 +324,34 @@ const StreamingPage = () => {
                 </ConfigCard>
             </ConfigSection>
 
+            <ConfigSection title="Latency Optimization" description="Reduce perceived response time with streaming overlap and filler audio.">
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <FormSwitch
+                            label="LLM → TTS Streaming Overlap"
+                            description="Stream LLM tokens and synthesize TTS per-sentence instead of waiting for full response. Significantly reduces time-to-first-audio."
+                            checked={streamingConfig.pipeline_streaming_overlap ?? true}
+                            onChange={(e) => updateStreamingConfig('pipeline_streaming_overlap', e.target.checked)}
+                            tooltip="Only applies to pipeline LLM adapters that support token streaming (e.g. OpenAI, Groq). Non-streaming adapters use the serial path automatically."
+                        />
+                        <FormSwitch
+                            label="Enable Pipeline Filler Audio"
+                            description="Play a brief acknowledgment phrase (e.g. 'One moment please.') via the pipeline TTS adapter before LLM inference starts. Works with all pipeline configurations."
+                            checked={streamingConfig.pipeline_filler_enabled ?? false}
+                            onChange={(e) => updateStreamingConfig('pipeline_filler_enabled', e.target.checked)}
+                            tooltip="Synthesizes one random filler phrase using the pipeline's TTS adapter, plays it to the caller, then starts LLM inference. Adds ~0.5-1s of perceived responsiveness."
+                        />
+                        <FormInput
+                            label="Filler Phrases"
+                            value={(Array.isArray(streamingConfig.pipeline_filler_phrases) ? streamingConfig.pipeline_filler_phrases : ['One moment please.', 'Let me check on that.', 'Sure thing.', 'Just a moment.']).join(', ')}
+                            onChange={(e) => updateStreamingConfig('pipeline_filler_phrases', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
+                            disabled={!streamingConfig.pipeline_filler_enabled}
+                            tooltip="Comma-separated list of filler phrases to randomly choose from. One is selected at random before each LLM turn."
+                        />
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
             <ConfigSection title="Diagnostics" description="Tools for debugging audio stream issues.">
                 <ConfigCard>
                     <div className="space-y-6">

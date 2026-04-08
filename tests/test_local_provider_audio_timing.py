@@ -367,3 +367,94 @@ async def test_notify_barge_in_ack_timeout_clears_pending():
 
     await asyncio.sleep(0.45)
     assert provider._pending_barge_in_acks == {}
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_streaming_tts_produces_multiple_agent_audio():
+    """Multiple tts_audio + binary pairs should produce multiple AgentAudio events."""
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(LocalProviderConfig(), on_event=on_event)
+    provider._active_call_id = "call-multi"
+    provider.websocket = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "tts_audio",
+                    "call_id": "call-multi",
+                    "encoding": "mulaw",
+                    "sample_rate_hz": 8000,
+                    "byte_length": 400,
+                    "utterance_id": "utt-1",
+                    "chunk_index": 0,
+                    "is_final": False,
+                }
+            ),
+            b"\x00" * 400,
+            json.dumps(
+                {
+                    "type": "tts_audio",
+                    "call_id": "call-multi",
+                    "encoding": "mulaw",
+                    "sample_rate_hz": 8000,
+                    "byte_length": 400,
+                    "utterance_id": "utt-1",
+                    "chunk_index": 1,
+                    "is_final": True,
+                }
+            ),
+            b"\x00" * 400,
+        ]
+    )
+
+    await provider._receive_loop()
+
+    agent_events = [e for e in events if e.get("type") == "AgentAudio"]
+    assert len(agent_events) == 2
+    assert agent_events[0]["encoding"] == "mulaw"
+    assert agent_events[1]["encoding"] == "mulaw"
+
+    # Only one AgentAudioDone should fire (the last done timer wins)
+    await asyncio.sleep(0.18)
+    done_events = [e for e in events if e.get("type") == "AgentAudioDone"]
+    assert len(done_events) == 1
+    await provider.clear_active_call_id()
+
+
+@pytest.mark.asyncio
+async def test_multi_chunk_metadata_fields_are_backward_compatible():
+    """tts_audio without utterance_id/chunk_index/is_final should still work (v1 compat)."""
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(LocalProviderConfig(), on_event=on_event)
+    provider._active_call_id = "call-compat"
+    provider.websocket = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "type": "tts_audio",
+                    "call_id": "call-compat",
+                    "encoding": "mulaw",
+                    "sample_rate_hz": 8000,
+                    "byte_length": 200,
+                }
+            ),
+            b"\x00" * 200,
+        ]
+    )
+
+    await provider._receive_loop()
+
+    agent_events = [e for e in events if e.get("type") == "AgentAudio"]
+    assert len(agent_events) == 1
+
+    await asyncio.sleep(0.18)
+    done_events = [e for e in events if e.get("type") == "AgentAudioDone"]
+    assert len(done_events) == 1
+    await provider.clear_active_call_id()

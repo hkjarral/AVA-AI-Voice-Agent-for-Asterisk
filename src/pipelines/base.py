@@ -284,6 +284,11 @@ class STTComponent(Component):
 class LLMComponent(Component):
     """Language model component."""
 
+    # Override to True in adapters that implement real token-level streaming
+    # via generate_stream(). The engine checks this to decide whether to use
+    # the streaming overlap pipeline or the serial path.
+    supports_streaming: bool = False
+
     @abstractmethod
     async def generate(
         self,
@@ -293,6 +298,22 @@ class LLMComponent(Component):
         options: Dict[str, Any],
     ) -> Union[str, LLMResponse]:
         """Generate a response given transcript + context."""
+
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream tokens one-by-one from the LLM.
+
+        Default implementation yields the full response at once (no streaming).
+        Override in adapters that support token-level streaming for lower latency.
+        """
+        result = await self.generate(call_id, transcript, context, options)
+        text = result.text if isinstance(result, LLMResponse) else result
+        yield text
 
 
 class TTSComponent(Component):

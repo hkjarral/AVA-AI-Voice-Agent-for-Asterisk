@@ -532,3 +532,98 @@ class MatchaTTSBackend:
         self.tts = None
         self._initialized = False
         logging.info("🛑 MATCHA - TTS shutdown")
+
+
+class EspeakNGBackend:
+    """Ultra-fast CPU TTS via espeak-ng for ack/filler phrases.
+
+    Produces µ-law 8 kHz audio directly in-memory. Typical synthesis time
+    for a short phrase is <10 ms, making it suitable for instant
+    acknowledgment audio before LLM inference begins.
+    """
+
+    def __init__(
+        self,
+        voice: str = "en",
+        speed: int = 160,
+        pitch: int = 50,
+    ):
+        self.voice = voice
+        self.speed = speed
+        self.pitch = pitch
+        self._available: Optional[bool] = None
+
+    def is_available(self) -> bool:
+        if self._available is None:
+            import shutil
+            self._available = shutil.which("espeak-ng") is not None
+        return self._available
+
+    def synthesize(self, text: str) -> bytes:
+        """Synthesize *text* and return µ-law 8 kHz bytes.
+
+        Uses ``espeak-ng --stdout`` which emits a WAV to stdout, then
+        converts in-memory via ``audioop`` (no temp files, no sox).
+        """
+        import audioop
+        import io
+        import subprocess
+        import wave
+
+        if not self.is_available():
+            logging.error("espeak-ng binary not found on PATH")
+            return b""
+
+        try:
+            result = subprocess.run(
+                [
+                    "espeak-ng",
+                    "-v", self.voice,
+                    "-s", str(self.speed),
+                    "-p", str(self.pitch),
+                    "--stdout",
+                    text,
+                ],
+                capture_output=True,
+                check=True,
+                timeout=5,
+            )
+
+            wav_data = result.stdout
+            if not wav_data:
+                logging.warning("espeak-ng produced no output")
+                return b""
+
+            # Parse WAV header from stdout output
+            wav_io = io.BytesIO(wav_data)
+            with wave.open(wav_io, "rb") as wf:
+                pcm_data = wf.readframes(wf.getnframes())
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
+
+            # Stereo → mono
+            if channels > 1:
+                pcm_data = audioop.tomono(pcm_data, sampwidth, 1, 1)
+
+            # Ensure 16-bit
+            if sampwidth != 2:
+                pcm_data = audioop.lin2lin(pcm_data, sampwidth, 2)
+
+            # Resample to 8 kHz
+            if framerate != 8000:
+                pcm_data, _ = audioop.ratecv(pcm_data, 2, 1, framerate, 8000, None)
+
+            # PCM16 → µ-law
+            return audioop.lin2ulaw(pcm_data, 2)
+
+        except FileNotFoundError:
+            logging.error("espeak-ng not installed")
+            self._available = False
+            return b""
+        except subprocess.TimeoutExpired:
+            logging.error("espeak-ng timed out")
+            return b""
+        except Exception as exc:
+            logging.error("espeak-ng synthesis failed: %s", exc)
+            return b""
