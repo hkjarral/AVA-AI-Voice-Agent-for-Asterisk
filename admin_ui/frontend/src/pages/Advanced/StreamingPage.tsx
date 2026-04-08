@@ -324,6 +324,85 @@ const StreamingPage = () => {
                 </ConfigCard>
             </ConfigSection>
 
+            <ConfigSection title="Latency Optimization" description="Reduce perceived response time with streaming overlap and filler audio.">
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <FormSwitch
+                            label="LLM → TTS Streaming Overlap"
+                            description="Stream LLM tokens and synthesize TTS per-sentence instead of waiting for full response. Significantly reduces time-to-first-audio."
+                            checked={streamingConfig.pipeline_streaming_overlap ?? true}
+                            onChange={(e) => updateStreamingConfig('pipeline_streaming_overlap', e.target.checked)}
+                        />
+                        <FormSwitch
+                            label="Enable Filler Audio"
+                            description="Play a brief acknowledgment phrase (e.g. 'One moment please.') immediately while the LLM generates a response."
+                            checked={config.local_ai_server?.enable_filler_audio ?? false}
+                            onChange={(e) => setConfig({
+                                ...config,
+                                local_ai_server: {
+                                    ...config.local_ai_server,
+                                    enable_filler_audio: e.target.checked
+                                }
+                            })}
+                        />
+                        <FormInput
+                            label="Filler Phrases"
+                            value={(config.local_ai_server?.filler_phrases || ['One moment please.', 'Let me check on that.', 'Sure thing.', 'Just a moment.']).join(', ')}
+                            onChange={(e) => setConfig({
+                                ...config,
+                                local_ai_server: {
+                                    ...config.local_ai_server,
+                                    filler_phrases: e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean)
+                                }
+                            })}
+                            disabled={!config.local_ai_server?.enable_filler_audio}
+                            tooltip="Comma-separated list of filler phrases to randomly choose from."
+                        />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <FormInput
+                                label="Filler Voice (eSpeak)"
+                                value={config.local_ai_server?.filler_voice || 'en'}
+                                onChange={(e) => setConfig({
+                                    ...config,
+                                    local_ai_server: {
+                                        ...config.local_ai_server,
+                                        filler_voice: e.target.value
+                                    }
+                                })}
+                                disabled={!config.local_ai_server?.enable_filler_audio}
+                                tooltip="eSpeak-ng voice identifier (e.g. 'en', 'en-us')."
+                            />
+                            <FormInput
+                                label="Filler Speed (wpm)"
+                                type="number"
+                                value={config.local_ai_server?.filler_speed || 160}
+                                onChange={(e) => setConfig({
+                                    ...config,
+                                    local_ai_server: {
+                                        ...config.local_ai_server,
+                                        filler_speed: parseInt(e.target.value)
+                                    }
+                                })}
+                                disabled={!config.local_ai_server?.enable_filler_audio}
+                                tooltip="Words per minute for filler audio synthesis."
+                            />
+                        </div>
+                        <FormSwitch
+                            label="TTS Phrase Cache"
+                            description="Cache synthesized audio for short repeated phrases (e.g. greetings, confirmations). Saves TTS processing on cache hit."
+                            checked={config.local_ai_server?.tts_phrase_cache_enabled ?? false}
+                            onChange={(e) => setConfig({
+                                ...config,
+                                local_ai_server: {
+                                    ...config.local_ai_server,
+                                    tts_phrase_cache_enabled: e.target.checked
+                                }
+                            })}
+                        />
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
             <ConfigSection title="Diagnostics" description="Tools for debugging audio stream issues.">
                 <ConfigCard>
                     <div className="space-y-6">

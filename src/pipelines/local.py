@@ -976,6 +976,111 @@ class LocalLLMAdapter(_LocalAdapterBase, LLMComponent):
             )
             return LLMResponse(text="")
 
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream LLM tokens from the local AI server.
+
+        Sends an ``llm_request`` with ``stream: true`` and yields tokens as
+        they arrive via ``llm_token`` messages.  Falls back to the non-streaming
+        ``generate()`` path if the server doesn't support streaming.
+        """
+        runtime_options = options or {}
+
+        try:
+            session = await self._ensure_session(call_id, runtime_options)
+        except Exception as exc:
+            logger.error(
+                "Failed to establish LLM streaming session",
+                component=self.component_key,
+                call_id=call_id,
+                error=str(exc),
+            )
+            return
+
+        payload = {
+            "type": "llm_request",
+            "call_id": call_id,
+            "mode": "llm",
+            "text": transcript,
+            "context": context.get("messages") or context,
+            "stream": True,
+        }
+
+        try:
+            await self._send_json_with_retry(call_id, payload, runtime_options)
+        except Exception as exc:
+            logger.error(
+                "Failed to send LLM streaming request",
+                component=self.component_key,
+                call_id=call_id,
+                error=str(exc),
+            )
+            return
+
+        session = self._sessions.get(call_id)
+        if not session:
+            return
+
+        merged = self._compose_options(runtime_options)
+        timeout = float(merged.get("llm_response_timeout_sec", merged.get("response_timeout_sec", 30.0)))
+        started_at = time.perf_counter()
+
+        try:
+            while True:
+                try:
+                    kind, message = await self._recv_any(session, timeout)
+                except (ConnectionClosed, ConnectionClosedError):
+                    self._sessions.pop(call_id, None)
+                    return
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "LLM streaming timed out",
+                        component=self.component_key,
+                        call_id=call_id,
+                    )
+                    return
+
+                if kind != "json":
+                    continue
+
+                msg_type = message.get("type", "")
+
+                # Token-level streaming messages
+                if msg_type == "llm_token":
+                    token = message.get("token", "")
+                    if token:
+                        yield token
+                    continue
+
+                # Full response (end of stream or non-streaming fallback)
+                if msg_type == "llm_response":
+                    text = message.get("text", "").strip()
+                    latency_ms = (time.perf_counter() - started_at) * 1000.0
+                    logger.info(
+                        "Local LLM streaming complete",
+                        component=self.component_key,
+                        call_id=call_id,
+                        latency_ms=round(latency_ms, 2),
+                    )
+                    # If this is a non-streaming fallback, yield the full text
+                    if text:
+                        yield text
+                    return
+
+        except Exception as exc:
+            logger.error(
+                "LLM streaming receive failed",
+                component=self.component_key,
+                call_id=call_id,
+                error=str(exc),
+                exc_info=True,
+            )
+
 
 class LocalTTSAdapter(_LocalAdapterBase, TTSComponent):
     """# Milestone7: TTS adapter backed by the local AI server."""

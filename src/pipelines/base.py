@@ -294,6 +294,22 @@ class LLMComponent(Component):
     ) -> Union[str, LLMResponse]:
         """Generate a response given transcript + context."""
 
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream tokens one-by-one from the LLM.
+
+        Default implementation yields the full response at once (no streaming).
+        Override in adapters that support token-level streaming for lower latency.
+        """
+        result = await self.generate(call_id, transcript, context, options)
+        text = result.text if isinstance(result, LLMResponse) else result
+        yield text
+
 
 class TTSComponent(Component):
     """Text-to-speech component."""

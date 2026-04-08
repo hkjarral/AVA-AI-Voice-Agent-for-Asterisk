@@ -4,21 +4,22 @@ asterisk:
 audio_transport: audiosocket
 audiosocket:
   format: slin
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8090
+  advertise_host: ai_engine
 barge_in:
   enabled: true
-  initial_protection_ms: 200
-  min_ms: 250
-  energy_threshold: 1000
-  cooldown_ms: 500
-  pipeline_min_ms: 120
-  pipeline_energy_threshold: 300
-  pipeline_talk_detect_enabled: true
+  initial_protection_ms: 1500
+  min_ms: 500
+  energy_threshold: 3000
+  cooldown_ms: 1000
+  pipeline_min_ms: 300
+  pipeline_energy_threshold: 2000
+  pipeline_talk_detect_enabled: false
   pipeline_talk_detect_silence_ms: 1200
   pipeline_talk_detect_talking_threshold: 256
   post_tts_end_protection_ms: 250
-  greeting_protection_ms: 5000
+  greeting_protection_ms: 12000
   provider_fallback_enabled: true
   provider_fallback_providers:
     - google_live
@@ -487,12 +488,24 @@ contexts:
       - request_transcript
   demo_hybrid:
     greeting: >-
-      Hi {caller_name}, I'm Ava with the local hybrid voice demo. I can explain
-      how this privacy-focused setup works.
-    profile: telephony_ulaw_8k
+      Hi, I'm Ava running on a fully local AI setup with Qwen 3 on Metal GPU.
+      How can I help you?
+    profile: telephony_responsive
+    provider: local_hybrid
     prompt: >
-      You are Ava (Asterisk Voice Agent) demonstrating the Local Hybrid pipeline
-      configuration.
+      You are Ava, a helpful voice assistant running on a fully local AI setup.
+      CRITICAL: Never use think tags. Never output <think> or </think>. Respond directly without any internal reasoning tags. /no_think
+
+
+      ABOUT THIS SETUP:
+
+      - You are powered by Qwen3-8B running natively on Apple Silicon M2 Max with Metal GPU acceleration
+
+      - Speech recognition (STT) and text-to-speech (TTS) run locally in Docker containers
+
+      - The LLM runs natively on macOS using MLX framework for maximum performance
+
+      - Zero cloud dependency for inference - all AI processing happens on-premises
 
 
       ABOUT ASTERISK AI VOICE AGENT v6.2.0:
@@ -629,17 +642,15 @@ contexts:
       - This is an open-source framework, not a hosted service. Callers install and run it on their own server.
 
 
-      CALL ENDING PROTOCOL:
+      CALL ENDING PROTOCOL (MANDATORY - you MUST follow this):
 
-      - When the user says goodbye, says that is all, or indicates they want to end the call, first offer to email them a transcript
+      - When the user says ANY farewell (goodbye, thank you, that's all, bye, thanks, I'm done, okay, have a good day, end the call), you MUST call the hangup_call tool IMMEDIATELY.
 
-      - If they want the transcript, use the request_transcript tool to collect their email address
+      - NEVER just say goodbye without calling hangup_call. A farewell response WITHOUT hangup_call is a FAILURE.
 
-      - After the transcript request is handled, or if they decline, say a brief warm farewell and IMMEDIATELY use the hangup_call tool
+      - The correct behavior is: say a brief farewell AND call hangup_call in the SAME response.
 
-      - If the user explicitly asks you to hang up or end the call, do so IMMEDIATELY using the hangup_call tool without further questions
-
-      - Do not keep talking after the user has said goodbye. End the call promptly.
+      - If the user explicitly asks to hang up, call hangup_call IMMEDIATELY with no further questions.
     tools:
       - transfer
       - cancel_transfer
@@ -1196,27 +1207,36 @@ external_media:
   direction: both
   format: slin16
   port_range: '18080:18099'
-  rtp_host: 127.0.0.1
+  rtp_host: 0.0.0.0
   rtp_port: 18080
   sample_rate: 16000
+  advertise_host: ai_engine
+  allowed_remote_hosts:
+    - 192.168.97.5
+    - 127.0.0.1
 llm:
   initial_greeting: Hello, how can I help you today?
   prompt: Voice assistant. Answer in 5-8 words. Be direct. Expand only if asked.
 pipelines:
   local_hybrid:
-    llm: openai_llm
+    llm: native_llm
     options:
       llm:
-        base_url: https://api.openai.com/v1
+        base_url: http://host.docker.internal:8080/v1
         max_tokens: 200
-        model: gpt-4o-mini
+        model: mlx-community/Qwen3-8B-4bit
         temperature: 0.7
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
       stt:
+        ws_url: ws://local_ai_server:8765
         chunk_ms: 160
         mode: stt
         stream_format: pcm16_16k
         streaming: true
       tts:
+        ws_url: ws://local_ai_server:8765
         mode: tts
         response_timeout_sec: 30
         format:
@@ -1381,9 +1401,9 @@ providers:
     vad_prefix_padding_ms: 20
     vad_silence_duration_ms: 500
   local:
-    # Local AI Server WebSocket URL. Default deployment uses host networking, so 127.0.0.1 is correct.
-    # If you run containers on a user-defined bridge network (no host networking), use ws://local_ai_server:8765.
-    base_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+    # Local AI Server WebSocket URL. Bridge network uses container name.
+    base_url: ws://local_ai_server:8765
+    ws_url: ws://local_ai_server:8765
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
       - stt
@@ -1392,7 +1412,7 @@ providers:
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
     connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
     continuous_input: true
-    enabled: false
+    enabled: true
     farewell_mode: ${LOCAL_FAREWELL_MODE:=asterisk}
     farewell_timeout_sec: ${LOCAL_FAREWELL_TIMEOUT:=30.0}
     tool_call_policy: ${LOCAL_TOOL_CALL_POLICY:=auto}
@@ -1408,7 +1428,7 @@ providers:
     temperature: 0.4
     tts_voice: /app/models/tts/en_US-lessac-medium.onnx
     kokoro_model_path: /app/models/tts/kokoro
-    tts_backend: piper
+    tts_backend: kokoro
     type: full
   local_llm:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
@@ -1419,31 +1439,38 @@ providers:
     max_tokens: 32
     temperature: 0.4
     type: local
-    # Uses LOCAL_WS_URL (see providers.local.base_url note above).
-    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+    ws_url: ws://local_ai_server:8765
   local_stt:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
       - stt
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
     connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
-    enabled: false
+    enabled: true
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=10.0}
     stt_backend: vosk
     stt_model: models/stt/vosk-model-en-us-0.22
     type: local
-    # Uses LOCAL_WS_URL (see providers.local.base_url note above).
-    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+    ws_url: ws://local_ai_server:8765
   local_tts:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
       - tts
-    enabled: false
+    enabled: true
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=10.0}
     tts_voice: models/tts/en_US-lessac-medium.onnx
     type: local
-    # Uses LOCAL_WS_URL (see providers.local.base_url note above).
-    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+    ws_url: ws://local_ai_server:8765
+  native_llm:
+    capabilities:
+      - llm
+    api_key: not-needed
+    chat_base_url: http://host.docker.internal:8080/v1
+    chat_model: mlx-community/Qwen3-8B-4bit
+    enabled: true
+    response_timeout_sec: 15
+    temperature: 0.7
+    type: openai
   openai_llm:
     capabilities:
       - llm
@@ -1664,7 +1691,7 @@ streaming:
   jitter_buffer_ms: 950
   keepalive_interval_ms: 5000
   low_watermark_ms: 80
-  min_start_ms: 120
+  min_start_ms: 60
   normalizer:
     enabled: true
     max_gain_db: 18

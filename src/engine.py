@@ -10548,7 +10548,154 @@ class Engine:
                     # Build context with conversation history
                     # System prompt only in first turn (when history is empty)
                     context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
-                    
+
+                    # ── Streaming overlap: LLM tokens → sentence split → TTS ──
+                    # Only when: no tools active, streaming playback, config enabled,
+                    # and the LLM adapter supports generate_stream.
+                    _has_tools = bool((llm_options or {}).get("tools"))
+                    _streaming_cfg = getattr(self.config, "streaming", None)
+                    _overlap_enabled = getattr(_streaming_cfg, "pipeline_streaming_overlap", False) if _streaming_cfg else False
+                    _has_stream_method = hasattr(pipeline.llm_adapter, "generate_stream")
+
+                    _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
+                    if _tts_dm_override == "stream":
+                        _use_streaming_pb = True
+                    elif _tts_dm_override == "file":
+                        _use_streaming_pb = False
+                    else:
+                        _use_streaming_pb = self.config.downstream_mode != "file"
+
+                    if (
+                        not _has_tools
+                        and _overlap_enabled
+                        and _has_stream_method
+                        and _use_streaming_pb
+                    ):
+                        logger.info(
+                            "Pipeline streaming overlap active",
+                            call_id=call_id,
+                            pipeline=pipeline_label,
+                        )
+                        _SENTENCE_RE = re.compile(r"[.!?]\s+")
+                        sentence_buffer = ""
+                        full_response_text = ""
+                        first_tts_ts: Optional[float] = None
+
+                        stream_q: asyncio.Queue = asyncio.Queue(maxsize=256)
+                        old_provider_name = getattr(session, "provider_name", None)
+                        try:
+                            session.provider_name = "pipeline"
+                            await self.session_store.upsert_call(session)
+                        except Exception:
+                            pass
+
+                        try:
+                            tts_format = (pipeline.tts_options or {}).get("format")
+                            if not isinstance(tts_format, dict):
+                                tts_format = (pipeline.tts_options or {}).get("target_format")
+                            if not isinstance(tts_format, dict):
+                                tts_format = {}
+                            tts_encoding = str(tts_format.get("encoding") or tts_format.get("format") or "mulaw")
+                            try:
+                                tts_rate = int(tts_format.get("sample_rate") or tts_format.get("sample_rate_hz") or 8000)
+                            except Exception:
+                                tts_rate = 8000
+
+                            stream_id = await self.streaming_playback_manager.start_streaming_playback(
+                                call_id,
+                                stream_q,
+                                playback_type="pipeline-tts",
+                                source_encoding=tts_encoding,
+                                source_sample_rate=tts_rate,
+                            )
+                            if not stream_id:
+                                raise RuntimeError("start_streaming_playback returned no stream_id")
+
+                            async for token in pipeline.llm_adapter.generate_stream(
+                                call_id, transcript_text, context_for_llm, llm_options,
+                            ):
+                                sentence_buffer += token
+                                full_response_text += token
+
+                                match = _SENTENCE_RE.search(sentence_buffer)
+                                if match:
+                                    split_pos = match.end()
+                                    to_speak = sentence_buffer[:split_pos].strip()
+                                    sentence_buffer = sentence_buffer[split_pos:]
+
+                                    if to_speak:
+                                        async for tts_chunk in pipeline.tts_adapter.synthesize(
+                                            call_id, to_speak, pipeline.tts_options,
+                                        ):
+                                            if tts_chunk:
+                                                if first_tts_ts is None:
+                                                    first_tts_ts = time.time()
+                                                    turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                                    session.turn_latencies_ms.append(turn_latency_ms)
+                                                    try:
+                                                        if t_start is not None:
+                                                            _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(
+                                                                max(0.0, first_tts_ts - t_start)
+                                                            )
+                                                    except Exception:
+                                                        pass
+                                                await stream_q.put(tts_chunk)
+
+                            # Flush remaining sentence buffer
+                            remainder = sentence_buffer.strip()
+                            if remainder:
+                                async for tts_chunk in pipeline.tts_adapter.synthesize(
+                                    call_id, remainder, pipeline.tts_options,
+                                ):
+                                    if tts_chunk:
+                                        if first_tts_ts is None:
+                                            first_tts_ts = time.time()
+                                            turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
+                                            session.turn_latencies_ms.append(turn_latency_ms)
+                                        await stream_q.put(tts_chunk)
+
+                            # End-of-segment sentinel
+                            try:
+                                stream_q.put_nowait(None)
+                            except asyncio.QueueFull:
+                                asyncio.create_task(stream_q.put(None))
+                            try:
+                                if t_start is not None:
+                                    _TURN_RESPONSE_SECONDS.labels(pipeline_label, provider_label).observe(
+                                        max(0.0, time.time() - t_start)
+                                    )
+                            except Exception:
+                                pass
+
+                        except Exception:
+                            logger.error(
+                                "Pipeline streaming overlap failed; falling through to serial path",
+                                call_id=call_id,
+                                exc_info=True,
+                            )
+                            try:
+                                await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                            except Exception:
+                                pass
+                            # Don't return — fall through to serial path below
+                            full_response_text = ""
+                        finally:
+                            try:
+                                if old_provider_name is not None:
+                                    session.provider_name = old_provider_name
+                                    await self.session_store.upsert_call(session)
+                            except Exception:
+                                pass
+
+                        if full_response_text.strip():
+                            response_text = full_response_text.strip()
+                            conversation_history.append(_ts_msg("user", transcript_text))
+                            conversation_history.append(_ts_msg("assistant", response_text))
+                            session.conversation_history = list(conversation_history)
+                            await self.session_store.upsert_call(session)
+                            return
+
+                    # ── Serial path (original) ──
                     try:
                         llm_result = await pipeline.llm_adapter.generate(
                             call_id,

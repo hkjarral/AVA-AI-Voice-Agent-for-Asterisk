@@ -690,6 +690,10 @@ class StreamingConfig(BaseModel):
     egress_swap_mode: str = Field(default="auto")
     # When true, force outbound streaming audio to μ-law regardless of provider encoding.
     egress_force_mulaw: bool = Field(default=False)
+    # Overlap LLM token streaming with TTS synthesis in modular pipelines.
+    # Streams tokens → splits into sentences → synthesizes each sentence concurrently.
+    # Only applies when tools are NOT active for the turn (can't detect tool calls mid-stream).
+    pipeline_streaming_overlap: bool = Field(default=True)
 
 
 class LoggingConfig(BaseModel):

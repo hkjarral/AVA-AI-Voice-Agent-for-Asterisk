@@ -908,6 +908,12 @@ const CallHistoryPage = () => {
                                     <div className="text-sm text-muted-foreground">Avg Latency</div>
                                     <div className="font-medium">{(modalCall.avg_turn_latency_ms / 1000).toFixed(2)}s</div>
                                 </div>
+                                {selectedCall?.max_turn_latency_ms != null && (
+                                    <div>
+                                        <div className="text-sm text-muted-foreground">Max Latency</div>
+                                        <div className="font-medium">{(selectedCall.max_turn_latency_ms / 1000).toFixed(2)}s</div>
+                                    </div>
+                                )}
                                 <div>
                                     <div className="text-sm text-muted-foreground">Barge-ins</div>
                                     <div className="font-medium">{modalCall.barge_in_count}</div>

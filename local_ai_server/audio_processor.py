@@ -82,6 +82,32 @@ class AudioProcessor:
             return input_data
 
     @staticmethod
+    def pcm16_to_ulaw_8k(pcm_data: bytes, input_rate: int) -> bytes:
+        """Convert raw PCM16 mono audio to 8 kHz µ-law in-process.
+
+        Skips WAV header parsing — use when you already have raw PCM16 bytes.
+        Falls back to convert_to_ulaw_8k via a WAV wrapper on failure.
+        """
+        try:
+            if input_rate != ULAW_SAMPLE_RATE:
+                pcm_data, _ = audioop.ratecv(
+                    pcm_data, 2, 1, input_rate, ULAW_SAMPLE_RATE, None
+                )
+            return audioop.lin2ulaw(pcm_data, 2)
+        except Exception as exc:
+            logging.warning(
+                "pcm16_to_ulaw_8k failed (%s), falling back to WAV path", exc
+            )
+            # Build a minimal WAV wrapper and delegate to the WAV-aware path
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(input_rate)
+                wf.writeframes(pcm_data)
+            return AudioProcessor.convert_to_ulaw_8k(buf.getvalue(), input_rate)
+
+    @staticmethod
     def convert_to_ulaw_8k(input_data: bytes, input_rate: int) -> bytes:
         """Convert WAV audio to 8 kHz µ-law in-process via audioop.
 

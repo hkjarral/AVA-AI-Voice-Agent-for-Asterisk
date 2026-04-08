@@ -639,6 +639,53 @@ class OpenAILLMAdapter(LLMComponent):
             await websocket.close()
         return ""
 
+    async def generate_stream(
+        self,
+        call_id: str,
+        transcript: str,
+        context: Dict[str, Any],
+        options: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Stream tokens from OpenAI Chat Completions API."""
+        merged = self._compose_options(options)
+        if not merged["api_key"]:
+            raise RuntimeError("OpenAI LLM requires an API key")
+
+        await self._ensure_session()
+        assert self._session
+        payload = self._build_chat_payload(transcript, context, merged)
+        payload["stream"] = True
+
+        headers = _make_http_headers(merged)
+        url = merged["chat_base_url"].rstrip("/") + "/chat/completions"
+
+        try:
+            async with self._session.post(url, json=payload, headers=headers, timeout=merged["timeout_sec"]) as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    logger.error("OpenAI streaming failed", call_id=call_id, status=response.status, body_preview=body[:128])
+                    return
+
+                async for line in response.content:
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str or not line_str.startswith("data: "):
+                        continue
+                    data_str = line_str[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+        except aiohttp.ClientError as e:
+            logger.error("OpenAI streaming connection error", call_id=call_id, error=str(e))
+
     async def _ensure_session(self) -> None:
         if self._session and not self._session.closed:
             return
