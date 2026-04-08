@@ -9,17 +9,17 @@ audiosocket:
   advertise_host: ai_engine
 barge_in:
   enabled: true
-  initial_protection_ms: 1500
-  min_ms: 500
-  energy_threshold: 3000
-  cooldown_ms: 1000
-  pipeline_min_ms: 300
-  pipeline_energy_threshold: 2000
-  pipeline_talk_detect_enabled: false
+  initial_protection_ms: 200
+  min_ms: 250
+  energy_threshold: 1000
+  cooldown_ms: 500
+  pipeline_min_ms: 120
+  pipeline_energy_threshold: 300
+  pipeline_talk_detect_enabled: true
   pipeline_talk_detect_silence_ms: 1200
   pipeline_talk_detect_talking_threshold: 256
   post_tts_end_protection_ms: 250
-  greeting_protection_ms: 12000
+  greeting_protection_ms: 5000
   provider_fallback_enabled: true
   provider_fallback_providers:
     - google_live

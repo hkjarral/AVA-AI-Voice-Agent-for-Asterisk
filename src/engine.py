@@ -10539,6 +10539,7 @@ class Engine:
                     nonlocal conversation_history
                     response_text = ""
                     tool_calls = []
+                    _streaming_handled = False  # Set True when streaming overlap played audio + recorded history
                     turn_start_time = time.time()  # Track turn latency for call history
                     
                     pipeline_label = getattr(session, 'pipeline_name', None) or 'none'
@@ -10598,12 +10599,16 @@ class Engine:
                                     # Wait for filler playback to finish, then release the
                                     # streaming slot so the real LLM→TTS overlap can use it.
                                     await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                    # Clear tts_ended_ts to prevent post_tts_end_protection_ms
+                                    # from blocking inbound audio between filler and real response.
+                                    session.tts_ended_ts = 0.0
                                 if _old_pn is not None:
                                     session.provider_name = _old_pn
                             except Exception:
                                 logger.debug("Pipeline filler audio failed", call_id=call_id, exc_info=True)
                                 try:
                                     await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                    session.tts_ended_ts = 0.0
                                 except Exception:
                                     pass
 
@@ -10747,6 +10752,7 @@ class Engine:
 
                         if full_response_text.strip():
                             response_text = full_response_text.strip()
+                            _streaming_handled = True
                             conversation_history.append(_ts_msg("user", transcript_text))
                             conversation_history.append(_ts_msg("assistant", response_text))
                             session.conversation_history = list(conversation_history)
@@ -10943,8 +10949,7 @@ class Engine:
                         return
 
                     # Update conversation history (skip if streaming path already did this)
-                    _streaming_already_recorded = full_response_text.strip() if 'full_response_text' in dir() else ""
-                    if not _streaming_already_recorded:
+                    if not _streaming_handled:
                         conversation_history.append(_ts_msg("user", transcript_text))
                         if response_text:
                             conversation_history.append(_ts_msg("assistant", response_text))
@@ -10959,7 +10964,7 @@ class Engine:
 
                     # 1. Synthesize and Play Text (if any)
                     # Skip TTS if streaming path already played audio
-                    if response_text and not _streaming_already_recorded:
+                    if response_text and not _streaming_handled:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
                         logger.debug(f"TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")

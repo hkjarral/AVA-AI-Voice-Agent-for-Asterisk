@@ -2955,12 +2955,20 @@ class LocalAIServer:
         else:
             result = await self._process_tts_piper(text)
 
-        # Cache short phrases
+        # Cache short phrases (LRU eviction at 256 entries)
         if (
             self.config.tts_phrase_cache_enabled
             and result
             and len(text) <= self.config.tts_phrase_cache_max_text_len
         ):
+            _MAX_TTS_CACHE = 256
+            if len(self._tts_cache) >= _MAX_TTS_CACHE:
+                # Evict oldest entry (first key in insertion-ordered dict)
+                try:
+                    oldest_key = next(iter(self._tts_cache))
+                    del self._tts_cache[oldest_key]
+                except StopIteration:
+                    pass
             self._tts_cache[self._tts_cache_key(text)] = result
 
         return result
