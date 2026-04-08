@@ -1118,10 +1118,13 @@ async def get_available_models(language: Optional[str] = None):
             system_recommended = False
             if category == "llm":
                 model_id = model.get("id")
-                if model_id == "tinyllama":
+                if model_id == "qwen25_1_5b":
+                    # Best CPU voice model: fast inference, reliable tool calling
+                    system_recommended = meets_ram and cpu_cores >= 4
+                elif model_id == "tinyllama":
                     system_recommended = meets_ram and cpu_cores >= 2
                 elif model_id == "phi3_mini":
-                    system_recommended = meets_ram and cpu_cores >= 4
+                    system_recommended = meets_ram and cpu_cores >= 4 and gpu_detected
                 elif model_id == "llama32_3b":
                     system_recommended = meets_ram and (gpu_detected or cpu_cores >= 6)
                 elif model_id == "mistral_7b_instruct":

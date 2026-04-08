@@ -2182,7 +2182,7 @@ exten => s,1,NoOp(AI Agent Call)
                                                         return (
                                                             <option key={model.id} value={model.id}>
                                                                 {model.name}
-                                                                {model.system_recommended ? ' • Recommended' : ''}
+                                                                {model.cpu_recommended && !localAIStatus.gpuDetected ? ' • ⚡ CPU Recommended' : model.system_recommended ? ' • Recommended' : ''}
                                                                 {model.size_display ? ` • ${model.size_display}` : ''}
                                                                 {exceedsRam ? ` • ⚠ needs ${model.recommended_ram_gb}GB RAM` : ''}
                                                                 {!exceedsRam && model.description ? ` • ${model.description}` : ''}

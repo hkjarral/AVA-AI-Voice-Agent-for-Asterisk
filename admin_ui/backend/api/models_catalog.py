@@ -680,6 +680,15 @@ SILERO_TTS_MODELS = [
 
 LLM_MODELS = [
     # === Lightweight Models (4-8 GB RAM) ===
+    {"id": "qwen25_1_5b", "name": "Qwen 2.5-1.5B Instruct", "size_mb": 940, "size_display": "940 MB",
+     "description": "Best CPU voice model \u2014 fast inference, reliable tool calling",
+     "chat_format": "chatml",
+     "tool_calling": "experimental",
+     "tool_calling_note": "Supports hangup_call and basic tools via heuristic parsing. Uses <tool_call> format natively.",
+     "cpu_recommended": True,
+     "note": "Recommended for CPU-only voice deployments. ~7-9s per response with streaming overlap on 16-core CPU. Significantly faster than Phi-3 (3.8B) while maintaining good conversation quality.",
+     "download_url": "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+     "model_path": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "recommended_ram_gb": 4},
     {"id": "tinyllama", "name": "TinyLlama 1.1B", "size_mb": 700, "size_display": "700 MB",
      "description": "Lightweight, for low-resource systems",
      "chat_format": "chatml",

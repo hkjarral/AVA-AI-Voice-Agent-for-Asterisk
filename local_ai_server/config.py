@@ -72,7 +72,10 @@ class LocalAIConfig:
     kroko_embedded: bool = False
     kroko_port: int = 6006
 
-    llm_model_path: str = "/app/models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf"
+    # Default model: Qwen 2.5-1.5B Instruct (best CPU voice model).
+    # Phi-3-mini (3.8B) is too slow on CPU (~0.8 tok/s). Qwen 2.5-1.5B
+    # achieves ~15-30 tok/s with good tool calling and chatml format.
+    llm_model_path: str = "/app/models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
     llm_threads: int = 4
     # NOTE: 768 is intentionally small for latency, but it is often too small for
     # realistic system prompts (e.g. demo contexts). We keep the dataclass default
@@ -87,8 +90,10 @@ class LocalAIConfig:
     llm_system_prompt: str = (
         "You are a helpful AI voice assistant. Respond naturally and conversationally to the caller."
     )
+    # Stop tokens for ChatML format (Qwen 2.5, Phi-3, Hermes, etc.)
+    # Also includes Phi-specific tokens for backward compatibility.
     llm_stop_tokens: List[str] = field(
-        default_factory=lambda: ["<|user|>", "<|assistant|>", "<|end|>"]
+        default_factory=lambda: ["<|im_end|>", "<|endoftext|>", "<|user|>", "<|assistant|>", "<|end|>"]
     )
     llm_use_mlock: bool = False
     llm_infer_timeout_sec: float = 20.0

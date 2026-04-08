@@ -270,16 +270,19 @@ setup_light_cpu() {
   else
     echo "STT model already exists, skipping download"
   fi
-  # LLM (TinyLlama) - primary URL and fallback mirror
-  # Store consistently as: tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
-  local tiny_dst="$MODELS_DIR/llm/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-  # Prefer TheBloke repo
-  if ! download "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" \
-                 "$tiny_dst" "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"; then
-    echo "Primary TinyLlama URL failed, trying fallback mirror..." >&2
-    # Fallback mirror (file name differs slightly; we still save to $tiny_dst)
-    download "https://huggingface.co/hieupt/TinyLlama-1.1B-Chat-v1.0-Q4_K_M-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf" \
-             "$tiny_dst" "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf (mirror)"
+  # LLM (Qwen 2.5-1.5B Instruct) - best CPU voice model, fast inference + tool calling
+  # Falls back to TinyLlama if download fails
+  local qwen_dst="$MODELS_DIR/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+  if [ ! -f "$qwen_dst" ]; then
+    if ! download "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" \
+                   "$qwen_dst" "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"; then
+      echo "Qwen 2.5-1.5B download failed, falling back to TinyLlama..." >&2
+      local tiny_dst="$MODELS_DIR/llm/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+      download "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" \
+               "$tiny_dst" "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    fi
+  else
+    echo "LLM model already exists, skipping download"
   fi
   # TTS (Piper) - language-aware voice
   download "${PIPER_URL}" "$MODELS_DIR/tts/${PIPER_MODEL}" "${PIPER_MODEL}"
@@ -296,10 +299,15 @@ setup_medium_cpu() {
   else
     echo "STT model already exists, skipping download"
   fi
-  # LLM (Phi-3-mini - better than Llama-2-7B for CPU)
-  if [ ! -f "$MODELS_DIR/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf" ]; then
-    download "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf" \
-             "$MODELS_DIR/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf" "phi-3-mini-4k-instruct.Q4_K_M.gguf"
+  # LLM (Qwen 2.5-1.5B Instruct - much faster than Phi-3 on CPU, good tool calling)
+  local qwen_dst="$MODELS_DIR/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+  if [ ! -f "$qwen_dst" ]; then
+    if ! download "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" \
+                   "$qwen_dst" "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"; then
+      echo "Qwen 2.5-1.5B download failed, falling back to Phi-3..." >&2
+      download "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf" \
+               "$MODELS_DIR/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf" "phi-3-mini-4k-instruct.Q4_K_M.gguf"
+    fi
   else
     echo "LLM model already exists, skipping download"
   fi
