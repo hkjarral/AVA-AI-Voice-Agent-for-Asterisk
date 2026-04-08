@@ -1142,34 +1142,41 @@ class LocalAIServer:
         # ── Filler audio pre-synthesis ──
 
     async def _presynthesize_fillers(self) -> None:
-        """Pre-synthesize filler phrases via eSpeak NG at startup.
+        """Pre-synthesize filler phrases using the active TTS backend at startup.
 
-        Filler audio is emitted instantly before LLM inference to eliminate
-        perceived dead air on the call.  Synthesis is intentionally done at
-        startup so that there is zero TTS latency when a filler is needed.
+        Uses the same TTS engine (Piper/Kokoro/etc.) as real responses so
+        filler audio matches the agent's voice.  Falls back to eSpeak NG if
+        the primary TTS backend is unavailable.
         """
         if not self.config.enable_filler_audio:
             return
 
-        try:
-            from tts_backends import EspeakNGBackend
-        except ImportError:
-            logging.warning("EspeakNGBackend not available; filler audio disabled")
-            return
-
-        backend = EspeakNGBackend(
-            voice=self.config.filler_voice,
-            speed=self.config.filler_speed,
-        )
-
-        if not backend.is_available():
-            logging.warning("espeak-ng not installed; filler audio disabled")
-            return
-
         self._filler_cache.clear()
+
+        # Try the active TTS backend first (sounds natural)
+        use_primary_tts = any([
+            self.tts_model,          # Piper
+            getattr(self, "melotts_backend", None),
+            getattr(self, "kokoro_pipeline", None),
+            getattr(self, "silero_model", None),
+            getattr(self, "matcha_model", None),
+        ])
+
         for phrase in self.config.filler_phrases:
             try:
-                audio = await asyncio.to_thread(backend.synthesize, phrase)
+                if use_primary_tts:
+                    audio = await self.process_tts(phrase)
+                else:
+                    # Fallback to eSpeak NG
+                    from tts_backends import EspeakNGBackend
+                    backend = EspeakNGBackend(
+                        voice=self.config.filler_voice,
+                        speed=self.config.filler_speed,
+                    )
+                    if not backend.is_available():
+                        logging.warning("No TTS backend available for filler audio")
+                        return
+                    audio = await asyncio.to_thread(backend.synthesize, phrase)
                 if audio:
                     self._filler_cache[phrase] = audio
                     logging.debug("Filler cached: '%s' (%d bytes)", phrase, len(audio))
