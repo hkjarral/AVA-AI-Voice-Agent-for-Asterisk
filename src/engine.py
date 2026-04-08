@@ -10599,16 +10599,19 @@ class Engine:
                                     # Wait for filler playback to finish, then release the
                                     # streaming slot so the real LLM→TTS overlap can use it.
                                     await self.streaming_playback_manager.stop_streaming_playback(call_id)
-                                    # Clear tts_ended_ts to prevent post_tts_end_protection_ms
-                                    # from blocking inbound audio between filler and real response.
-                                    session.tts_ended_ts = 0.0
+                                    # Backdate tts_ended_ts so the post_tts_end_protection_ms
+                                    # window has already expired. This avoids blocking barge-in
+                                    # between filler and real response, while keeping the echo
+                                    # protection mechanism intact for future TTS emissions.
+                                    _post_guard = getattr(self.config, "barge_in", None)
+                                    _post_ms = getattr(_post_guard, "post_tts_end_protection_ms", 250) if _post_guard else 250
+                                    session.tts_ended_ts = time.time() - (_post_ms / 1000.0) - 0.01
                                 if _old_pn is not None:
                                     session.provider_name = _old_pn
                             except Exception:
                                 logger.debug("Pipeline filler audio failed", call_id=call_id, exc_info=True)
                                 try:
                                     await self.streaming_playback_manager.stop_streaming_playback(call_id)
-                                    session.tts_ended_ts = 0.0
                                 except Exception:
                                     pass
 
@@ -10759,7 +10762,7 @@ class Engine:
                             await self.session_store.upsert_call(session)
 
                             # Check for tool calls detected during streaming
-                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls", None) or []
+                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls_by_call", {}).get(call_id) or []
                             if _pending_tools:
                                 logger.info(
                                     "Streaming path executing pending tool calls",
@@ -10768,7 +10771,7 @@ class Engine:
                                     tools=[tc.get("name") for tc in _pending_tools],
                                 )
                                 tool_calls = list(_pending_tools)
-                                pipeline.llm_adapter._pending_tool_calls = []
+                                pipeline.llm_adapter._pending_tool_calls_by_call.pop(call_id, None)
                                 # Jump to tool execution (reuse serial path's tool handling)
                                 # by setting response_text and tool_calls, then breaking out
                             else:
@@ -10777,10 +10780,10 @@ class Engine:
                             # Fall through to tool execution below if tool calls were found
                         else:
                             # Streaming produced no text — likely a tool-call-only response.
-                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls", None) or []
+                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls_by_call", {}).get(call_id) or []
                             if _pending_tools:
                                 tool_calls = list(_pending_tools)
-                                pipeline.llm_adapter._pending_tool_calls = []
+                                pipeline.llm_adapter._pending_tool_calls_by_call.pop(call_id, None)
                                 response_text = ""
                                 logger.info(
                                     "Streaming produced tool calls only; executing",

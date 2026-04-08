@@ -88,6 +88,8 @@ class AudioProcessor:
         Skips WAV header parsing — use when you already have raw PCM16 bytes.
         Falls back to convert_to_ulaw_8k via a WAV wrapper on failure.
         """
+        # Preserve original data for fallback (ratecv reassigns pcm_data)
+        original_pcm = pcm_data
         try:
             if input_rate != ULAW_SAMPLE_RATE:
                 pcm_data, _ = audioop.ratecv(
@@ -98,14 +100,18 @@ class AudioProcessor:
             logging.warning(
                 "pcm16_to_ulaw_8k failed (%s), falling back to WAV path", exc
             )
-            # Build a minimal WAV wrapper and delegate to the WAV-aware path
+            # Build a minimal WAV wrapper using ORIGINAL data and delegate
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(input_rate)
-                wf.writeframes(pcm_data)
-            return AudioProcessor.convert_to_ulaw_8k(buf.getvalue(), input_rate)
+                wf.writeframes(original_pcm)
+            ulaw_data = AudioProcessor.convert_to_ulaw_8k(buf.getvalue(), input_rate)
+            if not ulaw_data:
+                logging.error("pcm16_to_ulaw_8k fallback also failed, returning empty")
+                return b""
+            return ulaw_data
 
     @staticmethod
     def convert_to_ulaw_8k(input_data: bytes, input_rate: int) -> bytes:

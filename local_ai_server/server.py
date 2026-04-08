@@ -2311,6 +2311,10 @@ class LocalAIServer:
             logging.warning("🧪 MOCK MODELS - reload_models is a no-op")
             return
         try:
+            # Clear TTS phrase cache (voice/model may have changed)
+            if self._tts_cache:
+                logging.info("🔄 Clearing TTS phrase cache (%d entries)", len(self._tts_cache))
+                self._tts_cache.clear()
             await self._cleanup_kroko_backend()
             await self.initialize_models(startup=False)
             logging.info("✅ Models reloaded successfully")
@@ -2636,8 +2640,16 @@ class LocalAIServer:
             thread_task = loop.run_in_executor(None, _stream_worker)
 
             token_count = 0
+            idle_timeout = self.config.llm_infer_timeout_sec
             while True:
-                token = await token_queue.get()
+                try:
+                    token = await asyncio.wait_for(token_queue.get(), timeout=idle_timeout)
+                except asyncio.TimeoutError:
+                    logging.warning(
+                        "🧠 LLM STREAMING TIMEOUT - No token in %ss, aborting",
+                        idle_timeout,
+                    )
+                    break
                 if token is None:
                     break
                 token_count += 1
@@ -2927,9 +2939,12 @@ class LocalAIServer:
         return prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages
 
     def _tts_cache_key(self, text: str) -> str:
-        """Build a cache key from TTS backend + model path + normalized text."""
+        """Build a cache key from TTS backend + model path + voice params + text."""
         model_path = getattr(self, "tts_model_path", "") or ""
-        return f"{self.tts_backend}:{model_path}:{text.strip().lower()}"
+        # Include voice-specific params to avoid serving stale audio after config change
+        speaker = getattr(self, "silero_speaker", "") or ""
+        voice = getattr(self, "kokoro_voice", "") or ""
+        return f"{self.tts_backend}:{model_path}:{speaker}:{voice}:{text.strip()}"
 
     async def process_tts(self, text: str) -> bytes:
         """Process TTS with 8kHz uLaw generation - routes to appropriate backend.

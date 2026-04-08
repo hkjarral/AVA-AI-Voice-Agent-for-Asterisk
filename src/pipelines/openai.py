@@ -382,6 +382,7 @@ class OpenAILLMAdapter(LLMComponent):
     """# Milestone7: OpenAI LLM adapter supporting Chat Completions and Realtime."""
 
     supports_streaming = True
+    _pending_tool_calls_by_call: dict  # call_id -> list of tool calls
 
     def __init__(
         self,
@@ -399,6 +400,7 @@ class OpenAILLMAdapter(LLMComponent):
         self._session_factory = session_factory
         self._session: Optional[aiohttp.ClientSession] = None
         self._default_timeout = float(self._pipeline_defaults.get("response_timeout_sec", provider_config.response_timeout_sec))
+        self._pending_tool_calls_by_call: dict = {}
 
     async def start(self) -> None:
         logger.debug(
@@ -650,14 +652,24 @@ class OpenAILLMAdapter(LLMComponent):
     ) -> AsyncIterator[str]:
         """Stream tokens from OpenAI Chat Completions API.
 
-        Tool calls detected in the stream are accumulated and stored in
-        ``self._pending_tool_calls`` so the engine can retrieve them after
-        streaming completes.
+        Tool calls detected in the stream are accumulated per-call in
+        ``self._pending_tool_calls_by_call[call_id]`` so the engine can
+        retrieve them after streaming completes (thread-safe for concurrent calls).
+
+        Falls back to non-streaming generate() for realtime transport mode.
         """
-        self._pending_tool_calls: list = []
+        self._pending_tool_calls_by_call[call_id] = []
         merged = self._compose_options(options)
         if not merged["api_key"]:
             raise RuntimeError("OpenAI LLM requires an API key")
+
+        # Realtime transport doesn't support Chat Completions streaming
+        if bool(merged.get("use_realtime")):
+            result = await self.generate(call_id, transcript, context, options)
+            text = result.text if isinstance(result, LLMResponse) else str(result)
+            if text:
+                yield text
+            return
 
         await self._ensure_session()
         assert self._session
@@ -735,7 +747,7 @@ class OpenAILLMAdapter(LLMComponent):
                         params = json.loads(entry["arguments"]) if entry["arguments"] else {}
                     except json.JSONDecodeError:
                         params = {}
-                    self._pending_tool_calls.append({
+                    self._pending_tool_calls_by_call[call_id].append({
                         "id": entry["id"],
                         "name": entry["name"],
                         "parameters": params,
@@ -744,8 +756,8 @@ class OpenAILLMAdapter(LLMComponent):
                 logger.info(
                     "OpenAI streaming detected tool calls",
                     call_id=call_id,
-                    tool_count=len(self._pending_tool_calls),
-                    tools=[tc["name"] for tc in self._pending_tool_calls],
+                    tool_count=len(self._pending_tool_calls_by_call[call_id]),
+                    tools=[tc["name"] for tc in self._pending_tool_calls_by_call[call_id]],
                 )
 
         except aiohttp.ClientError as e:

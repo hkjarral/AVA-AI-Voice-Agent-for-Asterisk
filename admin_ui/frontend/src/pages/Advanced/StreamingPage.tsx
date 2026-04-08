@@ -343,7 +343,7 @@ const StreamingPage = () => {
                         />
                         <FormInput
                             label="Filler Phrases"
-                            value={(streamingConfig.pipeline_filler_phrases || ['One moment please.', 'Let me check on that.', 'Sure thing.', 'Just a moment.']).join(', ')}
+                            value={(Array.isArray(streamingConfig.pipeline_filler_phrases) ? streamingConfig.pipeline_filler_phrases : ['One moment please.', 'Let me check on that.', 'Sure thing.', 'Just a moment.']).join(', ')}
                             onChange={(e) => updateStreamingConfig('pipeline_filler_phrases', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
                             disabled={!streamingConfig.pipeline_filler_enabled}
                             tooltip="Comma-separated list of filler phrases to randomly choose from. One is selected at random before each LLM turn."
