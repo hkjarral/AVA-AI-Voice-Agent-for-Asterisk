@@ -692,8 +692,16 @@ class StreamingConfig(BaseModel):
     egress_force_mulaw: bool = Field(default=False)
     # Overlap LLM token streaming with TTS synthesis in modular pipelines.
     # Streams tokens → splits into sentences → synthesizes each sentence concurrently.
-    # Only applies when tools are NOT active for the turn (can't detect tool calls mid-stream).
     pipeline_streaming_overlap: bool = Field(default=True)
+    # Play a brief filler phrase (e.g. "One moment please.") via the pipeline TTS
+    # adapter immediately when a user turn is detected, before LLM inference starts.
+    pipeline_filler_enabled: bool = Field(default=False)
+    pipeline_filler_phrases: List[str] = Field(default_factory=lambda: [
+        "One moment please.",
+        "Let me check on that.",
+        "Sure thing.",
+        "Just a moment.",
+    ])
 
 
 class LoggingConfig(BaseModel):

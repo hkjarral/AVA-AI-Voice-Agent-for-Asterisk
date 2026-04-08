@@ -10549,10 +10549,58 @@ class Engine:
                     # System prompt only in first turn (when history is empty)
                     context_for_llm = {"prior_messages": _sanitize_for_llm(conversation_history)}
 
+                    # ── Pipeline filler audio: instant ack before LLM ──
+                    _streaming_cfg = getattr(self.config, "streaming", None)
+                    _filler_enabled = getattr(_streaming_cfg, "pipeline_filler_enabled", False) if _streaming_cfg else False
+                    if _filler_enabled and pipeline.tts_adapter:
+                        _filler_phrases = getattr(_streaming_cfg, "pipeline_filler_phrases", None) or []
+                        if _filler_phrases:
+                            import random as _rnd
+                            _filler_text = _rnd.choice(_filler_phrases)
+                            try:
+                                _filler_q: asyncio.Queue = asyncio.Queue(maxsize=64)
+                                _old_pn = getattr(session, "provider_name", None)
+                                session.provider_name = "pipeline"
+
+                                _tts_fmt = (pipeline.tts_options or {}).get("format")
+                                if not isinstance(_tts_fmt, dict):
+                                    _tts_fmt = (pipeline.tts_options or {}).get("target_format")
+                                if not isinstance(_tts_fmt, dict):
+                                    _tts_fmt = {}
+                                _filler_enc = str(_tts_fmt.get("encoding") or _tts_fmt.get("format") or "mulaw")
+                                try:
+                                    _filler_rate = int(_tts_fmt.get("sample_rate") or _tts_fmt.get("sample_rate_hz") or 8000)
+                                except Exception:
+                                    _filler_rate = 8000
+
+                                _filler_sid = await self.streaming_playback_manager.start_streaming_playback(
+                                    call_id, _filler_q,
+                                    playback_type="pipeline-tts-filler",
+                                    source_encoding=_filler_enc,
+                                    source_sample_rate=_filler_rate,
+                                )
+                                if _filler_sid:
+                                    async for _fc in pipeline.tts_adapter.synthesize(call_id, _filler_text, pipeline.tts_options):
+                                        if _fc:
+                                            await _filler_q.put(_fc)
+                                    try:
+                                        _filler_q.put_nowait(None)
+                                    except asyncio.QueueFull:
+                                        asyncio.create_task(_filler_q.put(None))
+                                    logger.info(
+                                        "Pipeline filler audio emitted",
+                                        call_id=call_id,
+                                        phrase=_filler_text,
+                                    )
+                                if _old_pn is not None:
+                                    session.provider_name = _old_pn
+                            except Exception:
+                                logger.debug("Pipeline filler audio failed", call_id=call_id, exc_info=True)
+
                     # ── Streaming overlap: LLM tokens → sentence split → TTS ──
-                    # Only when: no tools active, streaming playback, config enabled,
-                    # and the LLM adapter supports generate_stream.
-                    _has_tools = bool((llm_options or {}).get("tools"))
+                    # Works even when tools are configured: if the LLM returns a tool
+                    # call instead of text, generate_stream() yields nothing and we
+                    # fall through to the serial path for tool execution.
                     _streaming_cfg = getattr(self.config, "streaming", None)
                     _overlap_enabled = getattr(_streaming_cfg, "pipeline_streaming_overlap", False) if _streaming_cfg else False
                     _has_stream_method = hasattr(pipeline.llm_adapter, "generate_stream")
@@ -10566,8 +10614,7 @@ class Engine:
                         _use_streaming_pb = self.config.downstream_mode != "file"
 
                     if (
-                        not _has_tools
-                        and _overlap_enabled
+                        _overlap_enabled
                         and _has_stream_method
                         and _use_streaming_pb
                     ):
@@ -10575,6 +10622,7 @@ class Engine:
                             "Pipeline streaming overlap active",
                             call_id=call_id,
                             pipeline=pipeline_label,
+                            tools_configured=bool((llm_options or {}).get("tools")),
                         )
                         _SENTENCE_RE = re.compile(r"[.!?]\s+")
                         sentence_buffer = ""
@@ -10694,6 +10742,13 @@ class Engine:
                             session.conversation_history = list(conversation_history)
                             await self.session_store.upsert_call(session)
                             return
+                        else:
+                            # Streaming produced no text — likely a tool call response.
+                            # Fall through to serial path which handles tool calls.
+                            logger.info(
+                                "Pipeline streaming produced no text; falling to serial path for tool handling",
+                                call_id=call_id,
+                            )
 
                     # ── Serial path (original) ──
                     try:
