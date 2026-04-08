@@ -10618,7 +10618,7 @@ class Engine:
                     # fall through to the serial path for tool execution.
                     _streaming_cfg = getattr(self.config, "streaming", None)
                     _overlap_enabled = getattr(_streaming_cfg, "pipeline_streaming_overlap", False) if _streaming_cfg else False
-                    _has_stream_method = hasattr(pipeline.llm_adapter, "generate_stream")
+                    _adapter_supports_streaming = getattr(pipeline.llm_adapter, "supports_streaming", False)
 
                     _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
                     if _tts_dm_override == "stream":
@@ -10630,7 +10630,7 @@ class Engine:
 
                     if (
                         _overlap_enabled
-                        and _has_stream_method
+                        and _adapter_supports_streaming
                         and _use_streaming_pb
                     ):
                         logger.info(

@@ -381,6 +381,8 @@ def _pcm16le_to_wav(audio_pcm16: bytes, sample_rate_hz: int) -> bytes:
 class OpenAILLMAdapter(LLMComponent):
     """# Milestone7: OpenAI LLM adapter supporting Chat Completions and Realtime."""
 
+    supports_streaming = True
+
     def __init__(
         self,
         component_key: str,

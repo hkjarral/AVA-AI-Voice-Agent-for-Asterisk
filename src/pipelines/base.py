@@ -284,6 +284,11 @@ class STTComponent(Component):
 class LLMComponent(Component):
     """Language model component."""
 
+    # Override to True in adapters that implement real token-level streaming
+    # via generate_stream(). The engine checks this to decide whether to use
+    # the streaming overlap pipeline or the serial path.
+    supports_streaming: bool = False
+
     @abstractmethod
     async def generate(
         self,
