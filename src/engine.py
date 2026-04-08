@@ -10751,34 +10751,64 @@ class Engine:
                             conversation_history.append(_ts_msg("assistant", response_text))
                             session.conversation_history = list(conversation_history)
                             await self.session_store.upsert_call(session)
-                            return
+
+                            # Check for tool calls detected during streaming
+                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls", None) or []
+                            if _pending_tools:
+                                logger.info(
+                                    "Streaming path executing pending tool calls",
+                                    call_id=call_id,
+                                    tool_count=len(_pending_tools),
+                                    tools=[tc.get("name") for tc in _pending_tools],
+                                )
+                                tool_calls = list(_pending_tools)
+                                pipeline.llm_adapter._pending_tool_calls = []
+                                # Jump to tool execution (reuse serial path's tool handling)
+                                # by setting response_text and tool_calls, then breaking out
+                            else:
+                                return
+
+                            # Fall through to tool execution below if tool calls were found
                         else:
-                            # Streaming produced no text — likely a tool call response.
-                            # Fall through to serial path which handles tool calls.
-                            logger.info(
-                                "Pipeline streaming produced no text; falling to serial path for tool handling",
-                                call_id=call_id,
-                            )
+                            # Streaming produced no text — likely a tool-call-only response.
+                            _pending_tools = getattr(pipeline.llm_adapter, "_pending_tool_calls", None) or []
+                            if _pending_tools:
+                                tool_calls = list(_pending_tools)
+                                pipeline.llm_adapter._pending_tool_calls = []
+                                response_text = ""
+                                logger.info(
+                                    "Streaming produced tool calls only; executing",
+                                    call_id=call_id,
+                                    tools=[tc.get("name") for tc in tool_calls],
+                                )
+                            else:
+                                # No text and no tools — fall through to serial path
+                                logger.info(
+                                    "Pipeline streaming produced no text; falling to serial path",
+                                    call_id=call_id,
+                                )
 
                     # ── Serial path (original) ──
-                    try:
-                        llm_result = await pipeline.llm_adapter.generate(
-                            call_id,
-                            transcript_text,
-                            context_for_llm,  # Include conversation history
-                            llm_options,  # Use context-injected options (includes system_prompt)
-                        )
-                    except Exception:
-                        logger.debug("LLM generate failed", call_id=call_id, exc_info=True)
-                        return
+                    # Skip if streaming path already set tool_calls
+                    if not tool_calls:
+                        try:
+                            llm_result = await pipeline.llm_adapter.generate(
+                                call_id,
+                                transcript_text,
+                                context_for_llm,  # Include conversation history
+                                llm_options,  # Use context-injected options (includes system_prompt)
+                            )
+                        except Exception:
+                            logger.debug("LLM generate failed", call_id=call_id, exc_info=True)
+                            return
 
-                    # Handle structured LLM response with tool calls
-                    if isinstance(llm_result, LLMResponse):
-                        response_text = (llm_result.text or "").strip()
-                        tool_calls = llm_result.tool_calls
-                    else:
-                        response_text = (str(llm_result) or "").strip()
-                        tool_calls = []
+                        # Handle structured LLM response with tool calls
+                        if isinstance(llm_result, LLMResponse):
+                            response_text = (llm_result.text or "").strip()
+                            tool_calls = llm_result.tool_calls
+                        else:
+                            response_text = (str(llm_result) or "").strip()
+                            tool_calls = []
 
                     # Contexts are the source of truth for tool allowlisting: enforce at execution time too.
                     allowed_tools: set[str] = set()
@@ -10911,22 +10941,25 @@ class Engine:
 
                     if not response_text and not tool_calls:
                         return
-                    
-                    # Update conversation history
-                    conversation_history.append(_ts_msg("user", transcript_text))
-                    if response_text:
-                        conversation_history.append(_ts_msg("assistant", response_text))
-                    elif tool_calls:
-                        conversation_history.append(_ts_msg("assistant", "(tool execution)"))
-                    
-                    # AAVA-85: Persist session history so tools (email) can access it
-                    session.conversation_history = list(conversation_history)
-                    await self.session_store.upsert_call(session)
+
+                    # Update conversation history (skip if streaming path already did this)
+                    _streaming_already_recorded = full_response_text.strip() if 'full_response_text' in dir() else ""
+                    if not _streaming_already_recorded:
+                        conversation_history.append(_ts_msg("user", transcript_text))
+                        if response_text:
+                            conversation_history.append(_ts_msg("assistant", response_text))
+                        elif tool_calls:
+                            conversation_history.append(_ts_msg("assistant", "(tool execution)"))
+
+                        # AAVA-85: Persist session history so tools (email) can access it
+                        session.conversation_history = list(conversation_history)
+                        await self.session_store.upsert_call(session)
 
                     playback_id = None
-                    
+
                     # 1. Synthesize and Play Text (if any)
-                    if response_text:
+                    # Skip TTS if streaming path already played audio
+                    if response_text and not _streaming_already_recorded:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
                         logger.debug(f"TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
