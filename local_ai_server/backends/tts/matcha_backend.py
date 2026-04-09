@@ -44,11 +44,11 @@ class MatchaBackend(TTSBackendInterface):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import sherpa_onnx
-            return hasattr(sherpa_onnx, "OfflineTts")
-        except ImportError:
-            return False
+        # Matcha TTS synthesis is handled directly in server.py via
+        # _process_tts_matcha() using sherpa-onnx OfflineTts. This backend
+        # class is a registry placeholder — do NOT report as available since
+        # initialize()/synthesize() are not wired to the real implementation.
+        return False
 
     def initialize(self, config: Dict[str, Any]) -> None:
         pass
@@ -57,6 +57,7 @@ class MatchaBackend(TTSBackendInterface):
         self._tts = None
 
     def synthesize(self, text: str) -> bytes:
+        # Real synthesis is in server.py:_process_tts_matcha()
         return b""
 
     def status(self) -> Dict[str, Any]:

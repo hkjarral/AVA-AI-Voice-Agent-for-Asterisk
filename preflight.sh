@@ -2506,7 +2506,7 @@ check_host_project_root() {
         log_warn "HOST_PROJECT_ROOT=$current_root does not match actual project dir: $SCRIPT_DIR"
         log_info "  Admin UI container operations may fail with incorrect bind mounts"
         log_info "  Fix: Update HOST_PROJECT_ROOT in .env to: $SCRIPT_DIR"
-        FIX_CMDS+=("sed -i 's|^HOST_PROJECT_ROOT=.*|HOST_PROJECT_ROOT=$SCRIPT_DIR|' '$SCRIPT_DIR/.env'")
+        FIX_CMDS+=("sed -i 's|^HOST_PROJECT_ROOT=.*|HOST_PROJECT_ROOT=${SCRIPT_DIR}|' '${SCRIPT_DIR}/.env'")
     else
         log_ok "HOST_PROJECT_ROOT matches project directory"
     fi

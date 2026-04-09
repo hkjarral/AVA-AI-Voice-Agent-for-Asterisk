@@ -11128,6 +11128,13 @@ class Engine:
                                 await asyncio.sleep(len(response_text) * 0.08)
                             except Exception:
                                 pass
+                        elif _streaming_handled and response_text:
+                            try:
+                                # Streaming path played audio without setting playback_id;
+                                # estimate wait from response length so caller hears farewell
+                                await asyncio.sleep(len(response_text) * 0.08)
+                            except Exception:
+                                pass
 
                         from src.tools.context import ToolExecutionContext
                         from src.tools.registry import tool_registry

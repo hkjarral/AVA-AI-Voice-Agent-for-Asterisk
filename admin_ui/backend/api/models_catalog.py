@@ -794,7 +794,7 @@ LLM_MODELS = [
 MATCHA_TTS_MODELS = [
     {"id": "matcha_en_ljspeech", "name": "Matcha LJSpeech (en, Female)", "language": "en-US", "region": "global", "backend": "matcha",
      "size_mb": 80, "size_display": "~80 MB (model + vocoder)",
-     "path": "/app/models/tts/matcha-icefall-en_US-ljspeech",
+     "model_path": "matcha-icefall-en_US-ljspeech",
      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-en_US-ljspeech.tar.bz2",
      "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/hifigan_v2.onnx",
      "recommended": True,
@@ -802,7 +802,7 @@ MATCHA_TTS_MODELS = [
      "note": "Requires sherpa-onnx (INCLUDE_SHERPA=true). Download model + vocoder to use."},
     {"id": "matcha_zh_baker", "name": "Matcha Baker (zh, Female)", "language": "zh-CN", "region": "asia", "backend": "matcha",
      "size_mb": 80, "size_display": "~80 MB (model + vocoder)",
-     "path": "/app/models/tts/matcha-icefall-zh-baker",
+     "model_path": "matcha-icefall-zh-baker",
      "download_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/matcha-icefall-zh-baker.tar.bz2",
      "vocoder_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/hifigan_v2.onnx",
      "description": "Fast Chinese TTS via flow matching. Requires Vocos vocoder.",
