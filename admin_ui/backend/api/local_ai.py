@@ -367,12 +367,17 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                     model_dir = os.path.dirname(request.model_path)
                     for voc_name in ("hifigan_v2.onnx", "vocos.onnx"):
                         voc_path = os.path.join(model_dir, voc_name)
-                        # Use the container path for env (model_path is already /app/models/...)
-                        env_updates["MATCHA_VOCODER_PATH"] = os.path.join(
-                            os.path.dirname(request.model_path), voc_name
+                        if os.path.isfile(voc_path):
+                            env_updates["MATCHA_VOCODER_PATH"] = voc_path
+                            yaml_updates["matcha_vocoder_path"] = voc_path
+                            break
+                    else:
+                        # Fallback: assume hifigan_v2 (container path)
+                        fallback_voc = os.path.join(
+                            os.path.dirname(request.model_path), "hifigan_v2.onnx"
                         )
-                        yaml_updates["matcha_vocoder_path"] = env_updates["MATCHA_VOCODER_PATH"]
-                        break
+                        env_updates["MATCHA_VOCODER_PATH"] = fallback_voc
+                        yaml_updates["matcha_vocoder_path"] = fallback_voc
 
     elif request.model_type == "llm":
         if request.model_path:
