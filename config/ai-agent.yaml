@@ -4,9 +4,8 @@ asterisk:
 audio_transport: audiosocket
 audiosocket:
   format: slin
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8090
-  advertise_host: ai_engine
 barge_in:
   enabled: true
   initial_protection_ms: 200
@@ -1210,9 +1209,7 @@ external_media:
   rtp_host: 0.0.0.0
   rtp_port: 18080
   sample_rate: 16000
-  advertise_host: ai_engine
   allowed_remote_hosts:
-    - 192.168.97.5
     - 127.0.0.1
 llm:
   initial_greeting: Hello, how can I help you today?
@@ -1230,13 +1227,13 @@ pipelines:
           chat_template_kwargs:
             enable_thinking: false
       stt:
-        ws_url: ws://local_ai_server:8765
+        ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
         chunk_ms: 160
         mode: stt
         stream_format: pcm16_16k
         streaming: true
       tts:
-        ws_url: ws://local_ai_server:8765
+        ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
         mode: tts
         response_timeout_sec: 30
         format:
@@ -1402,8 +1399,8 @@ providers:
     vad_silence_duration_ms: 500
   local:
     # Local AI Server WebSocket URL. Bridge network uses container name.
-    base_url: ws://local_ai_server:8765
-    ws_url: ws://local_ai_server:8765
+    base_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
       - stt
@@ -1439,7 +1436,7 @@ providers:
     max_tokens: 32
     temperature: 0.4
     type: local
-    ws_url: ws://local_ai_server:8765
+    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
   local_stt:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
@@ -1451,7 +1448,7 @@ providers:
     stt_backend: vosk
     stt_model: models/stt/vosk-model-en-us-0.22
     type: local
-    ws_url: ws://local_ai_server:8765
+    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
   local_tts:
     auth_token: ${LOCAL_WS_AUTH_TOKEN:-}
     capabilities:
@@ -1460,7 +1457,7 @@ providers:
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=10.0}
     tts_voice: models/tts/en_US-lessac-medium.onnx
     type: local
-    ws_url: ws://local_ai_server:8765
+    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
   native_llm:
     capabilities:
       - llm
