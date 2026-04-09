@@ -22,14 +22,26 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 
 | Milestone | Version | Details |
 |-----------|---------|---------|
+| CPU Latency Optimization | ✅ v6.4.1 | Streaming LLM→TTS overlap, pipeline filler audio, Qwen 2.5-1.5B CPU LLM, preflight hardening |
+| Matcha-TTS Backend | ✅ v6.4.1 | Matcha-TTS with audioop conversion, model catalog, vocoder auto-detection |
+| Modular Provider Subtypes | ✅ v6.4.1 | UI for adding custom LLM/STT/TTS providers as pipeline components |
 | Azure Speech STT/TTS Adapters | ✅ v6.3.2 | `src/pipelines/azure.py` — Fast REST, Realtime WebSocket, SSML TTS |
 | MiniMax LLM Adapter | ✅ v6.3.2 | M2.7 models via OpenAI-compatible API with tool-calling |
 | Call Recording Playback | ✅ v6.3.2 | Play back Asterisk recordings in Call Details modal |
-| Attended Transfer Streaming & Screening | ✅ v6.4.0 | Three screening modes, RTP streaming delivery, provider-agnostic tool guidance |
+| Attended Transfer Streaming & Screening | ✅ v6.4.0 | Three screening modes (basic_tts, ai_briefing, caller_recording), RTP streaming delivery, provider-agnostic tool guidance |
 | Russian Speech Backends | ✅ v6.4.0 | Sherpa offline STT (VAD-gated), T-one STT (Russian CTC), Silero TTS (multi-language) |
 | HTTP Tool Wildcard Extraction | ✅ v6.4.0 | JSONPath `[*]` array extraction in output variables |
 | Conversation Timestamps | ✅ v6.4.0 | Per-message timestamps in conversation history + Call Log UI |
 | Fullscreen UI Panels | ✅ v6.4.0 | Maximize/minimize toggle for dashboard panels |
+
+### v6.5.0 — Local AI Performance & Polish
+
+| Feature | Description | Key Files | Effort |
+|---------|-------------|-----------|--------|
+| **Local LLM Token Streaming (WebSocket)** | Server emits `llm_token` messages for pipeline `local_llm` adapter. Currently `_handle_llm_request()` in `local_ai_server/server.py` ignores `stream: true` and returns one `llm_response`. Wiring `process_llm_chat_streaming()` into the WS handler + setting `supports_streaming = True` on `LocalLLMAdapter` would give pipeline-mode users the same sentence-by-sentence overlap that full-mode already has. | `local_ai_server/server.py:5498` (WS handler), `src/pipelines/local.py:979` (adapter) | Medium (3-4h) |
+| **Concurrent LLM+TTS Producer/Consumer** | In `_process_full_pipeline_streaming()` (`server.py:5067`), `await self.process_tts()` blocks the token loop ~200-800ms per sentence. Refactor into two `asyncio.create_task` — producer consumes tokens and pushes sentences to a queue, consumer synthesizes and emits. Needs backpressure and `_llm_lock` coordination. Marginal gain on CPU but significant with faster LLMs (GPU/remote). | `local_ai_server/server.py:5067-5187` | Medium (3-4h) |
+| **Speculative LLM on Stable Partials** | Start LLM inference speculatively when STT partial transcript is stable >300ms with 5+ words. If final matches → use cached result (saves 300-1500ms). If not → discard and run fresh. Config-stubbed (`speculative_llm_enabled` etc. in `local_ai_server/config.py:154-157`). Requires `_llm_lock` coordination and session state for speculative results. Only benefits streaming STT backends (Vosk, Sherpa, Kroko) — not Whisper. | `local_ai_server/config.py:154`, `local_ai_server/server.py` (new), `local_ai_server/session.py` (new fields) | High (6-8h) |
+| **Comfort Noise Injection** | Replace digital silence with low-level telephony comfort noise (~-40dB) during processing gaps (between STT final and first TTS audio). Pre-generate 1 second of µ-law noise at startup, inject into `StreamingPlaybackManager` when buffer is empty. Config-stubbed (`comfort_noise_enabled` in `local_ai_server/config.py:166`). Cosmetic improvement — filler audio already addresses the biggest UX gap. | `src/core/streaming_playback_manager.py`, `local_ai_server/config.py:166` | Low (2h) |
 
 ### Planned Milestones
 
