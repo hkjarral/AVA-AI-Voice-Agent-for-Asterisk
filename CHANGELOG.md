@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- Additional provider integrations
+- Enhanced monitoring features
+
+## [6.4.1] - 2026-04-09
+
 ### Added
 
 - **CPU-Only Latency Optimization — Streaming LLM→TTS Overlap (#301)**: Reduces perceived response latency from 3-10s to sub-2s on pipeline configurations by overlapping LLM token generation with per-sentence TTS synthesis. Instead of waiting for the full LLM response before starting TTS, tokens are streamed and split at sentence boundaries (`.!?`), with each sentence synthesized and played immediately. Includes multi-chunk TTS protocol extension (`utterance_id`, `chunk_index`, `is_final` metadata fields — backward compatible), `supports_streaming` capability flag on LLM adapters (currently OpenAI-compatible only), and per-call tool state isolation for concurrent streaming sessions. Tested and validated on voiprnd with Google Live, Deepgram, OpenAI Realtime, and Local Hybrid (Qwen3-30B + Piper) pipelines.
@@ -45,11 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Whisper echo-guard multi-chunk support**: `_arm_whisper_stt_suppression()` stacks chunk durations for streaming responses instead of resetting per-chunk. Barge-in clears suppression immediately via `_clear_whisper_stt_suppression`.
 - **Semantic front-loading prompt**: Streaming pipeline appends instruction to begin responses with a brief acknowledgment clause, ensuring the first TTS chunk is meaningful.
 - **TTS cache key includes voice/speaker params**: Prevents serving stale audio after voice configuration changes. Cache cleared on `reload_models()`.
-
-## [6.4.1] - Pending community verification
-
-### Fixed
-
 - **Whisper first-run model download exceeds startup polling timeout (#299)**: The wizard's server-readiness polling loop used a hardcoded 2-minute timeout for all non-build starts. First-run HuggingFace model downloads (e.g. `distil-large-v3`, `turbo`, `large-v3`) take 3+ minutes on typical connections, causing a false "Polling timed out" error even though the server came up successfully. Directly related to the #297 fix — correcting the turbo model path now causes the download to actually proceed, making this timeout reliably hit. Fix: backend `/api/wizard/local/server-logs` now detects HuggingFace download activity in container logs and returns a `downloading: true` flag; frontend polling loop bumps its ceiling from 2 minutes to 10 minutes on first detection and shows a "⬇️ Downloading model from HuggingFace, please wait…" status message.
 - **Sherpa offline transducer crash on startup (#296)**: Wizard never wrote `SHERPA_MODEL_TYPE` to `.env`, so offline transducer models were loaded by the online (streaming) recognizer (`SherpaONNXSTTBackend`). The online recognizer calls `OnlineRecognizer.from_transducer()` against offline model files that lack the `encoder_dims` metadata field, causing an immediate crash and Docker restart loop. Fix: added `model_type` field (`"online"` / `"offline"`) to all `SHERPA_STT_MODELS` catalog entries and updated both wizard code paths (`download_selected_models` and `save_setup_config`) to emit `SHERPA_MODEL_TYPE` alongside `SHERPA_MODEL_PATH`.
 - **Whisper Large v3 Turbo STT model init failure (#297)**: `FASTER_WHISPER_STT_MODELS` listed `model_path: "large-v3-turbo"` but `faster-whisper` 1.0.3 (our pinned version) does not recognize `"turbo"` or `"large-v3-turbo"` as valid model size shorthands — turbo support was only added in `faster-whisper` 1.1.0. Fix: changed `model_path` to the HuggingFace repo ID `"deepdml/faster-whisper-large-v3-turbo-ct2"`, which `faster-whisper` 1.0.3 accepts directly (any `owner/repo` string bypasses the model size enum and downloads via `snapshot_download`). Also added `download_root` to persist downloaded models under the bind-mounted volume (`/app/models/stt/faster_whisper_cache`) so they survive container rebuilds.

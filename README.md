@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-6.4.0-blue.svg)
+![Version](https://img.shields.io/badge/version-6.4.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -25,7 +25,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 ## 📖 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
-- [🎉 What's New](#-whats-new-in-v640)
+- [🎉 What's New](#-whats-new-in-v641)
 - [🌟 Why Asterisk AI Voice Agent?](#-why-asterisk-ai-voice-agent)
 - [✨ Features](#-features)
 - [🎥 Demo](#-demo)
@@ -159,12 +159,12 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 ---
 
-## 🎉 What's New in v6.4.0
+## 🎉 What's New in v6.4.1
 
 <details open>
 <summary><b>Latest Updates</b></summary>
 
-### ⚡ CPU Latency Optimization — Streaming LLM→TTS Overlap (Unreleased)
+### ⚡ CPU Latency Optimization — Streaming LLM→TTS Overlap (v6.4.1)
 - **Sentence-by-sentence streaming**: LLM tokens are streamed and split at sentence boundaries — each sentence is synthesized and played immediately instead of waiting for the full response. Reduces perceived latency from 3-10s to sub-2s on pipeline configurations.
 - **Pipeline filler audio**: Instant acknowledgment phrase (e.g. "One moment please.") plays in the agent's own voice before LLM starts thinking. Configurable phrases via Admin UI.
 - **Qwen 2.5-1.5B Instruct recommended for CPU**: New 940MB model achieves ~15-30 tok/s on CPU (vs Phi-3's ~0.8 tok/s). Setup Wizard auto-recommends with "⚡ CPU Recommended" badge.
