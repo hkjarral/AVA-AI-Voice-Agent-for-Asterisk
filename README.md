@@ -164,6 +164,13 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 <details open>
 <summary><b>Latest Updates</b></summary>
 
+### ⚡ CPU Latency Optimization — Streaming LLM→TTS Overlap (Unreleased)
+- **Sentence-by-sentence streaming**: LLM tokens are streamed and split at sentence boundaries — each sentence is synthesized and played immediately instead of waiting for the full response. Reduces perceived latency from 3-10s to sub-2s on pipeline configurations.
+- **Pipeline filler audio**: Instant acknowledgment phrase (e.g. "One moment please.") plays in the agent's own voice before LLM starts thinking. Configurable phrases via Admin UI.
+- **Qwen 2.5-1.5B Instruct recommended for CPU**: New 940MB model achieves ~15-30 tok/s on CPU (vs Phi-3's ~0.8 tok/s). Setup Wizard auto-recommends with "⚡ CPU Recommended" badge.
+- **Direct PCM→µ-law conversion**: Eliminates temp WAV file roundtrip in all 5 TTS backends (10-50ms saved per response).
+- **Preflight hardened**: Buildx detection, RAM/disk/network checks, GPU install gated behind `--apply-fixes`, all runtime ports validated.
+
 ### 📞 Attended Transfer Streaming & Screening (v6.4.0)
 - **Three screening modes**: `basic_tts` (caller ID announcement), `ai_briefing` (experimental AI conversation summary), `caller_recording` (records caller stating name/reason)
 - **Streaming delivery**: ExternalMedia RTP helper eliminates shared storage dependency for transfer announcements

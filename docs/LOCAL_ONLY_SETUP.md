@@ -592,10 +592,13 @@ Models are **not bundled** in Docker images. Download them via:
 
 ### Supported LLM Models (GGUF)
 
-- `phi-3-mini-4k-instruct.Q4_K_M.gguf` (recommended — good quality/speed balance)
-- `tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf` (fastest on CPU, lower quality)
-- `phi-3-mini-128k-instruct.Q4_K_M.gguf` (larger context)
+- `qwen2.5-1.5b-instruct-q4_k_m.gguf` (**recommended for CPU** — 940MB, ~15-30 tok/s, reliable tool calling)
+- `phi-3-mini-4k-instruct.Q4_K_M.gguf` (good quality but slow on CPU ~0.8 tok/s — better with GPU)
+- `tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf` (smallest, fastest on CPU, lower quality)
+- `phi-3-mini-128k-instruct.Q4_K_M.gguf` (larger context, GPU recommended)
 - Any llama.cpp compatible GGUF model
+
+> **CPU Performance Note:** Qwen 2.5-1.5B delivers ~7-9s per voice response with streaming overlap enabled (vs 19-24s with Phi-3). The Setup Wizard auto-recommends this model for CPU-only deployments. Enable `streaming.pipeline_streaming_overlap: true` and `streaming.pipeline_filler_enabled: true` in `ai-agent.yaml` for best perceived latency.
 
 ### Supported TTS Models
 

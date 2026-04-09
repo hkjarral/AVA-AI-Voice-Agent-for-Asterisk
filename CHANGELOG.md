@@ -7,10 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned
+### Added
 
-- Additional provider integrations
-- Enhanced monitoring features
+- **CPU-Only Latency Optimization — Streaming LLM→TTS Overlap (#301)**: Reduces perceived response latency from 3-10s to sub-2s on pipeline configurations by overlapping LLM token generation with per-sentence TTS synthesis. Instead of waiting for the full LLM response before starting TTS, tokens are streamed and split at sentence boundaries (`.!?`), with each sentence synthesized and played immediately. Includes multi-chunk TTS protocol extension (`utterance_id`, `chunk_index`, `is_final` metadata fields — backward compatible), `supports_streaming` capability flag on LLM adapters (currently OpenAI-compatible only), and per-call tool state isolation for concurrent streaming sessions. Tested and validated on voiprnd with Google Live, Deepgram, OpenAI Realtime, and Local Hybrid (Qwen3-30B + Piper) pipelines.
+- **Pipeline Filler Audio**: Play a brief acknowledgment phrase (e.g. "One moment please.") via the pipeline's TTS adapter immediately when a user turn is detected, before LLM inference starts. Provides instant perceived responsiveness. Filler uses the same TTS voice as real responses (Piper/Kokoro/etc.), not eSpeak. Configurable via `streaming.pipeline_filler_enabled` and `streaming.pipeline_filler_phrases` in `ai-agent.yaml`. Admin UI toggle on Streaming page.
+- **Direct PCM→µ-law Conversion**: `pcm16_to_ulaw_8k()` static method in `AudioProcessor` bypasses WAV file roundtrip in all 5 TTS backends (Piper, Kokoro, MeloTTS, Silero, Matcha). Saves 10-50ms per TTS call by eliminating disk I/O.
+- **eSpeak NG Backend**: New `EspeakNGBackend` class in `tts_backends.py` for ultra-fast filler phrase synthesis. Uses `espeak-ng --stdout` with in-memory WAV parsing (no temp files, no sox subprocess). Falls back gracefully when eSpeak is unavailable.
+- **TTS Phrase Cache**: Optional in-memory cache for repeated short phrases (greetings, confirmations). LRU eviction at 256 entries, cache key includes backend + model path + voice/speaker params. Cleared on `reload_models()`. Enable via `LOCAL_TTS_PHRASE_CACHE_ENABLED=true` env var.
+- **Qwen 2.5-1.5B Instruct as Recommended CPU LLM**: New model catalog entry (`qwen25_1_5b`, 940MB Q4_K_M). Achieves ~15-30 tok/s on CPU vs Phi-3's ~0.8 tok/s. Reliable `hangup_call` tool execution via heuristic parsing. ChatML format. Setup Wizard auto-recommends for CPU-only deployments with "⚡ CPU Recommended" badge. Default LLM path updated in `config.py`. `model_setup.sh` updated for light/medium CPU tiers (Phi-3 and TinyLlama kept as fallbacks).
+- **LLM Streaming in Local AI Server**: `process_llm_chat_streaming()` async generator yields tokens from `llama-cpp-python`'s `create_chat_completion(stream=True)` via asyncio.Queue + thread executor. Idle timeout prevents `_llm_lock` from being held indefinitely. Used by `_process_full_pipeline_streaming()` for sentence-by-sentence TTS in full mode.
+- **OpenAI LLM Adapter Streaming**: `generate_stream()` on `OpenAILLMAdapter` streams tokens via SSE with tool call accumulation from `delta.tool_calls`. Falls back to non-streaming for realtime transport mode.
+- **Admin UI Latency Settings**: New "Latency Optimization" section on Streaming page with toggles for pipeline streaming overlap, pipeline filler audio, and filler phrase configuration. Max latency display added to Call History detail view.
+
+### Fixed
+
+- **Barge-in config regression**: Barge-in thresholds were accidentally hardened globally (`energy_threshold` 1000→3000, `initial_protection_ms` 200→1500, etc.) affecting all providers. Reverted to responsive pre-branch values.
+- **Config defaults for host networking**: Reverted `advertise_host: ai_engine` and `ws_url: ws://local_ai_server:8765` back to `127.0.0.1` / `${LOCAL_WS_URL:-ws://127.0.0.1:8765}`. Docker service names only resolve in bridge networking; host networking (the default) requires `127.0.0.1`. This caused "Allocation failed" on AudioSocket originate for all users on host networking.
+- **Filler audio slot conflict**: Filler audio occupied the streaming playback slot, blocking the real LLM→TTS streaming session. Fixed by calling `stop_streaming_playback` after filler completes, with `tts_ended_ts` backdated to avoid the post-TTS echo protection dead zone.
+- **Tool calls lost during streaming**: When the LLM returned both text and tool calls (e.g. farewell + `hangup_call`), `generate_stream()` consumed the text but tool call deltas were silently dropped. Agent would say goodbye but never hang up. Fixed by accumulating `delta.tool_calls` from SSE chunks per-call and executing after playback.
+- **Streaming capability detection**: `hasattr(adapter, "generate_stream")` was always true because the base `LLMComponent` defines a default. Replaced with `supports_streaming` class attribute. Non-streaming adapters (local_llm, ollama) now correctly use the serial path.
+- **TTS phrase cache non-functional UI toggle**: The StreamingPage toggle wrote to `config.local_ai_server.*` in YAML, but `local_ai_server` reads from `LOCAL_TTS_PHRASE_CACHE` env var. Removed broken toggle (setting managed via `.env`).
+- **pcm16_to_ulaw_8k fallback data corruption**: If `audioop.ratecv` succeeded but `lin2ulaw` failed, the fallback WAV wrapper used the already-resampled data with the original sample rate. Now preserves original PCM data for fallback.
+
+### Improved
+
+- **Preflight hardening**: 8 gaps addressed:
+  - CRITICAL: GPU nvidia-container-toolkit install now gated behind `--apply-fixes` (previously ran `apt-get install` + `systemctl restart docker` unconditionally, killing running containers on re-run)
+  - Docker Buildx missing now detected as `log_fail` with auto-fix command (was silently skipped — root cause of "Docker Compose requires buildx plugin" errors)
+  - Buildx version regex uses portable `grep -oE` instead of GNU-only `grep -oP`
+  - Port checks expanded: 3003 (Admin UI), 8090 (AudioSocket), 15000 (Health), 18080 (ExternalMedia RTP)
+  - System resource checks: RAM (4GB fail / 8GB warn), disk space (10GB warning on models mount)
+  - Network connectivity check for huggingface.co before model downloads
+  - `HOST_PROJECT_ROOT` validated and auto-seeded in `.env` for Admin UI container management
+  - GPU passthrough test cached for 60 minutes via marker file (skips ~200MB CUDA image pull on re-run)
+- **Reduced jitter buffer warmup**: `streaming.min_start_ms` from 120ms to 60ms for faster first audio across all providers.
+- **Reduced Whisper STT buffer**: 1s to 500ms for faster transcript delivery with Whisper backends.
+- **Whisper echo-guard multi-chunk support**: `_arm_whisper_stt_suppression()` stacks chunk durations for streaming responses instead of resetting per-chunk. Barge-in clears suppression immediately via `_clear_whisper_stt_suppression`.
+- **Semantic front-loading prompt**: Streaming pipeline appends instruction to begin responses with a brief acknowledgment clause, ensuring the first TTS chunk is meaningful.
+- **TTS cache key includes voice/speaker params**: Prevents serving stale audio after voice configuration changes. Cache cleared on `reload_models()`.
 
 ## [6.4.1] - Pending community verification
 

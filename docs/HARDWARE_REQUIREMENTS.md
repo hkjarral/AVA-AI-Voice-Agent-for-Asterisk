@@ -158,6 +158,8 @@ Total:                     ~600MB
 Fully Local mode runs **STT + LLM + TTS** on your own hardware with **no cloud APIs**.
 
 - The **local LLM** is the bottleneck: CPU-only inference requires a modern CPU and enough RAM; for best UX and higher concurrency, use a GPU-backed local LLM where possible.
+- **CPU-optimized model**: Qwen 2.5-1.5B Instruct (940MB, ~15-30 tok/s on 16-core CPU). With streaming overlap + filler audio enabled, delivers ~7-9s per voice response. The Setup Wizard auto-recommends this model for CPU-only setups.
+- **GPU model**: Phi-3 Mini or larger models deliver sub-1s responses with GPU offloading.
 - Setup guide: `docs/LOCAL_ONLY_SETUP.md`
 
 ## GPU Acceleration (Optional)
