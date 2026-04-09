@@ -241,7 +241,7 @@ async def test_attended_transfer_ai_briefing_generates_intro_summary_and_prompt(
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
 
-    async def fake_generate(*, session, destination_description, timeout_sec):
+    async def fake_generate(*, session, destination_description, timeout_sec, **kwargs):
         return "John needs billing help."
 
     async def fake_tts(*, call_id, text, timeout_sec):
@@ -447,7 +447,7 @@ async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_genera
     async def fake_start_helper(*, call_id, agent_channel_id, attended_cfg=None):
         return {"rtp_session_id": f"attx:{call_id}:{agent_channel_id}"}
 
-    async def fake_generate(*, session, destination_description, timeout_sec):
+    async def fake_generate(*, session, destination_description, timeout_sec, **kwargs):
         return None
 
     async def fake_tts(*, call_id, text, timeout_sec):
