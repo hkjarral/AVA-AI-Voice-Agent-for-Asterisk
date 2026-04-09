@@ -1001,19 +1001,20 @@ docker compose "$@"' > /usr/local/bin/docker-compose
         log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
     fi
     
-    # Check buildx version (required >= 0.17 for compose build)
+    # Check buildx (required for compose build)
+    local BUILDX_INSTALL_CMD="mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
     if docker buildx version &>/dev/null 2>&1; then
-        BUILDX_VER=$(docker buildx version 2>/dev/null | grep -oP 'v?\K[0-9]+\.[0-9]+' | head -1)
+        BUILDX_VER=$(docker buildx version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
         BUILDX_MAJOR=$(echo "$BUILDX_VER" | cut -d. -f1)
         BUILDX_MINOR=$(echo "$BUILDX_VER" | cut -d. -f2)
 
         # Validate that version components are numeric before comparison
         if [[ "$BUILDX_MAJOR" =~ ^[0-9]+$ ]] && [[ "$BUILDX_MINOR" =~ ^[0-9]+$ ]]; then
             if [ "$BUILDX_MAJOR" -eq 0 ] && [ "$BUILDX_MINOR" -lt 17 ]; then
-                log_warn "Docker Buildx $BUILDX_VER - requires 0.17+ for compose build"
-                log_info "  Fix: mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
+                log_fail "Docker Buildx $BUILDX_VER too old - requires 0.17+ for compose build"
+                log_info "  Fix: $BUILDX_INSTALL_CMD"
                 log_info "  Docs: $COMPOSE_AAVA_DOCS_URL"
-                FIX_CMDS+=("mkdir -p /usr/local/lib/docker/cli-plugins && curl -L https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx && chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx")
+                FIX_CMDS+=("$BUILDX_INSTALL_CMD")
             else
                 log_ok "Docker Buildx: $BUILDX_VER"
             fi
@@ -1022,6 +1023,11 @@ docker compose "$@"' > /usr/local/bin/docker-compose
             log_warn "Docker Buildx version non-standard: $BUILDX_VER"
             log_info "  Skipping version check - ensure you have Buildx 0.17+ features"
         fi
+    else
+        log_fail "Docker Buildx not installed (required for docker compose build)"
+        log_info "  Fix: $BUILDX_INSTALL_CMD"
+        log_info "  Or install via package manager: apt install docker-buildx-plugin (Debian/Ubuntu)"
+        FIX_CMDS+=("$BUILDX_INSTALL_CMD")
     fi
 }
 
@@ -2218,116 +2224,117 @@ check_gpu() {
     if ! command -v nvidia-container-cli &>/dev/null; then
         log_warn "nvidia-container-toolkit not installed"
         log_info "  GPU detected but Docker cannot use it without the toolkit"
-        log_info "  Attempting automatic installation..."
-        
-        # Auto-install based on OS
-        local toolkit_installed=false
-        case "$OS_FAMILY" in
-            debian)
-                # Add NVIDIA GPG key (skip if already exists)
-                if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
-                    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-                        gpg --batch --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || true
-                fi
-                # Add repo
-                curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-                    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > \
-                    /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || true
-                # Install
-                if apt-get update -qq && apt-get install -y nvidia-container-toolkit; then
-                    toolkit_installed=true
-                fi
-                ;;
-            rhel)
-                # Add repo
-                curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
-                    tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null 2>&1 || true
-                # Install
-                if yum install -y nvidia-container-toolkit; then
-                    toolkit_installed=true
-                fi
-                ;;
-        esac
-        
-        if [ "$toolkit_installed" = true ]; then
-            log_ok "nvidia-container-toolkit installed successfully"
-            # Configure Docker runtime
-            log_info "  Configuring Docker to use nvidia runtime..."
-            if nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
-                log_ok "Docker nvidia runtime configured"
-                # Restart Docker to apply changes
-                if systemctl restart docker 2>/dev/null; then
-                    log_ok "Docker restarted with nvidia runtime"
-                else
-                    log_warn "Could not restart Docker - please restart manually: sudo systemctl restart docker"
-                fi
-            else
-                log_warn "Could not configure nvidia runtime - please run: sudo nvidia-ctk runtime configure --runtime=docker"
-            fi
-        else
-            log_warn "Automatic installation failed. Install manually:"
+
+        if [ "$APPLY_FIXES" = true ]; then
+            log_info "  Attempting automatic installation..."
+            # Auto-install based on OS
+            local toolkit_installed=false
             case "$OS_FAMILY" in
                 debian)
-                    log_info "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                    log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
-                    log_info "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
-                    log_info "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-                    log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
-                    log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
-                    log_info "    sudo systemctl restart docker"
+                    if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
+                        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+                            gpg --batch --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || true
+                    fi
+                    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+                        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > \
+                        /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || true
+                    if apt-get update -qq && apt-get install -y nvidia-container-toolkit; then
+                        toolkit_installed=true
+                    fi
                     ;;
                 rhel)
-                    log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \\"
-                    log_info "      sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo"
-                    log_info "    sudo yum install -y nvidia-container-toolkit"
-                    log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
-                    log_info "    sudo systemctl restart docker"
+                    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
+                        tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null 2>&1 || true
+                    if yum install -y nvidia-container-toolkit; then
+                        toolkit_installed=true
+                    fi
                     ;;
             esac
+
+            if [ "$toolkit_installed" = true ]; then
+                log_ok "nvidia-container-toolkit installed successfully"
+                log_info "  Configuring Docker to use nvidia runtime..."
+                if nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
+                    log_ok "Docker nvidia runtime configured"
+                    if is_systemd_available && systemctl restart docker 2>/dev/null; then
+                        log_ok "Docker restarted with nvidia runtime"
+                    else
+                        log_warn "Could not restart Docker - please restart manually: sudo systemctl restart docker"
+                    fi
+                else
+                    log_warn "Could not configure nvidia runtime - please run: sudo nvidia-ctk runtime configure --runtime=docker"
+                fi
+            else
+                log_warn "Automatic installation failed. Install manually:"
+                case "$OS_FAMILY" in
+                    debian)
+                        log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                        log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                        log_info "    sudo systemctl restart docker"
+                        ;;
+                    rhel)
+                        log_info "    sudo yum install -y nvidia-container-toolkit"
+                        log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                        log_info "    sudo systemctl restart docker"
+                        ;;
+                esac
+                log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+                update_env_gpu "true"  # GPU exists, just toolkit missing
+                return 0
+            fi
+        else
+            log_info "  Run with --apply-fixes to install automatically, or install manually:"
+            log_info "    Debian/Ubuntu: sudo apt-get install -y nvidia-container-toolkit"
+            log_info "    RHEL/Rocky:    sudo yum install -y nvidia-container-toolkit"
             log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
             update_env_gpu "true"  # GPU exists, just toolkit missing
             return 0
         fi
     fi
-    
-    log_ok "nvidia-container-toolkit installed"
-    
-    # Step 4: Test Docker GPU passthrough
-    log_info "Testing Docker GPU passthrough..."
-    local cuda_test_images=(
-        "nvidia/cuda:12.0.0-base-ubi8"
-        "nvidia/cuda:12.0-base"
-        "nvidia/cuda:12.4.1-base-ubuntu22.04"
-    )
-    local passthrough_test_ok=false
-    local working_cuda_test_image=""
-    local cuda_test_image
-    for cuda_test_image in "${cuda_test_images[@]}"; do
-        if docker run --rm --gpus all "$cuda_test_image" nvidia-smi &>/dev/null 2>&1; then
-            passthrough_test_ok=true
-            working_cuda_test_image="$cuda_test_image"
-            break
-        fi
-    done
 
-    if [ "$passthrough_test_ok" = true ]; then
-        log_ok "Docker GPU passthrough working"
-        log_info "  Verified with image: $working_cuda_test_image"
-        update_env_gpu "true"
-        
-        # Inform user - GPU detection works via .env, no workflow change needed
-        log_info ""
-        log_info "  GPU will be detected by Setup Wizard automatically (via GPU_AVAILABLE in .env)"
-        log_info ""
-        log_info "  To use GPU for LLM inference (optional, faster responses):"
-        log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
-        log_info "    2. Start local_ai_server with GPU override:"
-        log_info "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server"
+    log_ok "nvidia-container-toolkit installed"
+
+    # Step 4: Test Docker GPU passthrough (skip if already verified on previous run)
+    local gpu_marker="$SCRIPT_DIR/.gpu-passthrough-ok"
+    if [ -f "$gpu_marker" ] && [ "$(find "$gpu_marker" -mmin -60 2>/dev/null)" ]; then
+        log_ok "Docker GPU passthrough: verified (cached)"
     else
-        log_warn "Docker GPU passthrough test failed"
-        log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
-        log_info "  Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-        update_env_gpu "true"  # GPU exists, passthrough just needs config
+        log_info "Testing Docker GPU passthrough (may pull ~200MB image)..."
+        local cuda_test_images=(
+            "nvidia/cuda:12.0.0-base-ubi8"
+            "nvidia/cuda:12.0-base"
+            "nvidia/cuda:12.4.1-base-ubuntu22.04"
+        )
+        local passthrough_test_ok=false
+        local working_cuda_test_image=""
+        local cuda_test_image
+        for cuda_test_image in "${cuda_test_images[@]}"; do
+            if docker run --rm --gpus all "$cuda_test_image" nvidia-smi &>/dev/null 2>&1; then
+                passthrough_test_ok=true
+                working_cuda_test_image="$cuda_test_image"
+                break
+            fi
+        done
+
+        if [ "$passthrough_test_ok" = true ]; then
+            log_ok "Docker GPU passthrough working"
+            log_info "  Verified with image: $working_cuda_test_image"
+            update_env_gpu "true"
+            touch "$gpu_marker" 2>/dev/null || true
+
+            log_info ""
+            log_info "  GPU will be detected by Setup Wizard automatically (via GPU_AVAILABLE in .env)"
+            log_info ""
+            log_info "  To use GPU for LLM inference (optional, faster responses):"
+            log_info "    1. Set LOCAL_LLM_GPU_LAYERS=-1 in .env"
+            log_info "    2. Start local_ai_server with GPU override:"
+            log_info "       ${COMPOSE_CMD:-docker compose} -p asterisk-ai-voice-agent -f docker-compose.yml -f docker-compose.gpu.yml up -d --build local_ai_server"
+        else
+            log_warn "Docker GPU passthrough test failed"
+            log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
+            log_info "  Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+            update_env_gpu "true"  # GPU exists, passthrough just needs config
+        fi
     fi
 }
 
@@ -2381,44 +2388,127 @@ GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
 # ============================================================================
 # Port Check
 # ============================================================================
-check_ports() {
-    PORT=3003
+_check_port() {
+    local port="$1"
+    local label="$2"
     if command -v ss &>/dev/null; then
-        if ss -tln | grep -q ":$PORT "; then
-            log_warn "Port $PORT already in use (Admin UI port)"
+        if ss -tln | grep -q ":$port "; then
+            log_warn "Port $port already in use ($label)"
         else
-            log_ok "Port $PORT available"
+            log_ok "Port $port available ($label)"
         fi
     elif command -v netstat &>/dev/null; then
-        if netstat -tln | grep -q ":$PORT "; then
-            log_warn "Port $PORT already in use (Admin UI port)"
+        if netstat -tln | grep -q ":$port "; then
+            log_warn "Port $port already in use ($label)"
         else
-            log_ok "Port $PORT available"
+            log_ok "Port $port available ($label)"
         fi
+    else
+        log_warn "Cannot check port $port - neither ss nor netstat found"
     fi
 }
 
+check_ports() {
+    _check_port 3003  "Admin UI"
+    _check_port 8090  "AudioSocket"
+    _check_port 15000 "Health/Metrics"
+    _check_port 18080 "ExternalMedia RTP"
+}
+
 check_ports_local_server() {
-    # Local AI Server is WS-only. Default port is 8765 (LOCAL_WS_PORT).
     local port="8765"
     if [ -f "$SCRIPT_DIR/.env" ]; then
-        # Use grep instead of source to avoid executing arbitrary code from .env
         local env_port
         env_port="$(grep -E '^LOCAL_WS_PORT=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
         [ -n "$env_port" ] && port="$env_port"
     fi
-    if command -v ss &>/dev/null; then
-        if ss -tln | grep -q ":$port "; then
-            log_warn "Port $port already in use (Local AI Server WS port)"
+    _check_port "$port" "Local AI Server WS"
+}
+
+# ============================================================================
+# System Resources (RAM, Disk)
+# ============================================================================
+check_system_resources() {
+    # RAM check: 4 GB fail / 8 GB warn
+    local ram_kb ram_gb
+    if [ -f /proc/meminfo ]; then
+        ram_kb="$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+        ram_gb=$(( ram_kb / 1024 / 1024 ))
+        if [ "$ram_gb" -lt 4 ]; then
+            log_fail "System RAM: ${ram_gb} GB (minimum 4 GB required for any LLM)"
+        elif [ "$ram_gb" -lt 8 ]; then
+            log_warn "System RAM: ${ram_gb} GB (8 GB recommended for CPU LLM inference)"
+            log_info "  Cloud-only providers (no local LLM) will work fine with ${ram_gb} GB"
         else
-            log_ok "Port $port available"
+            log_ok "System RAM: ${ram_gb} GB"
         fi
-    elif command -v netstat &>/dev/null; then
-        if netstat -tln | grep -q ":$port "; then
-            log_warn "Port $port already in use (Local AI Server WS port)"
+    else
+        log_info "Cannot check RAM (/proc/meminfo not found)"
+    fi
+
+    # Disk space check: 10 GB threshold on the models mount point
+    local models_dir="$SCRIPT_DIR/models"
+    local check_dir="$models_dir"
+    [ ! -d "$check_dir" ] && check_dir="$SCRIPT_DIR"
+    if command -v df &>/dev/null; then
+        local avail_gb
+        avail_gb="$(df -BG "$check_dir" 2>/dev/null | awk 'NR==2 {gsub(/G/,""); print $4}')"
+        if [ -n "$avail_gb" ] && [[ "$avail_gb" =~ ^[0-9]+$ ]]; then
+            if [ "$avail_gb" -lt 10 ]; then
+                log_warn "Disk space: ${avail_gb} GB free on $(df "$check_dir" 2>/dev/null | awk 'NR==2 {print $6}') (10 GB recommended for model downloads)"
+                log_info "  LLM models range from 700 MB to 9 GB depending on selection"
+            else
+                log_ok "Disk space: ${avail_gb} GB free"
+            fi
+        fi
+    fi
+}
+
+# ============================================================================
+# Network Connectivity (HuggingFace)
+# ============================================================================
+check_network() {
+    if command -v curl &>/dev/null; then
+        if curl -sf --connect-timeout 5 --max-time 10 https://huggingface.co >/dev/null 2>&1; then
+            log_ok "Network: huggingface.co reachable (model downloads)"
         else
-            log_ok "Port $port available"
+            log_warn "Cannot reach huggingface.co - model downloads may fail"
+            log_info "  Check network connectivity, proxy settings, or firewall rules"
+            log_info "  Models can also be downloaded manually and placed in models/ directory"
         fi
+    elif command -v wget &>/dev/null; then
+        if wget -q --spider --timeout=5 https://huggingface.co 2>/dev/null; then
+            log_ok "Network: huggingface.co reachable (model downloads)"
+        else
+            log_warn "Cannot reach huggingface.co - model downloads may fail"
+        fi
+    else
+        log_info "Cannot check network connectivity (neither curl nor wget found)"
+    fi
+}
+
+# ============================================================================
+# HOST_PROJECT_ROOT validation
+# ============================================================================
+check_host_project_root() {
+    [ ! -f "$SCRIPT_DIR/.env" ] && return 0
+
+    local current_root
+    current_root="$(grep -E '^HOST_PROJECT_ROOT=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]\"')"
+
+    if [ -z "$current_root" ]; then
+        # Not set — seed it with the actual project directory
+        echo "" >> "$SCRIPT_DIR/.env"
+        echo "HOST_PROJECT_ROOT=$SCRIPT_DIR" >> "$SCRIPT_DIR/.env"
+        log_ok "Set HOST_PROJECT_ROOT=$SCRIPT_DIR in .env"
+        log_info "  Required for Admin UI container management (docker compose bind mount)"
+    elif [ "$current_root" != "$SCRIPT_DIR" ]; then
+        log_warn "HOST_PROJECT_ROOT=$current_root does not match actual project dir: $SCRIPT_DIR"
+        log_info "  Admin UI container operations may fail with incorrect bind mounts"
+        log_info "  Fix: Update HOST_PROJECT_ROOT in .env to: $SCRIPT_DIR"
+        FIX_CMDS+=("sed -i 's|^HOST_PROJECT_ROOT=.*|HOST_PROJECT_ROOT=$SCRIPT_DIR|' '$SCRIPT_DIR/.env'")
+    else
+        log_ok "HOST_PROJECT_ROOT matches project directory"
     fi
 }
 
@@ -2631,6 +2721,7 @@ main() {
     echo ""
     
     detect_os
+    check_system_resources
     check_ipv6
     check_docker
     check_compose
@@ -2640,6 +2731,8 @@ main() {
     check_secrets_permissions  # AAVA-191: Vertex AI credentials directory
     check_selinux
     check_env
+    check_host_project_root
+    check_network
 
     if [ "$LOCAL_SERVER_ONLY" = true ]; then
         # Local AI Server onboarding path: skip Asterisk/Admin UI checks.
