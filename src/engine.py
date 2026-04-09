@@ -10747,9 +10747,8 @@ class Engine:
                             full_response_text = ""
                         finally:
                             try:
-                                if old_provider_name is not None:
-                                    session.provider_name = old_provider_name
-                                    await self.session_store.upsert_call(session)
+                                session.provider_name = old_provider_name
+                                await self.session_store.upsert_call(session)
                             except Exception:
                                 pass
 
