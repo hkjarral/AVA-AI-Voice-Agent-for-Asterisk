@@ -485,12 +485,15 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
     if request.backend == "matcha":
         if request.model_path:
             payload["matcha_model_path"] = request.model_path
-            # Auto-detect vocoder in the same directory
+            # Auto-detect vocoder in the same directory (check existence)
+            model_dir = os.path.dirname(request.model_path)
+            voc_resolved = None
             for voc_name in ("hifigan_v2.onnx", "vocos.onnx"):
-                payload["matcha_vocoder_path"] = os.path.join(
-                    os.path.dirname(request.model_path), voc_name
-                )
-                break
+                voc_path = os.path.join(model_dir, voc_name)
+                if os.path.isfile(voc_path):
+                    voc_resolved = voc_path
+                    break
+            payload["matcha_vocoder_path"] = voc_resolved or os.path.join(model_dir, "hifigan_v2.onnx")
     return payload
 
 
