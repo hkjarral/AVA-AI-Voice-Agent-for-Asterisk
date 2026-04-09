@@ -122,4 +122,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: March 2026 | **Current Version**: v6.4.0
+**Last Updated**: April 2026 | **Current Version**: v6.4.1
