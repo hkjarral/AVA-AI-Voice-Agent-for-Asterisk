@@ -2790,7 +2790,33 @@ async def validate_api_key(validation: ApiKeyValidation):
                         return {"valid": False, "error": error_msg}
                     else:
                         return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
-            
+
+            elif provider == "cambai":
+                # Validate CAMB AI key by performing a tiny TTS request.
+                # The /tts-stream endpoint returns 200 + audio bytes for a valid key,
+                # 401/403 for invalid keys.
+                response = await client.post(
+                    "https://client.camb.ai/apis/tts-stream",
+                    headers={
+                        "x-api-key": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "text": "test",
+                        "voice_id": 147320,
+                        "language": "en-us",
+                        "speech_model": "mars-flash",
+                        "output_configuration": {"format": "pcm_s16le"},
+                    },
+                    timeout=15.0,
+                )
+                if response.status_code == 200:
+                    return {"valid": True, "message": "CAMB AI API key is valid"}
+                elif response.status_code in (401, 403):
+                    return {"valid": False, "error": "Invalid API key"}
+                else:
+                    return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
+
             else:
                 return {"valid": False, "error": f"Unknown provider: {provider}"}
                 
@@ -2904,6 +2930,7 @@ class SetupConfig(BaseModel):
     elevenlabs_key: Optional[str] = None
     elevenlabs_agent_id: Optional[str] = None
     cartesia_key: Optional[str] = None
+    camb_key: Optional[str] = None
     greeting: str
     ai_name: str
     ai_role: str
@@ -2951,6 +2978,13 @@ async def save_setup_config(config: SetupConfig):
             raise HTTPException(status_code=400, detail="ElevenLabs API Key is required for ElevenLabs Conversational provider")
         if not config.elevenlabs_agent_id:
             raise HTTPException(status_code=400, detail="ElevenLabs Agent ID is required for ElevenLabs Conversational provider")
+    if config.provider == "cambai":
+        if not config.camb_key:
+            raise HTTPException(status_code=400, detail="CAMB AI API Key is required for CAMB AI provider")
+        if not config.deepgram_key:
+            raise HTTPException(status_code=400, detail="Deepgram API Key is required for CAMB AI pipeline (STT)")
+        if not config.openai_key:
+            raise HTTPException(status_code=400, detail="OpenAI API Key is required for CAMB AI pipeline (LLM)")
 
     try:
         import shutil
@@ -2992,6 +3026,8 @@ async def save_setup_config(config: SetupConfig):
             env_updates["ELEVENLABS_AGENT_ID"] = config.elevenlabs_agent_id
         if config.cartesia_key:
             env_updates["CARTESIA_API_KEY"] = config.cartesia_key
+        if config.camb_key:
+            env_updates["CAMB_API_KEY"] = config.camb_key
 
         if config.provider in ("local", "local_hybrid"):
             catalog = get_full_catalog()
@@ -3314,6 +3350,52 @@ async def save_setup_config(config: SetupConfig):
                     "stt": "local_stt",
                     "llm": llm_component,
                     "tts": "local_tts"
+                }
+
+            elif config.provider == "cambai":
+                # CAMB AI is a TTS-only provider, so it runs as a PIPELINE:
+                # Deepgram STT + OpenAI LLM + CAMB AI TTS
+                pipeline_name = "cambai_pipeline"
+                yaml_config["active_pipeline"] = pipeline_name
+                yaml_config["default_provider"] = pipeline_name
+
+                # Configure CAMB AI TTS provider
+                providers.setdefault("cambai", {})["enabled"] = True
+                if not provider_exists("cambai"):
+                    providers["cambai"].update({
+                        "voice_id": 147320,
+                        "speech_model": "mars-flash",
+                        "language": "en-us",
+                        "output_format": "pcm_s16le",
+                    })
+
+                # Configure Deepgram STT pipeline adapter
+                providers.setdefault("deepgram_stt", {})["enabled"] = True
+                if not provider_exists("deepgram_stt"):
+                    providers["deepgram_stt"].update({
+                        "api_key": "${DEEPGRAM_API_KEY}",
+                        "model": "nova-2-general",
+                        "stt_language": "en-US",
+                        "input_encoding": "linear16",
+                        "input_sample_rate_hz": 8000,
+                    })
+
+                # Configure OpenAI LLM pipeline adapter
+                providers.setdefault("openai_llm", {})["enabled"] = True
+                if not provider_exists("openai_llm"):
+                    providers["openai_llm"].update({
+                        "api_key": "${OPENAI_API_KEY}",
+                        "chat_base_url": "https://api.openai.com/v1",
+                        "chat_model": "gpt-4o-mini",
+                        "type": "openai",
+                        "capabilities": ["llm"],
+                    })
+
+                # Define the pipeline
+                yaml_config.setdefault("pipelines", {})[pipeline_name] = {
+                    "stt": "deepgram_stt",
+                    "llm": "openai_llm",
+                    "tts": "cambai_tts"
                 }
 
             # C6 Fix: Create default context

@@ -1,0 +1,122 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Golden Baseline: CAMB AI TTS - Pipeline Mode with MARS Models
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# CAMB AI provides high-quality, low-latency text-to-speech with the MARS
+# model family. This config uses CAMB AI for TTS in a modular pipeline
+# with Deepgram STT and OpenAI LLM.
+#
+# Requirements:
+#   - CAMB_API_KEY in .env file (get from https://studio.camb.ai)
+#   - DEEPGRAM_API_KEY in .env file (for STT)
+#   - OPENAI_API_KEY in .env file (for LLM)
+#   - Asterisk 18+ with ARI enabled
+#
+# Performance:
+#   - mars-flash: ~150ms latency (real-time conversations)
+#   - mars-pro: 800ms-2s (higher quality, translation, audiobooks)
+#   - mars-instruct: Director-level control for TV/film
+#
+# Best for:
+#   - Multilingual voice agents (16+ languages)
+#   - Voice cloning with custom voices
+#   - Low-latency real-time conversations (mars-flash)
+#
+# For detailed parameter explanations, see: docs/Configuration-Reference.md
+# ═══════════════════════════════════════════════════════════════════════════
+
+config_version: 6
+active_pipeline: cambai_pipeline
+default_provider: local  # Pipeline mode - provider not used directly
+
+# Audio Transport
+audio_transport: audiosocket
+audiosocket:
+  format: ulaw
+  host: 0.0.0.0
+  port: 8090
+
+# Playback Mode
+downstream_mode: stream
+
+# ─── Pipelines ───────────────────────────────────────────────────────────
+pipelines:
+  cambai_pipeline:
+    stt: deepgram_stt
+    llm: openai_llm
+    tts: cambai_tts
+
+  # Alternative: Use with local STT for fully self-hosted STT + cloud TTS
+  cambai_local_stt:
+    stt: local_stt
+    llm: openai_llm
+    tts: cambai_tts
+
+# ─── Contexts ────────────────────────────────────────────────────────────
+contexts:
+  default:
+    greeting: Hello, how can I help you today?
+    profile: telephony_ulaw_8k
+    prompt: You are a helpful AI assistant. Be concise and clear.
+    pipeline: cambai_pipeline
+  demo_cambai:
+    greeting: "Hi! I'm Ava powered by CAMB AI voice synthesis. Ask me anything!"
+    prompt: "You are Ava (Asterisk Voice Agent) demonstrating CAMB AI TTS. Be helpful and conversational."
+    profile: telephony_ulaw_8k
+    pipeline: cambai_pipeline
+
+# ─── Providers ───────────────────────────────────────────────────────────
+providers:
+  cambai:
+    enabled: true
+    # api_key loaded from CAMB_API_KEY env var
+    voice_id: 147320
+    speech_model: mars-flash   # mars-flash | mars-pro | mars-instruct
+    language: en-us            # BCP-47: en-us, es-es, fr-fr, de-de, ja-jp, etc.
+    output_format: pcm_s16le
+
+  # Fallback local provider for non-pipeline calls
+  local:
+    enabled: true
+    ws_url: ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+
+# ─── LLM ─────────────────────────────────────────────────────────────────
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  prompt: You are a helpful AI phone assistant. Keep responses concise.
+  initial_greeting: Hello, how can I help you today?
+  max_tokens: 300
+
+# ─── Barge-In ────────────────────────────────────────────────────────────
+barge_in:
+  enabled: true
+  energy_threshold: 700
+  initial_protection_ms: 100
+  min_ms: 150
+  post_tts_end_protection_ms: 100
+
+# ─── VAD ─────────────────────────────────────────────────────────────────
+vad:
+  enhanced_enabled: true
+  fallback_buffer_size: 128000
+  fallback_enabled: true
+  fallback_interval_ms: 4000
+  max_utterance_duration_ms: 10000
+  min_utterance_duration_ms: 600
+  use_provider_vad: false
+  utterance_padding_ms: 200
+  webrtc_aggressiveness: 1
+  webrtc_end_silence_frames: 50
+  webrtc_start_frames: 3
+
+# ─── Streaming ───────────────────────────────────────────────────────────
+streaming:
+  encoding: ulaw
+  sample_rate: 8000
+
+# ─── Audio Profiles ──────────────────────────────────────────────────────
+profiles:
+  telephony_ulaw_8k:
+    encoding: ulaw
+    sample_rate: 8000

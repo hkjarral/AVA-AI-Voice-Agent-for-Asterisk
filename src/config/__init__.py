@@ -39,6 +39,7 @@ GoogleProviderConfig = _parent_config.GoogleProviderConfig
 GroqSTTProviderConfig = _parent_config.GroqSTTProviderConfig
 GroqTTSProviderConfig = _parent_config.GroqTTSProviderConfig
 ElevenLabsProviderConfig = _parent_config.ElevenLabsProviderConfig
+CambAiProviderConfig = _parent_config.CambAiProviderConfig
 OpenAIRealtimeProviderConfig = _parent_config.OpenAIRealtimeProviderConfig
 AzureSTTProviderConfig = _parent_config.AzureSTTProviderConfig
 AzureTTSProviderConfig = _parent_config.AzureTTSProviderConfig
@@ -71,6 +72,7 @@ __all__ = [
     'GroqSTTProviderConfig',
     'GroqTTSProviderConfig',
     'ElevenLabsProviderConfig',
+    'CambAiProviderConfig',
     'OpenAIRealtimeProviderConfig',
     'AzureSTTProviderConfig',
     'AzureTTSProviderConfig',

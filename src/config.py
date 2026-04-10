@@ -365,7 +365,7 @@ class GroqTTSProviderConfig(BaseModel):
 
 class ElevenLabsProviderConfig(BaseModel):
     """ElevenLabs TTS provider configuration.
-    
+
     API Reference: https://elevenlabs.io/docs/api-reference/text-to-speech
     """
     enabled: bool = Field(default=True)
@@ -381,6 +381,26 @@ class ElevenLabsProviderConfig(BaseModel):
     similarity_boost: float = Field(default=0.75)
     style: float = Field(default=0.0)
     use_speaker_boost: bool = Field(default=True)
+    # Provider-specific farewell hangup delay (overrides global)
+    farewell_hangup_delay_sec: Optional[float] = None
+
+
+class CambAiProviderConfig(BaseModel):
+    """CAMB AI TTS provider configuration.
+
+    Supports MARS speech models: mars-flash (~150ms latency),
+    mars-pro (higher quality), mars-instruct (director-level control).
+
+    API Reference: https://docs.camb.ai
+    """
+    enabled: bool = Field(default=True)
+    api_key: Optional[str] = None
+    voice_id: int = Field(default=147320)  # Default CAMB AI voice
+    speech_model: str = Field(default="mars-flash")  # mars-flash, mars-pro, mars-instruct
+    language: str = Field(default="en-us")  # BCP-47 language code
+    base_url: str = Field(default="https://client.camb.ai/apis")
+    # Output format for streaming TTS
+    output_format: str = Field(default="pcm_s16le")  # pcm_s16le for raw PCM
     # Provider-specific farewell hangup delay (overrides global)
     farewell_hangup_delay_sec: Optional[float] = None
 

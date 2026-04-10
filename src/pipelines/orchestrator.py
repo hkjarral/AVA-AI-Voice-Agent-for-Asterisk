@@ -19,6 +19,7 @@ from ..config import (
     PipelineEntry,
     AzureSTTProviderConfig,
     AzureTTSProviderConfig,
+    CambAiProviderConfig,
     DeepgramProviderConfig,
     ElevenLabsProviderConfig,
     GoogleProviderConfig,
@@ -42,6 +43,7 @@ from .groq import GroqSTTAdapter, GroqTTSAdapter
 from .minimax import MiniMaxLLMAdapter
 from .telnyx import TelnyxLLMAdapter
 from .azure import AzureSTTFastAdapter, AzureSTTRealtimeAdapter, AzureTTSAdapter
+from .cambai import CambAiTTSAdapter
 
 logger = get_logger(__name__)
 
@@ -233,6 +235,7 @@ class PipelineOrchestrator:
         self._minimax_llm_provider_config: Optional[MiniMaxLLMProviderConfig] = self._hydrate_minimax_llm_config()
         self._google_provider_config: Optional[GoogleProviderConfig] = self._hydrate_google_config()
         self._elevenlabs_provider_config: Optional[ElevenLabsProviderConfig] = self._hydrate_elevenlabs_config()
+        self._cambai_provider_config: Optional[CambAiProviderConfig] = self._hydrate_cambai_config()
         self._groq_stt_provider_config: Optional[GroqSTTProviderConfig] = self._hydrate_groq_stt_config()
         self._groq_tts_provider_config: Optional[GroqTTSProviderConfig] = self._hydrate_groq_tts_config()
         self._azure_stt_provider_config: Optional[AzureSTTProviderConfig] = self._hydrate_azure_stt_config()
@@ -615,6 +618,19 @@ class PipelineOrchestrator:
         else:
             logger.debug("ElevenLabs pipeline adapters not registered - API key unavailable")
 
+        # CAMB AI TTS adapter
+        if self._cambai_provider_config:
+            tts_factory = self._make_cambai_tts_factory(self._cambai_provider_config)
+            self.register_factory("cambai_tts", tts_factory)
+            logger.info(
+                "CAMB AI TTS pipeline adapter registered",
+                tts_factory="cambai_tts",
+                voice_id=self._cambai_provider_config.voice_id,
+                speech_model=self._cambai_provider_config.speech_model,
+            )
+        else:
+            logger.debug("CAMB AI TTS pipeline adapter not registered - API key unavailable or config missing")
+
         # Ollama LLM adapter - for self-hosted local LLMs
         # Read config from providers.ollama_llm in YAML if available
         ollama_provider_config = {}
@@ -972,6 +988,23 @@ class PipelineOrchestrator:
 
         return factory
 
+    def _make_cambai_tts_factory(
+        self,
+        provider_config: CambAiProviderConfig,
+    ) -> ComponentFactory:
+        """Create factory for CAMB AI TTS adapter."""
+        config_payload = provider_config.model_dump()
+
+        def factory(component_key: str, options: Dict[str, Any]) -> Component:
+            return CambAiTTSAdapter(
+                component_key,
+                self.config,
+                CambAiProviderConfig(**config_payload),
+                options,
+            )
+
+        return factory
+
     def _hydrate_google_config(self) -> Optional[GoogleProviderConfig]:
         providers = getattr(self.config, "providers", {}) or {}
         raw_config = providers.get("google")
@@ -1078,6 +1111,51 @@ class PipelineOrchestrator:
         if not config.api_key:
             config = ElevenLabsProviderConfig(
                 **{**config.model_dump(), "api_key": os.getenv("ELEVENLABS_API_KEY")}
+            )
+
+        return config
+
+    def _hydrate_cambai_config(self) -> Optional[CambAiProviderConfig]:
+        """Hydrate CAMB AI provider config from YAML or env."""
+        providers = getattr(self.config, "providers", {}) or {}
+        raw_config = providers.get("cambai") or providers.get("cambai_tts")
+        if not raw_config:
+            # Check if API key exists in env
+            api_key = os.getenv("CAMB_API_KEY")
+            if api_key:
+                return CambAiProviderConfig(api_key=api_key)
+            return None
+        if isinstance(raw_config, CambAiProviderConfig):
+            config = raw_config
+        elif isinstance(raw_config, dict):
+            try:
+                camb_fields = set(CambAiProviderConfig.model_fields.keys())
+                filtered = {}
+                for k, v in raw_config.items():
+                    if k not in camb_fields:
+                        continue
+                    if isinstance(v, str) and v == "":
+                        continue
+                    filtered[k] = v
+                config = CambAiProviderConfig(**filtered)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to hydrate CAMB AI provider config for pipelines",
+                    error=str(exc),
+                )
+                return None
+        else:
+            return None
+
+        if not config.api_key and not os.getenv("CAMB_API_KEY"):
+            logger.warning(
+                "CAMB AI pipeline adapter requires CAMB_API_KEY; falling back to placeholder adapter",
+            )
+            return None
+
+        if not config.api_key:
+            config = CambAiProviderConfig(
+                **{**config.model_dump(), "api_key": os.getenv("CAMB_API_KEY")}
             )
 
         return config
