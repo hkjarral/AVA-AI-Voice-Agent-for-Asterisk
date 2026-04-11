@@ -257,6 +257,7 @@ async def list_calls(
     has_tool_calls: Optional[bool] = Query(None, description="Filter calls with tool executions"),
     min_duration: Optional[float] = Query(None, description="Minimum duration in seconds"),
     max_duration: Optional[float] = Query(None, description="Maximum duration in seconds"),
+    transcript_search: Optional[str] = Query(None, description="Search within conversation transcripts (case-insensitive substring match)"),
     order_by: str = Query("start_time", description="Column to order by"),
     order_dir: str = Query("DESC", description="Order direction (ASC/DESC)"),
 ):
@@ -281,6 +282,7 @@ async def list_calls(
         has_tool_calls=has_tool_calls,
         min_duration=min_duration,
         max_duration=max_duration,
+        transcript_search=transcript_search,
     )
     
     # Get paginated records
@@ -299,6 +301,7 @@ async def list_calls(
         has_tool_calls=has_tool_calls,
         min_duration=min_duration,
         max_duration=max_duration,
+        transcript_search=transcript_search,
         order_by=order_by,
         order_dir=order_dir,
         include_details=False,

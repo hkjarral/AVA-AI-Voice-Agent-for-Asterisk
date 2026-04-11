@@ -4,7 +4,7 @@ import {
     ChevronLeft, ChevronRight, RefreshCw, X, MessageSquare,
     Wrench, AlertCircle, CheckCircle, ArrowRightLeft, PhoneOff,
     BarChart3, Users, Timer, Activity, TrendingUp, Zap, PieChart,
-    Play, Pause, Volume2, FileAudio
+    Play, Pause, Volume2, FileAudio, Search
 } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -160,6 +160,19 @@ const CallHistoryPage = () => {
     });
     const [showFilters, setShowFilters] = useState(false);
 
+    // Transcript search with debounce
+    const [transcriptSearchInput, setTranscriptSearchInput] = useState('');
+    const [transcriptSearch, setTranscriptSearch] = useState('');
+    const transcriptSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const handleTranscriptSearchChange = useCallback((value: string) => {
+        setTranscriptSearchInput(value);
+        if (transcriptSearchTimer.current) clearTimeout(transcriptSearchTimer.current);
+        transcriptSearchTimer.current = setTimeout(() => {
+            setTranscriptSearch(value);
+            setPage(1);
+        }, 300);
+    }, []);
+
     const fetchCalls = useCallback(async () => {
         try {
             setLoading(true);
@@ -174,7 +187,8 @@ const CallHistoryPage = () => {
             Object.entries(filters).forEach(([key, value]) => {
                 if (value) params[key] = value;
             });
-            
+            if (transcriptSearch) params.transcript_search = transcriptSearch;
+
             const res = await axios.get('/api/calls', { params });
             setCalls(res.data.calls);
             setTotal(res.data.total);
@@ -185,7 +199,7 @@ const CallHistoryPage = () => {
         } finally {
             setLoading(false);
         }
-    }, [page, pageSize, filters]);
+    }, [page, pageSize, filters, transcriptSearch]);
 
     const fetchStats = useCallback(async () => {
         try {
@@ -428,7 +442,7 @@ const CallHistoryPage = () => {
         setPage(1);
     };
 
-    const hasActiveFilters = Object.values(filters).some(v => v !== '');
+    const hasActiveFilters = Object.values(filters).some(v => v !== '') || transcriptSearch !== '';
     const modalCall = selectedCall ?? selectedCallSummary;
 
     return (
@@ -437,6 +451,24 @@ const CallHistoryPage = () => {
             <div className="flex items-center justify-between">
                 <h1 className="text-3xl font-bold">Call History</h1>
                 <div className="flex items-center gap-2">
+                    <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <input
+                            type="text"
+                            value={transcriptSearchInput}
+                            onChange={(e) => handleTranscriptSearchChange(e.target.value)}
+                            placeholder="Search transcripts..."
+                            className="pl-9 pr-8 py-2 bg-background border rounded-lg text-sm w-56 focus:outline-none focus:ring-1 focus:ring-ring"
+                        />
+                        {transcriptSearchInput && (
+                            <button
+                                onClick={() => { setTranscriptSearchInput(''); setTranscriptSearch(''); setPage(1); }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        )}
+                    </div>
                     <button
                         onClick={() => setShowStats(!showStats)}
                         className={`p-2 rounded-lg border transition-colors ${showStats ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}

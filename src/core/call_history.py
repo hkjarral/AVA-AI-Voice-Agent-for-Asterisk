@@ -332,6 +332,7 @@ class CallHistoryStore:
         has_tool_calls: Optional[bool] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
+        transcript_search: Optional[str] = None,
         order_by: str = "start_time",
         order_dir: str = "DESC",
         include_details: bool = True,
@@ -406,7 +407,10 @@ class CallHistoryStore:
                     if max_duration is not None:
                         conditions.append("duration_seconds <= ?")
                         params.append(max_duration)
-                    
+                    if transcript_search:
+                        conditions.append("conversation_history LIKE ?")
+                        params.append(f"%{transcript_search}%")
+
                     # Validate order_by to prevent SQL injection
                     valid_columns = [
                         'start_time', 'end_time', 'duration_seconds', 
@@ -476,6 +480,7 @@ class CallHistoryStore:
         has_tool_calls: Optional[bool] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
+        transcript_search: Optional[str] = None,
     ) -> int:
         """Count records matching filters."""
         if not self._enabled:
@@ -523,7 +528,10 @@ class CallHistoryStore:
                     if max_duration is not None:
                         conditions.append("duration_seconds <= ?")
                         params.append(max_duration)
-                    
+                    if transcript_search:
+                        conditions.append("conversation_history LIKE ?")
+                        params.append(f"%{transcript_search}%")
+
                     where_clause = " AND ".join(conditions) if conditions else "1=1"
                     query = f"SELECT COUNT(*) FROM call_records WHERE {where_clause}"
                     
