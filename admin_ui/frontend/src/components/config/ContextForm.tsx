@@ -19,14 +19,15 @@ interface ContextFormProps {
 }
 
 const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
-    const estimateTokens = (text: string): number => {
-        if (!text) return 0;
+    const estimateTokens = (text: unknown): number => {
+        const normalized = typeof text === 'string' ? text : String(text ?? '');
+        if (!normalized.trim()) return 0;
         // Heuristic: ~1.3 tokens per word, accounts for punctuation and whitespace tokens
-        const words = text.trim().split(/\s+/).filter(Boolean).length;
+        const words = normalized.trim().split(/\s+/).filter(Boolean).length;
         return Math.round(words * 1.3);
     };
 
-    const promptTokens = useMemo(() => estimateTokens(config.prompt || ''), [config.prompt]);
+    const promptTokens = useMemo(() => estimateTokens(config.prompt), [config.prompt]);
 
     const tokenCountColor = promptTokens > 8000
         ? 'text-red-400'
