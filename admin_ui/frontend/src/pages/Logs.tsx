@@ -38,6 +38,31 @@ const Logs = () => {
         }
     }, [logs, autoRefresh]);
 
+    const getFilteredLines = (): string[] => {
+        if (!logs) return [];
+        return logs.split('\n').filter(line =>
+            !filter || line.toLowerCase().includes(filter.toLowerCase())
+        );
+    };
+
+    const handleDownload = () => {
+        const lines = getFilteredLines();
+        if (lines.length === 0) {
+            return;
+        }
+        const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `ava-${container}-${ts}.log`;
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
     const getColoredLogs = () => {
         if (!logs) return <div className="text-muted-foreground italic">No logs available...</div>;
 
@@ -92,6 +117,14 @@ const Logs = () => {
                         title={autoRefresh ? "Pause Auto-refresh" : "Resume Auto-refresh"}
                     >
                         {autoRefresh ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                    </button>
+
+                    <button
+                        onClick={handleDownload}
+                        className="p-2 rounded border border-input hover:bg-accent"
+                        title="Download Logs"
+                    >
+                        <Download className="w-4 h-4" />
                     </button>
 
                     <button
