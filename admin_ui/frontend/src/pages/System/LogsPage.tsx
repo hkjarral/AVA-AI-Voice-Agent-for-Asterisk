@@ -186,7 +186,6 @@ const LogsPage = () => {
             const params: Record<string, any> = { tail: 500 };
             // Send as CSV for FastAPI list parsing (avoid axios `levels[]=...` serialization).
             if (rawLevels.length) params.levels = rawLevels.join(',');
-            if (q.trim()) params.q = q.trim();
             const res = await axios.get(`/api/logs/${container}`, { params });
             setLogs(res.data.logs);
         } catch (err: any) {
@@ -298,7 +297,7 @@ const LogsPage = () => {
             if (autoRefresh) fetchLogs();
         }, 3000);
         return () => clearInterval(interval);
-    }, [autoRefresh, container, mode, q, rawLevels.join(',')]);
+    }, [autoRefresh, container, mode, rawLevels.join(',')]);
 
     useEffect(() => {
         if (mode !== 'troubleshoot') return;
