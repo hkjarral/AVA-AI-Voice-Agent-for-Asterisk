@@ -29,9 +29,12 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
 
     const promptTokens = useMemo(() => estimateTokens(config.prompt), [config.prompt]);
 
-    const tokenCountColor = promptTokens > 8000
+    const promptHardLimit = Number(config?.prompt_token_limit ?? 8000);
+    const promptWarnLimit = Number(config?.prompt_token_warn_limit ?? Math.floor(promptHardLimit * 0.5));
+
+    const tokenCountColor = promptTokens > promptHardLimit
         ? 'text-red-400'
-        : promptTokens > 4000
+        : promptTokens > promptWarnLimit
             ? 'text-yellow-400'
             : 'text-muted-foreground';
 
@@ -200,9 +203,9 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                 />
                 <div className={`text-xs ${tokenCountColor} mt-1 text-right`} aria-live="polite">
                     ~{promptTokens.toLocaleString()} tokens estimated
-                    {promptTokens > 8000
-                        ? ' ⚠ large prompt'
-                        : promptTokens > 4000
+                    {promptTokens > promptHardLimit
+                        ? ` ⚠ exceeds ~${promptHardLimit.toLocaleString()} token budget`
+                        : promptTokens > promptWarnLimit
                             ? ' • approaching limit'
                             : ''}
                 </div>
