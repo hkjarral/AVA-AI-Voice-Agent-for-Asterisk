@@ -29,8 +29,16 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
 
     const promptTokens = useMemo(() => estimateTokens(config.prompt), [config.prompt]);
 
-    const promptHardLimit = Number(config?.prompt_token_limit ?? 8000);
-    const promptWarnLimit = Number(config?.prompt_token_warn_limit ?? Math.floor(promptHardLimit * 0.5));
+    const toPositiveInt = (value: unknown, fallback: number): number => {
+        const parsed = typeof value === 'number' ? value : Number(value);
+        return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+    };
+
+    const promptHardLimit = toPositiveInt(config?.prompt_token_limit, 8000);
+    const promptWarnLimit = Math.min(
+        toPositiveInt(config?.prompt_token_warn_limit, Math.floor(promptHardLimit * 0.5)),
+        promptHardLimit
+    );
 
     const tokenCountColor = promptTokens > promptHardLimit
         ? 'text-red-400'
