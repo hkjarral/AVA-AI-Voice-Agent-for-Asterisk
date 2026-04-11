@@ -443,8 +443,17 @@ class Engine:
         self.webrtc_vad = None
         try:
             vad_cfg = getattr(config, "vad", None)
-            use_provider_vad = bool(getattr(vad_cfg, "use_provider_vad", False)) if vad_cfg else False
-            if use_provider_vad:
+            # Resolve effective VAD mode: vad_mode takes precedence, fall back to legacy use_provider_vad
+            vad_mode = getattr(vad_cfg, "vad_mode", "auto") if vad_cfg else "auto"
+            legacy_use_provider_vad = bool(getattr(vad_cfg, "use_provider_vad", False)) if vad_cfg else False
+            # For backward compatibility: if vad_mode is "auto" and use_provider_vad is true,
+            # treat it as explicit "provider" mode (legacy configs expect this behavior)
+            if vad_mode == "auto" and legacy_use_provider_vad:
+                vad_mode = "provider"
+            self._vad_mode = vad_mode  # Store for per-call runtime decisions
+            # In "auto" mode, always initialize local VAD so it's available per-call;
+            # vad_mode takes precedence over legacy use_provider_vad
+            if vad_mode == "provider":
                 logger.info("Using provider-managed VAD; local VAD disabled")
             elif vad_cfg and getattr(vad_cfg, "enhanced_enabled", False):
                 self.vad_manager = EnhancedVADManager(
@@ -473,7 +482,7 @@ class Engine:
                     except Exception as e:
                         logger.warning("🎤 WebRTC VAD initialization failed", error=str(e))
                         self.webrtc_vad = None
-                elif not use_provider_vad:
+                elif vad_mode != "provider":
                     logger.warning("🎤 WebRTC VAD not available - install py-webrtcvad")
         except Exception:
             logger.error("Failed to initialize VAD components", exc_info=True)
@@ -560,6 +569,33 @@ class Engine:
                 error=str(exc),
                 exc_info=exc,
             )
+
+    def _should_use_local_vad(self, provider_name: Optional[str] = None) -> bool:
+        """Decide whether local VAD should be active for a given provider.
+
+        In 'auto' mode (default), local VAD is skipped only for providers
+        that have native VAD, native barge-in, and native AEC — i.e. they can
+        reliably handle turn detection on telephony without local assistance.
+        """
+        vad_mode = getattr(self, "_vad_mode", "auto")
+        if vad_mode == "local":
+            return True
+        if vad_mode == "provider":
+            return False
+        # auto mode: check provider capabilities
+        if provider_name and provider_name in self.providers:
+            provider = self.providers[provider_name]
+            caps = None
+            if hasattr(provider, "get_capabilities"):
+                caps = provider.get_capabilities()
+            if (
+                caps
+                and getattr(caps, "has_native_vad", False)
+                and getattr(caps, "has_native_barge_in", False)
+                and getattr(caps, "has_native_aec", False)
+            ):
+                return False
+        return True
 
     def _fire_and_forget(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
         """Create a fire-and-forget task with exception logging."""
@@ -3051,7 +3087,16 @@ class Engine:
                 start_time=datetime.now(timezone.utc)  # Track call start time (UTC for consistent storage)
             )
             session.is_outbound = bool(is_outbound)
-            session.enhanced_vad_enabled = bool(self.vad_manager)
+            # Per-provider VAD decision: local VAD active only when appropriate for this provider
+            use_local = self._should_use_local_vad(session.provider_name)
+            session.enhanced_vad_enabled = bool(self.vad_manager) and use_local
+            if self.vad_manager and not use_local:
+                logger.info(
+                    "Provider handles VAD natively; local VAD inactive for this call",
+                    call_id=session.call_id,
+                    provider=session.provider_name,
+                    vad_mode=getattr(self, "_vad_mode", "auto"),
+                )
             await self._save_session(session, new=True)
 
             # Read called_number: cache (from ChannelVarSet events) > GET request > "unknown"
@@ -3222,6 +3267,9 @@ class Engine:
                 # Full agent override for this call
                 previous = session.provider_name
                 session.provider_name = resolved_provider
+                # Re-evaluate per-provider VAD decision after provider change
+                use_local = self._should_use_local_vad(resolved_provider)
+                session.enhanced_vad_enabled = bool(self.vad_manager) and use_local
                 await self._save_session(session)
                 logger.info(
                     "AI provider override applied from channel variable",
@@ -6904,7 +6952,13 @@ class Engine:
                     return
 
             vad_result: Optional[VADResult] = None
-            if self.vad_manager:
+            # enhanced_vad_enabled=None means "not yet initialized" — fall back to
+            # per-provider decision so restored sessions and test constructions
+            # are not silently opted-out.
+            _vad_flag = session.enhanced_vad_enabled
+            if _vad_flag is None:
+                _vad_flag = bool(self.vad_manager) and self._should_use_local_vad(session.provider_name)
+            if self.vad_manager and _vad_flag:
                 try:
                     vad_result = await self._run_enhanced_vad(session, audio_bytes)
                 except Exception:

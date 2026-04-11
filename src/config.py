@@ -651,7 +651,12 @@ class LLMConfig(BaseModel):
 
 
 class VADConfig(BaseModel):
-    use_provider_vad: bool = Field(default=False)
+    use_provider_vad: bool = Field(default=False)  # Deprecated: use vad_mode instead
+    vad_mode: Literal["auto", "local", "provider"] = Field(
+        default="auto",
+        description="VAD mode: 'auto' (decide per-provider based on capabilities), "
+                    "'local' (always use local VAD), 'provider' (prefer provider VAD, equivalent to use_provider_vad=true)"
+    )
     enhanced_enabled: bool = Field(default=False)
     # WebRTC VAD settings - optimized for real-time conversation
     webrtc_aggressiveness: int = 1

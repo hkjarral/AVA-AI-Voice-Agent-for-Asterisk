@@ -65,6 +65,7 @@ class ProviderCapabilities:
     is_full_agent: bool = False  # True for providers like OpenAI Realtime, Google Live, Deepgram Voice Agent
     has_native_vad: bool = False  # True if provider has built-in Voice Activity Detection
     has_native_barge_in: bool = False  # True if provider handles interruption/barge-in internally
+    has_native_aec: bool = False  # True if provider has built-in Acoustic Echo Cancellation (safe to skip local VAD on telephony)
     requires_continuous_audio: bool = False  # True if provider needs continuous audio stream (not VAD-gated)
 
 
