@@ -1,7 +1,7 @@
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import { ChevronDown, ChevronRight, Search, Phone, Webhook, Lock } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import HelpTooltip from '../ui/HelpTooltip';
 
 interface ContextFormProps {
@@ -19,6 +19,21 @@ interface ContextFormProps {
 }
 
 const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
+    const estimateTokens = (text: string): number => {
+        if (!text) return 0;
+        // Heuristic: ~1.3 tokens per word, accounts for punctuation and whitespace tokens
+        const words = text.trim().split(/\s+/).filter(Boolean).length;
+        return Math.round(words * 1.3);
+    };
+
+    const promptTokens = useMemo(() => estimateTokens(config.prompt || ''), [config.prompt]);
+
+    const tokenCountColor = promptTokens > 8000
+        ? 'text-red-400'
+        : promptTokens > 4000
+            ? 'text-yellow-400'
+            : 'text-muted-foreground';
+
     const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({
         pre_call: false,
         in_call: true,
@@ -182,6 +197,10 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                     onChange={(e) => updateConfig('prompt', e.target.value)}
                     placeholder="You are a helpful voice assistant..."
                 />
+                <div className={`text-xs ${tokenCountColor} mt-1 text-right`}>
+                    ~{promptTokens.toLocaleString()} tokens estimated
+                    {promptTokens > 8000 && ' ⚠ large prompt'}
+                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
