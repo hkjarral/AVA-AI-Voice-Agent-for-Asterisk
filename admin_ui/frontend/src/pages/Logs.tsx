@@ -40,7 +40,10 @@ const Logs = () => {
 
     const allLines = useMemo(() => {
         if (!logs) return [];
-        return logs.split('\n');
+        const lines = logs.split('\n');
+        // Remove trailing empty element produced by a final newline
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        return lines;
     }, [logs]);
 
     const filteredLines = useMemo(() => {
@@ -156,6 +159,7 @@ const Logs = () => {
                         onClick={scrollToBottom}
                         className="p-2 rounded border border-input hover:bg-accent"
                         title="Scroll to Bottom"
+                        aria-label="Scroll to Bottom"
                     >
                         <ArrowDown className="w-4 h-4" />
                     </button>
