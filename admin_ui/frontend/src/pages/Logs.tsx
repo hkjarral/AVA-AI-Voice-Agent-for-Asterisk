@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
-import { RefreshCw, Download, Pause, Play, Search } from 'lucide-react';
+import { RefreshCw, Download, Pause, Play, Search, ArrowDown } from 'lucide-react';
 
 const Logs = () => {
     const [logs, setLogs] = useState('');
@@ -38,12 +38,28 @@ const Logs = () => {
         }
     }, [logs, autoRefresh]);
 
-    const filteredLines = useMemo(() => {
+    const allLines = useMemo(() => {
         if (!logs) return [];
-        return logs.split('\n').filter(line =>
-            !filter || line.toLowerCase().includes(filter.toLowerCase())
+        return logs.split('\n');
+    }, [logs]);
+
+    const filteredLines = useMemo(() => {
+        if (!filter) return allLines;
+        return allLines.filter(line => line.toLowerCase().includes(filter.toLowerCase()));
+    }, [allLines, filter]);
+
+    const highlightMatch = (line: string, term: string): React.ReactNode => {
+        if (!term) return line;
+        const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escapedTerm})`, 'gi');
+        // split with a capturing group: odd indices are matches, even are non-matches
+        const parts = line.split(regex);
+        return parts.map((part, i) =>
+            i % 2 === 1
+                ? <mark key={i} className="bg-yellow-400/30 text-yellow-200 rounded px-0.5">{part}</mark>
+                : part
         );
-    }, [logs, filter]);
+    };
 
     const handleDownload = () => {
         const lines = filteredLines;
@@ -58,8 +74,13 @@ const Logs = () => {
         URL.revokeObjectURL(url);
     };
 
+    const scrollToBottom = () => {
+        logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
     const getColoredLogs = () => {
         if (!logs) return <div className="text-muted-foreground italic">No logs available...</div>;
+        if (filteredLines.length === 0) return <div className="text-muted-foreground italic">No lines match the filter.</div>;
 
         return filteredLines.map((line, i) => {
             let className = 'text-green-400'; // Default
@@ -73,7 +94,11 @@ const Logs = () => {
                 className = 'text-gray-500';
             }
 
-            return <div key={i} className={`${className} hover:bg-white/5 px-1 rounded`}>{line}</div>;
+            return (
+                <div key={i} className={`${className} hover:bg-white/5 px-1 rounded`}>
+                    {highlightMatch(line, filter)}
+                </div>
+            );
         });
     };
 
@@ -92,6 +117,13 @@ const Logs = () => {
                             onChange={e => setFilter(e.target.value)}
                         />
                     </div>
+                    {logs && (
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                            {filter
+                                ? `${filteredLines.length} / ${allLines.length} lines`
+                                : `${allLines.length} lines`}
+                        </span>
+                    )}
                 </div>
                 <div className="flex space-x-2 items-center">
                     <select
@@ -118,6 +150,14 @@ const Logs = () => {
                         title="Refresh Now"
                     >
                         <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+
+                    <button
+                        onClick={scrollToBottom}
+                        className="p-2 rounded border border-input hover:bg-accent"
+                        title="Scroll to Bottom"
+                    >
+                        <ArrowDown className="w-4 h-4" />
                     </button>
 
                     <button
