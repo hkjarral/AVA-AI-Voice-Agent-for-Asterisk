@@ -814,6 +814,14 @@ const LogsPage = () => {
                         />
                     </div>
 
+                    {events.length > 0 && (
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                            {q
+                                ? `${filteredEvents.length} / ${events.length} events`
+                                : `${events.length} events`}
+                        </span>
+                    )}
+
                     <div className="flex items-center gap-2">
                         <span className="text-xs text-muted-foreground">Since</span>
                         <input
@@ -949,7 +957,7 @@ const LogsPage = () => {
                                     </div>
                                 )}
                                 <div className="flex-1 break-words">
-                                    <div className="text-gray-200">{e.msg}</div>
+                                    <div className="text-gray-200">{highlightMatch(e.msg, q)}</div>
                                     <div className="text-[10px] text-gray-500 mt-0.5">
                                         {e.call_id ? `call_id=${e.call_id} ` : ''}
                                         {e.provider ? `provider=${e.provider} ` : ''}
@@ -967,7 +975,7 @@ const LogsPage = () => {
                 ) : (
                     <>
                         {logs && filteredRawLines.length > 0 ? (
-                            <div className="space-y-0">
+                            <div className="space-y-0 font-mono">
                                 {filteredRawLines.map((line, i) => {
                                     let className = 'text-gray-300';
                                     if (line.includes('ERROR') || line.includes('Exception') || line.includes('CRITICAL')) {
@@ -980,8 +988,8 @@ const LogsPage = () => {
                                         className = 'text-gray-500';
                                     }
                                     return (
-                                        <div key={i} className={`${className} hover:bg-white/5 px-1 rounded`}>
-                                            {highlightMatch(line, q)}
+                                        <div key={i} className={`${className} hover:bg-white/5 px-1 rounded`} style={{ whiteSpace: 'pre-wrap' }}>
+                                            {q ? highlightMatch(line, q) : parseAnsi(line)}
                                         </div>
                                     );
                                 })}
