@@ -198,9 +198,13 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                     onChange={(e) => updateConfig('prompt', e.target.value)}
                     placeholder="You are a helpful voice assistant..."
                 />
-                <div className={`text-xs ${tokenCountColor} mt-1 text-right`}>
+                <div className={`text-xs ${tokenCountColor} mt-1 text-right`} aria-live="polite">
                     ~{promptTokens.toLocaleString()} tokens estimated
-                    {promptTokens > 8000 && ' ⚠ large prompt'}
+                    {promptTokens > 8000
+                        ? ' ⚠ large prompt'
+                        : promptTokens > 4000
+                            ? ' • approaching limit'
+                            : ''}
                 </div>
             </div>
 
