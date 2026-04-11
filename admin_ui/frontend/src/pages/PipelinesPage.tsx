@@ -259,6 +259,13 @@ const PipelinesPage = () => {
         const pipelineName = isNewPipeline ? pipelineForm.name : editingPipeline;
         if (!pipelineName) return;
 
+        if (isNewPipeline && config.pipelines?.[pipelineName]) {
+            toast.error(`Pipeline '${pipelineName}' already exists`, {
+                description: 'Please choose a different name to avoid overwriting the existing pipeline.'
+            });
+            return;
+        }
+
         const normalizedForm = {
             ...pipelineForm,
             stt: ensureModularKey(pipelineForm.stt || '', 'stt'),
