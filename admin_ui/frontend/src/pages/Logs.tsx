@@ -143,6 +143,7 @@ const Logs = () => {
                         onClick={() => setAutoRefresh(!autoRefresh)}
                         className={`p-2 rounded border ${autoRefresh ? 'bg-primary text-primary-foreground border-primary' : 'border-input hover:bg-accent'}`}
                         title={autoRefresh ? "Pause Auto-refresh" : "Resume Auto-refresh"}
+                        aria-label={autoRefresh ? "Pause Auto-refresh" : "Resume Auto-refresh"}
                     >
                         {autoRefresh ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                     </button>
@@ -151,6 +152,7 @@ const Logs = () => {
                         onClick={fetchLogs}
                         className="p-2 rounded border border-input hover:bg-accent"
                         title="Refresh Now"
+                        aria-label="Refresh Now"
                     >
                         <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                     </button>
@@ -169,6 +171,7 @@ const Logs = () => {
                         disabled={filteredLines.length === 0}
                         className="p-2 rounded border border-input hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
                         title={filteredLines.length === 0 ? "No visible logs to download" : "Download Logs"}
+                        aria-label={filteredLines.length === 0 ? "No visible logs to download" : "Download Logs"}
                     >
                         <Download className="w-4 h-4" />
                     </button>
