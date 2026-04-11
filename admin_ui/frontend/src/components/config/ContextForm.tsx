@@ -20,8 +20,9 @@ interface ContextFormProps {
 
 const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
     const estimateTokens = (text: string): number => {
-        if (!text) return 0;
-        const words = text.trim().split(/\s+/).length;
+        const normalized = text.trim();
+        if (!normalized) return 0;
+        const words = normalized.split(/\s+/).length;
         return Math.ceil(words * 1.3);
     };
 
