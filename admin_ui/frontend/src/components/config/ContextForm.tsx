@@ -18,6 +18,9 @@ interface ContextFormProps {
     isNew?: boolean;
 }
 
+const TOKEN_WARN_LIMIT = 4000;
+const TOKEN_HARD_LIMIT = 8000;
+
 const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
     const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({
         pre_call: false,
@@ -135,8 +138,8 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
 
     const tokenCountColor = useMemo(() => {
         if (estimatedTokens === 0) return 'text-muted-foreground';
-        if (estimatedTokens > 8000) return 'text-red-500';
-        if (estimatedTokens > 4000) return 'text-yellow-500';
+        if (estimatedTokens > TOKEN_HARD_LIMIT) return 'text-red-500';
+        if (estimatedTokens > TOKEN_WARN_LIMIT) return 'text-yellow-500';
         return 'text-muted-foreground';
     }, [estimatedTokens]);
 
@@ -199,8 +202,8 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                 <div className="flex items-center justify-between mt-1">
                     <span className={`text-xs ${tokenCountColor}`}>
                         ~{estimatedTokens.toLocaleString()} tokens estimated
-                        {estimatedTokens > 8000 && ' — exceeds typical 8K context limit'}
-                        {estimatedTokens > 4000 && estimatedTokens <= 8000 && ' — approaching 8K context limit'}
+                        {estimatedTokens > TOKEN_HARD_LIMIT && ' — exceeds typical 8K context limit'}
+                        {estimatedTokens > TOKEN_WARN_LIMIT && estimatedTokens <= TOKEN_HARD_LIMIT && ' — approaching 8K context limit'}
                     </span>
                 </div>
             </div>
