@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { Plus, Settings, Trash2, MessageSquare, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { Plus, Settings, Trash2, Copy, MessageSquare, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -275,6 +275,19 @@ const ContextsPage = () => {
         setIsNewContext(true);
     };
 
+    const handleCloneContext = (name: string) => {
+        const sourceData = config.contexts?.[name] || {};
+        let cloneName = `${name}_copy`;
+        let suffix = 2;
+        while (config.contexts?.[cloneName]) {
+            cloneName = `${name}_copy_${suffix}`;
+            suffix++;
+        }
+        setEditingContext('new_context');
+        setContextForm({ name: cloneName, ...sourceData });
+        setIsNewContext(true);
+    };
+
     const handleDeleteContext = async (name: string) => {
         const confirmed = await confirm({
             title: 'Delete Context?',
@@ -464,6 +477,13 @@ const ContextsPage = () => {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
+                                        onClick={() => handleCloneContext(name)}
+                                        className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                        title="Clone context"
+                                    >
+                                        <Copy className="w-4 h-4" />
+                                    </button>
                                     <button
                                         onClick={() => handleEditContext(name)}
                                         className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
