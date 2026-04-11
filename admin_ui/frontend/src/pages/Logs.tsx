@@ -48,6 +48,7 @@ const Logs = () => {
     const handleDownload = () => {
         const lines = getFilteredLines();
         if (lines.length === 0) {
+            alert('No logs available to export. Adjust filters and try again.');
             return;
         }
         const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
@@ -64,11 +65,12 @@ const Logs = () => {
     };
 
     const getColoredLogs = () => {
-        if (!logs) return <div className="text-muted-foreground italic">No logs available...</div>;
+        const filteredLines = getFilteredLines();
+        if (!logs || filteredLines.length === 0) {
+            return <div className="text-muted-foreground italic">No logs available...</div>;
+        }
 
-        return logs.split('\n').map((line, i) => {
-            if (filter && !line.toLowerCase().includes(filter.toLowerCase())) return null;
-
+        return filteredLines.map((line, i) => {
             let className = 'text-green-400'; // Default
             if (line.includes('ERROR') || line.includes('Exception') || line.includes('CRITICAL')) {
                 className = 'text-red-500 font-bold';
