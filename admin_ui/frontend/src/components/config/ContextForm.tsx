@@ -199,7 +199,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                 />
                 {(config.prompt || '').length > 0 && (
                     <div className="flex items-center justify-end gap-2 mt-1">
-                        <span className={`text-xs ${tokenColorClass}`}>
+                        <span className={`text-xs ${tokenColorClass}`} aria-live="polite" aria-atomic="true">
                             ~{promptTokens.toLocaleString()} tokens estimated
                         </span>
                         {promptTokens >= 4000 && (
