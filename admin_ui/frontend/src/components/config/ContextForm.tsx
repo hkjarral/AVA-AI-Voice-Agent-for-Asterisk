@@ -127,7 +127,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
     };
 
     const estimatedTokens = useMemo(() => {
-        const text = config.prompt || '';
+        const text = typeof config.prompt === 'string' ? config.prompt : String(config.prompt ?? '');
         if (!text.trim()) return 0;
         const words = text.split(/\s+/).filter(Boolean).length;
         return Math.round(words * 1.3);
