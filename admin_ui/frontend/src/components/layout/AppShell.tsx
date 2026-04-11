@@ -2,6 +2,7 @@ import React from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import CommandPalette from '../CommandPalette';
 
 const AppShell = () => {
     return (
@@ -17,6 +18,8 @@ const AppShell = () => {
                     </div>
                 </div>
             </main>
+
+            <CommandPalette />
         </div>
     );
 };
