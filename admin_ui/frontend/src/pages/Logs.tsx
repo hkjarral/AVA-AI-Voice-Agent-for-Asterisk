@@ -38,12 +38,30 @@ const Logs = () => {
         }
     }, [logs, autoRefresh]);
 
+    const getFilteredLines = (): string[] => {
+        if (!logs) return [];
+        return logs.split('\n').filter(line =>
+            !filter || line.toLowerCase().includes(filter.toLowerCase())
+        );
+    };
+
+    const handleDownload = () => {
+        const lines = getFilteredLines();
+        if (lines.length === 0) return;
+        const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ava-${container}-${timestamp}.log`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     const getColoredLogs = () => {
         if (!logs) return <div className="text-muted-foreground italic">No logs available...</div>;
 
-        return logs.split('\n').map((line, i) => {
-            if (filter && !line.toLowerCase().includes(filter.toLowerCase())) return null;
-
+        return getFilteredLines().map((line, i) => {
             let className = 'text-green-400'; // Default
             if (line.includes('ERROR') || line.includes('Exception') || line.includes('CRITICAL')) {
                 className = 'text-red-500 font-bold';
@@ -100,6 +118,15 @@ const Logs = () => {
                         title="Refresh Now"
                     >
                         <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+
+                    <button
+                        onClick={handleDownload}
+                        disabled={!logs}
+                        className="p-2 rounded border border-input hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Download Logs"
+                    >
+                        <Download className="w-4 h-4" />
                     </button>
                 </div>
             </div>
