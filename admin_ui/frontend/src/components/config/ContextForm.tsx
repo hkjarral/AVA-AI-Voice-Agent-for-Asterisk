@@ -1,7 +1,7 @@
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import { ChevronDown, ChevronRight, Search, Phone, Webhook, Lock } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import HelpTooltip from '../ui/HelpTooltip';
 
 interface ContextFormProps {
@@ -19,6 +19,20 @@ interface ContextFormProps {
 }
 
 const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabledMap, toolCatalogByName, availableProfiles, defaultProfileName, httpTools, onChange, isNew }: ContextFormProps) => {
+    const estimateTokens = (text: string): number => {
+        if (!text) return 0;
+        const words = text.trim().split(/\s+/).length;
+        return Math.ceil(words * 1.3);
+    };
+
+    const promptTokens = useMemo(() => estimateTokens(config.prompt || ''), [config.prompt]);
+
+    const tokenColorClass = useMemo(() => {
+        if (promptTokens >= 8000) return 'text-red-400';
+        if (promptTokens >= 4000) return 'text-yellow-400';
+        return 'text-muted-foreground';
+    }, [promptTokens]);
+
     const [expandedPhases, setExpandedPhases] = useState<Record<string, boolean>>({
         pre_call: false,
         in_call: true,
@@ -182,6 +196,22 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                     onChange={(e) => updateConfig('prompt', e.target.value)}
                     placeholder="You are a helpful voice assistant..."
                 />
+                {(config.prompt || '').length > 0 && (
+                    <div className="flex items-center justify-end gap-2 mt-1">
+                        <span className={`text-xs ${tokenColorClass}`}>
+                            ~{promptTokens.toLocaleString()} tokens estimated
+                        </span>
+                        {promptTokens >= 4000 && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                promptTokens >= 8000
+                                    ? 'bg-red-500/20 text-red-400'
+                                    : 'bg-yellow-500/20 text-yellow-400'
+                            }`}>
+                                {promptTokens >= 8000 ? 'Very long' : 'Long'}
+                            </span>
+                        )}
+                    </div>
+                )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
