@@ -252,23 +252,31 @@ async def get_providers_health():
     """
     store = _get_call_history_store()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    records = await store.list(
-        limit=10000,
-        offset=0,
-        start_date=cutoff,
-        include_details=False,
-    )
 
     provider_stats: dict[str, dict] = {}
-    for r in records:
-        name = r.provider_name or "unknown"
-        if name not in provider_stats:
-            provider_stats[name] = {"total": 0, "succeeded": 0, "failed": 0}
-        provider_stats[name]["total"] += 1
-        if r.outcome in ("error", "failed"):
-            provider_stats[name]["failed"] += 1
-        else:
-            provider_stats[name]["succeeded"] += 1
+    page_size = 1000
+    offset = 0
+    while True:
+        records = await store.list(
+            limit=page_size,
+            offset=offset,
+            start_date=cutoff,
+            include_details=False,
+        )
+        if not records:
+            break
+        for r in records:
+            name = r.provider_name or "unknown"
+            if name not in provider_stats:
+                provider_stats[name] = {"total": 0, "succeeded": 0, "failed": 0}
+            provider_stats[name]["total"] += 1
+            if r.outcome in ("error", "failed"):
+                provider_stats[name]["failed"] += 1
+            else:
+                provider_stats[name]["succeeded"] += 1
+        if len(records) < page_size:
+            break
+        offset += page_size
 
     result: dict[str, dict] = {}
     for name, stats in provider_stats.items():
