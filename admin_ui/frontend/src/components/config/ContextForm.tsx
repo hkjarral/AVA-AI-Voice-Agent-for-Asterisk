@@ -1,7 +1,7 @@
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import { ChevronDown, ChevronRight, Search, Phone, Webhook, Lock } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import HelpTooltip from '../ui/HelpTooltip';
 
 interface ContextFormProps {
@@ -126,6 +126,20 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         return toolEnabledMap[tool] === false;
     };
 
+    const estimatedTokens = useMemo(() => {
+        const text = config.prompt || '';
+        if (!text.trim()) return 0;
+        const words = text.split(/\s+/).filter(Boolean).length;
+        return Math.round(words * 1.3);
+    }, [config.prompt]);
+
+    const tokenCountColor = useMemo(() => {
+        if (estimatedTokens === 0) return 'text-muted-foreground';
+        if (estimatedTokens > 8000) return 'text-red-500';
+        if (estimatedTokens > 4000) return 'text-yellow-500';
+        return 'text-muted-foreground';
+    }, [estimatedTokens]);
+
     const pipelineOptions = Object.entries(pipelines || {}).map(([name, _]: [string, any]) => ({
         value: `pipeline:${name}`,
         label: `[Pipeline] ${name}`,
@@ -182,6 +196,13 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                     onChange={(e) => updateConfig('prompt', e.target.value)}
                     placeholder="You are a helpful voice assistant..."
                 />
+                <div className="flex items-center justify-between mt-1">
+                    <span className={`text-xs ${tokenCountColor}`}>
+                        ~{estimatedTokens.toLocaleString()} tokens estimated
+                        {estimatedTokens > 8000 && ' — exceeds typical 8K context limit'}
+                        {estimatedTokens > 4000 && estimatedTokens <= 8000 && ' — approaching 8K context limit'}
+                    </span>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
