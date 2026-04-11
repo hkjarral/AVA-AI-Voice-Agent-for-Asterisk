@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Settings, Radio, Star, AlertCircle, RefreshCw, Loader2, Plus, Trash2, Copy } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -204,6 +204,20 @@ const ProfilesPage = () => {
         return descriptions[profileName] || 'Custom audio profile';
     };
 
+    const handleCloneProfile = (profileName: string) => {
+        const existingProfiles = Object.keys(config.profiles || {}).filter(k => k !== 'default');
+        let cloneName = `${profileName}_copy`;
+        let counter = 2;
+        while (existingProfiles.includes(cloneName)) {
+            cloneName = `${profileName}_copy_${counter}`;
+            counter++;
+        }
+        setEditingProfile('new_profile');
+        setProfileForm({ ...config.profiles?.[profileName] });
+        setIsNewProfile(true);
+        setNewProfileName(cloneName);
+    };
+
     const handleDeleteProfile = async (profileName: string) => {
         const currentProfiles = config.profiles || {};
         const currentProfileKeys = Object.keys(currentProfiles).filter((k) => k !== 'default');
@@ -384,6 +398,16 @@ const ProfilesPage = () => {
                                         </div>
                                     </div>
 	                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+	                                        <button
+	                                            onClick={(e) => {
+	                                                e.stopPropagation();
+	                                                handleCloneProfile(profileName);
+	                                            }}
+	                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+	                                            title="Clone profile"
+	                                        >
+	                                            <Copy className="w-4 h-4" />
+	                                        </button>
 	                                        <button
 	                                            onClick={(e) => {
 	                                                e.stopPropagation();

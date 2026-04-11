@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { Plus, Settings, Trash2, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
+import { Plus, Settings, Trash2, Copy, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
@@ -202,6 +202,21 @@ const PipelinesPage = () => {
                 tts: { format: { encoding: 'mulaw', sample_rate: 8000 } }
             }
         });
+        setIsNewPipeline(true);
+    };
+
+    const handleClonePipeline = (name: string) => {
+        const existingPipelines = Object.keys(config.pipelines || {});
+        let cloneName = `${name}_copy`;
+        let counter = 2;
+        while (existingPipelines.includes(cloneName)) {
+            cloneName = `${name}_copy_${counter}`;
+            counter++;
+        }
+        const existing = config.pipelines?.[name] || {};
+        const { tools: _legacyTools, ...rest } = (existing && typeof existing === 'object') ? existing : {};
+        setEditingPipeline(cloneName);
+        setPipelineForm({ name: cloneName, ...rest });
         setIsNewPipeline(true);
     };
 
@@ -497,6 +512,13 @@ const PipelinesPage = () => {
                                     )}
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
+                                        onClick={() => handleClonePipeline(name)}
+                                        className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                        title="Clone pipeline"
+                                    >
+                                        <Copy className="w-4 h-4" />
+                                    </button>
                                     <button
                                         onClick={() => handleEditPipeline(name)}
                                         className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
