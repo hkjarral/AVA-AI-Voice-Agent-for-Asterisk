@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { RefreshCw, Pause, Play, Terminal } from 'lucide-react';
+import { RefreshCw, Pause, Play, Terminal, ArrowDown } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { parseAnsi } from '../../utils/ansi';
 import { describeApiError } from '../../utils/apiErrors';
@@ -426,6 +426,30 @@ const LogsPage = () => {
         return <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] ${cls}`}>{lvl.toUpperCase()}</span>;
     };
 
+    const highlightMatch = (line: string, term: string): React.ReactNode => {
+        if (!term) return line;
+        const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escapedTerm})`, 'gi');
+        const parts = line.split(regex);
+        return parts.map((part, i) =>
+            i % 2 === 1
+                ? <mark key={i} className="bg-yellow-400/30 text-yellow-200 rounded px-0.5">{part}</mark>
+                : part
+        );
+    };
+
+    const allRawLines = useMemo(() => {
+        if (!logs) return [];
+        const lines = logs.split('\n');
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        return lines;
+    }, [logs]);
+
+    const filteredRawLines = useMemo(() => {
+        if (!q) return allRawLines;
+        return allRawLines.filter(line => line.toLowerCase().includes(q.toLowerCase()));
+    }, [allRawLines, q]);
+
     return (
         <div className="space-y-6 h-[calc(100vh-140px)] flex flex-col">
             <div className="flex justify-between items-center flex-shrink-0">
@@ -548,6 +572,21 @@ const LogsPage = () => {
                             }}
                         />
                     </div>
+                    {logs && (
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                            {q
+                                ? `${filteredRawLines.length} / ${allRawLines.length} lines`
+                                : `${allRawLines.length} lines`}
+                        </span>
+                    )}
+                    <button
+                        onClick={() => logsEndRef.current?.scrollIntoView({ behavior: "smooth" })}
+                        className="ml-auto inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent p-2"
+                        title="Scroll to Bottom"
+                        aria-label="Scroll to Bottom"
+                    >
+                        <ArrowDown className="w-4 h-4" />
+                    </button>
                 </div>
             )}
 
@@ -926,27 +965,53 @@ const LogsPage = () => {
                         )}
                     </div>
                 ) : (
-                    <pre className="whitespace-pre-wrap break-all">
-                        {logs ? parseAnsi(logs) : (
+                    <>
+                        {logs && filteredRawLines.length > 0 ? (
+                            <div className="space-y-0">
+                                {filteredRawLines.map((line, i) => {
+                                    let className = 'text-gray-300';
+                                    if (line.includes('ERROR') || line.includes('Exception') || line.includes('CRITICAL')) {
+                                        className = 'text-red-500 font-bold';
+                                    } else if (line.includes('WARN') || line.includes('WARNING')) {
+                                        className = 'text-yellow-500';
+                                    } else if (line.includes('INFO')) {
+                                        className = 'text-blue-300';
+                                    } else if (line.includes('DEBUG')) {
+                                        className = 'text-gray-500';
+                                    }
+                                    return (
+                                        <div key={i} className={`${className} hover:bg-white/5 px-1 rounded`}>
+                                            {highlightMatch(line, q)}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : logs ? (
                             rawLevels.length === 1 && rawLevels[0] === 'debug' ? (
-                                <span className="text-gray-400">
-                                    No debug logs found.{'\n\n'}
+                                <div className="text-gray-400">
+                                    No debug logs found.<br/><br/>
                                     <span className="text-gray-500">
-                                        Debug logging may be disabled. To enable:{'\n'}
-                                        1. Set <span className="text-blue-400">LOG_LEVEL=DEBUG</span> in your .env file{'\n'}
+                                        Debug logging may be disabled. To enable:<br/>
+                                        1. Set <span className="text-blue-400">LOG_LEVEL=DEBUG</span> in your .env file<br/>
                                         2. Restart the container: <span className="text-blue-400">docker compose up -d --force-recreate {container}</span>
                                     </span>
-                                </span>
+                                </div>
                             ) : rawLevels.length > 0 && !rawLevels.includes('info') && !rawLevels.includes('warning') && !rawLevels.includes('error') ? (
-                                <span className="text-gray-400">
-                                    No logs found for selected level(s): {rawLevels.join(', ')}{'\n\n'}
+                                <div className="text-gray-400">
+                                    No logs found for selected level(s): {rawLevels.join(', ')}<br/><br/>
                                     <span className="text-gray-500">
                                         Try selecting additional levels like 'info' or 'warning'.
                                     </span>
-                                </span>
-                            ) : "No logs available..."
+                                </div>
+                            ) : q ? (
+                                <div className="text-gray-400 italic">No lines match the filter.</div>
+                            ) : (
+                                <div className="text-gray-400">No logs available...</div>
+                            )
+                        ) : (
+                            <div className="text-gray-400">No logs available...</div>
                         )}
-                    </pre>
+                    </>
                 )}
                 <div ref={logsEndRef} />
             </div>
