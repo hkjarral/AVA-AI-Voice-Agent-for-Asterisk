@@ -406,7 +406,8 @@ def parse_log_line(line: str) -> Optional[Tuple[LogEvent, Dict[str, str]]]:
             kv = {k: str(v) for k, v in obj.items() if isinstance(v, (str, int, float, bool))}
             meta = _build_meta(msg, kv)
             if "stasisstart event received" in (msg or "").lower():
-                event_data = _parse_event_data_dict(raw)
+                _nested = obj.get("event_data")
+                event_data = _nested if isinstance(_nested, dict) else obj
                 if event_data:
                     meta.update(_meta_from_event_data(event_data))
                     if not call_id:
