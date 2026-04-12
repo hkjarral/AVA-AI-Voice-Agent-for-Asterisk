@@ -1,4 +1,5 @@
 import ast
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ def strip_ansi(text: str) -> str:
 
 
 _TS_LEVEL_RE = re.compile(
-    r"^\s*(?P<ts>\d{4}-\d\d-\d\dT[0-9:.]+(?:Z|[+-]\d{2}:\d{2}))\s*\[\s*(?P<level>[a-zA-Z]+)\s*\]\s*(?P<rest>.*)$"
+    r"^\s*(?P<ts>\d{4}-\d\d-\d\d[T ][0-9:.]+(?:Z|[+-]\d{2}:\d{2})?)\s*\[\s*(?P<level>[a-zA-Z]+)\s*\]\s*(?P<rest>.*)$"
 )
 
 _LOGGER_RE = re.compile(r"^(?P<msg>.*?)\s*\[(?P<logger>[^\]]+)\]\s*(?P<kv>.*)$")
@@ -385,6 +386,51 @@ def parse_log_line(line: str) -> Optional[Tuple[LogEvent, Dict[str, str]]]:
     raw = strip_ansi(line.rstrip("\n"))
     if not raw.strip():
         return None
+
+    # ── JSON format (structlog default: LOG_FORMAT=json) ──────────────────
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+            call_id = obj.get("call_id") or obj.get("caller_channel_id") or obj.get("channel_id")
+            msg = obj.get("event") or obj.get("message") or ""
+            level = (obj.get("level") or "info").lower()
+            ts = _parse_ts(obj.get("timestamp") or "")
+            component = obj.get("component") or obj.get("logger")
+            provider = obj.get("provider") or obj.get("provider_name")
+            context = obj.get("context") or obj.get("context_name")
+            pipeline = obj.get("pipeline") or obj.get("pipeline_name")
+            if not provider:
+                provider = _infer_provider_from_component(component)
+            category, milestone = classify_event(msg, component)
+            kv = {k: str(v) for k, v in obj.items() if isinstance(v, (str, int, float, bool))}
+            meta = _build_meta(msg, kv)
+            if "stasisstart event received" in (msg or "").lower():
+                _nested = obj.get("event_data")
+                event_data = _nested if isinstance(_nested, dict) else obj
+                if event_data:
+                    meta.update(_meta_from_event_data(event_data))
+                    if not call_id:
+                        call_id = meta.get("ari_channel_id") or call_id
+            return (
+                LogEvent(
+                    ts=ts,
+                    level=level,
+                    msg=msg,
+                    component=component,
+                    call_id=call_id,
+                    provider=provider,
+                    context=context,
+                    pipeline=pipeline,
+                    category=category,
+                    milestone=milestone,
+                    meta=meta,
+                    raw=raw,
+                ),
+                kv,
+            )
+        except json.JSONDecodeError:
+            pass  # fall through to text regex parsing
 
     m = _TS_LEVEL_RE.match(raw)
     if not m:
