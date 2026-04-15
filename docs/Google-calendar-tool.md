@@ -110,8 +110,9 @@ Under `tools.google_calendar`:
 | `free_prefix` | Default prefix for events that define available windows (e.g. `"Open"`). The LLM can override this per-call. | *(none -- must be provided by LLM or config)* |
 | `busy_prefix` | Default prefix for events that define booked slots (e.g. `"Busy"`). The LLM can override this per-call. | *(none -- must be provided by LLM or config)* |
 | `min_slot_duration_minutes` | Default appointment duration in minutes for `get_free_slots`. | `15` |
+| `calendars` | Map of named calendars (multi-account support). Each entry can set `credentials_path`, `calendar_id`, `timezone`. | *(optional)* |
 
-Example config with defaults:
+Example (single or multiple calendars):
 
 ```yaml
 tools:
@@ -120,17 +121,39 @@ tools:
     free_prefix: "Open"
     busy_prefix: "Busy"
     min_slot_duration_minutes: 30
+    calendars:
+      work:
+        credentials_path: credentials/work-sa.json
+        calendar_id: abc@group.calendar.google.com
+        timezone: America/Denver
+      personal:
+        credentials_path: credentials/personal-sa.json
+        calendar_id: primary
+        timezone: America/Denver
 ```
+
+Per-context selection (which calendars apply in that context):
+
+```yaml
+contexts:
+  sales:
+    tools:
+      - google_calendar
+    tools.google_calendar:
+      selected_calendars: [work, personal]
+```
+
+- If `calendars` is omitted but env vars are set, the tool will auto-materialize `calendars.default` from `GOOGLE_CALENDAR_*` and use it.
 
 ## Actions
 
 | Action | Purpose |
 |--------|--------|
-| `list_events` | List events in a time range (`time_min`, `time_max`). |
-| `get_event` | Get one event by `event_id`. |
-| `create_event` | Create event with `summary`, `start_datetime`, `end_datetime` (optional `description`). |
-| `delete_event` | Delete an event by `event_id`. |
-| `get_free_slots` | Return start times where a slot of given `duration` (minutes) fits. Uses `free_prefix` / `busy_prefix` to compute available intervals; slot starts are aligned to multiples of `duration` (e.g. 15 -> :00, :15, :30, :45). |
+| `list_events` | List events in a time range (`time_min`, `time_max`). Optional: `calendar_key` to target a single calendar; otherwise aggregates over selected calendars. |
+| `get_event` | Get one event by `event_id`. Requires `calendar_key` (or defaults to first selected). |
+| `create_event` | Create event with `summary`, `start_datetime`, `end_datetime` (optional `description`). Requires `calendar_key` (or defaults to first selected). |
+| `delete_event` | Delete an event by `event_id`. Requires `calendar_key` (or defaults to first selected). |
+| `get_free_slots` | Return start times where a slot of given `duration` (minutes) fits. Uses `free_prefix` / `busy_prefix` to compute available intervals. Optional: `calendar_key`; otherwise aggregates across selected calendars with `aggregate_mode` (`all` intersection default, `any` union). Slot starts are aligned to multiples of `duration`. |
 
 All times use ISO 8601. The tool is registered as `google_calendar` and is in the **business** tool category.
 
