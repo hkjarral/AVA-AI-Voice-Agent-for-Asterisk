@@ -1,6 +1,6 @@
 websockets==15.0.1
 vosk==0.3.45
-llama-cpp-python==0.3.16
+llama-cpp-python==0.3.20
 piper-tts==1.2.0
 numpy==1.26.4
 sherpa-onnx==1.12.38
