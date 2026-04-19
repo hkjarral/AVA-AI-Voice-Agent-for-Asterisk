@@ -40,6 +40,10 @@ By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 - **Roadmap**: See [docs/ROADMAP.md](docs/ROADMAP.md) for planned milestones with difficulty levels
 - **Discord**: Join [our server](https://discord.gg/ysg8fphxUe) and ask in #contributing
 
+### A note on `good first issue` tickets
+
+These are reserved for contributors making their first PR to AAVA. If you've already had a PR merged — thank you — please pick up an issue without the `good first issue` label next time. This keeps the onboarding lane clear for people making their first contribution.
+
 ## Getting Started
 
 **New to the project?** Start here:
@@ -55,14 +59,14 @@ By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Active branches:
 - `develop`: Feature work and ongoing development
-- `staging`: Release prep and GA readiness (PRs typically target here)
+- `staging`: Release prep and GA readiness
 - `main`: Stable releases
 
 Recommended flow:
 
 1. Fork the repository and create a feature branch from `develop`
 2. Make your changes in small, focused commits
-3. Open a Pull Request (PR) against `staging` (preferred) or `develop`
+3. Open a Pull Request (PR) against `main`
 4. Include a clear description and testing notes
 5. A maintainer will review, run CI/manual checks, and merge
 
@@ -148,7 +152,7 @@ We use labels to categorize issues:
 
 | Label | Description |
 |-------|-------------|
-| `good first issue` | Good for newcomers |
+| `good first issue` | Good for newcomers — [first-PR policy](#a-note-on-good-first-issue-tickets) |
 | `help wanted` | Extra attention needed |
 | `difficulty: beginner` | No Asterisk experience needed |
 | `difficulty: intermediate` | Some domain knowledge needed |
