@@ -65,7 +65,13 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     google_live: {
         model: GOOGLE_LIVE_SUGGESTED_MODELS,
         llm_model: GOOGLE_LIVE_SUGGESTED_MODELS,
-        tts_voice_name: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr'],
+        tts_voice_name: [
+            'Achernar', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Aoede', 'Autonoe',
+            'Callirrhoe', 'Charon', 'Despina', 'Enceladus', 'Erinome', 'Fenrir', 'Gacrux',
+            'Iapetus', 'Kore', 'Laomedeia', 'Leda', 'Orus', 'Puck', 'Pulcherrima',
+            'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar', 'Sulafat', 'Umbriel',
+            'Vindemiatrix', 'Zephyr', 'Zubenelgenubi',
+        ],
     },
     minimax: {
         chat_model: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'],

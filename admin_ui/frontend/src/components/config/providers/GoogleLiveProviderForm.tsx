@@ -409,22 +409,40 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             value={config.tts_voice_name || 'Aoede'}
                             onChange={(e) => handleChange('tts_voice_name', e.target.value)}
                         >
-                            <optgroup label="Female">
-                                <option value="Aoede">Aoede</option>
-                                <option value="Kore">Kore</option>
-                                <option value="Leda">Leda</option>
-                            </optgroup>
-                            <optgroup label="Male">
-                                <option value="Puck">Puck</option>
-                                <option value="Charon">Charon</option>
-                                <option value="Fenrir">Fenrir</option>
-                                <option value="Orus">Orus</option>
-                                <option value="Zephyr">Zephyr</option>
-                            </optgroup>
+                            <option value="Achernar">Achernar — Soft</option>
+                            <option value="Achird">Achird — Friendly</option>
+                            <option value="Algenib">Algenib — Gravelly</option>
+                            <option value="Algieba">Algieba — Smooth</option>
+                            <option value="Alnilam">Alnilam — Firm</option>
+                            <option value="Aoede">Aoede — Breezy</option>
+                            <option value="Autonoe">Autonoe — Bright</option>
+                            <option value="Callirrhoe">Callirrhoe — Easy-going</option>
+                            <option value="Charon">Charon — Informative</option>
+                            <option value="Despina">Despina — Smooth</option>
+                            <option value="Enceladus">Enceladus — Breathy</option>
+                            <option value="Erinome">Erinome — Clear</option>
+                            <option value="Fenrir">Fenrir — Excitable</option>
+                            <option value="Gacrux">Gacrux — Mature</option>
+                            <option value="Iapetus">Iapetus — Clear</option>
+                            <option value="Kore">Kore — Firm</option>
+                            <option value="Laomedeia">Laomedeia — Upbeat</option>
+                            <option value="Leda">Leda — Youthful</option>
+                            <option value="Orus">Orus — Firm</option>
+                            <option value="Puck">Puck — Upbeat</option>
+                            <option value="Pulcherrima">Pulcherrima — Forward</option>
+                            <option value="Rasalgethi">Rasalgethi — Informative</option>
+                            <option value="Sadachbia">Sadachbia — Lively</option>
+                            <option value="Sadaltager">Sadaltager — Knowledgeable</option>
+                            <option value="Schedar">Schedar — Even</option>
+                            <option value="Sulafat">Sulafat — Warm</option>
+                            <option value="Umbriel">Umbriel — Easy-going</option>
+                            <option value="Vindemiatrix">Vindemiatrix — Gentle</option>
+                            <option value="Zephyr">Zephyr — Bright</option>
+                            <option value="Zubenelgenubi">Zubenelgenubi — Casual</option>
                         </select>
                         <p className="text-xs text-muted-foreground">
-                            Multilingual voices - auto-switches between 24 languages without configuration.
-                            <a href="https://firebase.google.com/docs/ai-logic/live-api/configuration" target="_blank" rel="noopener noreferrer" className="ml-1 text-blue-500 hover:underline">Voice Docs ↗</a>
+                            Multilingual voices — auto-switch across 70+ languages without configuration.
+                            <a href="https://ai.google.dev/gemini-api/docs/speech-generation" target="_blank" rel="noopener noreferrer" className="ml-1 text-blue-500 hover:underline">Voice Docs ↗</a>
                         </p>
                     </div>
                     <div className="space-y-2">
