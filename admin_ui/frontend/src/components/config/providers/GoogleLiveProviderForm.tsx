@@ -10,13 +10,40 @@ import {
     normalizeGoogleLiveModelForUi,
 } from '../../../utils/googleLiveModels';
 
-const GOOGLE_LIVE_SUPPORTED_VOICE_NAMES = [
-    'Achernar', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Aoede', 'Autonoe',
-    'Callirrhoe', 'Charon', 'Despina', 'Enceladus', 'Erinome', 'Fenrir', 'Gacrux',
-    'Iapetus', 'Kore', 'Laomedeia', 'Leda', 'Orus', 'Puck', 'Pulcherrima',
-    'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar', 'Sulafat', 'Umbriel',
-    'Vindemiatrix', 'Zephyr', 'Zubenelgenubi',
-];
+const GOOGLE_LIVE_VOICE_OPTIONS = [
+    { value: 'Achernar', tone: 'Soft' },
+    { value: 'Achird', tone: 'Friendly' },
+    { value: 'Algenib', tone: 'Gravelly' },
+    { value: 'Algieba', tone: 'Smooth' },
+    { value: 'Alnilam', tone: 'Firm' },
+    { value: 'Aoede', tone: 'Breezy' },
+    { value: 'Autonoe', tone: 'Bright' },
+    { value: 'Callirrhoe', tone: 'Easy-going' },
+    { value: 'Charon', tone: 'Informative' },
+    { value: 'Despina', tone: 'Smooth' },
+    { value: 'Enceladus', tone: 'Breathy' },
+    { value: 'Erinome', tone: 'Clear' },
+    { value: 'Fenrir', tone: 'Excitable' },
+    { value: 'Gacrux', tone: 'Mature' },
+    { value: 'Iapetus', tone: 'Clear' },
+    { value: 'Kore', tone: 'Firm' },
+    { value: 'Laomedeia', tone: 'Upbeat' },
+    { value: 'Leda', tone: 'Youthful' },
+    { value: 'Orus', tone: 'Firm' },
+    { value: 'Puck', tone: 'Upbeat' },
+    { value: 'Pulcherrima', tone: 'Forward' },
+    { value: 'Rasalgethi', tone: 'Informative' },
+    { value: 'Sadachbia', tone: 'Lively' },
+    { value: 'Sadaltager', tone: 'Knowledgeable' },
+    { value: 'Schedar', tone: 'Even' },
+    { value: 'Sulafat', tone: 'Warm' },
+    { value: 'Umbriel', tone: 'Easy-going' },
+    { value: 'Vindemiatrix', tone: 'Gentle' },
+    { value: 'Zephyr', tone: 'Bright' },
+    { value: 'Zubenelgenubi', tone: 'Casual' },
+] as const;
+
+const GOOGLE_LIVE_SUPPORTED_VOICE_NAMES = GOOGLE_LIVE_VOICE_OPTIONS.map((v) => v.value);
 
 interface VertexRegion {
     value: string;
@@ -417,36 +444,11 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             value={config.tts_voice_name || 'Aoede'}
                             onChange={(e) => handleChange('tts_voice_name', e.target.value)}
                         >
-                            <option value="Achernar">Achernar — Soft</option>
-                            <option value="Achird">Achird — Friendly</option>
-                            <option value="Algenib">Algenib — Gravelly</option>
-                            <option value="Algieba">Algieba — Smooth</option>
-                            <option value="Alnilam">Alnilam — Firm</option>
-                            <option value="Aoede">Aoede — Breezy</option>
-                            <option value="Autonoe">Autonoe — Bright</option>
-                            <option value="Callirrhoe">Callirrhoe — Easy-going</option>
-                            <option value="Charon">Charon — Informative</option>
-                            <option value="Despina">Despina — Smooth</option>
-                            <option value="Enceladus">Enceladus — Breathy</option>
-                            <option value="Erinome">Erinome — Clear</option>
-                            <option value="Fenrir">Fenrir — Excitable</option>
-                            <option value="Gacrux">Gacrux — Mature</option>
-                            <option value="Iapetus">Iapetus — Clear</option>
-                            <option value="Kore">Kore — Firm</option>
-                            <option value="Laomedeia">Laomedeia — Upbeat</option>
-                            <option value="Leda">Leda — Youthful</option>
-                            <option value="Orus">Orus — Firm</option>
-                            <option value="Puck">Puck — Upbeat</option>
-                            <option value="Pulcherrima">Pulcherrima — Forward</option>
-                            <option value="Rasalgethi">Rasalgethi — Informative</option>
-                            <option value="Sadachbia">Sadachbia — Lively</option>
-                            <option value="Sadaltager">Sadaltager — Knowledgeable</option>
-                            <option value="Schedar">Schedar — Even</option>
-                            <option value="Sulafat">Sulafat — Warm</option>
-                            <option value="Umbriel">Umbriel — Easy-going</option>
-                            <option value="Vindemiatrix">Vindemiatrix — Gentle</option>
-                            <option value="Zephyr">Zephyr — Bright</option>
-                            <option value="Zubenelgenubi">Zubenelgenubi — Casual</option>
+                            {GOOGLE_LIVE_VOICE_OPTIONS.map((voice) => (
+                                <option key={voice.value} value={voice.value}>
+                                    {voice.value} — {voice.tone}
+                                </option>
+                            ))}
                             {config.tts_voice_name && !GOOGLE_LIVE_SUPPORTED_VOICE_NAMES.includes(config.tts_voice_name) && (
                                 <optgroup label="Custom">
                                     <option value={config.tts_voice_name}>{config.tts_voice_name}</option>
