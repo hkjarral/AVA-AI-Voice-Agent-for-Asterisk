@@ -10,6 +10,14 @@ import {
     normalizeGoogleLiveModelForUi,
 } from '../../../utils/googleLiveModels';
 
+const GOOGLE_LIVE_SUPPORTED_VOICE_NAMES = [
+    'Achernar', 'Achird', 'Algenib', 'Algieba', 'Alnilam', 'Aoede', 'Autonoe',
+    'Callirrhoe', 'Charon', 'Despina', 'Enceladus', 'Erinome', 'Fenrir', 'Gacrux',
+    'Iapetus', 'Kore', 'Laomedeia', 'Leda', 'Orus', 'Puck', 'Pulcherrima',
+    'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar', 'Sulafat', 'Umbriel',
+    'Vindemiatrix', 'Zephyr', 'Zubenelgenubi',
+];
+
 interface VertexRegion {
     value: string;
     label: string;
@@ -439,6 +447,11 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             <option value="Vindemiatrix">Vindemiatrix — Gentle</option>
                             <option value="Zephyr">Zephyr — Bright</option>
                             <option value="Zubenelgenubi">Zubenelgenubi — Casual</option>
+                            {config.tts_voice_name && !GOOGLE_LIVE_SUPPORTED_VOICE_NAMES.includes(config.tts_voice_name) && (
+                                <optgroup label="Custom">
+                                    <option value={config.tts_voice_name}>{config.tts_voice_name}</option>
+                                </optgroup>
+                            )}
                         </select>
                         <p className="text-xs text-muted-foreground">
                             Multilingual voices — auto-switch across 70+ languages without configuration.
