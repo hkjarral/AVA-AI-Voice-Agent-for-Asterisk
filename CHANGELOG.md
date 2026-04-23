@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Google Live voice picker — full 30-voice catalog (#349)**: Expanded the `google_live` TTS voice picker in the admin UI from 8 hardcoded voices (split arbitrarily into Female/Male) to the full 30-voice catalog that Gemini native-audio Live models support. Voices are labeled with Google's official tone descriptors (Bright, Firm, Smooth, Warm, etc.) from the [speech-generation docs](https://ai.google.dev/gemini-api/docs/speech-generation), listed alphabetically. Female/Male grouping dropped since Google does not publish gender metadata for these voices. Help text updated ("24 languages" → "70+ languages") to match Google's current multilingual capability. Default voice `Aoede` preserved; no backend changes — the `google_live` provider already accepts any string, so all 22 new voices work with existing operator YAML configs unchanged.
+
+### Fixed
+
+- **Google Live voice picker data-loss footgun (#349)**: Voice picker now renders a "Custom" optgroup for YAML-configured voices outside the 30-voice Gemini catalog (e.g. a new Google voice before we ship a UI update), mirroring the existing pattern on the model picker. Previously, a controlled `<select>` with a value not matching any `<option>` fell through to browser-default rendering (first option selected visually while React state held the configured value), so operators "fixing" the mismatched display silently overwrote their YAML-set custom voice on save.
+
 ### Planned
 
 - Additional provider integrations
