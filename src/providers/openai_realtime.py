@@ -112,6 +112,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         # Track whether ANY audio was emitted during a given response (response_id -> bool).
         # _in_audio_burst is only "currently emitting", and is often false by response.done.
         self._audio_seen_response_ids: set[str] = set()
+        # Per-response "done" events. A function_call handler must wait for its parent response's
+        # response.done before submitting function_call_output, otherwise OpenAI may reject the
+        # output with invalid_tool_call_id ("Tool call ID ... not found in conversation") — which
+        # in turn causes the LLM to retry and duplicate side-effectful tool calls (e.g. creating
+        # multiple calendar events). See _handle_function_call() for the wait logic.
+        self._response_done_events: dict[str, asyncio.Event] = {}
         # For farewells, wait for output_audio.done before emitting HangupReady to avoid cutting off speech.
         self._farewell_waiting_for_audio_done: bool = False
         self._response_audio_start_time: Optional[float] = None  # Track when audio started for interruption cooldown
@@ -612,7 +618,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             
             # Execute tool via adapter
             result = await self.tool_adapter.handle_tool_call_event(event_data, context)
-            
+
             # Check if this is a hangup_call tool that will trigger hangup
             item = event_data.get("item", {})
             function_name = item.get("name")
@@ -627,7 +633,29 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                         function_name=function_name,
                         farewell=result.get("message")
                     )
-            
+
+            # CRITICAL: Wait for response.done on the parent response before submitting
+            # function_call_output. OpenAI only commits function_call items to the
+            # conversation on response finalization, and submitting output prematurely
+            # yields an "invalid_tool_call_id" error — which causes the LLM to retry
+            # with a fresh call_id, duplicating side-effectful tool calls (e.g. multiple
+            # calendar events for one caller request).
+            parent_resp_id = event_data.get("response_id")
+            if parent_resp_id:
+                done_evt = self._response_done_events.get(parent_resp_id)
+                if done_evt is not None:
+                    try:
+                        await asyncio.wait_for(done_evt.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "response.done did not arrive within 5s; submitting function_call_output anyway",
+                            call_id=self._call_id,
+                            response_id=parent_resp_id,
+                            tool=function_name,
+                        )
+                    finally:
+                        self._response_done_events.pop(parent_resp_id, None)
+
             # Send result back to OpenAI
             await self.tool_adapter.send_tool_result(result, context)
 
@@ -780,6 +808,14 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._keepalive_task = None
             self._greeting_vad_task = None
             self._background_tasks.clear()
+            # Unblock any pending function_call handlers and drop their sentinels so they
+            # exit cleanly instead of waiting for a response.done that will never arrive.
+            try:
+                for _evt in self._response_done_events.values():
+                    _evt.set()
+                self._response_done_events.clear()
+            except Exception:
+                pass
             self.websocket = None
             self._call_id = None
             self._closing = False
@@ -1632,6 +1668,19 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             return
 
         if event_type in ("response.completed", "response.error", "response.cancelled", "response.done"):
+            # Signal any function_call handler that's waiting on this response. The server
+            # commits output items to the conversation on response finalization, so this is
+            # the earliest point a function_call_output can be safely submitted.
+            try:
+                ev_resp = event.get("response") or {}
+                done_resp_id = ev_resp.get("id") or self._current_response_id
+                if done_resp_id:
+                    done_evt = self._response_done_events.get(done_resp_id)
+                    if done_evt:
+                        done_evt.set()
+            except Exception:
+                logger.debug("Failed to signal response.done event", exc_info=True)
+
             # Track whether ANY audio was emitted during this response (not just "currently emitting").
             current_response_id = self._current_response_id
             had_audio_for_response = bool(
@@ -1944,11 +1993,20 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             if item.get("type") == "function_call":
                 call_id_field = item.get("call_id")
                 function_name = item.get("name")
+                # Register a response.done sentinel for this response BEFORE we dispatch
+                # the tool handler. The handler will await this event before submitting
+                # function_call_output, so the parent response has time to commit to the
+                # conversation on the server side. Without this, fast tools race ahead of
+                # response.done and OpenAI rejects the output with invalid_tool_call_id.
+                resp_id = event.get("response_id") or self._current_response_id
+                if resp_id and resp_id not in self._response_done_events:
+                    self._response_done_events[resp_id] = asyncio.Event()
                 logger.info(
                     "📞 OpenAI function call detected",
                     call_id=self._call_id,
                     function_call_id=call_id_field,
                     function_name=function_name,
+                    response_id=resp_id,
                 )
                 # Handle function call via tool adapter
                 task = asyncio.create_task(self._handle_function_call(event))
