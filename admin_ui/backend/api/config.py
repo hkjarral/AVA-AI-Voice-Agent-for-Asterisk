@@ -3143,58 +3143,6 @@ def _ms_token_cache_path_for_key(account_key: str) -> str:
     return f"{MICROSOFT_CALENDAR_SECRETS_DIR}/microsoft-calendar-{key}-token-cache.json"
 
 
-def _resolve_ms_token_cache_path(token_cache_path: str) -> str:
-    """Resolve a user-supplied token cache path to a safe absolute path under
-    MICROSOFT_CALENDAR_SECRETS_DIR.
-
-    Sanitization uses CodeQL-recognized primitives only:
-
-    * `os.path.basename(raw)` strips any directory components from the input
-      (recognized as a path-traversal sanitizer by CodeQL's Python query).
-    * Defense-in-depth explicit rejection of `..`, `/`, `\\` in the basename
-      catches any pathological input that survived basename extraction.
-    * The chosen basename must match the strict allowlist regex
-      `_MS_TOKEN_FILENAME_RE` (alphanumerics, underscore, hyphen only).
-    * The returned path is `os.path.join(<literal trusted prefix>, <vetted
-      basename>)`. The literal prefix is what CodeQL recognizes as untainted.
-
-    Taint flow on the user-controlled value terminates at the regex check;
-    everything downstream operates on the regex-validated basename joined
-    with a constant trusted prefix.
-    """
-    raw = (token_cache_path or "").strip()
-    if not raw:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "missing_token_cache_path",
-                "message": "No token_cache_path configured or supplied.",
-            },
-        )
-    # CodeQL recognizes os.path.basename as a path-traversal sanitizer.
-    filename = os.path.basename(raw)
-    # Defense-in-depth: explicit rejection of any traversal-shaped basename
-    # (CodeQL recognizes explicit "..", "/", "\\" rejection as a sanitizer).
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "invalid_token_cache_filename",
-                "message": "Microsoft token cache filename is not recognized.",
-            },
-        )
-    if not _MS_TOKEN_FILENAME_RE.fullmatch(filename):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "invalid_token_cache_filename",
-                "message": "Microsoft token cache filename is not recognized.",
-            },
-        )
-    # Construct the result from a literal prefix + regex-vetted basename.
-    return os.path.join(MICROSOFT_CALENDAR_SECRETS_DIR, filename)
-
-
 class _MicrosoftDeviceStartRequest(BaseModel):
     tenant_id: str
     client_id: str
@@ -3253,8 +3201,13 @@ def _ms_graph_request_with_token(token: str, method: str, path: str, body: Optio
         )
 
 
-def _persist_ms_token_cache(cache, token_cache_path: str) -> None:
-    safe_path = _resolve_ms_token_cache_path(token_cache_path)
+def _persist_ms_token_cache(cache, account_key: str) -> None:
+    # Derive the cache path from the validated account_key (regex-allowlisted
+    # in `_ms_token_cache_path_for_key`). The user-supplied token_cache_path
+    # never reaches `os.path.*` operations — see Codex review feedback on PR
+    # #357 for context (CodeQL py/path-injection couldn't track the previous
+    # sanitizer through a function return).
+    safe_path = _ms_token_cache_path_for_key(account_key)
     import portalocker  # type: ignore
 
     os.makedirs(os.path.dirname(safe_path), exist_ok=True)
@@ -3274,7 +3227,7 @@ def _persist_ms_token_cache(cache, token_cache_path: str) -> None:
             pass
 
 
-def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, token_cache_path: str) -> None:
+def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account_key: str) -> None:
     import msal  # type: ignore
 
     cache = msal.SerializableTokenCache()
@@ -3297,7 +3250,7 @@ def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, token_c
                     "message": description or error or "Microsoft device-code authorization failed.",
                 }
             return
-        _persist_ms_token_cache(cache, token_cache_path)
+        _persist_ms_token_cache(cache, account_key)
         access_token = result["access_token"]
         me = _ms_graph_request_with_token(access_token, "GET", "/me")
         calendars_payload = _ms_graph_request_with_token(access_token, "GET", "/me/calendars")
@@ -3390,7 +3343,7 @@ async def start_microsoft_calendar_device_flow(req: _MicrosoftDeviceStartRequest
         }
     worker = threading.Thread(
         target=_ms_device_flow_worker,
-        args=(flow_id, tenant_id, client_id, token_cache_path),
+        args=(flow_id, tenant_id, client_id, account_key),
         daemon=True,
     )
     worker.start()
@@ -3469,7 +3422,27 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
     timezone = (req.timezone if req.timezone is not None else persisted.get("timezone", "") or "UTC").strip() or "UTC"
 
     _validate_ms_tenant_client_or_400(tenant_id, client_id)
-    safe_token_path = _resolve_ms_token_cache_path(token_cache_path)
+    # Derive the path from the validated account_key. Any user-supplied
+    # token_cache_path is accepted only as a basename consistency check —
+    # it never reaches `os.path.*` operations. (Codex review feedback on
+    # PR #357: CodeQL py/path-injection couldn't track the previous
+    # sanitizer through a function return; deriving from account_key
+    # eliminates the user-controlled path data entirely.)
+    safe_token_path = _ms_token_cache_path_for_key(account_key)
+    if token_cache_path:
+        posted_basename = os.path.basename(token_cache_path)
+        if posted_basename and posted_basename != os.path.basename(safe_token_path):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "token_cache_path_mismatch",
+                    "message": (
+                        "Supplied token_cache_path does not match the canonical path "
+                        "derived from account_key. Omit token_cache_path or align it "
+                        "to the canonical filename."
+                    ),
+                },
+            )
     if not os.path.exists(safe_token_path):
         raise HTTPException(
             status_code=401,
@@ -3535,8 +3508,26 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
 @router.post("/microsoft-calendar/disconnect")
 async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
     account_key = _validate_ms_account_key_or_400(req.account_key or "default")
-    token_cache_path = (req.token_cache_path or "").strip() or _ms_token_cache_path_for_key(account_key)
-    safe_path = _resolve_ms_token_cache_path(token_cache_path)
+    # Derive the path from the validated account_key (regex-allowlisted).
+    # Any user-supplied token_cache_path is accepted only as a basename
+    # consistency check — it never reaches `os.path.*` operations. (See
+    # Codex review feedback on PR #357.)
+    safe_path = _ms_token_cache_path_for_key(account_key)
+    posted = (req.token_cache_path or "").strip()
+    if posted:
+        posted_basename = os.path.basename(posted)
+        if posted_basename and posted_basename != os.path.basename(safe_path):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "token_cache_path_mismatch",
+                    "message": (
+                        "Supplied token_cache_path does not match the canonical path "
+                        "derived from account_key. Omit token_cache_path or align it "
+                        "to the canonical filename."
+                    ),
+                },
+            )
     removed = False
     for path in (safe_path, f"{safe_path}.lock"):
         try:
@@ -3551,4 +3542,4 @@ async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
                     "message": f"Failed to remove Microsoft token cache: {exc}",
                 },
             ) from exc
-    return {"status": "success", "removed": removed, "token_cache_path": token_cache_path}
+    return {"status": "success", "removed": removed, "token_cache_path": safe_path}
