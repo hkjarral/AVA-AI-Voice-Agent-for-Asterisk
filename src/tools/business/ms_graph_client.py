@@ -14,12 +14,12 @@ from typing import Any
 from src.tools.business._calendar_utils import graph_datetime
 
 
-# MSAL silently filters reserved scopes (User.Read / offline_access / openid /
-# profile) and adds them back automatically because they're OIDC built-ins or
-# the default Graph resource. Keep only the resource-specific scope here so we
-# stay symmetric with admin_ui's device-flow init (where MSAL hard-rejects the
-# reserved scopes). The issued token still covers User.Read + offline_access.
-MS_CALENDAR_SCOPES = ["Calendars.ReadWrite"]
+# MSAL Python's reserved-scope check rejects ONLY `openid`, `profile`,
+# `offline_access` (it auto-adds those itself). `User.Read` is a regular
+# Graph delegated permission and must be requested explicitly — without it
+# the issued access token cannot call `/me`, which the device-flow worker
+# uses to confirm the signed-in identity (Authorization_RequestDenied 403).
+MS_CALENDAR_SCOPES = ["User.Read", "Calendars.ReadWrite"]
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 

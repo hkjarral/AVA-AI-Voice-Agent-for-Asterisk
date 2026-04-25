@@ -3340,12 +3340,13 @@ async def start_microsoft_calendar_device_flow(req: _MicrosoftDeviceStartRequest
         client_id,
         authority=f"https://login.microsoftonline.com/{tenant_id}",
     )
-    # MSAL's initiate_device_flow rejects "reserved" scopes — `User.Read`,
-    # `offline_access`, `openid`, `profile`. MSAL adds them automatically
-    # for the device-code flow because they're either OIDC built-ins or
-    # the default Graph resource. Only pass resource-specific scopes here;
-    # the resulting token will still cover User.Read + offline_access.
-    flow = app.initiate_device_flow(scopes=["Calendars.ReadWrite"])
+    # MSAL Python only treats `openid`, `profile`, and `offline_access` as
+    # reserved — it auto-adds those itself and raises ValueError if the
+    # caller passes them. `User.Read` is a regular Graph delegated
+    # permission and MUST be requested explicitly; otherwise the issued
+    # access token cannot call `/me` (Authorization_RequestDenied 403),
+    # which we use post-auth to confirm the signed-in identity.
+    flow = app.initiate_device_flow(scopes=["User.Read", "Calendars.ReadWrite"])
     if not flow or "user_code" not in flow:
         raise HTTPException(
             status_code=400,
