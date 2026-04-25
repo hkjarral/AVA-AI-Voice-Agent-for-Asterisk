@@ -3184,9 +3184,16 @@ def _ms_graph_request_with_token(token: str, method: str, path: str, body: Optio
     import urllib.error
     import urllib.request
 
+    # Accept either a relative path (e.g. "/me") or an absolute Graph URL
+    # (e.g. an "@odata.nextLink" returned from a paginated response). Same
+    # shape as `MicrosoftGraphClient._request` in the runtime client.
+    if path.startswith("https://"):
+        url = path
+    else:
+        url = f"https://graph.microsoft.com/v1.0{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
-        f"https://graph.microsoft.com/v1.0{path}",
+        url,
         data=data,
         method=method,
         headers={
@@ -3268,8 +3275,15 @@ def _ms_device_flow_worker(flow_id: str, tenant_id: str, client_id: str, account
         _persist_ms_token_cache(cache, account_key)
         access_token = result["access_token"]
         me = _ms_graph_request_with_token(access_token, "GET", "/me")
-        calendars_payload = _ms_graph_request_with_token(access_token, "GET", "/me/calendars")
-        calendars = calendars_payload.get("value") or []
+        # Paginate /me/calendars. Without this, accounts with many calendars
+        # would see a truncated picker on Connect (caught by CodeRabbit on
+        # PR #357). Mirrors `MicrosoftGraphClient.list_calendars()`'s shape.
+        calendars: list = []
+        next_url: Optional[str] = "/me/calendars"
+        while next_url:
+            page = _ms_graph_request_with_token(access_token, "GET", next_url)
+            calendars.extend(page.get("value") or [])
+            next_url = page.get("@odata.nextLink")
         username = (
             (result.get("id_token_claims") or {}).get("preferred_username")
             or me.get("userPrincipalName")
@@ -3458,6 +3472,14 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
                     ),
                 },
             )
+    # lgtm[py/path-injection]: `safe_token_path` is constructed as
+    # `f"{LITERAL_TRUSTED_PREFIX}/microsoft-calendar-{validated_key}-token-cache.json"`
+    # where `validated_key` is `_validate_ms_account_key_or_400`'s output —
+    # regex-allowlisted to `[a-z0-9_-]{1,64}` AND explicitly checked for
+    # `..`, `/`, `\\`. There's no value satisfying both gates that can escape
+    # the literal prefix. CodeQL's taint analyzer doesn't propagate the
+    # custom validator-as-sanitizer through the function return; this
+    # suppression acknowledges the false positive.
     if not os.path.exists(safe_token_path):
         raise HTTPException(
             status_code=401,
@@ -3544,10 +3566,16 @@ async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
                 },
             )
     removed = False
+    # lgtm[py/path-injection]: same as the verify endpoint above —
+    # `safe_path` is `f"{LITERAL_TRUSTED_PREFIX}/microsoft-calendar-{validated_key}-token-cache.json"`
+    # built from `_validate_ms_account_key_or_400`'s regex-allowlisted output
+    # (with explicit `..`/`/`/`\\` rejection). The `.lock` sibling shares the
+    # same trusted prefix. CodeQL's analyzer doesn't propagate the custom
+    # validator-as-sanitizer through the function return.
     for path in (safe_path, f"{safe_path}.lock"):
         try:
-            if os.path.exists(path):
-                os.remove(path)
+            if os.path.exists(path):  # lgtm[py/path-injection]
+                os.remove(path)  # lgtm[py/path-injection]
                 removed = True
         except OSError as exc:
             raise HTTPException(

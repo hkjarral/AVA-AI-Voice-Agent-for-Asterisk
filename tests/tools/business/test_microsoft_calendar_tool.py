@@ -28,7 +28,12 @@ class FakeMicrosoftClient:
     def delete_event(self, event_id):
         self.deleted.append(event_id)
         if self.delete_results:
-            return self.delete_results.pop(0)
+            outcome = self.delete_results.pop(0)
+            # Allow tests to inject a MicrosoftGraphApiError to simulate
+            # Microsoft Graph rejecting a malformed event_id (HTTP 400).
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         return True
 
     def get_event(self, event_id):
@@ -200,3 +205,103 @@ async def test_delete_event_falls_back_to_last_created_event(ms_context):
     assert deleted["status"] == "success"
     assert deleted["event_id"] == "ms_event_123"
     assert fake.deleted == ["hallucinated_id", "ms_event_123"]
+
+
+@pytest.mark.asyncio
+async def test_delete_event_falls_back_when_first_delete_raises_400(ms_context):
+    """The malformed-id case from PR #357 commit b02cd308.
+
+    Live testing surfaced LLMs passing structurally-invalid event_ids on
+    reschedule (Gemini hallucinated base64 with the wrong mailbox prefix,
+    Deepgram passed the literal "event_id_here", OpenAI passed "1"). All
+    three tripped Microsoft Graph's HTTP 400 "The Id is invalid." path,
+    raising `MicrosoftGraphApiError` instead of returning False — which
+    short-circuited the existing 404 fallback. The fix routes 400s through
+    the same tracked-id retry. Pin the behavior here.
+    """
+    tool = MicrosoftCalendarTool()
+    fake = FakeMicrosoftClient()
+    fake.delete_results = [
+        MicrosoftGraphApiError(
+            "The Id is invalid.",
+            error_code="microsoft_graph_error",
+            status=400,
+        ),
+        True,
+    ]
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(
+            {
+                "action": "create_event",
+                "summary": "Consultation",
+                "start_datetime": "2026-04-29T10:00:00",
+                "end_datetime": "2026-04-29T10:30:00",
+            },
+            ms_context,
+        )
+        deleted = await tool.execute(
+            {
+                "action": "delete_event",
+                "event_id": "AAMkADgzYzQ3YjQy_hallucinated",
+            },
+            ms_context,
+        )
+    assert created["event_id"] == "ms_event_123"
+    assert deleted["status"] == "success"
+    assert deleted["event_id"] == "ms_event_123"
+    # First call hits the hallucinated id (raises 400), second call hits
+    # the tracked id from the same call's prior create_event.
+    assert fake.deleted == ["AAMkADgzYzQ3YjQy_hallucinated", "ms_event_123"]
+
+
+@pytest.mark.asyncio
+async def test_delete_event_with_no_event_id_resolves_from_same_call_cache(ms_context):
+    """The ergonomic path from PR #357 commit 83b0b2e2.
+
+    The new schema makes `event_id` optional on `delete_event`. Models that
+    follow the updated `agent_hint` from `create_event` are told to OMIT
+    `event_id` on the typical reschedule flow — the tool resolves the
+    authoritative id from `_last_event_per_call[call_id]` instead. This is
+    the clean path; the 400/404 fallbacks above remain as a safety net for
+    models that still try to echo an id and get it wrong.
+    """
+    tool = MicrosoftCalendarTool()
+    fake = FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        created = await tool.execute(
+            {
+                "action": "create_event",
+                "summary": "Consultation",
+                "start_datetime": "2026-04-29T10:00:00",
+                "end_datetime": "2026-04-29T10:30:00",
+            },
+            ms_context,
+        )
+        deleted = await tool.execute(
+            {"action": "delete_event"},
+            ms_context,
+        )
+    assert created["event_id"] == "ms_event_123"
+    assert deleted["status"] == "success"
+    assert deleted["event_id"] == "ms_event_123"
+    # Single delete call against the tracked id — no hallucinated-id round
+    # trip because the model didn't supply an event_id at all.
+    assert fake.deleted == ["ms_event_123"]
+
+
+@pytest.mark.asyncio
+async def test_delete_event_no_event_id_and_no_tracked_event_returns_error(ms_context):
+    """Defensive coverage: the no-event_id ergonomic path requires a same-
+    call create to fall back on. Without one, the tool returns a clear
+    error instead of silently picking a stale id from a different call.
+    """
+    tool = MicrosoftCalendarTool()
+    fake = FakeMicrosoftClient()
+    with patch.object(tool, "_client_for_config", return_value=fake):
+        result = await tool.execute(
+            {"action": "delete_event"},
+            ms_context,
+        )
+    assert result["status"] == "error"
+    assert "event_id" in result["message"].lower()
+    assert fake.deleted == []
