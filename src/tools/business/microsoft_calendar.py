@@ -645,17 +645,35 @@ class MicrosoftCalendarTool(Tool):
         if validation_error:
             return {"status": "error", "message": validation_error}
         client = self._client_for_config(account)
+
+        def _tracked_fallback_id() -> str | None:
+            if not call_id:
+                return None
+            with self._last_event_lock:
+                tracked = self._last_event_per_call.get(call_id)
+            if tracked and tracked.get("event_id") and tracked["event_id"] != event_id:
+                return tracked["event_id"]
+            return None
+
+        # Two failure modes need the tracked-id fallback:
+        #   * 404 — `client.delete_event` returns False (the model gave us an id
+        #     that's well-formed but not present in this mailbox).
+        #   * 400 "The Id is invalid." — `client.delete_event` raises
+        #     MicrosoftGraphApiError because the id is structurally malformed
+        #     (e.g. an LLM hallucination with a different mailbox prefix).
+        # In both cases, if we already created an event for this call we know
+        # the authoritative id; retry with it before surfacing an error.
+        initial_exc: MicrosoftGraphApiError | None = None
+        success = False
         try:
             success = await asyncio.to_thread(client.delete_event, event_id)
         except MicrosoftGraphApiError as exc:
-            return self._map_api_error(exc, "Failed to delete Microsoft Calendar event")
+            if exc.status == 400:
+                initial_exc = exc
+            else:
+                return self._map_api_error(exc, "Failed to delete Microsoft Calendar event")
         if not success:
-            fallback_id = None
-            if call_id:
-                with self._last_event_lock:
-                    tracked = self._last_event_per_call.get(call_id)
-                if tracked and tracked.get("event_id") and tracked["event_id"] != event_id:
-                    fallback_id = tracked["event_id"]
+            fallback_id = _tracked_fallback_id()
             if fallback_id:
                 try:
                     retry_success = await asyncio.to_thread(client.delete_event, fallback_id)
@@ -671,6 +689,8 @@ class MicrosoftCalendarTool(Tool):
                         "event_id": fallback_id,
                         "calendar": key,
                     }
+            if initial_exc is not None:
+                return self._map_api_error(initial_exc, "Failed to delete Microsoft Calendar event")
             return {"status": "error", "error_code": "event_not_found", "message": "Failed to delete event (not found)."}
         if call_id:
             with self._last_event_lock:
