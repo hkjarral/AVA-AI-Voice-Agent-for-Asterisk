@@ -780,15 +780,29 @@ class TestRoundTwoToFiveFixes:
         assert result["error_code"] == "invalid_duration"
 
     @pytest.mark.asyncio
-    async def test_create_event_success_message_includes_event_id(
+    async def test_create_event_success_response_carries_event_id_for_delete_flow(
         self, gcal_tool, gcal_enabled_context
     ):
         """Real bug: Gemini hallucinated event_ids for delete_event calls
-        because create_event's success message was just 'Event created.' —
-        the actual id was in the structured `id` field but easy to miss.
+        because the prior 'Event created.' message gave no anchor for the
+        actual id.
 
-        Pin: success message MUST include the event_id verbatim with explicit
-        instruction not to fabricate.
+        Round-5 first-cut fix put the id + delete-guidance in the `message`
+        field, but live testing on round-7 surfaced a UX regression: most
+        providers (OpenAI Realtime, ElevenLabs) read `message` verbatim to
+        the caller, so the caller heard robotic developer scaffolding
+        ('event_id ce8f8153va8n0sdfspseb5e5lc... do not invent or guess one').
+
+        Round-8 final shape:
+        - `message` is short and human-friendly: "Event created."
+        - `agent_hint` carries the structured guidance (event_id +
+          delete-then-recreate rule) for the model to consume but NOT
+          read aloud.
+        - `id` and `event_id` fields remain available verbatim for tool
+          arg passing.
+
+        This test pins all three: clean message, agent_hint with the
+        guidance, and id/event_id fields still set.
         """
         mock_cal = MagicMock()
         mock_cal.service = MagicMock()
@@ -808,12 +822,22 @@ class TestRoundTwoToFiveFixes:
                 context=gcal_enabled_context,
             )
         assert result["status"] == "success"
+        # Structured fields for tool args
         assert result["id"] == "real_event_id_xyz"
-        assert result["event_id"] == "real_event_id_xyz", "event_id alias must be set"
-        # The id must appear in the human-readable message field too
-        assert "real_event_id_xyz" in result["message"]
-        # And the message must coach the LLM not to invent ids
-        assert "do not invent" in result["message"].lower() or "do not guess" in result["message"].lower()
+        assert result["event_id"] == "real_event_id_xyz"
+        # Human-friendly message stays short — does NOT include the id
+        # (which would be read aloud) or developer scaffolding text.
+        assert result["message"] == "Event created."
+        assert "real_event_id_xyz" not in result["message"], \
+            "event_id must NOT appear in message field (model reads it aloud); use agent_hint instead"
+        assert "do not invent" not in result["message"].lower()
+        # agent_hint carries the deletion guidance for the model
+        assert "agent_hint" in result, "agent_hint field must be present for delete-then-recreate flow"
+        assert "real_event_id_xyz" in result["agent_hint"]
+        # The hint must coach the LLM not to invent ids
+        assert ("do not invent" in result["agent_hint"].lower()
+                or "do not guess" in result["agent_hint"].lower()), \
+            "agent_hint must explicitly tell the model not to fabricate event_ids"
 
     @pytest.mark.asyncio
     async def test_delete_event_fallback_uses_tracked_id_on_404(

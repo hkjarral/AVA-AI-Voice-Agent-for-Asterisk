@@ -13228,12 +13228,25 @@ class Engine:
                         prompt_override = overrides.get("prompt")
                         greeting_override = overrides.get("greeting")
 
+                        # Apply template substitution ({today}, {current_date}, etc.)
+                        # before sending to providers. Without this, the literal
+                        # placeholders reach the provider's LLM and the model has
+                        # no anchor for day-of-week reasoning — real bug observed
+                        # on deepgram during sanity testing where the agent
+                        # confidently said "April 27th, 2026 is a Tuesday" when
+                        # it's a Monday, and doubled down when the caller
+                        # corrected it. The other prompt-injection sites in this
+                        # file already substitute (engine.py:10093 for llm_options
+                        # system_prompt, e.g.); this provider_context path was
+                        # missed.
                         if isinstance(prompt_override, str) and prompt_override.strip():
-                            provider_context["prompt"] = prompt_override
-                            provider_context["instructions"] = prompt_override  # Alias for ElevenLabs
+                            substituted = self._apply_prompt_template_substitution(prompt_override, session)
+                            provider_context["prompt"] = substituted
+                            provider_context["instructions"] = substituted  # Alias for ElevenLabs
                         elif hasattr(context_config, 'prompt') and context_config.prompt:
-                            provider_context['prompt'] = context_config.prompt
-                            provider_context['instructions'] = context_config.prompt  # Alias for ElevenLabs
+                            substituted = self._apply_prompt_template_substitution(context_config.prompt, session)
+                            provider_context['prompt'] = substituted
+                            provider_context['instructions'] = substituted  # Alias for ElevenLabs
 
                         try:
                             from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
@@ -13273,9 +13286,9 @@ class Engine:
                             logger.debug("Failed to inject runtime tool guidance", call_id=call_id, exc_info=True)
 
                         if isinstance(greeting_override, str) and greeting_override.strip():
-                            provider_context["greeting"] = greeting_override
+                            provider_context["greeting"] = self._apply_prompt_template_substitution(greeting_override, session)
                         elif hasattr(context_config, 'greeting') and context_config.greeting:
-                            provider_context['greeting'] = context_config.greeting
+                            provider_context['greeting'] = self._apply_prompt_template_substitution(context_config.greeting, session)
             except Exception as e:
                 logger.warning(f"Failed to build provider context: {e}", call_id=call_id, exc_info=True)
             

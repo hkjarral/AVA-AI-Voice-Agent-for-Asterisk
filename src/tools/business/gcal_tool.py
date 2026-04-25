@@ -1522,16 +1522,28 @@ class GCalendarTool(Tool):
                                 evicted_call_id=evicted_call_id,
                                 cap=self._LAST_EVENT_CACHE_CAP,
                             )
-                # Surface the event_id IN THE MESSAGE — not just the structured
-                # `id` field — so models that read the human-readable response
-                # field don't lose it. Without this, Gemini fabricated a
-                # plausible-looking id when asked to delete the booking.
+                # Round-5 fix carried the deletion guidance in the `message`
+                # field, but live testing showed providers (especially OpenAI
+                # Realtime and ElevenLabs) read the message verbatim to the
+                # caller — including the raw event_id and the developer-facing
+                # text "do not invent or guess one". That's a UX regression:
+                # the caller hears robotic developer scaffolding.
+                #
+                # Fix: keep `message` short and human-friendly (the prior
+                # "Event created." wording, which prompt templates still grep
+                # for), and put the deletion-guidance + event_id in a separate
+                # `agent_hint` field. Models that consume the structured
+                # response (most do) get the hint; models that only read the
+                # message field get a clean confirmation. The `event_id` /
+                # `id` fields remain available for tool args.
                 out = {
                     "status": "success",
-                    "message": (
-                        f"Event created with id '{created_id}'. To modify or delete this "
-                        f"event later (e.g. if the caller corrects the time), call "
-                        f"delete_event with this exact event_id — do not invent or guess one."
+                    "message": "Event created.",
+                    "agent_hint": (
+                        f"event_id='{created_id}'. If the caller later corrects "
+                        f"the date or time, call delete_event with THIS EXACT "
+                        f"event_id (do not invent or guess one) and then call "
+                        f"create_event with the corrected time."
                     ),
                     "id": created_id,
                     "event_id": created_id,
