@@ -229,6 +229,29 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         })();
         useEffect(() => {
             const cals = config?.google_calendar?.calendars || {};
+            const liveKeys = new Set(Object.keys(cals));
+            // Clear cached identity entries whose calendar key was deleted
+            // OR whose credentials_path was cleared — without this, stale
+            // SA email/client ID lingers in the UI after the operator
+            // removes the path or the whole calendar. CodeRabbit minor
+            // finding.
+            setIdentityByKey((prev) => {
+                let changed = false;
+                const next = { ...prev };
+                for (const cachedKey of Object.keys(prev)) {
+                    if (!liveKeys.has(cachedKey)) {
+                        delete next[cachedKey];
+                        changed = true;
+                        continue;
+                    }
+                    const path = (((cals as any)[cachedKey] || {})?.credentials_path || '').trim();
+                    if (!path) {
+                        delete next[cachedKey];
+                        changed = true;
+                    }
+                }
+                return changed ? next : prev;
+            });
             Object.entries(cals).forEach(([key, val]: [string, any]) => {
                 const path = (val?.credentials_path || '').trim();
                 if (!path) return;
@@ -273,6 +296,16 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                         google_calendar: { ...(config.google_calendar || {}), calendars: cals },
                     });
                 }
+                // Use the post-autofill cal snapshot for the fingerprint, not
+                // the pre-verify one — if Verify just auto-filled timezone
+                // from calendar_actual_timezone, the original `cal` object
+                // was missing that field and the fingerprint would record a
+                // pre-autofill state. The next field-change check would
+                // immediately invalidate the green check on something that
+                // didn't actually change. CodeRabbit minor finding.
+                const calForFingerprint = (calActualTz && !((cal as any)?.timezone || '').trim())
+                    ? { ...cal, timezone: calActualTz }
+                    : cal;
                 setVerifyByKey((prev) => ({
                     ...prev,
                     [key]: {
@@ -281,7 +314,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                         calendar_summary: res.data?.calendar_summary || '',
                         calendar_actual_timezone: calActualTz,
                         drift_warning: res.data?.drift_warning || undefined,
-                        verifiedFor: _verifyFingerprint(cal),
+                        verifiedFor: _verifyFingerprint(calForFingerprint),
                     },
                 }));
             } catch (err: any) {
@@ -2341,16 +2374,21 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                     {config.google_calendar?.enabled && (
                         <div className="mt-4 pl-4 border-l-2 border-border ml-2 space-y-4">
                             {/* Tool-level defaults applied to get_free_slots when the LLM doesn't override per-call.
-                                Backend falls back to "Open" / "Busy" / 30 if both LLM and config are silent, so the
-                                tool works out of the box even with these fields blank. Empty string is treated as
-                                "use default" — operators can clear the field without breaking the tool. */}
+                                Free prefix blank/absent → free/busy mode (Google native API + working-hours mask).
+                                Free prefix non-empty → title-prefix mode using that prefix value.
+                                The operator's choice always wins over LLM-supplied per-call values. */}
                             <div>
                                 <div className="text-sm font-medium mb-1">Slot-finding defaults</div>
                                 <div className="text-xs text-muted-foreground mb-3">
-                                    Defaults applied to <code className="px-1 bg-muted rounded">get_free_slots</code> when the LLM doesn't pass them per-call.
-                                    Open windows are events on your calendar titled with the free prefix (e.g. "Open 9-5"),
-                                    minus events titled with the busy prefix (e.g. "Busy lunch").
-                                    Leave blank to use built-in defaults (<code className="px-1 bg-muted rounded">Open</code> / <code className="px-1 bg-muted rounded">Busy</code> / <code className="px-1 bg-muted rounded">30</code> min / <code className="px-1 bg-muted rounded">3</code> slots).
+                                    Configures how <code className="px-1 bg-muted rounded">get_free_slots</code> determines availability.
+                                    <strong className="block mt-1"> Free prefix non-empty</strong> →
+                                    <em> title-prefix mode</em>: the tool scans your calendar for events titled with this prefix
+                                    (e.g. "Open 9-5") and treats those windows as available, minus events titled with the busy prefix.
+                                    <strong className="block mt-1"> Free prefix blank or unset</strong> →
+                                    <em> free/busy mode</em>: the tool uses Google's native free/busy API intersected with a
+                                    working-hours mask (Mon–Fri 09:00–17:00 by default; tunable via YAML).
+                                    The operator's choice always wins — even if the LLM passes a prefix per-call, the operator
+                                    setting takes precedence.
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                                     <FormInput

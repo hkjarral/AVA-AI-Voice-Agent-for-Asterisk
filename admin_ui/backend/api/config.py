@@ -2878,9 +2878,15 @@ async def upload_google_calendar_credentials(file: UploadFile = File(...)):
             previous_key_id = None
 
     # Atomic write: tmp + replace, so a crash mid-write doesn't leave an
-    # invalid file at the target path
+    # invalid file at the target path. Use a unique tmp filename per
+    # request (PID + monotonic counter via uuid) so two concurrent uploads
+    # of the same SA file don't race on os.replace — each request writes
+    # its own tmp and they replace serially. Without this, a second upload
+    # could see the first's half-written tmp and either overwrite mid-
+    # write or replace away from a corrupted source.
+    import uuid
     os.makedirs(GOOGLE_CALENDAR_SECRETS_DIR, exist_ok=True)
-    tmp_path = target_path + ".tmp"
+    tmp_path = f"{target_path}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     try:
         with open(tmp_path, "wb") as f:
             f.write(raw)
@@ -2944,6 +2950,13 @@ async def delete_google_calendar_credentials(filename: str):
     the file doesn't exist (idempotent-ish — repeated DELETEs after the
     first are safe to retry but the second one tells the operator the file
     was already gone).
+
+    Refuses to delete if any other calendar entry still references the
+    same credentials file. Filenames are content-addressed by client_email,
+    so reusing one SA across multiple calendar keys is intentional and
+    common (e.g., one SA managing multiple calendars in the same domain).
+    Without this check, deleting via one key would silently break every
+    OTHER key that pointed at the same file.
     """
     target_path = _resolve_calendar_secret_path(filename)
     if not os.path.exists(target_path):
@@ -2952,6 +2965,42 @@ async def delete_google_calendar_credentials(filename: str):
             detail={
                 "error_code": "credentials_file_not_found",
                 "message": f"No credentials file at {filename}.",
+            },
+        )
+
+    # Check for other calendar entries still pointing at this file
+    container_path = f"{GOOGLE_CALENDAR_SECRETS_DIR}/{filename}"
+    try:
+        merged = _read_merged_config_dict()
+    except Exception:
+        merged = {}
+    referenced_by: list[str] = []
+    cals = ((merged.get("tools") or {}).get("google_calendar") or {}).get("calendars") or {}
+    if isinstance(cals, dict):
+        for k, v in cals.items():
+            if not isinstance(v, dict):
+                continue
+            entry_path = (v.get("credentials_path") or "").strip()
+            if not entry_path:
+                continue
+            try:
+                entry_real = os.path.realpath(entry_path)
+            except Exception:
+                entry_real = entry_path
+            target_real = os.path.realpath(target_path)
+            if entry_real == target_real or entry_path == container_path:
+                referenced_by.append(str(k))
+    if referenced_by:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "credentials_file_in_use",
+                "message": (
+                    f"Cannot delete '{filename}': still referenced by calendar "
+                    f"key(s) {sorted(referenced_by)}. Remove or reassign those "
+                    f"calendar entries first, then retry the delete."
+                ),
+                "referenced_by": sorted(referenced_by),
             },
         )
     try:

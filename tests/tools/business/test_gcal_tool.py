@@ -323,6 +323,48 @@ class TestGetFreeSlotsStructuredResponse:
         assert len(result["slots"]) > 0
 
     @pytest.mark.asyncio
+    async def test_absent_config_prefix_also_switches_to_freebusy_mode(
+        self, gcal_tool, tool_context
+    ):
+        """The canonical mode-selection rule says blank OR absent free_prefix
+        switches to freebusy mode. The previous test pinned the explicit-
+        blank case; this one pins the absent-key case. Both are common
+        configurations: a fresh install has no free_prefix key, while an
+        operator UI clear stores empty string. They must behave identically."""
+        # Note: free_prefix and busy_prefix are both ABSENT from the config
+        # dict (not set to '', not set to anything). This is what a fresh
+        # install or a YAML config that never mentions these keys looks like.
+        tool_context.get_config_value = Mock(
+            return_value={
+                "enabled": True,
+                "credentials_path": "/fake/creds.json",
+                "calendar_id": "primary",
+                "timezone": "America/Los_Angeles",
+                # NO free_prefix / busy_prefix keys
+            }
+        )
+        mock_cal = MagicMock()
+        mock_cal.service = MagicMock()
+        mock_cal.freebusy_query = Mock(return_value=[])
+        mock_cal.list_events = Mock(side_effect=AssertionError(
+            "list_events must NOT be called when free_prefix is absent (freebusy mode)"
+        ))
+        with patch.object(gcal_tool, "_get_cal", return_value=mock_cal), \
+             patch.object(gcal_tool, "_get_or_create_cal", return_value=mock_cal):
+            result = await gcal_tool.execute(
+                parameters={
+                    "action": "get_free_slots",
+                    "time_min": "2026-04-27T00:00:00",
+                    "time_max": "2026-04-28T00:00:00",
+                    "duration": 30,
+                },
+                context=tool_context,
+            )
+        assert result["status"] == "success"
+        assert result["availability_mode"] == "freebusy", \
+            "Absent free_prefix in config must switch to freebusy mode (canonical rule)"
+
+    @pytest.mark.asyncio
     async def test_empty_string_config_prefix_switches_to_freebusy_mode(
         self, gcal_tool, tool_context
     ):
@@ -829,6 +871,53 @@ class TestRoundTwoToFiveFixes:
         assert "real_id_abc" in delete_result["message"]
         # Two delete attempts: first failed (hallucinated id), second succeeded (tracked)
         assert mock_cal.delete_event.call_count == 2
+        # Cleanup invariant: the tracked entry MUST be cleared after a
+        # successful fallback, so a subsequent hallucinated delete_event
+        # in the same call doesn't double-fallback onto the same id.
+        # Without this, an LLM that keeps making up event_ids could keep
+        # "succeeding" against the same already-deleted real id.
+        assert gcal_enabled_context.call_id not in gcal_tool._last_event_per_call, \
+            "Tracked event_id must be cleared after successful fallback delete"
+
+    @pytest.mark.asyncio
+    async def test_invalid_working_hours_falls_back_to_defaults(
+        self, gcal_tool, tool_context
+    ):
+        """Operator typo like working_hours_start=25 used to crash deep in
+        _working_hours_mask with an unhelpful ValueError. Now coerced to the
+        default with a warning so the failure mode is predictable."""
+        tool_context.get_config_value = Mock(
+            return_value={
+                "enabled": True,
+                "credentials_path": "/fake/creds.json",
+                "calendar_id": "primary",
+                "timezone": "America/Los_Angeles",
+                # Out-of-range / invalid working hours
+                "working_hours_start": 25,        # invalid (>24)
+                "working_hours_end": "potato",   # invalid type
+                "working_days": [9, "x", 7],     # invalid (>6) and non-int
+            }
+        )
+        mock_cal = MagicMock()
+        mock_cal.service = MagicMock()
+        mock_cal.freebusy_query = Mock(return_value=[])
+        with patch.object(gcal_tool, "_get_cal", return_value=mock_cal), \
+             patch.object(gcal_tool, "_get_or_create_cal", return_value=mock_cal):
+            # Must not raise — the coercion should normalize invalid values
+            # to defaults and continue rather than crashing.
+            result = await gcal_tool.execute(
+                parameters={
+                    "action": "get_free_slots",
+                    "time_min": "2026-04-27T00:00:00",
+                    "time_max": "2026-04-28T00:00:00",
+                    "duration": 30,
+                },
+                context=tool_context,
+            )
+        assert result["status"] == "success"
+        # Default working hours are 9-17 Mon-Fri, so a Mon-Tue range with
+        # nothing busy should produce slots.
+        assert result["reason"] == "available"
 
     @pytest.mark.asyncio
     async def test_last_event_cache_bounded_by_lru_eviction(

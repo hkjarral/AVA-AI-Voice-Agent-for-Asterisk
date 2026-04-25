@@ -581,19 +581,56 @@ class GCalendarTool(Tool):
                 # Working hours config (only used in freebusy mode). Conservative
                 # business-hours default. Operators can override via tool config.
                 # Future PR: surface in UI; for now accept YAML overrides.
-                try:
-                    work_start_hour = int(config.get("working_hours_start", 9))
-                except (TypeError, ValueError):
-                    work_start_hour = 9
-                try:
-                    work_end_hour = int(config.get("working_hours_end", 17))
-                except (TypeError, ValueError):
-                    work_end_hour = 17
+                #
+                # Validate ranges defensively — without this, an operator typo
+                # like working_hours_start=25 would crash at the `cur_day.replace
+                # (hour=work_start_hour)` call deep in _working_hours_mask with
+                # an unhelpful ValueError. Range checks here keep the failure
+                # mode predictable: invalid value → fall back to default + log
+                # warning so the operator notices.
+                def _coerce_hour(raw_value, default: int, key: str) -> int:
+                    try:
+                        v = int(raw_value)
+                    except (TypeError, ValueError):
+                        if raw_value is not None:
+                            logger.warning(
+                                "Invalid working-hours value; falling back to default",
+                                key=key, raw_value=raw_value, default=default,
+                            )
+                        return default
+                    if v < 0 or v > 24:
+                        logger.warning(
+                            "working-hours value out of range [0..24]; falling back to default",
+                            key=key, value=v, default=default,
+                        )
+                        return default
+                    return v
+
+                work_start_hour = _coerce_hour(
+                    config.get("working_hours_start"), 9, "working_hours_start",
+                )
+                work_end_hour = _coerce_hour(
+                    config.get("working_hours_end"), 17, "working_hours_end",
+                )
+                if work_end_hour <= work_start_hour:
+                    logger.warning(
+                        "working_hours_end must be greater than working_hours_start; reverting to defaults",
+                        work_start_hour=work_start_hour, work_end_hour=work_end_hour,
+                    )
+                    work_start_hour, work_end_hour = 9, 17
                 _wd_raw = config.get("working_days")
                 if isinstance(_wd_raw, list) and _wd_raw:
                     try:
-                        work_days_set = {int(d) for d in _wd_raw}
-                    except (TypeError, ValueError):
+                        # Constrain to Python weekday() range (0=Mon..6=Sun);
+                        # ignore out-of-range entries (e.g., a typo of 7).
+                        work_days_set = {int(d) for d in _wd_raw if 0 <= int(d) <= 6}
+                        if not work_days_set:
+                            raise ValueError("no valid weekday values")
+                    except (TypeError, ValueError) as wd_err:
+                        logger.warning(
+                            "Invalid working_days; falling back to Mon-Fri",
+                            raw_value=_wd_raw, error=str(wd_err),
+                        )
                         work_days_set = {0, 1, 2, 3, 4}
                 else:
                     work_days_set = {0, 1, 2, 3, 4}  # Mon-Fri
@@ -1557,7 +1594,42 @@ class GCalendarTool(Tool):
                             if err is None:
                                 cal_i = _cal_for_key(fallback_target)
                                 target_key = fallback_target
-                        retry_success = await asyncio.to_thread(cal_i.delete_event, fallback_id)
+                        # Retry can also raise GoogleCalendarApiError (auth /
+                        # forbidden / 5xx). Without this catch the exception
+                        # would bubble out of the tool as a generic 500-style
+                        # failure with no error_code, and the SCHEDULING-block
+                        # recovery rules wouldn't fire.
+                        try:
+                            retry_success = await asyncio.to_thread(cal_i.delete_event, fallback_id)
+                        except GoogleCalendarApiError as retry_err:
+                            raw_msg = str(retry_err)
+                            status = getattr(getattr(retry_err.original, "resp", None), "status", None)
+                            error_code = "delete_event_failed"
+                            if status == 403 or "forbidden" in raw_msg.lower():
+                                error_code = "forbidden_calendar"
+                            elif status == 401 or "unauthorized" in raw_msg.lower():
+                                error_code = "auth_failed"
+                            elif status and 500 <= status < 600:
+                                error_code = "google_api_unavailable"
+                            out = {
+                                "status": "error",
+                                "error_code": error_code,
+                                "message": (
+                                    f"Failed to delete event during fallback retry: "
+                                    f"{raw_msg}. (http_status={status})"
+                                ),
+                            }
+                            logger.error(
+                                "Fallback delete_event raised GoogleCalendarApiError",
+                                call_id=call_id, requested_id=event_id,
+                                fallback_id=fallback_id,
+                                error_code=error_code, status=status,
+                            )
+                            logger.info(
+                                "Tool response to AI", call_id=call_id, action=action,
+                                status=out.get("status"), error_code=error_code,
+                            )
+                            return out
                         if retry_success:
                             logger.warning(
                                 "delete_event recovered from hallucinated id via call-tracked fallback",

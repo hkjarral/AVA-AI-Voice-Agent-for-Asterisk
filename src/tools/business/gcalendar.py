@@ -218,7 +218,23 @@ class GCalendar:
                     calendar_id=self.calendar_id,
                 )
             busy = cal_block.get("busy", []) or []
-            out = [(b["start"], b["end"]) for b in busy if b.get("start") and b.get("end")]
+            # Fail closed on malformed intervals — silently dropping a busy
+            # entry that's missing start/end would surface bookable slots
+            # inside an actually-busy window, which is the same correctness
+            # bug we fixed at the gcal_tool layer for parse failures. If
+            # Google ever returns a malformed interval, treat it as a
+            # signal that the response itself is suspect and refuse to
+            # return partial availability.
+            out: list[tuple] = []
+            for b in busy:
+                if not (b.get("start") and b.get("end")):
+                    raise GoogleCalendarApiError(
+                        f"Google Calendar freebusy returned malformed interval "
+                        f"(missing start/end): {b}. Refusing to return partial "
+                        f"availability.",
+                        calendar_id=self.calendar_id,
+                    )
+                out.append((b["start"], b["end"]))
             logger.info("Successfully fetched freebusy from Google Calendar", busy_count=len(out))
             return out
         except GoogleCalendarApiError:
