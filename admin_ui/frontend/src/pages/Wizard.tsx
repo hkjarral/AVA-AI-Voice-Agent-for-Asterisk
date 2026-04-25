@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle, Wrench } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -2707,12 +2707,12 @@ exten => s,1,NoOp(AI Agent Call)
                                 live agent escalation, voicemail, post-call email summaries, MCP tools —
                                 are configured separately under <strong>Tools</strong>.
                             </p>
-                            <a
-                                href="/tools"
+                            <Link
+                                to="/tools"
                                 className="inline-flex items-center text-sm text-blue-700 dark:text-blue-400 hover:underline font-medium"
                             >
                                 Open Tools →
-                            </a>
+                            </Link>
                         </div>
 
                         {/* Local AI Server Setup - Only for Local provider */}

@@ -323,12 +323,18 @@ class TestGetFreeSlotsStructuredResponse:
         assert len(result["slots"]) > 0
 
     @pytest.mark.asyncio
-    async def test_empty_string_config_prefix_treated_as_default(
+    async def test_empty_string_config_prefix_switches_to_freebusy_mode(
         self, gcal_tool, tool_context
     ):
-        """Operator clears the prefix field in the UI (free_prefix=''): treat as 'use default'
-        rather than literal empty match. Otherwise everything would silently match (every
-        summary starts with empty string)."""
+        """Operator clears the prefix field in the UI (free_prefix=''): per
+        the canonical mode-selection rule, blank or absent free_prefix
+        switches the tool to free/busy mode (Google's native API + working
+        hours mask), regardless of any free_prefix value the LLM passes.
+
+        Earlier behavior (and earlier name of this test) treated blank as
+        "use backend default Open" which silently kept title-prefix mode
+        active — that was the bug that made operators wonder why their UI
+        change didn't take effect."""
         tool_context.get_config_value = Mock(
             return_value={
                 "enabled": True,
@@ -339,28 +345,30 @@ class TestGetFreeSlotsStructuredResponse:
                 "busy_prefix": "",
             }
         )
-        events = [
-            self._make_event(
-                "Open",
-                "2026-04-29T09:00:00-07:00",
-                "2026-04-29T10:00:00-07:00",
-            ),
-        ]
-        mock_cal = self._mock_cal_with_events(events)
-        # Patch both: legacy_single guard uses _get_cal, the loop uses _get_or_create_cal
+        # In freebusy mode, list_events isn't called — freebusy_query is.
+        mock_cal = MagicMock()
+        mock_cal.service = MagicMock()
+        mock_cal.freebusy_query = Mock(return_value=[])  # nothing busy
+        mock_cal.list_events = Mock(side_effect=AssertionError(
+            "list_events must NOT be called in freebusy mode"
+        ))
         with patch.object(gcal_tool, "_get_cal", return_value=mock_cal), \
              patch.object(gcal_tool, "_get_or_create_cal", return_value=mock_cal):
             result = await gcal_tool.execute(
                 parameters={
                     "action": "get_free_slots",
-                    "time_min": "2026-04-29T00:00:00",
-                    "time_max": "2026-04-30T00:00:00",
+                    "time_min": "2026-04-27T00:00:00",
+                    "time_max": "2026-04-28T00:00:00",
                     "duration": 30,
+                    # Even with LLM trying to force title-prefix mode, the
+                    # operator's blank config wins.
+                    "free_prefix": "Open",
                 },
                 context=tool_context,
             )
-        # Empty-string prefix treated as "use default Open" — the event titled "Open" matches
         assert result["status"] == "success"
+        assert result["availability_mode"] == "freebusy", \
+            "Blank operator free_prefix must switch to freebusy mode regardless of LLM-supplied value"
         assert result["reason"] == "available"
         assert len(result["slots"]) > 0
 

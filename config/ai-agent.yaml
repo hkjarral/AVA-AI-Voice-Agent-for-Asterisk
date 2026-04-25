@@ -221,7 +221,7 @@ contexts:
 
       - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
 
-      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Tell the caller the meeting is on the calendar; the tool does not currently send a separate email invitation to the caller, so do not promise one. If they ask for a calendar invite, advise them to email the maintainer to be added as an attendee.
 
       - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
 
@@ -420,7 +420,7 @@ contexts:
 
       - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
 
-      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Tell the caller the meeting is on the calendar; the tool does not currently send a separate email invitation to the caller, so do not promise one. If they ask for a calendar invite, advise them to email the maintainer to be added as an attendee.
 
       - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
 
@@ -705,7 +705,7 @@ contexts:
 
       - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
 
-      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Tell the caller the meeting is on the calendar; the tool does not currently send a separate email invitation to the caller, so do not promise one. If they ask for a calendar invite, advise them to email the maintainer to be added as an attendee.
 
       - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
 
@@ -952,7 +952,7 @@ contexts:
 
       - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
 
-      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Tell the caller the meeting is on the calendar; the tool does not currently send a separate email invitation to the caller, so do not promise one. If they ask for a calendar invite, advise them to email the maintainer to be added as an attendee.
 
       - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
 
@@ -1143,7 +1143,7 @@ contexts:
 
       - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
 
-      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Tell the caller the meeting is on the calendar; the tool does not currently send a separate email invitation to the caller, so do not promise one. If they ask for a calendar invite, advise them to email the maintainer to be added as an attendee.
 
       - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
 

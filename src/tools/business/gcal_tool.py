@@ -466,30 +466,38 @@ class GCalendarTool(Tool):
                 #     just want "during business hours, when am I not in another meeting".
                 # The mode switch is implicit on free_prefix being blank so existing
                 # configs (which set free_prefix='Open') keep their behavior.
-                # Operator's deliberate config choice wins over LLM defaults.
-                # Background: the LLM (especially Gemini) routinely auto-fills
-                # free_prefix='Open' from the schema example even when the operator
-                # has explicitly cleared it in the UI to enable free/busy mode. If
-                # the operator EXPLICITLY set free_prefix to "" (key present with
-                # empty/whitespace value in saved config), they've signaled "I want
-                # free/busy mode" — that overrides any LLM-supplied value. If the
-                # key is entirely absent from config, we fall back to the standard
-                # LLM-overrides-config precedence.
-                _SENTINEL = object()
-                config_free = config.get("free_prefix", _SENTINEL)
-                operator_forced_freebusy = (
-                    config_free is not _SENTINEL
-                    and (config_free is None or str(config_free).strip() == "")
-                )
-                if operator_forced_freebusy:
-                    free_prefix = ""
-                else:
+                # Single canonical rule for free_prefix → mode selection
+                # (CodeRabbit major: previously diverged across CHANGELOG/docs):
+                #
+                #   config has free_prefix as a non-empty string  → title-prefix mode (use that prefix)
+                #   config has free_prefix='' (explicit blank)    → freebusy mode (operator's deliberate choice)
+                #   config has NO free_prefix key                 → freebusy mode (defaults match the explicit-blank case)
+                #
+                # In ALL cases, the operator's choice wins over LLM-supplied
+                # values. The LLM still gets to *narrow* an active title-prefix
+                # mode by passing a different prefix, but it cannot escape
+                # freebusy mode by passing 'Open' when the operator has chosen
+                # freebusy. Background: Gemini auto-fills free_prefix='Open'
+                # from the schema example even when the operator has cleared
+                # it in the UI; without operator-wins precedence, that LLM
+                # noise would override deliberate UI configuration.
+                config_free_raw = config.get("free_prefix")
+                config_free = (config_free_raw or "").strip() if config_free_raw is not None else ""
+                if config_free:
+                    # Non-empty config value — title-prefix mode. LLM can
+                    # override the prefix string (e.g. for cross-team setups
+                    # where different demo contexts use different prefix
+                    # conventions on the same calendar) but stays in
+                    # title-prefix mode.
                     _free_pref_explicit = parameters.get("free_prefix")
-                    _free_pref_raw = (
-                        _free_pref_explicit if _free_pref_explicit is not None
-                        else (config_free or "" if config_free is not _SENTINEL else "")
+                    free_prefix = (
+                        _free_pref_explicit.strip() if _free_pref_explicit
+                        else config_free
                     )
-                    free_prefix = (_free_pref_raw or "").strip()
+                else:
+                    # Config blank or absent — freebusy mode regardless of
+                    # what the LLM passes. Operator-wins.
+                    free_prefix = ""
                 _busy_pref_raw = parameters.get("busy_prefix") or config.get("busy_prefix") or ""
                 busy_prefix = (_busy_pref_raw or "").strip() or "Busy"
                 availability_mode = "title_prefix" if free_prefix else "freebusy"
@@ -718,11 +726,31 @@ class GCalendarTool(Tool):
                                 work_start_hour, work_end_hour, work_days_set,
                             )
                             busy_blocks_dt: list[tuple[datetime, datetime]] = []
+                            parse_failed = False
                             for s_iso, e_iso in busy_isos:
                                 try:
                                     busy_blocks_dt.append((self._parse_iso(s_iso), self._parse_iso(e_iso)))
-                                except Exception:
-                                    continue
+                                except Exception as parse_err:
+                                    # FAIL CLOSED — silently dropping a busy
+                                    # interval would surface bookable slots
+                                    # inside an actually-busy window, exactly
+                                    # the kind of correctness bug the rest of
+                                    # the freebusy flow is designed to prevent.
+                                    # CodeRabbit major finding. Mark the whole
+                                    # calendar as failed for this query.
+                                    logger.warning(
+                                        "Failed to parse freebusy interval; treating calendar as unavailable",
+                                        call_id=call_id,
+                                        calendar_key=k,
+                                        bad_start=s_iso,
+                                        bad_end=e_iso,
+                                        error=str(parse_err),
+                                    )
+                                    parse_failed = True
+                                    break
+                            if parse_failed:
+                                failed_keys.append(k)
+                                continue
                             # Subtract busy from each working-hours block (mirrors the
                             # title-prefix free-vs-busy intersection logic).
                             free_blocks_dt.sort(key=lambda x: x[0])
@@ -842,12 +870,51 @@ class GCalendarTool(Tool):
                         slot_starts.append(start)
                         start += timedelta(minutes=duration_minutes)
 
-                # Normalize all slots to a consistent output timezone
-                output_tz_name = config.get("timezone", "") or (_tz_for_key(keys_to_use[0]) if not legacy_single else calendar_tz_name)
+                # Pick the output timezone for the slot list. Priority:
+                # 1. Root tool config `timezone` (operator-pinned override)
+                # 2. The TARGET calendar's timezone (single-cal mode)
+                # 3. UTC fallback
+                # CodeRabbit critical finding: in multi-calendar configs where
+                # selected calendars have DIFFERENT timezones, formatting slots
+                # in `keys_to_use[0]`'s TZ misleads the LLM — it picks a slot,
+                # then create_event lands on a different calendar with a
+                # different TZ, and the same naive timestamp resolves to a
+                # different wall-clock time. We avoid that footgun by emitting
+                # slots in UTC when calendars disagree on TZ. Single-cal and
+                # all-same-TZ multi-cal cases (the 99% case) keep their
+                # original behavior.
+                tz_set: set[str] = set()
+                for k in keys_to_use:
+                    if k in failed_keys:
+                        continue
+                    tz_name = _tz_for_key(k) if not legacy_single else calendar_tz_name
+                    if tz_name:
+                        tz_set.add(tz_name)
+                # Operator-pinned override always wins
+                root_tz = (config.get("timezone") or "").strip()
+                if root_tz:
+                    output_tz_name = root_tz
+                elif len(tz_set) == 1:
+                    output_tz_name = next(iter(tz_set))
+                elif len(tz_set) > 1:
+                    # Multi-cal disagreement — fall back to UTC + warn so the
+                    # LLM doesn't book in the wrong wall-clock zone.
+                    output_tz_name = "UTC"
+                    logger.warning(
+                        "Selected calendars have differing timezones; emitting slots in UTC",
+                        call_id=call_id,
+                        timezones=sorted(tz_set),
+                    )
+                else:
+                    output_tz_name = "UTC"
                 try:
                     output_tz = ZoneInfo(output_tz_name)
                 except (KeyError, TypeError):
                     output_tz = ZoneInfo("UTC")
+                    output_tz_name = "UTC"
+                # Surface to caller whether we had to fall back due to multi-cal
+                # TZ disagreement, so consumers (and tests) can distinguish.
+                multi_cal_tz_disagreement = len(tz_set) > 1 and not root_tz
                 slot_starts = [t.astimezone(output_tz) for t in slot_starts]
                 slot_starts.sort()
 
@@ -910,14 +977,31 @@ class GCalendarTool(Tool):
                     # pre-PR behavior was for the model to read every ISO
                     # timestamp aloud, producing minutes of robotic monologue.
                     starts_only = [s.split("–")[0] for s in results]
+                    if multi_cal_tz_disagreement:
+                        # When the selected calendars don't agree on a single TZ
+                        # we surface slots in UTC. The model needs to know to
+                        # pass UTC-suffixed datetimes (`...Z`) to create_event
+                        # — NOT naive local-time strings, since each calendar's
+                        # interpretation of "local" would differ.
+                        booking_hint = (
+                            "When booking via create_event, pass start_datetime "
+                            "and end_datetime in UTC with the 'Z' suffix (e.g. "
+                            "'2026-04-27T17:00:00Z') and set the appropriate "
+                            "calendar_key so the booking lands on the calendar "
+                            "you intended. The selected calendars use different "
+                            "timezones, which is why slots are returned in UTC."
+                        )
+                    else:
+                        booking_hint = (
+                            "When booking via create_event, pass start_datetime "
+                            "and end_datetime as the SAME local-time strings "
+                            "(no Z, no offset — calendar timezone is implicit)"
+                        )
                     message = (
                         "Free slot starts: " + ", ".join(starts_only) + ". "
                         f"Each slot is {duration_minutes} minutes long in "
-                        f"{output_tz_name}: {', '.join(results)}. When booking "
-                        "via create_event, pass start_datetime and end_datetime "
-                        "as the SAME local-time strings (no Z, no offset — "
-                        "calendar timezone is implicit) and set end_datetime = "
-                        f"start_datetime + {duration_minutes} minutes."
+                        f"{output_tz_name}: {', '.join(results)}. " + booking_hint +
+                        f" and set end_datetime = start_datetime + {duration_minutes} minutes."
                     )
                     if slots_truncated:
                         message += (
@@ -988,6 +1072,11 @@ class GCalendarTool(Tool):
                     # treats wall-clock as local; this field tells the model what
                     # "local" means.
                     "calendar_timezone": output_tz_name,
+                    # True when the selected calendars don't agree on a single
+                    # timezone and we fell back to UTC for the slot list.
+                    # Consumers should know to pass UTC datetimes (with 'Z') to
+                    # create_event in this case, not naive local-time strings.
+                    "tz_disagreement": multi_cal_tz_disagreement,
                     "open_windows_found": open_windows_found,
                     "busy_blocks_found": busy_blocks_found,
                     "reason": reason,
@@ -1272,10 +1361,54 @@ class GCalendarTool(Tool):
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
 
-                event = await asyncio.to_thread(cal_i.create_event, summary, desc, start_dt_str, end_dt_str)
+                # Surface Google API errors with their original detail so the
+                # SCHEDULING-block recovery substrings ('forbidden', '403',
+                # 'not configured', 'unavailable') can match the real failure
+                # cause. Previously every API failure collapsed to a generic
+                # "Failed to create event." which never matched any recovery
+                # substring — a permissions failure on booking would hit that
+                # generic path and either bail silently or send the caller
+                # the wrong fallback message. CodeRabbit major finding.
+                try:
+                    event = await asyncio.to_thread(
+                        cal_i.create_event, summary, desc, start_dt_str, end_dt_str
+                    )
+                except GoogleCalendarApiError as api_err:
+                    raw_msg = str(api_err)
+                    status = getattr(getattr(api_err.original, "resp", None), "status", None)
+                    error_code = "create_event_failed"
+                    if status == 403 or "forbidden" in raw_msg.lower():
+                        error_code = "forbidden_calendar"
+                    elif status == 401 or "unauthorized" in raw_msg.lower():
+                        error_code = "auth_failed"
+                    elif status == 404 or "not found" in raw_msg.lower():
+                        error_code = "calendar_not_found"
+                    elif status and 500 <= status < 600:
+                        error_code = "google_api_unavailable"
+                    out = {
+                        "status": "error",
+                        "error_code": error_code,
+                        "message": (
+                            f"Failed to create event: {raw_msg}. "
+                            f"(http_status={status})"
+                        ),
+                    }
+                    logger.error(
+                        "create_event raised GoogleCalendarApiError",
+                        call_id=call_id, error_code=error_code, status=status,
+                    )
+                    logger.info(
+                        "Tool response to AI", call_id=call_id, action=action,
+                        status=out.get("status"), error_code=error_code,
+                    )
+                    return out
                 if not event:
-                    out = {"status": "error", "message": "Failed to create event."}
-                    logger.error("Failed to create event", call_id=call_id)
+                    out = {
+                        "status": "error",
+                        "error_code": "create_event_failed",
+                        "message": "Failed to create event (service returned no event object).",
+                    }
+                    logger.error("Failed to create event (None returned)", call_id=call_id)
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
                 created_id = event.get("id")
@@ -1347,7 +1480,40 @@ class GCalendarTool(Tool):
                         logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                         return out
                     cal_i = _cal_for_key(target_key)
-                success = await asyncio.to_thread(cal_i.delete_event, event_id)
+                # delete_event raises GoogleCalendarApiError on non-404 errors
+                # (auth, forbidden, server, etc.) and returns False on 404.
+                # Surface non-404 errors with specific error_codes so the
+                # SCHEDULING-block recovery substrings can match. The False/
+                # 404 path falls through to the LLM-hallucinated-id fallback
+                # below, which is the common case (the bug we already
+                # documented in round-5 testing).
+                try:
+                    success = await asyncio.to_thread(cal_i.delete_event, event_id)
+                except GoogleCalendarApiError as api_err:
+                    raw_msg = str(api_err)
+                    status = getattr(getattr(api_err.original, "resp", None), "status", None)
+                    error_code = "delete_event_failed"
+                    if status == 403 or "forbidden" in raw_msg.lower():
+                        error_code = "forbidden_calendar"
+                    elif status == 401 or "unauthorized" in raw_msg.lower():
+                        error_code = "auth_failed"
+                    elif status and 500 <= status < 600:
+                        error_code = "google_api_unavailable"
+                    out = {
+                        "status": "error",
+                        "error_code": error_code,
+                        "message": f"Failed to delete event: {raw_msg}. (http_status={status})",
+                    }
+                    logger.error(
+                        "delete_event raised GoogleCalendarApiError",
+                        call_id=call_id, event_id=event_id,
+                        error_code=error_code, status=status,
+                    )
+                    logger.info(
+                        "Tool response to AI", call_id=call_id, action=action,
+                        status=out.get("status"), error_code=error_code,
+                    )
+                    return out
                 if not success:
                     # Fallback: when the model hallucinates an event_id (Gemini
                     # bug seen in voiprnd round-4 test), try the last

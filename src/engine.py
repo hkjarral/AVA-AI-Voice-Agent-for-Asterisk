@@ -3995,12 +3995,18 @@ class Engine:
         
         import re
         
-        # Local time (host TZ — typically UTC inside Docker; calendar TZ is
+        # Single instant snapshot — derive both UTC and local from the same
+        # base so the date/time placeholders can't disagree across day
+        # boundaries (CodeRabbit minor finding: two separate datetime.now()
+        # calls could see e.g. 23:59:59 UTC and 00:00:00 local on the same
+        # rendering pass, producing inconsistent {today} vs
+        # {current_datetime_iso} values).
+        # Note on TZ: host TZ inside Docker is typically UTC; calendar TZ is
         # tool-scoped and can differ. Calendar tool surfaces its own TZ
         # explicitly via get_free_slots' calendar_timezone field, so the
-        # model can resolve any cross-zone mismatch when it matters.)
-        _now_local = datetime.now()
+        # model can resolve any cross-zone mismatch when it matters.
         _now_utc = datetime.now(timezone.utc)
+        _now_local = _now_utc.astimezone()
 
         substitutions = {
             "caller_name": getattr(session, 'caller_name', None) or "there",

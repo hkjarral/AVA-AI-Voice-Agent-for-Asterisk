@@ -298,9 +298,17 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             }
         };
 
-        const copyToClipboard = (text: string) => {
+        const copyToClipboard = async (text: string) => {
+            // navigator.clipboard.writeText returns a Promise — without
+            // awaiting we'd toast.success before the copy completes, and
+            // async failures (permission denied, no clipboard available)
+            // would never reach the catch. CodeRabbit minor finding.
+            if (!navigator.clipboard) {
+                toast.error('Clipboard not available in this browser');
+                return;
+            }
             try {
-                navigator.clipboard?.writeText(text);
+                await navigator.clipboard.writeText(text);
                 toast.success('Copied');
             } catch {
                 toast.error('Copy failed');

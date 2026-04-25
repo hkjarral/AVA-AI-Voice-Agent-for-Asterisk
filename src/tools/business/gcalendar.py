@@ -286,13 +286,32 @@ class GCalendar:
             logger.info("Event successfully deleted from Google Calendar", event_id=event_id)
             return True
         except Exception as e:
+            # 404 → return False so the gcal_tool fallback ("delete succeeded
+            # via tracked id") path can trigger. Anything else (403, 401,
+            # 5xx, network) → raise so the tool surfaces the real error to
+            # the LLM. Without this distinction every API failure looked
+            # like "not found" and would trigger the fallback even when the
+            # real cause was permissions or auth, masking real bugs.
+            status = getattr(getattr(e, "resp", None), "status", None)
+            if status == 404:
+                logger.warning(
+                    "Event not found during delete (Google returned 404)",
+                    event_id=event_id,
+                    error=str(e),
+                )
+                return False
             logger.error(
                 "Error deleting event via Google API",
                 event_id=event_id,
                 error=str(e),
+                status=status,
                 exc_info=True,
             )
-            return False
+            raise GoogleCalendarApiError(
+                f"Google Calendar API error deleting event: {e}",
+                calendar_id=self.calendar_id,
+                original=e,
+            ) from e
 
     def create_event(
         self,
@@ -353,10 +372,20 @@ class GCalendar:
             )
             return event
         except Exception as e:
+            # Preserve Google's error detail — caller surfaces it to the LLM
+            # so the SCHEDULING-block recovery rules ("forbidden", "403",
+            # "not configured", etc.) can actually fire on the real error
+            # text. CodeRabbit major finding: previously every API failure
+            # collapsed to a generic "Failed to create event." which never
+            # matched any of the recovery substrings.
             logger.error(
                 "Error creating event via Google API",
                 error=str(e),
                 exc_info=True,
             )
-            return None
+            raise GoogleCalendarApiError(
+                f"Google Calendar API error creating event: {e}",
+                calendar_id=self.calendar_id,
+                original=e,
+            ) from e
 

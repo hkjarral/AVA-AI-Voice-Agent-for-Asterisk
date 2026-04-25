@@ -23,6 +23,14 @@ numpy>=1.24.0
 # (c) call the Calendar API as the SA (calendars.get / calendarList.get)
 # Without these, the verify endpoints can only do JSON-shape validation
 # (can't distinguish "syntactically valid SA file" from "SA actually works
-# against the live API"). Pinned to match the main ai_engine requirements.
+# against the live API").
+#
+# Note on the >=2.0.0 constraint: we mirror the same minimum-version range
+# used by the root ai_engine requirements.txt rather than pinning to an
+# exact version, so the admin_ui and ai_engine containers are guaranteed
+# compatible with each other AND with whatever the operator has chosen at
+# the root level. CodeRabbit flagged the comment "pinned to match" as
+# misleading — it's a *minimum-version range*, not an exact pin, and the
+# intent is to track the root requirements.
 google-auth>=2.0.0
 google-api-python-client>=2.0.0

@@ -107,16 +107,31 @@ Under `tools.google_calendar`:
 | Key | Description | Default |
 |-----|-------------|---------|
 | `enabled` | Turn the tool on or off. | `false` |
-| `free_prefix` | Prefix for events that define available windows (e.g. `"Open"`). The LLM can override this per-call. Now exposed in the Tools UI. | `"Open"` (backend fallback) |
-| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). The LLM can override this per-call. Now exposed in the Tools UI. | `"Busy"` (backend fallback) |
+| `free_prefix` | Prefix for events that define available windows (e.g. `"Open"`). When non-empty, the tool uses **title-prefix mode** and only events titled with this prefix count as available time. When blank (`''`) or absent, the tool uses **free/busy mode** (Google's native `freebusy.query()` API) intersected with a working-hours mask. The LLM may override the prefix string within title-prefix mode but cannot switch modes — the operator's setting wins. Now exposed in the Tools UI. | *(blank → free/busy mode)* |
+| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). Only used in title-prefix mode. The LLM can override this per-call. Now exposed in the Tools UI. | `"Busy"` (backend fallback, title-prefix mode only) |
 | `min_slot_duration_minutes` | Default appointment duration in minutes for `get_free_slots`. | `30` (backend default and Admin UI default for new entries) |
-| `calendars` | Map of named calendars (multi-account support). Each entry can set `credentials_path`, `calendar_id`, `timezone`. | *(optional)* |
+| `max_slots_returned` | Cap on number of slot start-times surfaced to the LLM by `get_free_slots`. Set to `0` to disable the cap. | `3` |
+| `max_event_duration_minutes` | Refuse `create_event` calls that book a longer event. Set to `0` to disable the cap. | `240` |
+| `working_hours_start` / `working_hours_end` / `working_days` | Working hours mask used in free/busy mode. Hours are 24h calendar-local; days use Python `weekday()` convention (Mon=0..Sun=6). | `9` / `17` / `[0,1,2,3,4]` |
+| `calendars` | Map of named calendars (multi-account support). Each entry can set `credentials_path`, `calendar_id`, `timezone`, `subject` (DWD). | *(optional)* |
 
-**Defaults note:** the prefix and duration fields fall back to `"Open"`,
-`"Busy"`, and `30` minutes when neither the LLM call nor the config sets
-them — so the tool works out of the box without any of these set. Empty-
-string values in config are treated as "use the backend default" (operators
-can clear the field in the UI without breaking the tool).
+**Mode-selection rule (canonical):** the operator's `free_prefix` setting
+determines mode and always wins over any LLM-supplied value:
+
+- `free_prefix: 'Open'` (or any non-empty string) → **title-prefix mode** —
+  `get_free_slots` scans the calendar for events titled with the prefix.
+  The LLM may pass a different prefix to use within title-prefix mode, but
+  cannot switch out of it.
+- `free_prefix: ''` (explicit blank) or no `free_prefix` key at all →
+  **free/busy mode** — `get_free_slots` calls Google's native `freebusy.query()`
+  intersected with the configured working-hours mask. Operators don't need
+  to seed "Open" events. Even if the LLM passes `free_prefix='Open'`, the
+  operator's deliberate choice (or default) of free/busy wins.
+
+**Defaults note:** when the operator config omits `busy_prefix` or
+`min_slot_duration_minutes`, the backend falls back to `"Busy"` and `30`
+minutes respectively. `free_prefix` does NOT have a backend default — its
+absence is the explicit signal for free/busy mode.
 
 > **Behavior change in this release:** the backend default for
 > `min_slot_duration_minutes` was previously `15`; it is now `30`, matching
@@ -758,7 +773,7 @@ sufficient.
 Place a single test call against `demo_elevenlabs`. In the AAVA engine
 logs you should see:
 
-```
+```text
 {"event": "[elevenlabs] [<call_id>] Received message type: client_tool_call"}
 {"event": "[elevenlabs] [<call_id>] Tool call: google_calendar"}
 {"event": "GCalendarTool execution triggered by LLM", ...}

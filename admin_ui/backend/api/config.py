@@ -2283,18 +2283,18 @@ def _load_sa_metadata(creds_path: str) -> dict:
                     "ownership 'appuser')."
                 ),
             },
-        )
+        ) from e
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=400,
             detail={
                 "error_code": "credentials_not_json",
                 "message": "credentials_path file does not contain valid JSON.",
             },
-        )
+        ) from e
 
     if not isinstance(data, dict) or data.get("type") != "service_account":
         raise HTTPException(
@@ -2396,11 +2396,29 @@ def _verify_calendar_access_sync(
             },
         )
 
+    # Constrain creds_path to the allow-listed secrets dirs before opening
+    # the file. The verify endpoint accepts creds_path from the request body
+    # (so operators can verify unsaved UI edits), so without this check it
+    # could be used to read arbitrary host files. Same guard applied in
+    # _load_sa_metadata and _discover_accessible_calendars; this closes the
+    # gap CodeRabbit flagged on this endpoint specifically.
+    try:
+        norm_creds_path = os.path.realpath(creds_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_credentials_path",
+                "message": f"credentials_path could not be resolved: {e}",
+            },
+        ) from e
+    _assert_creds_path_in_allowed_dir(norm_creds_path, creds_path)
+
     # Build SA creds. Failures here are credential-shape problems, not
     # API-side problems — distinguish them.
     try:
         creds = service_account.Credentials.from_service_account_file(
-            creds_path,
+            norm_creds_path,
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
     except (FileNotFoundError, ValueError) as e:
@@ -2410,7 +2428,7 @@ def _verify_calendar_access_sync(
                 "error_code": "invalid_credentials",
                 "message": f"Could not load service-account credentials: {e}",
             },
-        )
+        ) from e
 
     if subject:
         creds = creds.with_subject(subject)
@@ -2538,16 +2556,26 @@ def _verify_calendar_access_sync(
                 try:
                     service.calendarList().insert(body={"id": calendar_id}).execute()
                     auto_subscribed = True
-                except HttpError:
-                    # If insert fails (e.g. policy block), the verify is
-                    # still valid — just no subscription. Don't surface as
-                    # a failure to the user.
-                    pass
+                except HttpError as insert_err:
+                    # If insert fails (e.g. policy block, quota), the verify
+                    # is still valid — just no subscription. Don't surface
+                    # as a failure to the user, but log so an operator
+                    # debugging "why isn't this showing in the picker"
+                    # can see what happened. CodeRabbit minor finding.
+                    logger.debug(
+                        "calendarList().insert failed for %s (auto-subscribe non-fatal): %s",
+                        calendar_id, insert_err,
+                    )
             else:
-                # Some other API error — ignore silently, verify itself succeeded
-                pass
-    except Exception:
-        pass
+                logger.debug(
+                    "calendarList().get returned non-404 error for %s (non-fatal): %s",
+                    calendar_id, e,
+                )
+    except Exception as outer_err:
+        logger.debug(
+            "Auto-subscribe outer try failed for %s (non-fatal): %s",
+            calendar_id, outer_err, exc_info=True,
+        )
 
     return {
         "status": "ok",
@@ -2929,5 +2957,5 @@ async def delete_google_calendar_credentials(filename: str):
                 "error_code": "delete_failed",
                 "message": f"Failed to remove credentials file: {e}",
             },
-        )
+        ) from e
     return {"status": "success", "filename": filename}
