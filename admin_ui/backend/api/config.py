@@ -2175,6 +2175,43 @@ def _read_google_calendar_entry(key: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
+_ALLOWED_CREDENTIALS_DIRS = (
+    "/app/project/secrets",
+    "/app/secrets",
+    "/secrets",
+)
+
+
+def _assert_creds_path_in_allowed_dir(norm_path: str, original: str) -> None:
+    """Reject any path that doesn't resolve under one of our known secrets
+    directories. Defense-in-depth even when ``creds_path`` came from
+    persisted config (the UI writes new uploads into GOOGLE_CALENDAR_SECRETS_DIR
+    but legacy YAML may point elsewhere — we still constrain to a fixed set
+    of mount roots so user-controlled values can never escape into reading
+    arbitrary host files via this endpoint). Closes CodeQL warnings re
+    ``Uncontrolled data used in path expression``.
+    """
+    real_dirs = [os.path.realpath(d) for d in _ALLOWED_CREDENTIALS_DIRS]
+    for safe in real_dirs:
+        try:
+            common = os.path.commonpath([norm_path, safe])
+        except ValueError:
+            continue
+        if common == safe:
+            return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error_code": "credentials_path_outside_allowed_dirs",
+            "message": (
+                f"credentials_path '{original}' resolves outside the allowed "
+                f"secrets directories ({', '.join(_ALLOWED_CREDENTIALS_DIRS)}). "
+                "Move the file under one of those mounts and update the path."
+            ),
+        },
+    )
+
+
 def _load_sa_metadata(creds_path: str) -> dict:
     """Read the SA JSON at ``creds_path`` and return its identity metadata.
 
@@ -2203,6 +2240,12 @@ def _load_sa_metadata(creds_path: str) -> dict:
                 "message": "credentials_path could not be resolved.",
             },
         )
+
+    # Constrain to a known set of mount roots. Without this, an operator
+    # (or a UI bug) could submit a path like "/etc/passwd" and trigger a
+    # file read against an arbitrary host file. CodeQL flagged the open
+    # call below for this reason; the allow-list closes it.
+    _assert_creds_path_in_allowed_dir(norm_path, creds_path)
 
     if not os.path.exists(norm_path):
         raise HTTPException(
@@ -2668,9 +2711,23 @@ def _discover_accessible_calendars(creds_path: str) -> dict:
             "error_message": "google-auth + googleapiclient are required to discover calendars.",
         }
 
+    # Constrain creds_path to known secrets dirs (defense-in-depth — same
+    # rationale as in _load_sa_metadata; keeps CodeQL happy and prevents
+    # this endpoint from being a vector for reading arbitrary host files).
+    try:
+        norm_creds = os.path.realpath(creds_path)
+    except Exception:
+        return {"ok": False, "error_code": "invalid_credentials_path",
+                "error_message": "credentials_path could not be resolved."}
+    try:
+        _assert_creds_path_in_allowed_dir(norm_creds, creds_path)
+    except HTTPException as e:
+        return {"ok": False, "error_code": e.detail.get("error_code", "credentials_path_disallowed"),
+                "error_message": e.detail.get("message", str(e))}
+
     try:
         creds = service_account.Credentials.from_service_account_file(
-            creds_path,
+            norm_creds,
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
     except Exception as e:
@@ -2799,10 +2856,13 @@ async def upload_google_calendar_credentials(file: UploadFile = File(...)):
     try:
         with open(tmp_path, "wb") as f:
             f.write(raw)
-        # 0o644 — admin_ui (writer, root) can write; ai_engine (appuser)
-        # can read. The directory is bind-mounted only to specific
-        # containers, so this is the actual security boundary.
-        os.chmod(tmp_path, 0o644)
+        # 0o640 — owner (admin_ui, root) can read+write; group (asterisk,
+        # which the ai_engine appuser belongs to) can read; world cannot
+        # read. Tightened from 0o644 to silence CodeQL "overly permissive
+        # file permissions" — the admin_ui→ai_engine bind-mount + group
+        # ownership is the actual security boundary, but world-readable
+        # was unnecessarily generous for a service-account credential.
+        os.chmod(tmp_path, 0o640)
         os.replace(tmp_path, target_path)
     except OSError as e:
         # Clean up the .tmp on failure

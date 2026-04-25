@@ -823,6 +823,115 @@ class TestRoundTwoToFiveFixes:
         assert mock_cal.delete_event.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_last_event_cache_bounded_by_lru_eviction(
+        self, gcal_tool, gcal_enabled_context
+    ):
+        """Codex P2 feedback: _last_event_per_call adds an entry on every
+        successful create_event but only removes its own on delete_event,
+        so the typical 'book → hang up without correction' flow leaks an
+        entry per call indefinitely.
+
+        Pin: the cache is bounded at _LAST_EVENT_CACHE_CAP via LRU eviction.
+        Without the bound a long-running engine accumulates unbounded state.
+        """
+        # Lower the cap for the test so we don't have to issue 1024+ creates
+        original_cap = gcal_tool._LAST_EVENT_CACHE_CAP
+        gcal_tool._LAST_EVENT_CACHE_CAP = 5
+        try:
+            mock_cal = MagicMock()
+            mock_cal.service = MagicMock()
+            # Each create returns a unique event id
+            mock_cal.create_event = Mock(side_effect=[
+                {"id": f"evt_{i}", "htmlLink": "..."} for i in range(10)
+            ])
+            with patch.object(gcal_tool, "_get_cal", return_value=mock_cal), \
+                 patch.object(gcal_tool, "_get_or_create_cal", return_value=mock_cal):
+                # 10 distinct call_ids → 10 successful creates.
+                # The cache should hold only the most recent 5 (cap=5).
+                for i in range(10):
+                    gcal_enabled_context.call_id = f"call_{i:02d}"
+                    result = await gcal_tool.execute(
+                        parameters={
+                            "action": "create_event",
+                            "summary": f"Booking {i}",
+                            "start_datetime": "2026-04-27T11:00:00",
+                            "end_datetime": "2026-04-27T11:30:00",
+                        },
+                        context=gcal_enabled_context,
+                    )
+                    assert result["status"] == "success"
+            # After 10 creates with cap=5, only the most recent 5 entries
+            # should remain. The oldest 5 (call_00..call_04) should be evicted.
+            assert len(gcal_tool._last_event_per_call) == 5
+            assert "call_00" not in gcal_tool._last_event_per_call
+            assert "call_04" not in gcal_tool._last_event_per_call
+            assert "call_05" in gcal_tool._last_event_per_call
+            assert "call_09" in gcal_tool._last_event_per_call
+        finally:
+            gcal_tool._LAST_EVENT_CACHE_CAP = original_cap
+
+    @pytest.mark.asyncio
+    async def test_last_event_cache_lru_refresh_on_re_create(
+        self, gcal_tool, gcal_enabled_context
+    ):
+        """When the same call_id books again (e.g. delete-then-recreate flow),
+        its LRU position must be refreshed so it isn't evicted while still
+        actively in use. Confirmed by re-creating an early call_id and then
+        triggering eviction — the refreshed call_id should survive."""
+        original_cap = gcal_tool._LAST_EVENT_CACHE_CAP
+        gcal_tool._LAST_EVENT_CACHE_CAP = 3
+        try:
+            mock_cal = MagicMock()
+            mock_cal.service = MagicMock()
+            mock_cal.create_event = Mock(side_effect=[
+                {"id": f"evt_{i}", "htmlLink": "..."} for i in range(6)
+            ])
+            with patch.object(gcal_tool, "_get_cal", return_value=mock_cal), \
+                 patch.object(gcal_tool, "_get_or_create_cal", return_value=mock_cal):
+                # Three distinct call_ids — fills the cache exactly
+                for i in range(3):
+                    gcal_enabled_context.call_id = f"call_{i}"
+                    await gcal_tool.execute(
+                        parameters={
+                            "action": "create_event", "summary": "x",
+                            "start_datetime": "2026-04-27T11:00:00",
+                            "end_datetime": "2026-04-27T11:30:00",
+                        },
+                        context=gcal_enabled_context,
+                    )
+                # Re-create on call_0 — this should move it to the most-recent slot
+                gcal_enabled_context.call_id = "call_0"
+                await gcal_tool.execute(
+                    parameters={
+                        "action": "create_event", "summary": "x2",
+                        "start_datetime": "2026-04-27T12:00:00",
+                        "end_datetime": "2026-04-27T12:30:00",
+                    },
+                    context=gcal_enabled_context,
+                )
+                # Now add 2 more — that's 5 distinct creates total but cap=3.
+                # call_1 is the oldest after the refresh, then call_2.
+                # call_3 and call_4 are added — call_1 and call_2 evicted,
+                # call_0 (refreshed) survives.
+                for i in range(3, 5):
+                    gcal_enabled_context.call_id = f"call_{i}"
+                    await gcal_tool.execute(
+                        parameters={
+                            "action": "create_event", "summary": "x",
+                            "start_datetime": "2026-04-27T11:00:00",
+                            "end_datetime": "2026-04-27T11:30:00",
+                        },
+                        context=gcal_enabled_context,
+                    )
+            # call_0 was refreshed mid-stream so it must still be present
+            assert "call_0" in gcal_tool._last_event_per_call, \
+                "Re-creating on an existing call_id must refresh its LRU position"
+            # call_1 was the oldest after refresh; should be evicted
+            assert "call_1" not in gcal_tool._last_event_per_call
+        finally:
+            gcal_tool._LAST_EVENT_CACHE_CAP = original_cap
+
+    @pytest.mark.asyncio
     async def test_delete_event_no_fallback_when_no_tracked_id(
         self, gcal_tool, gcal_enabled_context
     ):

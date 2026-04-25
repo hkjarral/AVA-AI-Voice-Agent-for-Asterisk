@@ -129,6 +129,15 @@ class GCalendarTool(Tool):
     Compatible with Google Live/Vertex and OpenAI via Asterisk-AI-Voice-Agent.
     """
 
+    # Cap on the per-call_id event-tracking map. Every successful create_event
+    # adds an entry; delete_event removes its own, but most calls book then
+    # hang up without ever issuing a delete, so entries accumulate over the
+    # engine's lifetime if unbounded. 1024 is generous — at typical voice-agent
+    # call rates that's many hours of distinct concurrent calls — and LRU
+    # eviction keeps the working set focused on calls that are likely still
+    # in progress. (Codex P2 feedback.)
+    _LAST_EVENT_CACHE_CAP = 1024
+
     def __init__(self):
         super().__init__()
         logger.debug("Initializing GCalendarTool instance")
@@ -142,9 +151,11 @@ class GCalendarTool(Tool):
         # 'f0l1q7d4j1t5n0b4h3c2a1m0') instead of the real id from the prior
         # create_event success — Google returned 404, and the model then
         # called create_event anyway, leaving duplicate events on the calendar.
-        # We keep at most the LAST successful create per call_id (rebooking
-        # in the same call should always replace the previous one).
-        self._last_event_per_call: dict[str, dict] = {}
+        # OrderedDict + LRU eviction at _LAST_EVENT_CACHE_CAP entries keeps
+        # this bounded — without the cap the typical flow (book → end call,
+        # never delete) would leak an entry per call indefinitely.
+        from collections import OrderedDict
+        self._last_event_per_call: "OrderedDict[str, dict]" = OrderedDict()
         self._last_event_lock = threading.Lock()
 
     def _get_cal(self, config: Dict[str, Any]) -> GCalendar:
@@ -1270,13 +1281,26 @@ class GCalendarTool(Tool):
                 created_id = event.get("id")
                 # Track the last successful create for this call so delete_event
                 # can fall back when the model hallucinates the event_id (real
-                # bug seen on Gemini in voiprnd round-4 test).
+                # bug seen on Gemini in voiprnd round-4 test). LRU eviction
+                # bounds the cache at _LAST_EVENT_CACHE_CAP — see __init__.
                 if call_id and created_id:
                     with self._last_event_lock:
+                        # move_to_end so updating an existing call_id refreshes
+                        # its LRU position rather than leaving it stale at the
+                        # cold end. Then evict the oldest if over cap.
+                        if call_id in self._last_event_per_call:
+                            self._last_event_per_call.move_to_end(call_id)
                         self._last_event_per_call[call_id] = {
                             "event_id": created_id,
                             "calendar_key": target_key,
                         }
+                        while len(self._last_event_per_call) > self._LAST_EVENT_CACHE_CAP:
+                            evicted_call_id, _evicted_entry = self._last_event_per_call.popitem(last=False)
+                            logger.debug(
+                                "Evicted oldest entry from _last_event_per_call (LRU cap reached)",
+                                evicted_call_id=evicted_call_id,
+                                cap=self._LAST_EVENT_CACHE_CAP,
+                            )
                 # Surface the event_id IN THE MESSAGE — not just the structured
                 # `id` field — so models that read the human-readable response
                 # field don't lose it. Without this, Gemini fabricated a
