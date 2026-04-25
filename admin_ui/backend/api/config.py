@@ -2884,13 +2884,19 @@ async def upload_google_calendar_credentials(file: UploadFile = File(...)):
     try:
         with open(tmp_path, "wb") as f:
             f.write(raw)
-        # 0o640 — owner (admin_ui, root) can read+write; group (asterisk,
-        # which the ai_engine appuser belongs to) can read; world cannot
-        # read. Tightened from 0o644 to silence CodeQL "overly permissive
-        # file permissions" — the admin_ui→ai_engine bind-mount + group
-        # ownership is the actual security boundary, but world-readable
-        # was unnecessarily generous for a service-account credential.
-        os.chmod(tmp_path, 0o640)
+        # 0o640 is the minimum permission set required by AAVA's split-
+        # container architecture: admin_ui (writer, runs as root) owns the
+        # file; ai_engine (reader, runs as `appuser` in the `asterisk`
+        # group) reads via group permissions; world has no access. Going
+        # tighter (0o600 / owner-only) would block ai_engine from reading
+        # the SA credential and break the calendar tool entirely.
+        # CodeQL still flags 0o640 as "group-readable", which is true but
+        # a deliberate cross-container boundary, not a security weakness —
+        # the bind-mount is scoped to two specific containers and group
+        # membership is set at image-build time, not at runtime. The
+        # `nosec` annotation below documents this intent so the warning
+        # doesn't keep recurring on every rescan.
+        os.chmod(tmp_path, 0o640)  # nosec B103 - cross-container read; see comment above
         os.replace(tmp_path, target_path)
     except OSError as e:
         # Clean up the .tmp on failure

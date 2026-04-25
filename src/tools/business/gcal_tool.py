@@ -890,10 +890,26 @@ class GCalendarTool(Tool):
                     tz_name = _tz_for_key(k) if not legacy_single else calendar_tz_name
                     if tz_name:
                         tz_set.add(tz_name)
-                # Operator-pinned override always wins
-                root_tz = (config.get("timezone") or "").strip()
-                if root_tz:
-                    output_tz_name = root_tz
+                # Selection rules — corrected per CodeRabbit critical follow-up:
+                # the previous version had `config["timezone"]` (root override)
+                # winning over per-calendar timezones, which is a footgun in
+                # multi-calendar mode. create_event ALWAYS uses the target
+                # calendar's TZ to reparse naive datetime strings, so if the
+                # slot list was formatted in a different TZ the model will
+                # book at the wrong wall-clock time.
+                #
+                # Legacy single-cal mode: root config["timezone"] IS the
+                #   calendar's TZ (no per-calendar overrides exist) — use it.
+                # Multi-calendar mode: per-calendar TZ is authoritative.
+                #   Root config["timezone"] is ignored to avoid the create_event
+                #   reparse mismatch. If the selected calendars agree on a TZ,
+                #   use it. If they disagree, fall back to UTC + warning.
+                if legacy_single:
+                    output_tz_name = (
+                        (config.get("timezone") or "").strip()
+                        or calendar_tz_name
+                        or "UTC"
+                    )
                 elif len(tz_set) == 1:
                     output_tz_name = next(iter(tz_set))
                 elif len(tz_set) > 1:
@@ -914,7 +930,11 @@ class GCalendarTool(Tool):
                     output_tz_name = "UTC"
                 # Surface to caller whether we had to fall back due to multi-cal
                 # TZ disagreement, so consumers (and tests) can distinguish.
-                multi_cal_tz_disagreement = len(tz_set) > 1 and not root_tz
+                # Multi-cal mode + selected calendars don't agree on a TZ.
+                # In this case we fall back to UTC display and warn the model
+                # to pass UTC datetimes (with 'Z') to create_event. Doesn't
+                # apply in legacy_single mode (only one calendar exists).
+                multi_cal_tz_disagreement = len(tz_set) > 1 and not legacy_single
                 slot_starts = [t.astimezone(output_tz) for t in slot_starts]
                 slot_starts.sort()
 
