@@ -2241,26 +2241,33 @@ def _load_sa_metadata(creds_path: str) -> dict:
             },
         ) from e
 
-    # Constrain to a known set of mount roots. Without this, an operator
-    # (or a UI bug) could submit a path like "/etc/passwd" and trigger a
-    # file read against an arbitrary host file. CodeQL flagged the open
-    # call below for this reason; this inline constraint closes it.
+    # Constrain user-supplied creds_path to a known set of mount roots
+    # via Path.relative_to() — the CodeQL-recognized sanitizer pattern.
+    # Without this, an operator (or a UI bug) could submit a path like
+    # "/etc/passwd" and trigger a file read against an arbitrary host
+    # file. After this guard, `safe_path` is provably-rooted under one
+    # of the allow-listed dirs and CAN be used in subsequent file ops.
     #
-    # Inline rather than calling _assert_creds_path_in_allowed_dir because
-    # CodeQL's path-injection analyzer doesn't trace value-flow through
-    # helper functions, so the helper's commonpath check wasn't visible
-    # to the static scan and the alert kept firing. The inline form makes
-    # the constraint legible to both humans and CodeQL.
-    _allowed_real_dirs = [os.path.realpath(d) for d in _ALLOWED_CREDENTIALS_DIRS]
-    _is_allowed = False
-    for _safe in _allowed_real_dirs:
+    # Past attempts using commonpath() in a list-loop weren't recognized
+    # by CodeQL's py/path-injection analyzer; the relative_to() pattern
+    # below is the canonical sanitizer per CodeQL's published
+    # documentation.
+    from pathlib import Path
+    _candidate_path = Path(norm_path)
+    safe_path: Path | None = None
+    for _allowed in _ALLOWED_CREDENTIALS_DIRS:
+        _allowed_real = Path(_allowed).resolve()
         try:
-            if os.path.commonpath([norm_path, _safe]) == _safe:
-                _is_allowed = True
-                break
+            _candidate_path.relative_to(_allowed_real)
         except ValueError:
             continue
-    if not _is_allowed:
+        # `relative_to` succeeded → _candidate_path is provably under
+        # _allowed_real. Construct the sanitized path by re-rooting at
+        # the safe prefix to make the constraint visible to data-flow
+        # analysis rather than relying on the unmodified user input.
+        safe_path = _allowed_real / _candidate_path.relative_to(_allowed_real)
+        break
+    if safe_path is None:
         raise HTTPException(
             status_code=400,
             detail={
@@ -2272,10 +2279,8 @@ def _load_sa_metadata(creds_path: str) -> dict:
                 ),
             },
         )
-    # At this point norm_path is provably under one of the allow-listed
-    # roots (validated inline above). Subsequent file ops are safe.
 
-    if not os.path.exists(norm_path):
+    if not safe_path.exists():
         raise HTTPException(
             status_code=404,
             detail={
@@ -2284,7 +2289,7 @@ def _load_sa_metadata(creds_path: str) -> dict:
             },
         )
 
-    if not os.path.isfile(norm_path):
+    if not safe_path.is_file():
         raise HTTPException(
             status_code=400,
             detail={
@@ -2294,7 +2299,7 @@ def _load_sa_metadata(creds_path: str) -> dict:
         )
 
     try:
-        with open(norm_path, "r") as f:
+        with safe_path.open("r") as f:
             raw = f.read()
     except OSError as e:
         # Most common case here is a permissions error (e.g. file owned by
@@ -2989,16 +2994,15 @@ async def delete_google_calendar_credentials(filename: str):
     # Resolve the requested filename inside the secrets dir. The helper
     # validates the filename pattern + path-traversal protection, but
     # CodeQL doesn't trace value-flow through helpers, so we re-state the
-    # constraint inline below before any file operation. (Same approach
-    # as _load_sa_metadata.)
+    # constraint inline below using Path.relative_to() — the canonical
+    # CodeQL-recognized sanitizer. (Same approach as _load_sa_metadata.)
     target_path = _resolve_calendar_secret_path(filename)
-    _secrets_real = os.path.realpath(GOOGLE_CALENDAR_SECRETS_DIR)
-    _target_real = os.path.realpath(target_path)
+    from pathlib import Path
+    _secrets_dir = Path(GOOGLE_CALENDAR_SECRETS_DIR).resolve()
+    _candidate = Path(target_path).resolve()
     try:
-        _common = os.path.commonpath([_target_real, _secrets_real])
+        _candidate.relative_to(_secrets_dir)
     except ValueError:
-        _common = ""
-    if _common != _secrets_real:
         # Defense-in-depth — should be unreachable given
         # _resolve_calendar_secret_path's filename regex + dirname check,
         # but keeps the constraint visible to static analysis.
@@ -3009,7 +3013,11 @@ async def delete_google_calendar_credentials(filename: str):
                 "message": "Resolved path escapes the secrets directory.",
             },
         )
-    if not os.path.exists(_target_real):
+    # Reconstruct the safe path explicitly under the secrets dir so the
+    # sanitization is visible to data-flow analysis rather than relying
+    # on the unmodified input.
+    safe_target_path = _secrets_dir / _candidate.relative_to(_secrets_dir)
+    if not safe_target_path.exists():
         raise HTTPException(
             status_code=404,
             detail={
@@ -3037,7 +3045,7 @@ async def delete_google_calendar_credentials(filename: str):
                 entry_real = os.path.realpath(entry_path)
             except Exception:
                 entry_real = entry_path
-            if entry_real == _target_real or entry_path == container_path:
+            if entry_real == str(safe_target_path) or entry_path == container_path:
                 referenced_by.append(str(k))
     if referenced_by:
         raise HTTPException(
@@ -3053,10 +3061,11 @@ async def delete_google_calendar_credentials(filename: str):
             },
         )
     try:
-        # Use the locally-validated _target_real (constrained to the
-        # secrets dir via inline commonpath check above) rather than
-        # raw target_path, so static analysis can see the constraint.
-        os.remove(_target_real)
+        # safe_target_path is provably under _secrets_dir via the
+        # Path.relative_to() guard above. Using the Path object's
+        # unlink() method here keeps the data-flow chain explicit
+        # for static analysis.
+        safe_target_path.unlink()
     except OSError as e:
         raise HTTPException(
             status_code=500,
