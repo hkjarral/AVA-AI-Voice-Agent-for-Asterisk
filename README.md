@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-6.4.1-blue.svg)
+![Version](https://img.shields.io/badge/version-6.4.2-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -27,7 +27,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 ## 📖 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
-- [🎉 What's New](#-whats-new-in-v641)
+- [🎉 What's New](#-whats-new-in-v642)
 - [🌟 Why Asterisk AI Voice Agent?](#-why-asterisk-ai-voice-agent)
 - [✨ Features](#-features)
 - [🎥 Demo](#-demo)
@@ -161,10 +161,35 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 ---
 
-## 🎉 What's New in v6.4.1
+## 🎉 What's New in v6.4.2
 
 <details open>
 <summary><b>Latest Updates</b></summary>
+
+### 🗓️ Microsoft Calendar — Outlook / Microsoft 365 integration (NEW, v6.4.2)
+- **Device-code OAuth** for V1 (one work/school account per deployment) — no public redirect URL required, runs entirely from the Tools UI **Connect** button
+- **Native Microsoft Graph free/busy** by default with a working-hours mask (Mon–Fri 09:00–17:00, configurable) — operators don't need to seed "Open" availability events
+- **Per-context account binding** via `contexts.<name>.tool_overrides.microsoft_calendar.selected_accounts`
+- **Server-side delete fallback** absorbs LLMs that hallucinate or omit event_ids on reschedule (validated across Google Live, Deepgram, OpenAI Realtime, ElevenLabs)
+- Personal Outlook.com and tenant-wide application permissions are intentionally out of scope for V1
+- Setup guide: [docs/Microsoft-calendar-tool.md](docs/Microsoft-calendar-tool.md)
+
+### 📅 Google Calendar — major overhaul (v6.4.2)
+- **Multi-account / per-context binding** (#338): single deployments can serve multiple separate calendars (one per business line / agent persona); each Admin UI Context binds to exactly one calendar; cross-calendar `aggregate_mode` for shared availability use cases
+- **JSON upload + auto-discover**: per-row "📁 Upload JSON" button writes the SA file to `secrets/`, authenticates, lists shared calendars, auto-fills credentials path / calendar id / timezone — eliminates the SCP-and-paste workflow for the 90% case
+- **Domain-Wide Delegation** support: optional `subject` per calendar enables Workspace impersonation; UI exposes the SA `client_id` (the #1 setup pitfall) with copy-to-clipboard for paste-into-admin-console
+- **Tools UI polish**: `free_prefix` / `busy_prefix` / `min_slot_duration_minutes` now exposed as form fields (were YAML-only); per-calendar 🩺 **Verify access** button with distinct, actionable error codes (`forbidden_calendar`, `calendar_not_found`, `auth_failed`, `dwd_not_configured`, etc.)
+- **Native free/busy mode**: blank/absent `free_prefix` switches `get_free_slots` to Google's `freebusy.query()` API intersected with a working-hours mask
+- **Slot-count cap** (default 3, configurable) so the agent stops reading 20-slot lists; **event duration cap** (default 240 min) prevents 7-hour bookings from LLM math errors
+
+### 🎯 Reschedule reliability across all providers (v6.4.2)
+- Server-side `event_id` tracking + 400/404 fallback eliminates duplicate bookings caused by LLMs hallucinating opaque IDs across conversation turns
+- Date/time prompt placeholders (`{today}`, `{current_date}`, `{current_weekday}`, `{current_time}`, `{current_datetime_iso}`) injected per-call so models stop reasoning with stale years (real bug observed: local_hybrid model thinking it's 2023, ElevenLabs/Claude saying "Tuesday April 27" when April 27 2026 is a Monday)
+
+### 🔧 Reliability fixes (v6.4.2)
+- **OpenAI Realtime — duplicate events (3x) on fast tools**: race condition between fast tool execution (~300–500ms) and `response.done` commit caused the LLM to retry the booking. Fixed by gating `function_call_output` on a per-`response_id` async event
+- **Per-context `tool_overrides` now actually take effect** on OpenAI Realtime, Deepgram, and Google Live (was silently ignored — only ElevenLabs honored it). Affected `selected_calendars`, custom transfer destinations, webhook URLs, etc.
+- **Google Live — 30-voice catalog** (#349): voice picker expanded from 8 hardcoded voices to all 30 native-audio voices with Google's official tone descriptors
 
 ### ⚡ CPU Latency Optimization — Streaming LLM→TTS Overlap (v6.4.1)
 - **Sentence-by-sentence streaming**: LLM tokens are streamed and split at sentence boundaries — each sentence is synthesized and played immediately instead of waiting for the full response. Reduces perceived latency from 3-10s to sub-2s on pipeline configurations.

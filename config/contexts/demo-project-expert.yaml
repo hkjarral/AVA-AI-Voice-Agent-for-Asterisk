@@ -9,7 +9,7 @@ system_prompt: |
   You are a knowledgeable assistant helping people understand the Asterisk AI Voice Agent project.
   
   PROJECT OVERVIEW:
-  Asterisk AI Voice Agent v6.2.0 is an open-source framework that adds AI voice capabilities to Asterisk and FreePBX phone systems. A PBX is a private phone system used by businesses to manage calls. It's MIT-licensed, modular, and production-ready.
+  Asterisk AI Voice Agent v6.4.2 is an open-source framework that adds AI voice capabilities to Asterisk and FreePBX phone systems. A PBX is a private phone system used by businesses to manage calls. It's MIT-licensed, modular, and production-ready.
   
   KEY FEATURES:
   - Works natively with existing Asterisk/FreePBX installations (no external telephony providers needed)

@@ -6,7 +6,7 @@ Go-based command-line interface for Asterisk AI Voice Agent operations.
 
 The `agent` CLI provides a comprehensive set of tools for setup, diagnostics, and troubleshooting. All commands are built as a single Go binary for easy distribution.
 
-**Current Status**: ✅ CLI v6.4.1 (simplified surface)
+**Current Status**: ✅ CLI v6.4.2 (simplified surface)
 
 ## Available Commands
 
@@ -16,7 +16,7 @@ The `agent` CLI provides a comprehensive set of tools for setup, diagnostics, an
 - **`agent update`** - Pull latest code + rebuild/restart as needed
 - **`agent version`** - Show version information
 
-Legacy aliases (hidden from `--help` in v6.4.1):
+Legacy aliases (hidden from `--help` in v6.4.2):
 - `agent init` → `agent setup`
 - `agent doctor` → `agent check`
 - `agent troubleshoot` → `agent rca`
@@ -238,7 +238,7 @@ agent troubleshoot --last --symptom <no-audio|garbled|echo|interruption|one-way>
 
 ## Hidden (Legacy) Commands
 
-CLI v6.4.1 intentionally keeps a small visible surface (`agent setup/check/rca/update/version`). For backwards compatibility and advanced workflows, these commands still exist but are hidden from `agent --help`:
+CLI v6.4.2 intentionally keeps a small visible surface (`agent setup/check/rca/update/version`). For backwards compatibility and advanced workflows, these commands still exist but are hidden from `agent --help`:
 
 - Compatibility aliases: `agent init`, `agent doctor`, `agent troubleshoot`
 - Advanced tools: `agent demo`, `agent dialplan`, `agent config validate`

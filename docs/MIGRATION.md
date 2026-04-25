@@ -2,6 +2,90 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v6.4.1 to v6.4.2
+
+**Mostly back-compatible.** New features are additive or opt-in. A handful of
+Google Calendar default-value changes affect operators who relied on the
+previous backend defaults; explicit YAML configs are unchanged.
+
+```bash
+# Standard upgrade
+git pull
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate
+```
+
+New in v6.4.2:
+- **Microsoft Calendar V1 (NEW)** — Outlook / Microsoft 365 calendar integration via device-code OAuth. Opt-in: configure under `tools.microsoft_calendar.accounts.default` and bind to a context via `contexts.<name>.tool_overrides.microsoft_calendar.selected_accounts`. Setup guide: [docs/Microsoft-calendar-tool.md](Microsoft-calendar-tool.md).
+- **Google Calendar — major overhaul**
+  - Multi-account / per-context binding (#338): legacy single-calendar root fields still work as a fallback materialized as `calendars.default`. New nested shape: `tools.google_calendar.calendars.<key>.{credentials_path, calendar_id, timezone, subject?}`.
+  - JSON upload + auto-discover from the Tools UI.
+  - Domain-Wide Delegation support via optional `subject` per calendar.
+  - Tools UI Verify with distinct error codes (`forbidden_calendar`, `calendar_not_found`, `auth_failed`, `dwd_not_configured`, etc.).
+  - Native free/busy mode: blank/absent `free_prefix` switches to `freebusy.query()` intersected with a working-hours mask.
+- **Reschedule reliability across all providers** — server-side `event_id` resolution + 400/404 fallback for both Google and Microsoft Calendar tools.
+- **Date/time prompt placeholders** — `{today}`, `{current_date}`, `{current_weekday}`, `{current_time}`, `{current_datetime_iso}` resolved per-call inside `_apply_prompt_template_substitution`.
+- **Google Live — full 30-voice catalog** in the Admin UI voice picker (#349).
+
+Bug fixes that may change observable behavior:
+- **OpenAI Realtime — duplicate events (3x) on fast tools** — fast tools no longer create duplicate calendar bookings. Race-condition fix between fast tool execution and `response.done` commit.
+- **Per-context `tool_overrides` now actually take effect** on OpenAI Realtime, Deepgram, and Google Live (was silently ignored — only ElevenLabs honored it). If you have `selected_calendars`, custom transfer destinations, or webhook URLs configured per-context, they will now apply on the next call.
+
+### Behavior changes operators should review
+
+Google Calendar default-value changes — operators with explicit YAML keep their
+existing values; those relying on backend defaults will see new behavior. Full
+detail in [CHANGELOG.md](../CHANGELOG.md) under *Migration notes
+(calendar-improvements branch)*. Quick summary:
+
+| Setting | Old default | New default | If you want old behavior |
+|---|---|---|---|
+| `tools.google_calendar.min_slot_duration_minutes` | 15 | 30 | Set explicitly to `15` |
+| `tools.google_calendar.max_slots_returned` | (unbounded) | 3 | Set to `0` to disable cap |
+| `tools.google_calendar.max_event_duration_minutes` | (unbounded) | 240 | Set to `0` to disable cap |
+| `tools.google_calendar.free_prefix` blank/absent | title-prefix mode (default `'Open'`) | native free/busy + working-hours mask | Set `free_prefix: 'Open'` (or any non-empty string) explicitly |
+
+The slot-list message format and `create_event` success message have been
+extended (extra timezone/duration/event_id guidance) but the legacy `"Free
+slot starts:"` and `"Event created"` prefixes are preserved verbatim, so
+prompt templates that pattern-match on those substrings keep working.
+
+To stay on exact pre-PR behavior:
+
+```yaml
+tools:
+  google_calendar:
+    free_prefix: Open                  # keep title-prefix mode
+    busy_prefix: Busy                  # keep busy-block scanning
+    min_slot_duration_minutes: 15      # restore pre-6.4.2 slot grid
+    max_slots_returned: 0              # disable slot cap (return all)
+    max_event_duration_minutes: 0      # disable duration cap
+```
+
+## v6.4.0 to v6.4.1
+
+**No breaking changes.** All new features are additive or opt-in.
+
+```bash
+# Standard upgrade
+git pull
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate
+```
+
+New in v6.4.1:
+- CPU latency optimization (streaming LLM→TTS overlap, pipeline filler audio)
+- Qwen 2.5-1.5B Instruct as recommended CPU LLM (~15-30 tok/s vs Phi-3's ~0.8 tok/s)
+- Direct PCM→µ-law conversion in all 5 TTS backends (eliminates WAV roundtrip)
+- TTS phrase cache (LRU, 256 entries) — opt-in via `LOCAL_TTS_PHRASE_CACHE_ENABLED=true`
+- LLM streaming in Local AI Server and OpenAI LLM adapter
+- Admin UI Latency Optimization settings on Streaming page
+- Preflight hardening: GPU install gated behind `--apply-fixes`, Buildx detection, RAM/disk/network checks, all runtime ports validated
+
+To enable the new TTS phrase cache:
+```bash
+# In .env
+LOCAL_TTS_PHRASE_CACHE_ENABLED=true
+```
+
 ## v6.3.2 to v6.4.0
 
 **No breaking changes.** All new features are additive or opt-in.

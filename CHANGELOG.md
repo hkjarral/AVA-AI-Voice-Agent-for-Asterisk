@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- _(future entries go here)_
+
+## [6.4.2] - 2026-04-25
+
+### Added
+
 - **Microsoft Calendar tool V1 (branch `microsoft-calendar`)**: Added a Microsoft 365 Outlook calendar tool using device-code OAuth, with Admin UI Connect/Verify/Disconnect flow, per-context account binding, native Microsoft Graph free/busy availability by default, working-hours masks, slot caps, event-duration guardrails, quiet `create_event` spoken messages plus `agent_hint`, server-side delete fallback for hallucinated event ids, locked MSAL token-cache handling across `admin_ui` and `ai_engine`, provider-agnostic demo-context scheduling prompts, and docs covering Azure public-client setup. V1 supports one work/school Microsoft 365 account (`accounts.default`) with explicit tenant ID; personal Outlook.com and tenant-wide application permissions are intentionally out of scope.
 - **Google Calendar — event-id surfaced in create_event message + server-side delete fallback (branch `calendar-improvements`, round-5 fix)**: Two-layer defense against a real bug seen in voiprnd round-5 testing where Gemini followed the new "delete-then-recreate on caller correction" rule but **hallucinated** the event_id (passed `f0l1q7d4j1t5n0b4h3c2a1m0` instead of the real id from the prior `create_event` success), and Google returned 404. **(behavior change)** `create_event` success message now includes the event id verbatim: *"Event created with id 'XYZ'. To modify or delete this event later, call delete_event with this exact event_id — do not invent or guess one."* Models that read the message field (most do) can no longer miss it. Aliased as `event_id` on the response too. **(server-side safety net)** `GCalendarTool` now tracks the most-recent successful `create_event` per `call_id` (in-memory, threadsafe). If `delete_event` returns 404 and we have a tracked id from the same call, the tool falls back to deleting that one instead and returns success with a message that explains the recovery so the model self-corrects on subsequent attempts. Tracking entry is cleared on first successful delete or fallback to avoid double-fallback edge cases.
 - **Engine — date/time prompt placeholders for scheduling reasoning (branch `calendar-improvements`, round-4 fix)**: New template variables resolved per-call inside `_apply_prompt_template_substitution`: `{current_date}` ('2026-04-24'), `{current_weekday}` ('Friday'), `{current_time}` ('22:35'), `{current_datetime_iso}` (UTC), and `{today}` ('Friday, April 24, 2026'). Same substitution path every prompt already goes through, so all 5 demo contexts and any user-defined contexts get them automatically. Resolves real bugs surfaced by live testing: local_hybrid model passing `time_min: '2023-04-28...'` (model thought current year was 2023), and ElevenLabs/Claude saying *"Tuesday April 27"* when April 27, 2026 is actually a Monday. Companion update injects `Today is {today}` into the SCHEDULING block of all 5 demo contexts, plus a delete-then-recreate rule for caller corrections (*"FIRST call delete_event with the prior event_id, THEN call create_event with the corrected time"*) and an explicit retry directive for `duration_too_long` / `invalid_duration` / `missing_parameters` errors so models don't bail to "calendar not configured" on recoverable parameter errors.
@@ -1693,6 +1699,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 
 ## Version History
 
+- **v6.4.2** (2026-04-25) - Microsoft Calendar V1 (Outlook/Microsoft 365), Google Calendar major overhaul (multi-account, JSON upload, DWD, Verify, native free/busy), reschedule reliability across providers, OpenAI Realtime duplicate-events fix, per-context tool_overrides fix, Google Live 30-voice catalog, date/time prompt placeholders
+- **v6.4.1** (2026-04-09) - CPU latency optimization (streaming LLM→TTS overlap, pipeline filler, Qwen 2.5-1.5B), TTS phrase cache, OpenAI streaming, preflight hardening
 - **v6.4.0** (2026-03-28) - Attended transfer streaming & screening, Sherpa offline STT, T-one STT, Silero TTS, HTTP wildcards, conversation timestamps, fullscreen UI
 - **v6.3.2** (2026-03-12) - Azure Speech Service STT/TTS adapters, MiniMax LLM adapter, call recording playback, Google Calendar delete, security hardening
 - **v6.3.1** (2026-02-23) - Local AI Server onboarding + model lifecycle hardening, tool gateway/guardrails, model catalog + UI rebuild flows, CLI verification tooling, expanded docs and audits
@@ -1715,7 +1723,9 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.4.0...HEAD
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.4.2...HEAD
+[6.4.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.4.1...v6.4.2
+[6.4.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.4.0...v6.4.1
 [6.4.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.3.2...v6.4.0
 [6.3.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.3.1...v6.3.2
 [6.3.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.2...v6.3.1

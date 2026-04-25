@@ -124,7 +124,7 @@ For end-user and operator documentation, see the parent [/docs](../) directory:
 
 ## 📅 Project Status
 
-- **Current Version:** 6.4.1
+- **Current Version:** 6.4.2
 - **Active Branch:** `develop`
 - **Roadmap:** See [/docs/ROADMAP.md](../ROADMAP.md)
 - **Community Features:** GitHub Issues + Linear integration

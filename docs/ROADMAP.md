@@ -22,6 +22,11 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 
 | Milestone | Version | Details |
 |-----------|---------|---------|
+| Microsoft Calendar V1 | ✅ v6.4.2 | Outlook / Microsoft 365 calendar integration via device-code OAuth, Graph free/busy, per-context account binding, Tools UI Connect/Verify/Disconnect |
+| Google Calendar — major overhaul | ✅ v6.4.2 | Multi-account / per-context binding (#338), JSON upload + auto-discover, Domain-Wide Delegation support, Tools UI Verify with distinct error codes, native free/busy mode |
+| Reschedule reliability | ✅ v6.4.2 | Server-side `event_id` resolution + 400/404 fallback eliminates LLM-id-hallucination duplicate bookings; validated across Google Live, Deepgram, OpenAI Realtime, ElevenLabs |
+| Date/time prompt placeholders | ✅ v6.4.2 | `{today}`, `{current_date}`, `{current_weekday}`, `{current_time}`, `{current_datetime_iso}` injected per-call so models stop reasoning with stale years |
+| Google Live 30-voice catalog | ✅ v6.4.2 | Voice picker expanded from 8 hardcoded voices to full 30-voice catalog with Google's official tone descriptors (#349) |
 | CPU Latency Optimization | ✅ v6.4.1 | Streaming LLM→TTS overlap, pipeline filler audio, Qwen 2.5-1.5B CPU LLM, preflight hardening |
 | Matcha-TTS Backend | ✅ v6.4.1 | Matcha-TTS with audioop conversion, model catalog, vocoder auto-detection |
 | Modular Provider Subtypes | ✅ v6.4.1 | UI for adding custom LLM/STT/TTS providers as pipeline components |
@@ -122,4 +127,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: April 2026 | **Current Version**: v6.4.1
+**Last Updated**: April 2026 | **Current Version**: v6.4.2
