@@ -493,6 +493,288 @@ In the Tools page Google Calendar section, each calendar entry shows:
       `auth_failed` ("bad credentials"), `dwd_not_configured`,
       `credentials_file_not_found`, etc.
 
+## ElevenLabs Agent — extra setup step (tools registered on platform)
+
+> **Read this if you're using the `elevenlabs_agent` provider.** Skip if you're
+> only using `google_live`, `openai_realtime`, `deepgram`, or `local_hybrid`.
+
+For `google_live`, `openai_realtime`, `deepgram`, and `local_hybrid`, AAVA
+sends the tool schema to the provider over the websocket at session start.
+Each call learns the available tools dynamically. Nothing extra to set up.
+
+**ElevenLabs Conversational AI does not work that way.** Tools are registered
+**ahead of time on the ElevenLabs platform**, attached to your specific
+agent. At runtime, the agent emits `client_tool_call` events over the
+websocket and AAVA executes them locally. If a tool isn't registered on
+the agent, the LLM running on ElevenLabs' side literally doesn't know it
+exists — it falls back to the prompt-instruction wording instead of calling
+the tool. The most common failure mode in our live testing was the agent
+saying *"the calendar tool is not configured at the moment, I suggest you
+email the maintainer directly"* with no `client_tool_call` ever firing.
+
+To use the calendar tool with ElevenLabs Agent you must register it once:
+
+### Where
+
+elevenlabs.io → **Conversational AI** → your Agent → **Tools** tab →
+**Add Tool** → select **Client Tool** (not Webhook, not System).
+
+### JSON to paste (recommended path — dashboard accepts this verbatim, or POST to the Tools API)
+
+```json
+{
+  "type": "client",
+  "name": "google_calendar",
+  "description": "Use this tool to interact with Google Calendar to list events, get a specific event, create a new event, delete an event, or find free slots. Call get_free_slots first when scheduling a meeting (always pass time_min and time_max in ISO 8601 UTC, e.g. time_min='2026-04-25T09:00:00Z' time_max='2026-04-28T17:00:00Z'), then propose 2 to 3 specific times to the caller in plain language — never read the entire slots list aloud. Once the caller picks a time, call create_event with summary, description, start_datetime, and end_datetime to book it. If the tool returns error_code 'missing_parameters', retry with valid time_min and time_max — that is NOT a configuration error.",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": false,
+  "pre_tool_speech": "auto",
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "tool_error_handling_mode": "auto",
+  "execution_mode": "post_tool_speech",
+  "assignments": [],
+  "expects_response": true,
+  "response_timeout_secs": 30,
+  "parameters": [
+    {
+      "id": "action",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "The calendar operation to perform.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": ["list_events", "get_event", "create_event", "delete_event", "get_free_slots"],
+      "is_system_provided": false,
+      "required": true
+    },
+    {
+      "id": "calendar_key",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Optional. Named calendar key (from tools.google_calendar.calendars) to target a single calendar. Leave empty to use the calendar bound to this context.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "aggregate_mode",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "For multi-calendar get_free_slots: 'all' = intersection (default — only times free on every calendar), 'any' = union (free on at least one). Ignored when calendar_key is set.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": ["all", "any"],
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "time_min",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "ISO 8601 start time (UTC, e.g. '2026-04-25T09:00:00Z'). Required for list_events and get_free_slots.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "time_max",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "ISO 8601 end time (UTC, e.g. '2026-04-28T17:00:00Z'). Required for list_events and get_free_slots.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "free_prefix",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Optional for get_free_slots. The prefix of events that define working hours (e.g. 'Open'). Leave empty to use Google's native free/busy with default working hours (Mon–Fri 09:00–17:00).",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "busy_prefix",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Optional for get_free_slots in title-prefix mode. The prefix of events that block availability (e.g. 'Busy'). Ignored in free/busy mode.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "duration",
+      "type": "integer",
+      "value_type": "llm_prompt",
+      "description": "Appointment duration in minutes. Used by get_free_slots to return only start times where this many minutes fit. Slot starts align to multiples of this duration. Default 30.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "event_id",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "The exact ID of the event. Required for get_event and delete_event.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "summary",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Title of the event. Required for create_event.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "description",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "Detailed description of the event. Optional for create_event.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "start_datetime",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "ISO 8601 start time for the new event (e.g. '2026-04-27T19:00:00Z'). Required for create_event.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    },
+    {
+      "id": "end_datetime",
+      "type": "string",
+      "value_type": "llm_prompt",
+      "description": "ISO 8601 end time for the new event (e.g. '2026-04-27T19:30:00Z'). Required for create_event.",
+      "dynamic_variable": "",
+      "constant_value": "",
+      "enum": null,
+      "is_system_provided": false,
+      "required": false
+    }
+  ],
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  },
+  "response_mocks": []
+}
+```
+
+If your dashboard exposes a JSON-Schema import field instead, the equivalent
+shape is:
+
+```json
+{
+  "tool_config": {
+    "type": "client",
+    "name": "google_calendar",
+    "description": "...",
+    "expects_response": true,
+    "response_timeout_secs": 30,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["list_events", "get_event", "create_event", "delete_event", "get_free_slots"]},
+        "calendar_key": {"type": "string"},
+        "aggregate_mode": {"type": "string", "enum": ["all", "any"]},
+        "time_min": {"type": "string"},
+        "time_max": {"type": "string"},
+        "free_prefix": {"type": "string"},
+        "busy_prefix": {"type": "string"},
+        "duration": {"type": "integer"},
+        "event_id": {"type": "string"},
+        "summary": {"type": "string"},
+        "description": {"type": "string"},
+        "start_datetime": {"type": "string"},
+        "end_datetime": {"type": "string"}
+      },
+      "required": ["action"]
+    }
+  }
+}
+```
+
+API endpoint for programmatic creation:
+`POST https://api.elevenlabs.io/v1/convai/tools` with header
+`xi-api-key: <your_key>`.
+
+### After creating the tool
+
+**Assign it to the agent** AAVA's `elevenlabs_agent` config points at — in
+the agent settings → Tools tab → enable `google_calendar`. Some ElevenLabs
+deployments expose tools as a per-agent attach step separate from the
+global tool definition, so creating the tool is necessary but not
+sufficient.
+
+### Notes on the schema
+
+- **`expects_response: true`** (vs `false` on tools like `hangup_call`) —
+  the agent needs the slot list / event id back to speak about it.
+- **`response_timeout_secs: 30`** — Google Calendar API is usually <1 s,
+  but DWD token refreshes and `freebusy.query` over wide ranges can take
+  a few seconds. Matches AAVA's tool definition `max_execution_time=30`.
+- **`execution_mode: "post_tool_speech"`** + **`pre_tool_speech: "auto"`** —
+  ElevenLabs fills an "ok, let me check the calendar…" filler while the
+  API call runs, masking latency. Switch to `"during_tool_call"` if you
+  prefer the agent stays silent until the result is back.
+- **`required` is set only on `action`** — every other parameter is
+  conditionally required based on which `action` value the model picks
+  (e.g. `summary` is only required for `create_event`). ElevenLabs'
+  `required` flag is unconditional, so marking everything required would
+  block legitimate `get_free_slots` calls that omit `summary`/`event_id`.
+- **`enum` is set only on `action` and `aggregate_mode`** — the others
+  use `null`.
+
+### Verifying it took effect
+
+Place a single test call against `demo_elevenlabs`. In the AAVA engine
+logs you should see:
+
+```
+{"event": "[elevenlabs] [<call_id>] Received message type: client_tool_call"}
+{"event": "[elevenlabs] [<call_id>] Tool call: google_calendar"}
+{"event": "GCalendarTool execution triggered by LLM", ...}
+{"event": "Tool response to AI", "action": "get_free_slots", "status": "success", ...}
+```
+
+If you still get the "calendar tool is not configured" fallback after
+registering, check:
+
+1. The tool name on ElevenLabs is exactly `google_calendar` (case-
+   sensitive, no spaces).
+2. The tool is **enabled** on the specific agent that AAVA's
+   `elevenlabs_agent` config points at (not just created globally).
+3. AAVA has the right `agent_id` in `config/ai-agent.yaml` under
+   `providers.elevenlabs_agent.agent_id`.
+
 ## Prompt examples (how callers use the tool)
 
 Example things a caller might say, and the kind of **google_calendar** call the agent should make in response.
