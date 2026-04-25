@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle } from 'lucide-react';
+import { AlertCircle, ArrowRight, Loader2, Cloud, Server, Shield, Zap, SkipForward, CheckCircle, CheckCircle2, XCircle, Terminal, Copy, HardDrive, Play, RefreshCw, Info, AlertTriangle, Wrench } from 'lucide-react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
@@ -2689,6 +2689,31 @@ exten => s,1,NoOp(AI Agent Call)
                                 </p>
                             </>
                         )}
+
+                        {/* Next steps signpost — Tools.
+                            The wizard configures providers and base settings, but in-call
+                            capabilities (calendar booking, transfers, voicemail, post-call
+                            email summaries, MCP tools) are configured separately on the
+                            Tools page. Without this signpost, first-time users finish the
+                            wizard and don't realize there's another configuration surface
+                            they need to visit. */}
+                        <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800 text-left">
+                            <h3 className="font-semibold mb-2 flex items-center text-blue-800 dark:text-blue-300">
+                                <Wrench className="w-4 h-4 mr-2" />
+                                Next: configure Tools (optional)
+                            </h3>
+                            <p className="text-sm text-blue-700 dark:text-blue-400 mb-2">
+                                In-call capabilities — Google Calendar booking, blind/attended transfers,
+                                live agent escalation, voicemail, post-call email summaries, MCP tools —
+                                are configured separately under <strong>Tools</strong>.
+                            </p>
+                            <a
+                                href="/tools"
+                                className="inline-flex items-center text-sm text-blue-700 dark:text-blue-400 hover:underline font-medium"
+                            >
+                                Open Tools →
+                            </a>
+                        </div>
 
                         {/* Local AI Server Setup - Only for Local provider */}
                         {config.provider === 'local' && (

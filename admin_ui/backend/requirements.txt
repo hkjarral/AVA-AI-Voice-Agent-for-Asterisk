@@ -17,3 +17,12 @@ aiohttp==3.9.3
 prometheus_client==0.19.0
 jinja2==3.1.6
 numpy>=1.24.0
+# Google Calendar verify endpoint + Vertex AI verify endpoint use these to
+# (a) extract SA identity (client_email / client_id) from uploaded JSON
+# (b) refresh the SA OAuth token to test that credentials actually work
+# (c) call the Calendar API as the SA (calendars.get / calendarList.get)
+# Without these, the verify endpoints can only do JSON-shape validation
+# (can't distinguish "syntactically valid SA file" from "SA actually works
+# against the live API"). Pinned to match the main ai_engine requirements.
+google-auth>=2.0.0
+google-api-python-client>=2.0.0

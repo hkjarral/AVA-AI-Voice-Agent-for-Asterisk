@@ -107,10 +107,22 @@ Under `tools.google_calendar`:
 | Key | Description | Default |
 |-----|-------------|---------|
 | `enabled` | Turn the tool on or off. | `false` |
-| `free_prefix` | Default prefix for events that define available windows (e.g. `"Open"`). The LLM can override this per-call. | *(none -- must be provided by LLM or config)* |
-| `busy_prefix` | Default prefix for events that define booked slots (e.g. `"Busy"`). The LLM can override this per-call. | *(none -- must be provided by LLM or config)* |
-| `min_slot_duration_minutes` | Default appointment duration in minutes for `get_free_slots`. | `15` |
+| `free_prefix` | Prefix for events that define available windows (e.g. `"Open"`). The LLM can override this per-call. Now exposed in the Tools UI. | `"Open"` (backend fallback) |
+| `busy_prefix` | Prefix for events that define booked slots (e.g. `"Busy"`). The LLM can override this per-call. Now exposed in the Tools UI. | `"Busy"` (backend fallback) |
+| `min_slot_duration_minutes` | Default appointment duration in minutes for `get_free_slots`. | `30` (backend default and Admin UI default for new entries) |
 | `calendars` | Map of named calendars (multi-account support). Each entry can set `credentials_path`, `calendar_id`, `timezone`. | *(optional)* |
+
+**Defaults note:** the prefix and duration fields fall back to `"Open"`,
+`"Busy"`, and `30` minutes when neither the LLM call nor the config sets
+them — so the tool works out of the box without any of these set. Empty-
+string values in config are treated as "use the backend default" (operators
+can clear the field in the UI without breaking the tool).
+
+> **Behavior change in this release:** the backend default for
+> `min_slot_duration_minutes` was previously `15`; it is now `30`, matching
+> the UI default and what the docs always advertised. YAML configs that
+> explicitly set `min_slot_duration_minutes` keep their value; only configs
+> that omit the key see the change.
 
 Example (single or multiple calendars):
 
@@ -214,6 +226,272 @@ the multi-calendar YAML setup described above.
 | `get_free_slots` | Return start times where a slot of given `duration` (minutes) fits. Uses `free_prefix` / `busy_prefix` to compute available intervals. With multiple calendars selected (YAML only), aggregates via `aggregate_mode`: `all` (default) = intersection (time is free on every calendar), `any` = union. Pass `calendar_key` to constrain to one calendar. Slot starts are aligned to multiples of `duration`. |
 
 All times use ISO 8601. The tool is registered as `google_calendar` and is in the **business** tool category.
+
+### `get_free_slots` response shape
+
+`get_free_slots` returns a structured response so the LLM (and any downstream
+prompt logic) can react appropriately to the two distinct empty-result cases:
+
+```json
+{
+  "status": "success",
+  "message": "Free 30-minute slots (America/Los_Angeles): 2026-04-27 09:00–09:30, 09:30–10:00, 10:00–10:30. All times are in America/Los_Angeles. When booking via create_event, pass start_datetime and end_datetime as the SAME local-time strings (no Z, no offset — calendar timezone is implicit) and set end_datetime = start_datetime + 30 minutes. (showing 3 of 28 available; propose 2-3 of these to the caller — do not read the full list).",
+  "slots": ["2026-04-27T09:00:00-07:00", "2026-04-27T09:30:00-07:00", "2026-04-27T10:00:00-07:00"],
+  "slots_with_end": [
+    {"start": "2026-04-27T09:00:00-07:00", "end": "2026-04-27T09:30:00-07:00"},
+    {"start": "2026-04-27T09:30:00-07:00", "end": "2026-04-27T10:00:00-07:00"},
+    {"start": "2026-04-27T10:00:00-07:00", "end": "2026-04-27T10:30:00-07:00"}
+  ],
+  "slot_duration_minutes": 30,
+  "calendar_timezone": "America/Los_Angeles",
+  "open_windows_found": true,
+  "busy_blocks_found": false,
+  "reason": "available",
+  "availability_mode": "freebusy",
+  "total_slots_available": 28,
+  "slots_truncated": true,
+  "calendars_without_open_windows": []
+}
+```
+
+The `reason` field is one of:
+
+| `reason` | Meaning | Suggested LLM behavior |
+|---|---|---|
+| `available` | Slots returned. `slots` is non-empty. `message` includes a duration nudge and the calendar timezone. | Read back at most 2-3 options in plain language. Never read the entire `slots` list aloud. |
+| `fully_booked` | Open availability windows (or working-hours mask in free/busy mode) exist for the requested range but are entirely covered by Busy blocks. `slots` is empty. | Apologize and suggest a different day. |
+| `no_open_windows` | No availability for the range. In title-prefix mode, no events titled with `free_prefix` exist. In free/busy mode, the requested time range falls outside configured working hours. `slots` is empty. | Tell the caller you don't see availability; offer to take a message or try a different date range. |
+
+`availability_mode` is one of:
+
+| `availability_mode` | Means | When it triggers |
+|---|---|---|
+| `title_prefix` | Title-prefix mode — the tool scans event titles for events starting with `free_prefix` (default `'Open'`) for available windows, minus events starting with `busy_prefix` (default `'Busy'`). | When `free_prefix` is configured (truthy after strip) — either via Tools UI or YAML, or passed by the LLM. |
+| `freebusy` | Native Google free/busy mode — the tool calls Google's `freebusy.query()` API for busy intervals and intersects with a working-hours mask (default Mon–Fri 09:00–17:00 in calendar tz). No need to seed "Open" events. | When `free_prefix` is blank/empty in config (operator deliberately cleared it in the UI) AND the LLM doesn't pass a value either. |
+
+The `slots` array is normalized to ISO-8601 strings with explicit calendar
+timezone offsets (e.g. `2026-04-27T09:00:00-07:00`). The `message` string
+includes a human-readable form (`2026-04-27 09:00–09:30`) plus the calendar
+timezone name and an explicit duration instruction so models that read the
+message field don't fabricate end times.
+
+The `total_slots_available` and `slots_truncated` fields surface the cap
+behavior — without a cap, a multi-day open window can return 20–50+ slot
+starts and an LLM may read the full list aloud (multiple minutes of robotic
+monologue). The cap is configurable via `tools.google_calendar.max_slots_returned`
+in the Tools UI; default is `3`. Set to `0` (or any value `≤ 0`) to disable
+the cap.
+
+`open_windows_found` and `busy_blocks_found` surface the underlying counts
+directly — useful if a custom downstream tool wants to distinguish these
+without parsing `reason`. `calendars_without_open_windows` (multi-calendar
+aggregations only) names which selected calendars contributed zero open
+windows — useful in `aggregate_mode='all'` mode when the intersection is
+empty because of one calendar specifically.
+
+### Native free/busy mode (no `free_prefix` configured)
+
+If you leave **Free prefix** blank in the Tools UI (or omit `free_prefix`
+from YAML), `get_free_slots` switches to Google's native free/busy API and
+synthesizes available windows from a working-hours mask intersected with
+busy events. Operators don't need to seed "Open" availability events.
+
+Working hours can be tuned via these YAML keys under `tools.google_calendar`
+(default Mon–Fri 09:00–17:00 in the calendar's local timezone):
+
+```yaml
+tools:
+  google_calendar:
+    working_hours_start: 9          # 24h, calendar-local
+    working_hours_end: 17           # 24h, calendar-local
+    working_days: [0, 1, 2, 3, 4]   # Python weekday() — Mon=0..Sun=6
+```
+
+Existing configs with `free_prefix: 'Open'` (or any non-empty value) keep
+title-prefix mode — the mode switch is implicit on `free_prefix` being
+blank, so this is fully back-compatible.
+
+### Event duration cap on `create_event`
+
+`create_event` refuses bookings with non-positive duration (`error_code:
+invalid_duration`) or duration > 240 minutes (`error_code: duration_too_long`).
+This is a server-side guard against an LLM bug seen in live testing where
+the model picked the right slot start but extended `end_datetime` to fill
+the rest of the post-start availability window — booking a 7-hour meeting
+instead of 30 minutes. The guard returns a fail-fast error with retry
+instructions in the message, so the model self-corrects.
+
+Configurable via `tools.google_calendar.max_event_duration_minutes` (default
+`240`). Set to `0` to disable the cap.
+
+### `create_event` success — `event_id` surfaced for delete-then-recreate
+
+The success response includes the event id in BOTH the structured `id`/`event_id`
+fields AND the `message` string itself, with explicit instruction to copy
+verbatim:
+
+```json
+{
+  "status": "success",
+  "message": "Event created with id 'XYZ'. To modify or delete this event later (e.g. if the caller corrects the time), call delete_event with this exact event_id — do not invent or guess one.",
+  "id": "XYZ",
+  "event_id": "XYZ",
+  "link": "https://...",
+  "calendar": "calendar_1"
+}
+```
+
+Without the prominent message-level mention, models like Gemini have been
+observed fabricating plausible-looking event ids when asked to delete a
+booking after a caller correction (real bug from live testing). Pinning the
+id in the message field — which most providers expose to the model verbatim
+— addresses this at the prompt level.
+
+As a server-side safety net, `GCalendarTool` also tracks the most-recent
+successful `create_event` per `call_id`. If `delete_event` returns 404 with
+a hallucinated id and we have a real id from the same call, the tool falls
+back to deleting that one and returns success with a message explaining the
+recovery. Tracking is cleared on first delete so a stale id can't be matched
+twice. This means the **delete-then-recreate** flow on caller corrections is
+robust even when models slip up on id verbatim copying.
+
+## JSON upload (Admin UI) — recommended setup path
+
+In the Tools page Google Calendar section, each calendar row has an
+**📁 Upload JSON** button (or **Replace JSON** if a path is already set).
+Clicking it opens a file picker; choose your service-account JSON and:
+
+1. The file is uploaded to the admin_ui backend, validated as a Google SA
+   key, and written to a stable path under `secrets/` keyed off a hash of
+   the SA's `client_email`. The same SA always gets the same filename, so
+   re-uploading after a private-key rotation overwrites the existing file
+   and any references to it (in YAML, Contexts page, etc.) keep working.
+
+2. The backend then authenticates as the SA and calls Google's
+   `calendarList.list()` API to discover which calendars the SA has access
+   to. Three outcomes:
+
+   - **1 calendar accessible** (the 90% case): the row's `Credentials
+     Path`, `Calendar ID`, and `Timezone` fields are auto-filled with the
+     discovered calendar's details. A green ✓ confirmation appears.
+     Click Save and you're done — no typing required.
+   - **Multiple calendars accessible**: the path fills automatically; a
+     dropdown picker appears letting the operator choose which calendar
+     the row should target. Picking a calendar fills the remaining
+     fields.
+   - **Zero calendars accessible**: the path fills, but a yellow callout
+     surfaces the SA email and instructs the operator to share their
+     calendar with that email (with `Make changes to events` permission)
+     and click **Replace JSON** to re-discover.
+
+The legacy manual flow (SCP a JSON to the host's `secrets/` directory,
+paste the in-container path into the form, share the calendar in
+Google Calendar's UI, paste calendar ID + timezone, click Verify) still
+works — the Credentials Path text field accepts any path the operator
+types — but you should not need it for normal setups.
+
+## Domain-Wide Delegation (DWD) — for Workspaces with external-sharing restrictions
+
+If your Google Workspace admin has disabled external sharing for primary
+calendars (the *"Only free/busy information"* policy at admin.google.com →
+Apps → Google Workspace → Calendar → External sharing options), the
+default flow of "share your calendar with the SA email" won't work — the
+share UI will refuse to grant write access to the service-account
+domain. DWD is the workaround: instead of sharing, the SA **impersonates**
+a real user in your domain.
+
+### When to use DWD
+
+- Your Workspace admin policy blocks external sharing
+- You want the SA to access multiple users' calendars without each user
+  individually sharing with the SA
+- You want events created by the SA to attribute to a real user, not the
+  service account
+
+### When NOT to use DWD
+
+- Your calendar is shareable with the SA via the normal "Share with
+  specific people" flow — DWD adds setup overhead for no benefit
+- You're a Workspace admin who can simply loosen the external-sharing
+  policy — that's the simpler fix
+
+### Setup (operator-side)
+
+1. **In Cloud Console** — open your service account → **Show domain-wide
+   delegation** → enable it. Note the OAuth Client ID (NOT the email
+   — this is the #1 setup pitfall).
+
+2. **In admin.google.com** (you must be a Workspace admin):
+   - Security → Access and data control → API controls
+   - Click **Manage Domain Wide Delegation**
+   - **Add new** with the Client ID from step 1 and scope:
+     `https://www.googleapis.com/auth/calendar`
+   - Save
+
+3. **In AAVA Admin UI**:
+   - Tools → Google Calendar → expand **🪪 Domain-Wide Delegation
+     (advanced)** under your calendar row
+   - Paste the email of the user you want the SA to impersonate (e.g.
+     `you@yourdomain.com`)
+   - Click out of the field — auto-verify fires; success returns
+     ✓ Reachable, failure surfaces `dwd_not_configured` with the
+     specific underlying error from Google's token endpoint
+
+### Equivalent YAML
+
+```yaml
+tools:
+  google_calendar:
+    enabled: true
+    calendars:
+      work:
+        credentials_path: /app/project/secrets/google-calendar-<hash>.json
+        calendar_id: you@yourdomain.com
+        timezone: America/New_York
+        subject: you@yourdomain.com   # ← DWD: impersonate this user
+```
+
+The `subject` field is per-calendar so a single AAVA install can
+impersonate different users for different calendars in the same tenant.
+
+### Why client_id and email both appear in the Identity badge
+
+The Identity badge shows two values, both with copy buttons:
+
+- `client_email` — what you'd paste into the *standard* "Share with
+  specific people" flow (the non-DWD path)
+- `client_id` — the OAuth Client ID, what admin.google.com expects for
+  Domain-Wide Delegation setup
+
+These look superficially similar but are NOT interchangeable. Pasting
+the email into the DWD form returns `unauthorized_client` from Google's
+token endpoint at runtime; pasting the client_id into the calendar
+share UI does nothing useful. AAVA shows both to make the distinction
+unambiguous.
+
+## Identity badge & Verify button (Admin UI)
+
+In the Tools page Google Calendar section, each calendar entry shows:
+
+- **Service Account email** — auto-loaded from the credentials JSON file.
+  Click the copy icon and paste it into Google Calendar's "Share with
+  specific people" UI to grant the SA access to your calendar.
+- **Client ID** — also auto-loaded. **This is the OAuth client ID, NOT
+  the email.** It's what you paste into admin.google.com → Security →
+  Access and data control → API controls → Domain-wide delegation when
+  setting up DWD. Mixing up email vs Client ID is the #1 DWD setup
+  pitfall — surfacing both with copy buttons prevents it.
+- **🩺 Verify access** button — POSTs current form state (including
+  unsaved edits) to `/api/config/google-calendar/{key}/verify`, which
+  uses raw `googleapiclient` to call `calendars.get(calendar_id)` as
+  the SA and returns one of:
+    - ✓ `Reachable: <calendar summary> (<actual timezone>)` — green
+    - ⚠ Drift warning if the configured timezone doesn't match the
+      calendar's actual timezone (silent footgun otherwise)
+    - ✗ Specific error code: `forbidden_calendar` ("share calendar
+      with the SA"), `calendar_not_found` ("wrong calendar id"),
+      `auth_failed` ("bad credentials"), `dwd_not_configured`,
+      `credentials_file_not_found`, etc.
 
 ## Prompt examples (how callers use the tool)
 

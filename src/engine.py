@@ -3973,7 +3973,20 @@ class Engine:
         - {call_direction}: "inbound" or "outbound" (default: "inbound")
         - {campaign_id}: Outbound campaign ID (default: "")
         - {lead_id}: Outbound lead/contact ID (default: "")
-        
+        - {current_date}: Today's date in ISO form, e.g. "2026-04-24"
+        - {current_weekday}: Today's day-of-week, e.g. "Friday"
+        - {current_time}: Current time HH:MM (24h)
+        - {current_datetime_iso}: Current UTC datetime in ISO form
+        - {today}: Human-readable date, e.g. "Friday, April 24, 2026"
+
+        The date/time placeholders matter for any prompt that involves
+        scheduling — without them, the LLM can't reliably map "tomorrow",
+        "next Tuesday", "April 28", etc. Live test calls revealed real
+        bugs from missing date context: local_hybrid passed time_min in
+        2023 (model thought current year was 2023), and elevenlabs said
+        "Tuesday April 27" when April 27, 2026 is actually a Monday.
+        Pinning today's date in the prompt fixes both classes of error.
+
         Unknown placeholders are left as-is (safe fallback).
         Uses regex-based substitution to handle partial matches correctly.
         """
@@ -3982,6 +3995,13 @@ class Engine:
         
         import re
         
+        # Local time (host TZ — typically UTC inside Docker; calendar TZ is
+        # tool-scoped and can differ. Calendar tool surfaces its own TZ
+        # explicitly via get_free_slots' calendar_timezone field, so the
+        # model can resolve any cross-zone mismatch when it matters.)
+        _now_local = datetime.now()
+        _now_utc = datetime.now(timezone.utc)
+
         substitutions = {
             "caller_name": getattr(session, 'caller_name', None) or "there",
             "caller_number": getattr(session, 'caller_number', None) or "unknown",
@@ -3991,6 +4011,12 @@ class Engine:
             "call_direction": "outbound" if getattr(session, 'is_outbound', False) else "inbound",
             "campaign_id": getattr(session, 'outbound_campaign_id', None) or "",
             "lead_id": getattr(session, 'outbound_lead_id', None) or "",
+            # Date/time placeholders — see docstring above for rationale.
+            "current_date": _now_local.strftime("%Y-%m-%d"),
+            "current_weekday": _now_local.strftime("%A"),
+            "current_time": _now_local.strftime("%H:%M"),
+            "current_datetime_iso": _now_utc.isoformat(timespec="seconds"),
+            "today": _now_local.strftime("%A, %B %d, %Y"),
         }
         
         # Add pre-call tool results (Milestone 24 - CRM enrichment variables)

@@ -207,6 +207,31 @@ contexts:
       - This is an open-source framework, not a hosted service. Callers install and run it on their own server.
 
 
+      SCHEDULING A MEETING WITH THE PROJECT AUTHOR:
+
+      - Today is {today}. Use this as the reference for "tomorrow", "next week", and any day-of-week mapping. Day names you compute MUST match this date — never tell the caller a date is on a weekday it isn't.
+
+      - If the caller wants to talk to the author, contributor, or maintainer of the Asterisk AI Voice Agent project, or asks for a demo, walkthrough, integration help, or follow-up call, offer to schedule a meeting on their calendar.
+
+      - Ask: "Would you like to schedule a meeting with the author of the project?"
+
+      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-25T09:00:00' time_max='2026-04-28T17:00:00') — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+
+      - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
+
+      - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
+
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+
+      - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
+
+      - If get_free_slots returns an error with error_code 'missing_parameters' or any 'parameter' / 'argument' / 'time' issue, retry the same call with valid time_min and time_max. Do NOT tell the caller the calendar is unavailable for parameter errors — those are recoverable.
+
+      - If create_event returns error_code 'duration_too_long' or 'invalid_duration', retry with end_datetime = start_datetime + slot duration. Do not tell the caller the calendar is unavailable for these errors — they are also recoverable.
+
+      - Only fall back to "the calendar is not configured, please email the maintainer" when the tool's response message explicitly contains 'not configured', 'no credentials', '403', 'forbidden', or 'unavailable'. For any other tool error or empty result, try a different time range or apologize and offer to try a different day.
+
+
       CALL ENDING PROTOCOL:
 
       - When the user says goodbye, says that is all, or indicates they want to end the call, first offer to email them a transcript
@@ -379,6 +404,31 @@ contexts:
       - If the caller asks about next steps, suggest: clone the GitHub repo, join the Discord community, or try the Admin UI Setup Wizard
 
       - This is an open-source framework, not a hosted service. Callers install and run it on their own server.
+
+
+      SCHEDULING A MEETING WITH THE PROJECT AUTHOR:
+
+      - Today is {today}. Use this as the reference for "tomorrow", "next week", and any day-of-week mapping. Day names you compute MUST match this date — never tell the caller a date is on a weekday it isn't.
+
+      - If the caller wants to talk to the author, contributor, or maintainer of the Asterisk AI Voice Agent project, or asks for a demo, walkthrough, integration help, or follow-up call, offer to schedule a meeting on their calendar.
+
+      - Ask: "Would you like to schedule a meeting with the author of the project?"
+
+      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-25T09:00:00' time_max='2026-04-28T17:00:00') — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+
+      - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
+
+      - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
+
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+
+      - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
+
+      - If get_free_slots returns an error with error_code 'missing_parameters' or any 'parameter' / 'argument' / 'time' issue, retry the same call with valid time_min and time_max. Do NOT tell the caller the calendar is unavailable for parameter errors — those are recoverable.
+
+      - If create_event returns error_code 'duration_too_long' or 'invalid_duration', retry with end_datetime = start_datetime + slot duration. Do not tell the caller the calendar is unavailable for these errors — they are also recoverable.
+
+      - Only fall back to "the calendar is not configured, please email the maintainer" when the tool's response message explicitly contains 'not configured', 'no credentials', '403', 'forbidden', or 'unavailable'. For any other tool error or empty result, try a different time range or apologize and offer to try a different day.
 
 
       CALL ENDING PROTOCOL (CRITICAL - follow exactly):
@@ -641,6 +691,31 @@ contexts:
       - This is an open-source framework, not a hosted service. Callers install and run it on their own server.
 
 
+      SCHEDULING A MEETING WITH THE PROJECT AUTHOR:
+
+      - Today is {today}. Use this as the reference for "tomorrow", "next week", and any day-of-week mapping. Day names you compute MUST match this date — never tell the caller a date is on a weekday it isn't.
+
+      - If the caller wants to talk to the author, contributor, or maintainer of the Asterisk AI Voice Agent project, or asks for a demo, walkthrough, integration help, or follow-up call, offer to schedule a meeting on their calendar.
+
+      - Ask: "Would you like to schedule a meeting with the author of the project?"
+
+      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-25T09:00:00' time_max='2026-04-28T17:00:00') — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+
+      - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
+
+      - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
+
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+
+      - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
+
+      - If get_free_slots returns an error with error_code 'missing_parameters' or any 'parameter' / 'argument' / 'time' issue, retry the same call with valid time_min and time_max. Do NOT tell the caller the calendar is unavailable for parameter errors — those are recoverable.
+
+      - If create_event returns error_code 'duration_too_long' or 'invalid_duration', retry with end_datetime = start_datetime + slot duration. Do not tell the caller the calendar is unavailable for these errors — they are also recoverable.
+
+      - Only fall back to "the calendar is not configured, please email the maintainer" when the tool's response message explicitly contains 'not configured', 'no credentials', '403', 'forbidden', or 'unavailable'. For any other tool error or empty result, try a different time range or apologize and offer to try a different day.
+
+
       CALL ENDING PROTOCOL (MANDATORY - you MUST follow this):
 
       - When the user says ANY farewell (goodbye, thank you, that's all, bye, thanks, I'm done, okay, have a good day, end the call), you MUST call the hangup_call tool IMMEDIATELY.
@@ -657,6 +732,7 @@ contexts:
       - leave_voicemail
       - send_email_summary
       - request_transcript
+      - google_calendar
   demo_hybrid_groq:
     greeting: >-
       Hi {caller_name}, I'm Ava with the Groq-powered local hybrid demo. I can
@@ -862,6 +938,31 @@ contexts:
       - This is an open-source framework, not a hosted service. Callers install and run it on their own server.
 
 
+      SCHEDULING A MEETING WITH THE PROJECT AUTHOR:
+
+      - Today is {today}. Use this as the reference for "tomorrow", "next week", and any day-of-week mapping. Day names you compute MUST match this date — never tell the caller a date is on a weekday it isn't.
+
+      - If the caller wants to talk to the author, contributor, or maintainer of the Asterisk AI Voice Agent project, or asks for a demo, walkthrough, integration help, or follow-up call, offer to schedule a meeting on their calendar.
+
+      - Ask: "Would you like to schedule a meeting with the author of the project?"
+
+      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-25T09:00:00' time_max='2026-04-28T17:00:00') — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+
+      - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
+
+      - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
+
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+
+      - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
+
+      - If get_free_slots returns an error with error_code 'missing_parameters' or any 'parameter' / 'argument' / 'time' issue, retry the same call with valid time_min and time_max. Do NOT tell the caller the calendar is unavailable for parameter errors — those are recoverable.
+
+      - If create_event returns error_code 'duration_too_long' or 'invalid_duration', retry with end_datetime = start_datetime + slot duration. Do not tell the caller the calendar is unavailable for these errors — they are also recoverable.
+
+      - Only fall back to "the calendar is not configured, please email the maintainer" when the tool's response message explicitly contains 'not configured', 'no credentials', '403', 'forbidden', or 'unavailable'. For any other tool error or empty result, try a different time range or apologize and offer to try a different day.
+
+
       CALL ENDING PROTOCOL:
 
       - When the user says goodbye, says that is all, or indicates they want to end the call, first offer to email them a transcript
@@ -881,6 +982,7 @@ contexts:
       - leave_voicemail
       - send_email_summary
       - request_transcript
+      - google_calendar
   demo_elevenlabs:
     greeting: >-
       Hi {caller_name}, I'm using ElevenLabs premium voice technology. Ask me
@@ -1027,6 +1129,31 @@ contexts:
       - This is an open-source framework, not a hosted service. Callers install and run it on their own server.
 
 
+      SCHEDULING A MEETING WITH THE PROJECT AUTHOR:
+
+      - Today is {today}. Use this as the reference for "tomorrow", "next week", and any day-of-week mapping. Day names you compute MUST match this date — never tell the caller a date is on a weekday it isn't.
+
+      - If the caller wants to talk to the author, contributor, or maintainer of the Asterisk AI Voice Agent project, or asks for a demo, walkthrough, integration help, or follow-up call, offer to schedule a meeting on their calendar.
+
+      - Ask: "Would you like to schedule a meeting with the author of the project?"
+
+      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-25T09:00:00' time_max='2026-04-28T17:00:00') — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+
+      - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
+
+      - Before calling create_event, REPEAT the full date including day-of-week, the time, and the timezone back to the caller and wait for explicit confirmation ("Yes, that works"). Do not call create_event on an ambiguous "yes" if the caller might be confirming something else.
+
+      - Once they explicitly confirm, call create_event ONCE. Pass start_datetime and end_datetime as the SAME naive local-time strings the tool returned (no Z, no offset). end_datetime MUST equal start_datetime + slot duration (typically 30 minutes) — never extend it to fill the rest of the available window. Capture their email so they receive the invite.
+
+      - IF THE CALLER CORRECTS THE TIME OR DATE AFTER A SUCCESSFUL BOOKING: do NOT just call create_event again. The previous create_event returned an event id in its result. FIRST call delete_event with that event_id, THEN call create_event with the corrected time. Never leave duplicate events on the calendar.
+
+      - If get_free_slots returns an error with error_code 'missing_parameters' or any 'parameter' / 'argument' / 'time' issue, retry the same call with valid time_min and time_max. Do NOT tell the caller the calendar is unavailable for parameter errors — those are recoverable.
+
+      - If create_event returns error_code 'duration_too_long' or 'invalid_duration', retry with end_datetime = start_datetime + slot duration. Do not tell the caller the calendar is unavailable for these errors — they are also recoverable.
+
+      - Only fall back to "the calendar is not configured, please email the maintainer" when the tool's response message explicitly contains 'not configured', 'no credentials', '403', 'forbidden', or 'unavailable'. For any other tool error or empty result, try a different time range or apologize and offer to try a different day.
+
+
       CALL ENDING PROTOCOL:
 
       - When the user says goodbye, says that is all, or indicates they want to end the call, first offer to email them a transcript
@@ -1046,6 +1173,7 @@ contexts:
       - leave_voicemail
       - send_email_summary
       - request_transcript
+      - google_calendar
     background_music: jingle
   demo_aviation_atis:
     greeting: >-

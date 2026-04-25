@@ -137,6 +137,311 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 	        const [internalExtKeyDraftByRowId, setInternalExtKeyDraftByRowId] = useState<Record<string, string>>({});
 	        const internalExtKeyCommittedRef = useRef<Record<string, string>>({});
 	        const [calKeyDraftByKey, setCalKeyDraftByKey] = useState<Record<string, string>>({});
+
+        // ─── Google Calendar per-row Identity & Verify state ───────────────────
+        // Identity = SA metadata read from the configured credentials_path file.
+        // Auto-fetched when credentials_path becomes non-empty so the operator
+        // sees the SA email (to share their calendar with) without having to
+        // crack open the JSON. Cached by the (key + path) tuple so we don't
+        // refetch when unrelated state changes trigger a re-render.
+        type CalIdentityState = {
+            path: string;          // path we tried — used as dedupe key
+            loading?: boolean;
+            client_email?: string;
+            client_id?: string;
+            project_id?: string;
+            error?: string;
+            errorCode?: string;
+        };
+        const [identityByKey, setIdentityByKey] = useState<Record<string, CalIdentityState>>({});
+
+        // Verify = result of POSTing /verify. Either explicit success (with
+        // calendar metadata) or an explicit error code the UI can render
+        // meaningfully (forbidden_calendar = "share the calendar with the SA",
+        // calendar_not_found = "wrong calendar id", auth_failed = "bad creds",
+        // dwd_not_configured = "set up DWD at admin.google.com", etc.).
+        type CalVerifyState = {
+            loading?: boolean;
+            ok?: boolean;
+            calendar_summary?: string;
+            calendar_actual_timezone?: string;
+            drift_warning?: string;
+            errorCode?: string;
+            errorMessage?: string;
+            // Fingerprint of the (path, calendar_id, timezone, subject) tuple
+            // verified. Lets the blur-handler invalidate stale results when
+            // the operator edits a field after a successful verify — without
+            // this, the row keeps showing the old green check even though the
+            // current values haven't been verified. Codex feedback #3.
+            verifiedFor?: string;
+        };
+        const _verifyFingerprint = (cal: any): string => {
+            const path = ((cal?.credentials_path || '') as string).trim();
+            const calId = ((cal?.calendar_id || '') as string).trim();
+            const tz = ((cal?.timezone || '') as string).trim();
+            const subj = ((cal?.subject || '') as string).trim();
+            return `${path}|${calId}|${tz}|${subj}`;
+        };
+        const [verifyByKey, setVerifyByKey] = useState<Record<string, CalVerifyState>>({});
+
+        const loadCalendarIdentity = async (key: string, path: string) => {
+            try {
+                // Send the current form-state path as a query param so /info
+                // doesn't load stale identity from the persisted YAML for
+                // unsaved manual path edits. Codex feedback #4.
+                const res = await axios.get(
+                    `/api/config/google-calendar/${encodeURIComponent(key)}/info`,
+                    { params: { credentials_path: path } }
+                );
+                setIdentityByKey((prev) => ({
+                    ...prev,
+                    [key]: {
+                        path,
+                        loading: false,
+                        client_email: res.data?.client_email || '',
+                        client_id: res.data?.client_id || '',
+                        project_id: res.data?.project_id || '',
+                    },
+                }));
+            } catch (err: any) {
+                const detail = err?.response?.data?.detail || {};
+                setIdentityByKey((prev) => ({
+                    ...prev,
+                    [key]: {
+                        path,
+                        loading: false,
+                        error: detail.message || err?.message || 'Failed to read identity',
+                        errorCode: detail.error_code || 'unknown',
+                    },
+                }));
+            }
+        };
+
+        // Fire identity fetch whenever a calendar's credentials_path changes
+        // to a new non-empty value. Effect dep is the JSON of (key, path)
+        // pairs only, so unrelated state changes (e.g. typing in calendar_id)
+        // don't retrigger.
+        const calendarPathsKey = (() => {
+            const cals = config?.google_calendar?.calendars || {};
+            return JSON.stringify(
+                Object.entries(cals).map(([k, v]: [string, any]) => [k, (v?.credentials_path || '').trim()])
+            );
+        })();
+        useEffect(() => {
+            const cals = config?.google_calendar?.calendars || {};
+            Object.entries(cals).forEach(([key, val]: [string, any]) => {
+                const path = (val?.credentials_path || '').trim();
+                if (!path) return;
+                const existing = identityByKey[key];
+                if (existing && existing.path === path && !existing.error) return; // already loaded
+                setIdentityByKey((prev) => ({ ...prev, [key]: { path, loading: true } }));
+                loadCalendarIdentity(key, path);
+            });
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [calendarPathsKey]);
+
+        const runCalendarVerify = async (key: string) => {
+            const cal = config?.google_calendar?.calendars?.[key] || {};
+            setVerifyByKey((prev) => ({ ...prev, [key]: { loading: true } }));
+            try {
+                const res = await axios.post(
+                    `/api/config/google-calendar/${encodeURIComponent(key)}/verify`,
+                    {
+                        // Send current form state so we test what the operator sees,
+                        // not the persisted YAML (which may be stale from unsaved edits).
+                        credentials_path: cal.credentials_path || '',
+                        calendar_id: cal.calendar_id || '',
+                        timezone: cal.timezone || '',
+                        // Include DWD subject if set — verify endpoint maps
+                        // unauthorized_client / invalid_grant token failures to
+                        // the dwd_not_configured error code so the UI can render
+                        // a helpful "set up DWD at admin.google.com" message.
+                        subject: cal.subject || '',
+                    }
+                );
+                // Auto-fill Timezone if it's empty: verify already returned the
+                // calendar's actual timezone, no need to make the operator copy
+                // it manually. Only fill when empty — never overwrite a value
+                // the operator has explicitly typed (e.g. they want a different
+                // display tz than the calendar's own tz).
+                const calActualTz = res.data?.calendar_actual_timezone || '';
+                if (calActualTz && !((cal as any)?.timezone || '').trim()) {
+                    const cals = { ...(config.google_calendar?.calendars || {}) };
+                    cals[key] = { ...(cals[key] || {}), timezone: calActualTz };
+                    onChange({
+                        ...config,
+                        google_calendar: { ...(config.google_calendar || {}), calendars: cals },
+                    });
+                }
+                setVerifyByKey((prev) => ({
+                    ...prev,
+                    [key]: {
+                        loading: false,
+                        ok: true,
+                        calendar_summary: res.data?.calendar_summary || '',
+                        calendar_actual_timezone: calActualTz,
+                        drift_warning: res.data?.drift_warning || undefined,
+                        verifiedFor: _verifyFingerprint(cal),
+                    },
+                }));
+            } catch (err: any) {
+                const detail = err?.response?.data?.detail || {};
+                setVerifyByKey((prev) => ({
+                    ...prev,
+                    [key]: {
+                        loading: false,
+                        ok: false,
+                        errorCode: detail.error_code || 'unknown',
+                        errorMessage: detail.message || err?.message || 'Verify failed',
+                    },
+                }));
+            }
+        };
+
+        const copyToClipboard = (text: string) => {
+            try {
+                navigator.clipboard?.writeText(text);
+                toast.success('Copied');
+            } catch {
+                toast.error('Copy failed');
+            }
+        };
+
+        // ─── Google Calendar JSON upload + auto-discover ─────────────────────
+        // Uploading a JSON file POSTs it to /api/config/google-calendar/credentials,
+        // which writes the file under secrets/ with a stable hash filename,
+        // extracts the SA identity, and discovers which calendars the SA has
+        // been shared with. Discovery results are used to auto-fill calendar_id
+        // and timezone (when exactly 1 calendar is accessible) or to surface
+        // an actionable picker (when multiple).
+        type CalDiscoveredCalendar = {
+            id: string;
+            summary: string;
+            timezone: string;
+            access_role: string;
+        };
+        type CalUploadState = {
+            uploading?: boolean;
+            error?: string;
+            replaced?: boolean;
+            discovery?: {
+                ok: boolean;
+                calendars?: CalDiscoveredCalendar[];
+                error_code?: string;
+                error_message?: string;
+            };
+        };
+        const [uploadByKey, setUploadByKey] = useState<Record<string, CalUploadState>>({});
+        const calendarFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+        const handleCalendarFileUpload = async (key: string, file: File) => {
+            setUploadByKey((prev) => ({ ...prev, [key]: { uploading: true } }));
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                const res = await axios.post(
+                    '/api/config/google-calendar/credentials',
+                    formData,
+                    { headers: { 'Content-Type': 'multipart/form-data' } }
+                );
+                const data = res.data || {};
+                const containerPath: string = data.container_path || '';
+                const wasReplaced: boolean = !!data.replaced;
+                const discovery = data.discovery || {};
+                const accessibleCalendars: CalDiscoveredCalendar[] = (discovery.calendars || []) as CalDiscoveredCalendar[];
+
+                // Build the next config in one shot. Always set credentials_path; conditionally
+                // set calendar_id + timezone if discovery returned exactly 1 reachable calendar.
+                const cals = { ...(config.google_calendar?.calendars || {}) };
+                const existing = cals[key] || {};
+                const updates: any = {
+                    ...existing,
+                    credentials_path: containerPath,
+                };
+                if (discovery.ok && accessibleCalendars.length === 1) {
+                    const only = accessibleCalendars[0];
+                    updates.calendar_id = only.id;
+                    updates.timezone = only.timezone;
+                }
+                cals[key] = updates;
+                onChange({
+                    ...config,
+                    google_calendar: { ...(config.google_calendar || {}), calendars: cals },
+                });
+
+                setUploadByKey((prev) => ({
+                    ...prev,
+                    [key]: {
+                        uploading: false,
+                        replaced: wasReplaced,
+                        discovery: {
+                            ok: !!discovery.ok,
+                            calendars: accessibleCalendars,
+                            error_code: discovery.error_code,
+                            error_message: discovery.error_message,
+                        },
+                    },
+                }));
+
+                // Seed identityByKey from the upload response so the badge
+                // displays immediately, without waiting for /info to read
+                // PERSISTED config (which doesn't have the new path until
+                // the operator clicks Save). Bug observed during 0b smoke test.
+                if (data.identity?.client_email) {
+                    setIdentityByKey((prev) => ({
+                        ...prev,
+                        [key]: {
+                            path: containerPath,
+                            loading: false,
+                            client_email: data.identity.client_email,
+                            client_id: data.identity.client_id,
+                            project_id: data.identity.project_id,
+                        },
+                    }));
+                }
+
+                // Toast feedback. Prioritize the most useful message.
+                if (wasReplaced) {
+                    toast.success(`Replaced credentials for ${data.identity?.client_email || 'service account'}`);
+                } else if (discovery.ok && accessibleCalendars.length === 1) {
+                    toast.success(`Uploaded — auto-filled calendar "${accessibleCalendars[0].summary || accessibleCalendars[0].id}"`);
+                } else if (discovery.ok && accessibleCalendars.length > 1) {
+                    toast.success(`Uploaded — ${accessibleCalendars.length} calendars accessible, pick one below`);
+                } else if (discovery.ok && accessibleCalendars.length === 0) {
+                    toast.message('Uploaded — no subscribed calendars yet', {
+                        description: `If you've already shared a calendar with the SA, paste the Calendar ID and click Verify. Otherwise share your calendar with ${data.identity?.client_email} first.`,
+                    });
+                } else {
+                    toast.warning('Uploaded — could not discover calendars', {
+                        description: discovery.error_message || 'See row for details.',
+                    });
+                }
+            } catch (err: any) {
+                const detail = err?.response?.data?.detail || {};
+                const errMessage = detail.message || err?.message || 'Upload failed';
+                setUploadByKey((prev) => ({
+                    ...prev,
+                    [key]: { uploading: false, error: errMessage },
+                }));
+                toast.error('Upload failed', { description: errMessage });
+            }
+        };
+
+        // Operator picks a calendar from the multi-calendar accessible list →
+        // fill calendar_id + timezone in the row's form state.
+        const pickDiscoveredCalendar = (key: string, picked: CalDiscoveredCalendar) => {
+            const cals = { ...(config.google_calendar?.calendars || {}) };
+            cals[key] = {
+                ...(cals[key] || {}),
+                calendar_id: picked.id,
+                timezone: picked.timezone,
+            };
+            onChange({
+                ...config,
+                google_calendar: { ...(config.google_calendar || {}), calendars: cals },
+            });
+            toast.success(`Selected "${picked.summary || picked.id}"`);
+        };
 	        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => {
 	            try {
 	                const v = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
@@ -2027,6 +2332,73 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                     />
                     {config.google_calendar?.enabled && (
                         <div className="mt-4 pl-4 border-l-2 border-border ml-2 space-y-4">
+                            {/* Tool-level defaults applied to get_free_slots when the LLM doesn't override per-call.
+                                Backend falls back to "Open" / "Busy" / 30 if both LLM and config are silent, so the
+                                tool works out of the box even with these fields blank. Empty string is treated as
+                                "use default" — operators can clear the field without breaking the tool. */}
+                            <div>
+                                <div className="text-sm font-medium mb-1">Slot-finding defaults</div>
+                                <div className="text-xs text-muted-foreground mb-3">
+                                    Defaults applied to <code className="px-1 bg-muted rounded">get_free_slots</code> when the LLM doesn't pass them per-call.
+                                    Open windows are events on your calendar titled with the free prefix (e.g. "Open 9-5"),
+                                    minus events titled with the busy prefix (e.g. "Busy lunch").
+                                    Leave blank to use built-in defaults (<code className="px-1 bg-muted rounded">Open</code> / <code className="px-1 bg-muted rounded">Busy</code> / <code className="px-1 bg-muted rounded">30</code> min / <code className="px-1 bg-muted rounded">3</code> slots).
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                                    <FormInput
+                                        label="Free prefix"
+                                        value={config.google_calendar?.free_prefix ?? ''}
+                                        onChange={(e) => updateNestedConfig('google_calendar', 'free_prefix', e.target.value)}
+                                        placeholder="(blank = use Google free/busy)"
+                                        tooltip={
+                                            "Two modes:\n" +
+                                            "• Set a prefix (e.g. 'Open'): the tool scans your calendar for events titled with this prefix and treats those windows as your availability. Best when you want explicit, manually curated booking windows.\n" +
+                                            "• Leave blank: the tool uses Google's native free/busy API instead. Anything not blocked by an existing event during configured working hours (Mon–Fri 09:00–17:00 by default) is treated as available. Best for operators who don't want to manually create 'Open' events.\n" +
+                                            "Working-hours range can be overridden via YAML keys 'working_hours_start' / 'working_hours_end' / 'working_days' under tools.google_calendar."
+                                        }
+                                    />
+                                    <FormInput
+                                        label="Busy prefix"
+                                        value={config.google_calendar?.busy_prefix ?? ''}
+                                        onChange={(e) => updateNestedConfig('google_calendar', 'busy_prefix', e.target.value)}
+                                        placeholder="Busy"
+                                        tooltip="Only used in title-prefix mode. Events titled with this prefix block availability inside the open windows. Default: 'Busy'. Ignored when Free prefix is blank (free/busy mode uses any non-prefix-matching event as a busy block via Google's native API)."
+                                    />
+                                    <FormInput
+                                        label="Default slot duration (minutes)"
+                                        type="number"
+                                        value={(config.google_calendar?.min_slot_duration_minutes ?? '').toString()}
+                                        onChange={(e) => {
+                                            const raw = e.target.value;
+                                            const parsed = raw === '' ? undefined : parseInt(raw, 10);
+                                            updateNestedConfig(
+                                                'google_calendar',
+                                                'min_slot_duration_minutes',
+                                                Number.isFinite(parsed) ? parsed : undefined
+                                            );
+                                        }}
+                                        placeholder="30"
+                                        tooltip="Slot length in minutes if the LLM doesn't pass duration. Default: 30."
+                                    />
+                                    <FormInput
+                                        label="Max slots returned"
+                                        type="number"
+                                        value={(config.google_calendar?.max_slots_returned ?? '').toString()}
+                                        onChange={(e) => {
+                                            const raw = e.target.value;
+                                            const parsed = raw === '' ? undefined : parseInt(raw, 10);
+                                            updateNestedConfig(
+                                                'google_calendar',
+                                                'max_slots_returned',
+                                                Number.isFinite(parsed) ? parsed : undefined
+                                            );
+                                        }}
+                                        placeholder="3"
+                                        tooltip="Cap on how many slot start-times get_free_slots returns to the AI. Default: 3. Without a cap, a multi-day open window can return 20+ slots and the AI may read all of them aloud, producing minutes of robotic monologue. The tool also adds a 'showing N of M' nudge to the response so the AI summarizes 2–3 options to the caller. Set to 0 to disable the cap."
+                                    />
+                                </div>
+                            </div>
+
                             <div>
                                 <div className="text-sm font-medium mb-1">Calendars</div>
                                 <div className="text-xs text-muted-foreground mb-3">
@@ -2056,7 +2428,24 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                         onChange({ ...config, google_calendar: { ...(config.google_calendar || {}), calendars: cals } });
                                                     }}
                                                     placeholder="/app/secrets/service-account.json"
-                                                    tooltip="Path to the Google service account JSON key file."
+                                                    tooltip="Path to the Google service account JSON key file. Tip: use the Upload JSON button below the row to skip the manual SCP step — uploading also auto-fills Calendar ID and Timezone."
+                                                />
+                                                {/* Hidden file input — triggered by the Upload button in the
+                                                    identity/verify sub-row below. Kept here next to the path
+                                                    field so the ref is colocated with what it ultimately fills. */}
+                                                <input
+                                                    ref={(el) => { calendarFileInputRefs.current[key] = el; }}
+                                                    type="file"
+                                                    accept="application/json,.json"
+                                                    className="hidden"
+                                                    onChange={(e) => {
+                                                        const f = e.target.files?.[0];
+                                                        if (f) {
+                                                            handleCalendarFileUpload(key, f);
+                                                        }
+                                                        // Reset so re-uploading the same file fires onChange again
+                                                        if (e.target) e.target.value = '';
+                                                    }}
                                                 />
                                             </div>
                                             <div className="md:col-span-3">
@@ -2068,8 +2457,28 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                         cals[key] = { ...(cals[key] || {}), calendar_id: e.target.value };
                                                         onChange({ ...config, google_calendar: { ...(config.google_calendar || {}), calendars: cals } });
                                                     }}
-                                                    placeholder="primary"
-                                                    tooltip="Google Calendar ID (e.g. 'primary' or a calendar email address)."
+                                                    onBlur={() => {
+                                                        // Auto-verify on blur once both fields needed for verification
+                                                        // are populated. If verify succeeds, runCalendarVerify
+                                                        // auto-fills Timezone (when empty) and the backend
+                                                        // auto-subscribes the calendar so future discovery sees it.
+                                                        // Skip if we already have a successful result for this exact
+                                                        // (path, calendar_id, timezone, subject) tuple — avoids
+                                                        // duplicate API calls when the operator tabs through fields
+                                                        // without changing values, but DOES re-fire if any verified
+                                                        // field has changed since the last successful verify.
+                                                        // Codex feedback #3.
+                                                        const cal = config?.google_calendar?.calendars?.[key] || {};
+                                                        const calId = ((cal as any)?.calendar_id || '').trim();
+                                                        const path = ((cal as any)?.credentials_path || '').trim();
+                                                        if (!calId || !path) return;
+                                                        const existing = verifyByKey[key];
+                                                        const currentFingerprint = _verifyFingerprint(cal);
+                                                        if (existing && existing.ok && !existing.loading && existing.verifiedFor === currentFingerprint) return;
+                                                        runCalendarVerify(key);
+                                                    }}
+                                                    placeholder="you@yourdomain.com or c_xxx@group.calendar.google.com"
+                                                    tooltip="Google Calendar ID. Use your email for primary calendars (NOT 'primary' — that only works for service-account-impersonated calls). For secondary calendars: 'c_xxx@group.calendar.google.com' from Calendar Settings → Integrate calendar. Auto-verifies when you tab out of this field."
                                                 />
                                             </div>
                                             <div className="md:col-span-2">
@@ -2108,12 +2517,315 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                                     Remove
                                                 </button>
                                             </div>
+
+                                            {/* Identity + Verify sub-row.
+                                                Identity is auto-loaded from the configured credentials_path
+                                                so the operator sees the SA email (to share their calendar with)
+                                                and client_id (for DWD setup) without grepping the JSON.
+                                                Verify is one-click — POSTs current form state, returns
+                                                structured success or actionable error code. */}
+                                            <div className="md:col-span-12 mt-2 pt-2 border-t border-border/50 space-y-2">
+                                                {/* Identity row */}
+                                                {(() => {
+                                                    const ident = identityByKey[key];
+                                                    if (!ident) {
+                                                        return (
+                                                            <div className="text-xs text-muted-foreground italic">
+                                                                Set the Credentials Path above to load the service account identity.
+                                                            </div>
+                                                        );
+                                                    }
+                                                    if (ident.loading) {
+                                                        return (
+                                                            <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                                                <Loader2 className="h-3 w-3 animate-spin" /> Loading identity from {ident.path}…
+                                                            </div>
+                                                        );
+                                                    }
+                                                    if (ident.error) {
+                                                        return (
+                                                            <div className="text-xs text-destructive">
+                                                                <span className="font-medium">Could not read credentials</span>
+                                                                {ident.errorCode ? <span className="ml-1">({ident.errorCode})</span> : null}
+                                                                <span className="ml-1">— {ident.error}</span>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    return (
+                                                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs items-center">
+                                                            {ident.client_email && (
+                                                                <div className="flex items-center gap-1">
+                                                                    <span className="text-muted-foreground">📧 Service Account:</span>
+                                                                    <code className="px-1 bg-muted rounded">{ident.client_email}</code>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => copyToClipboard(ident.client_email!)}
+                                                                        className="text-muted-foreground hover:text-foreground"
+                                                                        title="Copy — share your calendar with this email"
+                                                                    >📋</button>
+                                                                </div>
+                                                            )}
+                                                            {ident.client_id && (
+                                                                <div className="flex items-center gap-1">
+                                                                    <span className="text-muted-foreground">🔑 Client ID:</span>
+                                                                    <code className="px-1 bg-muted rounded">{ident.client_id}</code>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => copyToClipboard(ident.client_id!)}
+                                                                        className="text-muted-foreground hover:text-foreground"
+                                                                        title="Copy — used for Domain-Wide Delegation at admin.google.com (NOT the email)"
+                                                                    >📋</button>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
+
+                                                {/* Discovered-calendars picker — only renders when the upload's
+                                                    discovery returned multiple accessible calendars (or zero, with a
+                                                    helpful share-with-this-email hint). For the 1-calendar case the
+                                                    upload handler already auto-filled the row's calendar_id/tz, so
+                                                    nothing extra is shown here. */}
+                                                {(() => {
+                                                    const upload = uploadByKey[key];
+                                                    if (!upload?.discovery) return null;
+                                                    const disc = upload.discovery;
+                                                    if (!disc.ok) {
+                                                        return (
+                                                            <div className="text-xs text-yellow-600 dark:text-yellow-400">
+                                                                ⚠ Could not discover accessible calendars
+                                                                {disc.error_code ? <span className="ml-1">({disc.error_code})</span> : null}
+                                                                {disc.error_message ? <span className="ml-1">— {disc.error_message}</span> : null}
+                                                            </div>
+                                                        );
+                                                    }
+                                                    const cals = disc.calendars || [];
+                                                    if (cals.length === 0) {
+                                                        // Honest messaging: calendarList.list() only returns calendars
+                                                        // the SA has SUBSCRIBED to. A calendar shared with the SA via
+                                                        // "Share with specific people" does NOT auto-subscribe — the
+                                                        // SA has to call calendarList.insert() first. So an empty
+                                                        // discovery doesn't mean the SA has no access; it just means
+                                                        // we haven't subscribed yet. Direct `calendars.get(id)` works
+                                                        // regardless, which is what the Verify button uses.
+                                                        const ident = identityByKey[key];
+                                                        const email = ident?.client_email;
+                                                        return (
+                                                            <div className="text-xs text-yellow-600 dark:text-yellow-400 space-y-1">
+                                                                <div>⚠ No subscribed calendars on this service account yet.</div>
+                                                                {email && (
+                                                                    <>
+                                                                        <div>
+                                                                            <strong>If you've already shared a calendar</strong> with <code className="px-1 bg-muted rounded">{email}</code>:
+                                                                            paste the Calendar ID above (your email for primary calendars, or <code className="px-1 bg-muted rounded">c_xxx@group.calendar.google.com</code> for secondary), then click <strong>Verify access</strong>.
+                                                                        </div>
+                                                                        <div>
+                                                                            <strong>If you haven't shared yet</strong>: open Google Calendar → Settings & sharing → Share with specific people → add <code className="px-1 bg-muted rounded">{email}</code> (Make changes to events), then click <strong>Replace JSON</strong> to re-discover.
+                                                                        </div>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    }
+                                                    if (cals.length === 1) {
+                                                        // Auto-filled by upload handler — quiet success indicator
+                                                        return (
+                                                            <div className="text-xs text-green-600 dark:text-green-400">
+                                                                ✓ Auto-filled with the only accessible calendar: {cals[0].summary || cals[0].id}
+                                                            </div>
+                                                        );
+                                                    }
+                                                    // Multiple calendars: dropdown picker. Operator chooses one.
+                                                    return (
+                                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                                            <span className="text-muted-foreground">{cals.length} calendars accessible — pick one:</span>
+                                                            <select
+                                                                className="px-2 py-1 rounded border bg-background"
+                                                                onChange={(e) => {
+                                                                    const idx = parseInt(e.target.value, 10);
+                                                                    if (Number.isFinite(idx) && cals[idx]) {
+                                                                        pickDiscoveredCalendar(key, cals[idx]);
+                                                                    }
+                                                                }}
+                                                                defaultValue=""
+                                                            >
+                                                                <option value="" disabled>Choose a calendar…</option>
+                                                                {cals.map((c, i) => (
+                                                                    <option key={c.id || i} value={i}>
+                                                                        {c.summary || c.id} ({c.access_role}) — {c.timezone}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    );
+                                                })()}
+
+                                                {/* Action row: Upload, Verify, plus inline result/status text.
+                                                    Grouped so all SA-related actions live in one place beneath
+                                                    the row, leaving the form-field row above cleanly aligned. */}
+                                                <div className="flex items-start gap-3 flex-wrap">
+                                                    <button
+                                                        type="button"
+                                                        className="px-3 py-1 text-xs rounded border hover:bg-accent flex items-center gap-1"
+                                                        disabled={uploadByKey[key]?.uploading}
+                                                        onClick={() => calendarFileInputRefs.current[key]?.click()}
+                                                        title="Upload an SA JSON. Auto-discovers and fills Calendar ID + Timezone if exactly one calendar is shared with the SA."
+                                                    >
+                                                        {uploadByKey[key]?.uploading
+                                                            ? <Loader2 className="h-3 w-3 animate-spin" />
+                                                            : <span>📁</span>}
+                                                        {(val as any)?.credentials_path ? 'Replace JSON' : 'Upload JSON'}
+                                                    </button>
+                                                    {uploadByKey[key]?.error && (
+                                                        <span className="text-xs text-destructive self-center">✗ {uploadByKey[key]?.error}</span>
+                                                    )}
+                                                    {(() => {
+                                                        // Disable Verify when there's nothing meaningful to test
+                                                        // against (no path or no calendar_id) — clicking would just
+                                                        // surface the same missing_credentials_path / missing_calendar_id
+                                                        // error from the backend. Make the disabled reason visible
+                                                        // in the tooltip so the operator knows what to fix.
+                                                        const hasPath = !!(val as any)?.credentials_path?.trim?.();
+                                                        const hasCalId = !!(val as any)?.calendar_id?.trim?.();
+                                                        const verifyDisabled = !!verifyByKey[key]?.loading || !hasPath || !hasCalId;
+                                                        const verifyTitle = verifyByKey[key]?.loading
+                                                            ? 'Verifying…'
+                                                            : !hasPath
+                                                                ? 'Upload a JSON or fill in Credentials Path first.'
+                                                                : !hasCalId
+                                                                    ? 'Fill in Calendar ID first (your email for primary, or c_xxx@group.calendar.google.com for secondary).'
+                                                                    : 'Test that the credentials can read the configured calendar.';
+                                                        return (
+                                                            <button
+                                                                type="button"
+                                                                className="px-3 py-1 text-xs rounded border hover:bg-accent flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                                                disabled={verifyDisabled}
+                                                                onClick={() => runCalendarVerify(key)}
+                                                                title={verifyTitle}
+                                                            >
+                                                                {verifyByKey[key]?.loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <span>🩺</span>}
+                                                                Verify access
+                                                            </button>
+                                                        );
+                                                    })()}
+                                                    {(() => {
+                                                        const v = verifyByKey[key];
+                                                        if (!v || v.loading) return null;
+                                                        // Only show the green check if the fingerprint matches the
+                                                        // current row state — otherwise the operator edited a
+                                                        // verified field (path / calendar_id / tz / subject) after
+                                                        // the last verify and the green check is stale.
+                                                        // Codex feedback #3.
+                                                        const cal = config?.google_calendar?.calendars?.[key] || {};
+                                                        const currentFp = _verifyFingerprint(cal);
+                                                        if (v.ok && v.verifiedFor && v.verifiedFor !== currentFp) return null;
+                                                        if (v.ok) {
+                                                            return (
+                                                                <div className="text-xs flex flex-col">
+                                                                    <span className="text-green-600 dark:text-green-400">
+                                                                        ✓ Reachable: {v.calendar_summary || '(no summary)'} ({v.calendar_actual_timezone || 'no tz'})
+                                                                    </span>
+                                                                    {v.drift_warning && (
+                                                                        <span className="text-yellow-600 dark:text-yellow-400 mt-0.5">
+                                                                            ⚠ {v.drift_warning}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return (
+                                                            <div className="text-xs text-destructive">
+                                                                <span className="font-medium">✗ {v.errorCode || 'failed'}</span>
+                                                                <span className="ml-1">— {v.errorMessage || 'unknown error'}</span>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+
+                                                {/* Domain-Wide Delegation (advanced).
+                                                    Optional per-row impersonation: when set, the SA acts AS this
+                                                    user via creds.with_subject(). Required when org policy blocks
+                                                    external sharing of calendars (the "Some sharing options have
+                                                    been turned off by your administrator" wall).
+
+                                                    Default-open if subject is already configured so operators
+                                                    don't have to hunt for it on edit. Default-closed for fresh
+                                                    rows since 90% of setups don't need DWD. */}
+                                                <details className="text-xs" open={!!(val as any)?.subject?.trim?.()}>
+                                                    <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none inline-flex items-center gap-1">
+                                                        <span>🪪</span>
+                                                        Domain-Wide Delegation (advanced)
+                                                    </summary>
+                                                    <div className="mt-2 space-y-2 pl-4 border-l-2 border-border/40">
+                                                        <div className="flex items-center gap-2">
+                                                            <label className="text-muted-foreground whitespace-nowrap min-w-[8rem]">Impersonate as:</label>
+                                                            <input
+                                                                type="email"
+                                                                className="flex-1 px-2 py-1 rounded border bg-background"
+                                                                placeholder="user@yourdomain.com"
+                                                                value={(val as any)?.subject || ''}
+                                                                onChange={(e) => {
+                                                                    const cals = { ...(config.google_calendar?.calendars || {}) };
+                                                                    cals[key] = { ...(cals[key] || {}), subject: e.target.value };
+                                                                    onChange({ ...config, google_calendar: { ...(config.google_calendar || {}), calendars: cals } });
+                                                                }}
+                                                                onBlur={() => {
+                                                                    // Re-fire verify on blur if all three are set
+                                                                    // so DWD setup mistakes surface immediately
+                                                                    // (dwd_not_configured error code) rather than
+                                                                    // at first call time. Same dedupe as Calendar ID.
+                                                                    const cal = config?.google_calendar?.calendars?.[key] || {};
+                                                                    const calId = ((cal as any)?.calendar_id || '').trim();
+                                                                    const path = ((cal as any)?.credentials_path || '').trim();
+                                                                    const subj = ((cal as any)?.subject || '').trim();
+                                                                    if (!calId || !path) return;
+                                                                    // Reset previous result so the verify status
+                                                                    // reflects the new subject value
+                                                                    setVerifyByKey((prev) => ({ ...prev, [key]: undefined as any }));
+                                                                    if (subj || verifyByKey[key]?.ok) runCalendarVerify(key);
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        <div className="text-muted-foreground space-y-1">
+                                                            <div>
+                                                                Optional. When set, the service account impersonates this user.
+                                                                Use when your Workspace policy blocks external sharing of calendars
+                                                                (the "Some sharing options have been turned off by your administrator" wall).
+                                                            </div>
+                                                            {(() => {
+                                                                const ident = identityByKey[key];
+                                                                const cid = ident?.client_id;
+                                                                return (
+                                                                    <div>
+                                                                        <strong>Setup:</strong> at <a href="https://admin.google.com/ac/owl/domainwidedelegation" target="_blank" rel="noreferrer" className="underline hover:text-foreground">admin.google.com → Security → API controls → Domain-wide delegation</a>,
+                                                                        add a new client with <strong>Client ID</strong> <code className="px-1 bg-muted rounded">{cid || '(load identity above first)'}</code>
+                                                                        {' '}(NOT the email!) and scope <code className="px-1 bg-muted rounded">https://www.googleapis.com/auth/calendar</code>.
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    </div>
+                                                </details>
+                                            </div>
                                         </div>
                                     ))}
                                     {Object.keys(config.google_calendar?.calendars || {}).length === 0 && (
-                                        <div className="text-xs text-muted-foreground italic border border-dashed border-border rounded p-3 text-center">
-                                            No calendars configured. GOOGLE_CALENDAR_* environment variables will be used as fallback.
-                                            <br />Add a calendar below to get started.
+                                        <div className="text-xs text-muted-foreground italic border border-dashed border-border rounded p-3 space-y-1">
+                                            <div className="font-medium text-foreground not-italic">No calendars configured.</div>
+                                            <div>
+                                                Click <strong>+ Add Calendar</strong> below to set up Google Calendar access.
+                                                You'll need a Google service account JSON key file and a calendar shared with that
+                                                service account (with <strong>"Make changes to events"</strong> permission).
+                                            </div>
+                                            <div>
+                                                For <code className="px-1 bg-muted rounded">get_free_slots</code> to return availability,
+                                                your calendar needs events titled with the free prefix (default: "Open") to define
+                                                when bookings are allowed.
+                                            </div>
+                                            <div className="opacity-70">
+                                                Legacy fallback: <code className="px-1 bg-muted rounded">GOOGLE_CALENDAR_*</code> env vars
+                                                still work for one calendar (deprecated, will be removed in a future release).
+                                            </div>
                                         </div>
                                     )}
                                     <button

@@ -2113,3 +2113,761 @@ async def verify_vertex_credentials():
     except Exception as e:
         logger.error(f"Error verifying Vertex AI credentials: {e}")
         raise HTTPException(status_code=400, detail="Verification failed - check credentials are valid")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Calendar — Per-Key Info & Verify
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# These endpoints support the Tools page Google Calendar section. They cover:
+#   - Surfacing the service account identity (client_email + client_id) for
+#     each calendar entry, so operators don't have to grep the JSON file to
+#     know what email to share their calendar with, and so DWD setup can use
+#     the correct client_id (NOT the email — admin.google.com expects the
+#     OAuth client ID).
+#   - Verifying that the configured credentials can actually read the
+#     configured calendar — distinguishing "bad credentials" from "calendar
+#     not shared" from "wrong calendar id" with separate error codes.
+#
+# Verify uses the raw googleapiclient (not the GCalendar wrapper, which
+# swallows API exceptions as [] / None / False — unusable for diagnostics).
+# Per Codex feedback: error codes must surface 401 / 403 / 404 distinctly.
+#
+# Verify accepts an optional POST body so the UI can test unsaved form state
+# without forcing a save first. Body fields override persisted config.
+
+# Calendar keys are user-chosen identifiers (e.g. "work", "calendar_1").
+# They appear in URL paths for these endpoints, so we constrain them tightly
+# to prevent path-traversal-shaped values from being smuggled through.
+# The same regex is used by the gcal tool's calendar resolver — keys outside
+# this set are not addressable in YAML either.
+_CALENDAR_KEY_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$", re.IGNORECASE)
+
+
+def _validate_calendar_key_or_400(key: str) -> str:
+    """Validate a calendar key from a URL path. Raise 400 on bad input.
+
+    Allowed: alphanumeric, underscore, hyphen, 1-64 chars. Rejects path
+    components, slashes, dots, control chars, oversized values, unicode etc.
+    """
+    if not isinstance(key, str) or not _CALENDAR_KEY_PATTERN.fullmatch(key or ""):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_calendar_key",
+                "message": "Calendar key must be 1-64 chars of [a-z0-9_-] only.",
+            },
+        )
+    return key
+
+
+def _read_google_calendar_entry(key: str) -> dict:
+    """Look up the persisted config for one calendar key. Returns {} if absent."""
+    try:
+        merged = _read_merged_config_dict()
+    except Exception:
+        return {}
+    gcal = (merged.get("tools") or {}).get("google_calendar") or {}
+    cals = gcal.get("calendars") or {}
+    if not isinstance(cals, dict):
+        return {}
+    entry = cals.get(key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _load_sa_metadata(creds_path: str) -> dict:
+    """Read the SA JSON at ``creds_path`` and return its identity metadata.
+
+    Raises HTTPException with structured detail on any failure: file missing,
+    not JSON, not a service-account file, unreadable, etc.
+    """
+    import json
+
+    if not creds_path:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_credentials_path",
+                "message": "No credentials_path configured for this calendar key.",
+            },
+        )
+
+    # Canonicalize and resolve; refuse traversal-shaped paths.
+    try:
+        norm_path = os.path.realpath(creds_path)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_credentials_path",
+                "message": "credentials_path could not be resolved.",
+            },
+        )
+
+    if not os.path.exists(norm_path):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "credentials_file_not_found",
+                "message": f"No file at credentials_path '{creds_path}'.",
+            },
+        )
+
+    if not os.path.isfile(norm_path):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_path_not_a_file",
+                "message": f"credentials_path '{creds_path}' is not a regular file.",
+            },
+        )
+
+    try:
+        with open(norm_path, "r") as f:
+            raw = f.read()
+    except OSError as e:
+        # Most common case here is a permissions error (e.g. file owned by
+        # root with mode 600 and admin_ui running as appuser). Surface it
+        # explicitly so the operator knows to chmod 640 + chgrp appuser.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_file_unreadable",
+                "message": (
+                    f"Cannot read credentials file: {e}. "
+                    "This is usually a permissions issue — the admin_ui "
+                    "process needs read access (try chmod 640 + group "
+                    "ownership 'appuser')."
+                ),
+            },
+        )
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_not_json",
+                "message": "credentials_path file does not contain valid JSON.",
+            },
+        )
+
+    if not isinstance(data, dict) or data.get("type") != "service_account":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_not_service_account",
+                "message": "credentials_path does not point to a Google service-account JSON file.",
+            },
+        )
+
+    required = ("client_email", "private_key", "private_key_id")
+    if not all(data.get(k) for k in required):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_missing_fields",
+                "message": f"Service account JSON missing required fields: {required}.",
+            },
+        )
+
+    return {
+        "client_email": data.get("client_email", ""),
+        "client_id": data.get("client_id", ""),
+        "project_id": data.get("project_id", ""),
+        "private_key_id": data.get("private_key_id", ""),
+    }
+
+
+@router.get("/google-calendar/{key}/info")
+async def get_google_calendar_info(key: str, credentials_path: Optional[str] = None):
+    """Return SA identity metadata for a configured calendar entry.
+
+    The operator needs `client_email` to share their calendar with the SA,
+    and `client_id` for Domain-Wide Delegation setup. Both are surfaced so
+    the operator never has to crack open the JSON file by hand.
+
+    Accepts an optional ``credentials_path`` query parameter so the UI can
+    load identity for unsaved form state (e.g. a manual path edit before
+    Save). Without this, the UI would load stale identity from the
+    persisted YAML for any path that's been typed but not saved. Symmetric
+    with /verify's POST-body override. Codex feedback #4.
+    """
+    _validate_calendar_key_or_400(key)
+    entry = _read_google_calendar_entry(key)
+    # Override-then-fallback: if the caller passed credentials_path explicitly,
+    # use that; otherwise fall back to the persisted entry's path.
+    effective_path = (credentials_path or "").strip() or (entry.get("credentials_path") or "").strip()
+    metadata = _load_sa_metadata(effective_path)
+    return {
+        "key": key,
+        "calendar_id": entry.get("calendar_id", ""),
+        "configured_timezone": entry.get("timezone", ""),
+        **metadata,
+    }
+
+
+class _GoogleCalendarVerifyRequest(BaseModel):
+    """Optional overrides so the UI can verify unsaved form state.
+
+    All fields are optional; missing fields fall back to the persisted
+    configuration for the calendar key. This means the operator can edit
+    the form and click Verify without saving first — Codex feedback #1.
+    """
+    credentials_path: Optional[str] = None
+    calendar_id: Optional[str] = None
+    timezone: Optional[str] = None
+    subject: Optional[str] = None  # For Domain-Wide Delegation (Phase 1)
+
+
+def _verify_calendar_access_sync(
+    creds_path: str,
+    calendar_id: str,
+    configured_timezone: str,
+    subject: Optional[str],
+) -> dict:
+    """Blocking work: build SA creds, optionally impersonate, hit Calendar API.
+
+    Run via asyncio.to_thread. Raises HTTPException with structured detail on
+    any failure (so the FastAPI handler doesn't have to translate exceptions).
+
+    Per Codex feedback #5: when ``subject`` is set, refresh the token and call
+    ``calendars.get()`` as the impersonated user. Building the credential with
+    ``with_subject()`` alone can succeed even when DWD scopes/admin consent
+    haven't been configured — the failure only surfaces on the first API call.
+    """
+    import json
+
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "google_libs_not_installed",
+                "message": "google-auth + googleapiclient are required for verify.",
+            },
+        )
+
+    # Build SA creds. Failures here are credential-shape problems, not
+    # API-side problems — distinguish them.
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            creds_path,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_credentials",
+                "message": f"Could not load service-account credentials: {e}",
+            },
+        )
+
+    if subject:
+        creds = creds.with_subject(subject)
+
+    # Force a token refresh — surfaces DWD misconfiguration BEFORE we hit the
+    # Calendar API. With DWD, with_subject() succeeds at construction but the
+    # token mint can fail (admin consent not granted, scopes wrong, etc.).
+    try:
+        creds.refresh(Request())
+    except Exception as e:
+        # Heuristic: "unauthorized_client" is the canonical DWD-not-configured
+        # response from Google's token endpoint.
+        msg = str(e).lower()
+        if subject and ("unauthorized_client" in msg or "invalid_grant" in msg):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error_code": "dwd_not_configured",
+                    "message": (
+                        f"Domain-Wide Delegation is not configured for "
+                        f"subject '{subject}'. Add the service account's "
+                        f"client_id (NOT email) at admin.google.com → "
+                        f"Security → Access and data control → API controls "
+                        f"→ Domain-wide delegation, with scope "
+                        f"'https://www.googleapis.com/auth/calendar'. "
+                        f"Underlying error: {e}"
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_code": "auth_failed",
+                "message": f"Could not obtain access token: {e}",
+            },
+        )
+
+    # Now hit the Calendar API. Distinguish 401/403/404 cleanly.
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        cal = service.calendars().get(calendarId=calendar_id).execute()
+    except HttpError as e:
+        status = getattr(getattr(e, "resp", None), "status", None)
+        # Try to extract Google's own error reason for nicer messages.
+        try:
+            err_payload = json.loads(e.content.decode("utf-8")) if hasattr(e, "content") else {}
+            reason = (((err_payload.get("error") or {}).get("errors") or [{}])[0]).get("reason", "")
+        except Exception:
+            reason = ""
+
+        if status == 401:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error_code": "auth_failed",
+                    "message": f"Calendar API rejected the credentials (401). reason={reason!r}",
+                },
+            )
+        if status == 403:
+            # Most common cause: calendar exists but isn't shared with the SA.
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error_code": "forbidden_calendar",
+                    "message": (
+                        f"The service account is not authorized to access "
+                        f"calendar '{calendar_id}'. Most commonly this means "
+                        f"the calendar hasn't been shared with the service "
+                        f"account email. (HTTP 403, reason={reason!r})"
+                    ),
+                },
+            )
+        if status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error_code": "calendar_not_found",
+                    "message": (
+                        f"Calendar '{calendar_id}' not found. Check the ID — "
+                        f"primary calendars use the user's email; secondary "
+                        f"calendars look like 'c_xxx@group.calendar.google.com'."
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "calendar_api_error",
+                "message": f"Calendar API error: HTTP {status} reason={reason!r}",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "unknown",
+                "message": f"Unexpected error during verify: {e}",
+            },
+        )
+
+    actual_tz = cal.get("timeZone") or ""
+    drift_warning = None
+    if configured_timezone and actual_tz and configured_timezone != actual_tz:
+        drift_warning = (
+            f"Configured timezone '{configured_timezone}' does not match the "
+            f"calendar's actual timezone '{actual_tz}'. Events will use the "
+            f"configured timezone, which may produce wrong wall-clock times. "
+            f"Update the Timezone field to match."
+        )
+
+    # Auto-subscribe: when Verify succeeds against a calendar that ISN'T in
+    # the SA's calendarList, insert it so future discovery (calendarList.list)
+    # actually returns it. Without this, calendars shared via "Share with
+    # specific people" remain invisible to discovery even though they're
+    # fully accessible via direct calendars.get(). Best-effort — the verify
+    # itself succeeded, so we report success regardless of insert outcome.
+    auto_subscribed = False
+    try:
+        # Cheap check: was this calendar already in the SA's calendarList?
+        try:
+            service.calendarList().get(calendarId=calendar_id).execute()
+        except HttpError as e:
+            # 404 here = not subscribed → insert it
+            if getattr(getattr(e, "resp", None), "status", None) == 404:
+                try:
+                    service.calendarList().insert(body={"id": calendar_id}).execute()
+                    auto_subscribed = True
+                except HttpError:
+                    # If insert fails (e.g. policy block), the verify is
+                    # still valid — just no subscription. Don't surface as
+                    # a failure to the user.
+                    pass
+            else:
+                # Some other API error — ignore silently, verify itself succeeded
+                pass
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "calendar_summary": cal.get("summary", ""),
+        "calendar_actual_timezone": actual_tz,
+        "configured_timezone": configured_timezone,
+        "drift_warning": drift_warning,
+        "impersonating_subject": subject or None,
+        "auto_subscribed": auto_subscribed,  # True iff we just added this to the SA's calendarList
+    }
+
+
+@router.post("/google-calendar/{key}/verify")
+async def verify_google_calendar(key: str, override: Optional[_GoogleCalendarVerifyRequest] = None):
+    """Verify that the configured (or about-to-be-configured) credentials can
+    read the configured calendar. Returns structured success or 4xx with an
+    error_code field the UI can display nicely.
+
+    Override fields in the POST body win over persisted config so the UI can
+    test unsaved form state without forcing a save first.
+    """
+    _validate_calendar_key_or_400(key)
+
+    entry = _read_google_calendar_entry(key)
+
+    # Effective config = persisted, with optional POST-body overrides on top.
+    # Subject must initialize from the persisted entry too — without this,
+    # API callers (or future UI paths) that omit subject in the POST body
+    # would verify without impersonation and get a false success/failure.
+    # Codex feedback #5.
+    creds_path = (entry.get("credentials_path") or "").strip()
+    calendar_id = (entry.get("calendar_id") or "").strip()
+    configured_tz = (entry.get("timezone") or "").strip()
+    persisted_subject = (entry.get("subject") or "").strip()
+    subject: Optional[str] = persisted_subject or None
+    if override is not None:
+        if override.credentials_path is not None:
+            creds_path = override.credentials_path.strip()
+        if override.calendar_id is not None:
+            calendar_id = override.calendar_id.strip()
+        if override.timezone is not None:
+            configured_tz = override.timezone.strip()
+        if override.subject is not None:
+            subject = override.subject.strip() or None
+
+    if not creds_path:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_credentials_path",
+                "message": "No credentials_path configured or supplied for this calendar key.",
+            },
+        )
+    if not calendar_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "missing_calendar_id",
+                "message": "No calendar_id configured or supplied for this calendar key.",
+            },
+        )
+
+    return await asyncio.to_thread(
+        _verify_calendar_access_sync,
+        creds_path,
+        calendar_id,
+        configured_tz,
+        subject,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Calendar — JSON Upload + Auto-discover
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Drag-drop upload flow. After file save, the endpoint authenticates as the
+# uploaded SA and calls calendarList.list() to discover which calendars the
+# SA has been shared with. The UI uses the discovery result to:
+#   - Auto-fill calendar_id + timezone if exactly one calendar is accessible
+#   - Show a picker if multiple calendars are accessible
+#   - Show a "share your calendar with this email" hint if zero calendars
+#
+# This collapses what was a multi-step flow (SCP file, configure path,
+# share calendar in Google UI, paste calendar ID, paste timezone, click
+# Verify) into a single drag-drop that auto-fills the row and auto-verifies.
+
+# Where uploaded SA files live. Bind-mounted between admin_ui (writer) and
+# ai_engine (reader) by docker-compose.yml; this matches the existing path
+# scheme used by VERTEX_CREDENTIALS_PATH.
+GOOGLE_CALENDAR_SECRETS_DIR = "/app/project/secrets"
+
+# Stable filename pattern keyed off the SA's client_email hash. This means:
+# - Re-uploading the same SA (e.g. private key rotation) overwrites the same
+#   file → existing UI/YAML credentials_path references stay valid.
+# - Uploading a different SA writes to a different file → no silent collision.
+# - Calendar UI key renames don't require renaming the file (keys are UI
+#   labels, files are content-addressed). Per Codex feedback #3.
+_CALENDAR_UPLOAD_FILENAME_RE = re.compile(r"^google-calendar-[a-f0-9]{12}\.json$")
+
+
+def _calendar_filename_for_email(client_email: str) -> str:
+    """Compute the stable filename for an uploaded SA file.
+
+    sha256(client_email)[:12] is enough entropy to avoid accidental collisions
+    while keeping the filename short and human-recognizable in `ls`.
+    """
+    import hashlib
+    digest = hashlib.sha256(client_email.encode("utf-8")).hexdigest()[:12]
+    return f"google-calendar-{digest}.json"
+
+
+def _resolve_calendar_secret_path(filename: str) -> str:
+    """Resolve `filename` to an absolute path under GOOGLE_CALENDAR_SECRETS_DIR.
+
+    Refuses anything outside the secrets dir (path traversal protection) or
+    that doesn't match the stable-hash filename pattern. Returns the
+    canonical absolute path. Per Codex feedback #2.
+    """
+    if not _CALENDAR_UPLOAD_FILENAME_RE.fullmatch(filename or ""):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_filename",
+                "message": "Filename must match the stable-hash pattern google-calendar-XXXXXXXXXXXX.json.",
+            },
+        )
+    candidate = os.path.realpath(os.path.join(GOOGLE_CALENDAR_SECRETS_DIR, filename))
+    secrets_dir = os.path.realpath(GOOGLE_CALENDAR_SECRETS_DIR)
+    # Final defense: must be a direct child of the secrets dir
+    if os.path.dirname(candidate) != secrets_dir:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "path_outside_secrets_dir",
+                "message": "Resolved path escapes the secrets directory.",
+            },
+        )
+    return candidate
+
+
+def _discover_accessible_calendars(creds_path: str) -> dict:
+    """Authenticate as the SA and list all calendars it can access.
+
+    Returns a dict with two keys:
+      "ok": True/False
+      "calendars": [{ id, summary, timezone, access_role }, ...]  (only on success)
+      "error_code"/"error_message" on failure
+
+    Failures here are non-fatal for the upload itself — the file IS saved
+    even if discovery fails. The UI shows a yellow "Re-check" button.
+    """
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        return {
+            "ok": False,
+            "error_code": "google_libs_not_installed",
+            "error_message": "google-auth + googleapiclient are required to discover calendars.",
+        }
+
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            creds_path,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+    except Exception as e:
+        return {"ok": False, "error_code": "invalid_credentials", "error_message": str(e)}
+
+    try:
+        creds.refresh(Request())
+    except Exception as e:
+        return {"ok": False, "error_code": "auth_failed", "error_message": str(e)}
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        result = service.calendarList().list(maxResults=250).execute()
+    except HttpError as e:
+        status = getattr(getattr(e, "resp", None), "status", None)
+        return {
+            "ok": False,
+            "error_code": f"calendar_list_http_{status or 'unknown'}",
+            "error_message": str(e),
+        }
+    except Exception as e:
+        return {"ok": False, "error_code": "unknown", "error_message": str(e)}
+
+    calendars = []
+    for c in result.get("items", []) or []:
+        calendars.append({
+            "id": c.get("id", ""),
+            "summary": c.get("summary", ""),
+            "timezone": c.get("timeZone", ""),
+            "access_role": c.get("accessRole", ""),
+        })
+    # Surface higher-permission calendars first so the UI's auto-pick prefers
+    # the most useful one when there are multiples
+    role_priority = {"owner": 0, "writer": 1, "reader": 2, "freeBusyReader": 3}
+    calendars.sort(key=lambda c: (role_priority.get(c["access_role"], 99), c["summary"].lower()))
+    return {"ok": True, "calendars": calendars}
+
+
+@router.post("/google-calendar/credentials")
+async def upload_google_calendar_credentials(file: UploadFile = File(...)):
+    """Upload a Google service-account JSON file and discover accessible calendars.
+
+    Single round-trip:
+      1. Validate the upload (size, JSON shape, SA shape)
+      2. Compute stable-hash filename (so re-uploading same SA reuses path)
+      3. Write atomically to secrets/<filename> with broad-read perms so the
+         ai_engine container's appuser can read the file at runtime
+      4. Authenticate as the SA and call calendarList.list() to discover
+         which calendars the SA has been shared with
+      5. Return identity + container path + accessible calendar list
+
+    The UI uses the response to:
+      - Auto-fill calendar_id + timezone if exactly 1 calendar is accessible
+      - Show a picker if >1 calendars are accessible
+      - Tell the operator to share their calendar with the SA email if 0
+    """
+    import json
+
+    # Hard cap on file size — SA JSONs are ~2KB; anything close to 100KB is
+    # almost certainly malicious or wrong. Read into memory directly because
+    # we need to validate JSON shape before touching disk.
+    MAX_BYTES = 100 * 1024
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "empty_file", "message": "Uploaded file is empty."},
+        )
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "file_too_large",
+                "message": f"Service account JSON files are typically 2-3 KB; rejected file is {len(raw)} bytes (cap {MAX_BYTES}).",
+            },
+        )
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "credentials_not_json", "message": "Uploaded file is not valid JSON."},
+        )
+
+    if not isinstance(data, dict) or data.get("type") != "service_account":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_not_service_account",
+                "message": "Uploaded JSON must be a Google service-account key (type: service_account).",
+            },
+        )
+
+    required = ("client_email", "private_key", "private_key_id")
+    if not all(data.get(k) for k in required):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_missing_fields",
+                "message": f"Service-account JSON is missing required fields: {required}.",
+            },
+        )
+
+    client_email = data["client_email"]
+    filename = _calendar_filename_for_email(client_email)
+    target_path = _resolve_calendar_secret_path(filename)
+    container_path = f"{GOOGLE_CALENDAR_SECRETS_DIR}/{filename}"
+
+    # Detect overwrite for the UI to surface "replaced existing credential"
+    # — Codex feedback #3 about key rotation visibility
+    was_replaced = os.path.exists(target_path)
+    previous_key_id: Optional[str] = None
+    if was_replaced:
+        try:
+            with open(target_path, "r") as f:
+                prev_data = json.load(f)
+            previous_key_id = prev_data.get("private_key_id")
+        except Exception:
+            previous_key_id = None
+
+    # Atomic write: tmp + replace, so a crash mid-write doesn't leave an
+    # invalid file at the target path
+    os.makedirs(GOOGLE_CALENDAR_SECRETS_DIR, exist_ok=True)
+    tmp_path = target_path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(raw)
+        # 0o644 — admin_ui (writer, root) can write; ai_engine (appuser)
+        # can read. The directory is bind-mounted only to specific
+        # containers, so this is the actual security boundary.
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, target_path)
+    except OSError as e:
+        # Clean up the .tmp on failure
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "write_failed",
+                "message": f"Failed to write credentials file: {e}",
+            },
+        )
+
+    # Now discover which calendars the SA can actually access. This is done
+    # in a thread because both creds.refresh() and the API call are blocking.
+    # Failures here are NON-fatal for the upload — the file is on disk
+    # successfully; the UI just falls back to the manual-fill flow.
+    discovery = await asyncio.to_thread(_discover_accessible_calendars, target_path)
+
+    return {
+        "status": "success",
+        "filename": filename,
+        "container_path": container_path,
+        "replaced": was_replaced,
+        "previous_key_id": previous_key_id,
+        "identity": {
+            "client_email": client_email,
+            "client_id": data.get("client_id", ""),
+            "project_id": data.get("project_id", ""),
+            "private_key_id": data.get("private_key_id", ""),
+        },
+        "discovery": discovery,
+    }
+
+
+@router.delete("/google-calendar/credentials/{filename}")
+async def delete_google_calendar_credentials(filename: str):
+    """Remove an uploaded SA credentials file.
+
+    Only filenames matching the stable-hash pattern are accepted; any other
+    shape is rejected with 400 (path traversal protection). Returns 404 if
+    the file doesn't exist (idempotent-ish — repeated DELETEs after the
+    first are safe to retry but the second one tells the operator the file
+    was already gone).
+    """
+    target_path = _resolve_calendar_secret_path(filename)
+    if not os.path.exists(target_path):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "credentials_file_not_found",
+                "message": f"No credentials file at {filename}.",
+            },
+        )
+    try:
+        os.remove(target_path)
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "delete_failed",
+                "message": f"Failed to remove credentials file: {e}",
+            },
+        )
+    return {"status": "success", "filename": filename}
