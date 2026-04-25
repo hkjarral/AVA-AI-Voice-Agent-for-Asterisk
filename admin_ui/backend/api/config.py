@@ -3097,7 +3097,14 @@ def _ms_flow_lock():
 
 
 def _validate_ms_account_key_or_400(key: str) -> str:
-    if not isinstance(key, str) or not _MS_ACCOUNT_KEY_PATTERN.fullmatch(key or ""):
+    candidate = key if isinstance(key, str) else ""
+    # Explicit rejection of path-traversal characters. The regex below already
+    # excludes these (the character class is [a-z0-9_-] only), but CodeQL's
+    # py/path-injection query specifically recognizes explicit "..", "/", "\\"
+    # rejection as a sanitizer; `re.fullmatch` against a restrictive pattern
+    # is not recognized. Belt-and-suspenders that also makes the intent
+    # readable to humans skimming the call site.
+    if ".." in candidate or "/" in candidate or "\\" in candidate:
         raise HTTPException(
             status_code=400,
             detail={
@@ -3105,7 +3112,15 @@ def _validate_ms_account_key_or_400(key: str) -> str:
                 "message": "Account key must be 1-64 chars of [a-z0-9_-] only.",
             },
         )
-    return key
+    if not _MS_ACCOUNT_KEY_PATTERN.fullmatch(candidate):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "invalid_account_key",
+                "message": "Account key must be 1-64 chars of [a-z0-9_-] only.",
+            },
+        )
+    return candidate
 
 
 def _validate_ms_tenant_client_or_400(tenant_id: str, client_id: str) -> tuple[str, str]:
