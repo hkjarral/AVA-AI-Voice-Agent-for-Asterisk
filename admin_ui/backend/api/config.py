@@ -2232,20 +2232,48 @@ def _load_sa_metadata(creds_path: str) -> dict:
     # Canonicalize and resolve; refuse traversal-shaped paths.
     try:
         norm_path = os.path.realpath(creds_path)
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=400,
             detail={
                 "error_code": "invalid_credentials_path",
                 "message": "credentials_path could not be resolved.",
             },
-        )
+        ) from e
 
     # Constrain to a known set of mount roots. Without this, an operator
     # (or a UI bug) could submit a path like "/etc/passwd" and trigger a
     # file read against an arbitrary host file. CodeQL flagged the open
-    # call below for this reason; the allow-list closes it.
-    _assert_creds_path_in_allowed_dir(norm_path, creds_path)
+    # call below for this reason; this inline constraint closes it.
+    #
+    # Inline rather than calling _assert_creds_path_in_allowed_dir because
+    # CodeQL's path-injection analyzer doesn't trace value-flow through
+    # helper functions, so the helper's commonpath check wasn't visible
+    # to the static scan and the alert kept firing. The inline form makes
+    # the constraint legible to both humans and CodeQL.
+    _allowed_real_dirs = [os.path.realpath(d) for d in _ALLOWED_CREDENTIALS_DIRS]
+    _is_allowed = False
+    for _safe in _allowed_real_dirs:
+        try:
+            if os.path.commonpath([norm_path, _safe]) == _safe:
+                _is_allowed = True
+                break
+        except ValueError:
+            continue
+    if not _is_allowed:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "credentials_path_outside_allowed_dirs",
+                "message": (
+                    f"credentials_path '{creds_path}' resolves outside the allowed "
+                    f"secrets directories ({', '.join(_ALLOWED_CREDENTIALS_DIRS)}). "
+                    "Move the file under one of those mounts and update the path."
+                ),
+            },
+        )
+    # At this point norm_path is provably under one of the allow-listed
+    # roots (validated inline above). Subsequent file ops are safe.
 
     if not os.path.exists(norm_path):
         raise HTTPException(
@@ -2958,8 +2986,30 @@ async def delete_google_calendar_credentials(filename: str):
     Without this check, deleting via one key would silently break every
     OTHER key that pointed at the same file.
     """
+    # Resolve the requested filename inside the secrets dir. The helper
+    # validates the filename pattern + path-traversal protection, but
+    # CodeQL doesn't trace value-flow through helpers, so we re-state the
+    # constraint inline below before any file operation. (Same approach
+    # as _load_sa_metadata.)
     target_path = _resolve_calendar_secret_path(filename)
-    if not os.path.exists(target_path):
+    _secrets_real = os.path.realpath(GOOGLE_CALENDAR_SECRETS_DIR)
+    _target_real = os.path.realpath(target_path)
+    try:
+        _common = os.path.commonpath([_target_real, _secrets_real])
+    except ValueError:
+        _common = ""
+    if _common != _secrets_real:
+        # Defense-in-depth — should be unreachable given
+        # _resolve_calendar_secret_path's filename regex + dirname check,
+        # but keeps the constraint visible to static analysis.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "path_outside_secrets_dir",
+                "message": "Resolved path escapes the secrets directory.",
+            },
+        )
+    if not os.path.exists(_target_real):
         raise HTTPException(
             status_code=404,
             detail={
@@ -2987,8 +3037,7 @@ async def delete_google_calendar_credentials(filename: str):
                 entry_real = os.path.realpath(entry_path)
             except Exception:
                 entry_real = entry_path
-            target_real = os.path.realpath(target_path)
-            if entry_real == target_real or entry_path == container_path:
+            if entry_real == _target_real or entry_path == container_path:
                 referenced_by.append(str(k))
     if referenced_by:
         raise HTTPException(
@@ -3004,7 +3053,10 @@ async def delete_google_calendar_credentials(filename: str):
             },
         )
     try:
-        os.remove(target_path)
+        # Use the locally-validated _target_real (constrained to the
+        # secrets dir via inline commonpath check above) rather than
+        # raw target_path, so static analysis can see the constraint.
+        os.remove(_target_real)
     except OSError as e:
         raise HTTPException(
             status_code=500,
