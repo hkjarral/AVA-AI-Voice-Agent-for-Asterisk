@@ -3472,15 +3472,18 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
                     ),
                 },
             )
-    # lgtm[py/path-injection]: `safe_token_path` is constructed as
-    # `f"{LITERAL_TRUSTED_PREFIX}/microsoft-calendar-{validated_key}-token-cache.json"`
-    # where `validated_key` is `_validate_ms_account_key_or_400`'s output —
-    # regex-allowlisted to `[a-z0-9_-]{1,64}` AND explicitly checked for
-    # `..`, `/`, `\\`. There's no value satisfying both gates that can escape
-    # the literal prefix. CodeQL's taint analyzer doesn't propagate the
-    # custom validator-as-sanitizer through the function return; this
-    # suppression acknowledges the false positive.
-    if not os.path.exists(safe_token_path):
+    # Sink-side Path-based normalization. The path was already constructed
+    # safely (literal prefix + regex-validated, traversal-rejected account
+    # key), but CodeQL's `py/path-injection` query doesn't propagate the
+    # validator-as-sanitizer through the function return. The
+    # `Path.resolve() / .relative_to(secrets_dir)` pattern at the sink is a
+    # CodeQL-recognized sanitizer (raises ValueError on escape attempts);
+    # this makes the safety property visible to the static analyzer.
+    from pathlib import Path
+    _ms_secrets_dir = Path(MICROSOFT_CALENDAR_SECRETS_DIR).resolve()
+    _resolved_token_path = Path(safe_token_path).resolve()
+    _resolved_token_path.relative_to(_ms_secrets_dir)  # raises if escape
+    if not _resolved_token_path.exists():
         raise HTTPException(
             status_code=401,
             detail={
@@ -3506,7 +3509,7 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
     account = MicrosoftAccountConfig(
         tenant_id=tenant_id,
         client_id=client_id,
-        token_cache_path=safe_token_path,
+        token_cache_path=str(_resolved_token_path),
         user_principal_name=user_principal_name,
         calendar_id=calendar_id,
         timezone=timezone,
@@ -3566,16 +3569,19 @@ async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
                 },
             )
     removed = False
-    # lgtm[py/path-injection]: same as the verify endpoint above —
-    # `safe_path` is `f"{LITERAL_TRUSTED_PREFIX}/microsoft-calendar-{validated_key}-token-cache.json"`
-    # built from `_validate_ms_account_key_or_400`'s regex-allowlisted output
-    # (with explicit `..`/`/`/`\\` rejection). The `.lock` sibling shares the
-    # same trusted prefix. CodeQL's analyzer doesn't propagate the custom
+    # Sink-side Path-based normalization (same shape as verify above). The
+    # `Path.resolve() / .relative_to(secrets_dir)` pair raises ValueError on
+    # any escape attempt — CodeQL recognizes this pattern as a sanitizer for
+    # `py/path-injection`, whereas it doesn't propagate the upstream
     # validator-as-sanitizer through the function return.
-    for path in (safe_path, f"{safe_path}.lock"):
+    from pathlib import Path
+    _ms_secrets_dir = Path(MICROSOFT_CALENDAR_SECRETS_DIR).resolve()
+    for path_str in (safe_path, f"{safe_path}.lock"):
+        resolved = Path(path_str).resolve()
+        resolved.relative_to(_ms_secrets_dir)  # raises if escape
         try:
-            if os.path.exists(path):  # lgtm[py/path-injection]
-                os.remove(path)  # lgtm[py/path-injection]
+            if resolved.exists():
+                resolved.unlink()
                 removed = True
         except OSError as exc:
             raise HTTPException(

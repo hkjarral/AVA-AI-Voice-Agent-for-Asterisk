@@ -727,4 +727,12 @@ class MicrosoftCalendarTool(Tool):
                 tracked = self._last_event_per_call.get(call_id)
                 if tracked and tracked.get("event_id") == event_id:
                     self._last_event_per_call.pop(call_id, None)
-        return {"status": "success", "message": "Event deleted.", "id": event_id, "calendar": key}
+        # Match the fallback retry's response shape: surface both `id` and
+        # `event_id` for callers that key by either name.
+        return {
+            "status": "success",
+            "message": "Event deleted.",
+            "id": event_id,
+            "event_id": event_id,
+            "calendar": key,
+        }
