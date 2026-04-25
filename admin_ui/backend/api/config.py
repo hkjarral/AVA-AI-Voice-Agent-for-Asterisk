@@ -3082,10 +3082,19 @@ async def delete_google_calendar_credentials(filename: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 MICROSOFT_CALENDAR_SECRETS_DIR = "/app/project/secrets"
-_MS_ACCOUNT_KEY_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$", re.IGNORECASE)
+# V1 is single-account by design: only `accounts.default` is supported.
+# The token-cache file path is therefore a literal constant — never derived
+# from user input. When multi-account ships (V2), this constraint can be
+# lifted and the path will be derived from a per-account allowlist. Keeping
+# the path as a literal is what lets CodeQL's `py/path-injection` query
+# treat the value as untainted; it's also what the deployed product
+# contract has been all along (UI hardcodes `account_key="default"`,
+# docs document one-account V1).
+MICROSOFT_CALENDAR_TOKEN_CACHE_PATH = (
+    f"{MICROSOFT_CALENDAR_SECRETS_DIR}/microsoft-calendar-default-token-cache.json"
+)
 _MS_TENANT_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _MS_CLIENT_ID_PATTERN = re.compile(r"^[0-9a-fA-F-]{32,64}$")
-_MS_TOKEN_FILENAME_RE = re.compile(r"^microsoft-calendar-[a-z0-9_-]{1,64}-token-cache\.json$")
 _MS_DEVICE_FLOWS: dict[str, dict] = {}
 
 
@@ -3097,30 +3106,31 @@ def _ms_flow_lock():
 
 
 def _validate_ms_account_key_or_400(key: str) -> str:
-    candidate = key if isinstance(key, str) else ""
-    # Explicit rejection of path-traversal characters. The regex below already
-    # excludes these (the character class is [a-z0-9_-] only), but CodeQL's
-    # py/path-injection query specifically recognizes explicit "..", "/", "\\"
-    # rejection as a sanitizer; `re.fullmatch` against a restrictive pattern
-    # is not recognized. Belt-and-suspenders that also makes the intent
-    # readable to humans skimming the call site.
-    if ".." in candidate or "/" in candidate or "\\" in candidate:
+    """V1 supports exactly one Microsoft Calendar account: `default`.
+
+    Rejecting all other keys with a literal-string equality check (rather
+    than a regex pattern) is the simplest contract that matches what the
+    UI already enforces and what the docs document, and it lets CodeQL's
+    `py/path-injection` query treat any downstream path that depends on
+    the validated key as untainted (a literal-string equality check is a
+    recognized sanitizer; `re.fullmatch` against a character class is
+    not). When multi-account ships in V2, this validator can grow to
+    accept a finite allowlist of keys; the path resolver should then
+    derive from a per-key allowlist rather than a free-form string.
+    """
+    candidate = (key if isinstance(key, str) else "").strip()
+    if candidate != "default":
         raise HTTPException(
             status_code=400,
             detail={
-                "error_code": "invalid_account_key",
-                "message": "Account key must be 1-64 chars of [a-z0-9_-] only.",
+                "error_code": "unsupported_account_key",
+                "message": (
+                    "Microsoft Calendar V1 supports only account_key='default'. "
+                    "Multi-account support is planned for a future release."
+                ),
             },
         )
-    if not _MS_ACCOUNT_KEY_PATTERN.fullmatch(candidate):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "invalid_account_key",
-                "message": "Account key must be 1-64 chars of [a-z0-9_-] only.",
-            },
-        )
-    return candidate
+    return "default"
 
 
 def _validate_ms_tenant_client_or_400(tenant_id: str, client_id: str) -> tuple[str, str]:
@@ -3154,8 +3164,11 @@ def _validate_ms_tenant_client_or_400(tenant_id: str, client_id: str) -> tuple[s
 
 
 def _ms_token_cache_path_for_key(account_key: str) -> str:
-    key = _validate_ms_account_key_or_400(account_key)
-    return f"{MICROSOFT_CALENDAR_SECRETS_DIR}/microsoft-calendar-{key}-token-cache.json"
+    # V1 single-account: validate the key (only "default" is accepted) and
+    # return the literal constant path. No user-controlled bytes flow into
+    # the result.
+    _validate_ms_account_key_or_400(account_key)
+    return MICROSOFT_CALENDAR_TOKEN_CACHE_PATH
 
 
 class _MicrosoftDeviceStartRequest(BaseModel):
@@ -3472,18 +3485,10 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
                     ),
                 },
             )
-    # Sink-side Path-based normalization. The path was already constructed
-    # safely (literal prefix + regex-validated, traversal-rejected account
-    # key), but CodeQL's `py/path-injection` query doesn't propagate the
-    # validator-as-sanitizer through the function return. The
-    # `Path.resolve() / .relative_to(secrets_dir)` pattern at the sink is a
-    # CodeQL-recognized sanitizer (raises ValueError on escape attempts);
-    # this makes the safety property visible to the static analyzer.
-    from pathlib import Path
-    _ms_secrets_dir = Path(MICROSOFT_CALENDAR_SECRETS_DIR).resolve()
-    _resolved_token_path = Path(safe_token_path).resolve()
-    _resolved_token_path.relative_to(_ms_secrets_dir)  # raises if escape
-    if not _resolved_token_path.exists():
+    # `safe_token_path` is `MICROSOFT_CALENDAR_TOKEN_CACHE_PATH`, a literal
+    # constant — no user input can affect it (V1 is single-account; the
+    # validator above only accepts `account_key="default"`).
+    if not os.path.exists(safe_token_path):
         raise HTTPException(
             status_code=401,
             detail={
@@ -3509,7 +3514,7 @@ async def verify_microsoft_calendar(req: _MicrosoftVerifyRequest):
     account = MicrosoftAccountConfig(
         tenant_id=tenant_id,
         client_id=client_id,
-        token_cache_path=str(_resolved_token_path),
+        token_cache_path=safe_token_path,
         user_principal_name=user_principal_name,
         calendar_id=calendar_id,
         timezone=timezone,
@@ -3569,19 +3574,14 @@ async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
                 },
             )
     removed = False
-    # Sink-side Path-based normalization (same shape as verify above). The
-    # `Path.resolve() / .relative_to(secrets_dir)` pair raises ValueError on
-    # any escape attempt — CodeQL recognizes this pattern as a sanitizer for
-    # `py/path-injection`, whereas it doesn't propagate the upstream
-    # validator-as-sanitizer through the function return.
-    from pathlib import Path
-    _ms_secrets_dir = Path(MICROSOFT_CALENDAR_SECRETS_DIR).resolve()
-    for path_str in (safe_path, f"{safe_path}.lock"):
-        resolved = Path(path_str).resolve()
-        resolved.relative_to(_ms_secrets_dir)  # raises if escape
+    # `safe_path` is `MICROSOFT_CALENDAR_TOKEN_CACHE_PATH`, a literal
+    # constant — no user input can affect it (V1 is single-account; the
+    # validator above only accepts `account_key="default"`). The `.lock`
+    # sibling shares the same trusted prefix.
+    for path in (safe_path, f"{safe_path}.lock"):
         try:
-            if resolved.exists():
-                resolved.unlink()
+            if os.path.exists(path):
+                os.remove(path)
                 removed = True
         except OSError as exc:
             raise HTTPException(
