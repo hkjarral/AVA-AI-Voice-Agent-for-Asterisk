@@ -33,4 +33,8 @@ google-auth>=2.0.0
 
 # Google Calendar API client for business calendar tool
 google-api-python-client>=2.0.0
+
+# Microsoft Calendar API client for business calendar tool
+msal>=1.28.0
+portalocker>=2.8.0
 azure-cognitiveservices-speech>=1.41.0

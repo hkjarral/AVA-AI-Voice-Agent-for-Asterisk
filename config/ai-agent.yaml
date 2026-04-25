@@ -215,7 +215,7 @@ contexts:
 
       - Ask: "Would you like to schedule a meeting with the author of the project?"
 
-      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+      - If they agree, use the available calendar tool for this context (microsoft_calendar when present, otherwise google_calendar). First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
 
       - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
 
@@ -414,7 +414,7 @@ contexts:
 
       - Ask: "Would you like to schedule a meeting with the author of the project?"
 
-      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+      - If they agree, use the available calendar tool for this context (microsoft_calendar when present, otherwise google_calendar). First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
 
       - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
 
@@ -699,7 +699,7 @@ contexts:
 
       - Ask: "Would you like to schedule a meeting with the author of the project?"
 
-      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+      - If they agree, use the available calendar tool for this context (microsoft_calendar when present, otherwise google_calendar). First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
 
       - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
 
@@ -946,7 +946,7 @@ contexts:
 
       - Ask: "Would you like to schedule a meeting with the author of the project?"
 
-      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+      - If they agree, use the available calendar tool for this context (microsoft_calendar when present, otherwise google_calendar). First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
 
       - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
 
@@ -1137,7 +1137,7 @@ contexts:
 
       - Ask: "Would you like to schedule a meeting with the author of the project?"
 
-      - If they agree, use the google_calendar tool. First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
+      - If they agree, use the available calendar tool for this context (microsoft_calendar when present, otherwise google_calendar). First call get_free_slots with explicit time_min and time_max in ISO 8601 covering the next few business days starting from today's date. Pass them as naive local-time strings without a timezone suffix (e.g. time_min='2026-04-27T09:00:00' time_max='2026-04-30T17:00:00' which is Monday through Thursday) — the tool interprets these in the calendar's local timezone. The tool's response message tells you which timezone, the slot start/end times, and the slot duration.
 
       - Then propose AT MOST 2 to 3 specific times in plain language — never read the entire slots list aloud.
 

@@ -594,6 +594,12 @@ Tool Definitions:
             self.register(GCalendarTool)
         except ImportError as e:
             logger.warning(f"Could not import GCalendarTool: {e}")
+
+        try:
+            from src.tools.business.microsoft_calendar import MicrosoftCalendarTool
+            self.register(MicrosoftCalendarTool)
+        except ImportError as e:
+            logger.warning(f"Could not import MicrosoftCalendarTool: {e}")
         
         # Future tools will be registered here:
         # from src.tools.telephony.voicemail import SendToVoicemailTool

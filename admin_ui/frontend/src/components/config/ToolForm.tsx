@@ -483,6 +483,169 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
             });
             toast.success(`Selected "${picked.summary || picked.id}"`);
         };
+
+        // ─── Microsoft Calendar device-code OAuth ────────────────────────────
+        type MsCalendarSummary = {
+            id: string;
+            name: string;
+            is_default_calendar?: boolean;
+        };
+        type MsDeviceState = {
+            flowId?: string;
+            status?: 'idle' | 'pending' | 'success' | 'error' | 'expired';
+            userCode?: string;
+            verificationUri?: string;
+            message?: string;
+            error?: string;
+        };
+        type MsVerifyState = {
+            loading?: boolean;
+            ok?: boolean;
+            message?: string;
+            calendarName?: string;
+            errorCode?: string;
+        };
+        const [msDevice, setMsDevice] = useState<MsDeviceState>({ status: 'idle' });
+        const [msCalendars, setMsCalendars] = useState<MsCalendarSummary[]>([]);
+        const [msVerify, setMsVerify] = useState<MsVerifyState>({});
+
+        const microsoftAccount = config.microsoft_calendar?.accounts?.default || {};
+        const updateMicrosoftAccount = (patch: Record<string, any>) => {
+            const accounts = { ...(config.microsoft_calendar?.accounts || {}) };
+            accounts.default = { ...(accounts.default || {}), ...patch };
+            onChange({
+                ...config,
+                microsoft_calendar: {
+                    ...(config.microsoft_calendar || {}),
+                    accounts,
+                },
+            });
+        };
+
+        const startMicrosoftDeviceFlow = async () => {
+            const account = config.microsoft_calendar?.accounts?.default || {};
+            const tenantId = (account.tenant_id || '').trim();
+            const clientId = (account.client_id || '').trim();
+            if (!tenantId || !clientId) {
+                toast.error('Tenant ID and Client ID are required before connecting Microsoft Calendar');
+                return;
+            }
+            try {
+                setMsDevice({ status: 'pending' });
+                const res = await axios.post('/api/config/microsoft-calendar/device/start', {
+                    tenant_id: tenantId,
+                    client_id: clientId,
+                    account_key: 'default',
+                });
+                setMsDevice({
+                    status: 'pending',
+                    flowId: res.data?.flow_id,
+                    userCode: res.data?.user_code,
+                    verificationUri: res.data?.verification_uri,
+                    message: res.data?.message,
+                });
+            } catch (err: any) {
+                const detail = err?.response?.data?.detail || {};
+                const message = detail.message || err?.message || 'Could not start Microsoft device-code flow';
+                setMsDevice({ status: 'error', error: message });
+                toast.error('Microsoft connect failed', { description: message });
+            }
+        };
+
+        useEffect(() => {
+            if (!msDevice.flowId || msDevice.status !== 'pending') return;
+            let stopped = false;
+            const poll = async () => {
+                try {
+                    const res = await axios.get(`/api/config/microsoft-calendar/device/status/${encodeURIComponent(msDevice.flowId || '')}`);
+                    if (stopped) return;
+                    const status = res.data?.status;
+                    if (status === 'success') {
+                        const result = res.data?.result || {};
+                        const calendars: MsCalendarSummary[] = result.calendars || [];
+                        const defaultCal = calendars.find((c) => c.is_default_calendar) || calendars[0];
+                        setMsCalendars(calendars);
+                        updateMicrosoftAccount({
+                            token_cache_path: result.token_cache_path || '',
+                            user_principal_name: result.user_principal_name || '',
+                            calendar_id: defaultCal?.id || microsoftAccount.calendar_id || '',
+                            timezone: microsoftAccount.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+                        });
+                        setMsDevice((prev) => ({ ...prev, status: 'success' }));
+                        toast.success('Microsoft Calendar connected');
+                        return;
+                    }
+                    if (status === 'error' || status === 'expired') {
+                        const message = res.data?.error?.message || (status === 'expired' ? 'Device code expired' : 'Microsoft authorization failed');
+                        setMsDevice((prev) => ({ ...prev, status, error: message }));
+                    }
+                } catch (err: any) {
+                    if (!stopped) {
+                        setMsDevice((prev) => ({ ...prev, status: 'error', error: err?.message || 'Device-code polling failed' }));
+                    }
+                }
+            };
+            const timer = setInterval(poll, 3000);
+            poll();
+            return () => {
+                stopped = true;
+                clearInterval(timer);
+            };
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [msDevice.flowId, msDevice.status]);
+
+        const runMicrosoftVerify = async () => {
+            const account = config.microsoft_calendar?.accounts?.default || {};
+            setMsVerify({ loading: true });
+            try {
+                const res = await axios.post('/api/config/microsoft-calendar/verify', {
+                    account_key: 'default',
+                    tenant_id: account.tenant_id || '',
+                    client_id: account.client_id || '',
+                    token_cache_path: account.token_cache_path || '',
+                    user_principal_name: account.user_principal_name || '',
+                    calendar_id: account.calendar_id || '',
+                    timezone: account.timezone || '',
+                });
+                setMsVerify({
+                    loading: false,
+                    ok: true,
+                    message: `Reachable: ${res.data?.calendar_name || account.calendar_id || 'calendar'}`,
+                    calendarName: res.data?.calendar_name || '',
+                });
+                toast.success('Microsoft Calendar verified');
+            } catch (err: any) {
+                const detail = err?.response?.data?.detail || {};
+                setMsVerify({
+                    loading: false,
+                    ok: false,
+                    errorCode: detail.error_code || 'unknown',
+                    message: detail.message || err?.message || 'Verify failed',
+                });
+            }
+        };
+
+        const disconnectMicrosoftCalendar = async () => {
+            const account = config.microsoft_calendar?.accounts?.default || {};
+            try {
+                await axios.post('/api/config/microsoft-calendar/disconnect', {
+                    account_key: 'default',
+                    token_cache_path: account.token_cache_path || '',
+                });
+                updateMicrosoftAccount({
+                    token_cache_path: '',
+                    user_principal_name: '',
+                    calendar_id: '',
+                });
+                setMsVerify({});
+                setMsCalendars([]);
+                setMsDevice({ status: 'idle' });
+                toast.success('Microsoft Calendar disconnected');
+            } catch (err: any) {
+                const detail = err?.response?.data?.detail || {};
+                toast.error('Disconnect failed', { description: detail.message || err?.message || 'Unknown error' });
+            }
+        };
 	        const [showHangupExpert, setShowHangupExpert] = useState<boolean>(() => {
 	            try {
 	                const v = localStorage.getItem(HANGUP_EXPERT_STORAGE_KEY);
@@ -2887,6 +3050,201 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     >
                                         + Add Calendar
                                     </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* Microsoft Calendar */}
+                <div className="border border-border rounded-lg p-4 bg-card/50">
+                    <FormSwitch
+                        label="Microsoft Calendar"
+                        description="Enable the Microsoft 365 Outlook Calendar tool using device-code OAuth."
+                        checked={config.microsoft_calendar?.enabled ?? false}
+                        onChange={(e) => updateNestedConfig('microsoft_calendar', 'enabled', e.target.checked)}
+                        className="mb-0 border-0 p-0 bg-transparent"
+                    />
+                    {config.microsoft_calendar?.enabled && (
+                        <div className="mt-4 pl-4 border-l-2 border-border ml-2 space-y-4">
+                            <div>
+                                <div className="text-sm font-medium mb-1">Availability defaults</div>
+                                <div className="text-xs text-muted-foreground mb-3">
+                                    Blank Free prefix uses Microsoft Graph free/busy plus working hours (Mon-Fri 09:00-17:00 by default).
+                                    Set Free prefix only if you want title-prefix "Open" events instead.
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                                    <FormInput
+                                        label="Free prefix"
+                                        value={config.microsoft_calendar?.free_prefix ?? ''}
+                                        onChange={(e) => updateNestedConfig('microsoft_calendar', 'free_prefix', e.target.value)}
+                                        placeholder="(blank = use Microsoft free/busy)"
+                                        tooltip="Leave blank for native Microsoft free/busy mode. Set a value only for title-prefix availability windows."
+                                    />
+                                    <FormInput
+                                        label="Busy prefix"
+                                        value={config.microsoft_calendar?.busy_prefix ?? ''}
+                                        onChange={(e) => updateNestedConfig('microsoft_calendar', 'busy_prefix', e.target.value)}
+                                        placeholder="Busy"
+                                        tooltip="Only used when Free prefix is set."
+                                    />
+                                    <FormInput
+                                        label="Default slot duration (minutes)"
+                                        type="number"
+                                        value={(config.microsoft_calendar?.min_slot_duration_minutes ?? '').toString()}
+                                        onChange={(e) => {
+                                            const raw = e.target.value;
+                                            const parsed = raw === '' ? undefined : parseInt(raw, 10);
+                                            updateNestedConfig('microsoft_calendar', 'min_slot_duration_minutes', Number.isFinite(parsed) ? parsed : undefined);
+                                        }}
+                                        placeholder="30"
+                                        tooltip="Slot length in minutes if the LLM doesn't pass duration. Default: 30."
+                                    />
+                                    <FormInput
+                                        label="Max slots returned"
+                                        type="number"
+                                        value={(config.microsoft_calendar?.max_slots_returned ?? '').toString()}
+                                        onChange={(e) => {
+                                            const raw = e.target.value;
+                                            const parsed = raw === '' ? undefined : parseInt(raw, 10);
+                                            updateNestedConfig('microsoft_calendar', 'max_slots_returned', Number.isFinite(parsed) ? parsed : undefined);
+                                        }}
+                                        placeholder="3"
+                                        tooltip="Cap on how many slot start-times get_free_slots returns to the AI. Default: 3."
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <div className="text-sm font-medium mb-1">Microsoft 365 account</div>
+                                <div className="text-xs text-muted-foreground mb-3">
+                                    V1 links one work or school Microsoft 365 account. In Azure App registrations, enable public client flows and use an explicit tenant ID.
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end border border-border rounded p-2 bg-card/30">
+                                    <div className="md:col-span-3">
+                                        <FormInput
+                                            label="Tenant ID"
+                                            value={microsoftAccount.tenant_id || ''}
+                                            onChange={(e) => updateMicrosoftAccount({ tenant_id: e.target.value })}
+                                            placeholder="contoso.onmicrosoft.com or tenant GUID"
+                                            tooltip="Explicit Entra tenant ID or domain. Microsoft Calendar V1 does not use /common."
+                                        />
+                                    </div>
+                                    <div className="md:col-span-3">
+                                        <FormInput
+                                            label="Client ID"
+                                            value={microsoftAccount.client_id || ''}
+                                            onChange={(e) => updateMicrosoftAccount({ client_id: e.target.value })}
+                                            placeholder="Application (client) ID"
+                                            tooltip="Azure App registrations → Overview → Application (client) ID. Public client flows must be enabled."
+                                        />
+                                    </div>
+                                    <div className="md:col-span-3">
+                                        <FormInput
+                                            label="Signed-in user"
+                                            value={microsoftAccount.user_principal_name || ''}
+                                            onChange={(e) => updateMicrosoftAccount({ user_principal_name: e.target.value })}
+                                            placeholder="filled after Connect"
+                                            tooltip="The Microsoft 365 user who authorized the device-code flow."
+                                        />
+                                    </div>
+                                    <div className="md:col-span-3">
+                                        <FormInput
+                                            label="Timezone"
+                                            value={microsoftAccount.timezone || ''}
+                                            onChange={(e) => updateMicrosoftAccount({ timezone: e.target.value })}
+                                            placeholder="America/New_York"
+                                            tooltip="IANA timezone used for working hours and local slot display. Graph requests are normalized to UTC internally."
+                                        />
+                                    </div>
+                                    <div className="md:col-span-5">
+                                        <FormInput
+                                            label="Token cache path"
+                                            value={microsoftAccount.token_cache_path || ''}
+                                            onChange={(e) => updateMicrosoftAccount({ token_cache_path: e.target.value })}
+                                            placeholder="/app/project/secrets/microsoft-calendar-default-token-cache.json"
+                                            tooltip="Filled after Connect. Stored under /app/project/secrets with 0640 permissions so admin_ui and ai_engine can refresh tokens safely."
+                                        />
+                                    </div>
+                                    <div className="md:col-span-5">
+                                        <FormInput
+                                            label="Calendar ID"
+                                            value={microsoftAccount.calendar_id || ''}
+                                            onChange={(e) => updateMicrosoftAccount({ calendar_id: e.target.value })}
+                                            placeholder="filled after Connect or choose below"
+                                            tooltip="Microsoft Graph calendar id. Events are created with /me/calendars/{calendar_id}/events so this selection is honored."
+                                        />
+                                    </div>
+                                    <div className="md:col-span-2 flex gap-2 justify-end">
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1 text-xs rounded border hover:bg-accent disabled:opacity-50"
+                                            disabled={msDevice.status === 'pending'}
+                                            onClick={startMicrosoftDeviceFlow}
+                                            title="Start device-code OAuth. The operator signs in at microsoft.com/devicelogin."
+                                        >
+                                            {msDevice.status === 'pending' ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Connect'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="px-3 py-1 text-xs rounded border hover:bg-accent disabled:opacity-50"
+                                            disabled={msVerify.loading || !microsoftAccount.token_cache_path || !microsoftAccount.calendar_id}
+                                            onClick={runMicrosoftVerify}
+                                            title="Verify the connected account can see the configured calendar."
+                                        >
+                                            {msVerify.loading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Verify'}
+                                        </button>
+                                    </div>
+
+                                    <div className="md:col-span-12 pt-2 border-t border-border/50 space-y-2">
+                                        {msDevice.status === 'pending' && (
+                                            <div className="text-xs rounded border border-blue-500/30 bg-blue-500/10 p-2">
+                                                <div className="font-medium">Authorize Microsoft Calendar</div>
+                                                <div>Go to <a className="underline" href={msDevice.verificationUri || 'https://microsoft.com/devicelogin'} target="_blank" rel="noreferrer">{msDevice.verificationUri || 'https://microsoft.com/devicelogin'}</a> and enter code <code className="px-1 bg-muted rounded">{msDevice.userCode}</code>.</div>
+                                            </div>
+                                        )}
+                                        {msDevice.status === 'error' && (
+                                            <div className="text-xs text-destructive">Microsoft connect failed: {msDevice.error}</div>
+                                        )}
+                                        {msDevice.status === 'expired' && (
+                                            <div className="text-xs text-yellow-600 dark:text-yellow-400">Device code expired. Click Connect to start again.</div>
+                                        )}
+                                        {msDevice.status === 'success' && (
+                                            <div className="text-xs text-green-600 dark:text-green-400">Connected as {microsoftAccount.user_principal_name || 'Microsoft user'}.</div>
+                                        )}
+                                        {msCalendars.length > 0 && (
+                                            <div className="flex items-center gap-2 text-xs flex-wrap">
+                                                <span className="text-muted-foreground">Choose calendar:</span>
+                                                <select
+                                                    className="px-2 py-1 rounded border bg-background"
+                                                    value={microsoftAccount.calendar_id || ''}
+                                                    onChange={(e) => updateMicrosoftAccount({ calendar_id: e.target.value })}
+                                                >
+                                                    {msCalendars.map((cal) => (
+                                                        <option key={cal.id} value={cal.id}>{cal.name || cal.id}{cal.is_default_calendar ? ' (default)' : ''}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                        )}
+                                        {msVerify.ok && (
+                                            <div className="text-xs text-green-600 dark:text-green-400">{msVerify.message}</div>
+                                        )}
+                                        {msVerify.ok === false && (
+                                            <div className="text-xs text-destructive">
+                                                <span className="font-medium">{msVerify.errorCode || 'verify_failed'}</span>
+                                                <span className="ml-1">{msVerify.message}</span>
+                                            </div>
+                                        )}
+                                        {microsoftAccount.token_cache_path && (
+                                            <button
+                                                type="button"
+                                                className="px-3 py-1 text-xs rounded border hover:bg-accent text-destructive"
+                                                onClick={disconnectMicrosoftCalendar}
+                                            >
+                                                Disconnect
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                         </div>

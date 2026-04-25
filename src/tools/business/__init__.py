@@ -17,3 +17,9 @@ try:
     __all__.append("GCalendarTool")
 except ImportError:
     pass
+
+try:
+    from src.tools.business.microsoft_calendar import MicrosoftCalendarTool
+    __all__.append("MicrosoftCalendarTool")
+except ImportError:
+    pass
