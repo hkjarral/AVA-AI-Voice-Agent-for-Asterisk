@@ -63,7 +63,17 @@ _MICROSOFT_CALENDAR_INPUT_SCHEMA = {
         },
         "busy_prefix": {"type": "string", "description": "Optional title-prefix busy marker."},
         "duration": {"type": "integer", "description": "Appointment duration in minutes."},
-        "event_id": {"type": "string", "description": "Exact event id for get_event/delete_event."},
+        "event_id": {
+            "type": "string",
+            "description": (
+                "Microsoft Graph event id. Required for get_event. For delete_event you can "
+                "OMIT this if you want to delete the event you just created in this same "
+                "call (e.g. the typical reschedule flow: create → user changes their mind → "
+                "delete → create with new time). The tool will look up the most recently "
+                "created event_id automatically. Only pass an event_id explicitly if you "
+                "need to delete a specific older event."
+            ),
+        },
         "summary": {"type": "string", "description": "Event title for create_event."},
         "description": {"type": "string", "description": "Optional event description."},
         "start_datetime": {"type": "string", "description": "ISO 8601 start time for create_event."},
@@ -626,9 +636,10 @@ class MicrosoftCalendarTool(Tool):
             "status": "success",
             "message": "Event created.",
             "agent_hint": (
-                f"event_id='{event_id}'. If the caller later corrects the date or time, "
-                "call delete_event with THIS EXACT event_id and then call create_event "
-                "with the corrected time."
+                "If the caller later corrects the date or time, call delete_event with NO "
+                "event_id parameter (the tool will delete the event you just created), "
+                "then call create_event with the corrected time. Do NOT try to echo back "
+                "the event_id — the tool tracks it server-side for this call."
             ),
             "id": event_id,
             "event_id": event_id,
@@ -638,8 +649,27 @@ class MicrosoftCalendarTool(Tool):
 
     async def _handle_delete_event(self, parameters: dict[str, Any], cfg: dict[str, str], key: str, call_id: str) -> dict[str, Any]:
         event_id = parameters.get("event_id")
+        # Real-time speech-to-speech models can't reliably echo opaque Graph
+        # event ids back across conversation turns (we observed Gemini hallucinating
+        # base64, Deepgram passing the literal "event_id_here", and OpenAI passing
+        # "1"). For the common single-call reschedule flow — where create_event
+        # ran a few turns earlier in the same call — the authoritative id lives
+        # in `_last_event_per_call[call_id]`. If the model omits event_id, use
+        # that. Belt-and-suspenders: if it passes a wrong id, the malformed-id
+        # fallback below still rescues the call.
+        if not event_id and call_id:
+            with self._last_event_lock:
+                tracked = self._last_event_per_call.get(call_id)
+            if tracked and tracked.get("event_id"):
+                event_id = tracked["event_id"]
         if not event_id:
-            return {"status": "error", "message": "Error: 'event_id' is required for delete_event."}
+            return {
+                "status": "error",
+                "message": (
+                    "Error: 'event_id' is required for delete_event when no event was "
+                    "created in this call to fall back on."
+                ),
+            }
         account = self._account_config(cfg)
         validation_error = self._validate_account(account)
         if validation_error:
