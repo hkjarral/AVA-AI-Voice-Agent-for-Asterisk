@@ -144,7 +144,14 @@ async def test_create_event_keeps_event_id_out_of_spoken_message(ms_context):
     assert result["status"] == "success"
     assert result["message"] == "Event created."
     assert "ms_event_123" not in result["message"]
-    assert "ms_event_123" in result["agent_hint"]
+    # Post-83b0b2e2: agent_hint deliberately does NOT echo the opaque event_id.
+    # Real-time speech-to-speech models can't reliably reproduce long ids
+    # across conversation turns, so we tell the model to omit event_id on
+    # delete_event and rely on server-side per-call resolution. The id stays
+    # addressable on the structured response (`result["event_id"]`) for
+    # code paths that genuinely need it.
+    assert "ms_event_123" not in result["agent_hint"]
+    assert "NO event_id" in result["agent_hint"]
     assert result["event_id"] == "ms_event_123"
 
 
