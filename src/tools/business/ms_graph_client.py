@@ -102,10 +102,13 @@ class MicrosoftGraphClient:
         tmp_path = f"{path}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as handle:
             handle.write(cache.serialize())
-        os.chmod(tmp_path, 0o640)
+        # Owner-only (0o600). Both admin_ui and ai_engine run as uid 1000 in
+        # the production containers, so they share owner-rw access; no need
+        # for group-readable bits.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, path)
         try:
-            os.chmod(path, 0o640)
+            os.chmod(path, 0o600)
         except OSError:
             pass
 

@@ -3144,10 +3144,24 @@ def _ms_token_cache_path_for_key(account_key: str) -> str:
 
 
 def _resolve_ms_token_cache_path(token_cache_path: str) -> str:
+    """Resolve a user-supplied token cache path to a safe absolute path under
+    MICROSOFT_CALENDAR_SECRETS_DIR.
+
+    The user-controlled input is only used to pick a *filename*; any directory
+    components in the input are stripped. The chosen filename must match the
+    strict allowlist regex `_MS_TOKEN_FILENAME_RE` (no path-traversal characters,
+    no separators), and the returned path is constructed by joining the trusted
+    `MICROSOFT_CALENDAR_SECRETS_DIR` literal with that vetted basename. Defense
+    in depth: a final realpath check confirms the resolved path remains inside
+    the trusted directory (catches symlink attacks if any future change adds
+    symlinks under secrets_dir). This shape is intentionally CodeQL-friendly —
+    the output is derived from a literal prefix + regex-vetted basename, which
+    breaks `py/path-injection` taint flow.
+    """
     from pathlib import Path
 
-    path = (token_cache_path or "").strip()
-    if not path:
+    raw = (token_cache_path or "").strip()
+    if not raw:
         raise HTTPException(
             status_code=400,
             detail={
@@ -3155,19 +3169,8 @@ def _resolve_ms_token_cache_path(token_cache_path: str) -> str:
                 "message": "No token_cache_path configured or supplied.",
             },
         )
-    candidate = Path(os.path.realpath(path))
-    secrets_dir = Path(MICROSOFT_CALENDAR_SECRETS_DIR).resolve()
-    try:
-        candidate.relative_to(secrets_dir)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_code": "token_cache_path_outside_secrets_dir",
-                "message": "token_cache_path must live under /app/project/secrets.",
-            },
-        )
-    filename = candidate.name
+    # Strip any directory components — only the basename is meaningful.
+    filename = Path(raw).name
     if not _MS_TOKEN_FILENAME_RE.fullmatch(filename):
         raise HTTPException(
             status_code=400,
@@ -3176,7 +3179,21 @@ def _resolve_ms_token_cache_path(token_cache_path: str) -> str:
                 "message": "Microsoft token cache filename is not recognized.",
             },
         )
-    return str(secrets_dir / candidate.relative_to(secrets_dir))
+    secrets_dir = Path(MICROSOFT_CALENDAR_SECRETS_DIR).resolve()
+    safe_path = (secrets_dir / filename).resolve()
+    # Belt-and-suspenders: confirm we land inside the trusted dir even if some
+    # future change introduces symlinks under secrets_dir.
+    try:
+        safe_path.relative_to(secrets_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "token_cache_path_outside_secrets_dir",
+                "message": "token_cache_path must live under /app/project/secrets.",
+            },
+        )
+    return str(safe_path)
 
 
 class _MicrosoftDeviceStartRequest(BaseModel):
@@ -3247,10 +3264,13 @@ def _persist_ms_token_cache(cache, token_cache_path: str) -> None:
         tmp_path = f"{safe_path}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as handle:
             handle.write(cache.serialize())
-        os.chmod(tmp_path, 0o640)
+        # Owner-only (0o600). admin_ui and ai_engine both run as uid 1000 in
+        # the production containers, so they share owner-rw access; no group
+        # bit is required for cross-container token-cache coordination.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, safe_path)
         try:
-            os.chmod(safe_path, 0o640)
+            os.chmod(safe_path, 0o600)
         except OSError:
             pass
 
