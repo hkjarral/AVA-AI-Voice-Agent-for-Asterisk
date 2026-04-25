@@ -272,13 +272,33 @@ class GCalendar:
             logger.info("Successfully fetched event details", event_id=event_id)
             return event
         except Exception as e:
+            # Mirror delete_event: 404 → return None so the tool can surface
+            # "event not found" naturally; anything else (auth, forbidden,
+            # 5xx) → raise GoogleCalendarApiError so the gcal_tool wrapper
+            # can map to a specific error_code and the SCHEDULING-block
+            # recovery rules can fire on real failures. Without this every
+            # API failure looked like "event not found" and masked auth
+            # errors that need different operator action.
+            status = getattr(getattr(e, "resp", None), "status", None)
+            if status == 404:
+                logger.warning(
+                    "Event not found in Google Calendar (404)",
+                    event_id=event_id,
+                    error=str(e),
+                )
+                return None
             logger.error(
                 "Error fetching event from Google API",
                 event_id=event_id,
                 error=str(e),
+                status=status,
                 exc_info=True,
             )
-            return None
+            raise GoogleCalendarApiError(
+                f"Google Calendar API error fetching event: {e}",
+                calendar_id=self.calendar_id,
+                original=e,
+            ) from e
 
     def delete_event(self, event_id: str) -> bool:
         """

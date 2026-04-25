@@ -1304,9 +1304,40 @@ class GCalendarTool(Tool):
                         logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                         return out
                     cal_i = _cal_for_key(target_key)
-                event = await asyncio.to_thread(cal_i.get_event, event_id)
+                # get_event raises GoogleCalendarApiError on auth/forbidden/
+                # 5xx and returns None on 404. Treat the typed error the
+                # same way as create_event/delete_event so the SCHEDULING-
+                # block recovery substrings can match real auth failures
+                # rather than collapsing them into "event not found".
+                try:
+                    event = await asyncio.to_thread(cal_i.get_event, event_id)
+                except GoogleCalendarApiError as api_err:
+                    raw_msg = str(api_err)
+                    status = getattr(getattr(api_err.original, "resp", None), "status", None)
+                    error_code = "get_event_failed"
+                    if status == 403 or "forbidden" in raw_msg.lower():
+                        error_code = "forbidden_calendar"
+                    elif status == 401 or "unauthorized" in raw_msg.lower():
+                        error_code = "auth_failed"
+                    elif status and 500 <= status < 600:
+                        error_code = "google_api_unavailable"
+                    out = {
+                        "status": "error",
+                        "error_code": error_code,
+                        "message": f"Failed to retrieve event: {raw_msg}. (http_status={status})",
+                    }
+                    logger.error(
+                        "get_event raised GoogleCalendarApiError",
+                        call_id=call_id, event_id=event_id,
+                        error_code=error_code, status=status,
+                    )
+                    logger.info(
+                        "Tool response to AI", call_id=call_id, action=action,
+                        status=out.get("status"), error_code=error_code,
+                    )
+                    return out
                 if not event:
-                    out = {"status": "error", "message": "Event not found."}
+                    out = {"status": "error", "error_code": "event_not_found", "message": "Event not found."}
                     logger.warning("Event not found", call_id=call_id, event_id=event_id)
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
