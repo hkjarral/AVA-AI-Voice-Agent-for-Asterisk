@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { RebuildBackendDialog } from '../../components/models/RebuildBackendDialog';
+import { CustomModelsPanel } from '../../components/models/CustomModelsPanel';
 import axios from 'axios';
 
 interface ModelInfo {
@@ -31,6 +32,7 @@ interface ModelInfo {
     tool_calling?: 'recommended' | 'experimental' | 'none' | string;
     tool_calling_note?: string;
     chat_format?: string;
+    source?: 'user';  // Set on community-added entries from /api/custom-models
 }
 
 interface InstalledModel {
@@ -1580,6 +1582,11 @@ const ModelsPage = () => {
                                                         <div>
                                                             <div className="flex items-center gap-2">
                                                                 <p className="font-medium">{model.name}</p>
+                                                                {model.source === 'user' && (
+                                                                    <span className="px-2 py-0.5 text-xs bg-amber-500/15 text-amber-700 dark:text-amber-400 rounded-full">
+                                                                        Community
+                                                                    </span>
+                                                                )}
                                                                 {!model.auto_download && isModelInstalled(model.model_path || '') && (
                                                                     <span className="px-2 py-0.5 text-xs bg-green-100 dark:bg-green-900/30 text-green-600 rounded-full">
                                                                         Installed
@@ -1733,6 +1740,11 @@ const ModelsPage = () => {
                                                         <div>
                                                             <div className="flex items-center gap-2">
                                                                 <p className="font-medium">{model.name}</p>
+                                                                {model.source === 'user' && (
+                                                                    <span className="px-2 py-0.5 text-xs bg-amber-500/15 text-amber-700 dark:text-amber-400 rounded-full">
+                                                                        Community
+                                                                    </span>
+                                                                )}
                                                                 {isModelInstalled(model.model_path || '') && (
                                                                     <span className="px-2 py-0.5 text-xs bg-green-100 dark:bg-green-900/30 text-green-600 rounded-full">
                                                                         Installed
@@ -1797,6 +1809,11 @@ const ModelsPage = () => {
                         )}
                     </div>
                 </div>
+            </div>
+
+            {/* Custom (community) models — off by default */}
+            <div className="max-w-7xl mx-auto px-6 pb-6">
+                <CustomModelsPanel onChanged={fetchModels} />
             </div>
 
             {/* Rebuild Backend Dialog */}
