@@ -309,6 +309,9 @@ data/*.db-wal
 data/*.db-shm
 !data/.gitkeep
 
+# Custom (community) model entries — user-specific, persists across upgrades
+data/custom_models.json
+
 # Secrets directory (Vertex AI credentials, API keys — never commit actual secrets)
 secrets/**
 !secrets/.gitkeep
