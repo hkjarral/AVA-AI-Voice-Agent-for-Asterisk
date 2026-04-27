@@ -199,15 +199,12 @@ class ARIClient:
                 try:
                     await self.connect()
                 except Exception as e:
-                    self._reconnect_attempt += 1
-                    backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
-                    logger.warning(
+                    should_continue = await self._mark_disconnected_and_backoff(
                         "ARI connection failed, will retry",
-                        attempt=self._reconnect_attempt,
-                        backoff_seconds=backoff,
-                        error=str(e)
+                        error=str(e),
                     )
-                    await asyncio.sleep(backoff)
+                    if not should_continue:
+                        break
                     continue
 
             logger.info("Starting ARI event listener.")
