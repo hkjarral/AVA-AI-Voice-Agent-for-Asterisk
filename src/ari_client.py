@@ -4,6 +4,7 @@ Focuses on robust connection and logging to debug startup issues.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -52,6 +53,7 @@ class ARIClient:
         self._reconnect_attempt = 0
         self._max_reconnect_backoff = 60  # Max seconds between reconnect attempts
         self._connected = False  # True readiness state for /ready endpoint
+        self._listener_active = False  # Guard against duplicate listener supervisors
         self.event_handlers: Dict[str, List[Callable]] = {}
         self.active_playbacks: Dict[str, str] = {}
         self.audio_frame_handler: Optional[Callable] = None
@@ -103,7 +105,13 @@ class ARIClient:
                     raise ConnectionError(f"Failed to connect to ARI HTTP endpoint. Status: {response.status}")
                 logger.info("Successfully connected to ARI HTTP endpoint.", scheme=http_scheme, ssl_verify=self.ssl_verify)
 
-            # Then, connect to the WebSocket
+            # Then, connect to the WebSocket. Close any stale socket first so a reconnect
+            # never reuses a dead iterator.
+            if self.websocket is not None:
+                with contextlib.suppress(Exception):
+                    await self.websocket.close()
+                self.websocket = None
+
             self.websocket = await websockets.connect(self.ws_url, ssl=ssl_context)
             self.running = True
             self._connected = True
@@ -119,7 +127,53 @@ class ARIClient:
 
     async def start_listening(self):
         """Start listening for events from the ARI WebSocket with automatic reconnection."""
-        await self._listen_with_reconnect()
+        if self._listener_active:
+            logger.warning("ARI listener already active; ignoring duplicate start")
+            return
+
+        self._listener_active = True
+        self._should_reconnect = True
+        try:
+            await self._listen_with_reconnect()
+        finally:
+            self._listener_active = False
+
+    async def _mark_disconnected_and_backoff(
+        self,
+        message: str,
+        *,
+        level: str = "warning",
+        error: Optional[str] = None,
+        exc_info: bool = False,
+    ) -> bool:
+        """Clear ARI connection state and sleep before reconnecting."""
+        self._connected = False
+        self.running = False
+
+        websocket = self.websocket
+        self.websocket = None
+        if websocket is not None:
+            with contextlib.suppress(Exception):
+                await websocket.close()
+
+        if not self._should_reconnect:
+            logger.info(f"{message} (shutdown requested).")
+            return False
+
+        self._reconnect_attempt += 1
+        backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
+        log = logger.error if level == "error" else logger.warning
+        kwargs = {
+            "attempt": self._reconnect_attempt,
+            "backoff_seconds": backoff,
+        }
+        if error is not None:
+            kwargs["error"] = error
+        if exc_info:
+            kwargs["exc_info"] = True
+        log(message, **kwargs)
+        await asyncio.sleep(backoff)
+        return True
 
     async def _listen_with_reconnect(self):
         """
@@ -172,41 +226,30 @@ class ARIClient:
                                 asyncio.create_task(handler(event_data))
                     except json.JSONDecodeError:
                         logger.warning("Failed to decode ARI event JSON", message=message)
+
+                # A clean iterator end is still a disconnect. Without this branch the outer
+                # loop immediately re-enters with the stale websocket and spams listener logs.
+                should_continue = await self._mark_disconnected_and_backoff(
+                    "ARI WebSocket listener ended, will reconnect"
+                )
+                if not should_continue:
+                    break
                         
             except ConnectionClosed:
-                self._connected = False
-                self.running = False
-                self.websocket = None
-                if self._should_reconnect:
-                    self._reconnect_attempt += 1
-                    backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
-                    logger.warning(
-                        "ARI WebSocket connection closed, will reconnect",
-                        attempt=self._reconnect_attempt,
-                        backoff_seconds=backoff
-                    )
-                    await asyncio.sleep(backoff)
-                else:
-                    logger.info("ARI WebSocket closed (shutdown requested).")
+                should_continue = await self._mark_disconnected_and_backoff(
+                    "ARI WebSocket connection closed, will reconnect"
+                )
+                if not should_continue:
                     break
                     
             except Exception as e:
-                self._connected = False
-                self.running = False
-                self.websocket = None
-                if self._should_reconnect:
-                    self._reconnect_attempt += 1
-                    backoff = min(2 ** self._reconnect_attempt, self._max_reconnect_backoff)
-                    logger.error(
-                        "ARI listener error, will reconnect",
-                        attempt=self._reconnect_attempt,
-                        backoff_seconds=backoff,
-                        error=str(e),
-                        exc_info=True
-                    )
-                    await asyncio.sleep(backoff)
-                else:
-                    logger.error("ARI listener error (shutdown requested).", exc_info=True)
+                should_continue = await self._mark_disconnected_and_backoff(
+                    "ARI listener error, will reconnect",
+                    level="error",
+                    error=str(e),
+                    exc_info=True,
+                )
+                if not should_continue:
                     break
         
         logger.info("ARI reconnect supervisor stopped.")
@@ -220,7 +263,8 @@ class ARIClient:
         self._connected = False
         self.running = False
         if self.websocket:
-            await self.websocket.close()
+            with contextlib.suppress(Exception):
+                await self.websocket.close()
             self.websocket = None
         if self.http_session and not self.http_session.closed:
             await self.http_session.close()
