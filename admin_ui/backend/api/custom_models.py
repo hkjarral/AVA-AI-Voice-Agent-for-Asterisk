@@ -443,8 +443,30 @@ class CustomModelDeleteError(RuntimeError):
     """Raised when disk cleanup fails and registry deletion must abort."""
 
 
+# Sidecar suffixes the download flow may write next to a model file. Any
+# new sidecar pattern added by wizard.py download_single_model needs to be
+# listed here so deletes don't leave orphans on disk. Found in PR #359
+# end-to-end testing — `.sha256` was being leaked.
+_SIDECAR_SUFFIXES = (".json", ".sha256", ".download.json")
+
+
+def _delete_with_sidecars(disk_path: Path) -> bool:
+    """Unlink the main file plus any known sidecars. Returns True if at
+    least one file was removed."""
+    deleted = False
+    if disk_path.is_file():
+        disk_path.unlink()
+        deleted = True
+    for suffix in _SIDECAR_SUFFIXES:
+        sidecar = disk_path.with_suffix(disk_path.suffix + suffix)
+        if sidecar.is_file():
+            sidecar.unlink()
+            deleted = True
+    return deleted
+
+
 def delete_custom_model(model_id: str) -> bool:
-    """Remove from JSON and delete the file on disk if present."""
+    """Remove from JSON and delete the file (plus sidecars) on disk if present."""
     with _custom_models_lock():
         models = _load_custom_models_unlocked()
         target = next((m for m in models if m["id"] == model_id), None)
@@ -454,12 +476,7 @@ def delete_custom_model(model_id: str) -> bool:
         model_path = target.get("model_path")
         if model_path and mtype in ALLOWED_TYPES:
             try:
-                disk_path = _resolve_model_path(mtype, model_path)
-                if disk_path.is_file():
-                    disk_path.unlink()
-                cfg = disk_path.with_suffix(disk_path.suffix + ".json")
-                if cfg.is_file():
-                    cfg.unlink()
+                _delete_with_sidecars(_resolve_model_path(mtype, model_path))
             except (OSError, ValueError) as e:
                 logger.warning(
                     "Could not delete custom model file; registry entry preserved",
@@ -493,16 +510,7 @@ def delete_catalog_model_file(model_type: str, model_path: str) -> bool:
     """
     if not _model_path_in_curated_catalog(model_type, model_path):
         raise ValueError("model_path is not in the curated catalog (use DELETE /custom-models/{id} for community entries)")
-    disk_path = _resolve_model_path(model_type, model_path)
-    deleted = False
-    if disk_path.is_file():
-        disk_path.unlink()
-        deleted = True
-    cfg = disk_path.with_suffix(disk_path.suffix + ".json")
-    if cfg.is_file():
-        cfg.unlink()
-        deleted = True
-    return deleted
+    return _delete_with_sidecars(_resolve_model_path(model_type, model_path))
 
 
 def merge_into_catalog(catalog: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
