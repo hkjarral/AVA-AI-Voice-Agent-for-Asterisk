@@ -18,10 +18,10 @@ import logging
 import os
 import re
 import struct
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import portalocker
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Storage layout — sits next to the existing call_history.db in data/
 CUSTOM_MODELS_FILE = Path(PROJECT_ROOT) / "data" / "custom_models.json"
-CUSTOM_MODELS_LOCK = threading.Lock()  # serialise JSON writes within this process
+CUSTOM_MODELS_LOCK_FILE = CUSTOM_MODELS_FILE.with_suffix(".json.lock")
 
 # Toggle env var
 ENABLE_ENV_KEY = "ENABLE_CUSTOM_MODELS"
@@ -81,12 +81,18 @@ def _ensure_dir() -> None:
     CUSTOM_MODELS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
-def load_custom_models() -> List[Dict[str, Any]]:
+def _custom_models_lock():
+    """Inter-process lock for custom_models.json read-modify-write cycles."""
+    _ensure_dir()
+    return portalocker.Lock(str(CUSTOM_MODELS_LOCK_FILE), timeout=10)
+
+
+def _load_custom_models_unlocked() -> List[Dict[str, Any]]:
     """Read custom models from disk. Returns empty list if file missing/invalid."""
     if not CUSTOM_MODELS_FILE.exists():
         return []
     try:
-        data = json.loads(CUSTOM_MODELS_FILE.read_text())
+        data = json.loads(CUSTOM_MODELS_FILE.read_text(encoding="utf-8"))
         if isinstance(data, list):
             return data
         logger.warning("custom_models.json is not a list, ignoring")
@@ -95,12 +101,24 @@ def load_custom_models() -> List[Dict[str, Any]]:
     return []
 
 
-def save_custom_models(models: List[Dict[str, Any]]) -> None:
+def load_custom_models() -> List[Dict[str, Any]]:
+    """Read custom models while coordinating with cross-process writers."""
+    with _custom_models_lock():
+        return _load_custom_models_unlocked()
+
+
+def _save_custom_models_unlocked(models: List[Dict[str, Any]]) -> None:
     """Atomic write."""
     _ensure_dir()
     tmp = CUSTOM_MODELS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(models, indent=2))
+    tmp.write_text(json.dumps(models, indent=2), encoding="utf-8")
     os.replace(tmp, CUSTOM_MODELS_FILE)
+
+
+def save_custom_models(models: List[Dict[str, Any]]) -> None:
+    """Write custom models while coordinating with cross-process writers."""
+    with _custom_models_lock():
+        _save_custom_models_unlocked(models)
 
 
 # ============== GGUF header introspection ==============
@@ -240,7 +258,11 @@ def introspect_gguf(model_path: str, file_size_bytes: int) -> Dict[str, Any]:
     try:
         meta = parse_gguf_header(model_path)
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        logger.info(
+            "Could not parse GGUF header",
+            extra={"error_type": type(e).__name__},
+        )
+        return {"ok": False, "error": "Could not read GGUF header"}
 
     arch = meta.get("general.architecture")
     name = meta.get("general.name")
@@ -339,8 +361,8 @@ def add_custom_model(model: CustomModelIn) -> Dict[str, Any]:
     if model.config_url and not model.config_url.startswith("https://"):
         raise ValueError("config_url must be https")
 
-    with CUSTOM_MODELS_LOCK:
-        models = load_custom_models()
+    with _custom_models_lock():
+        models = _load_custom_models_unlocked()
         existing_ids = {m["id"] for m in models}
         base_id = f"custom_{model.type}_{_slugify(model.name)}"
         candidate, n = base_id, 1
@@ -374,7 +396,7 @@ def add_custom_model(model: CustomModelIn) -> Dict[str, Any]:
         entry["_type"] = model.type
 
         models.append(entry)
-        save_custom_models(models)
+        _save_custom_models_unlocked(models)
         return entry
 
 
@@ -417,22 +439,14 @@ def _resolve_model_path(model_type: str, model_path: str) -> Path:
     return candidate
 
 
-def _sanitize_for_log(value: str, max_len: int = 80) -> str:
-    """Strip newlines/control chars and truncate. Logs are read by humans
-    AND by structured-log parsers; an attacker-controlled `\\n` could
-    inject a fake log line."""
-    if not isinstance(value, str):
-        return repr(value)
-    cleaned = re.sub(r"[\r\n\x00-\x1f]+", " ", value)
-    if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len] + "…"
-    return cleaned
+class CustomModelDeleteError(RuntimeError):
+    """Raised when disk cleanup fails and registry deletion must abort."""
 
 
 def delete_custom_model(model_id: str) -> bool:
     """Remove from JSON and delete the file on disk if present."""
-    with CUSTOM_MODELS_LOCK:
-        models = load_custom_models()
+    with _custom_models_lock():
+        models = _load_custom_models_unlocked()
         target = next((m for m in models if m["id"] == model_id), None)
         if not target:
             return False
@@ -447,15 +461,13 @@ def delete_custom_model(model_id: str) -> bool:
                 if cfg.is_file():
                     cfg.unlink()
             except (OSError, ValueError) as e:
-                # Sanitise log inputs — model_id comes from a URL path and
-                # could contain control chars used to forge log lines.
                 logger.warning(
-                    "Could not delete model file for %s: %s",
-                    _sanitize_for_log(model_id),
-                    _sanitize_for_log(str(e)),
+                    "Could not delete custom model file; registry entry preserved",
+                    extra={"error_type": type(e).__name__},
                 )
+                raise CustomModelDeleteError("Could not delete custom model file") from e
         models = [m for m in models if m["id"] != model_id]
-        save_custom_models(models)
+        _save_custom_models_unlocked(models)
         return True
 
 
@@ -564,7 +576,10 @@ async def create_custom_model(body: CustomModelIn):
 async def remove_custom_model(model_id: str):
     if not is_enabled():
         raise HTTPException(status_code=403, detail="Custom models are disabled.")
-    ok = delete_custom_model(model_id)
+    try:
+        ok = delete_custom_model(model_id)
+    except CustomModelDeleteError:
+        raise HTTPException(status_code=500, detail="Could not delete custom model file")
     if not ok:
         raise HTTPException(status_code=404, detail="Custom model not found")
     return {"deleted": model_id}

@@ -311,6 +311,7 @@ data/*.db-shm
 
 # Custom (community) model entries — user-specific, persists across upgrades
 data/custom_models.json
+data/custom_models.json.lock
 
 # Secrets directory (Vertex AI credentials, API keys — never commit actual secrets)
 secrets/**

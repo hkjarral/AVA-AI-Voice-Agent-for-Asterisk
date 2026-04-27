@@ -172,7 +172,7 @@ def main():
         failures.sort(key=lambda r: (r[5], r[3], r[6]))
         print(f"{'KIND':<5} {'CODE':<5} {'MODEL_ID':<35} {'FIELD':<25} URL")
         print("-" * 140)
-        for _, code, err, mid, name, kind, field, url in failures:
+        for _, code, err, mid, _name, kind, field, url in failures:
             code_str = str(code) if code else "ERR"
             print(f"{kind:<5} {code_str:<5} {mid:<35} {field:<25} {url}")
             if err:

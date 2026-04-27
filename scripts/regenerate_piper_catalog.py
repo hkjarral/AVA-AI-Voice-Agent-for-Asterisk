@@ -3,7 +3,7 @@
 Regenerate Piper TTS catalog entries from the HuggingFace rhasspy/piper-voices repo.
 
 Usage:
-    python scripts/regenerate_piper_catalog.py [--out FILE] [--include-existing]
+    python scripts/regenerate_piper_catalog.py --out FILE [--include-existing]
 
 Walks the rhasspy/piper-voices repo at v1.0.0 and emits Python dict literals in
 the same format used by admin_ui/backend/api/models_catalog.py::PIPER_TTS_MODELS.
@@ -289,7 +289,7 @@ def render_entry(meta):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--out", type=Path, help="Write to file (default: stdout)")
+    ap.add_argument("--out", type=Path, required=True, help="Write generated entries to file")
     ap.add_argument("--include-existing", action="store_true",
                     help="Emit entries already present in the catalog (for diff/verification)")
     ap.add_argument("--max-workers", type=int, default=3,
@@ -364,19 +364,11 @@ def main():
         out_lines.append(render_entry(m))
 
     output = "\n".join(out_lines) + "\n"
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        # Explicit UTF-8 — voice names like pt_PT 'tugão' need it and the
-        # platform default would otherwise vary by locale.
-        args.out.write_text(output, encoding="utf-8")
-        print(f"\nWrote {len(metas)} entries to {args.out}", file=sys.stderr)
-    else:
-        # CodeQL flags this as "clear-text logging of sensitive information"
-        # because the data was fetched from a remote URL. False positive: the
-        # contents are exclusively public HuggingFace catalog metadata (model
-        # filenames, sample rates) intended for paste into models_catalog.py.
-        # No credentials, PII, or secrets are involved.
-        sys.stdout.write(output)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    # Explicit UTF-8 — voice names like pt_PT 'tugão' need it and the
+    # platform default would otherwise vary by locale.
+    args.out.write_text(output, encoding="utf-8")
+    print(f"\nWrote {len(metas)} entries to {args.out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
