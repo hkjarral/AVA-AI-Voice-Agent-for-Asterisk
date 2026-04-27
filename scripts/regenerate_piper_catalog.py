@@ -13,8 +13,8 @@ the output is purely "what's new." Pass --include-existing to regenerate every
 voice for a full diff (e.g. when verifying the script's output matches what's
 already there).
 
-The output is a draft. Single-speaker voices have gender set to "?" because that
-information is not in HuggingFace metadata; review by hand and fill in before
+The output is a draft. render_entry() uses KNOWN_GENDERS for single-speaker
+voices and falls back to gender="unknown"; review unknown entries by hand before
 pasting into the catalog. Multi-speaker voices are tagged gender="multi"
 automatically (matches the existing convention used by nl_mls).
 
@@ -275,15 +275,19 @@ def render_entry(meta):
     base_url = f"{HF_RESOLVE_BASE}/{meta['lang']}/{lc}/{voice_q}"
     onnx_q = urllib.parse.quote(meta["onnx_filename"])
     config_q = urllib.parse.quote(meta["config_filename"])
+    size_display = f"{meta['size_mb']} MB"
+
+    def q(value):
+        return json.dumps(value, ensure_ascii=False)
 
     return (
-        f'    {{"id": "{voice_id}", "name": "{name}", "language": "{lang_display}", '
-        f'"region": "{region}", "backend": "piper",\n'
-        f'     "gender": "{gender}", "quality": "{quality}", '
-        f'"size_mb": {meta["size_mb"]}, "size_display": "{meta["size_mb"]} MB",\n'
-        f'     "model_path": "{meta["onnx_filename"]}",\n'
-        f'     "download_url": "{base_url}/{onnx_q}",\n'
-        f'     "config_url": "{base_url}/{config_q}"}},'
+        f'    {{"id": {q(voice_id)}, "name": {q(name)}, "language": {q(lang_display)}, '
+        f'"region": {q(region)}, "backend": "piper",\n'
+        f'     "gender": {q(gender)}, "quality": {q(quality)}, '
+        f'"size_mb": {meta["size_mb"]}, "size_display": {q(size_display)},\n'
+        f'     "model_path": {q(meta["onnx_filename"])},\n'
+        f'     "download_url": {q(f"{base_url}/{onnx_q}")},\n'
+        f'     "config_url": {q(f"{base_url}/{config_q}")}}},'
     )
 
 

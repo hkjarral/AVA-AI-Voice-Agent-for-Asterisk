@@ -41,6 +41,24 @@ URL_FIELDS = ("download_url", "config_url", "mirror_url", "vocoder_url", "tokens
 ALLOWED_SCHEMES = {"https"}  # No http://, file://, ftp://, custom schemes
 
 
+def _validate_url_scheme(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        raise urllib.error.URLError(
+            f"unsupported scheme '{parsed.scheme}' (only https allowed)"
+        )
+    return url
+
+
+class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects that leave the allowed URL schemes."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirect_url = urllib.parse.urljoin(req.full_url, newurl)
+        _validate_url_scheme(redirect_url)
+        return super().redirect_request(req, fp, code, msg, headers, redirect_url)
+
+
 def safe_url(url):
     parts = urllib.parse.urlsplit(url)
     return urllib.parse.urlunsplit(
@@ -75,17 +93,19 @@ def check_url(url, timeout=20, max_retries=4):
     # which otherwise happily opens file://, ftp://, custom schemes, etc.
     # A broken or malicious catalog entry could otherwise probe the local
     # filesystem or internal services.
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
-        return 0, f"unsupported scheme '{parsed.scheme}' (only https allowed)"
+    try:
+        _validate_url_scheme(url)
+    except urllib.error.URLError as e:
+        return 0, str(e.reason)
     req = urllib.request.Request(safe_url(url), method="HEAD",
                                  headers={"User-Agent": "AAVA-catalog-url-check/1.0"})
+    opener = urllib.request.build_opener(HttpsOnlyRedirectHandler)
     delay = 2.0
     last_err = None
     for attempt in range(max_retries):
         try:
-            # nosec B310: scheme is validated above; only https is reachable here.
-            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+            # nosec B310: original and redirected schemes are validated as HTTPS-only.
+            with opener.open(req, timeout=timeout) as r:  # noqa: S310
                 return r.status, None
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < max_retries - 1:

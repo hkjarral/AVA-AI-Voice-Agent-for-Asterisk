@@ -435,7 +435,7 @@ def _resolve_model_path(model_type: str, model_path: str) -> Path:
     try:
         candidate.relative_to(base)
     except ValueError:
-        raise ValueError("model_path escapes models/ directory")
+        raise ValueError("model_path escapes models/ directory") from None
     return candidate
 
 
@@ -568,7 +568,7 @@ async def create_custom_model(body: CustomModelIn):
     try:
         entry = add_custom_model(body)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return entry
 
 
@@ -578,8 +578,8 @@ async def remove_custom_model(model_id: str):
         raise HTTPException(status_code=403, detail="Custom models are disabled.")
     try:
         ok = delete_custom_model(model_id)
-    except CustomModelDeleteError:
-        raise HTTPException(status_code=500, detail="Could not delete custom model file")
+    except CustomModelDeleteError as e:
+        raise HTTPException(status_code=500, detail="Could not delete custom model file") from e
     if not ok:
         raise HTTPException(status_code=404, detail="Custom model not found")
     return {"deleted": model_id}
@@ -596,7 +596,7 @@ async def delete_downloaded_model(body: CatalogDeleteIn):
     try:
         deleted = delete_catalog_model_file(body.type, body.model_path)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not deleted:
         raise HTTPException(status_code=404, detail="Model file not on disk")
     return {"deleted": body.model_path}
@@ -615,7 +615,7 @@ async def introspect_model(body: IntrospectIn):
     try:
         disk_path = _resolve_model_path("llm", body.model_path)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not disk_path.is_file():
         # Echo only the bare filename, not the full server path.
         raise HTTPException(status_code=404, detail="Model file not found — has it been downloaded?")
