@@ -30,6 +30,7 @@ from api.models_catalog import (
     LANGUAGE_NAMES, REGION_NAMES, VOSK_STT_MODELS, SHERPA_STT_MODELS,
     KROKO_STT_MODELS, PIPER_TTS_MODELS, KOKORO_TTS_MODELS, SILERO_TTS_MODELS, LLM_MODELS
 )
+from api.custom_models import merge_into_catalog as _merge_custom_models
 from api.rebuild_jobs import (
     start_rebuild_job, get_rebuild_job, get_enabled_backends,
     is_rebuild_in_progress, BACKEND_BUILD_ARGS, BUILD_TIME_ESTIMATES
@@ -1104,7 +1105,12 @@ async def get_available_models(language: Optional[str] = None):
         full_catalog["llm"] = LLM_MODELS
     else:
         full_catalog = get_full_catalog()
-    
+
+    # Merge in user-added custom models when the toggle is on. They appear
+    # in the same lists as catalog entries with source="user" so the UI
+    # can badge them appropriately.
+    full_catalog = _merge_custom_models(full_catalog)
+
     # Add recommendation flags based on system
     catalog = {}
     for category, models in full_catalog.items():
