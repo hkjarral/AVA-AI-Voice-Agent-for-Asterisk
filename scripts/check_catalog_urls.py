@@ -50,6 +50,10 @@ def _validate_url_scheme(url):
     return url
 
 
+def _is_unsupported_scheme_error(error):
+    return "unsupported scheme" in str(getattr(error, "reason", error))
+
+
 class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Reject redirects that leave the allowed URL schemes."""
 
@@ -117,6 +121,8 @@ def check_url(url, timeout=20, max_retries=4):
             return e.code, str(e.reason or "")
         except urllib.error.URLError as e:
             last_err = f"URLError: {e.reason}"
+            if _is_unsupported_scheme_error(e):
+                return 0, last_err
             if attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2

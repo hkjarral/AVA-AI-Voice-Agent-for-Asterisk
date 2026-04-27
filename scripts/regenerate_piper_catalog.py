@@ -38,6 +38,7 @@ HF_API_BASE = f"https://huggingface.co/api/models/{HF_REPO}/tree/{HF_REV}"
 HF_RESOLVE_BASE = f"https://huggingface.co/{HF_REPO}/resolve/{HF_REV}"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CATALOG_PATH = REPO_ROOT / "admin_ui" / "backend" / "api" / "models_catalog.py"
+ALLOWED_SCHEMES = {"https"}
 
 # Region tags mirror what the existing catalog uses. Anything not listed
 # defaults to "europe" since most Piper voices are European languages.
@@ -101,6 +102,24 @@ KNOWN_GENDERS = {
 }
 
 
+def _validate_url_scheme(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        raise urllib.error.URLError(
+            f"unsupported scheme '{parsed.scheme}' (only https allowed)"
+        )
+    return url
+
+
+class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects that leave the allowed URL schemes."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirect_url = urllib.parse.urljoin(req.full_url, newurl)
+        _validate_url_scheme(redirect_url)
+        return super().redirect_request(req, fp, code, msg, headers, redirect_url)
+
+
 
 def _safe_url(url):
     """Percent-encode the path portion so non-ASCII voice names work."""
@@ -135,11 +154,14 @@ def fetch_json(url, timeout=30, max_retries=6):
     HF caps the tree API around 60 req/min; backoff is 2/4/8/16/32/64s
     so a single endpoint can sleep up to ~2 minutes total before failing.
     """
+    _validate_url_scheme(url)
     req = urllib.request.Request(_safe_url(url), headers={"Accept": "application/json"})
+    opener = urllib.request.build_opener(HttpsOnlyRedirectHandler)
     delay = 2.0
     for attempt in range(max_retries):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            # nosec B310: original and redirected schemes are validated as HTTPS-only.
+            with opener.open(req, timeout=timeout) as r:  # noqa: S310
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < max_retries - 1:
