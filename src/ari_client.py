@@ -172,8 +172,14 @@ class ARIClient:
         if exc_info:
             kwargs["exc_info"] = True
         log(message, **kwargs)
-        await asyncio.sleep(backoff)
-        return True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + backoff
+        while self._should_reconnect:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return True
+            await asyncio.sleep(min(remaining, 0.5))
+        return False
 
     async def _listen_with_reconnect(self):
         """

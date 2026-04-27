@@ -42,5 +42,5 @@ async def test_ari_listener_handles_clean_iterator_end_without_tight_loop(monkey
     assert client._connected is False
     assert client.websocket is None
     assert websocket.closed is True
-    assert sleeps == [2]
+    assert sleeps == [0.5]
     assert client._reconnect_attempt == 1
