@@ -76,6 +76,7 @@ export const CustomModelsPanel = ({ onChanged }: Props) => {
     const [form, setForm] = useState<FormState>(EMPTY_FORM);
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
+    const [fetchError, setFetchError] = useState<string | null>(null);
     const [expandedIntrospect, setExpandedIntrospect] = useState<Record<string, IntrospectResult | 'loading' | 'closed'>>({});
 
     const refresh = useCallback(async () => {
@@ -84,9 +85,13 @@ export const CustomModelsPanel = ({ onChanged }: Props) => {
             const res = await axios.get('/api/custom-models');
             setEnabled(res.data.enabled);
             setModels(res.data.models || []);
-        } catch (e) {
+            setFetchError(null);
+        } catch (e: any) {
+            // Don't reset enabled to false on transient network errors —
+            // misrepresents backend state and would hide configured entries.
+            // Only update enabled when we actually got a response.
             console.error('Failed to load custom models', e);
-            setEnabled(false);
+            setFetchError(e?.response?.data?.detail || e?.message || 'Failed to load');
         } finally {
             setLoading(false);
         }
@@ -195,6 +200,13 @@ export const CustomModelsPanel = ({ onChanged }: Props) => {
                     <span className="text-sm font-medium">{enabled ? 'Enabled' : 'Disabled'}</span>
                 </label>
             </div>
+
+            {fetchError && (
+                <div className="bg-destructive/10 border border-destructive/30 rounded p-2 text-xs text-destructive mb-3 flex items-center justify-between gap-2">
+                    <span>Couldn't reach backend: {fetchError}</span>
+                    <button onClick={refresh} className="underline">Retry</button>
+                </div>
+            )}
 
             {!enabled && (
                 <p className="text-sm text-muted-foreground italic">

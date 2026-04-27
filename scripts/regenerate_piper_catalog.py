@@ -156,6 +156,16 @@ def parse_existing_ids(catalog_path):
     return set(re.findall(r'"id":\s*"(piper_[^"]+)"', text))
 
 
+def parse_existing_model_paths(catalog_path):
+    """Pull every Piper model_path out of the existing catalog so we can
+    skip generating entries that point at the same .onnx file under a
+    different id (caught the ca_ES upc_ona duplicate flagged in PR #359
+    review)."""
+    text = catalog_path.read_text()
+    # Only match model_paths within Piper-style entries (lang_country prefix)
+    return set(re.findall(r'"model_path":\s*"([a-z]{2,3}_[A-Z]{2,3}-[^"]+\.onnx)"', text))
+
+
 # Languages with multiple country variants that need the country part in
 # the id to disambiguate (en_us vs en_gb, pt_br vs pt_pt, es_mx vs es_es).
 # Everything else collapses to the language code only (de_DE → de, pl_PL → pl)
@@ -264,7 +274,9 @@ def main():
 
     print(f"Walking {HF_REPO} @ {HF_REV} …", file=sys.stderr)
     existing_ids = parse_existing_ids(CATALOG_PATH)
-    print(f"  Catalog has {len(existing_ids)} piper voices already.", file=sys.stderr)
+    existing_paths = parse_existing_model_paths(CATALOG_PATH)
+    print(f"  Catalog has {len(existing_ids)} piper voices ({len(existing_paths)} unique files) already.",
+          file=sys.stderr)
 
     targets = []
     for lang_dir in list_dirs(""):
@@ -296,10 +308,14 @@ def main():
 
     if not args.include_existing:
         before = len(metas)
+        # Skip if either the generated id OR the underlying file path is
+        # already in the catalog. Path-level dedup catches the case where
+        # an existing entry uses a different id but points at the same
+        # .onnx file (the ca_ES upc/upc_ona collision found in PR #359).
         metas = [
             m for m in metas
-            if f"piper_{short_prefix(m['lang_country'])}_{m['voice']}_{m['quality']}"
-            not in existing_ids
+            if f"piper_{short_prefix(m['lang_country'])}_{m['voice']}_{m['quality']}" not in existing_ids
+            and m["onnx_filename"] not in existing_paths
         ]
         print(f"  Filtered out {before - len(metas)} already-in-catalog entries.", file=sys.stderr)
 
@@ -329,6 +345,11 @@ def main():
         args.out.write_text(output)
         print(f"\nWrote {len(metas)} entries to {args.out}", file=sys.stderr)
     else:
+        # CodeQL flags this as "clear-text logging of sensitive information"
+        # because the data was fetched from a remote URL. False positive: the
+        # contents are exclusively public HuggingFace catalog metadata (model
+        # filenames, sample rates) intended for paste into models_catalog.py.
+        # No credentials, PII, or secrets are involved.
         sys.stdout.write(output)
 
 

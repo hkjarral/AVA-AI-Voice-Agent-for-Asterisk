@@ -469,8 +469,11 @@ PIPER_TTS_MODELS = [
      "model_path": "tr_TR-dfki-medium.onnx",
      "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/tr/tr_TR/dfki/medium/tr_TR-dfki-medium.onnx",
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/tr/tr_TR/dfki/medium/tr_TR-dfki-medium.onnx.json"},
-    {"id": "piper_ca_upc_medium", "name": "UPC (ca-ES, Multi)", "language": "ca-ES", "region": "europe", "backend": "piper",
-     "gender": "multi", "quality": "medium", "size_mb": 100, "size_display": "100 MB",
+    # Legacy id kept for backwards compatibility with users who already
+    # selected this entry; metadata corrected — the underlying file is
+    # the single-speaker upc_ona voice (~60 MB), not a multi-speaker model.
+    {"id": "piper_ca_upc_medium", "name": "UPC Ona (ca-ES)", "language": "ca-ES", "region": "europe", "backend": "piper",
+     "gender": "unknown", "quality": "medium", "size_mb": 60, "size_display": "60 MB",
      "model_path": "ca_ES-upc_ona-medium.onnx",
      "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ca/ca_ES/upc_ona/medium/ca_ES-upc_ona-medium.onnx",
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ca/ca_ES/upc_ona/medium/ca_ES-upc_ona-medium.onnx.json"},
@@ -494,8 +497,11 @@ PIPER_TTS_MODELS = [
      "model_path": "no_NO-talesyntese-medium.onnx",
      "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/no/no_NO/talesyntese/medium/no_NO-talesyntese-medium.onnx",
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/no/no_NO/talesyntese/medium/no_NO-talesyntese-medium.onnx.json"},
-    {"id": "piper_sr_serbski_medium", "name": "Serbski (sr-RS, Male)", "language": "sr-RS", "region": "europe", "backend": "piper",
-     "gender": "male", "quality": "medium", "size_mb": 100, "size_display": "100 MB",
+    # Legacy id kept for backwards compatibility; metadata corrected — the
+    # underlying file is the multi-speaker Serbski Institut corpus (~73 MB),
+    # not a single-speaker male voice.
+    {"id": "piper_sr_serbski_medium", "name": "Serbski Institut (sr-RS, Multi)", "language": "sr-RS", "region": "europe", "backend": "piper",
+     "gender": "multi", "quality": "medium", "size_mb": 73, "size_display": "73 MB",
      "model_path": "sr_RS-serbski_institut-medium.onnx",
      "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sr/sr_RS/serbski_institut/medium/sr_RS-serbski_institut-medium.onnx",
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sr/sr_RS/serbski_institut/medium/sr_RS-serbski_institut-medium.onnx.json"},
@@ -547,11 +553,10 @@ PIPER_TTS_MODELS = [
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/low/ar_JO-kareem-low.onnx.json"},
 
     # === ca_ES ===
-    {"id": "piper_ca_upc_ona_medium", "name": "UPC Ona (ca-ES)", "language": "ca-ES", "region": "europe", "backend": "piper",
-     "gender": "unknown", "quality": "medium", "size_mb": 60, "size_display": "60 MB",
-     "model_path": "ca_ES-upc_ona-medium.onnx",
-     "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ca/ca_ES/upc_ona/medium/ca_ES-upc_ona-medium.onnx",
-     "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ca/ca_ES/upc_ona/medium/ca_ES-upc_ona-medium.onnx.json"},
+    # piper_ca_upc_ona_medium (model_path=ca_ES-upc_ona-medium.onnx) is omitted
+    # here: the existing piper_ca_upc_medium entry above (line 472) already
+    # points at the same file. The legacy entry's metadata (name, gender,
+    # size_mb) is incorrect — see the cleanup edit on piper_ca_upc_medium.
     {"id": "piper_ca_upc_ona_x_low", "name": "UPC Ona (ca-ES)", "language": "ca-ES", "region": "europe", "backend": "piper",
      "gender": "unknown", "quality": "x_low", "size_mb": 20, "size_display": "20 MB",
      "model_path": "ca_ES-upc_ona-x_low.onnx",
@@ -1114,11 +1119,8 @@ PIPER_TTS_MODELS = [
      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sl/sl_SI/artur/medium/sl_SI-artur-medium.onnx.json"},
 
     # === sr_RS ===
-    {"id": "piper_sr_serbski_institut_medium", "name": "Serbski Institut (sr-RS, Multi)", "language": "sr-RS", "region": "europe", "backend": "piper",
-     "gender": "multi", "quality": "medium", "size_mb": 73, "size_display": "73 MB",
-     "model_path": "sr_RS-serbski_institut-medium.onnx",
-     "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sr/sr_RS/serbski_institut/medium/sr_RS-serbski_institut-medium.onnx",
-     "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sr/sr_RS/serbski_institut/medium/sr_RS-serbski_institut-medium.onnx.json"},
+    # Single sr_RS voice in v1.0.0 (serbski_institut/medium) is already
+    # listed above via the legacy piper_sr_serbski_medium id.
 
     # === sv_SE ===
     {"id": "piper_sv_lisa_medium", "name": "Lisa (sv-SE, Female)", "language": "sv-SE", "region": "europe", "backend": "piper",

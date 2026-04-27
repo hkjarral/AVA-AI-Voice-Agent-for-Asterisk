@@ -331,8 +331,13 @@ def add_custom_model(model: CustomModelIn) -> Dict[str, Any]:
     """Persist a new custom model entry. Generates an id from the name."""
     if model.type not in ALLOWED_TYPES:
         raise ValueError(f"type must be one of {sorted(ALLOWED_TYPES)}")
-    if not model.download_url.startswith(("http://", "https://")):
-        raise ValueError("download_url must be http(s)")
+    # HTTPS only — http:// could be redirected to internal addresses by a
+    # malicious upstream and the download flow follows redirects. HuggingFace
+    # and every other legitimate model host serves over HTTPS.
+    if not model.download_url.startswith("https://"):
+        raise ValueError("download_url must be https")
+    if model.config_url and not model.config_url.startswith("https://"):
+        raise ValueError("config_url must be https")
 
     with CUSTOM_MODELS_LOCK:
         models = load_custom_models()
@@ -368,6 +373,28 @@ def add_custom_model(model: CustomModelIn) -> Dict[str, Any]:
         return entry
 
 
+def _resolve_model_path(model_type: str, model_path: str) -> Path:
+    """Validate + resolve a model file path under models/<type>/.
+
+    Two layers of defence against path traversal: (1) reject any input
+    containing path separators or '..', and (2) resolve the constructed
+    path and assert it stays under models/<type>/. CodeQL's taint
+    analysis flags constructed paths when they touch user input, so
+    anchoring on the resolved path is what satisfies the analyzer too.
+    """
+    if model_type not in ALLOWED_TYPES:
+        raise ValueError("invalid model type")
+    if "/" in model_path or "\\" in model_path or ".." in model_path or not model_path:
+        raise ValueError("model_path must be a bare filename")
+    base = (Path(PROJECT_ROOT) / "models" / model_type).resolve()
+    candidate = (base / model_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        raise ValueError("model_path escapes models/ directory")
+    return candidate
+
+
 def delete_custom_model(model_id: str) -> bool:
     """Remove from JSON and delete the file on disk if present."""
     with CUSTOM_MODELS_LOCK:
@@ -375,20 +402,19 @@ def delete_custom_model(model_id: str) -> bool:
         target = next((m for m in models if m["id"] == model_id), None)
         if not target:
             return False
-        # Try to delete the actual file too
         mtype = target.get("_type", "llm")
         model_path = target.get("model_path")
-        if model_path:
-            disk_path = Path(PROJECT_ROOT) / "models" / mtype / model_path
+        if model_path and mtype in ALLOWED_TYPES:
             try:
+                disk_path = _resolve_model_path(mtype, model_path)
                 if disk_path.is_file():
                     disk_path.unlink()
-                # Companion config (TTS)
                 cfg = disk_path.with_suffix(disk_path.suffix + ".json")
                 if cfg.is_file():
                     cfg.unlink()
-            except OSError as e:
-                logger.warning("Could not delete file %s: %s", disk_path, e)
+            except (OSError, ValueError) as e:
+                # Don't echo path back to logs — just the failure reason.
+                logger.warning("Could not delete model file for %s: %s", model_id, e)
         models = [m for m in models if m["id"] != model_id]
         save_custom_models(models)
         return True
@@ -396,14 +422,7 @@ def delete_custom_model(model_id: str) -> bool:
 
 def delete_catalog_model_file(model_type: str, model_path: str) -> bool:
     """Delete a downloaded catalog model from disk. Catalog entry stays."""
-    if model_type not in ALLOWED_TYPES:
-        raise ValueError(f"type must be one of {sorted(ALLOWED_TYPES)}")
-    # Defence in depth: reject path traversal attempts even though the path
-    # comes from our own catalog. A typo or malicious PR could otherwise
-    # delete files outside models/.
-    if "/" in model_path or "\\" in model_path or ".." in model_path:
-        raise ValueError("model_path must be a bare filename")
-    disk_path = Path(PROJECT_ROOT) / "models" / model_type / model_path
+    disk_path = _resolve_model_path(model_type, model_path)
     deleted = False
     if disk_path.is_file():
         disk_path.unlink()
@@ -416,18 +435,35 @@ def delete_catalog_model_file(model_type: str, model_path: str) -> bool:
 
 
 def merge_into_catalog(catalog: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
-    """Append custom-model entries (when enabled) into the appropriate
-    type list. Mutates and returns the dict for chaining."""
+    """Return a new catalog dict with custom-model entries (when enabled)
+    appended to the appropriate type list.
+
+    IMPORTANT: must NOT mutate the input lists in place. The caller
+    (wizard.py /local/available-models) passes lists that share references
+    with module-level catalog constants (notably LLM_MODELS). Mutating
+    them would re-append duplicates on every API call and pollute other
+    code paths that read those module-level lists in-process.
+    """
     if not is_enabled():
         return catalog
-    for entry in load_custom_models():
+    custom_entries = load_custom_models()
+    if not custom_entries:
+        return catalog
+    # Copy every type list before appending; new dict so the caller can
+    # also pass the original around safely.
+    out: Dict[str, List[Dict[str, Any]]] = {k: list(v) for k, v in catalog.items()}
+    for entry in custom_entries:
         mtype = entry.get("_type")
         if mtype not in ALLOWED_TYPES:
             continue
-        # Strip the internal _type field from the user-facing copy
+        # Strip the internal _type field from the user-facing copy.
+        # setdefault("source", ...) is defence-in-depth; add_custom_model
+        # already sets it on save, but we want the badge to render even
+        # for entries written by older versions of this code.
         public = {k: v for k, v in entry.items() if k != "_type"}
-        catalog.setdefault(mtype, []).append(public)
-    return catalog
+        public.setdefault("source", "user")
+        out.setdefault(mtype, []).append(public)
+    return out
 
 
 # ============== Router ==============
@@ -502,10 +538,12 @@ async def introspect_model(body: IntrospectIn):
     """Read the GGUF header of a downloaded LLM file. Returns metadata + RAM estimate."""
     if body.type != "llm":
         raise HTTPException(status_code=400, detail="introspect only supported for LLM models")
-    if "/" in body.model_path or "\\" in body.model_path or ".." in body.model_path:
-        raise HTTPException(status_code=400, detail="model_path must be a bare filename")
-    disk_path = Path(PROJECT_ROOT) / "models" / "llm" / body.model_path
+    try:
+        disk_path = _resolve_model_path("llm", body.model_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not disk_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Model file not found at {disk_path}")
+        # Echo only the bare filename, not the full server path.
+        raise HTTPException(status_code=404, detail="Model file not found — has it been downloaded?")
     size = disk_path.stat().st_size
     return introspect_gguf(str(disk_path), size)

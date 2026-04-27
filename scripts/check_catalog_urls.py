@@ -63,7 +63,7 @@ def check_url(url, timeout=20, max_retries=4):
                 wait = float(retry_after) if retry_after else delay
                 time.sleep(wait)
                 delay = min(delay * 2, 30.0)
-                last_err = f"HTTP 429 (retried)"
+                last_err = "HTTP 429 (retried)"
                 continue
             return e.code, str(e.reason or "")
         except urllib.error.URLError as e:
