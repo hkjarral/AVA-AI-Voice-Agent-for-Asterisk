@@ -25,7 +25,7 @@ jinja2==3.1.6
 dnspython==2.8.0
 
 # OpenAI for summary generation
-openai>=1.0.0
+openai>=2.32.0
 
 # Google Auth for Vertex AI Live API OAuth2/ADC support (AAVA-191)
 # Only required when use_vertex_ai: true in provider config
