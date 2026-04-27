@@ -63,6 +63,32 @@ This document summarizes the utilities under `scripts/` and when to use them.
 - `scripts/download_models.sh`, `scripts/download_tts_models.py`
   - Helpers for bulk model download.
 
+## Catalog Maintenance
+
+These scripts maintain `admin_ui/backend/api/models_catalog.py` — the curated list of STT/TTS/LLM models surfaced in the Admin UI Models page. Both are stdlib-only.
+
+- `scripts/check_catalog_urls.py`
+  - HEADs every download URL in the catalog (including Kokoro's nested `voice_files`)
+    in parallel and reports any that aren't reachable. Validates URLs are HTTPS
+    before opening them. Exits non-zero on any failure so it can gate CI.
+  - Usage: `python3 scripts/check_catalog_urls.py [--include-cloud] [--max-workers N]`
+  - Also wired up as the `Catalog URL Check` GitHub Actions workflow:
+    runs on every PR that touches the catalog (blocks merge), weekly on `main`
+    (opens or comments on a single `catalog-broken` issue rather than spamming
+    new ones), and on manual dispatch.
+
+- `scripts/regenerate_piper_catalog.py`
+  - Walks `rhasspy/piper-voices` v1.0.0 on HuggingFace, fetches per-voice metadata
+    (size, num_speakers, sample rate from each `.onnx.json`), and emits Python
+    dict literals matching the existing `PIPER_TTS_MODELS` format. Filters out
+    voices already in the catalog (by id AND by underlying file path) and
+    backs off on HF 429 with `Retry-After` honoring. The output is a draft
+    intended for human review (gender heuristic only covers common names) before
+    paste into `models_catalog.py`.
+  - Usage: `python3 scripts/regenerate_piper_catalog.py --out scripts/piper_draft.py`
+  - Run when HuggingFace publishes a new piper-voices revision (e.g. v1.1.0):
+    update `HF_REV` at the top of the script, regenerate, review, paste.
+
 ## Miscellaneous
 
 - `scripts/llm_latency_test.py`

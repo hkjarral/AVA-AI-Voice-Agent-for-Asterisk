@@ -84,6 +84,37 @@ Live ARI connection status, required Asterisk module checklist, configuration au
 #### Containers
 Start, stop, restart, and rebuild Docker containers directly from the UI.
 
+#### Models
+Browse, download, and manage local STT, TTS, and LLM models. Tabs split the catalog by type (`STT`, `TTS`, `LLM`) plus an `Installed` view that lists what's already on disk. The catalog itself lives in `admin_ui/backend/api/models_catalog.py` and ships with ~250 entries across the three types; new entries land via PRs and CI verifies every download URL is reachable on each PR plus weekly on `main` (see `scripts/check_catalog_urls.py`).
+
+The top of the page exposes the **Local AI Server** card with three pickers — STT, LLM, TTS — that show the currently-loaded model and let you switch the engine to any installed file. Switching applies the change to `.env` and reloads the engine in place; the running engine recovers from the swap without dropping calls already in progress.
+
+Downloaded models live under `models/<type>/` on the host (mounted into the container at `/app/models/<type>/`). The Installed tab counts files matching the catalog; deleting via the trash icon removes the file plus any sidecars (`.json` config for Piper, `.sha256` integrity sidecar).
+
+##### Community Models (best-effort)
+Operators can add LLM, TTS, or STT models that aren't in the curated catalog by pasting a HuggingFace download URL. Useful for trying new GGUF releases (Qwen3-4B, SmolLM2 variants, etc.) before they land in the official catalog.
+
+**Off by default.** Toggle on via the "Community Models" card at the bottom of the Models page; the choice persists to `.env` as `ENABLE_CUSTOM_MODELS=true`. When disabled, the panel collapses to a one-line note and no community entries appear in the main lists.
+
+When enabled:
+1. Click **+ Add custom model**. The form requires a Type (LLM/TTS/STT), Display name, and HTTPS Download URL; optional fields are Config URL (for Piper TTS), Chat format hint (for LLM, e.g. `chatml` / `llama-3` / `mistral-instruct`), Expected SHA256 (verified after download), and free-form Notes.
+2. The entry appears immediately in the relevant tab (STT/TTS/LLM) with a yellow **Community** badge alongside curated entries.
+3. Click **Download** on the entry as you would a curated model. Progress polls in the existing download UI.
+4. After download, expand the entry's chevron in the Community Models panel to **Inspect GGUF header** (LLM only): architecture, parameter count, quantization, context length, layer count, file size, and an estimated RAM requirement are surfaced. Architectures not in the verified-supported list (`llama`, `qwen2`, `qwen3`, `phi3`, `phi4`, `gemma`, `gemma2`, `mistral`, `mixtral`, `tinyllama`, etc.) get a yellow warning rather than blocking the download.
+5. Switch the engine to the new model via the LLM picker at the top of the page (a page reload may be needed for the picker to see the new file).
+6. The trash icon removes both the JSON entry and the on-disk file (plus all sidecars).
+
+The "best-effort" framing is genuine: catalog URL liveness, GGUF magic verification, file size and RAM estimation are checked, but the model isn't actually loaded as part of validation. If a community model fails to load or behaves badly at runtime, please open a GitHub issue.
+
+**Storage**:
+- Entries: `data/custom_models.json` (gitignored, persists across container rebuilds and upgrades)
+- Files: `models/<type>/custom_<type>_<slug>__<basename>` — the `custom_…__` prefix is namespaced with the unique entry id so two community entries with the same upstream filename can never collide on disk.
+
+**Security**:
+- HTTPS-only download URLs (rejects `http://` to prevent SSRF via redirect)
+- Path-traversal blocked on every endpoint that touches a model file
+- The `/delete-file` endpoint refuses to act on community-model files (community models must go through `DELETE /api/custom-models/{id}` so JSON and disk stay in sync)
+
 ## Security
 
 The Admin UI has Docker socket access for container management. Treat it as a control plane with elevated privileges.
