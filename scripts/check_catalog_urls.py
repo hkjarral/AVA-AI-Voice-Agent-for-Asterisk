@@ -38,6 +38,7 @@ except ImportError as e:
 
 OK_CODES = {200, 301, 302, 307, 308}
 URL_FIELDS = ("download_url", "config_url", "mirror_url", "vocoder_url", "tokens_url")
+ALLOWED_SCHEMES = {"https"}  # No http://, file://, ftp://, custom schemes
 
 
 def safe_url(url):
@@ -47,20 +48,48 @@ def safe_url(url):
     )
 
 
+def _parse_retry_after(value, default):
+    """Retry-After can be either delta-seconds (int) or an HTTP-date.
+    Be permissive — fall back to `default` if we can't parse it instead
+    of crashing the whole worker (one bad header used to abort the run).
+    """
+    if not value:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone
+        when = parsedate_to_datetime(value)
+        delta = (when - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, delta)
+    except Exception:
+        return default
+
+
 def check_url(url, timeout=20, max_retries=4):
     """Return (status_code, error_message). Code 0 means network failure."""
+    # Reject anything that isn't HTTPS *before* handing it to urlopen,
+    # which otherwise happily opens file://, ftp://, custom schemes, etc.
+    # A broken or malicious catalog entry could otherwise probe the local
+    # filesystem or internal services.
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        return 0, f"unsupported scheme '{parsed.scheme}' (only https allowed)"
     req = urllib.request.Request(safe_url(url), method="HEAD",
                                  headers={"User-Agent": "AAVA-catalog-url-check/1.0"})
     delay = 2.0
     last_err = None
     for attempt in range(max_retries):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            # nosec B310: scheme is validated above; only https is reachable here.
+            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
                 return r.status, None
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < max_retries - 1:
-                retry_after = e.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else delay
+                wait = _parse_retry_after(e.headers.get("Retry-After"), delay)
                 time.sleep(wait)
                 delay = min(delay * 2, 30.0)
                 last_err = "HTTP 429 (retried)"
@@ -119,7 +148,15 @@ def main():
                    for mid, name, kind, field, url in targets}
         for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             mid, name, kind, field, url = futures[fut]
-            code, err = fut.result()
+            try:
+                code, err = fut.result()
+            except Exception as exc:
+                # check_url should always return cleanly; if it raises (a
+                # bug in our retry logic, an unparseable header, etc.),
+                # record it as a failure for this URL but keep the run
+                # going — losing one entry's status beats aborting the
+                # whole CI check.
+                code, err = 0, f"checker bug: {type(exc).__name__}: {exc}"
             ok = code in OK_CODES
             results.append((ok, code, err, mid, name, kind, field, url))
             if i % 25 == 0:

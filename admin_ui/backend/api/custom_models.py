@@ -348,11 +348,16 @@ def add_custom_model(model: CustomModelIn) -> Dict[str, Any]:
             n += 1
             candidate = f"{base_id}_{n}"
 
+        # Namespace the on-disk filename with the unique entry id so two
+        # custom models can never collide on the same model_path (would
+        # let one delete remove another's artifact, and a download would
+        # silently overwrite). Curated catalog entries also can't shadow
+        # because none start with "custom_".
         entry: Dict[str, Any] = {
             "id": candidate,
             "name": model.name,
             "download_url": model.download_url,
-            "model_path": _derive_model_path(model),
+            "model_path": f"{candidate}__{_derive_model_path(model)}",
             "source": "user",  # so the UI can badge it "Community / best-effort"
             "size_mb": 0,  # filled in after download via Content-Length sniff
             "size_display": "?",
@@ -373,26 +378,55 @@ def add_custom_model(model: CustomModelIn) -> Dict[str, Any]:
         return entry
 
 
+# Hardcoded base directories per model type. Looking up by validated key
+# (rather than building the path with `model_type` interpolated) keeps the
+# user-supplied string entirely out of the path-construction expression,
+# which is what CodeQL's "uncontrolled data in path" analysis wants to see.
+_BASE_DIRS = {
+    "llm": (Path(PROJECT_ROOT) / "models" / "llm").resolve(),
+    "tts": (Path(PROJECT_ROOT) / "models" / "tts").resolve(),
+    "stt": (Path(PROJECT_ROOT) / "models" / "stt").resolve(),
+}
+
 def _resolve_model_path(model_type: str, model_path: str) -> Path:
     """Validate + resolve a model file path under models/<type>/.
 
-    Two layers of defence against path traversal: (1) reject any input
-    containing path separators or '..', and (2) resolve the constructed
-    path and assert it stays under models/<type>/. CodeQL's taint
-    analysis flags constructed paths when they touch user input, so
-    anchoring on the resolved path is what satisfies the analyzer too.
+    Three layers of defence: (1) `model_type` must match an allowed key
+    that maps to a hardcoded base directory (so the type string never
+    flows into the path construction expression); (2) `model_path` is
+    rejected if it contains path separators, traversal segments, or
+    control characters; (3) the resolved path is asserted to stay under
+    the base via `relative_to()` so symlink/normalisation surprises can
+    never escape. The string-level checks deliberately allow Unicode
+    letters so legitimate non-ASCII filenames (e.g. piper pt_PT
+    `tugão`) remain manageable through the UI.
     """
-    if model_type not in ALLOWED_TYPES:
+    base = _BASE_DIRS.get(model_type)
+    if base is None:
         raise ValueError("invalid model type")
-    if "/" in model_path or "\\" in model_path or ".." in model_path or not model_path:
+    if not model_path:
+        raise ValueError("model_path is required")
+    if "/" in model_path or "\\" in model_path or model_path in (".", "..") \
+            or model_path.startswith("..") or any(ord(c) < 32 for c in model_path):
         raise ValueError("model_path must be a bare filename")
-    base = (Path(PROJECT_ROOT) / "models" / model_type).resolve()
     candidate = (base / model_path).resolve()
     try:
         candidate.relative_to(base)
     except ValueError:
         raise ValueError("model_path escapes models/ directory")
     return candidate
+
+
+def _sanitize_for_log(value: str, max_len: int = 80) -> str:
+    """Strip newlines/control chars and truncate. Logs are read by humans
+    AND by structured-log parsers; an attacker-controlled `\\n` could
+    inject a fake log line."""
+    if not isinstance(value, str):
+        return repr(value)
+    cleaned = re.sub(r"[\r\n\x00-\x1f]+", " ", value)
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len] + "…"
+    return cleaned
 
 
 def delete_custom_model(model_id: str) -> bool:
@@ -413,15 +447,40 @@ def delete_custom_model(model_id: str) -> bool:
                 if cfg.is_file():
                     cfg.unlink()
             except (OSError, ValueError) as e:
-                # Don't echo path back to logs — just the failure reason.
-                logger.warning("Could not delete model file for %s: %s", model_id, e)
+                # Sanitise log inputs — model_id comes from a URL path and
+                # could contain control chars used to forge log lines.
+                logger.warning(
+                    "Could not delete model file for %s: %s",
+                    _sanitize_for_log(model_id),
+                    _sanitize_for_log(str(e)),
+                )
         models = [m for m in models if m["id"] != model_id]
         save_custom_models(models)
         return True
 
 
+def _model_path_in_curated_catalog(model_type: str, model_path: str) -> bool:
+    """Verify (model_type, model_path) refers to an entry in the curated
+    catalog (not a community-added one). Imported lazily because the
+    catalog module sits at the same import level."""
+    from api.models_catalog import get_full_catalog
+    catalog = get_full_catalog()
+    type_list = catalog.get(model_type, [])
+    return any(
+        m.get("model_path") == model_path and m.get("source") != "user"
+        for m in type_list
+    )
+
+
 def delete_catalog_model_file(model_type: str, model_path: str) -> bool:
-    """Delete a downloaded catalog model from disk. Catalog entry stays."""
+    """Delete a downloaded curated-catalog model from disk. Catalog entry stays.
+
+    Refuses to act if (model_type, model_path) is not in the curated
+    catalog — community models must go through DELETE /api/custom-models/{id}
+    so their JSON entry stays in sync with the on-disk state.
+    """
+    if not _model_path_in_curated_catalog(model_type, model_path):
+        raise ValueError("model_path is not in the curated catalog (use DELETE /custom-models/{id} for community entries)")
     disk_path = _resolve_model_path(model_type, model_path)
     deleted = False
     if disk_path.is_file():

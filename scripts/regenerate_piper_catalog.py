@@ -110,6 +110,25 @@ def _safe_url(url):
     )
 
 
+def _parse_retry_after(value, default):
+    """Retry-After is either delta-seconds or an HTTP-date. Be permissive
+    so a date-format header doesn't crash the worker."""
+    if not value:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone
+        when = parsedate_to_datetime(value)
+        delta = (when - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, delta)
+    except Exception:
+        return default
+
+
 def fetch_json(url, timeout=30, max_retries=6):
     """GET JSON with exponential backoff on 429 (HF rate limit).
 
@@ -125,8 +144,7 @@ def fetch_json(url, timeout=30, max_retries=6):
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < max_retries - 1:
                 # Honor server's Retry-After if present, else exponential backoff
-                retry_after = e.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else delay
+                wait = _parse_retry_after(e.headers.get("Retry-After"), delay)
                 time.sleep(wait)
                 delay = min(delay * 2, 64.0)
                 continue
@@ -152,7 +170,7 @@ def list_files(path):
 
 
 def parse_existing_ids(catalog_path):
-    text = catalog_path.read_text()
+    text = catalog_path.read_text(encoding="utf-8")
     return set(re.findall(r'"id":\s*"(piper_[^"]+)"', text))
 
 
@@ -161,7 +179,7 @@ def parse_existing_model_paths(catalog_path):
     skip generating entries that point at the same .onnx file under a
     different id (caught the ca_ES upc_ona duplicate flagged in PR #359
     review)."""
-    text = catalog_path.read_text()
+    text = catalog_path.read_text(encoding="utf-8")
     # Only match model_paths within Piper-style entries (lang_country prefix)
     return set(re.findall(r'"model_path":\s*"([a-z]{2,3}_[A-Z]{2,3}-[^"]+\.onnx)"', text))
 
@@ -196,8 +214,14 @@ def fetch_voice_meta(lang, lang_country, voice, quality):
     cfg_url = f"{HF_RESOLVE_BASE}/{base}/{config_filename}"
     try:
         cfg = fetch_json(cfg_url)
-    except Exception:
-        cfg = {}
+    except Exception as e:
+        # Don't silently fall back to {} — that would default num_speakers
+        # to 1 and misclassify a multi-speaker voice as single. Skip the
+        # entry instead so the human reviewer notices it's missing rather
+        # than catching the wrong gender/quality after the fact.
+        print(f"  ! Skipping {lang_country}/{voice}/{quality}: config fetch failed ({e})",
+              file=sys.stderr)
+        return None
 
     return {
         "lang": lang,
@@ -342,7 +366,9 @@ def main():
     output = "\n".join(out_lines) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(output)
+        # Explicit UTF-8 — voice names like pt_PT 'tugão' need it and the
+        # platform default would otherwise vary by locale.
+        args.out.write_text(output, encoding="utf-8")
         print(f"\nWrote {len(metas)} entries to {args.out}", file=sys.stderr)
     else:
         # CodeQL flags this as "clear-text logging of sensitive information"
