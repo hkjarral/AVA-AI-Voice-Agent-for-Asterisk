@@ -82,6 +82,11 @@ class WebhookConfig:
     # Summary generation (optional - uses LLM to summarize transcript)
     generate_summary: bool = False
     summary_max_words: int = 100
+    # Custom system prompt template for the summarizer. If set, ``{max_words}``
+    # is interpolated; otherwise a sensible default (caller-perspective recap)
+    # is used. Useful for branding or perspective changes (e.g. "We discussed…"
+    # instead of "The caller asked about…").
+    summary_prompt: Optional[str] = None
 
     # Per-tool override for response body capture in call history.
     # None → use CALL_HISTORY_RESPONSE_BODY_MAX_CHARS env (default 512).
@@ -462,7 +467,11 @@ class GenericWebhookTool(PostCallTool):
                 messages=[
                     {
                         "role": "system",
-                        "content": f"You are a call summarizer. Summarize the following phone conversation in {max_words} words or less. Focus on: the caller's main request, key information exchanged, and the outcome. Be concise and factual."
+                        "content": (
+                            self.config.summary_prompt.format(max_words=max_words)
+                            if self.config.summary_prompt
+                            else f"You are a call summarizer. Summarize the following phone conversation in {max_words} words or less. Focus on: the caller's main request, key information exchanged, and the outcome. Be concise and factual."
+                        ),
                     },
                     {
                         "role": "user",
@@ -506,6 +515,7 @@ def create_webhook_tool(name: str, config_dict: Dict[str, Any]) -> GenericWebhoo
         content_type=config_dict.get('content_type', 'application/json'),
         generate_summary=config_dict.get('generate_summary', False),
         summary_max_words=config_dict.get('summary_max_words', 100),
+        summary_prompt=config_dict.get('summary_prompt'),
         response_body_max_chars=config_dict.get('response_body_max_chars'),
     )
     
