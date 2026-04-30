@@ -162,6 +162,10 @@ class CallSession:
     # Pre-call tool results (Milestone 24) - CRM lookup data injected into prompts
     pre_call_results: Dict[str, str] = field(default_factory=dict)  # {variable_name: value}
 
+    # Pre-call tool execution metadata for the call history UI.
+    # Same per-entry shape as the post_call_tool_calls JSON column on CallRecord.
+    pre_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+
     # Outbound campaign dialer (Milestone 22)
     is_outbound: bool = False
     outbound_campaign_id: Optional[str] = None

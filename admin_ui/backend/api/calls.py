@@ -116,6 +116,8 @@ class CallRecordResponse(BaseModel):
     transfer_destination: Optional[str] = None
     error_message: Optional[str] = None
     tool_calls: list = []
+    pre_call_tool_calls: list = []
+    post_call_tool_calls: list = []
     avg_turn_latency_ms: float = 0.0
     max_turn_latency_ms: float = 0.0
     total_turns: int = 0
@@ -204,6 +206,24 @@ def _normalize_tool_calls(tool_calls: list) -> list:
     return normalized
 
 
+def _normalize_phase_tool_calls(entries: list, phase: str) -> list:
+    """
+    Normalize pre-call / post-call tool execution entries for UI consumption.
+
+    Ensures every entry has a ``phase`` field set (older rows might omit it).
+    Filters non-dict entries defensively. Does NOT mutate the input.
+    """
+    normalized: list = []
+    for item in (entries or []):
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        if not entry.get("phase"):
+            entry["phase"] = phase
+        normalized.append(entry)
+    return normalized
+
+
 def _record_to_response(record) -> CallRecordResponse:
     """Convert a CallRecord to a response model."""
     return CallRecordResponse(
@@ -223,6 +243,12 @@ def _record_to_response(record) -> CallRecordResponse:
         transfer_destination=record.transfer_destination,
         error_message=record.error_message,
         tool_calls=_normalize_tool_calls(record.tool_calls or []),
+        pre_call_tool_calls=_normalize_phase_tool_calls(
+            getattr(record, "pre_call_tool_calls", None) or [], "pre_call"
+        ),
+        post_call_tool_calls=_normalize_phase_tool_calls(
+            getattr(record, "post_call_tool_calls", None) or [], "post_call"
+        ),
         avg_turn_latency_ms=record.avg_turn_latency_ms,
         max_turn_latency_ms=record.max_turn_latency_ms,
         total_turns=record.total_turns,

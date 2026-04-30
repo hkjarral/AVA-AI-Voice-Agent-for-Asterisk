@@ -9,10 +9,37 @@ import re
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
 import aiohttp
+
+
+# --- Response body capture knob (used by call-history tracking) ---
+# Per-tool YAML override: ``response_body_max_chars`` on the tool config.
+# Falls back to env ``CALL_HISTORY_RESPONSE_BODY_MAX_CHARS`` (default 512).
+# Set to 0 to disable body capture entirely (status code + error only).
+_DEFAULT_RESPONSE_BODY_MAX_CHARS = 512
+
+
+def _resolve_body_max_chars(per_tool: Optional[int]) -> int:
+    if per_tool is not None:
+        try:
+            return max(0, int(per_tool))
+        except (TypeError, ValueError):
+            pass
+    raw = os.environ.get("CALL_HISTORY_RESPONSE_BODY_MAX_CHARS")
+    if raw is not None and raw != "":
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return _DEFAULT_RESPONSE_BODY_MAX_CHARS
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 from src.tools.base import PostCallTool, ToolDefinition, ToolCategory, ToolPhase
 from src.tools.context import PostCallContext
@@ -55,6 +82,11 @@ class WebhookConfig:
     # Summary generation (optional - uses LLM to summarize transcript)
     generate_summary: bool = False
     summary_max_words: int = 100
+
+    # Per-tool override for response body capture in call history.
+    # None → use CALL_HISTORY_RESPONSE_BODY_MAX_CHARS env (default 512).
+    # 0 → don't capture any response body (status code + error only).
+    response_body_max_chars: Optional[int] = None
 
 
 class GenericWebhookTool(PostCallTool):
@@ -106,28 +138,77 @@ class GenericWebhookTool(PostCallTool):
             is_global=config.is_global,
             timeout_ms=config.timeout_ms,
         )
-    
+        # Diagnostics for call-history tracking — populated at every exit path of execute().
+        self._last_result: Optional[Dict[str, Any]] = None
+
     @property
     def definition(self) -> ToolDefinition:
         return self._definition
-    
+
+    def get_last_result(self) -> Optional[Dict[str, Any]]:
+        """Return diagnostics from the last execute() call (HTTP status, body preview, error)."""
+        return self._last_result
+
+    def _record_result(
+        self,
+        *,
+        status: str,
+        started_iso: str,
+        started_monotonic: float,
+        http_status: Optional[int] = None,
+        body_text: str = "",
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Populate ``self._last_result`` with execution diagnostics."""
+        max_chars = _resolve_body_max_chars(self.config.response_body_max_chars)
+        response_summary: Optional[str] = None
+        if max_chars > 0 and body_text:
+            response_summary = body_text if len(body_text) <= max_chars else body_text[:max_chars] + "…"
+        finished_iso = _now_iso()
+        duration_ms = round((time.monotonic() - started_monotonic) * 1000, 2)
+        self._last_result = {
+            "status": status,
+            "http_status": http_status,
+            "response_summary": response_summary,
+            "error_message": (error_message[:500] if error_message else None),
+            "started_at": started_iso,
+            "finished_at": finished_iso,
+            "duration_ms": duration_ms,
+        }
+
     async def execute(self, context: PostCallContext) -> None:
         """
         Execute the webhook (fire-and-forget).
-        
+
         Args:
             context: PostCallContext with comprehensive call data
         """
+        # Reset diagnostics at the top of every execution.
+        started_iso = _now_iso()
+        started = time.monotonic()
+        self._last_result = None
+
         if not self.config.enabled:
             logger.debug(f"Webhook tool disabled: {self.config.name}")
+            self._record_result(
+                status="skipped",
+                started_iso=started_iso,
+                started_monotonic=started,
+                error_message="tool disabled",
+            )
             return
-        
+
         if not self.config.url:
             logger.warning(f"Webhook tool has no URL configured: {self.config.name}")
+            self._record_result(
+                status="skipped",
+                started_iso=started_iso,
+                started_monotonic=started,
+                error_message="no URL configured",
+            )
             return
-        
+
         try:
-            started = time.monotonic()
             # Generate summary if requested and not already present
             if self.config.generate_summary and not context.summary:
                 context.summary = await self._generate_summary(context)
@@ -209,6 +290,13 @@ class GenericWebhookTool(PostCallTool):
                                 preview(body_text),
                                 getattr(context, "call_id", None),
                             )
+                        self._record_result(
+                            status="ok",
+                            started_iso=started_iso,
+                            started_monotonic=started,
+                            http_status=status,
+                            body_text=body_text,
+                        )
                     else:
                         # Log but don't fail (fire-and-forget)
                         body_preview = (body_text[:200] if body_text else "")
@@ -225,11 +313,34 @@ class GenericWebhookTool(PostCallTool):
                                 preview(body_text),
                                 getattr(context, "call_id", None),
                             )
-        
+                        self._record_result(
+                            status="error",
+                            started_iso=started_iso,
+                            started_monotonic=started,
+                            http_status=status,
+                            body_text=body_text,
+                            error_message=f"HTTP {status}",
+                        )
+
         except aiohttp.ClientError as e:
             logger.warning(f"Webhook request failed: {self.config.name} error={e}")
+            # aiohttp surfaces ServerTimeoutError/SocketTimeoutError as ClientError subclasses.
+            cls = e.__class__.__name__.lower()
+            timed_out = "timeout" in cls
+            self._record_result(
+                status="timeout" if timed_out else "error",
+                started_iso=started_iso,
+                started_monotonic=started,
+                error_message=f"{e.__class__.__name__}: {e}",
+            )
         except Exception as e:
             logger.error(f"Webhook unexpected error: {self.config.name} error={e}", exc_info=True)
+            self._record_result(
+                status="error",
+                started_iso=started_iso,
+                started_monotonic=started,
+                error_message=f"{e.__class__.__name__}: {e}",
+            )
     
     def _build_payload(self, context: PostCallContext) -> str:
         """
@@ -395,6 +506,7 @@ def create_webhook_tool(name: str, config_dict: Dict[str, Any]) -> GenericWebhoo
         content_type=config_dict.get('content_type', 'application/json'),
         generate_summary=config_dict.get('generate_summary', False),
         summary_max_words=config_dict.get('summary_max_words', 100),
+        response_body_max_chars=config_dict.get('response_body_max_chars'),
     )
     
     return GenericWebhookTool(config)

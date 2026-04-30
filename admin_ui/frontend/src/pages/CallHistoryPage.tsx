@@ -30,11 +30,33 @@ interface CallRecordSummary {
     barge_in_count: number;
 }
 
+type ToolPhase = 'pre_call' | 'in_call' | 'post_call';
+
+type ToolExecutionStatus = 'pending' | 'ok' | 'error' | 'timeout' | 'skipped';
+
+// One entry in pre_call_tool_calls / post_call_tool_calls. Mirrors the schema
+// the engine writes via CallHistoryStore.append_phase_tool / update_phase_tool.
+interface PhaseToolCall {
+    name: string;
+    kind?: string | null;
+    phase: ToolPhase;
+    status: ToolExecutionStatus;
+    started_at?: string | null;
+    finished_at?: string | null;
+    duration_ms?: number | null;
+    http_status?: number | null;
+    response_summary?: string | null;
+    error_message?: string | null;
+    attempt?: number | null;
+}
+
 interface CallRecordDetail extends CallRecordSummary {
     pipeline_components: Record<string, string>;
     conversation_history: Array<{ role: string; content: string; timestamp?: number | string }>;
     transfer_destination: string | null;
     tool_calls: Array<{ name: string; params: any; result: string; message?: string; timestamp: string; duration_ms: number }>;
+    pre_call_tool_calls: PhaseToolCall[];
+    post_call_tool_calls: PhaseToolCall[];
     max_turn_latency_ms: number;
     caller_audio_format: string;
     codec_alignment_ok: boolean;
@@ -118,6 +140,113 @@ const OutcomeIcon = ({ outcome }: { outcome: string }) => {
             return <Phone className="w-4 h-4 text-muted-foreground" />;
     }
 };
+
+// --- Tool execution UI helpers ---------------------------------------------
+
+const PHASE_LABELS: Record<ToolPhase, string> = {
+    pre_call: 'Pre-call',
+    in_call: 'In-call',
+    post_call: 'Post-call',
+};
+
+const StatusPill = ({ status }: { status: ToolExecutionStatus }) => {
+    const styles: Record<ToolExecutionStatus, string> = {
+        ok:       'bg-green-500/15 text-green-500',
+        error:    'bg-red-500/15 text-red-500',
+        timeout:  'bg-orange-500/15 text-orange-500',
+        pending:  'bg-yellow-500/15 text-yellow-500',
+        skipped:  'bg-muted text-muted-foreground',
+    };
+    return (
+        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${styles[status] || styles.skipped}`}>
+            {status === 'pending' && <span className="w-1.5 h-1.5 rounded-full bg-current mr-1 animate-pulse" />}
+            {status}
+        </span>
+    );
+};
+
+const PhaseToolCard = ({ entry }: { entry: PhaseToolCall }) => {
+    const ms = typeof entry.duration_ms === 'number' ? `${Math.round(entry.duration_ms)}ms` : null;
+    return (
+        <div className="bg-muted/30 rounded-lg p-3 text-sm">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0">
+                    <Wrench className="w-4 h-4 shrink-0" />
+                    <span className="font-medium truncate">{entry.name}</span>
+                    {entry.kind && (
+                        <span className="text-xs text-muted-foreground truncate">{entry.kind}</span>
+                    )}
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground text-xs">
+                    {entry.http_status != null && <span>HTTP {entry.http_status}</span>}
+                    {ms && <span>{ms}</span>}
+                    <StatusPill status={entry.status} />
+                </div>
+            </div>
+            {entry.error_message && (
+                <div className="mt-2 text-xs text-red-500/90 break-words">{entry.error_message}</div>
+            )}
+            {entry.response_summary && (
+                <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">
+                    {entry.response_summary}
+                </pre>
+            )}
+        </div>
+    );
+};
+
+const PhaseToolGroup = ({ phase, entries }: { phase: ToolPhase; entries: PhaseToolCall[] }) => (
+    <div>
+        <div className="text-sm font-medium text-muted-foreground mb-1">
+            {PHASE_LABELS[phase]} ({entries.length})
+        </div>
+        <div className="space-y-2">
+            {entries.map((entry, i) => (
+                <PhaseToolCard key={`${phase}-${entry.name}-${entry.started_at ?? i}`} entry={entry} />
+            ))}
+        </div>
+    </div>
+);
+
+// In-call tools have a different shape (params/result/message) than phase tools.
+// We render them with the same pill semantics: result === 'success' → ok, else error.
+const InCallToolGroup = ({ entries }: {
+    entries: Array<{ name: string; params: any; result: string; message?: string; timestamp: string; duration_ms: number }>;
+}) => (
+    <div>
+        <div className="text-sm font-medium text-muted-foreground mb-1">
+            {PHASE_LABELS.in_call} ({entries.length})
+        </div>
+        <div className="space-y-2">
+            {entries.map((tool, i) => {
+                const status: ToolExecutionStatus = tool.result === 'success' ? 'ok' : 'error';
+                const hasParams = tool.params && typeof tool.params === 'object' && Object.keys(tool.params).length > 0;
+                return (
+                    <div key={`in-${tool.name}-${i}`} className="bg-muted/30 rounded-lg p-3 text-sm">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <Wrench className="w-4 h-4 shrink-0" />
+                                <span className="font-medium truncate">{tool.name}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-muted-foreground text-xs">
+                                <span>{Math.round(tool.duration_ms)}ms</span>
+                                <StatusPill status={status} />
+                            </div>
+                        </div>
+                        {tool.message && (
+                            <div className="mt-2 text-xs text-muted-foreground break-words">{tool.message}</div>
+                        )}
+                        {hasParams && (
+                            <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto">
+                                {JSON.stringify(tool.params, null, 2)}
+                            </pre>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    </div>
+);
 
 const CallHistoryPage = () => {
     const { confirm } = useConfirmDialog();
@@ -984,29 +1113,6 @@ const CallHistoryPage = () => {
                                 </div>
                             </div>
 
-                            {/* Tool Calls Summary */}
-                            <div>
-                                <h3 className="font-semibold mb-2">Tool Executions ({selectedCall?.tool_calls.length || 0})</h3>
-                                {!selectedCall ? (
-                                    <p className="text-muted-foreground text-sm">Load the call to view tool details</p>
-                                ) : selectedCall.tool_calls.length === 0 ? (
-                                    <p className="text-muted-foreground text-sm">No tools were called during this call</p>
-                                ) : (
-                                    <div className="flex flex-wrap gap-2">
-                                        {selectedCall.tool_calls.map((tool, i) => (
-                                            <div key={i} className="bg-muted/30 rounded-lg px-3 py-2 text-sm flex items-center gap-2">
-                                                <Wrench className="w-4 h-4" />
-                                                <span className="font-medium">{tool.name}</span>
-                                                <span className={`text-xs ${tool.result === 'success' ? 'text-green-500' : 'text-red-500'}`}>
-                                                    {tool.result}
-                                                </span>
-                                                <span className="text-xs text-muted-foreground">{Math.round(tool.duration_ms)}ms</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-
                             {/* Configuration */}
                             <div>
                                 <h3 className="font-semibold mb-2">Configuration</h3>
@@ -1069,35 +1175,51 @@ const CallHistoryPage = () => {
                                 )}
                             </div>
 
-                            {/* Tool Call Details */}
-                            {selectedCall && selectedCall.tool_calls.length > 0 && (
-                                <div>
-                                    <h3 className="font-semibold mb-2">Tool Call Details</h3>
-                                    <div className="space-y-2">
-                                        {selectedCall.tool_calls.map((tool, i) => (
-                                            <div key={i} className="bg-muted/30 rounded-lg p-3 text-sm">
-                                                <div className="flex items-center justify-between">
-                                                    <div className="flex items-center gap-2">
-                                                        <Wrench className="w-4 h-4" />
-                                                        <span className="font-medium">{tool.name}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2 text-muted-foreground">
-                                                        <span>{Math.round(tool.duration_ms)}ms</span>
-                                                        <span className={tool.result === 'success' ? 'text-green-500' : 'text-red-500'}>
-                                                            {tool.result}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                                {tool.params && Object.keys(tool.params).length > 0 && (
-                                                    <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto">
-                                                        {JSON.stringify(tool.params, null, 2)}
-                                                    </pre>
-                                                )}
-                                            </div>
-                                        ))}
+                            {/* Tool Executions — unified section grouping all phases */}
+                            {selectedCall && (() => {
+                                const preCall = selectedCall.pre_call_tool_calls || [];
+                                const inCall = selectedCall.tool_calls || [];
+                                const postCall = selectedCall.post_call_tool_calls || [];
+                                const total = preCall.length + inCall.length + postCall.length;
+                                if (total === 0) return null;
+                                const hasPending = postCall.some((t) => t?.status === 'pending') ||
+                                                   preCall.some((t) => t?.status === 'pending');
+                                return (
+                                    <div>
+                                        <div className="flex items-center justify-between mb-2">
+                                            <h3 className="font-semibold">Tool Executions ({total})</h3>
+                                            {hasPending && selectedCall && (
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        try {
+                                                            const res = await axios.get(`/api/calls/${selectedCall.id}`);
+                                                            setSelectedCall(res.data);
+                                                        } catch (err) {
+                                                            console.error('Failed to refresh call details:', err);
+                                                        }
+                                                    }}
+                                                    className="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 text-muted-foreground"
+                                                    title="Refresh — some tools are still running"
+                                                >
+                                                    Refresh
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div className="space-y-4">
+                                            {preCall.length > 0 && (
+                                                <PhaseToolGroup phase="pre_call" entries={preCall} />
+                                            )}
+                                            {inCall.length > 0 && (
+                                                <InCallToolGroup entries={inCall as any} />
+                                            )}
+                                            {postCall.length > 0 && (
+                                                <PhaseToolGroup phase="post_call" entries={postCall} />
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                );
+                            })()}
 
                             {/* Error Message */}
                             {modalCall.error_message && (

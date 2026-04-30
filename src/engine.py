@@ -5932,8 +5932,19 @@ class Engine:
             except Exception as e:
                 logger.warning("Failed to process transcript emails", call_id=call_id, error=str(e), exc_info=True)
 
+            # Persist call to history FIRST so post-call tools can update the row
+            # with their execution metadata as they complete. The call record carries
+            # `pre_call_tool_calls` from the synchronous pre-call phase and an empty
+            # `post_call_tool_calls` list which post-call tools then populate via
+            # CallHistoryStore.append_phase_tool / update_phase_tool.
+            try:
+                await self._persist_call_history(session, call_id)
+            except Exception as e:
+                logger.debug("Failed to persist call history", call_id=call_id, error=str(e))
+
             # Execute post-call tools (webhooks, CRM updates) - Milestone 24
-            # These run fire-and-forget and do not block cleanup
+            # These run fire-and-forget and do not block cleanup. They update the
+            # already-persisted call_records row as each tool completes.
             try:
                 await self._execute_post_call_tools(
                     call_id, session,
@@ -5942,15 +5953,9 @@ class Engine:
                 )
             except Exception as e:
                 logger.debug("Post-call tool execution failed", call_id=call_id, error=str(e), exc_info=True)
-            
+
             # Clean up call start time after post-call tools have used it
             _call_start_times.pop(call_id, None)
-
-            # Persist call to history before removing session (Milestone 21)
-            try:
-                await self._persist_call_history(session, call_id)
-            except Exception as e:
-                logger.debug("Failed to persist call history", call_id=call_id, error=str(e))
 
             # Finally remove the session.
             await self.session_store.remove_call(call_id)
@@ -6079,6 +6084,10 @@ class Engine:
                 transfer_destination=session.transfer_destination,
                 error_message=session.error_message,
                 tool_calls=getattr(session, 'tool_calls', []) or [],
+                pre_call_tool_calls=getattr(session, 'pre_call_tool_calls', []) or [],
+                # post_call_tool_calls is populated AFTER this initial save by the
+                # post-call dispatch loop, via CallHistoryStore.append/update_phase_tool.
+                post_call_tool_calls=[],
                 avg_turn_latency_ms=avg_latency,
                 max_turn_latency_ms=max_latency,
                 total_turns=len(turn_latencies),
@@ -13816,12 +13825,20 @@ class Engine:
             
             # Track if we need to play hold audio
             hold_audio_tasks: Dict[str, asyncio.Task] = {}
-            
+
+            # Collect execution metadata (one entry per tool) for the call history UI.
+            # Same shape as post_call_tool_calls so the frontend can render uniformly.
+            tool_call_records: List[Dict[str, Any]] = []
+
             async def run_tool_with_timeout(tool) -> Dict[str, str]:
                 """Execute a single pre-call tool with timeout and hold audio."""
                 tool_name = tool.definition.name
+                tool_kind = type(tool).__name__
                 timeout_ms = tool.definition.timeout_ms or 2000
                 hold_file = tool.definition.hold_audio_file
+                started_at_iso = datetime.now(timezone.utc).isoformat()
+                exec_status = "ok"
+                exec_error: Optional[str] = None
                 hold_threshold_ms = tool.definition.hold_audio_threshold_ms or 500
                 
                 tool_start = time.time()
@@ -13857,6 +13874,8 @@ class Engine:
                                output_keys=list(tool_results.keys()))
                 except asyncio.TimeoutError:
                     duration_ms = (time.time() - tool_start) * 1000
+                    exec_status = "timeout"
+                    exec_error = f"exceeded {timeout_ms}ms budget"
                     logger.warning("Pre-call tool timed out",
                                   call_id=call_id,
                                   tool=tool_name,
@@ -13867,6 +13886,8 @@ class Engine:
                         tool_results[var] = ""
                 except Exception as e:
                     duration_ms = (time.time() - tool_start) * 1000
+                    exec_status = "error"
+                    exec_error = f"{e.__class__.__name__}: {e}"
                     logger.error("Pre-call tool failed",
                                 call_id=call_id,
                                 tool=tool_name,
@@ -13879,7 +13900,32 @@ class Engine:
                     # Cancel hold audio if still pending
                     if tool_name in hold_audio_tasks:
                         hold_audio_tasks[tool_name].cancel()
-                
+                    # Record execution metadata for the call history UI.
+                    finished_at_iso = datetime.now(timezone.utc).isoformat()
+                    metadata: Dict[str, Any] = {
+                        "name": tool_name,
+                        "kind": tool_kind,
+                        "phase": "pre_call",
+                        "status": exec_status,
+                        "started_at": started_at_iso,
+                        "finished_at": finished_at_iso,
+                        "duration_ms": round(duration_ms, 2),
+                        "error_message": (exec_error[:500] if exec_error else None),
+                        "attempt": 1,
+                    }
+                    # Optional tool diagnostics (HTTP status, body preview) if the
+                    # tool implements get_last_result.
+                    try:
+                        last = tool.get_last_result() if hasattr(tool, "get_last_result") else None
+                        if isinstance(last, dict):
+                            for k in ("http_status", "response_summary"):
+                                if last.get(k) is not None:
+                                    metadata[k] = last[k]
+                    except Exception:
+                        logger.debug("pre-call get_last_result failed",
+                                     call_id=call_id, tool=tool_name, exc_info=True)
+                    tool_call_records.append(metadata)
+
                 return tool_results
             
             # Run all pre-call tools in parallel
@@ -13899,6 +13945,8 @@ class Engine:
             
             # Store pre-call results in session for debugging and in-call access
             session.pre_call_results = results
+            # Execution metadata for the call history UI (one entry per tool).
+            session.pre_call_tool_calls = tool_call_records
             await self._save_session(session)
             
             logger.info("Pre-call tools completed",
@@ -13988,31 +14036,136 @@ class Engine:
                 config=self.config.dict() if hasattr(self.config, 'dict') else {},
             )
             
-            # Fire-and-forget execution for each tool
-            async def run_post_call_tool(tool):
+            # Capture execution metadata in call_records.post_call_tool_calls
+            # so the admin UI can show what happened. We write a `pending`
+            # placeholder per tool BEFORE scheduling (so a killed engine still
+            # shows what was supposed to run), then update with the result.
+            try:
+                from src.core.call_history import get_call_history_store
+                history_store = get_call_history_store()
+            except Exception:
+                history_store = None
+            phase = "post_call"
+
+            async def run_post_call_tool(tool, started_at_iso: str):
                 tool_name = tool.definition.name
+                tool_kind = type(tool).__name__
+                tool_start = time.time()
+                # Per-tool budget: configured timeout + 1s grace; defaults to 6s.
+                timeout_ms = getattr(tool.definition, "timeout_ms", None) or 5000
+                tool_timeout = timeout_ms / 1000.0 + 1.0
+                status = "ok"
+                error_message = None
                 try:
-                    tool_start = time.time()
-                    await tool.execute(post_call_ctx)
-                    duration_ms = (time.time() - tool_start) * 1000
-                    logger.info("Post-call tool completed",
-                               call_id=call_id,
-                               tool=tool_name,
-                               duration_ms=round(duration_ms, 2))
+                    await asyncio.wait_for(tool.execute(post_call_ctx), timeout=tool_timeout)
+                except asyncio.TimeoutError:
+                    status = "timeout"
+                    error_message = f"exceeded {tool_timeout:.1f}s budget"
+                    logger.warning(
+                        "Post-call tool timed out",
+                        call_id=call_id,
+                        tool=tool_name,
+                        timeout_s=tool_timeout,
+                    )
                 except Exception as e:
-                    logger.error("Post-call tool failed",
-                                call_id=call_id,
-                                tool=tool_name,
-                                error=str(e),
-                                exc_info=True)
-            
+                    status = "error"
+                    error_message = f"{e.__class__.__name__}: {e}"
+                    logger.error(
+                        "Post-call tool failed",
+                        call_id=call_id,
+                        tool=tool_name,
+                        error=str(e),
+                        exc_info=True,
+                    )
+                duration_ms = round((time.time() - tool_start) * 1000, 2)
+                logger.info(
+                    "Post-call tool completed",
+                    call_id=call_id,
+                    tool=tool_name,
+                    duration_ms=duration_ms,
+                    status=status,
+                )
+                # Merge any tool-specific diagnostics (HTTP status, body preview, etc.)
+                tool_extra = {}
+                try:
+                    last = tool.get_last_result() if hasattr(tool, "get_last_result") else None
+                    if isinstance(last, dict):
+                        # Tool's recorded status wins if it tagged "skipped"; otherwise
+                        # we keep the engine-measured status (which knows about timeouts).
+                        if last.get("status") == "skipped":
+                            status = "skipped"
+                        for k in ("http_status", "response_summary", "started_at", "finished_at", "duration_ms"):
+                            if last.get(k) is not None:
+                                tool_extra[k] = last[k]
+                        if last.get("error_message") and not error_message:
+                            error_message = last["error_message"]
+                except Exception:
+                    logger.debug("get_last_result failed", call_id=call_id, tool=tool_name, exc_info=True)
+                # Persist final state.
+                if history_store is not None:
+                    try:
+                        await history_store.update_phase_tool(
+                            call_id=call_id,
+                            phase=phase,
+                            tool_name=tool_name,
+                            started_at=started_at_iso,
+                            updates={
+                                "kind": tool_kind,
+                                "phase": phase,
+                                "status": status,
+                                "duration_ms": tool_extra.get("duration_ms", duration_ms),
+                                "started_at": tool_extra.get("started_at", started_at_iso),
+                                "finished_at": tool_extra.get("finished_at"),
+                                "http_status": tool_extra.get("http_status"),
+                                "response_summary": tool_extra.get("response_summary"),
+                                "error_message": error_message,
+                                "attempt": 1,
+                            },
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to update post-call tool history",
+                            call_id=call_id, tool=tool_name, exc_info=True,
+                        )
+
+            # Write `pending` placeholders BEFORE scheduling tasks. This way the
+            # row reflects what was supposed to run even if the engine dies before
+            # any task completes. Captured `started_at` is the matching key for
+            # the later update_phase_tool call.
+            tool_starts = {}
+            if history_store is not None:
+                for tool in tools_to_run:
+                    started_at_iso = datetime.now(timezone.utc).isoformat()
+                    tool_starts[tool.definition.name] = started_at_iso
+                    try:
+                        await history_store.append_phase_tool(
+                            call_id=call_id,
+                            phase=phase,
+                            record={
+                                "name": tool.definition.name,
+                                "kind": type(tool).__name__,
+                                "phase": phase,
+                                "status": "pending",
+                                "started_at": started_at_iso,
+                                "finished_at": None,
+                                "duration_ms": None,
+                                "attempt": 1,
+                            },
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to record pending post-call tool",
+                            call_id=call_id, tool=tool.definition.name, exc_info=True,
+                        )
+
             # Create fire-and-forget tasks for all post-call tools
             for tool in tools_to_run:
+                started_at_iso = tool_starts.get(tool.definition.name) or datetime.now(timezone.utc).isoformat()
                 self._fire_and_forget(
-                    run_post_call_tool(tool),
+                    run_post_call_tool(tool, started_at_iso),
                     name=f"post-call-{tool.definition.name}-{call_id}"
                 )
-            
+
             logger.info("Post-call tools fired", call_id=call_id, count=len(tools_to_run))
             
         except Exception as e:

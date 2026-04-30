@@ -49,8 +49,14 @@ class CallRecord:
     error_message: Optional[str] = None
     
     # Tool executions (debugging)
+    # tool_calls = in-call tool invocations issued by the LLM during the conversation.
+    # pre_call_tool_calls = pre-call enrichment tool execution metadata (lookup tools).
+    # post_call_tool_calls = post-call webhook/notification execution metadata (fire-and-forget).
+    # All three share the same per-entry shape (see ToolCallEntry typedef in admin_ui frontend).
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    
+    pre_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    post_call_tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+
     # Latency metrics (debugging)
     avg_turn_latency_ms: float = 0.0
     max_turn_latency_ms: float = 0.0
@@ -85,12 +91,16 @@ class CallRecord:
                     data[key] = None
         
         # Parse JSON strings for complex fields
-        for key in ['pipeline_components', 'conversation_history', 'tool_calls']:
+        _list_fields = ['conversation_history', 'tool_calls', 'pre_call_tool_calls', 'post_call_tool_calls']
+        for key in ['pipeline_components', *_list_fields]:
             if data.get(key) and isinstance(data[key], str):
                 try:
                     data[key] = json.loads(data[key])
                 except json.JSONDecodeError:
-                    data[key] = [] if key in ['conversation_history', 'tool_calls'] else {}
+                    data[key] = [] if key in _list_fields else {}
+            elif data.get(key) is None and key in _list_fields:
+                # NULL columns (existing rows pre-migration) — surface as empty list.
+                data[key] = []
         
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
@@ -126,6 +136,8 @@ class CallHistoryStore:
         transfer_destination TEXT,
         error_message TEXT,
         tool_calls TEXT,
+        pre_call_tool_calls TEXT,
+        post_call_tool_calls TEXT,
         avg_turn_latency_ms REAL,
         max_turn_latency_ms REAL,
         total_turns INTEGER,
@@ -177,6 +189,7 @@ class CallHistoryStore:
                 try:
                     cursor = conn.cursor()
                     cursor.execute(self._CREATE_TABLE_SQL)
+                    self._ensure_schema_sync(conn)
                     for idx_sql in self._CREATE_INDEXES_SQL:
                         cursor.execute(idx_sql)
                     conn.commit()
@@ -187,6 +200,23 @@ class CallHistoryStore:
         except Exception as e:
             logger.error(f"Failed to initialize call history database: {e}", exc_info=True)
             self._enabled = False
+
+    def _ensure_schema_sync(self, conn: sqlite3.Connection) -> None:
+        """
+        Best-effort additive migrations for existing installs.
+
+        SQLite has limited ALTER TABLE support; we only add nullable columns when
+        missing — never drop or rename. Failures are logged and never block startup.
+        """
+        try:
+            cur = conn.cursor()
+            existing = {str(r[1]) for r in cur.execute("PRAGMA table_info(call_records)").fetchall()}
+            if "pre_call_tool_calls" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN pre_call_tool_calls TEXT")
+            if "post_call_tool_calls" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN post_call_tool_calls TEXT")
+        except Exception:
+            logger.debug("call_records schema migration failed (non-fatal)", exc_info=True)
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with WAL mode and busy timeout for multi-process safety."""
@@ -230,9 +260,10 @@ class CallHistoryStore:
                             start_time, end_time, duration_seconds,
                             provider_name, pipeline_name, pipeline_components, context_name,
                             conversation_history, outcome, transfer_destination, error_message,
-                            tool_calls, avg_turn_latency_ms, max_turn_latency_ms, total_turns,
+                            tool_calls, pre_call_tool_calls, post_call_tool_calls,
+                            avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record.id,
                         record.call_id,
@@ -250,6 +281,8 @@ class CallHistoryStore:
                         record.transfer_destination,
                         record.error_message,
                         json.dumps(record.tool_calls),
+                        json.dumps(record.pre_call_tool_calls),
+                        json.dumps(record.post_call_tool_calls),
                         record.avg_turn_latency_ms,
                         record.max_turn_latency_ms,
                         record.total_turns,
@@ -269,6 +302,140 @@ class CallHistoryStore:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _save_sync)
     
+    # ---------------------------------------------------------------
+    # Phase-tool execution metadata (pre-call / post-call)
+    #
+    # Pre-call tools run synchronously before the AI greets, so their entries
+    # could in principle be inlined into the initial save(). We still expose
+    # the same append/update API as post-call to keep the engine code symmetric.
+    #
+    # Post-call tools are fire-and-forget; the call_records row is written
+    # *before* tools complete, then each tool calls append_phase_tool() to
+    # add a `pending` placeholder and update_phase_tool() to record its result.
+    # Read-modify-write is serialized by self._lock + SQLite WAL so concurrent
+    # tools for the same call don't clobber each other.
+    # ---------------------------------------------------------------
+
+    _PHASE_COLUMN = {"pre_call": "pre_call_tool_calls", "post_call": "post_call_tool_calls"}
+
+    async def append_phase_tool(self, call_id: str, phase: str, record: Dict[str, Any]) -> bool:
+        """
+        Append a tool-execution entry to either pre_call_tool_calls or post_call_tool_calls.
+
+        Used at scheduling time to write a `pending` placeholder. If the call_records
+        row is missing (race with persist), returns False — the engine should ensure
+        persist runs first.
+        """
+        column = self._PHASE_COLUMN.get(phase)
+        if not self._enabled or column is None:
+            return False
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"SELECT {column} FROM call_records WHERE call_id = ?", (call_id,))
+                    row = cur.fetchone()
+                    if row is None:
+                        return False
+                    existing_raw = row[0] if not isinstance(row, sqlite3.Row) else row[column]
+                    try:
+                        entries = json.loads(existing_raw) if existing_raw else []
+                    except (TypeError, json.JSONDecodeError):
+                        entries = []
+                    if not isinstance(entries, list):
+                        entries = []
+                    entries.append(record)
+                    cur.execute(
+                        f"UPDATE call_records SET {column} = ? WHERE call_id = ?",
+                        (json.dumps(entries), call_id),
+                    )
+                    conn.commit()
+                    return True
+                except Exception as exc:
+                    logger.error(
+                        "append_phase_tool failed",
+                        extra={"call_id": call_id, "phase": phase, "error": str(exc)},
+                    )
+                    return False
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync)
+
+    async def update_phase_tool(
+        self,
+        call_id: str,
+        phase: str,
+        tool_name: str,
+        started_at: Optional[str],
+        updates: Dict[str, Any],
+    ) -> bool:
+        """
+        Merge ``updates`` into an existing entry in ``<phase>_tool_calls`` matched by
+        (``name`` == ``tool_name``, ``started_at`` == ``started_at``). If ``started_at``
+        is None, matches by name and updates the most recent entry. If no entry matches,
+        appends a new one (keeps the API forgiving for callers that skipped the pending
+        placeholder).
+        """
+        column = self._PHASE_COLUMN.get(phase)
+        if not self._enabled or column is None:
+            return False
+
+        def _sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"SELECT {column} FROM call_records WHERE call_id = ?", (call_id,))
+                    row = cur.fetchone()
+                    if row is None:
+                        return False
+                    existing_raw = row[0] if not isinstance(row, sqlite3.Row) else row[column]
+                    try:
+                        entries = json.loads(existing_raw) if existing_raw else []
+                    except (TypeError, json.JSONDecodeError):
+                        entries = []
+                    if not isinstance(entries, list):
+                        entries = []
+
+                    target_idx = None
+                    for i, entry in enumerate(entries):
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("name") != tool_name:
+                            continue
+                        if started_at is None or entry.get("started_at") == started_at:
+                            target_idx = i  # keep iterating to land on most recent match
+                    if target_idx is None:
+                        merged = {"name": tool_name}
+                        if started_at is not None:
+                            merged["started_at"] = started_at
+                        merged.update(updates)
+                        entries.append(merged)
+                    else:
+                        entries[target_idx] = {**entries[target_idx], **updates}
+
+                    cur.execute(
+                        f"UPDATE call_records SET {column} = ? WHERE call_id = ?",
+                        (json.dumps(entries), call_id),
+                    )
+                    conn.commit()
+                    return True
+                except Exception as exc:
+                    logger.error(
+                        "update_phase_tool failed",
+                        extra={"call_id": call_id, "phase": phase, "tool": tool_name, "error": str(exc)},
+                    )
+                    return False
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _sync)
+
     async def get(self, record_id: str) -> Optional[CallRecord]:
         """
         Get a call record by ID.
