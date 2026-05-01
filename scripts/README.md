@@ -63,6 +63,13 @@ This document summarizes the utilities under `scripts/` and when to use them.
 - `scripts/download_models.sh`, `scripts/download_tts_models.py`
   - Helpers for bulk model download.
 
+## Provider Setup
+
+- `scripts/setup-vertex.sh`
+  - One-command Google Vertex AI setup. Runs on the AAVA host (where docker compose runs). Enables the Vertex API, creates a service account with `roles/aiplatform.user`, downloads the JSON key into `secrets/`, and patches `.env`. Auto-detects headless hosts and uses gcloud's code-paste auth flow over SSH. Lists existing GCP projects to pick from, or walks you through creating a new project + linking billing if you don't have one yet.
+  - Usage: `./scripts/setup-vertex.sh [project-id]`
+  - Full guide: [docs/Provider-Vertex-Setup.md](../docs/Provider-Vertex-Setup.md)
+
 ## Catalog Maintenance
 
 These scripts maintain `admin_ui/backend/api/models_catalog.py` — the curated list of STT/TTS/LLM models surfaced in the Admin UI Models page. Both are stdlib-only.
