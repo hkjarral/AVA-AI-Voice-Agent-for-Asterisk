@@ -110,6 +110,30 @@ class _FakeSession:
         self.closed = True
 
 
+class _TimeoutStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise asyncio.TimeoutError("simulated first-token timeout")
+
+
+class _FakeStreamingResponse(_FakeResponse):
+    def __init__(self, content, status: int = 200):
+        super().__init__(b"", status=status)
+        self.content = content
+
+
+class _FakeStreamingSession(_FakeSession):
+    def __init__(self, content, status: int = 200):
+        super().__init__(b"", status=status)
+        self._content = content
+
+    def post(self, url, json=None, data=None, headers=None, timeout=None):
+        self.requests.append({"url": url, "json": json, "data": data, "headers": headers, "timeout": timeout})
+        return _FakeStreamingResponse(self._content, status=self._status)
+
+
 @pytest.mark.asyncio
 async def test_openai_stt_adapter_transcribes(monkeypatch):
     app_config = _build_app_config()
@@ -158,6 +182,28 @@ async def test_openai_llm_adapter_chat_completion(monkeypatch):
     request = fake_session.requests[0]
     assert request["json"]["model"] == "gpt-4o-mini"
     assert request["json"]["messages"][-1] == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_stream_timeout_returns_empty_for_serial_fallback():
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    fake_session = _FakeStreamingSession(_TimeoutStream())
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False, "timeout_sec": 1.5},
+        session_factory=lambda: fake_session,
+    )
+
+    await adapter.start()
+    chunks = [chunk async for chunk in adapter.generate_stream("call-1", "hello", {"system_prompt": "You are helpful."}, {})]
+
+    assert chunks == []
+    assert fake_session.requests[0]["json"]["stream"] is True
+    assert fake_session.requests[0]["timeout"] == 1.5
+    assert adapter._pending_tool_calls_by_call["call-1"] == []
 
 
 @pytest.mark.asyncio

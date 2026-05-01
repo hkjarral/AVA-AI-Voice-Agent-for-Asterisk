@@ -760,6 +760,13 @@ class OpenAILLMAdapter(LLMComponent):
                     tools=[tc["name"] for tc in self._pending_tool_calls_by_call[call_id]],
                 )
 
+        except asyncio.TimeoutError as e:
+            logger.warning(
+                "OpenAI streaming timed out; falling back to serial path",
+                call_id=call_id,
+                timeout_sec=merged["timeout_sec"],
+                error=str(e),
+            )
         except aiohttp.ClientError as e:
             logger.error("OpenAI streaming connection error", call_id=call_id, error=str(e))
 
