@@ -32,7 +32,7 @@ openai>=2.32.0
 google-auth>=2.0.0
 
 # Google Calendar API client for business calendar tool
-google-api-python-client>=2.0.0
+google-api-python-client>=2.195.0
 
 # Microsoft Calendar API client for business calendar tool
 msal>=1.28.0
