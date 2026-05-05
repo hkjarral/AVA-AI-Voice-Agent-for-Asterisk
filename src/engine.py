@@ -14090,10 +14090,13 @@ class Engine:
                 try:
                     last = tool.get_last_result() if hasattr(tool, "get_last_result") else None
                     if isinstance(last, dict):
-                        # Tool's recorded status wins if it tagged "skipped"; otherwise
-                        # we keep the engine-measured status (which knows about timeouts).
-                        if last.get("status") == "skipped":
-                            status = "skipped"
+                        # Tool's recorded status wins for skipped/error/timeout — the tool
+                        # knows about non-2xx HTTP responses that didn't raise an exception
+                        # (GenericWebhookTool catches them internally). Without this, a 502
+                        # from the wrapper would still show as 'ok' in the modal.
+                        tool_reported = last.get("status")
+                        if tool_reported in ("skipped", "error", "timeout"):
+                            status = tool_reported
                         for k in ("http_status", "response_summary", "started_at", "finished_at", "duration_ms"):
                             if last.get(k) is not None:
                                 tool_extra[k] = last[k]
