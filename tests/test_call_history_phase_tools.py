@@ -534,8 +534,10 @@ async def test_webhook_concurrent_calls_dont_clobber_each_other(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _MockSession)
 
     tool = _make_webhook(url="http://example.invalid/{caller_number}", payload_template="{}")
-    ctx_a = _FakeContext(); ctx_a.caller_number = "ok"
-    ctx_b = _FakeContext(); ctx_b.caller_number = "fail"
+    ctx_a = _FakeContext()
+    ctx_a.caller_number = "ok"
+    ctx_b = _FakeContext()
+    ctx_b.caller_number = "fail"
 
     # Run both concurrently — pre-fix this would race and one would overwrite
     # the other's _last_result.

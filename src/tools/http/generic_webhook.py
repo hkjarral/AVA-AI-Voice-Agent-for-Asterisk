@@ -187,6 +187,11 @@ class GenericWebhookTool(PostCallTool):
         if not call_id:
             # Engine should always pass call_id; if missing, drop diagnostics
             # rather than overwrite a sibling call's entry.
+            logger.debug(
+                "_record_result called without call_id; dropping diagnostics for webhook %s status=%s",
+                self.config.name,
+                status,
+            )
             return
         self._last_results[call_id] = {
             "status": status,
