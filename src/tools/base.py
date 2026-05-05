@@ -411,7 +411,7 @@ class PreCallTool(ABC):
         """
         pass
 
-    def get_last_result(self) -> Optional[Dict[str, Any]]:
+    def get_last_result(self, call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Return execution metadata from the last ``execute()`` call, or None.
 
@@ -419,6 +419,10 @@ class PreCallTool(ABC):
         surface diagnostics like HTTP status, response body preview, or upstream
         error message. Default implementation returns None — the engine still
         records ``name``/``status``/``duration_ms`` from its own measurements.
+
+        ``call_id`` is provided so concrete tools can isolate per-execution state
+        (tools are registered as singletons; concurrent executions across calls
+        must not share mutable diagnostics fields).
         """
         return None
 
@@ -466,7 +470,7 @@ class PostCallTool(ABC):
         """
         pass
 
-    def get_last_result(self) -> Optional[Dict[str, Any]]:
+    def get_last_result(self, call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Return execution metadata from the last ``execute()`` call, or None.
 
@@ -475,5 +479,9 @@ class PostCallTool(ABC):
         upstream error message. Default implementation returns None — the engine
         still records ``name``/``status``/``duration_ms`` from its own
         measurements.
+
+        ``call_id`` is provided so concrete tools can isolate per-execution
+        state (tools are registered as singletons; concurrent post-call
+        executions across calls must not share mutable diagnostics fields).
         """
         return None

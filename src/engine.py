@@ -13916,7 +13916,13 @@ class Engine:
                     # Optional tool diagnostics (HTTP status, body preview) if the
                     # tool implements get_last_result.
                     try:
-                        last = tool.get_last_result() if hasattr(tool, "get_last_result") else None
+                        if hasattr(tool, "get_last_result"):
+                            try:
+                                last = tool.get_last_result(call_id=call_id)
+                            except TypeError:
+                                last = tool.get_last_result()
+                        else:
+                            last = None
                         if isinstance(last, dict):
                             for k in ("http_status", "response_summary"):
                                 if last.get(k) is not None:
@@ -14088,7 +14094,14 @@ class Engine:
                 # Merge any tool-specific diagnostics (HTTP status, body preview, etc.)
                 tool_extra = {}
                 try:
-                    last = tool.get_last_result() if hasattr(tool, "get_last_result") else None
+                    if hasattr(tool, "get_last_result"):
+                        try:
+                            last = tool.get_last_result(call_id=call_id)
+                        except TypeError:
+                            # Backward-compat: third-party overrides without call_id arg
+                            last = tool.get_last_result()
+                    else:
+                        last = None
                     if isinstance(last, dict):
                         # Tool's recorded status wins for skipped/error/timeout — the tool
                         # knows about non-2xx HTTP responses that didn't raise an exception
@@ -14104,6 +14117,9 @@ class Engine:
                             error_message = last["error_message"]
                 except Exception:
                     logger.debug("get_last_result failed", call_id=call_id, tool=tool_name, exc_info=True)
+                # Engine-side fallback for finished_at — tools that don't report it
+                # via get_last_result still get a real timestamp instead of NULL.
+                finished_at_iso = datetime.now(timezone.utc).isoformat()
                 # Persist final state.
                 if history_store is not None:
                     try:
@@ -14118,7 +14134,7 @@ class Engine:
                                 "status": status,
                                 "duration_ms": tool_extra.get("duration_ms", duration_ms),
                                 "started_at": tool_extra.get("started_at", started_at_iso),
-                                "finished_at": tool_extra.get("finished_at"),
+                                "finished_at": tool_extra.get("finished_at") or finished_at_iso,
                                 "http_status": tool_extra.get("http_status"),
                                 "response_summary": tool_extra.get("response_summary"),
                                 "error_message": error_message,

@@ -276,11 +276,28 @@ async def test_phase_methods_no_op_when_call_id_missing(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class _FakeContext:
-    """Minimal stand-in for PostCallContext (only attributes the tool reads)."""
+    """Minimal stand-in for PostCallContext (only attributes the tool reads).
+
+    Each test gets a fresh instance with a unique call_id so the per-call
+    diagnostics dict in GenericWebhookTool can't bleed across tests.
+    """
+    _counter = 0
+
     def __init__(self):
-        self.call_id = "test-call"
+        type(self)._counter += 1
+        self.call_id = f"test-call-{type(self)._counter}"
         self.summary = ""
         self.conversation_history = [{"role": "user", "content": "hi"}]
+        # Attributes read by GenericWebhookTool._substitute_variables — empty
+        # strings are fine; the tool null-coalesces.
+        self.caller_number = ""
+        self.called_number = ""
+        self.caller_name = ""
+        self.context_name = ""
+        self.provider = ""
+        self.call_direction = ""
+        self.campaign_id = ""
+        self.lead_id = ""
 
     def to_payload_dict(self):
         return {"call_id": self.call_id}
@@ -295,8 +312,9 @@ def _make_webhook(url: str = "", **overrides):
 @pytest.mark.asyncio
 async def test_webhook_last_result_disabled():
     tool = _make_webhook(url="http://example.invalid/x", enabled=False)
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last is not None
     assert last["status"] == "skipped"
     assert "disabled" in (last.get("error_message") or "")
@@ -307,8 +325,9 @@ async def test_webhook_last_result_disabled():
 @pytest.mark.asyncio
 async def test_webhook_last_result_no_url():
     tool = _make_webhook(url="")
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last is not None
     assert last["status"] == "skipped"
     assert last.get("http_status") is None
@@ -336,8 +355,9 @@ async def test_webhook_last_result_success(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _MockSession)
 
     tool = _make_webhook(url="http://example.invalid/ok", payload_template='{"x":1}')
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last["status"] == "ok"
     assert last["http_status"] == 200
     assert last["response_summary"] == '{"ok":true,"id":"abc"}'
@@ -366,8 +386,9 @@ async def test_webhook_last_result_non_2xx(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _MockSession)
 
     tool = _make_webhook(url="http://example.invalid/down", payload_template="{}")
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last["status"] == "error"
     assert last["http_status"] == 503
     assert "HTTP 503" in (last["error_message"] or "")
@@ -389,8 +410,9 @@ async def test_webhook_last_result_client_error(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _BoomSession)
 
     tool = _make_webhook(url="http://example.invalid/x", payload_template="{}")
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last["status"] == "error"
     assert "ClientConnectionError" in (last["error_message"] or "")
 
@@ -410,8 +432,9 @@ async def test_webhook_last_result_timeout(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _TimeoutSession)
 
     tool = _make_webhook(url="http://example.invalid/slow", payload_template="{}")
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last["status"] == "timeout"
     assert "ServerTimeoutError" in (last["error_message"] or "")
 
@@ -466,12 +489,96 @@ async def test_webhook_truncates_response_body(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _MockSession)
 
     tool = _make_webhook(url="http://example.invalid/big", payload_template="{}", response_body_max_chars=64)
-    await tool.execute(_FakeContext())
-    summary = tool.get_last_result()["response_summary"]
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    summary = tool.get_last_result(call_id=ctx.call_id)["response_summary"]
     # 64 chars + ellipsis
     assert summary.startswith("Z" * 64)
     assert summary.endswith("…")
     assert len(summary) == 65
+
+
+@pytest.mark.asyncio
+async def test_webhook_concurrent_calls_dont_clobber_each_other(monkeypatch):
+    """Two concurrent webhook executions on the same singleton tool must not
+    leak diagnostics between calls. Reproduces the Codex P1 finding: with the
+    pre-fix shared ``self._last_result`` field, whichever execute() returned
+    last would overwrite the other's status/HTTP body."""
+    from src.tools.http import generic_webhook as gw
+
+    class _MockResponse200:
+        def __init__(self, body: str):
+            self.status = 200
+            self._body = body
+        async def text(self): return self._body
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+    class _MockResponse500:
+        def __init__(self): self.status = 500
+        async def text(self): return "boom"
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+    # Different sessions per call_id so we can simulate distinct outcomes.
+    class _MockSession:
+        def __init__(self, **kwargs): pass
+        def request(self, **kwargs):
+            url = kwargs.get("url", "")
+            if "/ok" in url:
+                return _MockResponse200('{"call":"A"}')
+            return _MockResponse500()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+    monkeypatch.setattr(gw.aiohttp, "ClientSession", _MockSession)
+
+    tool = _make_webhook(url="http://example.invalid/{caller_number}", payload_template="{}")
+    ctx_a = _FakeContext(); ctx_a.caller_number = "ok"
+    ctx_b = _FakeContext(); ctx_b.caller_number = "fail"
+
+    # Run both concurrently — pre-fix this would race and one would overwrite
+    # the other's _last_result.
+    await asyncio.gather(tool.execute(ctx_a), tool.execute(ctx_b))
+
+    a = tool.get_last_result(call_id=ctx_a.call_id)
+    b = tool.get_last_result(call_id=ctx_b.call_id)
+
+    assert a is not None and b is not None, "both calls must have isolated diagnostics"
+    assert a["status"] == "ok", f"call A should report ok, got {a['status']}"
+    assert b["status"] == "error", f"call B should report error, got {b['status']}"
+    assert a["http_status"] == 200
+    assert b["http_status"] == 500
+    # Pop semantics: a second read returns None (no leftover state).
+    assert tool.get_last_result(call_id=ctx_a.call_id) is None
+
+
+def test_webhook_summary_prompt_with_literal_braces_falls_back_to_default():
+    """Codex P2 fix: a summary_prompt with literal ``{`` / ``}`` (e.g. JSON
+    sample) used to crash ``str.format()`` and silently return ``""``."""
+    from src.tools.http.generic_webhook import WebhookConfig, GenericWebhookTool
+
+    cfg = WebhookConfig(
+        name="bad_prompt",
+        url="http://example.invalid",
+        # Literal JSON braces — pre-fix this raised KeyError.
+        summary_prompt='Reply with {"summary":"<text>"} in {max_words} words.',
+    )
+    tool = GenericWebhookTool(cfg)
+    # Falls back to the default prompt when format() fails.
+    out = tool._resolve_summary_prompt(max_words=50)
+    assert "{max_words}" not in out  # interpolated default
+    assert "50 words or less" in out
+
+    # Custom prompt with only the documented placeholder works.
+    cfg2 = WebhookConfig(
+        name="good_prompt",
+        url="http://example.invalid",
+        summary_prompt="Summarize in {max_words} words. Use casual tone.",
+    )
+    tool2 = GenericWebhookTool(cfg2)
+    out2 = tool2._resolve_summary_prompt(max_words=80)
+    assert "Summarize in 80 words. Use casual tone." == out2
 
 
 @pytest.mark.asyncio
@@ -494,8 +601,9 @@ async def test_webhook_zero_max_chars_skips_body(monkeypatch):
     monkeypatch.setattr(gw.aiohttp, "ClientSession", _MockSession)
 
     tool = _make_webhook(url="http://example.invalid/no-body", payload_template="{}", response_body_max_chars=0)
-    await tool.execute(_FakeContext())
-    last = tool.get_last_result()
+    ctx = _FakeContext()
+    await tool.execute(ctx)
+    last = tool.get_last_result(call_id=ctx.call_id)
     assert last["status"] == "ok"
     assert last["http_status"] == 200
     assert last["response_summary"] is None  # body capture explicitly disabled

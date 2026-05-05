@@ -4,6 +4,7 @@ Generic Webhook Tool - Post-call webhook notifications.
 Sends call data to external systems after call ends (fire-and-forget).
 """
 
+import asyncio
 import os
 import re
 import json
@@ -143,20 +144,32 @@ class GenericWebhookTool(PostCallTool):
             is_global=config.is_global,
             timeout_ms=config.timeout_ms,
         )
-        # Diagnostics for call-history tracking — populated at every exit path of execute().
-        self._last_result: Optional[Dict[str, Any]] = None
+        # Diagnostics for call-history tracking — populated at every exit path of
+        # execute() and keyed by ``call_id``. The tool registry holds a single
+        # instance and post-call tools fire concurrently across calls, so a
+        # per-instance ``self._last_result`` would race; the engine reads the
+        # entry by call_id immediately after ``execute()`` returns and pops it.
+        self._last_results: Dict[str, Dict[str, Any]] = {}
 
     @property
     def definition(self) -> ToolDefinition:
         return self._definition
 
-    def get_last_result(self) -> Optional[Dict[str, Any]]:
-        """Return diagnostics from the last execute() call (HTTP status, body preview, error)."""
-        return self._last_result
+    def get_last_result(self, call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return diagnostics from the last execute() call (HTTP status, body preview, error).
+
+        ``call_id`` selects the per-call diagnostics entry. Pops on read so the
+        store does not grow unboundedly across the lifetime of the worker.
+        ``None`` ``call_id`` returns ``None`` (no fallback to global state).
+        """
+        if not call_id:
+            return None
+        return self._last_results.pop(call_id, None)
 
     def _record_result(
         self,
         *,
+        call_id: str,
         status: str,
         started_iso: str,
         started_monotonic: float,
@@ -164,14 +177,18 @@ class GenericWebhookTool(PostCallTool):
         body_text: str = "",
         error_message: Optional[str] = None,
     ) -> None:
-        """Populate ``self._last_result`` with execution diagnostics."""
+        """Store execution diagnostics for ``call_id`` in ``self._last_results``."""
         max_chars = _resolve_body_max_chars(self.config.response_body_max_chars)
         response_summary: Optional[str] = None
         if max_chars > 0 and body_text:
             response_summary = body_text if len(body_text) <= max_chars else body_text[:max_chars] + "…"
         finished_iso = _now_iso()
         duration_ms = round((time.monotonic() - started_monotonic) * 1000, 2)
-        self._last_result = {
+        if not call_id:
+            # Engine should always pass call_id; if missing, drop diagnostics
+            # rather than overwrite a sibling call's entry.
+            return
+        self._last_results[call_id] = {
             "status": status,
             "http_status": http_status,
             "response_summary": response_summary,
@@ -188,14 +205,15 @@ class GenericWebhookTool(PostCallTool):
         Args:
             context: PostCallContext with comprehensive call data
         """
-        # Reset diagnostics at the top of every execution.
         started_iso = _now_iso()
         started = time.monotonic()
-        self._last_result = None
+        # Diagnostics keyed by call_id (no shared instance state across calls).
+        call_id = getattr(context, "call_id", None) or ""
 
         if not self.config.enabled:
             logger.debug(f"Webhook tool disabled: {self.config.name}")
             self._record_result(
+                call_id=call_id,
                 status="skipped",
                 started_iso=started_iso,
                 started_monotonic=started,
@@ -206,6 +224,7 @@ class GenericWebhookTool(PostCallTool):
         if not self.config.url:
             logger.warning(f"Webhook tool has no URL configured: {self.config.name}")
             self._record_result(
+                call_id=call_id,
                 status="skipped",
                 started_iso=started_iso,
                 started_monotonic=started,
@@ -296,6 +315,7 @@ class GenericWebhookTool(PostCallTool):
                                 getattr(context, "call_id", None),
                             )
                         self._record_result(
+                            call_id=call_id,
                             status="ok",
                             started_iso=started_iso,
                             started_monotonic=started,
@@ -319,6 +339,7 @@ class GenericWebhookTool(PostCallTool):
                                 getattr(context, "call_id", None),
                             )
                         self._record_result(
+                            call_id=call_id,
                             status="error",
                             started_iso=started_iso,
                             started_monotonic=started,
@@ -327,13 +348,22 @@ class GenericWebhookTool(PostCallTool):
                             error_message=f"HTTP {status}",
                         )
 
+        except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+            # Explicit timeout exception types — covers asyncio.TimeoutError
+            # raised by aiohttp.ClientTimeout and SocketTimeoutError aliases.
+            logger.warning(f"Webhook timed out: {self.config.name} error={e}")
+            self._record_result(
+                call_id=call_id,
+                status="timeout",
+                started_iso=started_iso,
+                started_monotonic=started,
+                error_message=f"{e.__class__.__name__}: {e}",
+            )
         except aiohttp.ClientError as e:
             logger.warning(f"Webhook request failed: {self.config.name} error={e}")
-            # aiohttp surfaces ServerTimeoutError/SocketTimeoutError as ClientError subclasses.
-            cls = e.__class__.__name__.lower()
-            timed_out = "timeout" in cls
             self._record_result(
-                status="timeout" if timed_out else "error",
+                call_id=call_id,
+                status="error",
                 started_iso=started_iso,
                 started_monotonic=started,
                 error_message=f"{e.__class__.__name__}: {e}",
@@ -341,6 +371,7 @@ class GenericWebhookTool(PostCallTool):
         except Exception as e:
             logger.error(f"Webhook unexpected error: {self.config.name} error={e}", exc_info=True)
             self._record_result(
+                call_id=call_id,
                 status="error",
                 started_iso=started_iso,
                 started_monotonic=started,
@@ -428,6 +459,33 @@ class GenericWebhookTool(PostCallTool):
         redacted = re.sub(r'(api_key|apikey|key|token|auth)=([^&]+)', r'\1=***', url, flags=re.IGNORECASE)
         return redacted
     
+    def _resolve_summary_prompt(self, max_words: int) -> str:
+        """Build the summarizer system prompt, falling back to the default if a
+        custom ``summary_prompt`` raises (literal braces, unknown placeholders).
+        """
+        default_prompt = (
+            f"You are a call summarizer. Summarize the following phone "
+            f"conversation in {max_words} words or less. Focus on: the "
+            f"caller's main request, key information exchanged, and the "
+            f"outcome. Be concise and factual."
+        )
+        custom = self.config.summary_prompt
+        if not custom:
+            return default_prompt
+        try:
+            return custom.format(max_words=max_words)
+        except (KeyError, IndexError, ValueError) as e:
+            # Operator supplied a prompt with literal `{` / `}` (JSON snippet)
+            # or a placeholder other than `{max_words}`. Falling back keeps
+            # summary generation working instead of silently returning "".
+            logger.warning(
+                "summary_prompt format failed for webhook %s (%s); using default. "
+                "Use {{ }} to escape literal braces and only the {max_words} placeholder.",
+                self.config.name,
+                e,
+            )
+            return default_prompt
+
     async def _generate_summary(self, context: PostCallContext) -> str:
         """
         Generate a concise summary of the conversation using OpenAI.
@@ -467,11 +525,7 @@ class GenericWebhookTool(PostCallTool):
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            self.config.summary_prompt.format(max_words=max_words)
-                            if self.config.summary_prompt
-                            else f"You are a call summarizer. Summarize the following phone conversation in {max_words} words or less. Focus on: the caller's main request, key information exchanged, and the outcome. Be concise and factual."
-                        ),
+                        "content": self._resolve_summary_prompt(max_words),
                     },
                     {
                         "role": "user",

@@ -175,14 +175,29 @@ cyan "[4/5] Downloading service account key..."
 mkdir -p "$SECRETS_DIR"
 
 if [[ -f "$SA_KEY_FILE" ]]; then
-  read -rp "  Key file already exists. Overwrite? [y/N] " overwrite
+  # Detect existing key's project so we can warn if user picked a different one.
+  EXISTING_KEY_PROJECT="$(sed -n 's/.*"project_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SA_KEY_FILE" | head -n1)"
+  if [[ -n "$EXISTING_KEY_PROJECT" && "$EXISTING_KEY_PROJECT" != "$PROJECT" ]]; then
+    red "  ⚠ Existing key belongs to project \"$EXISTING_KEY_PROJECT\", not \"$PROJECT\"."
+    red "    Keeping it and writing GOOGLE_CLOUD_PROJECT=$PROJECT would cause confusing auth failures."
+    read -rp "  Overwrite with a fresh key for \"$PROJECT\"? [y/N] " overwrite
+  else
+    read -rp "  Key file already exists. Overwrite? [y/N] " overwrite
+  fi
   if [[ ! "$overwrite" =~ ^[Yy] ]]; then
     green "  ✓ Keeping existing key"
+    # Don't silently overwrite GOOGLE_CLOUD_PROJECT to a value that doesn't
+    # match the kept key — pin the .env to the key's actual project instead.
+    if [[ -n "$EXISTING_KEY_PROJECT" && "$EXISTING_KEY_PROJECT" != "$PROJECT" ]]; then
+      cyan "  → Pinning GOOGLE_CLOUD_PROJECT to existing key's project: $EXISTING_KEY_PROJECT"
+      PROJECT="$EXISTING_KEY_PROJECT"
+    fi
   else
     gcloud iam service-accounts keys create "$SA_KEY_FILE" \
       --iam-account="$SA_EMAIL" \
       --project="$PROJECT" \
       --quiet
+    chmod 600 "$SA_KEY_FILE"
     green "  ✓ Key saved to secrets/gcp-service-account.json"
   fi
 else
@@ -190,6 +205,7 @@ else
     --iam-account="$SA_EMAIL" \
     --project="$PROJECT" \
     --quiet
+  chmod 600 "$SA_KEY_FILE"
   green "  ✓ Key saved to secrets/gcp-service-account.json"
 fi
 
