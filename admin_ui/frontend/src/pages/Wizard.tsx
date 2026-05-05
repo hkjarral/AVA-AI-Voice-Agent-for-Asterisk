@@ -513,7 +513,10 @@ exten => s,1,NoOp(AI Agent Call)
             if (!res.data.valid) throw new Error(`${provider} Key Invalid: ${res.data.error}`);
 
             // Show detailed message from backend (includes model availability for Google)
-            showToast(res.data.message || `${provider} API Key is valid!`, 'success');
+            showToast(
+                res.data.warning || res.data.message || `${provider} API Key is valid!`,
+                res.data.warning ? 'warning' : 'success'
+            );
         } catch (err: any) {
             showToast(err.message, 'error');
         } finally {
@@ -969,6 +972,7 @@ exten => s,1,NoOp(AI Agent Call)
                             api_key: config.google_key
                         });
                         if (!res.data.valid) throw new Error(`Google Key Invalid: ${res.data.error}`);
+                        if (res.data.warning) showToast(res.data.warning, 'warning');
                     } else {
                         throw new Error('Google API Key is required for Google Live provider');
                     }

@@ -253,6 +253,8 @@ Use the same `GOOGLE_API_KEY` from pipeline setup:
 GOOGLE_API_KEY=your_api_key_here
 ```
 
+The setup wizard validates the key with Google's `models.list` endpoint. If that endpoint succeeds but does not advertise any `bidiGenerateContent` models, the wizard now treats Live model discovery as inconclusive instead of blocking setup. It will warn and continue with `gemini-2.5-flash-native-audio-latest`; if runtime calls fail, verify Live API access, billing/quota, and the currently available models in AI Studio.
+
 ### 3. Update Dialplan
 
 ```asterisk
@@ -411,7 +413,7 @@ Conversation context is maintained automatically:
 |---------------|---------|
 | **Audio format** | Requires 16kHz PCM input (resampling needed for 8kHz) |
 | **WebSocket** | Persistent connection (manage reconnection) |
-| **API availability** | Live API is still preview-labeled (use currently supported preview model IDs) |
+| **API availability** | Live API is still preview-labeled. Google's model-discovery metadata can lag or omit Live-capable models for some keys, so setup warns rather than treating missing `bidiGenerateContent` listings as an invalid key. |
 | **Latency** | Network-dependent (test in your environment) |
 
 ## Cost Comparison

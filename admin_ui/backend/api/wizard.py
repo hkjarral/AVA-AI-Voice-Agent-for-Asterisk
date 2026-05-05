@@ -35,43 +35,18 @@ from api.rebuild_jobs import (
     start_rebuild_job, get_rebuild_job, get_enabled_backends,
     is_rebuild_in_progress, BACKEND_BUILD_ARGS, BUILD_TIME_ESTIMATES
 )
+from services.google_live_validation import (
+    GOOGLE_LIVE_DEFAULT_MODEL,
+    GOOGLE_MODELS_URL,
+    build_google_key_validation_result,
+    extract_google_live_models as _extract_google_live_models,
+    select_google_live_model as _select_google_live_model,
+)
 
 router = APIRouter()
 
 DISK_WARNING_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 DISK_BLOCK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB (hard stop for downloads)
-GOOGLE_LIVE_DEFAULT_MODEL = "gemini-2.5-flash-native-audio-latest"
-GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-GOOGLE_LIVE_PREFERRED_MODELS = [
-    GOOGLE_LIVE_DEFAULT_MODEL,
-    "gemini-2.5-flash-native-audio-preview-12-2025",
-    "gemini-2.5-flash-native-audio-preview-09-2025",
-    "gemini-live-2.5-flash-native-audio",
-    "gemini-live-2.5-flash-preview-native-audio-09-2025",
-    "gemini-live-2.5-flash-preview",
-]
-
-
-def _extract_google_live_models(models: List[Dict[str, Any]]) -> List[str]:
-    """Extract model names that support bidiGenerateContent (Gemini Live)."""
-    live_models: List[str] = []
-    for model in models:
-        methods = model.get("supportedGenerationMethods", [])
-        if "bidiGenerateContent" in methods:
-            model_name = model.get("name", "").replace("models/", "")
-            if model_name:
-                live_models.append(model_name)
-    return live_models
-
-
-def _select_google_live_model(live_models: List[str]) -> Optional[str]:
-    """Pick the best available Google Live model using preferred order."""
-    for preferred_model in GOOGLE_LIVE_PREFERRED_MODELS:
-        if preferred_model in live_models:
-            return preferred_model
-    if live_models:
-        return live_models[0]
-    return None
 
 
 async def _discover_google_live_model(api_key: str) -> Optional[str]:
@@ -2720,36 +2695,44 @@ async def validate_api_key(validation: ApiKeyValidation):
                     timeout=10.0
                 )
                 if response.status_code == 200:
-                    # Check if the required model with bidiGenerateContent is available
                     data = response.json()
                     models = data.get("models", [])
-
-                    # Find models that support bidiGenerateContent (required for Live API)
-                    live_models = _extract_google_live_models(models)
-                    
-                    if not live_models:
-                        return {
-                            "valid": False, 
-                            "error": "API key valid but no Live API models available. Your API key doesn't have access to Gemini Live models (bidiGenerateContent). Try creating a new key at aistudio.google.com"
-                        }
-                    
-                    selected_model = _select_google_live_model(live_models)
-                    if selected_model:
-                        return {
-                            "valid": True,
-                            "message": f"Google API key is valid. Live model '{selected_model}' is available.",
-                            "selected_model": selected_model,
-                            "available_models": live_models,
-                        }
-
-                    # Defensive fallback (should not happen if live_models is non-empty)
+                    return build_google_key_validation_result(models)
+                elif response.status_code in [400, 401]:
+                    return {"valid": False, "error": "Invalid API key"}
+                elif response.status_code == 403:
+                    detail = response.text if hasattr(response, "text") else ""
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        error_detail = payload.get("error", {})
+                        if isinstance(error_detail, dict):
+                            detail = error_detail.get("message", "") or detail
+                        elif isinstance(error_detail, str):
+                            detail = error_detail or detail
+                    return {
+                        "valid": False,
+                        "error": detail or (
+                            "Google API access denied. Verify API enablement, key restrictions, "
+                            "and project permissions."
+                        ),
+                    }
+                elif response.status_code == 429:
                     return {
                         "valid": True,
-                        "message": f"Google API key is valid. Available Live models: {', '.join(live_models[:3])}",
-                        "available_models": live_models,
+                        "message": (
+                            "Google API key appears valid, but model discovery is currently "
+                            "rate-limited. Setup will continue using the default Gemini Live model."
+                        ),
+                        "warning": (
+                            "Google model discovery is rate-limited. Setup will continue using "
+                            f"{GOOGLE_LIVE_DEFAULT_MODEL}; verify quota in AI Studio if calls fail."
+                        ),
+                        "selected_model": GOOGLE_LIVE_DEFAULT_MODEL,
+                        "available_models": [],
                     }
-                elif response.status_code in [400, 403]:
-                    return {"valid": False, "error": "Invalid API key"}
                 else:
                     return {"valid": False, "error": f"API error: HTTP {response.status_code}"}
             

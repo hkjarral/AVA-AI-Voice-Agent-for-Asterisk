@@ -19,6 +19,10 @@ export const GOOGLE_LIVE_MODEL_GROUPS: GoogleLiveModelSection[] = [
             { value: 'gemini-2.5-flash-native-audio-latest', label: 'Gemini 2.5 Flash Native Audio (Latest)' },
             { value: 'gemini-2.5-flash-native-audio-preview-12-2025', label: 'Gemini 2.5 Flash Native Audio (Dec 2025)' },
             { value: 'gemini-2.5-flash-native-audio-preview-09-2025', label: 'Gemini 2.5 Flash Native Audio (Sep 2025)' },
+            {
+                value: 'gemini-3.1-flash-live-preview',
+                label: 'Gemini 3.1 Flash Live Preview',
+            },
         ],
     },
     {
