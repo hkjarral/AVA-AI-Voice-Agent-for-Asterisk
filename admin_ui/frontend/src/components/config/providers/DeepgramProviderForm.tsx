@@ -71,6 +71,10 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                             value={config.model || 'nova-2-phonecall'}
                             onChange={(e) => handleChange('model', e.target.value)}
                         >
+                            <optgroup label="Flux — Conversational (built-in turn detection)">
+                                <option value="flux-general-en">Flux General — English (recommended for voice agents)</option>
+                                <option value="flux-general-multi">Flux General — Multilingual</option>
+                            </optgroup>
                             <optgroup label="Nova-3 Multilingual (47+ languages)">
                                 <option value="nova-3">Nova-3 General — EN, ES, FR, DE, HI, RU, PT, JA, IT, NL +37 more</option>
                                 <option value="nova-3-medical">Nova-3 Medical — English only</option>

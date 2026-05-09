@@ -471,22 +471,26 @@ class DeepgramProvider(AIProviderInterface):
             },
             "agent": {
                 "language": agent_language,
-                "listen": { 
-                    "provider": { 
-                        "type": "deepgram", 
-                        "model": "nova-3"  # Twilio uses nova-3
-                    } 
+                "listen": {
+                    "provider": {
+                        "type": "deepgram",
+                        # Honor the configured listen model resolved at line 423 from
+                        # provider config / llm_config / default. Previously hardcoded to
+                        # "nova-3", which silently ignored YAML overrides like
+                        # `providers.deepgram.model: flux-general-en`.
+                        "model": listen_model
+                    }
                 },
-                "think": { 
-                    "provider": { 
-                        "type": "open_ai", 
-                        "model": "gpt-4o-mini",  # Twilio uses gpt-4o-mini
+                "think": {
+                    "provider": {
+                        "type": "open_ai",
+                        "model": "gpt-4o-mini",  # Conservative cost default; not changed by this fix
                         "temperature": 0.7
-                    }, 
-                    "prompt": think_prompt 
+                    },
+                    "prompt": think_prompt
                 },
                 "speak": {
-                    "provider": {"type": "deepgram", "model": speak_model}  # Revert: keep provider format
+                    "provider": {"type": "deepgram", "model": speak_model}
                 },
                 "greeting": greeting_val
             }
