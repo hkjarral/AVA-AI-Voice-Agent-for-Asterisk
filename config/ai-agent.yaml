@@ -1476,7 +1476,14 @@ providers:
     input_gain_target_rms: 0
     input_sample_rate_hz: 8000
     instructions: Voice assistant. Answer in 5-8 words. Be direct. Expand only if asked.
-    model: nova-2
+    # Deepgram Voice Agent listen-provider model. Pre-v6.5.0 this YAML field
+    # was silently ignored and the provider hardcoded "nova-3"; v6.5.0 made
+    # this honor the config and we ship "nova-3" to preserve that effective
+    # default on upgrade. To use Flux conversational STT, change this to
+    # "flux-general-en" (English) or "flux-general-multi" — the provider
+    # will automatically add `version: "v2"` and Flux-specific tuning fields
+    # to the Settings JSON. Selectable from the Admin UI Deepgram form.
+    model: nova-3
     output_encoding: mulaw
     output_sample_rate_hz: 8000
     tts_model: aura-2-thalia-en

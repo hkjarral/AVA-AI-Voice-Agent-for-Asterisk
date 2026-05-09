@@ -462,6 +462,37 @@ class DeepgramProvider(AIProviderInterface):
         # Get configured agent language (default: "en")
         agent_language = str(self._get_config_value("agent_language", "en") or "").strip() or "en"
         
+        # Listen provider block. Honor the configured listen model resolved
+        # at line 423 from provider config / llm_config / default. Pre-v6.5.0
+        # this was hardcoded to "nova-3", silently ignoring YAML overrides.
+        # Flux models additionally require `version: "v2"` per Deepgram's
+        # Configure Voice Agent docs and accept Flux-specific tuning fields
+        # (eot_threshold, eager_eot_threshold, keyterms) that Nova rejects.
+        listen_provider: Dict[str, Any] = {
+            "type": "deepgram",
+            "model": listen_model,
+        }
+        if isinstance(listen_model, str) and listen_model.lower().startswith("flux"):
+            listen_provider["version"] = "v2"
+            eot_threshold = self._get_config_value("eot_threshold", 0.7)
+            if eot_threshold is not None:
+                listen_provider["eot_threshold"] = float(eot_threshold)
+            eager_eot = self._get_config_value("eager_eot_threshold", None)
+            if eager_eot is not None:
+                listen_provider["eager_eot_threshold"] = float(eager_eot)
+            keyterms = self._get_config_value("keyterms", None)
+            if isinstance(keyterms, list) and keyterms:
+                listen_provider["keyterms"] = [str(k) for k in keyterms if str(k).strip()]
+            logger.info(
+                "Deepgram Flux listen-provider configured",
+                call_id=self.call_id,
+                model=listen_model,
+                version="v2",
+                eot_threshold=listen_provider.get("eot_threshold"),
+                eager_eot_threshold=listen_provider.get("eager_eot_threshold"),
+                keyterms_count=len(listen_provider.get("keyterms") or []),
+            )
+
         # Build settings with configured audio formats
         settings = {
             "type": "Settings",
@@ -471,16 +502,7 @@ class DeepgramProvider(AIProviderInterface):
             },
             "agent": {
                 "language": agent_language,
-                "listen": {
-                    "provider": {
-                        "type": "deepgram",
-                        # Honor the configured listen model resolved at line 423 from
-                        # provider config / llm_config / default. Previously hardcoded to
-                        # "nova-3", which silently ignored YAML overrides like
-                        # `providers.deepgram.model: flux-general-en`.
-                        "model": listen_model
-                    }
-                },
+                "listen": {"provider": listen_provider},
                 "think": {
                     "provider": {
                         "type": "open_ai",

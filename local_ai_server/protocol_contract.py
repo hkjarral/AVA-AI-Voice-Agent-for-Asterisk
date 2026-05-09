@@ -288,6 +288,55 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
             },
             "additionalProperties": True,
         },
+        # Issue #368 — local LLM tool-gated response.
+        # Inbound: client→server, sets session-scoped tool state once per turn.
+        # Sent before `llm_tool_request` so the server knows which tools the
+        # current call may legally invoke and what their JSON schemas look like.
+        # Server does not reply directly to `tool_context`; it stores the state
+        # on the session and uses it during subsequent `llm_tool_request`
+        # processing.
+        "ToolContext": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+                "type": {"const": "tool_context"},
+                "call_id": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "tools": {"type": "array", "items": {"type": "object"}},
+                "tool_policy": {"enum": ["auto", "strict", "compatible", "off"]},
+                "protocol_version": {"type": "integer"},
+            },
+            "additionalProperties": True,
+        },
+        # Issue #368 — local LLM tool-gated response.
+        # Inbound: client→server, delivers a tool's execution result back to
+        # the local LLM after the engine ran it. Triggers a follow-up LLM
+        # turn that produces the final spoken response (via `llm_response` +
+        # `tts_request`), NOT another tool call.
+        # Two operating shapes:
+        #   - Success: { type: "tool_result", call_id, tool_name, result: <obj> }
+        #   - Error:   { type: "tool_result", call_id, tool_name, result: <obj>,
+        #                is_error: true }
+        # The server renders an internal "tool turn" prompt
+        # ("The tool X returned <result>. Now answer the caller using the
+        # actual values only.") and re-prompts the local LLM. The follow-up
+        # final response is emitted with `extra.tool_result_final=true` so the
+        # engine can recognize it as the post-tool answer.
+        "ToolResult": {
+            "type": "object",
+            "required": ["type", "tool_name"],
+            "properties": {
+                "type": {"const": "tool_result"},
+                "call_id": {"type": "string"},
+                "request_id": {"type": "string"},
+                "tool_name": {"type": "string"},
+                "function_call_id": {"type": "string"},
+                "result": {},  # any JSON value (object preferred); server stringifies for the prompt
+                "is_error": {"type": "boolean"},
+                "protocol_version": {"type": "integer"},
+            },
+            "additionalProperties": True,
+        },
         "TTSRequest": {
             "type": "object",
             "required": ["type", "text"],
