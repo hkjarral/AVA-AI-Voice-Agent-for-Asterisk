@@ -3200,7 +3200,9 @@ async def save_setup_config(config: SetupConfig):
                 providers.setdefault("deepgram", {})["enabled"] = True
                 if not provider_exists("deepgram"):
                     providers["deepgram"].update({
-                        "model": "nova-2-general",
+                        # Aligned with shipped config/ai-agent.yaml + DeepgramProviderConfig
+                        # default. Pre-v6.5.0 runtime hardcoded nova-3 regardless of config.
+                        "model": "nova-3",
                         "tts_model": "aura-asteria-en",
                         "input_encoding": "mulaw",
                         "input_sample_rate_hz": 8000,

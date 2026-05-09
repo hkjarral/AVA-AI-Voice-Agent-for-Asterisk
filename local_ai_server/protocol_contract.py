@@ -426,6 +426,12 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
         {"$ref": "#/$defs/LLMResponse"},
         {"$ref": "#/$defs/LLMToolRequest"},
         {"$ref": "#/$defs/LLMToolResponse"},
+        # v6.5.0+: tool gateway extensions for #368 (local LLM tool-gated response).
+        # Without these in the top-level oneOf, environments running with
+        # `jsonschema` installed reject valid tool_context / tool_result
+        # messages even though the server handles them correctly.
+        {"$ref": "#/$defs/ToolContext"},
+        {"$ref": "#/$defs/ToolResult"},
         {"$ref": "#/$defs/TTSRequest"},
         {"$ref": "#/$defs/TTSResponse"},
         {"$ref": "#/$defs/AudioFrameRequest"},

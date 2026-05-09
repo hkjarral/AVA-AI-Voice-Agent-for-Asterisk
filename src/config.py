@@ -7,7 +7,7 @@ using Pydantic v2 for validation and type safety.
 
 import os
 import yaml
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from typing import Dict, Any, Literal, Optional, List
 import re
 import structlog
@@ -160,11 +160,15 @@ class DeepgramProviderConfig(BaseModel):
     # Flux-specific tuning. Only sent in the Settings JSON when the chosen
     # `model` starts with "flux". Defaults match Deepgram's recommendations
     # (eot_threshold=0.7, eager_eot_threshold disabled by default).
-    # Valid ranges (per Deepgram docs):
-    #   eot_threshold: 0.5 – 0.9
+    # Valid ranges enforced below, per Deepgram's Configure Voice Agent docs
+    # (https://developers.deepgram.com/docs/configure-voice-agent):
+    #   eot_threshold:       0.5 – 0.9
     #   eager_eot_threshold: 0.3 – 0.9 (or None to disable)
-    eot_threshold: Optional[float] = Field(default=0.7)
-    eager_eot_threshold: Optional[float] = Field(default=None)
+    # Cross-field rule (also enforced): if both are set, the eager threshold
+    # must be lower than the final eot threshold; otherwise eager EOT
+    # detection becomes a no-op or misbehaves.
+    eot_threshold: Optional[float] = Field(default=0.7, ge=0.5, le=0.9)
+    eager_eot_threshold: Optional[float] = Field(default=None, ge=0.3, le=0.9)
     keyterms: Optional[List[str]] = Field(default=None)
     greeting: Optional[str] = None
     instructions: Optional[str] = None
@@ -188,6 +192,29 @@ class DeepgramProviderConfig(BaseModel):
     )
     # Provider-specific farewell hangup delay (overrides global)
     farewell_hangup_delay_sec: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _validate_flux_thresholds(self) -> "DeepgramProviderConfig":
+        """Cross-field check for Flux EOT thresholds.
+
+        Per Deepgram's Voice Agent docs, eager EOT detection only behaves
+        correctly when its threshold is strictly lower than the final EOT
+        threshold (the eager VAD fires on a lower-confidence preview, then
+        the final EOT fires on a higher-confidence confirmation). If both
+        are configured but eager >= final, the eager VAD is at best a no-op
+        and at worst confuses turn-taking — better to fail fast at config
+        load.
+        """
+        if self.eot_threshold is not None and self.eager_eot_threshold is not None:
+            if self.eager_eot_threshold >= self.eot_threshold:
+                raise ValueError(
+                    "Deepgram Flux: eager_eot_threshold "
+                    f"({self.eager_eot_threshold}) must be strictly less than "
+                    f"eot_threshold ({self.eot_threshold}). "
+                    "Eager EOT detection only fires on a lower-confidence "
+                    "preview before the final higher-confidence EOT confirmation."
+                )
+        return self
 
 
 class OpenAIProviderConfig(BaseModel):

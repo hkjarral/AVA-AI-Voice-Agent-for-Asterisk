@@ -663,6 +663,76 @@
       },
       "additionalProperties": true
     },
+    "ToolContext": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_context"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "allowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "tool_policy": {
+          "enum": [
+            "auto",
+            "strict",
+            "compatible",
+            "off"
+          ]
+        },
+        "protocol_version": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ToolResult": {
+      "type": "object",
+      "required": [
+        "type",
+        "tool_name"
+      ],
+      "properties": {
+        "type": {
+          "const": "tool_result"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "function_call_id": {
+          "type": "string"
+        },
+        "result": {},
+        "is_error": {
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
     "TTSRequest": {
       "type": "object",
       "required": [
@@ -886,6 +956,12 @@
     },
     {
       "$ref": "#/$defs/LLMToolResponse"
+    },
+    {
+      "$ref": "#/$defs/ToolContext"
+    },
+    {
+      "$ref": "#/$defs/ToolResult"
     },
     {
       "$ref": "#/$defs/TTSRequest"

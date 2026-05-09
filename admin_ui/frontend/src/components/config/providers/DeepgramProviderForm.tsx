@@ -68,7 +68,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         <label className="text-sm font-medium">STT Model</label>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.model || 'nova-2-phonecall'}
+                            value={config.model || 'nova-3'}
                             onChange={(e) => handleChange('model', e.target.value)}
                         >
                             <optgroup label="Flux — Conversational (built-in turn detection)">

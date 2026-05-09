@@ -476,7 +476,10 @@ class DeepgramProvider(AIProviderInterface):
         if not greeting_val:
             greeting_val = "Hello, how can I help you today?"
 
-        listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-2-general"
+        # Final fallback aligned with DeepgramProviderConfig + shipped YAML defaults.
+        # In normal config flow this fallback never fires (config provides "nova-3"),
+        # but kept consistent so the unhappy-path doesn't downgrade behind users' backs.
+        listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-3"
         speak_model = self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None) or "aura-asteria-en"
 
         # Use configured output encoding/sample rate directly (no catalog fetch needed)

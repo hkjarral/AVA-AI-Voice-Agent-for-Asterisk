@@ -128,7 +128,11 @@ providers:
     input_encoding: mulaw
     input_sample_rate_hz: 8000
     instructions: Voice assistant. Answer in 5-8 words. Be direct. Expand only if asked.
-    model: nova-2-phonecall
+    # nova-3 is the v6.5.0+ default (aligned with shipped config/ai-agent.yaml).
+    # For Flux conversational STT (built-in EOT VAD), change to "flux-general-en"
+    # or "flux-general-multi" — the provider auto-adds version: "v2" plus
+    # eot_threshold / eager_eot_threshold / keyterms when a Flux model is selected.
+    model: nova-3
     output_encoding: mulaw
     output_sample_rate_hz: 8000
     tts_model: aura-2-thalia-en
