@@ -360,6 +360,21 @@ Google publishes Gemini Live models on two surfaces with different lifecycles. P
 
 > Older Live models (`gemini-2.0-flash-live-001-preview-*`) are no longer listed on Google's models page and should not be used for new deployments.
 
+#### Gemini 3.1 Flash Live — verified working on Developer API
+
+End-to-end testing on 2026-05-09 with `llm_model: gemini-3.1-flash-live-preview` against the Developer API endpoint confirmed full conversational compatibility with AAVA's existing code path:
+
+- WebSocket connect, `setupComplete` ACK, greeting playback, and tool calls (`hangup_call` → farewell) all worked unchanged.
+- Multi-part `serverContent` envelopes (a 3.1 behavioral change where a single event can carry both `modelTurn` and `outputTranscription` simultaneously) are handled correctly by the current parser — observed 94 multi-part envelopes in a 59-second test call, zero parse errors, zero unhandled message types.
+- Tool-call → farewell `clientContent` round-trip succeeds mid-conversation despite Google's docs implying `sendClientContent` is initial-history-only on 3.1; Google appears to accept it in practice without `initial_history_in_client_content: true` in the session config.
+
+**Caveats** (same as the 2.5 native-audio family on Developer API):
+
+- Server-side `interrupted` VAD is preview-tier; mid-utterance barge-in is unreliable even on 3.1. For production-grade barge-in, switch to Vertex AI mode and use `gemini-live-2.5-flash-native-audio` (GA).
+- AAVA's `clientContent` callsites (`_send_greeting`, post-tool farewell at `src/providers/google_live.py:2131` and `:2227`) work today but should be migrated to `realtimeInput` with a text field if Google tightens enforcement of the 3.1 history-only restriction in a future release.
+
+Investigation logs and timeline are archived locally under `archived/logs/2026-05-09_issue-350-gemini-3.1-phase-0/`.
+
 ### Hangup Fallback Tuning
 
 Google Live may occasionally miss or delay `turnComplete` near the end of a farewell.  
