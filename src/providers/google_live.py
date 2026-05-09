@@ -668,6 +668,13 @@ class GoogleLiveProvider(AIProviderInterface):
             is_full_agent=True,  # Full bidirectional agent (not pipeline component)
             has_native_vad=True,  # Gemini Live has built-in Voice Activity Detection
             has_native_barge_in=True,  # Handles interruptions automatically
+            # Google's server-side VAD handles overlap during TTS playback. Declaring this
+            # lets vad_mode=auto (default) skip local-VAD AND skip the client-side silence
+            # gating in engine.py, so caller audio reaches Google during TTS and
+            # serverContent.interrupted=true can fire for real barge-in. If a deployment
+            # observes self-echo false positives (caller speaker -> mic feedback loop),
+            # set vad_mode=local explicitly to restore the conservative gated behavior.
+            has_native_aec=True,
             requires_continuous_audio=True,  # Needs continuous audio stream for VAD
         )
     

@@ -6772,16 +6772,16 @@ class Engine:
                     return
                 if not getattr(session, "provider_session_active", False):
                     return
-                # CRITICAL FIX: Google Live needs gating, but OpenAI/Deepgram don't
-                # - Google Live: Bidirectional audio, NO server-side echo cancellation → NEEDS gating
-                # - OpenAI Realtime: Server-side AEC → gating harmful
-                # - Deepgram: Text-based output → no echo risk
-                needs_gating = provider_name == "google_live"
-                
+                # Google Live requires a continuous audio stream (cannot drop frames during TTS).
+                # If local VAD is the active mechanism for this call, replace the caller's audio
+                # with silence during TTS playback to prevent self-echo (caller speaker → mic loop)
+                # from confusing Google's server-side VAD. If `vad_mode=auto` (default) and the
+                # provider declares `has_native_aec=True`, we trust Google's server-side handling
+                # and skip the silence injection so server-side `interrupted=true` can fire on real
+                # barge-in. `vad_mode=local` keeps the conservative gated behavior.
+                needs_gating = provider_name == "google_live" and self._should_local_vad_be_active(provider_name)
+
                 if needs_gating and not session.audio_capture_enabled:
-                    # CRITICAL: Google Live requires continuous audio stream (like WebRTC)
-                    # Send SILENCE frames instead of blocking to maintain stream continuity
-                    # This prevents echo while keeping VAD healthy
                     logger.debug(
                         "🔇 GATING ACTIVE - Sending silence frame for Google Live (TTS playing)",
                         call_id=caller_channel_id,
@@ -8275,13 +8275,12 @@ class Engine:
                 # Preserve original inbound audio for local barge-in fallback checks (never run VAD on silence-substituted frames).
                 pcm_for_barge_in = pcm_16k
 
-                # CRITICAL: Check if audio capture is disabled (TTS playing)
-                # For Google Live: Send silence frames to maintain stream continuity (like AudioSocket)
-                # For OpenAI/Deepgram: Can drop audio (they handle gaps gracefully)
-                needs_gating = provider_name == "google_live"
-                
+                # See AudioSocket path above (`needs_gating` near _send_audio_to_provider) for
+                # the rationale. We mirror the same vad_mode-aware decision here for the
+                # ExternalMedia/RTP path so both transports respect the user's VAD intent.
+                needs_gating = provider_name == "google_live" and self._should_local_vad_be_active(provider_name)
+
                 if needs_gating and not session.audio_capture_enabled:
-                    # Send SILENCE instead of dropping to maintain Google Live's stream
                     logger.debug(
                         "🔇 GATING ACTIVE - Sending silence frame for Google Live (TTS playing)",
                         call_id=caller_channel_id,
