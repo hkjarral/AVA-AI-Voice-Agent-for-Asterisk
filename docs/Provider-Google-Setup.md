@@ -353,9 +353,10 @@ Google publishes Gemini Live models on two surfaces with different lifecycles. P
 | `gemini-live-2.5-flash-native-audio` | **Vertex AI** | **GA** | Use via `use_vertex_ai: true`. SLA, VPC-SC, fewer function-calling bugs (see [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md)). |
 
 **Recommendation:**
-- **Developer API users** → keep the shipped `gemini-2.5-flash-native-audio-latest` unless you need pinned reproducibility (then use the dated string).
-- **Production / enterprise** → switch to Vertex AI mode and use `gemini-live-2.5-flash-native-audio` for GA-grade reliability and the function-calling fix.
-- **Evaluating Gemini 3.1** → swap to `gemini-3.1-flash-live-preview` in a non-prod context first; report back via Discord/issues if function-calling and barge-in behave well end-to-end.
+- **Production voice agents** → use **Vertex AI mode** (`use_vertex_ai: true`) with `gemini-live-2.5-flash-native-audio`. This is the only Live native-audio path Google publishes as **GA**, and it's the only path where server-side barge-in (`serverContent.interrupted`) is empirically reliable. See the **Barge-In (Interruption)** section below and [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
+- **Developer API evaluation / non-prod** → the shipped `gemini-2.5-flash-native-audio-latest` works for basic conversation flow but server-side barge-in is unreliable. Acceptable for demos and feature evaluation; not recommended for production telephony where mid-utterance interruption matters.
+- **Pinned snapshot for reproducibility** → use `gemini-2.5-flash-native-audio-preview-12-2025` (or dated `-09-2025`) instead of the floating `-latest` alias.
+- **Evaluating Gemini 3.1** → swap to `gemini-3.1-flash-live-preview` in a non-prod context first; tool-calling and barge-in parity not yet validated for AAVA — report back via Discord/issues.
 
 > Older Live models (`gemini-2.0-flash-live-001-preview-*`) are no longer listed on Google's models page and should not be used for new deployments.
 
@@ -373,10 +374,22 @@ The fallback watchdog protects against stuck calls:
 
 ### 1. Barge-In (Interruption)
 
-**Automatic** - No configuration needed:
-- User speaks → Gemini detects via built-in VAD
-- Agent stops talking immediately
-- User's speech is processed
+Barge-in on Google Live is driven by **server-side VAD** that fires `serverContent.interrupted=true` when the model detects the caller speaking during agent audio output. AAVA's engine receives this signal as a `ProviderBargeIn` event and flushes pending TTS.
+
+**Reliability depends on which Google model surface you're using:**
+
+| Surface | Model | Server-side `interrupted` reliability |
+|---------|-------|---------------------------------------|
+| **Vertex AI** | `gemini-live-2.5-flash-native-audio` (**GA**) | Reliable — production-grade |
+| Developer API | `gemini-2.5-flash-native-audio-latest` (preview alias) | **Unreliable** — server-side `interrupted` may not fire on this preview model variant |
+| Developer API | `gemini-2.5-flash-native-audio-preview-12-2025` (dated preview) | Unverified — preview-tier; behavior may change without notice |
+| Developer API | `gemini-3.1-flash-live-preview` | New preview generation; tool-calling parity not yet validated for AAVA |
+
+**Recommendation for production voice agents: use Vertex AI mode** (`use_vertex_ai: true` + the GA model). This is not a workaround — it reflects Google's current product state where only Vertex publishes a GA Live native-audio model. See [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
+
+**Why the Dev API preview path is unreliable:** Empirical testing (issue [#351](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/351)) shows that with the same VAD config, same audio path, and same client gating logic, Vertex's GA model fires `serverContent.interrupted` correctly during caller overlap with agent audio while Dev API's `*-native-audio-latest` alias does not. The differentiator is the model variant, not AAVA's code path. Logs and traces are archived under `archived/logs/2026-05-09_issue-351-bargein-comparison/`.
+
+**Diagnosing barge-in issues:** AAVA ships an off-by-default trace flag for the Google Live barge-in event flow. Set `AAVA_BARGE_IN_TRACE=1` in `.env` and recreate `ai_engine` to see structured `BARGE_IN_TRACE` log lines covering every serverContent envelope, every `interrupted=True` from the server, every `ProviderBargeIn` emit, and every `AgentAudioDone` event. Useful for confirming whether your model's server-side VAD is actually firing.
 
 ### 2. Function Calling
 
@@ -470,10 +483,22 @@ Pricing changes frequently; verify current rates and quotas in your Google Cloud
 
 ### Issue: Barge-In Not Working
 
-**Note**: Barge-in is **automatic** with Google Live. If not working:
-1. Confirm using `AI_PROVIDER=google_live` (not pipeline)
-2. Check VAD is active: `docker logs ai_engine 2>&1 | grep -i vad`
-3. Verify WebSocket messages: `docker logs ai_engine 2>&1 | grep -i inputtranscription`
+Barge-in on Google Live depends on `serverContent.interrupted=true` firing from Google's server-side VAD. As documented in the **Barge-In (Interruption)** section above, this is reliable on Vertex AI's GA model but **unreliable on the Developer API preview models**.
+
+**If barge-in is not working:**
+
+1. **Confirm provider**: `AI_PROVIDER=google_live` (not a pipeline)
+2. **Confirm Vertex mode for production**: Set `use_vertex_ai: true` and use `gemini-live-2.5-flash-native-audio` (the GA model). See [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
+3. **Capture a diagnostic trace**:
+   ```bash
+   echo "AAVA_BARGE_IN_TRACE=1" >> .env
+   docker compose up -d ai_engine
+   # place a test call and deliberately overlap caller speech with agent TTS
+   docker logs ai_engine 2>&1 | grep BARGE_IN_TRACE | grep <call_id>
+   ```
+   - If `BARGE_IN_TRACE interrupted=True from server` count is **0**: Google's server is not firing the VAD interrupt event. On Dev API previews, this is expected; switch to Vertex GA.
+   - If the count is **>0** but `engine APPLIED barge-in` is **0**: the engine is dropping the events at a guard (cooldown or "no active output"). File an issue with the trace excerpt.
+4. **Verify caller audio energy** — telephony callers often have low input RMS (~25). Local-VAD fallback uses `vad_energy_threshold` (default `1500`) which is calibrated for clean studio audio. For pure-telephony deployments, server-side VAD on Vertex's GA model is the path that actually works; local VAD is unlikely to fire.
 
 ## Migration from Pipeline to Live
 

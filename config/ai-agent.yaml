@@ -1500,6 +1500,10 @@ providers:
     input_gain_target_rms: 0
     input_sample_rate_hz: 8000
     llm_max_output_tokens: 8192
+    # Production-grade barge-in (server-side `interrupted` VAD) requires Vertex AI's GA Live model.
+    # Set `use_vertex_ai: true` and change this to `gemini-live-2.5-flash-native-audio` for production.
+    # The shipped Developer API alias below is preview-tier — fine for evaluation, unreliable for
+    # mid-utterance interruption. See docs/Provider-Google-Setup.md "Barge-In (Interruption)".
     llm_model: gemini-2.5-flash-native-audio-latest
     llm_temperature: 0.4
     llm_top_k: 20
