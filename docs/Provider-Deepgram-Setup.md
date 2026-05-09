@@ -76,10 +76,13 @@ providers:
 |-------|------|--------|-------------|
 | `nova-3` | Listen (STT) | **GA — Deepgram's recommended default** | New deployments. Higher accuracy than nova-2, multilingual conversation, customizable vocabulary. |
 | `nova-2` | Listen (STT) | GA, still supported | Languages not yet supported by nova-3, or workloads that depend on filler-word identification. |
-| `flux` | Listen (STT) + turn detection | GA, conversational-focused | Voice-agent workloads that benefit from Deepgram's built-in turn detection (alternative to server VAD). Evaluate before flipping the default. |
+| `flux-general-en` | Listen (STT) + turn detection | GA, conversational | **Recommended for voice agents.** English-only conversational STT with built-in EndOfTurn / EagerEndOfTurn detection. Selectable from the Admin UI's Deepgram STT Model dropdown. End-to-end verified on the Voice Agent path (call ID `1778364955.475`, 2026-05-09). |
+| `flux-general-multi` | Listen (STT) + turn detection | GA, conversational | Multilingual variant of Flux for non-English voice-agent deployments. |
 | `aura-2-thalia-en` | Speak (TTS) | GA | Default voice. Browse the full Aura-2 voice catalog at [developers.deepgram.com/docs/tts-models](https://developers.deepgram.com/docs/tts-models). |
 
-> **Repo state (2026-04-26):** the shipped `config/ai-agent.yaml` still ships `model: nova-2` for backward compatibility with existing deployments. The Twilio path in `src/providers/deepgram.py` already uses `nova-3`. New deployments should set `model: nova-3` explicitly in their config; the migration is config-only with no code change required.
+> **Repo state (2026-05-09):** the shipped `config/ai-agent.yaml` still defaults `model: nova-2` for backward compatibility with existing deployments. New deployments selecting Flux from the Admin UI dropdown will route through the Deepgram Voice Agent path with `listen.provider.model: flux-general-en` automatically — no manual yaml edit required. Prior to v6.5.0, the listen model was hardcoded to `nova-3` in `src/providers/deepgram.py`, so existing yaml overrides for `model:` were silently ignored; this is fixed in v6.5.0.
+
+> **Advanced Flux tuning** (`eot_threshold`, `eager_eot_threshold`, prefix padding) is not yet exposed through the Admin UI's Deepgram form. The standalone Flux pipeline adapter at `src/pipelines/deepgram_flux.py` (registered as `deepgram_flux_stt`) supports these knobs for hybrid pipelines (Flux STT + non-Deepgram LLM/TTS). Wiring them through to the Voice Agent Settings JSON is a planned enhancement.
 
 ### 4. Configure Asterisk Dialplan
 
