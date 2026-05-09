@@ -36,6 +36,62 @@ def _log_provider_task_exception(task: asyncio.Task) -> None:
         logger.error("Provider background task failed", task_name=task.get_name(), error=str(exc), exc_info=exc)
 
 
+def build_listen_provider_block(
+    *,
+    model: str,
+    eot_threshold: Optional[float] = 0.7,
+    eager_eot_threshold: Optional[float] = None,
+    keyterms: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build the `agent.listen.provider` block for the Deepgram Voice Agent
+    Settings JSON.
+
+    Pre-v6.5.0 the listen model was hardcoded to ``nova-3`` regardless of
+    config. v6.5.0 makes the model honor config and additionally builds a
+    Flux-aware payload when the configured model starts with ``flux``,
+    matching Deepgram's published Voice Agent configuration:
+    https://developers.deepgram.com/docs/configure-voice-agent
+
+    Behavior:
+      - Nova-* models (default): emit ``{"type": "deepgram", "model": <model>}``.
+      - Flux models (``flux-general-en``, ``flux-general-multi``): additionally
+        emit ``version: "v2"`` (required) plus the Flux-specific tuning fields
+        ``eot_threshold`` (default 0.7, valid range 0.5–0.9), optional
+        ``eager_eot_threshold`` (default None, valid range 0.3–0.9), and
+        optional ``keyterms`` (list of strings to bias recognition).
+
+    Centralized as a module-level pure function so the Settings-builder
+    behavior can be unit-tested without spinning up a full
+    ``DeepgramProvider`` (which requires WebSocket, asyncio loop, etc.).
+
+    Args:
+        model: The configured listen model. Required.
+        eot_threshold: Flux end-of-turn confidence threshold. Ignored for Nova.
+        eager_eot_threshold: Flux eager end-of-turn confidence threshold.
+            Ignored for Nova; ``None`` disables the eager VAD on Flux.
+        keyterms: Optional list of strings to bias Flux recognition. Ignored
+            for Nova; empty/None values are dropped.
+
+    Returns:
+        dict suitable for use as the ``agent.listen.provider`` block.
+    """
+    block: Dict[str, Any] = {"type": "deepgram", "model": model}
+    if not isinstance(model, str) or not model.lower().startswith("flux"):
+        return block
+
+    # Flux-specific augmentations.
+    block["version"] = "v2"
+    if eot_threshold is not None:
+        block["eot_threshold"] = float(eot_threshold)
+    if eager_eot_threshold is not None:
+        block["eager_eot_threshold"] = float(eager_eot_threshold)
+    if isinstance(keyterms, list) and keyterms:
+        cleaned = [str(k) for k in keyterms if str(k).strip()]
+        if cleaned:
+            block["keyterms"] = cleaned
+    return block
+
+
 _DEEPGRAM_INPUT_RATE = Gauge(
     "ai_agent_deepgram_input_sample_rate_hz",
     "Configured Deepgram input sample rate per call",
@@ -462,27 +518,16 @@ class DeepgramProvider(AIProviderInterface):
         # Get configured agent language (default: "en")
         agent_language = str(self._get_config_value("agent_language", "en") or "").strip() or "en"
         
-        # Listen provider block. Honor the configured listen model resolved
-        # at line 423 from provider config / llm_config / default. Pre-v6.5.0
-        # this was hardcoded to "nova-3", silently ignoring YAML overrides.
-        # Flux models additionally require `version: "v2"` per Deepgram's
-        # Configure Voice Agent docs and accept Flux-specific tuning fields
-        # (eot_threshold, eager_eot_threshold, keyterms) that Nova rejects.
-        listen_provider: Dict[str, Any] = {
-            "type": "deepgram",
-            "model": listen_model,
-        }
-        if isinstance(listen_model, str) and listen_model.lower().startswith("flux"):
-            listen_provider["version"] = "v2"
-            eot_threshold = self._get_config_value("eot_threshold", 0.7)
-            if eot_threshold is not None:
-                listen_provider["eot_threshold"] = float(eot_threshold)
-            eager_eot = self._get_config_value("eager_eot_threshold", None)
-            if eager_eot is not None:
-                listen_provider["eager_eot_threshold"] = float(eager_eot)
-            keyterms = self._get_config_value("keyterms", None)
-            if isinstance(keyterms, list) and keyterms:
-                listen_provider["keyterms"] = [str(k) for k in keyterms if str(k).strip()]
+        # Listen provider block. See `build_listen_provider_block` for the
+        # full rationale (Nova vs Flux divergence, version=v2 requirement,
+        # Flux-specific tuning fields).
+        listen_provider = build_listen_provider_block(
+            model=listen_model,
+            eot_threshold=self._get_config_value("eot_threshold", 0.7),
+            eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
+            keyterms=self._get_config_value("keyterms", None),
+        )
+        if listen_provider.get("version") == "v2":
             logger.info(
                 "Deepgram Flux listen-provider configured",
                 call_id=self.call_id,
