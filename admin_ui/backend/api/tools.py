@@ -506,17 +506,52 @@ def _extract_json_paths(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
     return paths
 
 
+def _dotenv_value(name: str) -> Optional[str]:
+    """Read a key from the project .env file (not the current process environment).
+
+    Mirrors the helper at admin_ui/backend/api/system.py:57. Used so that
+    HTTP tool test guards pick up Admin UI Environment-page edits without
+    requiring an admin_ui container restart — see issue #370.
+    """
+    try:
+        from settings import ENV_PATH
+        if not os.path.exists(ENV_PATH):
+            return None
+        from dotenv import dotenv_values
+        raw = dotenv_values(ENV_PATH)
+        val = raw.get(name)
+        if val is None:
+            return None
+        return str(val)
+    except Exception:
+        return None
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
+    """Read a boolean env var, preferring the .env file over `os.environ`.
+
+    Precedence: `.env` (Admin UI source of truth) → `os.environ` → default.
+    The .env file is read on every call so Admin UI Environment-page edits
+    take effect immediately without needing an admin_ui container restart.
+    """
+    raw = _dotenv_value(name)
+    if raw is None:
+        raw = os.environ.get(name)
     if raw is None:
         return default
     return str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _env_csv_set(name: str) -> set[str]:
-    raw = os.environ.get(name, "")
+    """Read a CSV env var, preferring the .env file over `os.environ`.
+
+    Same precedence as `_env_bool`. See issue #370 for rationale.
+    """
+    raw = _dotenv_value(name)
+    if raw is None:
+        raw = os.environ.get(name, "")
     items = []
-    for part in raw.split(","):
+    for part in (raw or "").split(","):
         s = part.strip()
         if s:
             items.append(s)

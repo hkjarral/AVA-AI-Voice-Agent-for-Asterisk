@@ -100,9 +100,15 @@ def _local_ai_env_key(key: str) -> bool:
 
 
 def _admin_ui_env_key(key: str) -> bool:
+    # AAVA_HTTP_TOOL_TEST_* are read by the admin_ui's HTTP tool test endpoint
+    # (admin_ui/backend/api/tools.py). They take effect live via the .env file
+    # (no restart needed — see tools.py `_dotenv_value`), but recognizing them
+    # here surfaces them in the Admin UI Environment-page apply/restart UX as
+    # admin_ui-impacting keys, which is honest signaling: changes affect this
+    # service's runtime behavior. Refs #370.
     return (
         key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ")
-        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_"))
+        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_", "AAVA_HTTP_TOOL_TEST_"))
     )
 
 
