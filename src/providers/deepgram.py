@@ -56,8 +56,8 @@ def build_listen_provider_block(
       - Nova-* models (default): emit ``{"type": "deepgram", "model": <model>}``.
       - Flux models (``flux-general-en``, ``flux-general-multi``): additionally
         emit ``version: "v2"`` (required) plus the Flux-specific tuning fields
-        ``eot_threshold`` (default 0.7, valid range 0.5–0.9), optional
-        ``eager_eot_threshold`` (default None, valid range 0.3–0.9), and
+        ``eot_threshold`` (default 0.7, valid range 0.5-0.9), optional
+        ``eager_eot_threshold`` (default None, valid range 0.3-0.9), and
         optional ``keyterms`` (list of strings to bias recognition).
 
     Centralized as a module-level pure function so the Settings-builder

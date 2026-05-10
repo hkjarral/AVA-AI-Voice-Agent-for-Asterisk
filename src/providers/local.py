@@ -742,7 +742,13 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         )
         return True
 
-    async def send_tool_result(self, function_call_id: str, result: Any, is_error: bool = False) -> None:
+    async def send_tool_result(
+        self,
+        function_call_id: str,
+        result: Any,
+        is_error: bool = False,
+        call_id: Optional[str] = None,
+    ) -> None:
         """Send an executed local tool result back to local_ai_server for the final LLM turn.
 
         ``result`` may be any JSON value (object, list, string, int, ``False``,
@@ -752,6 +758,16 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         object — and the local LLM then composed its follow-up using a
         misleading payload. Per CodeRabbit review of PR #384 comment
         3214117421.
+
+        ``call_id`` is the originating call_id captured at tool dispatch
+        time. Pass it explicitly so the tool result is correlated to the
+        right session even when ``self._active_call_id`` has rolled over to
+        a newer call by the time a slow tool returns. Pre-fix this method
+        read ``self._active_call_id`` at result-send time, which could
+        misroute the post-tool answer across calls. Falls back to
+        ``self._active_call_id`` only if no explicit call_id is supplied
+        (back-compat for callers that haven't been updated yet). Per
+        CodeRabbit review of PR #384 comment 3214139216.
         """
         if not self.websocket or self.websocket.state.name != "OPEN":
             return
@@ -759,10 +775,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         tool_name = function_call_id
         if tool_name.startswith("local-"):
             tool_name = tool_name[len("local-"):]
+        # Originating call_id wins; provider-global fallback only as last resort.
+        effective_call_id = call_id or self._active_call_id
         payload = {
             "type": "tool_result",
             "protocol_version": 2,
-            "call_id": self._active_call_id,
+            "call_id": effective_call_id,
             "function_call_id": function_call_id,
             "tool_name": tool_name,
             "result": result,  # preserve falsy values; do NOT coerce to {}
@@ -773,7 +791,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             await self.websocket.send(json.dumps(payload, default=str))
             logger.debug(
                 "Sent local tool result to Local AI Server",
-                call_id=self._active_call_id,
+                call_id=effective_call_id,
                 function_call_id=function_call_id,
                 tool_name=tool_name,
                 is_error=bool(is_error),
@@ -781,7 +799,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         except Exception:
             logger.error(
                 "Failed to send local tool result to Local AI Server",
-                call_id=self._active_call_id,
+                call_id=effective_call_id,
                 function_call_id=function_call_id,
                 exc_info=True,
             )

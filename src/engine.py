@@ -13778,11 +13778,26 @@ class Engine:
         except Exception as e:
             logger.debug("Failed to log tool call to session", call_id=call_id, error=str(e))
         
-        # Send result back to provider
+        # Send result back to provider. Pass the originating `call_id` so
+        # the provider can correlate the result to the correct session even
+        # if its provider-global "active call" state has rolled over to a
+        # newer call by the time a slow tool returns. Per CodeRabbit review
+        # of PR #384 comment 3214139216.
         if provider and hasattr(provider, 'send_tool_result'):
             try:
                 is_error = result.get("status") == "error"
-                await provider.send_tool_result(function_call_id, result, is_error=is_error)
+                # The local provider's send_tool_result accepts an optional
+                # call_id kwarg (added in v6.5.0 review-pass response). Other
+                # provider implementations route through their tool_adapter
+                # and have their own correlation paths. Try the new signature
+                # first; fall back to the old one if the provider hasn't been
+                # updated yet.
+                try:
+                    await provider.send_tool_result(
+                        function_call_id, result, is_error=is_error, call_id=call_id
+                    )
+                except TypeError:
+                    await provider.send_tool_result(function_call_id, result, is_error=is_error)
                 logger.debug(
                     "Tool result sent to provider",
                     call_id=call_id,

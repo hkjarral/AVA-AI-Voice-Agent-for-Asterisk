@@ -379,7 +379,7 @@ Server's internal "tool turn" prompt is rendered as:
 
 Notes:
 
-- `result` may be any JSON value; objects are preferred. The server will `json.dumps()` it before embedding in the prompt. Falsy values (`0`, `false`, `""`, `[]`, `null`) are preserved and pass through unchanged.
+- `result` may be any JSON value; objects are preferred. The server will `json.dumps()` it before embedding in the prompt; very large serialized payloads are **truncated** to a fixed character cap (currently 4000 chars) before insertion to keep the follow-up prompt within the model's context budget — clients debugging large tool outputs should not assume the model received the full payload. Falsy values (`0`, `false`, `""`, `[]`, `null`) are preserved and pass through unchanged.
 - The follow-up response is emitted on the wire as an `llm_response` with top-level fields `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true`. Clients should match these top-level keys, **not** a nested `extra` object — the server flattens `extra.*` into the payload root before sending. Example:
 
   ```json
