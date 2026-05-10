@@ -54,6 +54,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._was_connected: bool = False
         # Background reconnect task (runs when previously connected server disconnects)
         self._background_reconnect_task: Optional[asyncio.Task] = None
+        # Single-flight guard for _reconnect() — prevents the audio-path
+        # background reconnect from racing the _send_loop's direct on-close
+        # _reconnect() call (both would otherwise overwrite self.websocket /
+        # listener / sender tasks).
+        self._reconnect_lock: asyncio.Lock = asyncio.Lock()
         self._warned_audio_drop_disconnected: bool = False
         # Runtime backend reported by local_ai_server in stt_result payloads.
         self._runtime_stt_backend: Optional[str] = None
@@ -911,10 +916,20 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             raise RuntimeError(f"Auth rejected: {data}")
 
     async def _reconnect(self):
+        # Single-flight: serialize concurrent reconnect attempts so the
+        # background task and _send_loop's direct on-close call don't race
+        # on self.websocket / listener / sender lifecycle.
+        async with self._reconnect_lock:
+            return await self._reconnect_locked()
+
+    async def _reconnect_locked(self):
+        # If another reconnect already brought us back online, skip.
+        if self.is_connected():
+            return True
         # HYBRID APPROACH: Quick port check first
         # If port is closed, server is not running at all - skip immediately
         # If port is open, server is starting/running - use retry logic
-        
+
         port_open = await self._is_port_open(timeout=0.5)
         
         if not port_open:
@@ -1346,7 +1361,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         input_mode=self.input_mode,
                     )
                     self._warned_audio_drop_disconnected = True
-                self._start_background_reconnect()
+                # Only kick a background reconnect if we were previously
+                # connected; otherwise we'd spin the port-check at frame rate
+                # for a server that was never reachable in this session.
+                if self._was_connected:
+                    self._start_background_reconnect()
                 return
 
             self._warned_audio_drop_disconnected = False
