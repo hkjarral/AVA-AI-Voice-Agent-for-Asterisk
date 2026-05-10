@@ -1033,11 +1033,14 @@ async def switch_model(request: SwitchModelRequest):
                 expected = request.sherpa_model_path or request.model_path
                 return (not expected) or stt.get("path") == expected
             if request.backend == "faster_whisper":
+                # Device/compute_type are intentionally NOT strict-checked here:
+                # local_ai_server applies a CUDA→CPU fallback at model-load time
+                # (see server.py: faster_whisper_device/compute reset on init
+                # failure). Strict matching would trigger an admin rollback of a
+                # working server. The env file persists the requested values for
+                # the next restart, and the status panel surfaces actual runtime
+                # device/compute_type for the operator.
                 if request.model_path and stt.get("path") != request.model_path:
-                    return False
-                if request.faster_whisper_device and stt.get("device") != request.faster_whisper_device:
-                    return False
-                if request.faster_whisper_compute_type and stt.get("compute_type") != request.faster_whisper_compute_type:
                     return False
                 return True
             if request.backend == "whisper_cpp":
