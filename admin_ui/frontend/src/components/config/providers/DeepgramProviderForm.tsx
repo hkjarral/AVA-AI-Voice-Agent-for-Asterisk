@@ -69,7 +69,23 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.model || 'nova-3'}
-                            onChange={(e) => handleChange('model', e.target.value)}
+                            onChange={(e) => {
+                                const nextModel = e.target.value;
+                                const isFluxModel = nextModel.startsWith('flux-');
+                                if (isFluxModel) {
+                                    handleChange('model', nextModel);
+                                } else {
+                                    // Clear Flux-only tuning fields when switching away from a flux-* model
+                                    // so stale values don't persist into Nova/other model configs.
+                                    onChange({
+                                        ...config,
+                                        model: nextModel,
+                                        eot_threshold: null,
+                                        eager_eot_threshold: null,
+                                        keyterms: null,
+                                    });
+                                }
+                            }}
                         >
                             <optgroup label="Flux — Conversational (built-in turn detection)">
                                 <option value="flux-general-en">Flux General — English (recommended for voice agents)</option>

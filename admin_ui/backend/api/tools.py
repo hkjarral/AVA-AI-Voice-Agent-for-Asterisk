@@ -514,18 +514,23 @@ def _dotenv_value(name: str) -> Optional[str]:
     requiring an admin_ui container restart — see issue #370.
 
     Returns:
-      - ``str`` value when the key is present in .env.
-      - ``None`` when the .env file does not exist or the key is genuinely
-        missing from a successfully-loaded .env. Callers may safely fall
-        back to ``os.environ`` in this case.
+      - ``str`` value when the key is present in .env with a value.
       - ``""`` (empty string) when .env exists but cannot be read or parsed
-        (IO error, malformed file, etc.). This is a **fail-closed sentinel**
-        for security-sensitive flags: callers MUST NOT fall back to
-        ``os.environ`` on this signal — see CodeRabbit review of #384
-        comment 3214117412 (April 2026 audit). Otherwise a broken .env would
+        (IO error, malformed file, etc.) **OR** when the key is present in a
+        successfully-loaded .env without a value (e.g. ``KEY=`` or a
+        bare ``KEY`` line — python-dotenv represents both as a present key
+        with ``None`` value). This is a **fail-closed sentinel** for
+        security-sensitive flags: callers MUST NOT fall back to
+        ``os.environ`` on this signal. Otherwise a broken .env would
         silently re-activate stale permissive values that the Admin UI
         Environment page intended to clear (e.g., a previously-set
         ``AAVA_HTTP_TOOL_TEST_ALLOW_PRIVATE=1`` in the process environment).
+        See CodeRabbit review of #384 comment 3214117412 (April 2026 audit)
+        and Codex review comment 3214190828 (treat valueless .env keys as
+        explicit overrides).
+      - ``None`` when the .env file does not exist or the key is genuinely
+        missing from a successfully-loaded .env. Callers may safely fall
+        back to ``os.environ`` in this case.
     """
     try:
         from settings import ENV_PATH
@@ -541,9 +546,15 @@ def _dotenv_value(name: str) -> Optional[str]:
             exc_info=exc,
         )
         return ""
-    val = raw.get(name)
-    if val is None:
+    if name not in raw:
         return None
+    val = raw[name]
+    if val is None:
+        # Key present in .env but with no value (e.g. ``KEY=`` or bare
+        # ``KEY``). Treat as an explicit "cleared by operator" override —
+        # do NOT fall back to os.environ. Per Codex review comment
+        # 3214190828.
+        return ""
     return str(val)
 
 

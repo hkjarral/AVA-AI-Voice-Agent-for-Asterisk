@@ -371,9 +371,9 @@ End-to-end testing on 2026-05-09 with `llm_model: gemini-3.1-flash-live-preview`
 **Caveats** (same as the 2.5 native-audio family on Developer API):
 
 - Server-side `interrupted` VAD is preview-tier; mid-utterance barge-in is unreliable even on 3.1. For production-grade barge-in, switch to Vertex AI mode and use `gemini-live-2.5-flash-native-audio` (GA).
-- AAVA's `clientContent` callsites (`_send_greeting`, post-tool farewell at `src/providers/google_live.py:2131` and `:2227`) work today but should be migrated to `realtimeInput` with a text field if Google tightens enforcement of the 3.1 history-only restriction in a future release.
+- AAVA's `clientContent` callsites (the `_send_greeting` helper and the post-tool farewell handler in `src/providers/google_live.py`) work today but should be migrated to `realtimeInput` with a text field if Google tightens enforcement of the 3.1 history-only restriction in a future release.
 
-Investigation logs and timeline are archived locally under `archived/logs/2026-05-09_issue-350-gemini-3.1-phase-0/`.
+Investigation logs and timeline are captured in the [#350 / #356 verification discussion on PR #384](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/384).
 
 ### Hangup Fallback Tuning
 
