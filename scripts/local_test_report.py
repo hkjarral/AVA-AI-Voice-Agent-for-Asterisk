@@ -539,6 +539,24 @@ def summarize_tool_calls(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
 # Extract model info from WS status
 # ---------------------------------------------------------------------------
 
+def _normalize_bool_str(value: Any, default: str = "unknown") -> str:
+    """Normalize mixed bool/string runtime-flag values to 'true'/'false'.
+
+    Status payload uses real booleans; env mode emits strings like '0'/'1'/'true'/'false'.
+    Without this, str(bool('false')) renders 'false' as 'true', and the report
+    inconsistently mixes '0'/'1' with 'true'/'false'.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on"}:
+            return "true"
+        if v in {"0", "false", "no", "off"}:
+            return "false"
+    return default
+
+
 def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) -> Dict[str, str]:
     """Extract STT/TTS/LLM model details from WS status response or env."""
     info: Dict[str, str] = {
@@ -580,13 +598,19 @@ def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) ->
         info["llm_context"] = str(llm_config.get("context", "N/A"))
         info["llm_max_tokens"] = str(llm_config.get("max_tokens", "N/A"))
         info["llm_gpu_layers"] = str(llm_config.get("gpu_layers", info["llm_gpu_layers"]))
-        info["llm_tool_capability"] = str((llm.get("tool_capability") or {}).get("level", "unknown"))
+        tool_capability = llm.get("tool_capability")
+        if isinstance(tool_capability, dict):
+            info["llm_tool_capability"] = str(tool_capability.get("level", "unknown"))
+        elif tool_capability is None:
+            info["llm_tool_capability"] = "unknown"
+        else:
+            info["llm_tool_capability"] = str(tool_capability)
 
         # Config
         config = status.get("config", {})
         info["runtime_mode"] = config.get("runtime_mode", "unknown")
-        info["filler_audio"] = str(bool(config.get("enable_filler_audio", False))).lower()
-        info["llm_tts_overlap"] = str(bool(config.get("llm_streaming_tts_overlap", True))).lower()
+        info["filler_audio"] = _normalize_bool_str(config.get("enable_filler_audio"), default="false")
+        info["llm_tts_overlap"] = _normalize_bool_str(config.get("llm_streaming_tts_overlap"), default="true")
 
         # GPU
         gpu = status.get("gpu", {})
@@ -611,8 +635,8 @@ def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) ->
         info["llm_max_tokens"] = env.get("LOCAL_LLM_MAX_TOKENS", "default")
         gpu_avail = env.get("GPU_AVAILABLE", "false").lower() in ("1", "true", "yes")
         info["runtime_mode"] = env.get("LOCAL_AI_MODE", "minimal" if not gpu_avail else "full")
-        info["filler_audio"] = env.get("LOCAL_ENABLE_FILLER_AUDIO", "0")
-        info["llm_tts_overlap"] = env.get("LOCAL_LLM_STREAMING_TTS_OVERLAP", "1")
+        info["filler_audio"] = _normalize_bool_str(env.get("LOCAL_ENABLE_FILLER_AUDIO"), default="false")
+        info["llm_tts_overlap"] = _normalize_bool_str(env.get("LOCAL_LLM_STREAMING_TTS_OVERLAP"), default="true")
 
     return info
 

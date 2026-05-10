@@ -588,7 +588,10 @@ const ModelsPage = () => {
     };
 
     const gpuDetected = isTruthy(envConfig.GPU_AVAILABLE);
-    const fasterWhisperDevice = (envConfig.FASTER_WHISPER_DEVICE || 'cpu').trim().toLowerCase();
+    // Effective device for compatibility gating: prefer pending selection
+    // over persisted env, so the new dropdown's CUDA picks are caught
+    // client-side instead of failing after the long apply flow.
+    const fasterWhisperDevice = (pendingSttExtra.device || envConfig.FASTER_WHISPER_DEVICE || 'cpu').trim().toLowerCase();
     const melottsDevice = (envConfig.MELOTTS_DEVICE || 'cpu').trim().toLowerCase();
     const gpuStatusKnown = typeof envConfig.GPU_AVAILABLE !== 'undefined';
     const runtimeGpuKnown = runtimeGpu !== null && typeof runtimeGpu.runtime_detected === 'boolean';
