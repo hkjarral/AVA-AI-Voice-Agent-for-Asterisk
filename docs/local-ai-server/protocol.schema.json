@@ -362,6 +362,9 @@
         "faster_whisper_language": {
           "type": "string"
         },
+        "runtime_config": {
+          "type": "object"
+        },
         "whisper_cpp_language": {
           "type": "string"
         },
