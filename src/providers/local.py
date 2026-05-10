@@ -748,8 +748,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         result: Any,
         is_error: bool = False,
         call_id: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Send an executed local tool result back to local_ai_server for the final LLM turn.
+
+        Returns ``True`` if the payload was handed off to the WebSocket layer,
+        ``False`` if the connection was unavailable or the send raised. The
+        engine uses this signal to decide whether to retry/fail-over rather
+        than silently stalling the post-tool turn. Per CodeRabbit review of
+        PR #384 comment 3214158829.
 
         ``result`` may be any JSON value (object, list, string, int, ``False``,
         ``0``, empty list, ``None``). Pre-fix this method coerced falsy values
@@ -770,7 +776,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         CodeRabbit review of PR #384 comment 3214139216.
         """
         if not self.websocket or self.websocket.state.name != "OPEN":
-            return
+            logger.warning(
+                "Cannot send local tool result: WebSocket not open",
+                call_id=call_id or self._active_call_id,
+                function_call_id=function_call_id,
+            )
+            return False
         function_call_id = str(function_call_id or "").strip()
         tool_name = function_call_id
         if tool_name.startswith("local-"):
@@ -796,6 +807,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 tool_name=tool_name,
                 is_error=bool(is_error),
             )
+            return True
         except Exception:
             logger.error(
                 "Failed to send local tool result to Local AI Server",
@@ -803,6 +815,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 function_call_id=function_call_id,
                 exc_info=True,
             )
+            return False
 
     @property
     def supported_codecs(self) -> List[str]:
@@ -1215,7 +1228,16 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 capability=(self._tool_capability or {}).get("level"),
             )
             await self._apply_system_prompt(prompt, call_id=call_id)
-        await self._send_tool_context(call_id=call_id)
+        # Fail-closed: tool_context state is per-WebSocket and we reuse the
+        # connection across calls. If the sync fails, the server can keep the
+        # previous call's allowlist/policy/schemas, leaking ACL state across
+        # calls. Abort this call setup instead of proceeding with stale state.
+        # Per CodeRabbit review of PR #384 review 4258719822 (outside-diff).
+        ok = await self._send_tool_context(call_id=call_id)
+        if not ok:
+            raise RuntimeError(
+                f"Failed to synchronize tool_context with Local AI Server (call_id={call_id})"
+            )
 
     async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> None:
         prompt = (prompt or "").strip()
@@ -1238,9 +1260,21 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         except Exception:
             logger.debug("Failed applying Local AI Server system prompt", call_id=call_id, exc_info=True)
 
-    async def _send_tool_context(self, *, call_id: str) -> None:
+    async def _send_tool_context(self, *, call_id: str) -> bool:
+        """Send tool_context to local_ai_server. Returns True on success.
+
+        Caller must treat False as fatal: the server caches per-session
+        ACL/policy/schemas and a missed sync leaks state across calls. Per
+        CodeRabbit review of PR #384 review 4258719822 (outside-diff).
+        """
         if not self.websocket or self.websocket.state.name != "OPEN":
-            return
+            logger.warning(
+                "Cannot send local tool_context: WebSocket not open",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+            )
+            return False
         payload = {
             "type": "tool_context",
             "protocol_version": 2,
@@ -1257,8 +1291,16 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 allowed_tools=sorted(self._allowed_tools),
                 policy=self._effective_tool_policy,
             )
+            return True
         except Exception:
-            logger.debug("Failed sending local tool context", call_id=call_id, exc_info=True)
+            logger.error(
+                "Failed sending local tool context",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+                exc_info=True,
+            )
+            return False
 
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 0, encoding: str = ""):
         """Send audio chunk to Local AI Server for STT processing."""

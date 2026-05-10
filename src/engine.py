@@ -9506,10 +9506,12 @@ class Engine:
                         logger.debug("Provider streaming queue full; dropping chunk", call_id=call_id)
             elif etype == "AgentAudioDone":
                 if _BARGE_IN_TRACE:
-                    try:
-                        _sup_now = session.vad_state.get("output_suppression") or {}
-                    except Exception:
-                        _sup_now = {}
+                    _vad_state = getattr(session, "vad_state", None)
+                    _sup_now = (
+                        _vad_state.get("output_suppression") or {}
+                        if isinstance(_vad_state, dict)
+                        else {}
+                    )
                     logger.info(
                         "BARGE_IN_TRACE engine received AgentAudioDone",
                         call_id=call_id,
@@ -13793,17 +13795,35 @@ class Engine:
                 # first; fall back to the old one if the provider hasn't been
                 # updated yet.
                 try:
-                    await provider.send_tool_result(
+                    _send_ok = await provider.send_tool_result(
                         function_call_id, result, is_error=is_error, call_id=call_id
                     )
-                except TypeError:
-                    await provider.send_tool_result(function_call_id, result, is_error=is_error)
-                logger.debug(
-                    "Tool result sent to provider",
-                    call_id=call_id,
-                    function_name=function_name,
-                    function_call_id=function_call_id,
-                )
+                except TypeError as _te:
+                    # Narrow guard: only fall back when the provider does not
+                    # accept the call_id kwarg. Any other TypeError is a real
+                    # bug that should surface, not be silently retried. Per
+                    # CodeRabbit review of PR #384 comment 3214158827.
+                    if "unexpected keyword argument 'call_id'" not in str(_te):
+                        raise
+                    _send_ok = await provider.send_tool_result(function_call_id, result, is_error=is_error)
+                # send_tool_result returns False on transport failure (local
+                # provider as of v6.5.0); other providers may return None,
+                # which we treat as success. Per CodeRabbit review of PR #384
+                # comment 3214158829.
+                if _send_ok is False:
+                    logger.warning(
+                        "Tool result send reported failure; post-tool turn may stall",
+                        call_id=call_id,
+                        function_name=function_name,
+                        function_call_id=function_call_id,
+                    )
+                else:
+                    logger.debug(
+                        "Tool result sent to provider",
+                        call_id=call_id,
+                        function_name=function_name,
+                        function_call_id=function_call_id,
+                    )
             except Exception as e:
                 logger.error(
                     "Failed to send tool result to provider",
