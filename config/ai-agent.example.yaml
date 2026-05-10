@@ -166,7 +166,12 @@ providers:
   deepgram:
     enabled: true
     api_key: "${DEEPGRAM_API_KEY}"
-    model: "nova-2-general"
+    # nova-3 is the v6.5.0+ default (aligned with shipped config/ai-agent.yaml).
+    # For Flux conversational STT (built-in EOT VAD), set:
+    #   model: "flux-general-en"      # or "flux-general-multi"
+    # The provider auto-adds version: "v2" + eot_threshold/eager_eot_threshold
+    # to the Settings JSON when a Flux model is selected.
+    model: "nova-3"
     tts_model: "aura-asteria-en"
   # ElevenLabs TTS - Modular pipeline adapter for STT→LLM→TTS pipelines
   # Use with pipelines (e.g., local_stt + openai_llm + elevenlabs_tts)

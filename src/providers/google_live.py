@@ -22,6 +22,7 @@ import base64
 import contextlib
 import json
 import math
+import os
 import time
 import struct
 import audioop
@@ -1880,10 +1881,10 @@ class GoogleLiveProvider(AIProviderInterface):
         had_audio = self._in_audio_burst
         turn_was_assistant = self._turn_has_assistant_output
         self._turn_has_assistant_output = False
-        
+
         # Note: Transcription is now saved in _handle_server_content when turnComplete=true
         # No need to flush here - it's already been handled
-        
+
         if self._in_audio_burst:
             self._in_audio_burst = False
             if self.on_event:

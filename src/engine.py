@@ -8894,7 +8894,6 @@ class Engine:
                         except Exception:
                             output_active = False
                     if not output_active and not bool(getattr(session, "tts_playing", False)):
-                        # No local output to flush; ignore noisy provider barge-in signals.
                         return
 
                     provider_evt = event.get("event") or event.get("reason") or ""
@@ -13733,17 +13732,50 @@ class Engine:
         except Exception as e:
             logger.debug("Failed to log tool call to session", call_id=call_id, error=str(e))
         
-        # Send result back to provider
+        # Send result back to provider. Pass the originating `call_id` so
+        # the provider can correlate the result to the correct session even
+        # if its provider-global "active call" state has rolled over to a
+        # newer call by the time a slow tool returns. Per CodeRabbit review
+        # of PR #384 comment 3214139216.
         if provider and hasattr(provider, 'send_tool_result'):
             try:
                 is_error = result.get("status") == "error"
-                await provider.send_tool_result(function_call_id, result, is_error=is_error)
-                logger.debug(
-                    "Tool result sent to provider",
-                    call_id=call_id,
-                    function_name=function_name,
-                    function_call_id=function_call_id,
-                )
+                # The local provider's send_tool_result accepts an optional
+                # call_id kwarg (added in v6.5.0 review-pass response). Other
+                # provider implementations route through their tool_adapter
+                # and have their own correlation paths. Try the new signature
+                # first; fall back to the old one if the provider hasn't been
+                # updated yet.
+                try:
+                    _send_ok = await provider.send_tool_result(
+                        function_call_id, result, is_error=is_error, call_id=call_id
+                    )
+                except TypeError as _te:
+                    # Narrow guard: only fall back when the provider does not
+                    # accept the call_id kwarg. Any other TypeError is a real
+                    # bug that should surface, not be silently retried. Per
+                    # CodeRabbit review of PR #384 comment 3214158827.
+                    if "unexpected keyword argument 'call_id'" not in str(_te):
+                        raise
+                    _send_ok = await provider.send_tool_result(function_call_id, result, is_error=is_error)
+                # send_tool_result returns False on transport failure (local
+                # provider as of v6.5.0); other providers may return None,
+                # which we treat as success. Per CodeRabbit review of PR #384
+                # comment 3214158829.
+                if _send_ok is False:
+                    logger.warning(
+                        "Tool result send reported failure; post-tool turn may stall",
+                        call_id=call_id,
+                        function_name=function_name,
+                        function_call_id=function_call_id,
+                    )
+                else:
+                    logger.debug(
+                        "Tool result sent to provider",
+                        call_id=call_id,
+                        function_name=function_name,
+                        function_call_id=function_call_id,
+                    )
             except Exception as e:
                 logger.error(
                     "Failed to send tool result to provider",

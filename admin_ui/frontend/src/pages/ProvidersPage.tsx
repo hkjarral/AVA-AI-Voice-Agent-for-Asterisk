@@ -232,7 +232,10 @@ const ProvidersPage: React.FC = () => {
             },
             deepgram: {
                 enabled: false,
-                model: 'nova-2-phonecall',
+                // Default aligned with shipped config/ai-agent.yaml + DeepgramProviderConfig.
+                // Pre-v6.5.0 the runtime hardcoded nova-3 regardless; v6.5.0 makes the listen
+                // model honor config and this default preserves that effective behavior.
+                model: 'nova-3',
                 tts_model: 'aura-2-thalia-en',
                 input_encoding: 'mulaw',
                 input_sample_rate_hz: 8000,
@@ -1140,7 +1143,7 @@ const ProvidersPage: React.FC = () => {
                         <h4 className="text-sm font-medium">Full Agents (Cloud)</h4>
                         {[
                             { id: 'openai_realtime', name: 'OpenAI Realtime', desc: 'GPT-4o real-time voice agent' },
-                            { id: 'deepgram', name: 'Deepgram', desc: 'Nova-2 STT + Aura TTS voice agent' },
+                            { id: 'deepgram', name: 'Deepgram', desc: 'Nova-3 STT + Aura-2 TTS voice agent (Flux available)' },
                             { id: 'google_live', name: 'Google Live', desc: 'Gemini 2.5 Native Audio real-time agent' },
                             { id: 'elevenlabs_agent', name: 'ElevenLabs Agent', desc: 'ElevenLabs conversational AI' },
                         ].map(template => (

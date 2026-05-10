@@ -100,9 +100,15 @@ def _local_ai_env_key(key: str) -> bool:
 
 
 def _admin_ui_env_key(key: str) -> bool:
+    # AAVA_HTTP_TOOL_TEST_* are read by the admin_ui's HTTP tool test endpoint
+    # (admin_ui/backend/api/tools.py). They take effect live via the .env file
+    # (no restart needed — see tools.py `_dotenv_value`), but recognizing them
+    # here surfaces them in the Admin UI Environment-page apply/restart UX as
+    # admin_ui-impacting keys, which is honest signaling: changes affect this
+    # service's runtime behavior. Refs #370.
     return (
         key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ")
-        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_"))
+        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_", "AAVA_HTTP_TOOL_TEST_"))
     )
 
 
@@ -1841,14 +1847,22 @@ def update_yaml_provider_field(provider_name: str, field: str, value: Any) -> bo
 async def get_provider_options(provider_type: str):
     """Get available options (models, voices) for a specific provider."""
     
-    # Common catalogs
+    # Common catalogs.
+    # Aligned with the DeepgramProviderForm.tsx STT-model dropdown and the
+    # docs/Provider-Deepgram-Setup.md model table. v6.5.0+ ships nova-3 as the
+    # default (preserves pre-fix runtime hardcoded behavior) and exposes Flux
+    # for conversational voice-agent workloads. Flux models are flagged so
+    # frontend consumers can render the EOT VAD note where appropriate.
     DEEPGRAM_MODELS = [
+        {"id": "flux-general-en", "name": "Flux General — English (recommended for voice agents)", "cost": "Low", "latency": "Ultra Low", "flux": True},
+        {"id": "flux-general-multi", "name": "Flux General — Multilingual", "cost": "Low", "latency": "Ultra Low", "flux": True},
+        {"id": "nova-3", "name": "Nova 3 (General, default)", "cost": "Low", "latency": "Ultra Low"},
+        {"id": "nova-3-medical", "name": "Nova 3 (Medical)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2", "name": "Nova 2 (General)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-phonecall", "name": "Nova 2 (Phonecall)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-medical", "name": "Nova 2 (Medical)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-meeting", "name": "Nova 2 (Meeting)", "cost": "Low", "latency": "Ultra Low"},
         {"id": "nova-2-general", "name": "Nova 2 (General Legacy)", "cost": "Low", "latency": "Ultra Low"},
-        {"id": "listen", "name": "General (Listen)", "cost": "Medium", "latency": "Low"},
     ]
     
     OPENAI_LLM_MODELS = [

@@ -4499,38 +4499,67 @@ class LocalAIServer:
             sentence = sentence[:157].rstrip() + "..."
         return sentence or "Thank you for calling. Goodbye."
 
-    async def _handle_llm_tool_request(
+    async def _handle_tool_context(
         self,
         websocket,
         session: SessionContext,
         data: Dict[str, Any],
     ) -> None:
-        request_id = str(data.get("request_id") or "").strip()
         call_id = data.get("call_id")
         if call_id:
             session.call_id = call_id
-        text = str(data.get("text") or "")
-        if not text.strip():
-            await self._send_json(
-                websocket,
-                {
-                    "type": "llm_tool_response",
-                    "call_id": session.call_id,
-                    "request_id": request_id,
-                    "text": "",
-                    "tool_calls": [],
-                    "finish_reason": "stop",
-                    "tool_path": "none",
-                    "tool_parse_failures": 0,
-                    "repair_attempts": 0,
-                    "protocol_version": 2,
-                },
-            )
-            return
+        session.allowed_tools = self._extract_allowed_tool_names(data)
+        session.tool_schemas = data.get("tools") if isinstance(data.get("tools"), list) else []
+        session.tool_policy = self._normalize_tool_policy(data.get("tool_policy"))
+        # Bind the cached tool context to its originating call_id. A long-lived
+        # WebSocket session can serve multiple calls; without this binding the
+        # ACL/schemas/policy would silently leak from one call to the next when
+        # the second call omits tool metadata in its `llm_tool_request` (the
+        # session-fallback path added for #368). See CodeRabbit review of
+        # PR #384 comment 3214130571.
+        session.tool_context_call_id = session.call_id or None
+        logging.info(
+            "🧩 TOOL CONTEXT - call_id=%s allowed_tools=%s policy=%s schemas=%s",
+            session.call_id,
+            session.allowed_tools,
+            session.tool_policy,
+            len(session.tool_schemas or []),
+        )
 
-        allowed_tools = self._extract_allowed_tool_names(data)
-        tool_schemas = data.get("tools") if isinstance(data.get("tools"), list) else []
-        policy = self._normalize_tool_policy(data.get("tool_policy"))
+    async def _build_llm_tool_response_payload(
+        self,
+        *,
+        session: SessionContext,
+        text: str,
+        request_id: str = "",
+        latest_user_text: str = "",
+        allowed_tools: Optional[List[str]] = None,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
+        tool_policy: Optional[str] = None,
+        tool_choice: str = "auto",
+        server_gated: bool = False,
+    ) -> Dict[str, Any]:
+        if not text.strip():
+            payload = {
+                "type": "llm_tool_response",
+                "call_id": session.call_id,
+                "text": "",
+                "tool_calls": [],
+                "finish_reason": "stop",
+                "tool_path": "none",
+                "tool_parse_failures": 0,
+                "repair_attempts": 0,
+                "protocol_version": 2,
+            }
+            if request_id:
+                payload["request_id"] = request_id
+            if server_gated:
+                payload["server_gated"] = True
+            return payload
+
+        allowed_tools = list(allowed_tools if allowed_tools is not None else session.allowed_tools or [])
+        tool_schemas = list(tool_schemas if tool_schemas is not None else session.tool_schemas or [])
+        policy = self._normalize_tool_policy(tool_policy if tool_policy is not None else session.tool_policy)
         if policy == "auto":
             capability_level = str((self._llm_tool_capability_meta or {}).get("level") or "").strip().lower()
             if capability_level == "strict":
@@ -4539,8 +4568,9 @@ class LocalAIServer:
                 policy = "off"
             else:
                 policy = "compatible"
-        tool_choice = str(data.get("tool_choice") or "auto").strip().lower()
-        latest_user_text = str(data.get("latest_user_text") or "").strip()
+        tool_choice = str(tool_choice or "auto").strip().lower()
+        if not latest_user_text:
+            latest_user_text = ""
 
         clean_text, tool_calls, parse_failures = self._extract_tool_calls_from_text(text, allowed_tools)
         tool_path = "parser" if tool_calls else "none"
@@ -4609,6 +4639,22 @@ class LocalAIServer:
             tool_calls = []
             tool_path = "none"
 
+        if tool_calls and not self._text_has_end_call_intent(latest_user_text):
+            kept_calls = [
+                tc
+                for tc in tool_calls
+                if str(tc.get("name") or "").strip() != "hangup_call"
+            ]
+            if len(kept_calls) != len(tool_calls):
+                logging.info(
+                    "🧩 LLM TOOL GATEWAY - Dropping hangup_call before TTS gate; no end intent call_id=%s latest_user_text=%s",
+                    session.call_id,
+                    latest_user_text[:80],
+                )
+                tool_calls = kept_calls
+                if not tool_calls:
+                    tool_path = "none"
+
         finish_reason = "tool_calls" if tool_calls else "stop"
         payload = {
             "type": "llm_tool_response",
@@ -4624,6 +4670,8 @@ class LocalAIServer:
         }
         if request_id:
             payload["request_id"] = request_id
+        if server_gated:
+            payload["server_gated"] = True
 
         logging.info(
             "🧩 LLM TOOL GATEWAY - call_id=%s policy=%s tool_path=%s tools=%s parse_failures=%s repair_attempts=%s structured_attempts=%s",
@@ -4635,7 +4683,190 @@ class LocalAIServer:
             repair_attempts,
             structured_attempts,
         )
+        return payload
+
+    async def _handle_llm_tool_request(
+        self,
+        websocket,
+        session: SessionContext,
+        data: Dict[str, Any],
+    ) -> None:
+        request_id = str(data.get("request_id") or "").strip()
+        call_id = data.get("call_id")
+        if call_id:
+            session.call_id = call_id
+        # Cross-call leakage guard: a long-lived WebSocket session can serve
+        # multiple calls. The cached `tool_context` (allowed_tools / schemas /
+        # policy) is bound to the call_id that created it; if a different
+        # call_id arrives without sending a fresh `tool_context`, drop the
+        # stale cache so we don't authorize tools the new call wasn't given.
+        # The request will then fall through with an empty allowlist
+        # (effectively rejecting tool calls until a `tool_context` is sent
+        # for this call). Per CodeRabbit review of PR #384 comment 3214130571.
+        cached_ctx_call_id = getattr(session, "tool_context_call_id", None)
+        if cached_ctx_call_id and call_id and cached_ctx_call_id != call_id:
+            logging.warning(
+                "🧩 TOOL CONTEXT - call_id mismatch (cached=%s incoming=%s); clearing stale cache",
+                cached_ctx_call_id,
+                call_id,
+            )
+            session.allowed_tools = []
+            session.tool_schemas = []
+            session.tool_policy = "auto"
+            session.tool_context_call_id = None
+        text = str(data.get("text") or "")
+        # When the request omits tool metadata, pass None so
+        # `_build_llm_tool_response_payload` can fall back to whatever was
+        # set on the session by a preceding `tool_context` message. Pre-fix
+        # behavior was to always pass concrete values (or `[]`/None) which
+        # silently overrode session state and broke the new two-step
+        # `tool_context` → `llm_tool_request` protocol unless every request
+        # repeated the metadata. Per CodeRabbit review of PR #384 comment
+        # 3214117418.
+        has_tool_fields = ("allowed_tools" in data) or ("tools" in data)
+        payload = await self._build_llm_tool_response_payload(
+            session=session,
+            text=text,
+            request_id=request_id,
+            latest_user_text=str(data.get("latest_user_text") or "").strip(),
+            allowed_tools=(
+                self._extract_allowed_tool_names(data) if has_tool_fields else None
+            ),
+            tool_schemas=(
+                data.get("tools") if isinstance(data.get("tools"), list) else None
+            ),
+            tool_policy=data.get("tool_policy") if "tool_policy" in data else None,
+            tool_choice=str(data.get("tool_choice") or "auto"),
+        )
         await self._send_json(websocket, payload)
+
+    async def _handle_tool_result(
+        self,
+        websocket,
+        session: SessionContext,
+        data: Dict[str, Any],
+    ) -> None:
+        call_id = data.get("call_id")
+        if call_id:
+            session.call_id = call_id
+        request_id = str(data.get("request_id") or "").strip() or None
+        tool_name = str(data.get("tool_name") or data.get("function_call_id") or "tool").strip()
+        result = data.get("result") if isinstance(data.get("result"), dict) else {"value": data.get("result")}
+        is_error = bool(data.get("is_error"))
+
+        try:
+            result_json = json.dumps(result or {}, ensure_ascii=False, default=str)
+        except Exception:
+            result_json = str(result)
+
+        # Cap the serialized result so a verbose tool output (large calendar
+        # event lists, dumped CRM records, etc.) cannot blow the prompt
+        # budget. 4000 chars ~ 1000 tokens — comfortably below most local
+        # models' context, even with the rest of the system prompt and
+        # conversation history. Per CodeRabbit review of PR #384 comment
+        # 3214117419.
+        _RESULT_JSON_MAX_CHARS = 4000
+        if len(result_json) > _RESULT_JSON_MAX_CHARS:
+            result_json = result_json[:_RESULT_JSON_MAX_CHARS] + "…"
+
+        if is_error:
+            tool_turn = (
+                f"The tool {tool_name} failed with this result: {result_json}. "
+                "Briefly apologize and ask the caller to try again."
+            )
+        else:
+            tool_turn = (
+                f"The tool {tool_name} returned this result: {result_json}. "
+                "Now answer the caller using the actual tool values only. "
+                "Do not mention JSON, tools, placeholders, or internal fields."
+            )
+
+        # Save the conversation history BEFORE `_prepare_llm_prompt` mutates
+        # `session.llm_messages` to include the synthetic tool-turn user
+        # message. Otherwise the tool JSON persists in history as if the
+        # caller had said it, which (a) leaks internal payloads into later
+        # turns and (b) accumulates context budget pressure across calls
+        # with multiple tool executions. We restore the original history
+        # below before appending only the final assistant answer to the
+        # session. Per CodeRabbit review of PR #384 comment 3214117419.
+        _saved_llm_messages = list(session.llm_messages)
+        _saved_llm_user_turns = list(session.llm_user_turns)
+
+        prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages = self._prepare_llm_prompt(
+            session, tool_turn
+        )
+        use_chat_path = bool(self.llm_chat_format)
+        infer_timeout = self.config.llm_infer_timeout_sec
+        try:
+            logging.info(
+                "🧩 TOOL RESULT LLM START - call_id=%s tool=%s tokens=%s raw_tokens=%s truncated=%s",
+                session.call_id,
+                tool_name,
+                prompt_tokens,
+                raw_tokens,
+                truncated,
+            )
+            if use_chat_path:
+                llm_response = await asyncio.wait_for(
+                    asyncio.shield(self.process_llm_chat(chat_messages)), timeout=infer_timeout
+                )
+            else:
+                llm_response = await asyncio.wait_for(
+                    asyncio.shield(self.process_llm(prompt_text)), timeout=infer_timeout
+                )
+        except asyncio.TimeoutError:
+            logging.warning(
+                "🧩 TOOL RESULT LLM TIMEOUT - call_id=%s tool=%s timeout=%.1fs",
+                session.call_id,
+                tool_name,
+                infer_timeout,
+            )
+            llm_response = "I found the result, but I need a moment to format it clearly."
+        except Exception as exc:
+            logging.error(
+                "🧩 TOOL RESULT LLM ERROR - call_id=%s tool=%s error=%s",
+                session.call_id,
+                tool_name,
+                exc,
+                exc_info=True,
+            )
+            llm_response = "I found the result, but I could not format it clearly."
+
+        # Restore the pre-tool history (drops the synthetic tool-turn user
+        # message), then append ONLY the final assistant answer. This keeps
+        # raw tool JSON out of permanent conversation history — see comment
+        # at the save point above.
+        session.llm_messages = _saved_llm_messages
+        session.llm_user_turns = _saved_llm_user_turns
+
+        assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
+        if assistant_text:
+            session.llm_messages.append({"role": "assistant", "content": assistant_text})
+            session.llm_user_turns = [
+                m.get("content", "")
+                for m in session.llm_messages
+                if (m.get("role") or "").strip().lower() == "user"
+            ]
+
+        if not await self._emit_llm_response(
+            websocket,
+            llm_response,
+            session,
+            request_id,
+            source_mode="tool_result",
+            extra={"tool_result_final": True, "tool_gateway_done": True, "tool_path": "none"},
+        ):
+            return
+
+        tts_text = self._strip_tool_calls_for_tts(llm_response or "")
+        audio_response = await self.process_tts(tts_text) if tts_text else b""
+        await self._emit_tts_audio(
+            websocket,
+            audio_response,
+            session,
+            request_id,
+            source_mode="tool_result",
+        )
 
     async def _emit_llm_response(
         self,
@@ -4645,6 +4876,7 @@ class LocalAIServer:
         request_id: Optional[str],
         *,
         source_mode: str,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> bool:
         text = (llm_response or "").strip()
         if not text:
@@ -4662,6 +4894,8 @@ class LocalAIServer:
         }
         if request_id:
             payload["request_id"] = request_id
+        if extra:
+            payload.update(extra)
         return await self._send_json(websocket, payload)
 
     async def _emit_tts_audio(
@@ -4954,6 +5188,7 @@ class LocalAIServer:
             and use_chat_path
             and self.config.llm_streaming_tts_overlap
             and self.llm_model is not None
+            and not (bool(getattr(self, "tool_gateway_enabled", True)) and bool(session.allowed_tools))
         )
 
         if use_streaming_pipeline:
@@ -5052,6 +5287,27 @@ class LocalAIServer:
                             exc_info=True,
                         )
 
+        tool_gateway_done = False
+        if mode == "full" and bool(getattr(self, "tool_gateway_enabled", True)) and bool(session.allowed_tools):
+            tool_payload = await self._build_llm_tool_response_payload(
+                session=session,
+                text=llm_response or "",
+                latest_user_text=clean_text,
+                allowed_tools=session.allowed_tools,
+                tool_schemas=session.tool_schemas,
+                tool_policy=session.tool_policy,
+                server_gated=True,
+            )
+            if tool_payload.get("finish_reason") == "tool_calls":
+                await self._send_json(websocket, tool_payload)
+                logging.info(
+                    "🧩 TOOL-GATED TTS - Suppressed pre-tool TTS call_id=%s tools=%s",
+                    session.call_id,
+                    [tc.get("name") for tc in tool_payload.get("tool_calls") or []],
+                )
+                return
+            tool_gateway_done = True
+
         # Record assistant turn for subsequent prompts (avoid tool-call markup in history).
         assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
         if assistant_text:
@@ -5068,6 +5324,7 @@ class LocalAIServer:
             session,
             request_id,
             source_mode=mode if mode != "full" else "llm",
+            extra={"tool_gateway_done": True} if tool_gateway_done else None,
         ):
             return
 
@@ -5699,6 +5956,14 @@ class LocalAIServer:
 
         if msg_type == "llm_tool_request":
             await self._handle_llm_tool_request(websocket, session, data)
+            return
+
+        if msg_type == "tool_context":
+            await self._handle_tool_context(websocket, session, data)
+            return
+
+        if msg_type == "tool_result":
+            await self._handle_tool_result(websocket, session, data)
             return
 
         if msg_type == "reload_models":

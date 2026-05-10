@@ -526,7 +526,22 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 safe = ""
             response_text = safe.strip() or "Goodbye."
 
-        if response_text and self.on_event:
+        # Emit spoken text only when every remaining tool call is `hangup_call`.
+        # The earlier `not any(... == "hangup_call")` guard left
+        # `should_emit_text=True` for mixed batches like
+        # `["hangup_call", "transfer"]`, so the provider would speak the
+        # farewell *before* dispatching the transfer — wrong order, and the
+        # caller hears "have a great day" right before being patched through.
+        # Per CodeRabbit review of PR #384 comment 3214130574: suppress text
+        # whenever any non-hangup tool remains in the batch.
+        should_emit_text = bool(response_text)
+        if normalized_tool_calls and any(
+            str(tool_call.get("name") or "").strip() != "hangup_call"
+            for tool_call in normalized_tool_calls
+        ):
+            should_emit_text = False
+
+        if should_emit_text and self.on_event:
             await self.on_event(
                 {
                     "type": "agent_transcript",
@@ -689,16 +704,23 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
 
     async def _handle_llm_tool_response(self, data: Dict[str, Any]) -> bool:
         request_id = str(data.get("request_id") or "").strip()
-        if not request_id:
-            return False
         pending = self._pending_llm_tool_responses.pop(request_id, None)
-        if not pending:
+        if not pending and request_id:
             logger.debug("Dropping stale llm_tool_response", request_id=request_id)
             return False
-        self._cancel_gateway_timeout(request_id)
+        if request_id:
+            self._cancel_gateway_timeout(request_id)
 
-        call_id = data.get("call_id") or pending.get("call_id") or self._active_call_id
-        llm_text = str(pending.get("llm_text") or "")
+        # After a successful `request_id` correlation, the local pending
+        # entry is the authoritative source for `call_id`. Preferring
+        # `data["call_id"]` first allowed a stale or echoed `call_id` from
+        # the server side to reroute the result to the wrong call. Use the
+        # pending entry's call_id first, then fall back to `data` (for
+        # responses that arrive without a known pending entry, e.g. server-
+        # initiated nudges), then `self._active_call_id` as last resort.
+        # Per CodeRabbit review of PR #384 comment 3214130576.
+        call_id = (pending or {}).get("call_id") or data.get("call_id") or self._active_call_id
+        llm_text = str((pending or {}).get("llm_text") or data.get("text") or "")
         clean_text = str(data.get("text") or "").strip()
         if not clean_text:
             parsed_clean, _ = parse_response_with_tools(llm_text)
@@ -719,6 +741,81 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             repair_attempts=repair_attempts,
         )
         return True
+
+    async def send_tool_result(
+        self,
+        function_call_id: str,
+        result: Any,
+        is_error: bool = False,
+        call_id: Optional[str] = None,
+    ) -> bool:
+        """Send an executed local tool result back to local_ai_server for the final LLM turn.
+
+        Returns ``True`` if the payload was handed off to the WebSocket layer,
+        ``False`` if the connection was unavailable or the send raised. The
+        engine uses this signal to decide whether to retry/fail-over rather
+        than silently stalling the post-tool turn. Per CodeRabbit review of
+        PR #384 comment 3214158829.
+
+        ``result`` may be any JSON value (object, list, string, int, ``False``,
+        ``0``, empty list, ``None``). Pre-fix this method coerced falsy values
+        to ``{}`` via ``result or {}``, which silently changed valid outputs
+        like ``0``, ``False``, ``""``, ``[]``, or ``None`` into an empty
+        object — and the local LLM then composed its follow-up using a
+        misleading payload. Per CodeRabbit review of PR #384 comment
+        3214117421.
+
+        ``call_id`` is the originating call_id captured at tool dispatch
+        time. Pass it explicitly so the tool result is correlated to the
+        right session even when ``self._active_call_id`` has rolled over to
+        a newer call by the time a slow tool returns. Pre-fix this method
+        read ``self._active_call_id`` at result-send time, which could
+        misroute the post-tool answer across calls. Falls back to
+        ``self._active_call_id`` only if no explicit call_id is supplied
+        (back-compat for callers that haven't been updated yet). Per
+        CodeRabbit review of PR #384 comment 3214139216.
+        """
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local tool result: WebSocket not open",
+                call_id=call_id or self._active_call_id,
+                function_call_id=function_call_id,
+            )
+            return False
+        function_call_id = str(function_call_id or "").strip()
+        tool_name = function_call_id
+        if tool_name.startswith("local-"):
+            tool_name = tool_name[len("local-"):]
+        # Originating call_id wins; provider-global fallback only as last resort.
+        effective_call_id = call_id or self._active_call_id
+        payload = {
+            "type": "tool_result",
+            "protocol_version": 2,
+            "call_id": effective_call_id,
+            "function_call_id": function_call_id,
+            "tool_name": tool_name,
+            "result": result,  # preserve falsy values; do NOT coerce to {}
+            "is_error": bool(is_error),
+            "tool_policy": self._effective_tool_policy,
+        }
+        try:
+            await self.websocket.send(json.dumps(payload, default=str))
+            logger.debug(
+                "Sent local tool result to Local AI Server",
+                call_id=effective_call_id,
+                function_call_id=function_call_id,
+                tool_name=tool_name,
+                is_error=bool(is_error),
+            )
+            return True
+        except Exception:
+            logger.error(
+                "Failed to send local tool result to Local AI Server",
+                call_id=effective_call_id,
+                function_call_id=function_call_id,
+                exc_info=True,
+            )
+            return False
 
     @property
     def supported_codecs(self) -> List[str]:
@@ -1130,15 +1227,48 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 allowed_tools=sorted(self._allowed_tools),
                 capability=(self._tool_capability or {}).get("level"),
             )
-            await self._apply_system_prompt(prompt, call_id=call_id)
+            # Fail-closed: same cross-call leakage class as tool_context. On
+            # a reused WebSocket, a missed prompt sync leaves the previous
+            # call's instructions live on the server. Per CodeRabbit review
+            # of PR #384 comment 3214166440.
+            prompt_ok = await self._apply_system_prompt(prompt, call_id=call_id)
+            if not prompt_ok:
+                raise RuntimeError(
+                    f"Failed to synchronize system prompt with Local AI Server (call_id={call_id})"
+                )
+        # Fail-closed: tool_context state is per-WebSocket and we reuse the
+        # connection across calls. If the sync fails, the server can keep the
+        # previous call's allowlist/policy/schemas, leaking ACL state across
+        # calls. Abort this call setup instead of proceeding with stale state.
+        # Per CodeRabbit review of PR #384 review 4258719822 (outside-diff).
+        ok = await self._send_tool_context(call_id=call_id)
+        if not ok:
+            raise RuntimeError(
+                f"Failed to synchronize tool_context with Local AI Server (call_id={call_id})"
+            )
 
-    async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> None:
+    async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> bool:
+        """Send system prompt to local_ai_server. Returns True on success.
+
+        Empty prompt or unchanged digest are treated as success (nothing to
+        sync). WebSocket-not-open and send-exception return False so the
+        caller can fail-closed and abort call setup instead of running with
+        the previous call's instructions on a reused connection. Per
+        CodeRabbit review of PR #384 comment 3214166440.
+        """
         prompt = (prompt or "").strip()
-        if not prompt or not self.websocket or self.websocket.state.name != "OPEN":
-            return
+        if not prompt:
+            return True  # nothing to sync, not a failure
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local system prompt: WebSocket not open",
+                call_id=call_id,
+                chars=len(prompt),
+            )
+            return False
         digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         if digest == self._last_system_prompt_digest:
-            return
+            return True  # already in sync from a prior successful send
         payload = {
             "type": "switch_model",
             "dry_run": True,  # system prompt does not require reload_models()
@@ -1150,8 +1280,57 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             await self.websocket.send(json.dumps(payload))
             self._last_system_prompt_digest = digest
             logger.info("Applied Local AI Server system prompt (dry_run)", call_id=call_id, chars=len(prompt))
+            return True
         except Exception:
-            logger.debug("Failed applying Local AI Server system prompt", call_id=call_id, exc_info=True)
+            logger.error(
+                "Failed applying Local AI Server system prompt",
+                call_id=call_id,
+                chars=len(prompt),
+                exc_info=True,
+            )
+            return False
+
+    async def _send_tool_context(self, *, call_id: str) -> bool:
+        """Send tool_context to local_ai_server. Returns True on success.
+
+        Caller must treat False as fatal: the server caches per-session
+        ACL/policy/schemas and a missed sync leaks state across calls. Per
+        CodeRabbit review of PR #384 review 4258719822 (outside-diff).
+        """
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local tool_context: WebSocket not open",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+            )
+            return False
+        payload = {
+            "type": "tool_context",
+            "protocol_version": 2,
+            "call_id": call_id,
+            "allowed_tools": sorted(self._allowed_tools),
+            "tools": list(self._allowed_tool_schemas or []),
+            "tool_policy": self._effective_tool_policy,
+        }
+        try:
+            await self.websocket.send(json.dumps(payload, default=str))
+            logger.debug(
+                "Sent local tool context to Local AI Server",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+            )
+            return True
+        except Exception:
+            logger.error(
+                "Failed sending local tool context",
+                call_id=call_id,
+                allowed_tools=sorted(self._allowed_tools),
+                policy=self._effective_tool_policy,
+                exc_info=True,
+            )
+            return False
 
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 0, encoding: str = ""):
         """Send audio chunk to Local AI Server for STT processing."""
@@ -1609,6 +1788,39 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                                     continue
                             llm_text = data.get("text", "")
                             call_id = data.get("call_id") or self._active_call_id
+
+                            # Honor tool-gateway completion markers at both
+                            # the top level AND nested under `extra` —
+                            # docs/local-ai-server/PROTOCOL.md describes the
+                            # post-tool final answer as carrying
+                            # `extra.tool_result_final = true`, while the
+                            # legacy in-band path emits the same markers at
+                            # the top level. Pre-fix this branch only
+                            # checked the top level, so a documented
+                            # `extra.*` payload would fall through into
+                            # `_dispatch_llm_tool_gateway_request()` and get
+                            # reparsed as another tool turn instead of being
+                            # emitted as the final answer. Per CodeRabbit
+                            # review of PR #384 comment 3214117422.
+                            _extra = data.get("extra") if isinstance(data.get("extra"), dict) else {}
+                            if (
+                                data.get("tool_gateway_done")
+                                or data.get("tool_result_final")
+                                or _extra.get("tool_gateway_done")
+                                or _extra.get("tool_result_final")
+                            ):
+                                await self._emit_local_llm_result(
+                                    call_id=call_id,
+                                    llm_text=llm_text,
+                                    clean_text=llm_text,
+                                    tool_calls=None,
+                                    tool_path=str(
+                                        data.get("tool_path")
+                                        or _extra.get("tool_path")
+                                        or "none"
+                                    ),
+                                )
+                                continue
 
                             # Structured tool gateway is enabled only for full local provider mode.
                             if self._is_structured_tool_gateway_active():

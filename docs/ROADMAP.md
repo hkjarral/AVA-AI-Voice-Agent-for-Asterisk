@@ -39,14 +39,26 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 | Conversation Timestamps | ✅ v6.4.0 | Per-message timestamps in conversation history + Call Log UI |
 | Fullscreen UI Panels | ✅ v6.4.0 | Maximize/minimize toggle for dashboard panels |
 
-### v6.5.0 — Local AI Performance & Polish
+### v6.5.0 — Local LLM Tool-Gated Response, Deepgram Flux, Gemini 3.1 (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Local LLM tool_context / tool_result protocol (#368)** | New v2 WebSocket message types so the local LLM waits for tool execution and resumes with the result injected into context. Cross-call ACL leakage guarded; both `tool_context` and system-prompt sync fail-closed. | ✅ Shipped |
+| **Deepgram Flux v2 + nova-3 default** | `flux-general-en` / `flux-general-multi` correctly emit `version: "v2"` plus `eot_threshold` / `eager_eot_threshold` / `keyterms`. Pydantic enforces ranges. Admin UI surfaces a "Flux Turn-Detection Tuning" panel when a `flux-*` model is selected. Default listen model flipped to `nova-3` to align YAML with pre-v6.5.0 hardcoded runtime behavior. | ✅ Shipped |
+| **Gemini 3.1 Flash Live verified compatible (#350, #356)** | Multi-part `serverContent` envelopes handled correctly by the existing parser; pinned by 9 unit tests. No engine changes required. | ✅ Shipped |
+| **#351 Google Live barge-in** | Resolved as a documentation issue — production answer is `use_vertex_ai: true`. Architectural silence-gating refactor deferred to v6.6 (the experiment in `1763a441` was reverted in `cead273a` because the AudioSocket forwarding path needs a broader audio-path overhaul). | ✅ Documented |
+| **#370 HTTP-tool-test `.env`-first guard** | Admin UI Environment-page edits to `AAVA_HTTP_TOOL_TEST_*` take effect without an `ai_engine` restart. | ✅ Shipped |
+
+### v6.6.0 — Deferred from v6.5 + Local AI Performance & Polish
 
 | Feature | Description | Key Files | Effort |
 |---------|-------------|-----------|--------|
+| **#351 silence-gating refactor (vad_mode-aware)** | The reverted experiment surfaced AudioSocket-path coupling that needs a broader audio-path overhaul + integration tests before silence-gating can honor `vad_mode`. | `src/providers/google_live.py`, AudioSocket forwarding path | High |
 | **Local LLM Token Streaming (WebSocket)** | Server emits `llm_token` messages for pipeline `local_llm` adapter. Currently `_handle_llm_request()` in `local_ai_server/server.py` ignores `stream: true` and returns one `llm_response`. Wiring `process_llm_chat_streaming()` into the WS handler + setting `supports_streaming = True` on `LocalLLMAdapter` would give pipeline-mode users the same sentence-by-sentence overlap that full-mode already has. | `local_ai_server/server.py:5498` (WS handler), `src/pipelines/local.py:979` (adapter) | Medium (3-4h) |
 | **Concurrent LLM+TTS Producer/Consumer** | In `_process_full_pipeline_streaming()` (`server.py:5067`), `await self.process_tts()` blocks the token loop ~200-800ms per sentence. Refactor into two `asyncio.create_task` — producer consumes tokens and pushes sentences to a queue, consumer synthesizes and emits. Needs backpressure and `_llm_lock` coordination. Marginal gain on CPU but significant with faster LLMs (GPU/remote). | `local_ai_server/server.py:5067-5187` | Medium (3-4h) |
 | **Speculative LLM on Stable Partials** | Start LLM inference speculatively when STT partial transcript is stable >300ms with 5+ words. If final matches → use cached result (saves 300-1500ms). If not → discard and run fresh. Config-stubbed (`speculative_llm_enabled` etc. in `local_ai_server/config.py:154-157`). Requires `_llm_lock` coordination and session state for speculative results. Only benefits streaming STT backends (Vosk, Sherpa, Kroko) — not Whisper. | `local_ai_server/config.py:154`, `local_ai_server/server.py` (new), `local_ai_server/session.py` (new fields) | High (6-8h) |
 | **Comfort Noise Injection** | Replace digital silence with low-level telephony comfort noise (~-40dB) during processing gaps (between STT final and first TTS audio). Pre-generate 1 second of µ-law noise at startup, inject into `StreamingPlaybackManager` when buffer is empty. Config-stubbed (`comfort_noise_enabled` in `local_ai_server/config.py:166`). Cosmetic improvement — filler audio already addresses the biggest UX gap. | `src/core/streaming_playback_manager.py`, `local_ai_server/config.py:166` | Low (2h) |
+| **Local-LLM `tool_result` edge-case test suite** | Multiple tool results in flight for one call, reconnect during pending tool result, interaction with `farewell_mode=asterisk`. Protocol surface is now documented; tests are the next-cycle add. | `tests/test_local_ai_server_protocol_schema.py` (extend) | Medium |
 
 ### Planned Milestones
 

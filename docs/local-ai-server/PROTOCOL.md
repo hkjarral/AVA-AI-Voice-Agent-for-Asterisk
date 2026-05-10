@@ -102,6 +102,8 @@ Notes:
 - `barge_in` → Clears Whisper-family STT suppression window; responds with `barge_in_ack`.
 - `llm_request` → Ask LLM with text; responds with `llm_response`.
 - `llm_tool_request` → Run tool-call parser/repair/structured gateway; responds with `llm_tool_response`.
+- `tool_context` → Set session-scoped tool state (allowed tools, schemas, policy) before `llm_tool_request`. No direct response. **(Added in v6.5.0 for #368.)**
+- `tool_result` → Deliver a tool's execution result back to the local LLM after the engine ran it; triggers a follow-up LLM turn whose final spoken text is delivered via `llm_response` (and audio via the server-side TTS output path active for the current session mode), not another tool call. **(Added in v6.5.0 for #368.)**
 - `tts_request` → Synthesize TTS from text; responds with `tts_response` (base64 μ-law).
 - `reload_models` → Reload all models; responds with `reload_response`.
 - `reload_llm` → Reload only LLM; responds with `reload_response`.
@@ -309,6 +311,90 @@ Notes:
 - `tool_path` values: `parser`, `structured`, `repair`, `heuristic`, `none`.
 - When `LOCAL_TOOL_GATEWAY_ENABLED=1`, structured/repair paths are used when parsing fails.
 - Fast-path hangup heuristic can emit `hangup_call` if end-of-call intent is detected in `latest_user_text`.
+
+---
+
+## Tool Context (`tool_context`) — v6.5.0+
+
+**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server before the first `llm_tool_request` of a turn, to declare which tools the call may legally invoke and their JSON schemas. The server stores these on the session and uses them during subsequent `llm_tool_request` processing.
+
+The server does **not** reply to `tool_context` directly — it just updates session state.
+
+Request:
+
+```json
+{
+  "type": "tool_context",
+  "call_id": "1234-5678",
+  "allowed_tools": ["hangup_call", "request_transcript", "microsoft_calendar"],
+  "tools": [
+    { "name": "hangup_call", "parameters": { "type": "object", "properties": { "farewell_message": { "type": "string" } } } }
+  ],
+  "tool_policy": "auto",
+  "protocol_version": 2
+}
+```
+
+Notes:
+
+- `tool_policy` valid values: `"auto"`, `"strict"`, `"compatible"`, `"off"`.
+- Sending `tool_context` more than once per call is allowed and replaces the prior state.
+
+---
+
+## Tool Result (`tool_result`) — v6.5.0+
+
+**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server after the engine has executed a tool call that the local LLM emitted. The server uses the result to compose a follow-up "tool turn" prompt and re-invokes the LLM, producing the **final spoken answer** (not another tool call). The follow-up final answer is delivered as an `llm_response` with **top-level wire fields** `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true` so the engine can recognize it as the post-tool answer; audio for that response is produced via the server-side TTS output path active for the current session mode (no separate `tts_request` is sent by the server).
+
+Two operating shapes:
+
+**Success:**
+
+```json
+{
+  "type": "tool_result",
+  "call_id": "1234-5678",
+  "request_id": "tool-1",
+  "tool_name": "microsoft_calendar",
+  "result": { "events": [ { "summary": "Demo call", "start": "2026-05-12T14:00:00-07:00" } ] }
+}
+```
+
+**Error:**
+
+```json
+{
+  "type": "tool_result",
+  "call_id": "1234-5678",
+  "tool_name": "microsoft_calendar",
+  "result": { "error": "Calendar API unavailable" },
+  "is_error": true
+}
+```
+
+Server's internal "tool turn" prompt is rendered as:
+
+- Success: *"The tool {tool_name} returned this result: {result_json}. Now answer the caller using the actual tool values only. Do not mention JSON, tools, placeholders, or internal fields."*
+- Error: *"The tool {tool_name} failed with this result: {result_json}. Briefly apologize and ask the caller to try again."*
+
+Notes:
+
+- `result` may be any JSON value; objects are preferred. The server will `json.dumps()` it before embedding in the prompt; very large serialized payloads are **truncated** to a fixed character cap (currently 4000 chars) before insertion to keep the follow-up prompt within the model's context budget — clients debugging large tool outputs should not assume the model received the full payload. Falsy values (`0`, `false`, `""`, `[]`, `null`) are preserved and pass through unchanged.
+- The follow-up response is emitted on the wire as an `llm_response` with top-level fields `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true`. Clients should match these top-level keys, **not** a nested `extra` object — the server flattens `extra.*` into the payload root before sending. Example:
+
+  ```json
+  {
+    "type": "llm_response",
+    "call_id": "1234-5678",
+    "mode": "tool_result",
+    "tool_result_final": true,
+    "tool_gateway_done": true,
+    "tool_path": "none",
+    "text": "Your appointment is confirmed for Friday at 2 PM."
+  }
+  ```
+
+- Edge cases not yet covered by automated tests (planned v6.6): multiple tool results in flight for the same call_id, reconnect during a pending tool result, and interaction with `farewell_mode=asterisk`.
 
 ---
 

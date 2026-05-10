@@ -36,6 +36,62 @@ def _log_provider_task_exception(task: asyncio.Task) -> None:
         logger.error("Provider background task failed", task_name=task.get_name(), error=str(exc), exc_info=exc)
 
 
+def build_listen_provider_block(
+    *,
+    model: str,
+    eot_threshold: Optional[float] = 0.7,
+    eager_eot_threshold: Optional[float] = None,
+    keyterms: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build the `agent.listen.provider` block for the Deepgram Voice Agent
+    Settings JSON.
+
+    Pre-v6.5.0 the listen model was hardcoded to ``nova-3`` regardless of
+    config. v6.5.0 makes the model honor config and additionally builds a
+    Flux-aware payload when the configured model starts with ``flux``,
+    matching Deepgram's published Voice Agent configuration:
+    https://developers.deepgram.com/docs/configure-voice-agent
+
+    Behavior:
+      - Nova-* models (default): emit ``{"type": "deepgram", "model": <model>}``.
+      - Flux models (``flux-general-en``, ``flux-general-multi``): additionally
+        emit ``version: "v2"`` (required) plus the Flux-specific tuning fields
+        ``eot_threshold`` (default 0.7, valid range 0.5-0.9), optional
+        ``eager_eot_threshold`` (default None, valid range 0.3-0.9), and
+        optional ``keyterms`` (list of strings to bias recognition).
+
+    Centralized as a module-level pure function so the Settings-builder
+    behavior can be unit-tested without spinning up a full
+    ``DeepgramProvider`` (which requires WebSocket, asyncio loop, etc.).
+
+    Args:
+        model: The configured listen model. Required.
+        eot_threshold: Flux end-of-turn confidence threshold. Ignored for Nova.
+        eager_eot_threshold: Flux eager end-of-turn confidence threshold.
+            Ignored for Nova; ``None`` disables the eager VAD on Flux.
+        keyterms: Optional list of strings to bias Flux recognition. Ignored
+            for Nova; empty/None values are dropped.
+
+    Returns:
+        dict suitable for use as the ``agent.listen.provider`` block.
+    """
+    block: Dict[str, Any] = {"type": "deepgram", "model": model}
+    if not isinstance(model, str) or not model.lower().startswith("flux"):
+        return block
+
+    # Flux-specific augmentations.
+    block["version"] = "v2"
+    if eot_threshold is not None:
+        block["eot_threshold"] = float(eot_threshold)
+    if eager_eot_threshold is not None:
+        block["eager_eot_threshold"] = float(eager_eot_threshold)
+    if isinstance(keyterms, list) and keyterms:
+        cleaned = [str(k) for k in keyterms if str(k).strip()]
+        if cleaned:
+            block["keyterms"] = cleaned
+    return block
+
+
 _DEEPGRAM_INPUT_RATE = Gauge(
     "ai_agent_deepgram_input_sample_rate_hz",
     "Configured Deepgram input sample rate per call",
@@ -420,7 +476,10 @@ class DeepgramProvider(AIProviderInterface):
         if not greeting_val:
             greeting_val = "Hello, how can I help you today?"
 
-        listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-2-general"
+        # Final fallback aligned with DeepgramProviderConfig + shipped YAML defaults.
+        # In normal config flow this fallback never fires (config provides "nova-3"),
+        # but kept consistent so the unhappy-path doesn't downgrade behind users' backs.
+        listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-3"
         speak_model = self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None) or "aura-asteria-en"
 
         # Use configured output encoding/sample rate directly (no catalog fetch needed)
@@ -433,7 +492,14 @@ class DeepgramProvider(AIProviderInterface):
             output_encoding=self._dg_output_encoding,
             output_sample_rate=self._dg_output_rate,
         )
-        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o"
+        # Resolved think (LLM) model used by both the primary Settings build and
+        # the `_last_settings_minimal` retry fallback. Default kept at
+        # "gpt-4o-mini" (the previously-hardcoded primary-path value) to
+        # preserve the conservative cost behavior on upgrade for deployments
+        # that don't set `llm_config.model`. Per CodeRabbit review of PR #384
+        # comment 3214130572 — eliminates the primary/retry think-model drift
+        # that pre-fix could swap a configured model for "gpt-4o-mini" on retry.
+        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o-mini"
         # Try context-injected prompt first (can be 'instructions' or 'prompt' key), then provider config, then llm_config, then default
         think_prompt = (
             self._get_config_value('instructions', None) or  # Context injection uses 'instructions' for Deepgram
@@ -462,6 +528,26 @@ class DeepgramProvider(AIProviderInterface):
         # Get configured agent language (default: "en")
         agent_language = str(self._get_config_value("agent_language", "en") or "").strip() or "en"
         
+        # Listen provider block. See `build_listen_provider_block` for the
+        # full rationale (Nova vs Flux divergence, version=v2 requirement,
+        # Flux-specific tuning fields).
+        listen_provider = build_listen_provider_block(
+            model=listen_model,
+            eot_threshold=self._get_config_value("eot_threshold", 0.7),
+            eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
+            keyterms=self._get_config_value("keyterms", None),
+        )
+        if listen_provider.get("version") == "v2":
+            logger.info(
+                "Deepgram Flux listen-provider configured",
+                call_id=self.call_id,
+                model=listen_model,
+                version="v2",
+                eot_threshold=listen_provider.get("eot_threshold"),
+                eager_eot_threshold=listen_provider.get("eager_eot_threshold"),
+                keyterms_count=len(listen_provider.get("keyterms") or []),
+            )
+
         # Build settings with configured audio formats
         settings = {
             "type": "Settings",
@@ -471,22 +557,22 @@ class DeepgramProvider(AIProviderInterface):
             },
             "agent": {
                 "language": agent_language,
-                "listen": { 
-                    "provider": { 
-                        "type": "deepgram", 
-                        "model": "nova-3"  # Twilio uses nova-3
-                    } 
-                },
-                "think": { 
-                    "provider": { 
-                        "type": "open_ai", 
-                        "model": "gpt-4o-mini",  # Twilio uses gpt-4o-mini
+                "listen": {"provider": listen_provider},
+                "think": {
+                    "provider": {
+                        "type": "open_ai",
+                        # Use the resolved `think_model` so primary and retry
+                        # paths can't drift. Default still "gpt-4o-mini" (set
+                        # at the variable definition above) to preserve the
+                        # prior conservative cost default. Per CodeRabbit
+                        # review of PR #384 comment 3214130572.
+                        "model": think_model,
                         "temperature": 0.7
-                    }, 
-                    "prompt": think_prompt 
+                    },
+                    "prompt": think_prompt
                 },
                 "speak": {
-                    "provider": {"type": "deepgram", "model": speak_model}  # Revert: keep provider format
+                    "provider": {"type": "deepgram", "model": speak_model}
                 },
                 "greeting": greeting_val
             }
@@ -506,8 +592,19 @@ class DeepgramProvider(AIProviderInterface):
                 )
         except Exception as e:
             logger.warning(f"Failed to configure tools: {e}", call_id=self.call_id, exc_info=True)
-        # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error
+        # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error.
+        # The retry's listen-provider block must match the primary one's shape (same
+        # call to `build_listen_provider_block`) so Flux models get `version: "v2"` plus
+        # threshold fields on retry too — otherwise the retry would silently drop those
+        # required fields and Deepgram would reject every retry. Per CodeRabbit review of
+        # PR #384 comment 3214117420.
         try:
+            minimal_listen_provider = build_listen_provider_block(
+                model=listen_model,
+                eot_threshold=self._get_config_value("eot_threshold", 0.7),
+                eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
+                keyterms=self._get_config_value("keyterms", None),
+            )
             self._last_settings_minimal = {
                 "type": "Settings",
                 "audio": {
@@ -516,7 +613,7 @@ class DeepgramProvider(AIProviderInterface):
                 "agent": {
                     "greeting": greeting_val,
                     "language": agent_language,
-                    "listen": { "provider": { "type": "deepgram", "model": listen_model } },
+                    "listen": { "provider": minimal_listen_provider },
                     "think": { "provider": { "type": "open_ai", "model": think_model }, "prompt": think_prompt },
                     "speak": { "provider": { "type": "deepgram", "model": speak_model } }
                 }
