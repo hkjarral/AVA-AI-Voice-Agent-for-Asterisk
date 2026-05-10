@@ -54,6 +54,16 @@ def _reexec_in_container(argv: List[str]) -> int:
         print(f"Cannot read script for container exec: {exc}", file=sys.stderr)
         return 2
 
+    project_root = os.getcwd()
+    auth_arg_present = False
+    for i, arg in enumerate(argv[1:]):
+        if arg == "--auth-token" or arg.startswith("--auth-token="):
+            auth_arg_present = True
+        if arg == "--project-root" and i + 2 <= len(argv[1:]):
+            project_root = argv[i + 2]
+        elif arg.startswith("--project-root="):
+            project_root = arg.split("=", 1)[1]
+
     # Build the same argv but skip --project-root (not meaningful inside container)
     filtered = []
     skip_next = False
@@ -67,6 +77,11 @@ def _reexec_in_container(argv: List[str]) -> int:
         if arg.startswith("--project-root="):
             continue
         filtered.append(arg)
+
+    if not auth_arg_present:
+        auth_token = _load_auth_from_env(project_root)
+        if auth_token:
+            filtered.extend(["--auth-token", auth_token])
 
     cmd = [
         "docker", "exec", "-i", "local_ai_server",
@@ -192,6 +207,12 @@ class CheckResult:
         return d
 
 
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 async def check_status(url: str, auth_token: Optional[str]) -> Tuple[Optional[Dict], List[CheckResult]]:
     """Check status and return (status_data, results)."""
     results: List[CheckResult] = []
@@ -229,13 +250,28 @@ async def check_status(url: str, auth_token: Optional[str]) -> Tuple[Optional[Di
     stt = models.get("stt", {})
     stt_loaded = stt.get("loaded", False)
     stt_msg = f"{stt.get('backend', '?')} | {stt.get('display', '?')}"
-    results.append(CheckResult("stt_loaded", stt_loaded, stt_msg))
+    stt_details = []
+    if stt.get("device"):
+        stt_details.append(f"device={stt.get('device')}")
+    if stt.get("compute_type"):
+        stt_details.append(f"compute={stt.get('compute_type')}")
+    if stt_details:
+        stt_msg += " | " + ", ".join(stt_details)
+    stt_warn = None
+    if stt.get("backend") == "faster_whisper" and stt.get("device") == "cpu" and stt.get("compute_type") == "float16":
+        stt_warn = "Faster-Whisper CPU + float16 is usually invalid; use int8 for CPU demos."
+    results.append(CheckResult("stt_loaded", stt_loaded, stt_msg, warning=stt_warn))
 
     # LLM status
     llm = models.get("llm", {})
     llm_loaded = llm.get("loaded", False)
     llm_cfg = llm.get("config", {})
-    llm_msg = f"{llm.get('display', '?')} | gpu_layers={llm_cfg.get('gpu_layers', '?')}"
+    tool_capability = llm.get("tool_capability") or {}
+    llm_msg = (
+        f"{llm.get('display', '?')} | "
+        f"ctx={llm_cfg.get('context', '?')}, max_tokens={llm_cfg.get('max_tokens', '?')}, "
+        f"gpu_layers={llm_cfg.get('gpu_layers', '?')}, tools={tool_capability.get('level', 'unknown')}"
+    )
     llm_warn = None
     if config.get("runtime_mode") == "minimal" and not llm_loaded:
         llm_warn = "Runtime mode is 'minimal' — LLM not preloaded (loaded on demand)"
@@ -247,6 +283,12 @@ async def check_status(url: str, auth_token: Optional[str]) -> Tuple[Optional[Di
     tts_loaded = tts.get("loaded", False)
     tts_msg = f"{tts.get('backend', '?')} | {tts.get('display', '?')}"
     results.append(CheckResult("tts_loaded", tts_loaded, tts_msg))
+
+    # Runtime flags
+    filler_enabled = _truthy(config.get("enable_filler_audio"), default=False)
+    overlap_enabled = _truthy(config.get("llm_streaming_tts_overlap"), default=True)
+    runtime_msg = f"filler_audio={filler_enabled}, llm_tts_overlap={overlap_enabled}"
+    results.append(CheckResult("runtime_config", True, runtime_msg))
 
     # GPU status
     gpu_usable = gpu.get("runtime_usable", False)

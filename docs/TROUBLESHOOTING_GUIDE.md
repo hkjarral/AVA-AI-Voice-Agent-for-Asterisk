@@ -83,12 +83,12 @@ Note: The CLI binary and the Python engine may have different version strings de
 
 ### Available Tools
 
-- **`agent setup`** - Interactive setup wizard (v5.3.1)
-- **`agent check`** - Standard diagnostics report (v5.3.1)
-- **`agent rca`** - Post-call root cause analysis (v5.3.1)
+- **`agent setup`** - Interactive setup wizard
+- **`agent check`** - Standard diagnostics report
+- **`agent rca`** - Post-call root cause analysis
 - **`agent update`** - Pull latest code + rebuild/restart as needed (v5.1+)
 
-Legacy aliases (v5.3.1; hidden from `--help`):
+Legacy aliases (hidden from `--help`):
 - `agent init` → `agent setup`
 - `agent doctor` → `agent check`
 - `agent troubleshoot` → `agent rca`
@@ -110,6 +110,14 @@ This performs comprehensive system checks:
 - ✅ Configuration validation
 - ✅ Provider API connectivity
 - ✅ Recent call history
+
+For full-local demos, also run:
+
+```bash
+agent check --local
+```
+
+This validates `local_ai_server` STT/LLM/TTS and reports the active Faster-Whisper device/compute, LLM context/max tokens/tool capability, GPU runtime status, and runtime flags such as `LOCAL_ENABLE_FILLER_AUDIO` and `LOCAL_LLM_STREAMING_TTS_OVERLAP`. For a CPU-only demo, the fast baseline is Faster-Whisper `tiny.en` on `cpu/int8`, Piper TTS, and a small GGUF LLM such as Qwen 2.5 0.5B or 1.5B.
 
 **Exit codes:**
 - `0` - All checks passed
@@ -645,7 +653,7 @@ agent demo -v
 # Run setup wizard
 agent setup
 
-# Flags below are planned; they may exist but are not implemented in v5.3.1:
+# Flags below are planned; they may exist but are not implemented in the visible CLI surface:
 # agent setup --non-interactive
 # agent setup --template <name>
 ```
@@ -1528,5 +1536,5 @@ See [docs/Transport-Mode-Compatibility.md](Transport-Mode-Compatibility.md) for 
 
 ---
 
-**Last Updated:** April 26, 2026  
-**Version:** v6.4.2
+**Last Updated:** May 2026
+**Version:** v6.5.0+

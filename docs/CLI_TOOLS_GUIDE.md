@@ -95,11 +95,12 @@ Example output:
 Host: ws://127.0.0.1:8765
 
 ✅ connection: Connected to ws://127.0.0.1:8765
-✅ stt_loaded: faster_whisper | Faster-Whisper (base)
-✅ llm_loaded: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | gpu_layers=50
-✅ tts_loaded: kokoro | Kokoro (af_heart, mode=hf)
-✅ gpu: NVIDIA GeForce RTX 4090 (24GB) | usable=True
-✅ llm_test: "Hello! How can I help you today?" (0.53s)
+✅ stt_loaded: faster_whisper | Faster-Whisper (tiny.en, en) | device=cpu, compute=int8
+✅ llm_loaded: qwen2.5-0.5b-instruct-q4_k_m.gguf | ctx=2048, max_tokens=32, gpu_layers=0, tools=none
+✅ tts_loaded: piper | en_US-lessac-medium.onnx
+✅ runtime_config: filler_audio=False, llm_tts_overlap=False
+✅ gpu: none | usable=False
+✅ llm_test: "Hello! How can I help you today?" (4.80s)
 ✅ tts_test: 27600 bytes mulaw@8000Hz (0.12s)
 ✅ stt_test: "Hello, this is a test of the speech recognition system." (1.47s)
 
@@ -111,6 +112,7 @@ Notes:
 - Auth token is read from `.env` (`LOCAL_WS_AUTH_TOKEN`) automatically. Override with `--auth-token`.
 - If `websockets` is not installed on the host, `--local` auto-runs the check inside the `local_ai_server` container.
 - LLM responses taking >15s trigger a warning that the model is too slow for telephony.
+- CPU full-local demo checks now report Faster-Whisper device/compute, LLM context/max tokens/tool capability, and runtime flags (`LOCAL_ENABLE_FILLER_AUDIO`, `LOCAL_LLM_STREAMING_TTS_OVERLAP`).
 - For standalone scripts: `python3 scripts/check_local_server.py --local` (same functionality without the Go CLI).
 
 `agent check --fix` behavior:

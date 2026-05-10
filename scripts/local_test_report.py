@@ -544,12 +544,18 @@ def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) ->
     info: Dict[str, str] = {
         "stt_backend": "unknown",
         "stt_model": "unknown",
+        "stt_device": "unknown",
+        "stt_compute": "unknown",
         "tts_backend": "unknown",
         "tts_voice": "unknown",
         "llm_model": "none",
         "llm_context": "N/A",
+        "llm_max_tokens": "N/A",
         "llm_gpu_layers": env.get("LOCAL_LLM_GPU_LAYERS", "not set"),
+        "llm_tool_capability": "unknown",
         "runtime_mode": "unknown",
+        "filler_audio": "unknown",
+        "llm_tts_overlap": "unknown",
     }
 
     if status:
@@ -559,6 +565,8 @@ def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) ->
         stt = models.get("stt", {})
         info["stt_backend"] = stt.get("backend", status.get("stt_backend", "unknown"))
         info["stt_model"] = stt.get("display", stt.get("path", "unknown"))
+        info["stt_device"] = str(stt.get("device", "unknown"))
+        info["stt_compute"] = str(stt.get("compute_type", "unknown"))
 
         # TTS
         tts = models.get("tts", {})
@@ -570,28 +578,41 @@ def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) ->
         info["llm_model"] = llm.get("display", "none")
         llm_config = llm.get("config", {})
         info["llm_context"] = str(llm_config.get("context", "N/A"))
+        info["llm_max_tokens"] = str(llm_config.get("max_tokens", "N/A"))
+        info["llm_gpu_layers"] = str(llm_config.get("gpu_layers", info["llm_gpu_layers"]))
+        info["llm_tool_capability"] = str((llm.get("tool_capability") or {}).get("level", "unknown"))
 
         # Config
         config = status.get("config", {})
         info["runtime_mode"] = config.get("runtime_mode", "unknown")
+        info["filler_audio"] = str(bool(config.get("enable_filler_audio", False))).lower()
+        info["llm_tts_overlap"] = str(bool(config.get("llm_streaming_tts_overlap", True))).lower()
 
         # GPU
         gpu = status.get("gpu", {})
-        if gpu.get("available"):
-            info["gpu_from_server"] = gpu.get("name", "detected")
-            vram = gpu.get("vram_total_mb")
-            if vram:
-                info["gpu_from_server"] += f" ({round(int(vram) / 1024)}GB)"
+        if gpu.get("runtime_usable") or gpu.get("runtime_detected"):
+            info["gpu_from_server"] = gpu.get("name") or "detected"
+            memory_gb = gpu.get("memory_gb")
+            if memory_gb:
+                info["gpu_from_server"] += f" ({memory_gb}GB)"
     else:
         # Fallback to env
         info["stt_backend"] = env.get("LOCAL_STT_BACKEND", "vosk")
-        info["stt_model"] = env.get("LOCAL_STT_MODEL_PATH", env.get("SHERPA_MODEL_PATH", "default"))
+        info["stt_model"] = env.get(
+            "FASTER_WHISPER_MODEL",
+            env.get("LOCAL_STT_MODEL_PATH", env.get("SHERPA_MODEL_PATH", "default")),
+        )
+        info["stt_device"] = env.get("FASTER_WHISPER_DEVICE", "unknown")
+        info["stt_compute"] = env.get("FASTER_WHISPER_COMPUTE_TYPE", "unknown")
         info["tts_backend"] = env.get("LOCAL_TTS_BACKEND", "piper")
         info["tts_voice"] = env.get("LOCAL_TTS_MODEL_PATH", "default")
         info["llm_model"] = os.path.basename(env.get("LOCAL_LLM_MODEL_PATH", "none"))
         info["llm_context"] = env.get("LOCAL_LLM_CONTEXT", "default")
+        info["llm_max_tokens"] = env.get("LOCAL_LLM_MAX_TOKENS", "default")
         gpu_avail = env.get("GPU_AVAILABLE", "false").lower() in ("1", "true", "yes")
         info["runtime_mode"] = env.get("LOCAL_AI_MODE", "minimal" if not gpu_avail else "full")
+        info["filler_audio"] = env.get("LOCAL_ENABLE_FILLER_AUDIO", "0")
+        info["llm_tts_overlap"] = env.get("LOCAL_LLM_STREAMING_TTS_OVERLAP", "1")
 
     return info
 
@@ -633,6 +654,8 @@ def format_template(
     llm_desc = model["llm_model"]
     if model["llm_context"] not in ("N/A", "default", "none"):
         llm_desc += f" / n_ctx={model['llm_context']}"
+    if model["llm_max_tokens"] not in ("N/A", "default", "none"):
+        llm_desc += f" / max_tokens={model['llm_max_tokens']}"
 
     lines = [
         "=" * 60,
@@ -647,12 +670,15 @@ def format_template(
         f"**OS**: {hw['os']}",
         f"**Docker**: {hw['docker']}",
         f"**STT**: {model['stt_backend']} / {model['stt_model']}",
+        f"**STT Runtime**: device={model['stt_device']}, compute={model['stt_compute']}",
         f"**TTS**: {model['tts_backend']} / {model['tts_voice']}",
         f"**LLM**: {llm_desc}",
         f"**LLM GPU Layers**: {model['llm_gpu_layers']}",
+        f"**LLM Tool Capability**: {model['llm_tool_capability']}",
         f"**Transport**: {transport}",
         f"**Pipeline**: {pipeline}",
         f"**Runtime Mode**: {model['runtime_mode']}",
+        f"**Runtime Flags**: filler_audio={model['filler_audio']}, llm_tts_overlap={model['llm_tts_overlap']}",
         f"**E2E Latency**: {e2e_hint}",
         f"**LLM Latency**: {llm_latency_str}",
         f"**STT Transcripts (last session)**: {latency.get('stt_transcripts_count', 0)}",
