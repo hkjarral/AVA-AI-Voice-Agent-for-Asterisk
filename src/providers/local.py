@@ -1227,7 +1227,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 allowed_tools=sorted(self._allowed_tools),
                 capability=(self._tool_capability or {}).get("level"),
             )
-            await self._apply_system_prompt(prompt, call_id=call_id)
+            # Fail-closed: same cross-call leakage class as tool_context. On
+            # a reused WebSocket, a missed prompt sync leaves the previous
+            # call's instructions live on the server. Per CodeRabbit review
+            # of PR #384 comment 3214166440.
+            prompt_ok = await self._apply_system_prompt(prompt, call_id=call_id)
+            if not prompt_ok:
+                raise RuntimeError(
+                    f"Failed to synchronize system prompt with Local AI Server (call_id={call_id})"
+                )
         # Fail-closed: tool_context state is per-WebSocket and we reuse the
         # connection across calls. If the sync fails, the server can keep the
         # previous call's allowlist/policy/schemas, leaking ACL state across
@@ -1239,13 +1247,28 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 f"Failed to synchronize tool_context with Local AI Server (call_id={call_id})"
             )
 
-    async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> None:
+    async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> bool:
+        """Send system prompt to local_ai_server. Returns True on success.
+
+        Empty prompt or unchanged digest are treated as success (nothing to
+        sync). WebSocket-not-open and send-exception return False so the
+        caller can fail-closed and abort call setup instead of running with
+        the previous call's instructions on a reused connection. Per
+        CodeRabbit review of PR #384 comment 3214166440.
+        """
         prompt = (prompt or "").strip()
-        if not prompt or not self.websocket or self.websocket.state.name != "OPEN":
-            return
+        if not prompt:
+            return True  # nothing to sync, not a failure
+        if not self.websocket or self.websocket.state.name != "OPEN":
+            logger.warning(
+                "Cannot send local system prompt: WebSocket not open",
+                call_id=call_id,
+                chars=len(prompt),
+            )
+            return False
         digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         if digest == self._last_system_prompt_digest:
-            return
+            return True  # already in sync from a prior successful send
         payload = {
             "type": "switch_model",
             "dry_run": True,  # system prompt does not require reload_models()
@@ -1257,8 +1280,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             await self.websocket.send(json.dumps(payload))
             self._last_system_prompt_digest = digest
             logger.info("Applied Local AI Server system prompt (dry_run)", call_id=call_id, chars=len(prompt))
+            return True
         except Exception:
-            logger.debug("Failed applying Local AI Server system prompt", call_id=call_id, exc_info=True)
+            logger.error(
+                "Failed applying Local AI Server system prompt",
+                call_id=call_id,
+                chars=len(prompt),
+                exc_info=True,
+            )
+            return False
 
     async def _send_tool_context(self, *, call_id: str) -> bool:
         """Send tool_context to local_ai_server. Returns True on success.
