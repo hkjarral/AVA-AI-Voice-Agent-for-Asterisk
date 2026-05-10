@@ -1397,6 +1397,7 @@ const EnvPage = () => {
                                     value={env['FASTER_WHISPER_MODEL'] || 'base'}
                                     onChange={(e) => updateEnv('FASTER_WHISPER_MODEL', e.target.value)}
                                     options={[
+                                        { value: 'tiny.en', label: 'Tiny English (CPU demo)' },
                                         { value: 'tiny', label: 'Tiny (Fastest)' },
                                         { value: 'base', label: 'Base' },
                                         { value: 'small', label: 'Small' },

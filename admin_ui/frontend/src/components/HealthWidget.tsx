@@ -603,6 +603,7 @@ export const HealthWidget = () => {
                                             // Show Faster-Whisper option (requires rebuild)
                                             return (
                                                 <optgroup key="faster_whisper" label="Faster-Whisper">
+                                                    <option key="faster_whisper_tiny_en" value="faster_whisper:tiny.en">Whisper Tiny English (CPU demo)</option>
                                                     <option key="faster_whisper_base" value="faster_whisper:base">Whisper Base (Recommended)</option>
                                                     <option key="faster_whisper_tiny" value="faster_whisper:tiny">Whisper Tiny (Fast)</option>
                                                     <option key="faster_whisper_small" value="faster_whisper:small">Whisper Small</option>
@@ -625,6 +626,7 @@ export const HealthWidget = () => {
                                     {/* Always show Faster-Whisper option even if not in availableModels */}
                                     {!availableModels?.stt?.faster_whisper && (
                                         <optgroup key="faster_whisper" label="Faster-Whisper (Requires Rebuild)">
+                                            <option key="faster_whisper_tiny_en" value="faster_whisper:tiny.en">Whisper Tiny English (CPU demo)</option>
                                             <option key="faster_whisper_base" value="faster_whisper:base">Whisper Base (Recommended)</option>
                                             <option key="faster_whisper_tiny" value="faster_whisper:tiny">Whisper Tiny (Fast)</option>
                                             <option key="faster_whisper_small" value="faster_whisper:small">Whisper Small</option>

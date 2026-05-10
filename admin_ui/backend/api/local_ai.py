@@ -147,6 +147,8 @@ class SwitchModelRequest(BaseModel):
     voice: Optional[str] = None  # For Kokoro TTS
     language: Optional[str] = None  # For Kroko STT
     faster_whisper_language: Optional[str] = None  # Language code for Faster-Whisper (e.g., en, ru)
+    faster_whisper_device: Optional[str] = None  # cpu, cuda, auto
+    faster_whisper_compute_type: Optional[str] = None  # int8, float16, float32
     whisper_cpp_language: Optional[str] = None  # Language code for Whisper.cpp (e.g., en, ru)
     tone_model_path: Optional[str] = None
     tone_decoder_type: Optional[str] = None  # beam_search | greedy
@@ -174,6 +176,8 @@ class SwitchModelRequest(BaseModel):
     # LLM tuning (optional)
     llm_context: Optional[int] = None
     llm_max_tokens: Optional[int] = None
+    enable_filler_audio: Optional[bool] = None
+    llm_streaming_tts_overlap: Optional[bool] = None
     # Allow intentional override for incompatible runtime/device combinations.
     force_incompatible_apply: Optional[bool] = False
 
@@ -309,6 +313,10 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 if request.model_path:
                     env_updates["FASTER_WHISPER_MODEL"] = request.model_path
                     yaml_updates["stt_model"] = request.model_path
+                if request.faster_whisper_device:
+                    env_updates["FASTER_WHISPER_DEVICE"] = request.faster_whisper_device
+                if request.faster_whisper_compute_type:
+                    env_updates["FASTER_WHISPER_COMPUTE_TYPE"] = request.faster_whisper_compute_type
                 if request.faster_whisper_language:
                     env_updates["FASTER_WHISPER_LANGUAGE"] = request.faster_whisper_language
                     yaml_updates["faster_whisper_language"] = request.faster_whisper_language
@@ -340,6 +348,7 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
                 # provided as a real filesystem path.
                 if request.model_path and request.model_path.startswith("/"):
                     env_updates["SILERO_MODEL_PATH"] = request.model_path
+                    yaml_updates["silero_model_path"] = request.model_path
             elif request.backend == "kokoro":
                 if request.kokoro_mode:
                     env_updates["KOKORO_MODE"] = request.kokoro_mode
@@ -386,6 +395,10 @@ def _build_local_ai_env_and_yaml_updates(request: SwitchModelRequest) -> tuple[D
             env_updates["LOCAL_LLM_CONTEXT"] = str(int(request.llm_context))
         if request.llm_max_tokens is not None:
             env_updates["LOCAL_LLM_MAX_TOKENS"] = str(int(request.llm_max_tokens))
+        if request.enable_filler_audio is not None:
+            env_updates["LOCAL_ENABLE_FILLER_AUDIO"] = "true" if request.enable_filler_audio else "false"
+        if request.llm_streaming_tts_overlap is not None:
+            env_updates["LOCAL_LLM_STREAMING_TTS_OVERLAP"] = "true" if request.llm_streaming_tts_overlap else "false"
 
     return env_updates, yaml_updates
 
@@ -428,8 +441,15 @@ def _build_local_ai_ws_switch_payload(request: SwitchModelRequest) -> Optional[D
             if request.tone_kenlm_path:
                 payload["tone_kenlm_path"] = request.tone_kenlm_path
         if request.backend == "faster_whisper":
+            stt_config: Dict[str, Any] = {}
             if request.model_path:
-                payload["stt_config"] = {"model": request.model_path}
+                stt_config["model"] = request.model_path
+            if request.faster_whisper_device:
+                stt_config["device"] = request.faster_whisper_device
+            if request.faster_whisper_compute_type:
+                stt_config["compute_type"] = request.faster_whisper_compute_type
+            if stt_config:
+                payload["stt_config"] = stt_config
             if request.faster_whisper_language:
                 payload["faster_whisper_language"] = request.faster_whisper_language
         if request.backend == "kroko":
@@ -991,9 +1011,14 @@ async def switch_model(request: SwitchModelRequest):
             if request.model_path and not (bool(llm.get("loaded")) and llm.get("path") == request.model_path):
                 return False
             cfg = llm.get("config") or {}
+            server_cfg = data.get("config") or {}
             if request.llm_context is not None and int(cfg.get("context") or 0) != int(request.llm_context):
                 return False
             if request.llm_max_tokens is not None and int(cfg.get("max_tokens") or 0) != int(request.llm_max_tokens):
+                return False
+            if request.enable_filler_audio is not None and bool(server_cfg.get("enable_filler_audio")) != bool(request.enable_filler_audio):
+                return False
+            if request.llm_streaming_tts_overlap is not None and bool(server_cfg.get("llm_streaming_tts_overlap")) != bool(request.llm_streaming_tts_overlap):
                 return False
             return True
 
@@ -1008,7 +1033,13 @@ async def switch_model(request: SwitchModelRequest):
                 expected = request.sherpa_model_path or request.model_path
                 return (not expected) or stt.get("path") == expected
             if request.backend == "faster_whisper" and request.model_path:
-                return stt.get("path") == request.model_path
+                if stt.get("path") != request.model_path:
+                    return False
+                if request.faster_whisper_device and stt.get("device") != request.faster_whisper_device:
+                    return False
+                if request.faster_whisper_compute_type and stt.get("compute_type") != request.faster_whisper_compute_type:
+                    return False
+                return True
             if request.backend == "whisper_cpp":
                 expected = request.whisper_cpp_model_path or request.model_path
                 return (not expected) or stt.get("path") == expected
@@ -1109,8 +1140,9 @@ async def switch_model(request: SwitchModelRequest):
         "MELOTTS_VOICE", "MELOTTS_DEVICE", "FASTER_WHISPER_MODEL", "FASTER_WHISPER_DEVICE",
         "TONE_MODEL_PATH", "TONE_DECODER_TYPE", "TONE_KENLM_PATH",
         "SHERPA_MODEL_TYPE", "SHERPA_VAD_MODEL_PATH",
-        "FASTER_WHISPER_LANGUAGE", "WHISPER_CPP_LANGUAGE",
-        "LOCAL_LLM_MODEL_PATH", "LOCAL_LLM_CONTEXT", "LOCAL_LLM_MAX_TOKENS", "GPU_AVAILABLE"
+        "FASTER_WHISPER_COMPUTE_TYPE", "FASTER_WHISPER_LANGUAGE", "WHISPER_CPP_LANGUAGE",
+        "LOCAL_LLM_MODEL_PATH", "LOCAL_LLM_CONTEXT", "LOCAL_LLM_MAX_TOKENS",
+        "LOCAL_ENABLE_FILLER_AUDIO", "LOCAL_LLM_STREAMING_TTS_OVERLAP", "GPU_AVAILABLE"
     ])
 
     # Guard CUDA-only backend selection when runtime GPU is unavailable.
@@ -1119,7 +1151,7 @@ async def switch_model(request: SwitchModelRequest):
     is_fw_cuda_selection = (
         request.model_type == "stt"
         and target_backend == "faster_whisper"
-        and (previous_env.get("FASTER_WHISPER_DEVICE", "cpu") or "cpu").strip().lower() == "cuda"
+        and (request.faster_whisper_device or previous_env.get("FASTER_WHISPER_DEVICE", "cpu") or "cpu").strip().lower() == "cuda"
     )
     is_melotts_cuda_selection = (
         request.model_type == "tts"
@@ -1164,7 +1196,13 @@ async def switch_model(request: SwitchModelRequest):
         requires_restart = False
 
     elif request.model_type == "llm":
-        wants_llm_change = bool(request.model_path) or request.llm_context is not None or request.llm_max_tokens is not None
+        wants_llm_change = (
+            bool(request.model_path)
+            or request.llm_context is not None
+            or request.llm_max_tokens is not None
+            or request.enable_filler_audio is not None
+            or request.llm_streaming_tts_overlap is not None
+        )
         if wants_llm_change:
             # LLM flow supports best-effort hot switch + verification before falling back to recreate.
             payload: Dict[str, Any] = {"type": "switch_model"}
@@ -1186,9 +1224,20 @@ async def switch_model(request: SwitchModelRequest):
                     llm_cfg["chat_format"] = catalog_chat_format
             if llm_cfg:
                 payload["llm_config"] = llm_cfg
+            runtime_cfg: Dict[str, Any] = {}
+            if request.enable_filler_audio is not None:
+                runtime_cfg["enable_filler_audio"] = bool(request.enable_filler_audio)
+            if request.llm_streaming_tts_overlap is not None:
+                runtime_cfg["llm_streaming_tts_overlap"] = bool(request.llm_streaming_tts_overlap)
+            if runtime_cfg:
+                payload["runtime_config"] = runtime_cfg
 
             ws_resp = await _try_ws_switch(payload)
-            if ws_resp and ws_resp.get("type") == "switch_response" and ws_resp.get("status") == "success":
+            if (
+                ws_resp
+                and ws_resp.get("type") == "switch_response"
+                and ws_resp.get("status") in {"success", "no_change"}
+            ):
                 _update_env_file(env_file, env_updates)
                 verified = await _wait_for_status(timeout_sec=45.0)
                 if verified:
@@ -1220,7 +1269,11 @@ async def switch_model(request: SwitchModelRequest):
     if request.model_type in ("stt", "tts") and request.backend:
         payload = _build_local_ai_ws_switch_payload(request)
         ws_resp = await _try_ws_switch(payload or {"type": "switch_model"})
-        if ws_resp and ws_resp.get("type") == "switch_response" and ws_resp.get("status") == "success":
+        if (
+            ws_resp
+            and ws_resp.get("type") == "switch_response"
+            and ws_resp.get("status") in {"success", "no_change"}
+        ):
             requires_restart = False
         else:
             requires_restart = True

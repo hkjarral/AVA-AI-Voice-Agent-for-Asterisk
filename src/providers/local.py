@@ -54,6 +54,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._was_connected: bool = False
         # Background reconnect task (runs when previously connected server disconnects)
         self._background_reconnect_task: Optional[asyncio.Task] = None
+        self._warned_audio_drop_disconnected: bool = False
         # Runtime backend reported by local_ai_server in stt_result payloads.
         self._runtime_stt_backend: Optional[str] = None
         # Runtime status snapshot (from local_ai_server status_response)
@@ -1108,7 +1109,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     async def start_session(self, call_id: str, context: Optional[Dict[str, Any]] = None):
         try:
             # Check if already connected
-            if self.websocket and self.websocket.state.name == "OPEN":
+            if self.is_connected():
                 logger.debug("WebSocket already connected, reusing connection", call_id=call_id)
                 if self._active_call_id and self._active_call_id != call_id:
                     self._tts_audio_meta_by_call.pop(self._active_call_id, None)
@@ -1129,6 +1130,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             
             # If not connected, initialize first
             await self.initialize()
+            if not self.is_connected():
+                raise RuntimeError("Local AI Server WebSocket is not connected after initialization")
             if self._active_call_id and self._active_call_id != call_id:
                 self._tts_audio_meta_by_call.pop(self._active_call_id, None)
                 self._last_user_transcript_by_call.pop(self._active_call_id, None)
@@ -1335,13 +1338,34 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 0, encoding: str = ""):
         """Send audio chunk to Local AI Server for STT processing."""
         try:
+            if not self.is_connected():
+                if not self._warned_audio_drop_disconnected:
+                    logger.warning(
+                        "Dropping Local AI audio chunk because WebSocket is unavailable; background reconnect requested",
+                        bytes=len(audio_chunk),
+                        input_mode=self.input_mode,
+                    )
+                    self._warned_audio_drop_disconnected = True
+                self._start_background_reconnect()
+                return
+
+            self._warned_audio_drop_disconnected = False
+
             logger.info("🎵 PROVIDER INPUT - Sending to Local AI Server",
                          bytes=len(audio_chunk),
                          queue_size=self._send_queue.qsize(),
                          input_mode=self.input_mode)
             
             # Enqueue for sender loop; drop if queue is full to avoid backpressure explosions
-            await self._send_queue.put(audio_chunk)
+            try:
+                self._send_queue.put_nowait(audio_chunk)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "Local AI Server send queue full; dropping audio chunk",
+                    bytes=len(audio_chunk),
+                    queue_size=self._send_queue.qsize(),
+                    input_mode=self.input_mode,
+                )
             
         except Exception as e:
             logger.error("Failed to enqueue audio for Local AI Server", 
@@ -1525,8 +1549,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         """Play an initial greeting message to the caller."""
         try:
             # Ensure websocket connection exists
-            if not self.websocket or self.websocket.state.name != "OPEN":
+            if not self.is_connected():
                 await self.initialize()
+            if not self.is_connected():
+                raise RuntimeError("Local AI Server WebSocket is not connected for greeting playback")
 
             # Ensure the receive loop will attribute AgentAudio to this call
             self._active_call_id = call_id

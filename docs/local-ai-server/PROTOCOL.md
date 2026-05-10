@@ -585,9 +585,19 @@ Request (examples):
   "type": "switch_model",
   "stt_backend": "faster_whisper",
   "stt_config": {
-    "model": "medium",
-    "device": "cuda",
-    "compute_type": "float16"
+    "model": "tiny.en",
+    "device": "cpu",
+    "compute_type": "int8"
+  }
+}
+```
+
+```json
+{
+  "type": "switch_model",
+  "runtime_config": {
+    "enable_filler_audio": false,
+    "llm_streaming_tts_overlap": false
   }
 }
 ```
@@ -630,10 +640,12 @@ Accepted payload shapes:
   - `stt_config`: `model`, `device`, `compute_type`, `faster_whisper_language`, `whisper_cpp_language`, `sherpa_model_type`, `sherpa_vad_model_path`, `tone_model_path`, `tone_decoder_type`, `tone_kenlm_path`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
   - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`, `silero_speaker`, `silero_language`, `silero_model_id`, `silero_model_path`
   - `llm_config`: `model_path`, `threads`, `context`, `batch`, `max_tokens`, `temperature`, `top_p`, `repeat_penalty`, `gpu_layers`, `system_prompt`, `use_mlock`, `chat_format`
+  - `runtime_config`: `enable_filler_audio`, `llm_streaming_tts_overlap`
 
 Notes:
 
 - `chat_format` is hot-reloadable through `llm_config.chat_format`.
+- Runtime-only changes do not reload STT/LLM/TTS models; enabling filler audio pre-synthesizes filler phrases with the active TTS backend.
 - Unsupported keys are ignored; valid applied keys are returned in `changed`.
 
 ---

@@ -177,6 +177,7 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "kroko_url": {"type": "string"},
                 "kroko_model_path": {"type": "string"},
                 "faster_whisper_language": {"type": "string"},
+                "runtime_config": {"type": "object"},
                 "whisper_cpp_language": {"type": "string"},
                 "sherpa_model_type": {"type": "string", "enum": ["online", "offline"]},
                 "sherpa_vad_model_path": {"type": "string"},

@@ -1148,10 +1148,9 @@ class LocalAIServer:
         filler audio matches the agent's voice.  Falls back to eSpeak NG if
         the primary TTS backend is unavailable.
         """
+        self._filler_cache.clear()
         if not self.config.enable_filler_audio:
             return
-
-        self._filler_cache.clear()
 
         # Try the active TTS backend first (sounds natural)
         use_primary_tts = any([
@@ -5098,6 +5097,27 @@ class LocalAIServer:
                 reason,
             )
             return
+
+        if mode in {"full", "llm"} and normalized_text:
+            words = normalized_text.split()
+            end_call_like = self._text_has_end_call_intent(clean_text)
+            single_word_fragments = {"a", "an", "the", "then", "uh", "um", "hmm"}
+            filler_tail_words = {"uh", "um", "hmm"}
+            should_suppress_short = (
+                not end_call_like
+                and (
+                    (len(words) == 1 and normalized_text in single_word_fragments)
+                    or (len(words) <= 4 and words[-1] in filler_tail_words)
+                )
+            )
+            if should_suppress_short:
+                logging.info(
+                    "📝 STT FINAL SUPPRESSED - Low-information fragment call_id=%s mode=%s text=%s",
+                    session.call_id,
+                    mode,
+                    clean_text[:80],
+                )
+                return
 
         if idle_promoted and normalized_text and normalized_text == last_final_norm:
             logging.info(

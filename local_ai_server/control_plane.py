@@ -63,6 +63,11 @@ _LLM_CONFIG_MAP = {
     "chat_format": "llm_chat_format",
 }
 
+_RUNTIME_CONFIG_MAP = {
+    "enable_filler_audio": "enable_filler_audio",
+    "llm_streaming_tts_overlap": "llm_streaming_tts_overlap",
+}
+
 
 def _apply_config_dict(
     config: LocalAIConfig,
@@ -95,8 +100,13 @@ def _apply_config_dict(
             value = float(value)
         else:
             value = str(value)
+        if current == value:
+            continue
         config = replace(config, **{target: value})
-        display = os.path.basename(str(value)) if "path" in target else value
+        if isinstance(value, bool):
+            display = "1" if value else "0"
+        else:
+            display = os.path.basename(str(value)) if "path" in target else value
         changed.append(f"{target}={display}")
     return config
 
@@ -117,6 +127,9 @@ def apply_switch_model_request(
 
     if "llm_config" in data and isinstance(data["llm_config"], dict):
         new_config = _apply_config_dict(new_config, data["llm_config"], _LLM_CONFIG_MAP, changed, "llama_cpp")
+
+    if "runtime_config" in data and isinstance(data["runtime_config"], dict):
+        new_config = _apply_config_dict(new_config, data["runtime_config"], _RUNTIME_CONFIG_MAP, changed, "runtime")
 
     if "stt_backend" in data:
         backend = (data["stt_backend"] or "").strip().lower()
@@ -223,6 +236,24 @@ def apply_switch_model_request(
         value = data["llm_model_path"]
         new_config = replace(new_config, llm_model_path=value)
         changed.append(f"llm_model_path={os.path.basename(value)}")
+
+    if "enable_filler_audio" in data:
+        value = data["enable_filler_audio"]
+        if isinstance(value, str):
+            value = value.strip().lower() in ("1", "true", "yes", "y", "on")
+        value = bool(value)
+        if new_config.enable_filler_audio != value:
+            new_config = replace(new_config, enable_filler_audio=value)
+            changed.append(f"enable_filler_audio={'1' if value else '0'}")
+
+    if "llm_streaming_tts_overlap" in data:
+        value = data["llm_streaming_tts_overlap"]
+        if isinstance(value, str):
+            value = value.strip().lower() in ("1", "true", "yes", "y", "on")
+        value = bool(value)
+        if new_config.llm_streaming_tts_overlap != value:
+            new_config = replace(new_config, llm_streaming_tts_overlap=value)
+            changed.append(f"llm_streaming_tts_overlap={'1' if value else '0'}")
 
     if "tts_backend" in data:
         backend = (data["tts_backend"] or "").strip().lower()

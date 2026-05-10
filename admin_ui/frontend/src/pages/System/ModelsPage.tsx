@@ -59,7 +59,7 @@ interface DownloadProgress {
 }
 
 interface ActiveModels {
-    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; sherpa_model_type?: string | null; tone_decoder_type?: string | null };
+    stt: { backend: string; path: string; loaded: boolean; display?: string; language?: string | null; device?: string | null; compute_type?: string | null; sherpa_model_type?: string | null; tone_decoder_type?: string | null };
     tts: { backend: string; path: string; loaded: boolean; display?: string };
     llm: {
         path: string;
@@ -157,8 +157,9 @@ const ModelsPage = () => {
     const [serverStatus, setServerStatus] = useState<'connected' | 'error' | 'loading'>('loading');
     const [restarting, setRestarting] = useState(false);
     const [pendingChanges, setPendingChanges] = useState<{ stt?: string; tts?: string; llm?: string }>({});
-    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
+    const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; device?: string; compute_type?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
     const [pendingLlmConfig, setPendingLlmConfig] = useState<{ context?: number; max_tokens?: number }>({});
+    const [pendingRuntimeConfig, setPendingRuntimeConfig] = useState<{ enable_filler_audio?: boolean; llm_streaming_tts_overlap?: boolean }>({});
     const [startingServer, setStartingServer] = useState(false);
     const [capabilities, setCapabilities] = useState<BackendCapabilities | null>(null);
     const [envConfig, setEnvConfig] = useState<Record<string, string>>({});
@@ -360,6 +361,8 @@ const ModelsPage = () => {
                         loaded: localAI.details?.models?.stt?.loaded || false,
                         display: localAI.details?.models?.stt?.display || '',
                         language: localAI.details?.models?.stt?.language || null,
+                        device: localAI.details?.models?.stt?.device || null,
+                        compute_type: localAI.details?.models?.stt?.compute_type || null,
                         sherpa_model_type: localAI.details?.models?.stt?.sherpa_model_type || null,
                         tone_decoder_type: localAI.details?.models?.stt?.tone_decoder_type || null,
                     },
@@ -591,6 +594,12 @@ const ModelsPage = () => {
     const runtimeGpuKnown = runtimeGpu !== null && typeof runtimeGpu.runtime_detected === 'boolean';
     const runtimeGpuDetected = runtimeGpu?.runtime_detected === true;
     const runtimeGpuUsable = runtimeGpu?.runtime_usable === true;
+    const currentFillerAudio = isTruthy(envConfig.LOCAL_ENABLE_FILLER_AUDIO);
+    const currentStreamingOverlap = isTruthy(envConfig.LOCAL_LLM_STREAMING_TTS_OVERLAP ?? 'true');
+    const hasPendingModelChanges = Object.keys(pendingChanges).length > 0;
+    const hasPendingLlmTuningChanges = Object.keys(pendingLlmConfig).length > 0;
+    const hasPendingRuntimeChanges = Object.keys(pendingRuntimeConfig).length > 0;
+    const hasPendingApplyChanges = hasPendingModelChanges || hasPendingLlmTuningChanges || hasPendingRuntimeChanges;
 
     const isBackendAvailable = (backend: string | undefined) => {
         const b = (backend || '').trim().toLowerCase();
@@ -695,9 +704,7 @@ const ModelsPage = () => {
     const requiresAnyRebuild = requiresRebuild.fasterWhisper || requiresRebuild.whisperCpp || requiresRebuild.tone || requiresRebuild.meloTts || requiresRebuild.krokoEmbedded || requiresRebuild.silero;
 
     const applyPendingChanges = async () => {
-        const hasModelChanges = Object.keys(pendingChanges).length > 0;
-        const hasLlmTuningChanges = Object.keys(pendingLlmConfig).length > 0;
-        if (!hasModelChanges && !hasLlmTuningChanges) return;
+        if (!hasPendingApplyChanges) return;
         if (compatibilityIssues.length > 0 && !forceIncompatibleApply) {
             showToast('Resolve compatibility warnings or enable force apply.', 'warning');
             return;
@@ -791,7 +798,7 @@ const ModelsPage = () => {
             }
 
             // Apply LLM changes (model and/or tuning) in one request to avoid multiple reloads.
-            if (remainingChanges.llm || hasLlmTuningChanges) {
+            if (remainingChanges.llm || hasPendingLlmTuningChanges || hasPendingRuntimeChanges) {
                 updateApplyProgress('switching', 82, 'Applying LLM changes...', 'Sending LLM switch request');
 
                 // Auto-set chat_format from catalog when switching LLM model
@@ -815,6 +822,8 @@ const ModelsPage = () => {
                     model_path: remainingChanges.llm || undefined,
                     llm_context: pendingLlmConfig.context || undefined,
                     llm_max_tokens: pendingLlmConfig.max_tokens || undefined,
+                    enable_filler_audio: pendingRuntimeConfig.enable_filler_audio,
+                    llm_streaming_tts_overlap: pendingRuntimeConfig.llm_streaming_tts_overlap,
                     force_incompatible_apply: forceIncompatibleApply
                 });
                 delete remainingChanges.llm;
@@ -826,8 +835,10 @@ const ModelsPage = () => {
                 const [backend, ...pathParts] = value.split(':');
                 const extra: Record<string, any> = {};
                 if (type === 'stt') {
-                    if (backend === 'faster_whisper' && pendingSttExtra.language) {
-                        extra.faster_whisper_language = pendingSttExtra.language;
+                    if (backend === 'faster_whisper') {
+                        if (pendingSttExtra.language) extra.faster_whisper_language = pendingSttExtra.language;
+                        if (pendingSttExtra.device) extra.faster_whisper_device = pendingSttExtra.device;
+                        if (pendingSttExtra.compute_type) extra.faster_whisper_compute_type = pendingSttExtra.compute_type;
                     } else if (backend === 'whisper_cpp' && pendingSttExtra.language) {
                         extra.whisper_cpp_language = pendingSttExtra.language;
                     } else if (backend === 'sherpa') {
@@ -854,6 +865,7 @@ const ModelsPage = () => {
             setPendingChanges({});
             setPendingSttExtra({});
             setPendingLlmConfig({});
+            setPendingRuntimeConfig({});
             setForceIncompatibleApply(false);
             updateApplyProgress('verifying', 95, 'Waiting for Local AI to come back online...', 'Refreshing active model status');
             setTimeout(() => {
@@ -1038,8 +1050,12 @@ const ModelsPage = () => {
                                             </optgroup>
                                         )}
                                         <optgroup label="Faster Whisper">
+                                            <option value="faster_whisper:tiny.en">
+                                                Whisper Tiny English (CPU demo) {!capabilities?.stt?.faster_whisper?.available ? '(requires rebuild)' : ''}
+                                            </option>
+                                            <option value="faster_whisper:tiny">Whisper Tiny</option>
                                             <option value="faster_whisper:base">
-                                                Whisper Base {!capabilities?.stt?.faster_whisper?.available ? '(requires rebuild)' : ''}
+                                                Whisper Base
                                             </option>
                                             <option value="faster_whisper:small">Whisper Small</option>
                                             <option value="faster_whisper:medium">Whisper Medium</option>
@@ -1059,7 +1075,7 @@ const ModelsPage = () => {
                                         const selectedBackend = selectedStt.split(':')[0];
                                         if (selectedBackend === 'faster_whisper' || selectedBackend === 'whisper_cpp') {
                                             return (
-                                                <div className="mt-2">
+                                                <div className="mt-2 space-y-2">
                                                     <label className="text-[10px] text-muted-foreground">Language (ISO 639-1)</label>
                                                     <input
                                                         type="text"
@@ -1073,6 +1089,57 @@ const ModelsPage = () => {
                                                         placeholder="en"
                                                         disabled={restarting}
                                                     />
+                                                    {selectedBackend === 'faster_whisper' && (
+                                                        (() => {
+                                                            const fwDevice = pendingSttExtra.device ?? activeModels.stt.device ?? envConfig.FASTER_WHISPER_DEVICE ?? 'cpu';
+                                                            const fwCompute = pendingSttExtra.compute_type ?? activeModels.stt.compute_type ?? envConfig.FASTER_WHISPER_COMPUTE_TYPE ?? 'int8';
+                                                            const cpuDevice = fwDevice === 'cpu';
+                                                            return (
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <div>
+                                                                        <label className="text-[10px] text-muted-foreground">Device</label>
+                                                                        <select
+                                                                            className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.device ? 'border-yellow-500' : 'border-border'}`}
+                                                                            value={fwDevice}
+                                                                            onChange={(e) => {
+                                                                                const device = e.target.value;
+                                                                                setPendingSttExtra(prev => {
+                                                                                    const currentCompute = prev.compute_type ?? activeModels.stt.compute_type ?? envConfig.FASTER_WHISPER_COMPUTE_TYPE ?? 'int8';
+                                                                                    return {
+                                                                                        ...prev,
+                                                                                        device,
+                                                                                        compute_type: device === 'cpu' && currentCompute === 'float16' ? 'int8' : prev.compute_type,
+                                                                                    };
+                                                                                });
+                                                                                if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                                            }}
+                                                                            disabled={restarting}
+                                                                        >
+                                                                            <option value="cpu">CPU</option>
+                                                                            <option value="auto">Auto</option>
+                                                                            <option value="cuda">CUDA</option>
+                                                                        </select>
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="text-[10px] text-muted-foreground">Compute</label>
+                                                                        <select
+                                                                            className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.compute_type ? 'border-yellow-500' : 'border-border'}`}
+                                                                            value={cpuDevice && fwCompute === 'float16' ? 'int8' : fwCompute}
+                                                                            onChange={(e) => {
+                                                                                setPendingSttExtra(prev => ({ ...prev, compute_type: e.target.value }));
+                                                                                if (!pendingChanges.stt) setPendingChanges(prev => ({ ...prev, stt: selectedStt }));
+                                                                            }}
+                                                                            disabled={restarting}
+                                                                        >
+                                                                            <option value="int8">INT8</option>
+                                                                            <option value="float16" disabled={cpuDevice}>Float16 {cpuDevice ? '(CUDA only)' : ''}</option>
+                                                                            <option value="float32">Float32</option>
+                                                                        </select>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })()
+                                                    )}
                                                 </div>
                                             );
                                         }
@@ -1212,6 +1279,29 @@ const ModelsPage = () => {
                                         </div>
                                     </div>
 
+                                    <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
+                                        <label className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-2 py-1.5">
+                                            <span className="text-muted-foreground">Filler audio</span>
+                                            <input
+                                                type="checkbox"
+                                                className="rounded border-border"
+                                                checked={pendingRuntimeConfig.enable_filler_audio ?? currentFillerAudio}
+                                                onChange={(e) => setPendingRuntimeConfig(prev => ({ ...prev, enable_filler_audio: e.target.checked }))}
+                                                disabled={restarting}
+                                            />
+                                        </label>
+                                        <label className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-2 py-1.5">
+                                            <span className="text-muted-foreground">LLM/TTS overlap</span>
+                                            <input
+                                                type="checkbox"
+                                                className="rounded border-border"
+                                                checked={pendingRuntimeConfig.llm_streaming_tts_overlap ?? currentStreamingOverlap}
+                                                onChange={(e) => setPendingRuntimeConfig(prev => ({ ...prev, llm_streaming_tts_overlap: e.target.checked }))}
+                                                disabled={restarting}
+                                            />
+                                        </label>
+                                    </div>
+
                                     {/* Runtime Stats */}
                                     {(activeModels.llm.prompt_fit?.system_prompt_tokens != null || activeModels.llm.prompt_fit?.safe_max_tokens != null) && (
                                         <div className="mt-3 rounded-md border border-border bg-muted/20 px-3 py-2">
@@ -1318,7 +1408,7 @@ const ModelsPage = () => {
                     )}
 
                     {/* Apply Changes Button */}
-                    {Object.keys(pendingChanges).length > 0 && (
+                    {hasPendingApplyChanges && (
                         <div className="mt-4 space-y-3">
                             {restarting && applyProgress && (
                                 <div className="p-3 rounded-md border border-blue-500/30 bg-blue-500/10 text-sm space-y-2">
@@ -1398,6 +1488,9 @@ const ModelsPage = () => {
                                 <button
                                     onClick={() => {
                                         setPendingChanges({});
+                                        setPendingSttExtra({});
+                                        setPendingLlmConfig({});
+                                        setPendingRuntimeConfig({});
                                         setForceIncompatibleApply(false);
                                     }}
                                     disabled={restarting}
