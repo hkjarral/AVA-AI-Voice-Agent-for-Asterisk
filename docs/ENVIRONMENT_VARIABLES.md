@@ -86,6 +86,10 @@ If you’re not sure, start without these; use `agent check` and `docs/Transport
 - `LOCAL_WS_URL`: how `ai_engine` reaches `local_ai_server` (host networking default is `ws://127.0.0.1:8765`).
 - `LOCAL_WS_AUTH_TOKEN`: optional auth token (recommended if you bind `local_ai_server` to non-loopback).
 - `LOCAL_STT_BACKEND`, `LOCAL_TTS_BACKEND`, `LOCAL_AI_MODE`: local runtime/backends (see `.env.example` for the full matrix).
+- `FASTER_WHISPER_DEVICE`: device for Faster-Whisper inference — `cpu` (default), `cuda`, or `auto`. Persisted by Admin UI when you change the Device selector on the Models page.
+- `FASTER_WHISPER_COMPUTE_TYPE`: quantization precision — `int8` (default, required for CPU), `float16` (CUDA only), or `float32`. The Models page UI prevents `float16` when device is `cpu`.
+- `LOCAL_ENABLE_FILLER_AUDIO`: `true`/`false` (default `false`) — enables pre-synthesized filler audio ("one moment…") during LLM inference. Runtime-only: toggling via the Models page or a `switch_model` WS message does **not** reload STT/LLM/TTS; enabling pre-synthesizes phrases with the active TTS backend, disabling clears the cache.
+- `LOCAL_LLM_STREAMING_TTS_OVERLAP`: `true`/`false` (default `true`) — when enabled, TTS synthesis starts on the first LLM token chunk rather than waiting for the full response. Disable on CPU-only deployments where the overlap increases latency. Same runtime-only toggle semantics as `LOCAL_ENABLE_FILLER_AUDIO`.
 
 ### Call History / storage
 

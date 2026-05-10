@@ -477,7 +477,7 @@ Response:
   "stt_backend": "vosk|kroko|sherpa|faster_whisper|whisper_cpp",
   "tts_backend": "piper|kokoro|melotts|silero",
   "models": {
-    "stt": { "loaded": true, "path": "/app/models/stt/...", "display": "vosk-model-en-us-0.22" },
+    "stt": { "loaded": true, "path": "/app/models/stt/...", "display": "Faster-Whisper (tiny.en, en)", "device": "cpu", "compute_type": "int8" },
     "llm": {
       "loaded": true,
       "path": "/app/models/llm/...",
@@ -515,6 +515,8 @@ Response:
   "config": {
     "log_level": "INFO",
     "debug_audio": false,
+    "enable_filler_audio": false,
+    "llm_streaming_tts_overlap": true,
     "mock_models": false,
     "runtime_mode": "full|minimal",
     "tool_gateway_enabled": true,
@@ -524,6 +526,11 @@ Response:
   }
 }
 ```
+
+Notes:
+
+- `models.stt.device` and `models.stt.compute_type` are only emitted for the `faster_whisper` backend (otherwise `null`).
+- `config.enable_filler_audio` and `config.llm_streaming_tts_overlap` reflect runtime-only flags that can be flipped via `switch_model` `runtime_config` without reloading STT/LLM/TTS.
 
 Schema:
 
