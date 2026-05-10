@@ -28,6 +28,13 @@ class SessionContext:
     allowed_tools: List[str] = field(default_factory=list)
     tool_schemas: List[Dict[str, Any]] = field(default_factory=list)
     tool_policy: str = "auto"
+    # `call_id` of the most recent `tool_context` message that populated the
+    # three fields above. Used to detect cross-call leakage on long-lived
+    # WebSocket sessions: when a different `call_id` arrives, the server
+    # clears the cached tool ACL/schemas/policy instead of inheriting the
+    # previous call's context. Per CodeRabbit review of PR #384 comment
+    # 3214130571.
+    tool_context_call_id: Optional[str] = None
     audio_buffer: bytes = b""
     # Kroko-specific session state
     kroko_ws: Optional[Any] = None

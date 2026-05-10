@@ -492,7 +492,14 @@ class DeepgramProvider(AIProviderInterface):
             output_encoding=self._dg_output_encoding,
             output_sample_rate=self._dg_output_rate,
         )
-        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o"
+        # Resolved think (LLM) model used by both the primary Settings build and
+        # the `_last_settings_minimal` retry fallback. Default kept at
+        # "gpt-4o-mini" (the previously-hardcoded primary-path value) to
+        # preserve the conservative cost behavior on upgrade for deployments
+        # that don't set `llm_config.model`. Per CodeRabbit review of PR #384
+        # comment 3214130572 — eliminates the primary/retry think-model drift
+        # that pre-fix could swap a configured model for "gpt-4o-mini" on retry.
+        think_model = getattr(self.llm_config, 'model', None) or "gpt-4o-mini"
         # Try context-injected prompt first (can be 'instructions' or 'prompt' key), then provider config, then llm_config, then default
         think_prompt = (
             self._get_config_value('instructions', None) or  # Context injection uses 'instructions' for Deepgram
@@ -554,7 +561,12 @@ class DeepgramProvider(AIProviderInterface):
                 "think": {
                     "provider": {
                         "type": "open_ai",
-                        "model": "gpt-4o-mini",  # Conservative cost default; not changed by this fix
+                        # Use the resolved `think_model` so primary and retry
+                        # paths can't drift. Default still "gpt-4o-mini" (set
+                        # at the variable definition above) to preserve the
+                        # prior conservative cost default. Per CodeRabbit
+                        # review of PR #384 comment 3214130572.
+                        "model": think_model,
                         "temperature": 0.7
                     },
                     "prompt": think_prompt

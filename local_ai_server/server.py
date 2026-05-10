@@ -4511,6 +4511,13 @@ class LocalAIServer:
         session.allowed_tools = self._extract_allowed_tool_names(data)
         session.tool_schemas = data.get("tools") if isinstance(data.get("tools"), list) else []
         session.tool_policy = self._normalize_tool_policy(data.get("tool_policy"))
+        # Bind the cached tool context to its originating call_id. A long-lived
+        # WebSocket session can serve multiple calls; without this binding the
+        # ACL/schemas/policy would silently leak from one call to the next when
+        # the second call omits tool metadata in its `llm_tool_request` (the
+        # session-fallback path added for #368). See CodeRabbit review of
+        # PR #384 comment 3214130571.
+        session.tool_context_call_id = session.call_id or None
         logging.info(
             "🧩 TOOL CONTEXT - call_id=%s allowed_tools=%s policy=%s schemas=%s",
             session.call_id,
@@ -4688,6 +4695,25 @@ class LocalAIServer:
         call_id = data.get("call_id")
         if call_id:
             session.call_id = call_id
+        # Cross-call leakage guard: a long-lived WebSocket session can serve
+        # multiple calls. The cached `tool_context` (allowed_tools / schemas /
+        # policy) is bound to the call_id that created it; if a different
+        # call_id arrives without sending a fresh `tool_context`, drop the
+        # stale cache so we don't authorize tools the new call wasn't given.
+        # The request will then fall through with an empty allowlist
+        # (effectively rejecting tool calls until a `tool_context` is sent
+        # for this call). Per CodeRabbit review of PR #384 comment 3214130571.
+        cached_ctx_call_id = getattr(session, "tool_context_call_id", None)
+        if cached_ctx_call_id and call_id and cached_ctx_call_id != call_id:
+            logging.warning(
+                "🧩 TOOL CONTEXT - call_id mismatch (cached=%s incoming=%s); clearing stale cache",
+                cached_ctx_call_id,
+                call_id,
+            )
+            session.allowed_tools = []
+            session.tool_schemas = []
+            session.tool_policy = "auto"
+            session.tool_context_call_id = None
         text = str(data.get("text") or "")
         # When the request omits tool metadata, pass None so
         # `_build_llm_tool_response_payload` can fall back to whatever was

@@ -344,7 +344,7 @@ Notes:
 
 ## Tool Result (`tool_result`) — v6.5.0+
 
-**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server after the engine has executed a tool call that the local LLM emitted. The server uses the result to compose a follow-up "tool turn" prompt and re-invokes the LLM, producing the **final spoken answer** (not another tool call). The follow-up final answer is delivered as an `llm_response` carrying `extra.tool_result_final = true` so the engine can recognize it as the post-tool answer; audio for that response is produced via the server-side TTS output path active for the current session mode (no separate `tts_request` is sent by the server).
+**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server after the engine has executed a tool call that the local LLM emitted. The server uses the result to compose a follow-up "tool turn" prompt and re-invokes the LLM, producing the **final spoken answer** (not another tool call). The follow-up final answer is delivered as an `llm_response` with **top-level wire fields** `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true` so the engine can recognize it as the post-tool answer; audio for that response is produced via the server-side TTS output path active for the current session mode (no separate `tts_request` is sent by the server).
 
 Two operating shapes:
 
@@ -379,8 +379,21 @@ Server's internal "tool turn" prompt is rendered as:
 
 Notes:
 
-- `result` may be any JSON value; objects are preferred. The server will `json.dumps()` it before embedding in the prompt.
-- The follow-up response is emitted with `source_mode: "tool_result"` and `extra: {"tool_result_final": true, "tool_gateway_done": true}`.
+- `result` may be any JSON value; objects are preferred. The server will `json.dumps()` it before embedding in the prompt. Falsy values (`0`, `false`, `""`, `[]`, `null`) are preserved and pass through unchanged.
+- The follow-up response is emitted on the wire as an `llm_response` with top-level fields `"mode": "tool_result"`, `"tool_result_final": true`, and `"tool_gateway_done": true`. Clients should match these top-level keys, **not** a nested `extra` object — the server flattens `extra.*` into the payload root before sending. Example:
+
+  ```json
+  {
+    "type": "llm_response",
+    "call_id": "1234-5678",
+    "mode": "tool_result",
+    "tool_result_final": true,
+    "tool_gateway_done": true,
+    "tool_path": "none",
+    "text": "Your appointment is confirmed for Friday at 2 PM."
+  }
+  ```
+
 - Edge cases not yet covered by automated tests (planned v6.6): multiple tool results in flight for the same call_id, reconnect during a pending tool result, and interaction with `farewell_mode=asterisk`.
 
 ---

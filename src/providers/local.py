@@ -526,9 +526,17 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 safe = ""
             response_text = safe.strip() or "Goodbye."
 
+        # Emit spoken text only when every remaining tool call is `hangup_call`.
+        # The earlier `not any(... == "hangup_call")` guard left
+        # `should_emit_text=True` for mixed batches like
+        # `["hangup_call", "transfer"]`, so the provider would speak the
+        # farewell *before* dispatching the transfer — wrong order, and the
+        # caller hears "have a great day" right before being patched through.
+        # Per CodeRabbit review of PR #384 comment 3214130574: suppress text
+        # whenever any non-hangup tool remains in the batch.
         should_emit_text = bool(response_text)
-        if normalized_tool_calls and not any(
-            str(tool_call.get("name") or "").strip() == "hangup_call"
+        if normalized_tool_calls and any(
+            str(tool_call.get("name") or "").strip() != "hangup_call"
             for tool_call in normalized_tool_calls
         ):
             should_emit_text = False
@@ -703,7 +711,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         if request_id:
             self._cancel_gateway_timeout(request_id)
 
-        call_id = data.get("call_id") or (pending or {}).get("call_id") or self._active_call_id
+        # After a successful `request_id` correlation, the local pending
+        # entry is the authoritative source for `call_id`. Preferring
+        # `data["call_id"]` first allowed a stale or echoed `call_id` from
+        # the server side to reroute the result to the wrong call. Use the
+        # pending entry's call_id first, then fall back to `data` (for
+        # responses that arrive without a known pending entry, e.g. server-
+        # initiated nudges), then `self._active_call_id` as last resort.
+        # Per CodeRabbit review of PR #384 comment 3214130576.
+        call_id = (pending or {}).get("call_id") or data.get("call_id") or self._active_call_id
         llm_text = str((pending or {}).get("llm_text") or data.get("text") or "")
         clean_text = str(data.get("text") or "").strip()
         if not clean_text:
