@@ -65,11 +65,20 @@ def test_tool_context_full_payload_validates():
 
 
 def test_tool_context_missing_type_rejected():
-    with pytest.raises(jsonschema.ValidationError):
+    """`type` is required by the contract. `validate_payload` enforces this
+    via a manual pre-check (raising ``ValueError``) before delegating to
+    jsonschema, so missing-type rejection works even when jsonschema is
+    not installed. Either exception type is acceptable here — the
+    semantic guarantee is that the payload is rejected."""
+    with pytest.raises((ValueError, jsonschema.ValidationError)):
         validate_payload({"call_id": "1234"})
 
 
 def test_tool_context_with_invalid_tool_policy_rejected():
+    """`tool_policy` is constrained to a known enum by the schema. The
+    pre-check in ``validate_payload`` does not catch this, so the
+    rejection genuinely comes from jsonschema and the specific
+    ``jsonschema.ValidationError`` type is meaningful."""
     with pytest.raises(jsonschema.ValidationError):
         validate_payload({
             "type": "tool_context",
@@ -128,7 +137,10 @@ def test_tool_result_arbitrary_result_value_validates():
 
 
 def test_tool_result_missing_tool_name_rejected():
-    """`tool_name` is the only schema-required field besides `type`."""
+    """`tool_name` is the only schema-required field besides `type`. This
+    rejection comes from jsonschema (the pre-check only validates the
+    `type` key), so the specific ``jsonschema.ValidationError`` type is
+    meaningful here."""
     with pytest.raises(jsonschema.ValidationError):
         validate_payload({
             "type": "tool_result",
