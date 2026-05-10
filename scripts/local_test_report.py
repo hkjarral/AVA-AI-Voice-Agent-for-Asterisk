@@ -621,11 +621,26 @@ def extract_model_info(status: Optional[Dict[str, Any]], env: Dict[str, str]) ->
                 info["gpu_from_server"] += f" ({memory_gb}GB)"
     else:
         # Fallback to env
-        info["stt_backend"] = env.get("LOCAL_STT_BACKEND", "vosk")
-        info["stt_model"] = env.get(
-            "FASTER_WHISPER_MODEL",
-            env.get("LOCAL_STT_MODEL_PATH", env.get("SHERPA_MODEL_PATH", "default")),
-        )
+        stt_backend = env.get("LOCAL_STT_BACKEND", "vosk")
+        info["stt_backend"] = stt_backend
+        # Dispatch on the active backend so we report the right model in the
+        # fallback path (config.py uses different env vars per backend).
+        if stt_backend == "faster_whisper":
+            info["stt_model"] = env.get("FASTER_WHISPER_MODEL", "default")
+        elif stt_backend == "sherpa":
+            info["stt_model"] = env.get("SHERPA_MODEL_PATH", "default")
+        elif stt_backend == "whisper_cpp":
+            info["stt_model"] = env.get(
+                "WHISPER_CPP_MODEL_PATH",
+                env.get("LOCAL_WHISPER_CPP_MODEL_PATH", env.get("LOCAL_STT_MODEL_PATH", "default")),
+            )
+        elif stt_backend == "tone":
+            info["stt_model"] = env.get("TONE_MODEL_PATH", "default")
+        elif stt_backend == "kroko":
+            info["stt_model"] = env.get("KROKO_MODEL_PATH", "default")
+        else:
+            # vosk and unknowns
+            info["stt_model"] = env.get("LOCAL_STT_MODEL_PATH", "default")
         info["stt_device"] = env.get("FASTER_WHISPER_DEVICE", "unknown")
         info["stt_compute"] = env.get("FASTER_WHISPER_COMPUTE_TYPE", "unknown")
         info["tts_backend"] = env.get("LOCAL_TTS_BACKEND", "piper")
