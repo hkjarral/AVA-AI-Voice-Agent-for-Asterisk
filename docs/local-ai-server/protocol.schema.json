@@ -363,7 +363,15 @@
           "type": "string"
         },
         "runtime_config": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "enable_filler_audio": {
+              "type": "boolean"
+            },
+            "llm_streaming_tts_overlap": {
+              "type": "boolean"
+            }
+          }
         },
         "whisper_cpp_language": {
           "type": "string"

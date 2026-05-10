@@ -1032,8 +1032,8 @@ async def switch_model(request: SwitchModelRequest):
             if request.backend == "sherpa":
                 expected = request.sherpa_model_path or request.model_path
                 return (not expected) or stt.get("path") == expected
-            if request.backend == "faster_whisper" and request.model_path:
-                if stt.get("path") != request.model_path:
+            if request.backend == "faster_whisper":
+                if request.model_path and stt.get("path") != request.model_path:
                     return False
                 if request.faster_whisper_device and stt.get("device") != request.faster_whisper_device:
                     return False

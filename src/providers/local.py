@@ -1585,6 +1585,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 logger.debug("Recorded greeting in conversation history", call_id=call_id)
         except Exception as e:
             logger.error("Failed to send greeting message", call_id=call_id, error=str(e), exc_info=True)
+            raise
 
     async def stop_session(self):
         # DON'T cancel the listener task - keep it running to receive AgentAudio events
