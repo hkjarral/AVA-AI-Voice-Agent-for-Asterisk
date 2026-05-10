@@ -39,6 +39,8 @@ Archive of completed development milestones for the Asterisk AI Voice Agent. For
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v6.5.0 | May 2026 | Local LLM tool-gated response (`tool_context`/`tool_result` v2 protocol), Deepgram Flux v2 + nova-3 default, Gemini 3.1 verified, Admin UI Flux tuning panel, #351 / #370 fixes |
+| v6.4.2 | Apr 2026 | Calendar improvements, custom (community) model entries via Admin UI, Vertex AI onboarding script |
 | v6.1.1 | Feb 2026 | Operator config overrides, live agent transfer, ViciDial compatibility, Admin UI Asterisk audit |
 | v6.0.0 | Feb 2026 | OpenAI Realtime GA API, email system overhaul, NAT/GPU support, Google Live improvements |
 | v5.3.1 | Jan 2026 | Phase tools (pre/in/post-call HTTP), extension status checking, Deepgram language config |

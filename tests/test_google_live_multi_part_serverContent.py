@@ -12,11 +12,10 @@ short-circuiting early returns. This test pins that property so a future
 refactor can't accidentally introduce an early return that skips one of
 the keys.
 
-Phase 0 testing on call `1778360966.459` (2026-05-09) observed 94 of these
-multi-part envelopes during a 59s call with `gemini-3.1-flash-live-preview`
-on the Developer API endpoint, with zero parse errors and zero unhandled
-message types. This test makes that empirical observation a unit-level
-guarantee.
+Phase 0 testing on 2026-05-09 observed 94 of these multi-part envelopes
+during a ~60s call with `gemini-3.1-flash-live-preview` on the Developer
+API endpoint, with zero parse errors and zero unhandled message types.
+This test makes that empirical observation a unit-level guarantee.
 """
 
 import asyncio

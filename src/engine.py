@@ -33,12 +33,6 @@ except ImportError:
 
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest, Histogram, Counter, Gauge
 
-# Issue #351: barge-in regression diagnostic trace, paired with the same flag
-# in src/providers/google_live.py. Set AAVA_BARGE_IN_TRACE=1 to emit
-# BARGE_IN_TRACE log lines at the engine's ProviderBargeIn / AgentAudioDone
-# handler entry points. Off by default.
-_BARGE_IN_TRACE = os.getenv("AAVA_BARGE_IN_TRACE", "").strip().lower() in ("1", "true", "yes", "on")
-
 from .ari_client import ARIClient
 from aiohttp import web
 from pydantic import ValidationError
@@ -8874,14 +8868,6 @@ class Engine:
             # - OpenAI Realtime emits `ProviderBargeIn` on `input_audio_buffer.speech_started` cancellation.
             # - ElevenLabs emits `interruption` when it detects barge-in.
             if etype in ("ProviderBargeIn", "interruption"):
-                if _BARGE_IN_TRACE:
-                    logger.info(
-                        "BARGE_IN_TRACE engine received provider barge-in",
-                        call_id=call_id,
-                        event_type=etype,
-                        provider=getattr(session, "provider_name", None),
-                        provider_event=event.get("event") or event.get("reason") or "",
-                    )
                 try:
                     # Guard against provider VAD noise when we're not actually outputting audio.
                     # This matters for OpenAI AudioSocket: `input_audio_buffer.speech_started` can occur
@@ -8892,13 +8878,6 @@ class Engine:
                         now = time.time()
                         last_barge_in_ts = float(getattr(session, "last_barge_in_ts", 0.0) or 0.0)
                         if last_barge_in_ts and (now - last_barge_in_ts) * 1000 < cooldown_ms:
-                            if _BARGE_IN_TRACE:
-                                logger.info(
-                                    "BARGE_IN_TRACE engine dropped provider barge-in (cooldown)",
-                                    call_id=call_id,
-                                    cooldown_ms=cooldown_ms,
-                                    age_ms=int((now - last_barge_in_ts) * 1000),
-                                )
                             return
                     except Exception:
                         pass
@@ -8915,23 +8894,10 @@ class Engine:
                         except Exception:
                             output_active = False
                     if not output_active and not bool(getattr(session, "tts_playing", False)):
-                        # No local output to flush; ignore noisy provider barge-in signals.
-                        if _BARGE_IN_TRACE:
-                            logger.info(
-                                "BARGE_IN_TRACE engine dropped provider barge-in (no active output)",
-                                call_id=call_id,
-                                tts_playing=bool(getattr(session, "tts_playing", False)),
-                            )
                         return
 
                     provider_evt = event.get("event") or event.get("reason") or ""
                     reason = provider_evt if etype == "ProviderBargeIn" else (provider_evt or etype)
-                    if _BARGE_IN_TRACE:
-                        logger.info(
-                            "BARGE_IN_TRACE engine applying barge-in action",
-                            call_id=call_id,
-                            reason=str(reason or etype),
-                        )
                     await self._apply_barge_in_action(
                         call_id,
                         source="provider_event",
@@ -9505,20 +9471,6 @@ class Engine:
                     except asyncio.QueueFull:
                         logger.debug("Provider streaming queue full; dropping chunk", call_id=call_id)
             elif etype == "AgentAudioDone":
-                if _BARGE_IN_TRACE:
-                    _vad_state = getattr(session, "vad_state", None)
-                    _sup_now = (
-                        _vad_state.get("output_suppression") or {}
-                        if isinstance(_vad_state, dict)
-                        else {}
-                    )
-                    logger.info(
-                        "BARGE_IN_TRACE engine received AgentAudioDone",
-                        call_id=call_id,
-                        provider=getattr(session, "provider_name", None),
-                        suppression_active=bool(_sup_now.get("active", False)),
-                        suppression_until_ts=float(_sup_now.get("until_ts", 0.0) or 0.0),
-                    )
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
                 # This prevents cutting into the next (new) response once the provider finishes the interrupted one.
                 try:

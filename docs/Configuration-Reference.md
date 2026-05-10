@@ -511,6 +511,8 @@ By default, the Admin UI blocks test requests to localhost/private targets to re
 - `AAVA_HTTP_TOOL_TEST_ALLOW_HOSTS=host1,host2`: allow specific hostnames.
 - `AAVA_HTTP_TOOL_TEST_FOLLOW_REDIRECTS=1`: allow redirects (default is disabled).
 
+**v6.5.0+:** the guard reads `.env` before `os.environ`, so changes made through the Admin UI Environment page take effect on the next test request without recreating the `ai_engine` container. `.env` read failures fail closed (helpers fall back to the default rather than silently consulting `os.environ`).
+
 
 ## Tips
 

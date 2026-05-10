@@ -404,9 +404,7 @@ Barge-in on Google Live is driven by **server-side VAD** that fires `serverConte
 
 **Status: documented limitation, not a code fix.** Issue [#351](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/351) is resolved in v6.5.0 by recommending Vertex AI mode for production, not by code changes. AAVA's TTS-input gating (which mutes caller audio during agent speech to prevent self-echo on Google Live) still applies unconditionally to all Google Live providers and modes — `vad_mode: provider` does not yet skip this gating despite the UI's documented intent. A v6.6 follow-up tracks the architectural fix (refactor silence-gating to honor `vad_mode`); the attempt that landed and was reverted on this branch (`1763a441` → `cead273a`) demonstrated that the audio-forwarding path on AudioSocket has downstream dependencies on either silence injection or `vad_manager` being non-None that aren't safely refactored without a broader audio-path overhaul.
 
-**Why the Dev API preview path is unreliable empirically:** Side-by-side instrumented testing showed that with the same VAD config, same audio path, and same client gating logic, Vertex's GA model fires `serverContent.interrupted` correctly during caller overlap (4 events on a single test call) while Dev API's `*-native-audio-latest` alias does not (0 events on a comparable call). The differentiator is the model variant, not AAVA's code path. Logs and traces are archived under `archived/logs/2026-05-09_issue-351-bargein-comparison/`.
-
-**Diagnosing barge-in issues:** AAVA ships an off-by-default trace flag for the Google Live barge-in event flow. Set `AAVA_BARGE_IN_TRACE=1` in `.env` and recreate `ai_engine` to see structured `BARGE_IN_TRACE` log lines covering every serverContent envelope, every `interrupted=True` from the server, every `ProviderBargeIn` emit, and every `AgentAudioDone` event. Useful for confirming whether your model's server-side VAD is actually firing.
+**Why the Dev API preview path is unreliable empirically:** Side-by-side testing showed that with the same VAD config, same audio path, and same client gating logic, Vertex's GA model fires `serverContent.interrupted` reliably during caller overlap, while Dev API's `*-native-audio-latest` alias does not. The differentiator is the model variant, not AAVA's code path.
 
 ### 2. Function Calling
 
@@ -506,16 +504,7 @@ Barge-in on Google Live depends on `serverContent.interrupted=true` firing from 
 
 1. **Confirm provider**: `AI_PROVIDER=google_live` (not a pipeline)
 2. **Confirm Vertex mode for production**: Set `use_vertex_ai: true` and use `gemini-live-2.5-flash-native-audio` (the GA model). See [Provider-Vertex-Setup.md](Provider-Vertex-Setup.md).
-3. **Capture a diagnostic trace**:
-   ```bash
-   echo "AAVA_BARGE_IN_TRACE=1" >> .env
-   docker compose up -d ai_engine
-   # place a test call and deliberately overlap caller speech with agent TTS
-   CALL_ID="your-call-id-here"
-   docker logs ai_engine 2>&1 | grep BARGE_IN_TRACE | grep "$CALL_ID"
-   ```
-   - If `BARGE_IN_TRACE interrupted=True from server` count is **0**: Google's server is not firing the VAD interrupt event. On Dev API previews, this is expected; switch to Vertex GA.
-   - If the count is **>0** but `engine APPLIED barge-in` is **0**: the engine is dropping the events at a guard (cooldown or "no active output"). File an issue with the trace excerpt.
+3. **Inspect engine logs** for `Google Live server-side interruption detected`. If those entries are absent during a call where you deliberately overlapped caller speech with agent TTS, Google's server-side VAD is not firing — on Dev API previews this is expected; switch to Vertex GA.
 4. **Verify caller audio energy** — telephony callers often have low input RMS (~25). Local-VAD fallback uses `vad_energy_threshold` (default `1500`) which is calibrated for clean studio audio. For pure-telephony deployments, server-side VAD on Vertex's GA model is the path that actually works; local VAD is unlikely to fire.
 
 ## Migration from Pipeline to Live

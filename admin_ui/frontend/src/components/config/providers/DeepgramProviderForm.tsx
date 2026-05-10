@@ -514,6 +514,91 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </p>
                 </div>
 
+                {/* Flux tuning — only when a flux-* model is selected */}
+                {(config.model || '').startsWith('flux-') && (
+                    <div className="space-y-3 border border-blue-300/40 rounded-lg p-3 bg-blue-500/5">
+                        <h5 className="text-sm font-semibold">Flux Turn-Detection Tuning</h5>
+                        <p className="text-xs text-muted-foreground">
+                            Flux ships its own EndOfTurn / EagerEndOfTurn detection. Defaults work for most voice-agent
+                            deployments; tune only if you observe early cut-offs or sluggish turn taking.
+                            See{' '}
+                            <a
+                                href="https://developers.deepgram.com/docs/configure-voice-agent"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 hover:underline"
+                            >
+                                Configure Voice Agent ↗
+                            </a>
+                            .
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">EndOfTurn Threshold (eot_threshold)</label>
+                                <input
+                                    type="number"
+                                    step="0.05"
+                                    min={0.5}
+                                    max={0.9}
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={config.eot_threshold ?? ''}
+                                    onChange={(e) =>
+                                        handleChange(
+                                            'eot_threshold',
+                                            e.target.value === '' ? null : parseFloat(e.target.value),
+                                        )
+                                    }
+                                    placeholder="0.7 (default)"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Valid range 0.5–0.9. Higher = wait longer before declaring end of turn.
+                                </p>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">EagerEndOfTurn Threshold (eager_eot_threshold)</label>
+                                <input
+                                    type="number"
+                                    step="0.05"
+                                    min={0.3}
+                                    max={0.9}
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={config.eager_eot_threshold ?? ''}
+                                    onChange={(e) =>
+                                        handleChange(
+                                            'eager_eot_threshold',
+                                            e.target.value === '' ? null : parseFloat(e.target.value),
+                                        )
+                                    }
+                                    placeholder="empty = disabled"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Valid range 0.3–0.9. Must be strictly less than eot_threshold. Empty = disabled.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Keyterms (comma-separated)</label>
+                            <input
+                                type="text"
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={Array.isArray(config.keyterms) ? config.keyterms.join(', ') : (config.keyterms ?? '')}
+                                onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const list = raw
+                                        .split(',')
+                                        .map((s) => s.trim())
+                                        .filter((s) => s.length > 0);
+                                    handleChange('keyterms', list.length > 0 ? list : null);
+                                }}
+                                placeholder="e.g. NEMT, ride, dispatcher"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Domain vocabulary to bias Flux STT toward. Leave empty to skip.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
                 <div className="space-y-2 border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
                     <label className="flex items-center gap-2 text-sm font-medium">
                         <input

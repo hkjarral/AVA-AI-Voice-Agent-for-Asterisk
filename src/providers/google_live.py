@@ -30,13 +30,6 @@ import re
 from typing import Any, Dict, Optional, List, Tuple
 from collections import deque
 
-# Issue #351: barge-in regression diagnostic trace. Set AAVA_BARGE_IN_TRACE=1
-# to emit BARGE_IN_TRACE log lines covering the interrupted-flag, ProviderBargeIn
-# emission, every serverContent envelope, and AgentAudioDone emission. Off by
-# default; intended for live diagnosis on dev between Vertex and Developer API
-# endpoints. Safe to leave behind a future regression net.
-_BARGE_IN_TRACE = os.getenv("AAVA_BARGE_IN_TRACE", "").strip().lower() in ("1", "true", "yes", "on")
-
 import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
@@ -1468,18 +1461,6 @@ class GoogleLiveProvider(AIProviderInterface):
             interrupted=bool(content.get("interrupted")),
         )
 
-        if _BARGE_IN_TRACE:
-            logger.info(
-                "BARGE_IN_TRACE serverContent",
-                call_id=self._call_id,
-                mode="vertex" if getattr(self, "_vertex_active", False) else "dev_api",
-                keys=list(content.keys()),
-                interrupted=bool(content.get("interrupted")),
-                turn_complete=bool(content.get("turnComplete")),
-                has_model_turn=bool(content.get("modelTurn")),
-                in_audio_burst=self._in_audio_burst,
-            )
-
         # Official Google barge-in signal: serverContent.interrupted = true
         # Per docs: "When VAD detects an interruption, the ongoing generation is
         # canceled and discarded. The server sends a BidiGenerateContentServerContent
@@ -1493,25 +1474,10 @@ class GoogleLiveProvider(AIProviderInterface):
                 call_id=self._call_id,
                 in_audio_burst=self._in_audio_burst,
             )
-            if _BARGE_IN_TRACE:
-                logger.info(
-                    "BARGE_IN_TRACE interrupted=True from server",
-                    call_id=self._call_id,
-                    mode="vertex" if getattr(self, "_vertex_active", False) else "dev_api",
-                    in_audio_burst=self._in_audio_burst,
-                    on_event_set=bool(self.on_event),
-                )
             if self._in_audio_burst:
                 self._in_audio_burst = False
             try:
                 if self.on_event:
-                    if _BARGE_IN_TRACE:
-                        logger.info(
-                            "BARGE_IN_TRACE emitting ProviderBargeIn",
-                            call_id=self._call_id,
-                            mode="vertex" if getattr(self, "_vertex_active", False) else "dev_api",
-                            source="server_interrupted",
-                        )
                     await self.on_event(
                         {
                             "type": "ProviderBargeIn",
@@ -1916,28 +1882,12 @@ class GoogleLiveProvider(AIProviderInterface):
         turn_was_assistant = self._turn_has_assistant_output
         self._turn_has_assistant_output = False
 
-        if _BARGE_IN_TRACE:
-            logger.info(
-                "BARGE_IN_TRACE _handle_turn_complete entry",
-                call_id=self._call_id,
-                mode="vertex" if getattr(self, "_vertex_active", False) else "dev_api",
-                in_audio_burst=self._in_audio_burst,
-                turn_was_assistant=turn_was_assistant,
-                on_event_set=bool(self.on_event),
-            )
-
         # Note: Transcription is now saved in _handle_server_content when turnComplete=true
         # No need to flush here - it's already been handled
 
         if self._in_audio_burst:
             self._in_audio_burst = False
             if self.on_event:
-                if _BARGE_IN_TRACE:
-                    logger.info(
-                        "BARGE_IN_TRACE emitting AgentAudioDone",
-                        call_id=self._call_id,
-                        mode="vertex" if getattr(self, "_vertex_active", False) else "dev_api",
-                    )
                 await self.on_event(
                     {
                         "type": "AgentAudioDone",

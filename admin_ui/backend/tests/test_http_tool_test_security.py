@@ -102,6 +102,6 @@ def test_admin_ui_env_key_recognizes_aava_http_tool_test_prefix():
     assert _admin_ui_env_key("AAVA_HTTP_TOOL_TEST_ALLOW_HOSTS") is True
     assert _admin_ui_env_key("AAVA_HTTP_TOOL_TEST_FOLLOW_REDIRECTS") is True
     # Unrelated keys still excluded.
-    assert _admin_ui_env_key("AAVA_BARGE_IN_TRACE") is False
+    assert _admin_ui_env_key("AAVA_LOG_LEVEL") is False
     assert _admin_ui_env_key("OPENAI_API_KEY") is False
 
