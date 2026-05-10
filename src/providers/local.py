@@ -726,8 +726,17 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         )
         return True
 
-    async def send_tool_result(self, function_call_id: str, result: Dict[str, Any], is_error: bool = False) -> None:
-        """Send an executed local tool result back to local_ai_server for the final LLM turn."""
+    async def send_tool_result(self, function_call_id: str, result: Any, is_error: bool = False) -> None:
+        """Send an executed local tool result back to local_ai_server for the final LLM turn.
+
+        ``result`` may be any JSON value (object, list, string, int, ``False``,
+        ``0``, empty list, ``None``). Pre-fix this method coerced falsy values
+        to ``{}`` via ``result or {}``, which silently changed valid outputs
+        like ``0``, ``False``, ``""``, ``[]``, or ``None`` into an empty
+        object — and the local LLM then composed its follow-up using a
+        misleading payload. Per CodeRabbit review of PR #384 comment
+        3214117421.
+        """
         if not self.websocket or self.websocket.state.name != "OPEN":
             return
         function_call_id = str(function_call_id or "").strip()
@@ -740,7 +749,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "call_id": self._active_call_id,
             "function_call_id": function_call_id,
             "tool_name": tool_name,
-            "result": result or {},
+            "result": result,  # preserve falsy values; do NOT coerce to {}
             "is_error": bool(is_error),
             "tool_policy": self._effective_tool_policy,
         }
@@ -1674,13 +1683,36 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                             llm_text = data.get("text", "")
                             call_id = data.get("call_id") or self._active_call_id
 
-                            if data.get("tool_gateway_done") or data.get("tool_result_final"):
+                            # Honor tool-gateway completion markers at both
+                            # the top level AND nested under `extra` —
+                            # docs/local-ai-server/PROTOCOL.md describes the
+                            # post-tool final answer as carrying
+                            # `extra.tool_result_final = true`, while the
+                            # legacy in-band path emits the same markers at
+                            # the top level. Pre-fix this branch only
+                            # checked the top level, so a documented
+                            # `extra.*` payload would fall through into
+                            # `_dispatch_llm_tool_gateway_request()` and get
+                            # reparsed as another tool turn instead of being
+                            # emitted as the final answer. Per CodeRabbit
+                            # review of PR #384 comment 3214117422.
+                            _extra = data.get("extra") if isinstance(data.get("extra"), dict) else {}
+                            if (
+                                data.get("tool_gateway_done")
+                                or data.get("tool_result_final")
+                                or _extra.get("tool_gateway_done")
+                                or _extra.get("tool_result_final")
+                            ):
                                 await self._emit_local_llm_result(
                                     call_id=call_id,
                                     llm_text=llm_text,
                                     clean_text=llm_text,
                                     tool_calls=None,
-                                    tool_path=str(data.get("tool_path") or "none"),
+                                    tool_path=str(
+                                        data.get("tool_path")
+                                        or _extra.get("tool_path")
+                                        or "none"
+                                    ),
                                 )
                                 continue
 

@@ -512,6 +512,20 @@ def _dotenv_value(name: str) -> Optional[str]:
     Mirrors the helper at admin_ui/backend/api/system.py:57. Used so that
     HTTP tool test guards pick up Admin UI Environment-page edits without
     requiring an admin_ui container restart — see issue #370.
+
+    Returns:
+      - ``str`` value when the key is present in .env.
+      - ``None`` when the .env file does not exist or the key is genuinely
+        missing from a successfully-loaded .env. Callers may safely fall
+        back to ``os.environ`` in this case.
+      - ``""`` (empty string) when .env exists but cannot be read or parsed
+        (IO error, malformed file, etc.). This is a **fail-closed sentinel**
+        for security-sensitive flags: callers MUST NOT fall back to
+        ``os.environ`` on this signal — see CodeRabbit review of #384
+        comment 3214117412 (April 2026 audit). Otherwise a broken .env would
+        silently re-activate stale permissive values that the Admin UI
+        Environment page intended to clear (e.g., a previously-set
+        ``AAVA_HTTP_TOOL_TEST_ALLOW_PRIVATE=1`` in the process environment).
     """
     try:
         from settings import ENV_PATH
@@ -519,22 +533,42 @@ def _dotenv_value(name: str) -> Optional[str]:
             return None
         from dotenv import dotenv_values
         raw = dotenv_values(ENV_PATH)
-        val = raw.get(name)
-        if val is None:
-            return None
-        return str(val)
-    except Exception:
+    except Exception as exc:
+        # Failed to import deps or read the file — fail closed.
+        logger.warning(
+            ".env read failed for key %s; failing closed (will not consult os.environ)",
+            name,
+            exc_info=exc,
+        )
+        return ""
+    val = raw.get(name)
+    if val is None:
         return None
+    return str(val)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
     """Read a boolean env var, preferring the .env file over `os.environ`.
 
-    Precedence: `.env` (Admin UI source of truth) → `os.environ` → default.
-    The .env file is read on every call so Admin UI Environment-page edits
-    take effect immediately without needing an admin_ui container restart.
+    Precedence:
+      - ``.env`` value if the key is present (Admin UI source of truth)
+      - ``os.environ`` if the key is genuinely missing from a successfully-
+        loaded ``.env``
+      - ``default`` otherwise
+
+    **Fail-closed semantics for security flags:** if ``_dotenv_value`` signals
+    a read failure (returns ``""``), this function does NOT fall back to
+    ``os.environ`` and instead returns ``default``. This prevents a broken
+    ``.env`` from silently re-activating stale permissive values for flags
+    like ``AAVA_HTTP_TOOL_TEST_ALLOW_PRIVATE``. See issue #370 for the
+    Admin-UI-overrides-take-effect-immediately rationale and PR #384
+    CodeRabbit review for the fail-closed strengthening.
     """
     raw = _dotenv_value(name)
+    if raw == "":
+        # Either explicit empty in .env (already evaluates to default) or
+        # .env read failure (fail-closed). Both end at the safe default.
+        return default
     if raw is None:
         raw = os.environ.get(name)
     if raw is None:
@@ -545,9 +579,17 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def _env_csv_set(name: str) -> set[str]:
     """Read a CSV env var, preferring the .env file over `os.environ`.
 
-    Same precedence as `_env_bool`. See issue #370 for rationale.
+    Same precedence as `_env_bool` — including the fail-closed signal: if
+    ``.env`` exists but can't be read, this function returns an empty set
+    (and does not consult ``os.environ``) so that allowlists like
+    ``AAVA_HTTP_TOOL_TEST_ALLOW_HOSTS`` cannot be silently re-populated by
+    stale process-environment values when ``.env`` is broken.
     """
     raw = _dotenv_value(name)
+    if raw == "":
+        # Explicit empty in .env (no hosts allowed) OR .env read failure
+        # (fail-closed). Either way: no allowlist entries.
+        return set()
     if raw is None:
         raw = os.environ.get(name, "")
     items = []

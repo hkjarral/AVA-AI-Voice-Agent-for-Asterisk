@@ -103,7 +103,7 @@ Notes:
 - `llm_request` → Ask LLM with text; responds with `llm_response`.
 - `llm_tool_request` → Run tool-call parser/repair/structured gateway; responds with `llm_tool_response`.
 - `tool_context` → Set session-scoped tool state (allowed tools, schemas, policy) before `llm_tool_request`. No direct response. **(Added in v6.5.0 for #368.)**
-- `tool_result` → Deliver a tool's execution result back to the local LLM after the engine ran it; triggers a follow-up LLM turn that produces the final spoken response (via `llm_response` + `tts_request`), not another tool call. **(Added in v6.5.0 for #368.)**
+- `tool_result` → Deliver a tool's execution result back to the local LLM after the engine ran it; triggers a follow-up LLM turn whose final spoken text is delivered via `llm_response` (and audio via the server-side TTS output path active for the current session mode), not another tool call. **(Added in v6.5.0 for #368.)**
 - `tts_request` → Synthesize TTS from text; responds with `tts_response` (base64 μ-law).
 - `reload_models` → Reload all models; responds with `reload_response`.
 - `reload_llm` → Reload only LLM; responds with `reload_response`.
@@ -344,7 +344,7 @@ Notes:
 
 ## Tool Result (`tool_result`) — v6.5.0+
 
-**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server after the engine has executed a tool call that the local LLM emitted. The server uses the result to compose a follow-up "tool turn" prompt and re-invokes the LLM, producing the **final spoken answer** (not another tool call). The follow-up response carries `extra.tool_result_final = true` so the engine can recognize it as the post-tool answer.
+**Issue [#368](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/368).** Sent client→server after the engine has executed a tool call that the local LLM emitted. The server uses the result to compose a follow-up "tool turn" prompt and re-invokes the LLM, producing the **final spoken answer** (not another tool call). The follow-up final answer is delivered as an `llm_response` carrying `extra.tool_result_final = true` so the engine can recognize it as the post-tool answer; audio for that response is produced via the server-side TTS output path active for the current session mode (no separate `tts_request` is sent by the server).
 
 Two operating shapes:
 

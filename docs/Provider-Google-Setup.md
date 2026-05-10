@@ -511,7 +511,8 @@ Barge-in on Google Live depends on `serverContent.interrupted=true` firing from 
    echo "AAVA_BARGE_IN_TRACE=1" >> .env
    docker compose up -d ai_engine
    # place a test call and deliberately overlap caller speech with agent TTS
-   docker logs ai_engine 2>&1 | grep BARGE_IN_TRACE | grep <call_id>
+   CALL_ID="your-call-id-here"
+   docker logs ai_engine 2>&1 | grep BARGE_IN_TRACE | grep "$CALL_ID"
    ```
    - If `BARGE_IN_TRACE interrupted=True from server` count is **0**: Google's server is not firing the VAD interrupt event. On Dev API previews, this is expected; switch to Vertex GA.
    - If the count is **>0** but `engine APPLIED barge-in` is **0**: the engine is dropping the events at a guard (cooldown or "no active output"). File an issue with the trace excerpt.

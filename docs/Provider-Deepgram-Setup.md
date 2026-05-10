@@ -81,9 +81,9 @@ providers:
 | `aura-2-thalia-en` | Speak (TTS) | GA | Default voice. Browse the full Aura-2 voice catalog at [developers.deepgram.com/docs/tts-models](https://developers.deepgram.com/docs/tts-models). |
 
 > **Upgrade behavior in v6.5.0 — read this before upgrading.** Pre-v6.5.0 the Deepgram Voice Agent provider hardcoded `listen.provider.model: "nova-3"` in the Settings JSON sent to Deepgram, regardless of the YAML `model:` field. v6.5.0 makes the YAML field actually apply. To preserve the previously-effective production behavior on upgrade, the shipped default is now **`nova-3`** (was previously documented as `nova-2` but had no runtime effect). Operators who had explicitly set `model: nova-2` in their YAML will see Deepgram move to Nova-2 *for real* on this upgrade — if you intentionally relied on the hidden Nova-3 hardcoding, leave the YAML at `nova-3` after upgrade.
-
+>
 > **Flux Voice Agent payload.** When the configured `model` starts with `flux-` (e.g., `flux-general-en`, `flux-general-multi`), the Voice Agent provider automatically adds `listen.provider.version: "v2"` and any configured Flux-specific tuning fields (`eot_threshold`, `eager_eot_threshold`, `keyterms`) to the Settings JSON, per [Deepgram's Configure Voice Agent documentation](https://developers.deepgram.com/docs/configure-voice-agent). Defaults: `eot_threshold: 0.7`, `eager_eot_threshold: None` (disabled). Both are configurable under `providers.deepgram.*` in YAML; UI exposure is a planned enhancement.
-
+>
 > **Standalone Flux pipeline path (advanced)** — the standalone Flux pipeline adapter at `src/pipelines/deepgram_flux.py` (registered as `deepgram_flux_stt`) supports the same tuning knobs for hybrid pipelines (Flux STT + non-Deepgram LLM/TTS). Use this only when you need Flux STT decoupled from Deepgram's Voice Agent.
 
 ### 4. Configure Asterisk Dialplan

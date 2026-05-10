@@ -580,8 +580,19 @@ class DeepgramProvider(AIProviderInterface):
                 )
         except Exception as e:
             logger.warning(f"Failed to configure tools: {e}", call_id=self.call_id, exc_info=True)
-        # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error
+        # Build and store a minimal Settings payload for fallback retry on UNPARSABLE error.
+        # The retry's listen-provider block must match the primary one's shape (same
+        # call to `build_listen_provider_block`) so Flux models get `version: "v2"` plus
+        # threshold fields on retry too — otherwise the retry would silently drop those
+        # required fields and Deepgram would reject every retry. Per CodeRabbit review of
+        # PR #384 comment 3214117420.
         try:
+            minimal_listen_provider = build_listen_provider_block(
+                model=listen_model,
+                eot_threshold=self._get_config_value("eot_threshold", 0.7),
+                eager_eot_threshold=self._get_config_value("eager_eot_threshold", None),
+                keyterms=self._get_config_value("keyterms", None),
+            )
             self._last_settings_minimal = {
                 "type": "Settings",
                 "audio": {
@@ -590,7 +601,7 @@ class DeepgramProvider(AIProviderInterface):
                 "agent": {
                     "greeting": greeting_val,
                     "language": agent_language,
-                    "listen": { "provider": { "type": "deepgram", "model": listen_model } },
+                    "listen": { "provider": minimal_listen_provider },
                     "think": { "provider": { "type": "open_ai", "model": think_model }, "prompt": think_prompt },
                     "speak": { "provider": { "type": "deepgram", "model": speak_model } }
                 }

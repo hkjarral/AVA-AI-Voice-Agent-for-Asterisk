@@ -4689,14 +4689,27 @@ class LocalAIServer:
         if call_id:
             session.call_id = call_id
         text = str(data.get("text") or "")
+        # When the request omits tool metadata, pass None so
+        # `_build_llm_tool_response_payload` can fall back to whatever was
+        # set on the session by a preceding `tool_context` message. Pre-fix
+        # behavior was to always pass concrete values (or `[]`/None) which
+        # silently overrode session state and broke the new two-step
+        # `tool_context` → `llm_tool_request` protocol unless every request
+        # repeated the metadata. Per CodeRabbit review of PR #384 comment
+        # 3214117418.
+        has_tool_fields = ("allowed_tools" in data) or ("tools" in data)
         payload = await self._build_llm_tool_response_payload(
             session=session,
             text=text,
             request_id=request_id,
             latest_user_text=str(data.get("latest_user_text") or "").strip(),
-            allowed_tools=self._extract_allowed_tool_names(data),
-            tool_schemas=data.get("tools") if isinstance(data.get("tools"), list) else [],
-            tool_policy=data.get("tool_policy"),
+            allowed_tools=(
+                self._extract_allowed_tool_names(data) if has_tool_fields else None
+            ),
+            tool_schemas=(
+                data.get("tools") if isinstance(data.get("tools"), list) else None
+            ),
+            tool_policy=data.get("tool_policy") if "tool_policy" in data else None,
             tool_choice=str(data.get("tool_choice") or "auto"),
         )
         await self._send_json(websocket, payload)
@@ -4720,6 +4733,16 @@ class LocalAIServer:
         except Exception:
             result_json = str(result)
 
+        # Cap the serialized result so a verbose tool output (large calendar
+        # event lists, dumped CRM records, etc.) cannot blow the prompt
+        # budget. 4000 chars ~ 1000 tokens — comfortably below most local
+        # models' context, even with the rest of the system prompt and
+        # conversation history. Per CodeRabbit review of PR #384 comment
+        # 3214117419.
+        _RESULT_JSON_MAX_CHARS = 4000
+        if len(result_json) > _RESULT_JSON_MAX_CHARS:
+            result_json = result_json[:_RESULT_JSON_MAX_CHARS] + "…"
+
         if is_error:
             tool_turn = (
                 f"The tool {tool_name} failed with this result: {result_json}. "
@@ -4731,6 +4754,17 @@ class LocalAIServer:
                 "Now answer the caller using the actual tool values only. "
                 "Do not mention JSON, tools, placeholders, or internal fields."
             )
+
+        # Save the conversation history BEFORE `_prepare_llm_prompt` mutates
+        # `session.llm_messages` to include the synthetic tool-turn user
+        # message. Otherwise the tool JSON persists in history as if the
+        # caller had said it, which (a) leaks internal payloads into later
+        # turns and (b) accumulates context budget pressure across calls
+        # with multiple tool executions. We restore the original history
+        # below before appending only the final assistant answer to the
+        # session. Per CodeRabbit review of PR #384 comment 3214117419.
+        _saved_llm_messages = list(session.llm_messages)
+        _saved_llm_user_turns = list(session.llm_user_turns)
 
         prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages = self._prepare_llm_prompt(
             session, tool_turn
@@ -4771,6 +4805,13 @@ class LocalAIServer:
                 exc_info=True,
             )
             llm_response = "I found the result, but I could not format it clearly."
+
+        # Restore the pre-tool history (drops the synthetic tool-turn user
+        # message), then append ONLY the final assistant answer. This keeps
+        # raw tool JSON out of permanent conversation history — see comment
+        # at the save point above.
+        session.llm_messages = _saved_llm_messages
+        session.llm_user_turns = _saved_llm_user_turns
 
         assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
         if assistant_text:

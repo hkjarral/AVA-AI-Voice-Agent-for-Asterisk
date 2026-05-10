@@ -27,13 +27,19 @@ from local_ai_server.protocol_contract import (
 )
 
 
-# Skip cleanly if `jsonschema` isn't installed in the test env. The
-# `validate_payload` helper falls back to minimal checks in that case,
-# so we still exercise it but the fine-grained shape validation requires
-# the library.
-jsonschema = pytest.importorskip(
-    "jsonschema",
-    reason="jsonschema not installed; install via pip to run schema tests",
+# Optional `jsonschema` import. Avoid module-level `importorskip` so the
+# `validate_payload`-pre-check tests and the schema-artifact-sync test still
+# run when jsonschema isn't installed (those don't need it). Apply the
+# `requires_jsonschema` marker only to tests that explicitly assert
+# `jsonschema.ValidationError` shape rejections.
+try:
+    import jsonschema  # type: ignore
+except ImportError:
+    jsonschema = None  # type: ignore[assignment]
+
+requires_jsonschema = pytest.mark.skipif(
+    jsonschema is None,
+    reason="jsonschema not installed; pip install jsonschema to run schema-validation-specific tests",
 )
 
 
@@ -66,19 +72,21 @@ def test_tool_context_full_payload_validates():
 
 def test_tool_context_missing_type_rejected():
     """`type` is required by the contract. `validate_payload` enforces this
-    via a manual pre-check (raising ``ValueError``) before delegating to
-    jsonschema, so missing-type rejection works even when jsonschema is
-    not installed. Either exception type is acceptable here — the
-    semantic guarantee is that the payload is rejected."""
-    with pytest.raises((ValueError, jsonschema.ValidationError)):
+    via a manual pre-check (raising ``ValueError``) BEFORE delegating to
+    jsonschema, so missing-type rejection works the same way whether or
+    not jsonschema is installed — and is a useful test of the pre-check
+    fallback path on systems without jsonschema."""
+    with pytest.raises(ValueError):
         validate_payload({"call_id": "1234"})
 
 
+@requires_jsonschema
 def test_tool_context_with_invalid_tool_policy_rejected():
     """`tool_policy` is constrained to a known enum by the schema. The
     pre-check in ``validate_payload`` does not catch this, so the
     rejection genuinely comes from jsonschema and the specific
-    ``jsonschema.ValidationError`` type is meaningful."""
+    ``jsonschema.ValidationError`` type is meaningful (requires the
+    library to be installed)."""
     with pytest.raises(jsonschema.ValidationError):
         validate_payload({
             "type": "tool_context",
@@ -136,11 +144,12 @@ def test_tool_result_arbitrary_result_value_validates():
         })
 
 
+@requires_jsonschema
 def test_tool_result_missing_tool_name_rejected():
     """`tool_name` is the only schema-required field besides `type`. This
     rejection comes from jsonschema (the pre-check only validates the
     `type` key), so the specific ``jsonschema.ValidationError`` type is
-    meaningful here."""
+    meaningful here (requires the library to be installed)."""
     with pytest.raises(jsonschema.ValidationError):
         validate_payload({
             "type": "tool_result",
