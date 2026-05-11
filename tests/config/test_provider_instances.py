@@ -10,11 +10,45 @@ def test_provider_kind_uses_type_for_duplicate_full_agent_instances():
     assert provider_kind("acme_google_live", cfg) == "google_live"
 
 
+def test_provider_kind_accepts_legacy_full_type_for_canonical_key():
+    cfg = {"type": "full", "enabled": True}
+
+    assert provider_kind("google_live", cfg) == "google_live"
+
+
+def test_legacy_full_type_on_noncanonical_key_requires_specific_kind():
+    config_data = {
+        "default_provider": "acme_google_live",
+        "providers": {
+            "acme_google_live": {"type": "full", "enabled": True},
+        },
+    }
+
+    with pytest.raises(ConfigValidationError) as exc_info:
+        validate_providers(config_data)
+
+    assert "unsupported full-agent type 'full'" in str(exc_info.value)
+
+
 def test_full_agent_default_with_explicit_type_skips_implicit_pipeline():
     config_data = {
         "default_provider": "acme_google_live",
         "providers": {
             "acme_google_live": {"type": "google_live", "enabled": True},
+        },
+    }
+
+    normalize_pipelines(config_data)
+
+    assert config_data["pipelines"] == {}
+    assert config_data["active_pipeline"] is None
+
+
+def test_full_agent_default_with_legacy_full_type_skips_implicit_pipeline():
+    config_data = {
+        "default_provider": "google_live",
+        "providers": {
+            "google_live": {"type": "full", "enabled": True},
         },
     }
 

@@ -67,6 +67,8 @@ def provider_kind(provider_key: str, provider_cfg: Any) -> Optional[str]:
     if isinstance(provider_cfg, Mapping):
         raw_type = str(provider_cfg.get("type") or "").strip()
         if raw_type:
+            if raw_type == "full" and provider_key in FULL_AGENT_KINDS:
+                return provider_key
             return raw_type
     if provider_key in FULL_AGENT_KINDS:
         return provider_key
@@ -122,7 +124,11 @@ def validate_provider_instances(config_data: Dict[str, Any]) -> None:
             continue
 
         kind = provider_kind(str(key), cfg)
-        if isinstance(cfg, Mapping) and cfg.get("type") and kind not in FULL_AGENT_KINDS:
+        raw_type = str(cfg.get("type") or "").strip() if isinstance(cfg, Mapping) else ""
+        if raw_type == "full" and str(key) in FULL_AGENT_KINDS:
+            continue
+
+        if isinstance(cfg, Mapping) and raw_type and kind not in FULL_AGENT_KINDS:
             errors.append(
                 f"Provider '{key}' declares unsupported full-agent type '{kind}'. "
                 f"Valid types: {', '.join(sorted(FULL_AGENT_KINDS))}."
@@ -194,8 +200,7 @@ def full_agent_default(config_data: Dict[str, Any]) -> bool:
     cfg = providers.get(default_provider)
     if not isinstance(cfg, Mapping):
         return False
-    explicit_type = str(cfg.get("type") or "").strip()
-    return explicit_type in FULL_AGENT_KINDS
+    return provider_kind(default_provider, cfg) in FULL_AGENT_KINDS
 
 
 def read_secret_file(path: str) -> str:
