@@ -10,6 +10,15 @@ class AIProviderInterface(ABC):
     """
     def __init__(self, on_event: Callable[[Dict[str, Any]], None]):
         self.on_event = on_event
+        self.provider_key: str = self.__class__.__name__
+        self.provider_kind: str = self.__class__.__name__
+
+    def set_provider_identity(self, *, provider_key: str, provider_kind: str) -> None:
+        self.provider_key = provider_key
+        self.provider_kind = provider_kind
+
+    def provider_event_name(self) -> str:
+        return self.provider_key or self.provider_kind
 
     @property
     @abstractmethod

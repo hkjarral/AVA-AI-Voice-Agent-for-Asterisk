@@ -50,11 +50,24 @@ interface TopologyState {
 // Full agent providers (not modular pipeline components)
 // These handle STT+LLM+TTS internally as complete agents
 const FULL_AGENT_PROVIDERS = new Set([
+  'local',
   'deepgram',
   'openai_realtime',
   'google_live',
   'elevenlabs_agent',
 ]);
+
+const providerKind = (name: string, config: any): string => {
+  const type = typeof config?.type === 'string' ? config.type : '';
+  return type || name;
+};
+
+const isFullAgentProvider = (name: string, config: any): boolean => {
+  const kind = providerKind(name, config);
+  if (FULL_AGENT_PROVIDERS.has(kind)) return true;
+  const caps = Array.isArray(config?.capabilities) ? config.capabilities : [];
+  return caps.includes('stt') && caps.includes('llm') && caps.includes('tts');
+};
 
 // Provider display name mapping
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
@@ -123,15 +136,16 @@ export const SystemTopology = () => {
         if (parsed?.providers && typeof parsed.providers === 'object') {
           for (const [name, config] of Object.entries(parsed.providers)) {
             // Only include full agent providers, skip modular components like local_stt, groq_llm, etc.
-            if (FULL_AGENT_PROVIDERS.has(name)) {
+            if (isFullAgentProvider(name, config)) {
               const cfg = config as any;
+              const kind = providerKind(name, cfg);
               // Check if enabled - defaults to true if not specified
               const enabled = cfg?.enabled !== false;
               // Provider ready status comes from health check, default to false if not found
               const ready = false; // Will be updated from health endpoint data
               providers.push({
                 name,
-                displayName: PROVIDER_DISPLAY_NAMES[name] || name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                displayName: cfg?.display_name || cfg?.customer || PROVIDER_DISPLAY_NAMES[kind] || name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
                 enabled,
                 ready,
               });

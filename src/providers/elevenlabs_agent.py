@@ -62,6 +62,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         tool_registry: Optional[Any] = None,
     ):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="elevenlabs_agent", provider_kind="elevenlabs_agent")
         self.config = config
         self.tool_registry = tool_registry
         
@@ -185,7 +186,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             await self.on_event({
                 "type": "session_started",
                 "call_id": call_id,
-                "provider": "elevenlabs_agent",
+                "provider": self.provider_event_name(),
             })
             
         except asyncio.TimeoutError:
@@ -417,7 +418,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 await self.on_event({
                     "type": "session_ended",
                     "call_id": self._call_id,
-                    "provider": "elevenlabs_agent",
+                    "provider": self.provider_event_name(),
                     "audio_sent_bytes": self._session_state.total_audio_sent,
                     "audio_received_bytes": self._session_state.total_audio_received,
                 })

@@ -150,7 +150,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         .filter(([_, p]: [string, any]) => isFullAgentProvider(p))
         .map(([name, p]: [string, any]) => ({
             value: `provider:${name}`,
-            label: `[Provider] ${name}${p.enabled === false ? ' (Disabled)' : ''}`,
+            label: `[Provider] ${p.display_name || p.customer || name} (${name}, ${p.type || name})${p.customer ? ` · ${p.customer}` : ''}${p.enabled === false ? ' (Disabled)' : ''}`,
         }));
 
     const overrideValue = config.pipeline

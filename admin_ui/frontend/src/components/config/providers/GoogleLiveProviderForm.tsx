@@ -62,9 +62,10 @@ interface CredentialsStatus {
 interface GoogleLiveProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
+    providerKey?: string;
 }
 
-const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config, onChange }) => {
+const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config, onChange, providerKey }) => {
     const { confirm } = useConfirmDialog();
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
@@ -87,24 +88,27 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
     const [verifyResult, setVerifyResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const providerCredentialsBase = providerKey
+        ? `/api/config/providers/${encodeURIComponent(providerKey)}/credentials`
+        : '/api/config/vertex-ai';
 
     // Fetch regions and credentials status
     const fetchVertexData = useCallback(async () => {
         try {
             const [regionsRes, credsRes] = await Promise.all([
                 axios.get('/api/config/vertex-ai/regions'),
-                axios.get('/api/config/vertex-ai/credentials'),
+                axios.get(providerKey ? providerCredentialsBase : `${providerCredentialsBase}/credentials`),
             ]);
             if (regionsRes.data) {
                 setRegions(regionsRes.data.regions || []);
             }
             if (credsRes.data) {
-                setCredentials(credsRes.data);
+                setCredentials(providerKey ? (credsRes.data.credentials?.['vertex-json'] || { uploaded: false }) : credsRes.data);
             }
         } catch (e) {
             console.error('Failed to fetch Vertex AI data:', e);
         }
-    }, []);
+    }, [providerKey, providerCredentialsBase]);
 
     useEffect(() => {
         fetchVertexData();
@@ -154,7 +158,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         formData.append('file', file);
 
         try {
-            const res = await axios.post('/api/config/vertex-ai/credentials', formData, {
+            const res = await axios.post(providerKey ? `${providerCredentialsBase}/vertex-json` : `${providerCredentialsBase}/credentials`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
             await fetchVertexData();
@@ -181,7 +185,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         if (!confirmed) return;
 
         try {
-            await axios.delete('/api/config/vertex-ai/credentials');
+            await axios.delete(providerKey ? `${providerCredentialsBase}/vertex-json` : `${providerCredentialsBase}/credentials`);
             setCredentials({ uploaded: false, filename: null, project_id: null, client_email: null, uploaded_at: null });
             setVerifyResult(null);
             toast.success('Service account credentials deleted');
@@ -196,7 +200,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
         setVerifyResult(null);
 
         try {
-            const res = await axios.post('/api/config/vertex-ai/verify');
+            const res = await axios.post(providerKey ? `${providerCredentialsBase}/verify` : `${providerCredentialsBase}/verify`);
             setVerifyResult({ status: 'success', message: res.data.message || 'Credentials verified!' });
             // Auto-switch to a Vertex-compatible model on successful verification
             const currentModel = config.llm_model || '';

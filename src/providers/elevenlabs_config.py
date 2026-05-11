@@ -20,6 +20,12 @@ class ElevenLabsAgentConfig:
     # Authentication
     api_key: str = ""
     agent_id: str = ""  # Pre-created agent ID from ElevenLabs dashboard
+    api_key_file: str = ""
+    api_key_env: str = ""
+    agent_id_file: str = ""
+    agent_id_env: str = ""
+    display_name: str = ""
+    customer: str = ""
     
     # Provider type
     type: str = "full"
@@ -67,6 +73,12 @@ class ElevenLabsAgentConfig:
         return cls(
             api_key=data.get("api_key", ""),
             agent_id=data.get("agent_id", ""),
+            api_key_file=data.get("api_key_file", ""),
+            api_key_env=data.get("api_key_env", ""),
+            agent_id_file=data.get("agent_id_file", ""),
+            agent_id_env=data.get("agent_id_env", ""),
+            display_name=data.get("display_name", ""),
+            customer=data.get("customer", ""),
             type=data.get("type", "full"),
             enabled=data.get("enabled", True),
             capabilities=data.get("capabilities", ["stt", "llm", "tts"]),

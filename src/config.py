@@ -19,6 +19,7 @@ from src.config.security import (
     inject_llm_config,
     inject_provider_api_keys,
 )
+from src.config.provider_instances import full_agent_default
 from src.config.defaults import (
     apply_transport_defaults,
     apply_audiosocket_defaults,
@@ -145,6 +146,11 @@ class LocalProviderConfig(BaseModel):
 
 class DeepgramProviderConfig(BaseModel):
     api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
+    type: Optional[str] = None
+    display_name: Optional[str] = None
+    customer: Optional[str] = None
     enabled: bool = Field(default=True)
     # The Deepgram Voice Agent's listen-provider model. Pre-v6.5.0 the listen
     # model was hardcoded to "nova-3" in src/providers/deepgram.py regardless
@@ -302,6 +308,12 @@ class MiniMaxLLMProviderConfig(BaseModel):
 
 class GoogleProviderConfig(BaseModel):
     api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
+    credentials_path: Optional[str] = None
+    type: Optional[str] = None
+    display_name: Optional[str] = None
+    customer: Optional[str] = None
     project_id: Optional[str] = None
     stt_base_url: str = Field(default="https://speech.googleapis.com/v1")
     tts_base_url: str = Field(default="https://texttospeech.googleapis.com/v1")
@@ -617,6 +629,11 @@ class MCPConfig(BaseModel):
 class OpenAIRealtimeProviderConfig(BaseModel):
     enabled: bool = Field(default=True)
     api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
+    type: Optional[str] = None
+    display_name: Optional[str] = None
+    customer: Optional[str] = None
     # "ga" = GA Realtime API (no beta header, gpt-realtime models)
     # "beta" = Beta Realtime API (OpenAI-Beta header, gpt-4o-realtime-preview models)
     # Default to beta for widest account compatibility out-of-box.
@@ -809,6 +826,11 @@ def _normalize_pipelines(config_data: Dict[str, Any]) -> None:
     default_provider = config_data.get("default_provider", "openai_realtime")
     pipelines_cfg = config_data.get("pipelines")
 
+    if not pipelines_cfg and full_agent_default(config_data):
+        config_data["pipelines"] = {}
+        config_data.setdefault("active_pipeline", None)
+        return
+
     if not pipelines_cfg:
         _generate_default_pipeline(config_data)
         return
@@ -904,6 +926,10 @@ class AppConfig(BaseModel):
 def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     """Populate a default pipeline entry when none are provided."""
     default_provider = config_data.get("default_provider", "openai_realtime")
+    if full_agent_default(config_data):
+        config_data.setdefault("pipelines", {})
+        config_data.setdefault("active_pipeline", None)
+        return
     pipeline_name = "default"
     # Milestone7: Align implicit defaults with the PipelineEntry schema.
     default_components = _compose_provider_components(default_provider)
@@ -997,8 +1023,8 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
         validate_providers(config_data)
         validate_pipelines(config_data)
     except ConfigValidationError as e:
-        logger.warning("Configuration validation warning", error=str(e))
-        # Log warning but don't fail - allow backward compatibility
+        logger.error("Configuration validation failed", error=str(e))
+        raise
     
     # Phase 5: Validate and return
     return AppConfig(**config_data)

@@ -26,6 +26,8 @@ import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider } 
 import { GOOGLE_LIVE_DEFAULT_MODEL } from '../utils/googleLiveModels';
 
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
+const FULL_AGENT_TYPES = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'local'];
+const providerLabel = (name: string, provider: any): string => provider?.display_name || provider?.customer || name;
 
 const ProvidersPage: React.FC = () => {
     const { confirm } = useConfirmDialog();
@@ -157,9 +159,14 @@ const ProvidersPage: React.FC = () => {
         setEditingProvider(name);
         const providerData = { ...(config.providers?.[name] || {}) };
 
-        if (!providerData.type) {
+        if (!providerData.type || providerData.type === 'full') {
             if (isFullAgentProvider(providerData)) {
-                providerData.type = 'full';
+                const lowerName = name.toLowerCase();
+                if (lowerName === 'local' || lowerName.includes('local')) providerData.type = 'local';
+                else if (lowerName.includes('google') || lowerName.includes('gemini')) providerData.type = 'google_live';
+                else if (lowerName.includes('elevenlabs')) providerData.type = 'elevenlabs_agent';
+                else if (lowerName.includes('deepgram')) providerData.type = 'deepgram';
+                else providerData.type = 'openai_realtime';
             } else {
                 const lowerName = name.toLowerCase();
                 if (lowerName.includes('openai')) providerData.type = 'openai';
@@ -192,7 +199,7 @@ const ProvidersPage: React.FC = () => {
         setEditingProvider('new');
         setProviderForm({
             name: '',
-            type: 'full',
+            type: 'openai_realtime',
             capabilities: ['stt', 'llm', 'tts'],
             enabled: true,
             base_url: ''
@@ -219,6 +226,8 @@ const ProvidersPage: React.FC = () => {
         const templates: Record<string, any> = {
             openai_realtime: {
                 enabled: false,
+                type: 'openai_realtime',
+                capabilities: ['stt', 'llm', 'tts'],
                 api_version: 'beta',
                 model: 'gpt-4o-realtime-preview-2024-12-17',
                 voice: 'alloy',
@@ -232,6 +241,8 @@ const ProvidersPage: React.FC = () => {
             },
             deepgram: {
                 enabled: false,
+                type: 'deepgram',
+                capabilities: ['stt', 'llm', 'tts'],
                 // Default aligned with shipped config/ai-agent.yaml + DeepgramProviderConfig.
                 // Pre-v6.5.0 the runtime hardcoded nova-3 regardless; v6.5.0 makes the listen
                 // model honor config and this default preserves that effective behavior.
@@ -246,7 +257,7 @@ const ProvidersPage: React.FC = () => {
             },
             google_live: {
                 enabled: false,
-                type: 'full',
+                type: 'google_live',
                 capabilities: ['stt', 'llm', 'tts'],
                 api_key: '${GOOGLE_API_KEY}',
                 llm_model: GOOGLE_LIVE_DEFAULT_MODEL,
@@ -259,7 +270,7 @@ const ProvidersPage: React.FC = () => {
             },
             elevenlabs_agent: {
                 enabled: false,
-                type: 'full',
+                type: 'elevenlabs_agent',
                 capabilities: ['stt', 'llm', 'tts'],
                 api_key: '${ELEVENLABS_API_KEY}',
                 agent_id: '${ELEVENLABS_AGENT_ID}',
@@ -501,6 +512,10 @@ const ProvidersPage: React.FC = () => {
             finalName = ensureModularKey(stripModularSuffix(finalName), cap);
             capabilities = [cap];
         } else {
+            if (!FULL_AGENT_TYPES.includes(String(providerForm.type || '').toLowerCase())) {
+                toast.error('Select a full-agent provider type.');
+                return;
+            }
             capabilities = ['stt', 'llm', 'tts'];
         }
 
@@ -513,6 +528,23 @@ const ProvidersPage: React.FC = () => {
         if ((isNewProvider || editingProvider !== finalName) && newConfig.providers[finalName]) {
             toast.error(`Provider "${finalName}" already exists.`);
             return;
+        }
+        if (!isNewProvider && editingProvider !== finalName) {
+            toast.error('Provider keys are immutable. Clone the provider to create a new key.');
+            return;
+        }
+        if (isNewProvider && newConfig.pipelines?.[finalName]) {
+            toast.error(`Provider "${finalName}" collides with an existing pipeline name.`);
+            return;
+        }
+        if (isNewProvider && String(providerForm.type || '').toLowerCase() === 'local') {
+            const hasLocal = Object.entries(newConfig.providers || {}).some(([key, value]: [string, any]) =>
+                key !== finalName && String(value?.type || key).toLowerCase() === 'local'
+            );
+            if (hasLocal) {
+                toast.error('Only one local full-agent provider can be configured.');
+                return;
+            }
         }
 
         const existingData = !isNewProvider && editingProvider ? (config.providers?.[editingProvider] || {}) : {};
@@ -629,7 +661,7 @@ const ProvidersPage: React.FC = () => {
             return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
         }
         if (providerName === 'google_live' || providerName.includes('google') || providerName.includes('gemini')) {
-            return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} />;
+            return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={providerForm.name} />;
         }
         if (providerName.includes('azure')) {
             return <AzureProviderForm config={providerForm} onChange={updateForm} />;
@@ -651,7 +683,7 @@ const ProvidersPage: React.FC = () => {
             case 'deepgram':
                 return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
             case 'google_live':
-                return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} />;
+                return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={providerForm.name} />;
             case 'openai':
                 return <OpenAIProviderForm config={providerForm} onChange={updateForm} />;
             case 'elevenlabs_agent':
@@ -768,7 +800,7 @@ const ProvidersPage: React.FC = () => {
                                 </div>
                                 <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-2 flex-wrap">
-                                        <h4 className={`font-semibold text-lg truncate ${!providerData.enabled ? 'text-muted-foreground' : ''}`}>{name}</h4>
+                                        <h4 className={`font-semibold text-lg truncate ${!providerData.enabled ? 'text-muted-foreground' : ''}`}>{providerLabel(name, providerData)}</h4>
                                         {config.default_provider === name && (
                                             <span className="text-xs bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 rounded-full flex items-center gap-1 flex-shrink-0">
                                                 <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
@@ -779,6 +811,9 @@ const ProvidersPage: React.FC = () => {
                                             <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded flex-shrink-0">Disabled</span>
                                         )}
                                         <HealthDot name={name} />
+                                    </div>
+                                    <div className="text-xs text-muted-foreground mt-0.5">
+                                        {name} · {providerData.type || name}{providerData.customer ? ` · ${providerData.customer}` : ''}
                                     </div>
                                     <div className="flex flex-wrap gap-1.5 mt-1.5">
                                         {(() => {
@@ -1061,6 +1096,56 @@ const ProvidersPage: React.FC = () => {
                 }
             >
                 <div className="space-y-4">
+                    <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Provider Key</label>
+                                <input
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={providerForm.name || ''}
+                                    disabled={!isNewProvider}
+                                    onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value.toLowerCase().replace(/[^a-z0-9_.-]/g, '') })}
+                                    placeholder="acme_google_live"
+                                />
+                            </div>
+                            {isFullAgentProvider(providerForm) && (
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Provider Type</label>
+                                    <select
+                                        className="w-full p-2 rounded border border-input bg-background"
+                                        value={providerForm.type || 'openai_realtime'}
+                                        disabled={!isNewProvider}
+                                        onChange={(e) => setProviderForm({ ...providerForm, type: e.target.value, capabilities: ['stt', 'llm', 'tts'] })}
+                                    >
+                                        <option value="openai_realtime">OpenAI Realtime</option>
+                                        <option value="deepgram">Deepgram Voice Agent</option>
+                                        <option value="google_live">Google Live</option>
+                                        <option value="elevenlabs_agent">ElevenLabs Agent</option>
+                                        <option value="local">Local</option>
+                                    </select>
+                                </div>
+                            )}
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Display Name</label>
+                                <input
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={providerForm.display_name || ''}
+                                    onChange={(e) => setProviderForm({ ...providerForm, display_name: e.target.value })}
+                                    placeholder="Acme Google Live"
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">Customer</label>
+                                <input
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={providerForm.customer || ''}
+                                    onChange={(e) => setProviderForm({ ...providerForm, customer: e.target.value })}
+                                    placeholder="Acme"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
                     {!isFullAgentProvider(providerForm) && (
                         <div className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

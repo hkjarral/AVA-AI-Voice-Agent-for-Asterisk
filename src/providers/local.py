@@ -25,6 +25,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     """
     def __init__(self, config: LocalProviderConfig, on_event: Callable[[Dict[str, Any]], None]):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="local", provider_kind="local")
         self.config = config
         self.websocket: Optional[ClientConnection] = None
         # Use effective_ws_url which prefers base_url over ws_url

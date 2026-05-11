@@ -58,7 +58,7 @@ export const isFullAgentProvider = (provider: any): boolean => {
     const caps = provider?.capabilities || [];
     const hasAllCaps = caps.includes('stt') && caps.includes('llm') && caps.includes('tts');
     // Full agent types - these are always full agents
-    const fullAgentTypes = ['openai_realtime', 'deepgram', 'deepgram_agent', 'google_live', 'elevenlabs_agent', 'full'];
+    const fullAgentTypes = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'full'];
     if (fullAgentTypes.includes(type)) return true;
     // Any provider with all 3 capabilities is a full agent
     if (hasAllCaps) return true;

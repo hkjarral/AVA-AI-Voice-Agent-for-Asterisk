@@ -9,6 +9,13 @@ This module handles:
 
 from typing import Any, Dict
 
+from src.config.provider_instances import (
+    FULL_AGENT_KINDS,
+    VALID_ROLE_SUFFIXES,
+    full_agent_default,
+    validate_provider_instances,
+)
+
 
 def _compose_provider_components(provider: str) -> Dict[str, Any]:
     """
@@ -45,6 +52,10 @@ def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     Complexity: 4
     """
     default_provider = config_data.get("default_provider", "openai_realtime")
+    if full_agent_default(config_data):
+        config_data.setdefault("pipelines", {})
+        config_data.setdefault("active_pipeline", None)
+        return
     pipeline_name = "default"
     default_components = _compose_provider_components(default_provider)
     
@@ -88,6 +99,11 @@ def normalize_pipelines(config_data: Dict[str, Any]) -> None:
     config_data.setdefault("default_provider", "openai_realtime")
     default_provider = config_data.get("default_provider")
     pipelines_cfg = config_data.get("pipelines")
+
+    if not pipelines_cfg and full_agent_default(config_data):
+        config_data["pipelines"] = {}
+        config_data.setdefault("active_pipeline", None)
+        return
     
     if not pipelines_cfg:
         _generate_default_pipeline(config_data)
@@ -271,14 +287,9 @@ class ConfigValidationError(Exception):
 
 
 # Known full-agent providers (multiple capabilities allowed)
-FULL_AGENT_PROVIDERS = frozenset({
-    "openai_realtime", "deepgram", "google_live", "local"
-})
+FULL_AGENT_PROVIDERS = FULL_AGENT_KINDS
 
 # Valid modular role suffixes
-VALID_ROLE_SUFFIXES = ("_stt", "_llm", "_tts")
-
-
 def validate_providers(config_data: Dict[str, Any]) -> None:
     """
     Validate provider configurations.
@@ -299,6 +310,11 @@ def validate_providers(config_data: Dict[str, Any]) -> None:
         return
     
     errors = []
+
+    try:
+        validate_provider_instances(config_data)
+    except Exception as exc:
+        errors.append(str(exc))
     
     for name, cfg in providers.items():
         if not isinstance(cfg, dict):

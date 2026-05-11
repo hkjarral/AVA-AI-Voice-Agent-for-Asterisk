@@ -45,6 +45,11 @@ from .config import (
     GoogleProviderConfig,
     OpenAIRealtimeProviderConfig,
 )
+from .config.provider_instances import (
+    FULL_AGENT_KINDS,
+    provider_kind,
+    resolve_secret_value,
+)
 from .pipelines import PipelineOrchestrator, PipelineOrchestratorError, PipelineResolution
 from .logging_config import get_logger, configure_logging
 from .rtp_server import RTPServer
@@ -390,6 +395,8 @@ class Engine:
         self.providers: Dict[str, AIProviderInterface] = {}
         # Factories for creating per-call provider instances (supports concurrent calls).
         self.provider_factories: Dict[str, Callable[[], AIProviderInterface]] = {}
+        # Provider instance key -> implementation kind (e.g. acme_google -> google_live).
+        self.provider_kinds: Dict[str, str] = {}
         # Active provider instances keyed by call_id (one provider instance per call).
         self._call_providers: Dict[str, AIProviderInterface] = {}
         # Single-flight start tasks keyed by call_id (prevents duplicate start_session races).
@@ -1318,12 +1325,7 @@ class Engine:
                                 ctx_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
                                 if isinstance(ctx_provider, str):
                                     ctx_provider = ctx_provider.strip()
-                                provider_aliases = {
-                                    "openai": "openai_realtime",
-                                    "deepgram_agent": "deepgram",
-                                    "google": "google_live",
-                                }
-                                resolved_context_provider = provider_aliases.get(ctx_provider, ctx_provider)
+                                resolved_context_provider = ctx_provider
                                 if resolved_context_provider and resolved_context_provider not in self.providers:
                                     resolved_context_provider = None
                             except Exception:
@@ -1420,12 +1422,7 @@ class Engine:
             context_provider = None
         if isinstance(context_provider, str):
             context_provider = context_provider.strip()
-        provider_aliases = {
-            "openai": "openai_realtime",
-            "deepgram_agent": "deepgram",
-            "google": "google_live",
-        }
-        resolved_context_provider = provider_aliases.get(context_provider, context_provider)
+        resolved_context_provider = context_provider
         if resolved_context_provider and resolved_context_provider not in self.providers:
             resolved_context_provider = None
 
@@ -2141,6 +2138,34 @@ class Engine:
             logger.debug("MCP manager stop error", exc_info=True)
         logger.info("Engine stopped.")
 
+    def _set_provider_identity(self, provider: AIProviderInterface, provider_key: str, provider_kind: str) -> None:
+        try:
+            provider.set_provider_identity(provider_key=provider_key, provider_kind=provider_kind)
+        except Exception:
+            setattr(provider, "provider_key", provider_key)
+            setattr(provider, "provider_kind", provider_kind)
+
+    def _provider_with_identity(
+        self,
+        provider: AIProviderInterface,
+        provider_key: str,
+        provider_kind: str,
+    ) -> AIProviderInterface:
+        self._set_provider_identity(provider, provider_key, provider_kind)
+        return provider
+
+    def _get_provider_kind(self, provider_name: Optional[str]) -> Optional[str]:
+        if not provider_name:
+            return None
+        return self.provider_kinds.get(provider_name) or provider_name
+
+    def _assign_session_provider(self, session: CallSession, provider_name: str) -> None:
+        session.provider_name = provider_name
+        try:
+            session.provider_kind = self._get_provider_kind(provider_name) or provider_name
+        except Exception:
+            session.provider_kind = provider_name
+
     async def _load_providers(self):
         """Load and initialize AI providers from the configuration."""
         # Pipeline adapter suffixes - these are loaded by PipelineOrchestrator, not Engine
@@ -2150,6 +2175,7 @@ class Engine:
         # Per-call provider sessions are created via provider_factories.
         self.providers.clear()
         self.provider_factories.clear()
+        self.provider_kinds.clear()
         
         logger.info("Loading AI providers...", provider_names=list(self.config.providers.keys()))
         for name, provider_config_data in self.config.providers.items():
@@ -2160,20 +2186,33 @@ class Engine:
             if isinstance(provider_config_data, dict) and not provider_config_data.get("enabled", True):
                 logger.info("Provider '%s' disabled in configuration; skipping initialization.", name)
                 continue
+            kind = provider_kind(name, provider_config_data)
+            if not kind:
+                logger.warning("Unknown provider type: %s", name)
+                continue
+            if kind not in FULL_AGENT_KINDS:
+                logger.warning("Unsupported full-agent provider kind", provider=name, kind=kind)
+                continue
+            self.provider_kinds[name] = kind
             try:
                 issues = self._audit_provider_config(name, provider_config_data)
                 if issues:
                     self.provider_alignment_issues[name] = issues
                 elif name in self.provider_alignment_issues:
                     self.provider_alignment_issues.pop(name, None)
-                if name == "local":
+                if kind == "local":
                     # Resolve env vars like ${LOCAL_WS_URL:-ws://127.0.0.1:8765}
                     resolved_config = _resolve_config_env_vars(provider_config_data)
                     config = LocalProviderConfig(**resolved_config)
                     provider = LocalProvider(config, self.on_provider_event)
+                    self._set_provider_identity(provider, name, kind)
                     self.providers[name] = provider
                     # Per-call factory (supports concurrent calls).
-                    self.provider_factories[name] = lambda cfg=config: LocalProvider(self._clone_config(cfg), self.on_provider_event)
+                    self.provider_factories[name] = lambda cfg=config, key=name, p_kind=kind: self._provider_with_identity(
+                        LocalProvider(self._clone_config(cfg), self.on_provider_event),
+                        key,
+                        p_kind,
+                    )
                     logger.info(f"Provider '{name}' loaded successfully.")
 
                     # Provide initial greeting from global LLM config
@@ -2186,8 +2225,8 @@ class Engine:
                     runtime_issues = self._describe_provider_alignment(name, provider)
                     if runtime_issues:
                         self.provider_alignment_issues.setdefault(name, []).extend(runtime_issues)
-                elif name == "deepgram":
-                    deepgram_config = self._build_deepgram_config(provider_config_data)
+                elif kind == "deepgram":
+                    deepgram_config = self._build_deepgram_config(provider_config_data, name)
                     if not deepgram_config:
                         continue
 
@@ -2197,18 +2236,23 @@ class Engine:
                         continue
 
                     provider = DeepgramProvider(deepgram_config, self.config.llm, self.on_provider_event)
+                    self._set_provider_identity(provider, name, kind)
                     # Set session store for turn latency tracking (Milestone 21)
                     provider.set_session_store(self.session_store)
                     self.providers[name] = provider
                     # Per-call factory (supports concurrent calls).
-                    self.provider_factories[name] = lambda cfg=deepgram_config: DeepgramProvider(self._clone_config(cfg), self.config.llm, self.on_provider_event)
-                    logger.info("Provider 'deepgram' loaded successfully with OpenAI LLM dependency.")
+                    self.provider_factories[name] = lambda cfg=deepgram_config, key=name, p_kind=kind: self._provider_with_identity(
+                        DeepgramProvider(self._clone_config(cfg), self.config.llm, self.on_provider_event),
+                        key,
+                        p_kind,
+                    )
+                    logger.info("Provider loaded successfully with OpenAI LLM dependency.", provider=name, kind=kind)
 
                     runtime_issues = self._describe_provider_alignment(name, provider)
                     if runtime_issues:
                         self.provider_alignment_issues.setdefault(name, []).extend(runtime_issues)
-                elif name == "openai_realtime":
-                    openai_cfg = self._build_openai_realtime_config(provider_config_data)
+                elif kind == "openai_realtime":
+                    openai_cfg = self._build_openai_realtime_config(provider_config_data, name)
                     if not openai_cfg:
                         continue
 
@@ -2217,33 +2261,45 @@ class Engine:
                         self.on_provider_event,
                         gating_manager=self.audio_gating_manager
                     )
+                    self._set_provider_identity(provider, name, kind)
                     # Set session store for turn latency tracking (Milestone 21)
                     provider._session_store = self.session_store
                     self.providers[name] = provider
                     # Per-call factory (supports concurrent calls).
                     self.provider_factories[name] = (
-                        lambda cfg=openai_cfg: OpenAIRealtimeProvider(self._clone_config(cfg), self.on_provider_event, gating_manager=self.audio_gating_manager)
+                        lambda cfg=openai_cfg, key=name, p_kind=kind: self._provider_with_identity(
+                            OpenAIRealtimeProvider(self._clone_config(cfg), self.on_provider_event, gating_manager=self.audio_gating_manager),
+                            key,
+                            p_kind,
+                        )
                     )
                     logger.info(
-                        "Provider 'openai_realtime' loaded successfully",
+                        "Provider loaded successfully",
+                        provider=name,
+                        kind=kind,
                         audio_gating_enabled=self.audio_gating_manager is not None
                     )
 
                     runtime_issues = self._describe_provider_alignment(name, provider)
                     if runtime_issues:
                         self.provider_alignment_issues.setdefault(name, []).extend(runtime_issues)
-                elif name == "google_live":
+                elif kind == "google_live":
                     # google_live uses GoogleProviderConfig like the pipeline adapters
                     try:
-                        # SECURITY: API key ONLY from environment variables, never from YAML
                         merged = dict(provider_config_data)
-                        merged['api_key'] = os.getenv('GOOGLE_API_KEY') or ''
+                        merged['api_key'] = resolve_secret_value(
+                            merged,
+                            file_field="api_key_file",
+                            env_field="api_key_env",
+                            inline_field="api_key",
+                            legacy_env_names=("GOOGLE_API_KEY",),
+                        )
                         google_cfg = GoogleProviderConfig(**merged)
                         # Note: Don't skip for missing API key - let is_ready() handle it
-                        if not google_cfg.api_key:
-                            logger.warning("Google Live provider API key missing (GOOGLE_API_KEY) - provider will show as Not Ready")
+                        if not google_cfg.api_key and not getattr(google_cfg, "credentials_path", None):
+                            logger.warning("Google Live provider credentials missing - provider will show as Not Ready", provider=name)
                     except Exception as e:
-                        logger.error(f"Failed to build GoogleProviderConfig for google_live: {e}", exc_info=True)
+                        logger.error(f"Failed to build GoogleProviderConfig for {name}: {e}", exc_info=True)
                         continue
 
                     hangup_policy = resolve_hangup_policy(getattr(self.config, "tools", None))
@@ -2253,28 +2309,35 @@ class Engine:
                         gating_manager=self.audio_gating_manager,
                         hangup_policy=hangup_policy,
                     )
+                    self._set_provider_identity(provider, name, kind)
                     # Set session store for turn latency tracking (Milestone 21)
                     provider._session_store = self.session_store
                     self.providers[name] = provider
                     # Per-call factory (supports concurrent calls).
                     self.provider_factories[name] = (
-                        lambda cfg=google_cfg, policy=hangup_policy: GoogleLiveProvider(
-                            self._clone_config(cfg),
-                            self.on_provider_event,
-                            gating_manager=self.audio_gating_manager,
-                            hangup_policy=policy,
+                        lambda cfg=google_cfg, policy=hangup_policy, key=name, p_kind=kind: self._provider_with_identity(
+                            GoogleLiveProvider(
+                                self._clone_config(cfg),
+                                self.on_provider_event,
+                                gating_manager=self.audio_gating_manager,
+                                hangup_policy=policy,
+                            ),
+                            key,
+                            p_kind,
                         )
                     )
                     logger.info(
-                        "Provider 'google_live' loaded successfully",
+                        "Provider loaded successfully",
+                        provider=name,
+                        kind=kind,
                         audio_gating_enabled=self.audio_gating_manager is not None
                     )
 
                     runtime_issues = self._describe_provider_alignment(name, provider)
                     if runtime_issues:
                         self.provider_alignment_issues.setdefault(name, []).extend(runtime_issues)
-                elif name == "elevenlabs_agent":
-                    elevenlabs_cfg = self._build_elevenlabs_config(provider_config_data)
+                elif kind == "elevenlabs_agent":
+                    elevenlabs_cfg = self._build_elevenlabs_config(provider_config_data, name)
                     if not elevenlabs_cfg:
                         continue
 
@@ -2282,22 +2345,29 @@ class Engine:
                         elevenlabs_cfg, 
                         self.on_provider_event,
                     )
+                    self._set_provider_identity(provider, name, kind)
                     # Set session store for turn latency tracking (Milestone 21)
                     provider._session_store = self.session_store
                     self.providers[name] = provider
                     # Per-call factory (supports concurrent calls).
                     self.provider_factories[name] = (
-                        lambda cfg=elevenlabs_cfg: ElevenLabsAgentProvider(self._clone_config(cfg), self.on_provider_event)
+                        lambda cfg=elevenlabs_cfg, key=name, p_kind=kind: self._provider_with_identity(
+                            ElevenLabsAgentProvider(self._clone_config(cfg), self.on_provider_event),
+                            key,
+                            p_kind,
+                        )
                     )
                     logger.info(
-                        "Provider 'elevenlabs_agent' loaded successfully"
+                        "Provider loaded successfully",
+                        provider=name,
+                        kind=kind,
                     )
 
                     runtime_issues = self._describe_provider_alignment(name, provider)
                     if runtime_issues:
                         self.provider_alignment_issues.setdefault(name, []).extend(runtime_issues)
                 else:
-                    logger.warning(f"Unknown provider type: {name}")
+                    logger.warning("Unknown provider type", provider=name, kind=kind)
                     continue
                     
             except Exception as e:
@@ -3082,6 +3152,7 @@ class Engine:
                 caller_number=caller_info.get('number'),
                 bridge_id=bridge_id,
                 provider_name=self.config.default_provider,
+                provider_kind=self._get_provider_kind(self.config.default_provider) or self.config.default_provider,
                 audio_capture_enabled=True,  # FIX #1: Start with capture enabled, only disable when TTS actually starts
                 status="connected",
                 start_time=datetime.now(timezone.utc)  # Track call start time (UTC for consistent storage)
@@ -3251,22 +3322,15 @@ class Engine:
                     exc_info=True,
                 )
 
-            provider_aliases = {
-                "openai": "openai_realtime",
-                "deepgram_agent": "deepgram",
-                "google": "google_live",
-            }
             resolved_provider = (
-                provider_aliases.get(ai_provider_value, ai_provider_value)
-                if ai_provider_value
-                else None
+                ai_provider_value if ai_provider_value else None
             )
 
             pipeline_resolution = None
             if resolved_provider and resolved_provider in self.providers:
                 # Full agent override for this call
                 previous = session.provider_name
-                session.provider_name = resolved_provider
+                self._assign_session_provider(session, resolved_provider)
                 # Re-evaluate per-provider VAD decision after provider change
                 use_local = self._should_use_local_vad(resolved_provider)
                 session.enhanced_vad_enabled = bool(self.vad_manager) and use_local
@@ -6256,11 +6320,10 @@ class Engine:
             if isinstance(context_block, dict):
                 ctx_provider = (context_block.get("provider") or "").strip()
             if ctx_provider:
-                aliases = {"openai": "openai_realtime", "deepgram_agent": "deepgram"}
-                resolved = aliases.get(ctx_provider, ctx_provider)
+                resolved = ctx_provider
                 if resolved in self.providers and session.provider_name != resolved:
                     prev = session.provider_name
-                    session.provider_name = resolved
+                    self._assign_session_provider(session, resolved)
                     await self._save_session(session)
                     provider_origin = "context"
                     logger.info("Context provider override applied", call_id=call_id, context=ai_context, previous_provider=prev, provider=resolved)
@@ -6770,7 +6833,7 @@ class Engine:
                 # - Google Live: Bidirectional audio, NO server-side echo cancellation → NEEDS gating
                 # - OpenAI Realtime: Server-side AEC → gating harmful
                 # - Deepgram: Text-based output → no echo risk
-                needs_gating = provider_name == "google_live"
+                needs_gating = self._get_provider_kind(provider_name) == "google_live"
                 
                 if needs_gating and not session.audio_capture_enabled:
                     # CRITICAL: Google Live requires continuous audio stream (like WebRTC)
@@ -7124,7 +7187,7 @@ class Engine:
                 # Other providers unaffected: Deepgram uses continuous_input path (line 2204 early return)
                 # CRITICAL: Only apply if TTS has actually started (not during pre-TTS initialization)
                 try:
-                    if provider_name == "openai_realtime" and getattr(session, 'tts_started_ts', 0.0) > 0.0:
+                    if self._get_provider_kind(provider_name) == "openai_realtime" and getattr(session, 'tts_started_ts', 0.0) > 0.0:
                         initial_protect = 5000  # 5 seconds to prevent echo feedback loop
                         logger.debug(
                             "Extended TTS protection for OpenAI Realtime (echo prevention)",
@@ -7232,7 +7295,7 @@ class Engine:
                 # OpenAI Realtime handles turn-taking/interruption internally via its own VAD
                 # Engine-level barge-in causes double-cancellation (both systems fighting)
                 provider_name = getattr(session, 'provider_name', None)
-                if should_trigger and provider_name == 'openai_realtime':
+                if should_trigger and self._get_provider_kind(provider_name) == 'openai_realtime':
                     logger.debug(
                         "Local barge-in detected for OpenAI Realtime - sending cancellation to server",
                         call_id=caller_channel_id,
@@ -7398,7 +7461,8 @@ class Engine:
 
             # DEBUG: Audio routing state (OpenAI troubleshooting)
             provider_name = session.provider_name or self.config.default_provider
-            if provider_name == "openai_realtime":
+            provider_kind = self._get_provider_kind(provider_name)
+            if provider_kind == "openai_realtime":
                 logger.debug(
                     "🎤 AUDIO ROUTING - Ready to forward",
                     call_id=caller_channel_id,
@@ -7423,7 +7487,7 @@ class Engine:
                 return
             
             # DEBUG: Provider ready check (OpenAI troubleshooting)
-            if provider_name == "openai_realtime":
+            if provider_kind == "openai_realtime":
                 logger.debug(
                     "🎤 AUDIO ROUTING - Provider ready",
                     call_id=caller_channel_id,
@@ -7444,7 +7508,7 @@ class Engine:
 
             # Preserve original μ-law frames for Deepgram when the payload was replaced with silence
             if (
-                provider_name == "deepgram"
+                provider_kind == "deepgram"
                 and provider_encoding in ("ulaw", "mulaw", "g711_ulaw", "mu-law")
                 and provider_payload
                 and not any(provider_payload)
@@ -7464,7 +7528,7 @@ class Engine:
             await provider.send_audio(provider_payload)
             
             # DEBUG: Confirm audio sent (OpenAI troubleshooting)
-            if provider_name == "openai_realtime":
+            if provider_kind == "openai_realtime":
                 logger.debug(
                     "🎤 AUDIO ROUTING - Sent to provider",
                     call_id=caller_channel_id,
@@ -7870,7 +7934,7 @@ class Engine:
         """Resolve effective barge-in min duration with local/pipeline-only first-turn fast path."""
         base_min = int(getattr(cfg, "pipeline_min_ms", 0) or getattr(cfg, "min_ms", 250)) if pipeline_mode else int(getattr(cfg, "min_ms", 250))
 
-        scope_applies = pipeline_mode or (provider_name == "local")
+        scope_applies = pipeline_mode or (self._get_provider_kind(provider_name) == "local")
         if not scope_applies:
             return base_min
 
@@ -8272,7 +8336,7 @@ class Engine:
                 # CRITICAL: Check if audio capture is disabled (TTS playing)
                 # For Google Live: Send silence frames to maintain stream continuity (like AudioSocket)
                 # For OpenAI/Deepgram: Can drop audio (they handle gaps gracefully)
-                needs_gating = provider_name == "google_live"
+                needs_gating = self._get_provider_kind(provider_name) == "google_live"
                 
                 if needs_gating and not session.audio_capture_enabled:
                     # Send SILENCE instead of dropping to maintain Google Live's stream
@@ -8499,31 +8563,41 @@ class Engine:
         except Exception as exc:
             logger.error("Error handling RTP audio", ssrc=ssrc, error=str(exc), exc_info=True)
 
-    def _build_deepgram_config(self, provider_cfg: Dict[str, Any]) -> Optional[DeepgramProviderConfig]:
+    def _build_deepgram_config(self, provider_cfg: Dict[str, Any], provider_key: str = "deepgram") -> Optional[DeepgramProviderConfig]:
         """Construct a DeepgramProviderConfig from raw provider settings with validation."""
         try:
-            # SECURITY: API keys ONLY from environment variables, never from YAML
             merged = dict(provider_cfg)
-            merged['api_key'] = os.getenv('DEEPGRAM_API_KEY') or ''  # Force from .env only
+            merged['api_key'] = resolve_secret_value(
+                merged,
+                file_field="api_key_file",
+                env_field="api_key_env",
+                inline_field="api_key",
+                legacy_env_names=("DEEPGRAM_API_KEY",),
+            )
             
             cfg = DeepgramProviderConfig(**merged)
             # Note: Don't return None for missing API key - let is_ready() handle it
             # This allows the provider to appear in health status as "Not Ready"
             if not cfg.api_key:
-                logger.warning("Deepgram provider API key missing (DEEPGRAM_API_KEY) - provider will show as Not Ready")
+                logger.warning("Deepgram provider API key missing - provider will show as Not Ready", provider=provider_key)
             return cfg
         except Exception as exc:
             logger.error("Failed to build DeepgramProviderConfig", error=str(exc), exc_info=True)
             return None
 
-    def _build_openai_realtime_config(self, provider_cfg: Dict[str, Any]) -> Optional[OpenAIRealtimeProviderConfig]:
+    def _build_openai_realtime_config(self, provider_cfg: Dict[str, Any], provider_key: str = "openai_realtime") -> Optional[OpenAIRealtimeProviderConfig]:
         """Construct an OpenAIRealtimeProviderConfig from raw provider settings."""
         try:
             # Respect provider overrides; only fill when missing/empty
             merged = dict(provider_cfg)
             
-            # SECURITY: API key ONLY from environment variables, never from YAML
-            merged['api_key'] = os.getenv('OPENAI_API_KEY')  # Force from .env only
+            merged['api_key'] = resolve_secret_value(
+                merged,
+                file_field="api_key_file",
+                env_field="api_key_env",
+                inline_field="api_key",
+                legacy_env_names=("OPENAI_API_KEY",),
+            )
             
             try:
                 instr = (merged.get("instructions") or "").strip()
@@ -8544,20 +8618,31 @@ class Engine:
                 return None
             # Note: Don't return None for missing API key - let is_ready() handle it
             if not cfg.api_key:
-                logger.warning("OpenAI Realtime provider API key missing (OPENAI_API_KEY) - provider will show as Not Ready")
+                logger.warning("OpenAI Realtime provider API key missing - provider will show as Not Ready", provider=provider_key)
             return cfg
         except Exception as exc:
             logger.error("Failed to build OpenAIRealtimeProviderConfig", error=str(exc), exc_info=True)
             return None
 
-    def _build_elevenlabs_config(self, provider_cfg: Dict[str, Any]) -> Optional[ElevenLabsAgentConfig]:
+    def _build_elevenlabs_config(self, provider_cfg: Dict[str, Any], provider_key: str = "elevenlabs_agent") -> Optional[ElevenLabsAgentConfig]:
         """Construct an ElevenLabsAgentConfig from raw provider settings."""
         try:
             merged = dict(provider_cfg)
             
-            # SECURITY: API keys ONLY from environment variables, never from YAML
-            merged['api_key'] = os.getenv('ELEVENLABS_API_KEY')
-            merged['agent_id'] = os.getenv('ELEVENLABS_AGENT_ID', merged.get('agent_id', ''))
+            merged['api_key'] = resolve_secret_value(
+                merged,
+                file_field="api_key_file",
+                env_field="api_key_env",
+                inline_field="api_key",
+                legacy_env_names=("ELEVENLABS_API_KEY",),
+            )
+            merged['agent_id'] = resolve_secret_value(
+                merged,
+                file_field="agent_id_file",
+                env_field="agent_id_env",
+                inline_field="agent_id",
+                legacy_env_names=("ELEVENLABS_AGENT_ID",),
+            )
             
             # Fill in defaults from llm config if not provided
             try:
@@ -8579,9 +8664,9 @@ class Engine:
                 return None
             # Note: Don't return None for missing API key/agent_id - let is_ready() handle it
             if not cfg.api_key:
-                logger.warning("ElevenLabs provider API key missing (ELEVENLABS_API_KEY) - provider will show as Not Ready")
+                logger.warning("ElevenLabs provider API key missing - provider will show as Not Ready", provider=provider_key)
             if not cfg.agent_id:
-                logger.warning("ElevenLabs provider agent ID missing (ELEVENLABS_AGENT_ID) - provider will show as Not Ready")
+                logger.warning("ElevenLabs provider agent ID missing - provider will show as Not Ready", provider=provider_key)
             return cfg
         except Exception as exc:
             logger.error("Failed to build ElevenLabsAgentConfig", error=str(exc), exc_info=True)
@@ -8601,7 +8686,7 @@ class Engine:
                 audiosocket_format = "ulaw"
             audiosocket_canon = self._canonicalize_encoding(audiosocket_format)
 
-            if name == "deepgram":
+            if self._get_provider_kind(name) == "deepgram":
                 enc = (provider_cfg.get("input_encoding") or "linear16").lower()
                 enc_canon = self._canonicalize_encoding(enc)
                 if enc_canon in {"slin16", "linear16", "pcm16"} and audiosocket_canon not in {"slin", "slin16"}:
@@ -8617,7 +8702,7 @@ class Engine:
                             "set audiosocket.format=ulaw or change deepgram.input_encoding to linear16."
                         )
 
-            if name == "openai_realtime":
+            if self._get_provider_kind(name) == "openai_realtime":
                 provider_rate = int(provider_cfg.get("provider_input_sample_rate_hz") or 0)
                 output_rate = int(provider_cfg.get("output_sample_rate_hz") or 0)
                 if provider_rate and provider_rate < 24000:
@@ -9513,7 +9598,7 @@ class Engine:
                     # (OpenAI, Deepgram, etc.) — discarding causes repeated re-gating interruptions.
                     # Re-arm only for providers/backends that need self-echo suppression.
                     _prov = getattr(session, 'provider_name', None)
-                    should_rearm_segment_gating = _prov in ("google_live", "local")
+                    should_rearm_segment_gating = self._get_provider_kind(_prov) in ("google_live", "local")
                     if should_rearm_segment_gating:
                         try:
                             self._segment_tts_active.discard(call_id)
@@ -10658,7 +10743,7 @@ class Engine:
                             try:
                                 _filler_q: asyncio.Queue = asyncio.Queue(maxsize=64)
                                 _old_pn = getattr(session, "provider_name", None)
-                                session.provider_name = "pipeline"
+                                self._assign_session_provider(session, "pipeline")
 
                                 _tts_fmt = (pipeline.tts_options or {}).get("format")
                                 if not isinstance(_tts_fmt, dict):
@@ -10701,7 +10786,7 @@ class Engine:
                                     _post_ms = getattr(_post_guard, "post_tts_end_protection_ms", 250) if _post_guard else 250
                                     session.tts_ended_ts = time.time() - (_post_ms / 1000.0) - 0.01
                                 if _old_pn is not None:
-                                    session.provider_name = _old_pn
+                                    self._assign_session_provider(session, _old_pn)
                             except Exception:
                                 logger.debug("Pipeline filler audio failed", call_id=call_id, exc_info=True)
                                 try:
@@ -10744,7 +10829,7 @@ class Engine:
                         stream_q: asyncio.Queue = asyncio.Queue(maxsize=256)
                         old_provider_name = getattr(session, "provider_name", None)
                         try:
-                            session.provider_name = "pipeline"
+                            self._assign_session_provider(session, "pipeline")
                             await self.session_store.upsert_call(session)
                         except Exception:
                             pass
@@ -10841,7 +10926,7 @@ class Engine:
                             full_response_text = ""
                         finally:
                             try:
-                                session.provider_name = old_provider_name
+                                self._assign_session_provider(session, old_provider_name)
                                 await self.session_store.upsert_call(session)
                             except Exception:
                                 pass
@@ -11076,7 +11161,7 @@ class Engine:
                             old_provider_name = getattr(session, "provider_name", None)
                             try:
                                 # Provide a stable provider label for adaptive streaming + metrics
-                                session.provider_name = "pipeline"
+                                self._assign_session_provider(session, "pipeline")
                                 await self.session_store.upsert_call(session)
                             except Exception:
                                 pass
@@ -11159,7 +11244,7 @@ class Engine:
                             finally:
                                 try:
                                     if old_provider_name is not None:
-                                        session.provider_name = old_provider_name
+                                        self._assign_session_provider(session, old_provider_name)
                                         await self.session_store.upsert_call(session)
                                 except Exception:
                                     pass
@@ -11820,16 +11905,7 @@ class Engine:
         if not provider_name:
             provider_name = session.provider_name or self.config.default_provider
 
-        # Normalize common aliases (keeps admin UX forgiving).
-        try:
-            aliases = {
-                "openai": "openai_realtime",
-                "deepgram_agent": "deepgram",
-                "google": "google_live",
-            }
-            provider_name = aliases.get(str(provider_name or "").strip(), provider_name)
-        except Exception:
-            pass
+        provider_name = str(provider_name or "").strip()
 
         # Persist provider selection for the rest of the call flow. This is critical when
         # pipeline mode is enabled globally (active_pipeline), but a context wants a
@@ -11841,7 +11917,7 @@ class Engine:
                 # If the selected provider is a monolithic provider, force it onto the session so
                 # later pipeline-default logic doesn't override it.
                 if normalized in self.providers and previous != normalized:
-                    session.provider_name = normalized
+                    self._assign_session_provider(session, normalized)
                     await self._save_session(session)
                     logger.info(
                         "Context/provider selection applied to session",
@@ -12855,7 +12931,7 @@ class Engine:
                         previous_provider=session.provider_name,
                         override_provider=provider_override,
                     )
-                    session.provider_name = provider_override
+                    self._assign_session_provider(session, provider_override)
                     updated = True
             else:
                 logger.debug(
@@ -12868,12 +12944,12 @@ class Engine:
                 # Clear stale full-agent provider_name so UI topology doesn't
                 # incorrectly highlight a monolithic provider for pipeline calls.
                 if session.provider_name in self.providers:
-                    session.provider_name = "pipeline"
+                    self._assign_session_provider(session, "pipeline")
                     updated = True
         else:
             # No primary_provider hint from pipeline; clear stale full-agent name.
             if session.provider_name in self.providers:
-                session.provider_name = "pipeline"
+                self._assign_session_provider(session, "pipeline")
                 updated = True
 
         if updated:
@@ -13085,7 +13161,7 @@ class Engine:
                     provider_name = fallback_name
                     factory = fallback_factory
                     if session.provider_name != fallback_name:
-                        session.provider_name = fallback_name
+                        self._assign_session_provider(session, fallback_name)
                         await self._save_session(session)
                 else:
                     logger.error(
@@ -13678,7 +13754,7 @@ class Engine:
                     # Handle special tools
                     if function_name == "hangup_call" and result.get("will_hangup"):
                         # Skip delayed hangup for local provider - ToolCall handler manages TTS and hangup
-                        if provider_name == "local":
+                        if self._get_provider_kind(provider_name) == "local":
                             logger.info("Hangup requested - local provider will handle TTS and hangup", call_id=call_id)
                         else:
                             # For full agent providers like ElevenLabs, they manage their own TTS

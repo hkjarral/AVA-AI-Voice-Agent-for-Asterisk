@@ -68,6 +68,7 @@ class CallSession:
     
     # Provider and conversation state
     provider_name: str = "local"
+    provider_kind: str = "local"
     pipeline_name: Optional[str] = None
     pipeline_components: Dict[str, str] = field(default_factory=dict)
     context_name: Optional[str] = None  # AI_CONTEXT from dialplan (for pipeline greeting/prompt resolution)

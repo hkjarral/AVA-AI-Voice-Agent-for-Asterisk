@@ -134,6 +134,7 @@ class GoogleLiveProvider(AIProviderInterface):
         hangup_policy: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="google_live", provider_kind="google_live")
         self.config = config
         self._hangup_policy = normalize_hangup_policy(hangup_policy or {})
         # Google Live only: allow disabling marker-based hangup heuristics to isolate provider disconnects.
@@ -318,7 +319,7 @@ class GoogleLiveProvider(AIProviderInterface):
             {
                 "type": "ProviderDisconnected",
                 "call_id": self._call_id,
-                "provider": "google_live",
+                "provider": self.provider_event_name(),
                 "code": code,
                 "reason": reason,
             }
@@ -746,12 +747,20 @@ class GoogleLiveProvider(AIProviderInterface):
                     "Set GOOGLE_CLOUD_PROJECT in .env or vertex_project in ai-agent.yaml."
                 )
 
-            # Obtain OAuth2 bearer token via ADC (Application Default Credentials).
-            # Runs in executor to avoid blocking the event loop.
+            # Obtain OAuth2 bearer token via provider-scoped service account file
+            # when configured, otherwise fall back to legacy ADC.
             def _get_vertex_token() -> str:
-                credentials, _ = google.auth.default(
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
-                )
+                scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+                credentials_path = (getattr(self.config, "credentials_path", None) or "").strip()
+                if credentials_path:
+                    from google.oauth2 import service_account
+
+                    credentials = service_account.Credentials.from_service_account_file(
+                        credentials_path,
+                        scopes=scopes,
+                    )
+                else:
+                    credentials, _ = google.auth.default(scopes=scopes)
                 auth_req = google.auth.transport.requests.Request()
                 credentials.refresh(auth_req)
                 return credentials.token
@@ -1482,7 +1491,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         {
                             "type": "ProviderBargeIn",
                             "call_id": self._call_id,
-                            "provider": "google_live",
+                            "provider": self.provider_event_name(),
                             "event": "interrupted",
                         }
                     )
@@ -1819,7 +1828,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         logger.warning(
                             "Google Live output PCM rate differs from configured output_sample_rate_hz; using provider rate",
                             call_id=self._call_id,
-                            provider="google_live",
+                            provider=self.provider_event_name(),
                             configured_output_sample_rate_hz=configured_output_rate,
                             provider_reported_output_sample_rate_hz=provider_reported_output_rate,
                             used_output_sample_rate_hz=provider_output_rate,
@@ -1828,7 +1837,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         logger.info(
                             "Google Live output PCM rate",
                             call_id=self._call_id,
-                            provider="google_live",
+                            provider=self.provider_event_name(),
                             configured_output_sample_rate_hz=configured_output_rate,
                             provider_reported_output_sample_rate_hz=(provider_reported_output_rate or None),
                             used_output_sample_rate_hz=provider_output_rate,
@@ -2005,7 +2014,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     session_store=getattr(self, '_session_store', None),
                     ari_client=getattr(self, '_ari_client', None),
                     config=getattr(self, '_full_config', None),
-                    provider_name="google_live",
+                    provider_name=self.provider_event_name(),
                 )
 
                 block_result = await tool_context.get_tool_block_response(func_name)

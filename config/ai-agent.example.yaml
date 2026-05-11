@@ -160,6 +160,29 @@ streaming:
 
 # Providers (secrets from .env)
 providers:
+  # Multi-instance full-agent example:
+  # Use a stable provider key per customer, and set `type` to the implementation kind.
+  # Route calls with AI_PROVIDER=acme_google_live, or via contexts.<name>.provider.
+  #
+  # acme_google_live:
+  #   enabled: true
+  #   type: google_live
+  #   display_name: "Acme Google Live"
+  #   customer: "Acme"
+  #   use_vertex_ai: true
+  #   vertex_project: "acme-gcp-project"
+  #   vertex_location: "us-central1"
+  #   credentials_path: "/app/project/secrets/providers/acme_google_live/vertex-service-account.json"
+  #   llm_model: "gemini-live-2.5-flash-native-audio"
+  #
+  # globex_google_live:
+  #   enabled: true
+  #   type: google_live
+  #   display_name: "Globex Google Live"
+  #   customer: "Globex"
+  #   api_key_file: "/app/project/secrets/providers/globex_google_live/api-key"
+  #   llm_model: "gemini-2.5-flash-native-audio-latest"
+
   local:
     enabled: true
     # Local AI Server WebSocket URL. Default deployment uses host networking, so 127.0.0.1 is correct.

@@ -25,6 +25,7 @@ from src.audio.resampler import (
 )
 from src.core.session_store import SessionStore
 from src.core.models import CallSession, PlaybackRef
+from src.config.provider_instances import FULL_AGENT_KINDS_WITH_NATIVE_TTS_GATING
 from .adaptive_streaming import (
     StreamCharacterizer,
     AdaptiveBufferController,
@@ -582,9 +583,10 @@ class StreamingPlaybackManager:
             # These providers have server-side VAD and don't need client-side audio gating
             # NOTE: google_live is intentionally EXCLUDED — it lacks server-side echo cancellation,
             # so engine-side gating is required to prevent echoed model audio from confusing its VAD.
-            FULL_AGENT_PROVIDERS = {'deepgram', 'openai_realtime', 'elevenlabs_agent'}
             provider_name = getattr(session, 'provider_name', None) if session else None
-            skip_gating = provider_name in FULL_AGENT_PROVIDERS
+            provider_kind = getattr(session, 'provider_kind', None) if session else None
+            provider_kind = provider_kind or provider_name
+            skip_gating = provider_kind in FULL_AGENT_KINDS_WITH_NATIVE_TTS_GATING
             
             gating_success = True
             if skip_gating:

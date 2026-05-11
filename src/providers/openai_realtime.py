@@ -90,6 +90,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         gating_manager=None,
     ):
         super().__init__(on_event)
+        self.set_provider_identity(provider_key="openai_realtime", provider_kind="openai_realtime")
         self.config = config
         self.websocket: Optional[ClientConnection] = None
         self._receive_task: Optional[asyncio.Task] = None
@@ -1405,7 +1406,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 {
                     "type": "ProviderBargeIn",
                     "call_id": self._call_id,
-                    "provider": "openai_realtime",
+                    "provider": self.provider_event_name(),
                     "event": event_type,
                 }
             )

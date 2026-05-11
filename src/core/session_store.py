@@ -73,6 +73,14 @@ class SessionStore:
         """Get session by any channel_id (caller, local, external_media)."""
         async with self._lock:
             return self._sessions_by_channel_id.get(channel_id)
+
+    async def has_active_sessions_for_provider(self, provider_key: str) -> bool:
+        """Return whether any active call is currently using provider_key."""
+        async with self._lock:
+            for session in self._sessions_by_call_id.values():
+                if getattr(session, "provider_name", None) == provider_key:
+                    return True
+            return False
     
     async def remove_call(self, call_id: str) -> Optional[CallSession]:
         """Remove a call session and all its channel mappings."""
