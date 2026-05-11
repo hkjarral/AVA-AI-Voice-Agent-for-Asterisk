@@ -50,6 +50,25 @@ pipelines:
         format:
           encoding: ulaw
           sample_rate: 8000
+  # Privacy-focused hybrid: local STT/TTS with cloud LLM reasoning
+  local_hybrid:
+    stt: local_stt
+    llm: openai_llm
+    tts: local_tts
+    options:
+      stt:
+        chunk_ms: 320
+        streaming: true
+        stream_format: "pcm16_16k"
+      llm:
+        base_url: "https://api.openai.com/v1"
+        model: "gpt-4o-mini"
+        temperature: 0.4
+        max_tokens: 150
+      tts:
+        format:
+          encoding: ulaw
+          sample_rate: 8000
   # Local STT + OpenAI LLM + ElevenLabs TTS (premium voice quality)
   hybrid_elevenlabs:
     stt: local_stt
