@@ -16,6 +16,8 @@ interface CallState {
 interface ProviderConfig {
   name: string;
   displayName: string;
+  subtitle: string;
+  kind: string;
   enabled: boolean;
   ready: boolean;  // Will be determined from health check
 }
@@ -59,6 +61,7 @@ const FULL_AGENT_PROVIDERS = new Set([
 
 const providerKind = (name: string, config: any): string => {
   const type = typeof config?.type === 'string' ? config.type : '';
+  if (type === 'full' && FULL_AGENT_PROVIDERS.has(name)) return name;
   return type || name;
 };
 
@@ -146,6 +149,8 @@ export const SystemTopology = () => {
               providers.push({
                 name,
                 displayName: cfg?.display_name || cfg?.customer || PROVIDER_DISPLAY_NAMES[kind] || name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                subtitle: `${name} · ${kind}${cfg?.customer ? ` · ${cfg.customer}` : ''}`,
+                kind,
                 enabled,
                 ready,
               });
@@ -470,7 +475,7 @@ export const SystemTopology = () => {
                     <div
                       key={provider.name}
                       onClick={() => navigate('/providers')}
-                      title={`Configure ${provider.displayName} →`}
+                      title={`Configure ${provider.displayName} (${provider.subtitle}) →`}
                       className={`relative flex items-center gap-2 p-2 px-3 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-[1px] ${cellClass}`}
                     >
                       {isActive && (
@@ -478,7 +483,10 @@ export const SystemTopology = () => {
                       )}
                       <Zap className={`w-4 h-4 flex-shrink-0 ${iconColor}`} />
                       <span className={`text-xs font-medium truncate ${isActive ? 'text-green-500' : 'text-foreground'}`}>
-                        {provider.displayName}
+                        <span className="block truncate">{provider.displayName}</span>
+                        <span className="block truncate text-[10px] font-normal text-muted-foreground">
+                          {provider.subtitle}
+                        </span>
                       </span>
                       {isDefault && <div className="w-2.5 h-2.5 rounded-full bg-yellow-500 ml-auto flex-shrink-0" title="Default Provider" />}
                       {isActive && (
