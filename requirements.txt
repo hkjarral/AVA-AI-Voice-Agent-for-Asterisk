@@ -5,7 +5,7 @@ aiohttp==3.13.5
 
 # Configuration and logging
 pydantic>=2.7.0
-pydantic_settings==2.14.0
+pydantic_settings==2.14.1
 structlog==25.5.0
 prometheus-client==0.24.1
 PyYAML==6.0.3
