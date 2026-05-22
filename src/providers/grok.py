@@ -2181,38 +2181,37 @@ class GrokProvider(AIProviderInterface):
         ):
             outbound = raw_bytes
         else:
-            # Otherwise, normalize to PCM16 using either ACK'ed format or inferred format, then convert
+            # Otherwise, normalize to PCM16 using either ACK'ed format or our declared format, then convert.
             effective_fmt = self._provider_output_format
             if not self._outfmt_acknowledged:
-                # Heuristic inference when ACK missing: prefer μ-law if odd length or RMS-ulaw >> RMS-pcm
-                inferred = None
-                try:
-                    l = len(raw_bytes)
-                    if l % 2 == 1:
-                        inferred = "ulaw"
-                    else:
-                        # Compare RMS when treated as PCM16 vs μ-law→PCM16 on a small window
-                        win_pcm = raw_bytes[: min(640, l - (l % 2))]
-                        rms_pcm = audioop.rms(win_pcm, 2) if win_pcm else 0
-                        try:
-                            win_mulaw_pcm16 = mulaw_to_pcm16le(raw_bytes[: min(320, l)])
-                        except Exception:
-                            win_mulaw_pcm16 = b""
-                        rms_ulaw = audioop.rms(win_mulaw_pcm16, 2) if win_mulaw_pcm16 else 0
-                        if rms_ulaw > max(50, int(1.5 * (rms_pcm or 1))):
-                            inferred = "ulaw"
-                        else:
-                            inferred = "pcm16"
-                except Exception:
-                    inferred = None
-                self._inferred_provider_encoding = inferred or self._inferred_provider_encoding or "pcm16"
-                effective_fmt = self._inferred_provider_encoding
+                # xAI does NOT send session.updated ACK (observed empirically on live voiprnd calls
+                # 2026-05-22). Per the xAI Voice Agent docs the default output is "24 kHz PCM" and
+                # per-session output_format declarations are accepted. So trust our session.update
+                # declaration as authoritative.
+                #
+                # The prior RMS-fingerprint heuristic (compare ulaw-decoded RMS vs raw-pcm16 RMS) was
+                # unreliable: μ-law's logarithmic decode amplifies mid-range bytes regardless of source
+                # content, biasing the result toward "ulaw" for speech-shaped data. That caused
+                # pcm16-@-24kHz bytes to be mis-decoded as μ-law → garbled playback.
+                configured_enc = (self.config.output_encoding or "").lower().strip()
+                if configured_enc in ("linear16", "pcm16", "slin16", "slin"):
+                    declared_fmt = "pcm16"
+                elif configured_enc in ("ulaw", "mulaw", "g711_ulaw", "mu-law"):
+                    declared_fmt = "ulaw"
+                elif configured_enc in ("alaw", "g711_alaw"):
+                    declared_fmt = "alaw"
+                else:
+                    declared_fmt = "pcm16"  # xAI documented default
+                self._inferred_provider_encoding = declared_fmt
+                effective_fmt = declared_fmt
                 if not self._inference_logged:
                     try:
                         logger.info(
-                            "Grok output format not ACKed; using inferred decode path",
+                            "Grok output format not ACKed; trusting session.update declaration",
                             call_id=self._call_id,
-                            inferred=effective_fmt,
+                            declared=effective_fmt,
+                            configured_output_encoding=configured_enc,
+                            configured_output_sample_rate_hz=getattr(self.config, "output_sample_rate_hz", None),
                             bytes=len(raw_bytes),
                         )
                     except Exception:
