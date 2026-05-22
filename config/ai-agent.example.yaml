@@ -205,6 +205,48 @@ providers:
     model: "gpt-4o-realtime-preview-2024-12-17"  # GA: gpt-realtime / gpt-realtime-mini | Beta: gpt-4o-realtime-preview-*
     voice: "alloy"
     base_url: "wss://api.openai.com/v1/realtime"
+  # xAI Grok Voice Agent — full-agent realtime provider with native μ-law support.
+  # 30-min hard session cap (we log a warning at 28 min and let xAI close cleanly).
+  # Single-instance config: provider key == kind. See docs/Provider-Grok-Setup.md.
+  grok:
+    enabled: true
+    api_key: "${XAI_API_KEY}"
+    base_url: "wss://api.x.ai/v1/realtime"
+    model: "grok-voice-latest"  # or grok-voice-think-fast-1.0 (flagship)
+    voice: "eve"  # named: eve|ara|rex|sal|leo, or a custom cloned voice ID
+    # μ-law direct passthrough (no resampling) — matches Asterisk's native telephony format.
+    # Switch provider_input_encoding to "linear16" and rate to 24000 for wideband audio.
+    input_encoding: "ulaw"
+    input_sample_rate_hz: 8000
+    provider_input_encoding: "ulaw"
+    provider_input_sample_rate_hz: 8000
+    output_encoding: "ulaw"
+    output_sample_rate_hz: 8000
+    target_encoding: "ulaw"
+    target_sample_rate_hz: 8000
+    session_warn_after_seconds: 1680  # 28 min — warn before 30-min hard cap
+    # Advanced (YAML-only): xAI-native tools (web_search, x_search, file_search, MCP).
+    # Each entry is forwarded verbatim into session.update.tools.
+    # extra_tools:
+    #   - {type: "web_search"}
+    #   - {type: "x_search", allowed_x_handles: ["xai"]}
+  # Multi-instance example: two isolated Grok configs with separate credential files
+  # at /app/project/secrets/providers/<key>/api-key. Route via Asterisk channel var
+  # AI_PROVIDER=acme_grok or contexts.<name>.provider: acme_grok.
+  # acme_grok:
+  #   enabled: true
+  #   type: grok
+  #   display_name: "Acme Grok"
+  #   customer: "Acme"
+  #   api_key_file: "/app/project/secrets/providers/acme_grok/api-key"
+  #   voice: "eve"
+  # globex_grok:
+  #   enabled: true
+  #   type: grok
+  #   display_name: "Globex Grok"
+  #   customer: "Globex"
+  #   api_key_file: "/app/project/secrets/providers/globex_grok/api-key"
+  #   voice: "rex"
   deepgram:
     enabled: true
     api_key: "${DEEPGRAM_API_KEY}"

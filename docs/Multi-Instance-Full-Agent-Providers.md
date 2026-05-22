@@ -24,7 +24,9 @@ providers:
     api_key_file: "/app/project/secrets/providers/globex_google_live/api-key"
 ```
 
-Supported full-agent `type` values are `openai_realtime`, `deepgram`, `google_live`, `elevenlabs_agent`, and `local`. `local` is limited to one instance.
+Supported full-agent `type` values are `openai_realtime`, `deepgram`, `google_live`, `elevenlabs_agent`, `grok`, and `local`. `local` is limited to one instance.
+
+> **Note on `grok`:** xAI documents a 30-minute hard cap per session. AAVA logs a structured warning at 28 minutes (configurable via `session_warn_after_seconds`) and lets xAI close the socket; existing call-teardown handles the close cleanly. See [Provider-Grok-Setup.md](Provider-Grok-Setup.md) for full setup details.
 
 ## Admin UI Flow
 
@@ -48,7 +50,7 @@ Admin-managed credential files are written under:
 
 Credential fields:
 
-- `api_key_file`: OpenAI Realtime, Deepgram, Google Developer API mode, ElevenLabs.
+- `api_key_file`: OpenAI Realtime, Deepgram, Google Developer API mode, ElevenLabs, Grok.
 - `agent_id_file`: ElevenLabs full-agent instances.
 - `credentials_path`: Google Live Vertex service account JSON.
 

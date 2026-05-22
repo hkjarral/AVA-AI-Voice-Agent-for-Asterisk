@@ -669,6 +669,61 @@ class OpenAIRealtimeProviderConfig(BaseModel):
 
     turn_detection: Optional[TurnDetectionConfig] = None
 
+
+class GrokProviderConfig(BaseModel):
+    """Configuration for the xAI Grok Voice Agent realtime provider.
+
+    The Voice Agent API is OpenAI-Realtime-compatible at the wire level with
+    minor deviations (nested audio.{input,output}.format shape; ``response.text.delta``
+    event naming; 30-min session cap). This config models the xAI-native shape
+    directly; the OpenAI provider is NOT reused. See Provider-Grok-Setup.md.
+    """
+
+    enabled: bool = Field(default=True)
+    # Credentials: prefer per-instance api_key_file (set by admin UI); falls back to
+    # api_key_env name, then inline api_key, then legacy XAI_API_KEY env.
+    api_key: Optional[str] = None
+    api_key_file: Optional[str] = None
+    api_key_env: Optional[str] = None
+    # Connection
+    base_url: str = Field(default="wss://api.x.ai/v1/realtime")
+    model: str = Field(default="grok-voice-latest")
+    voice: str = Field(default="eve")  # named: eve|ara|rex|sal|leo, or a custom voice ID
+    instructions: Optional[str] = None
+    greeting: Optional[str] = None
+    # Audio: μ-law direct passthrough by default (matches Asterisk telephony native)
+    input_encoding: str = Field(default="ulaw")
+    input_sample_rate_hz: int = Field(default=8000)
+    provider_input_encoding: str = Field(default="ulaw")  # "ulaw" or "linear16" (fallback)
+    provider_input_sample_rate_hz: int = Field(default=8000)
+    output_encoding: str = Field(default="ulaw")
+    output_sample_rate_hz: int = Field(default=8000)
+    target_encoding: str = Field(default="ulaw")  # AudioSocket egress format
+    target_sample_rate_hz: int = Field(default=8000)
+    input_gain_target_rms: int = Field(default=0)
+    input_gain_max_db: float = Field(default=0.0)
+    # Response shape
+    response_modalities: List[str] = Field(default_factory=lambda: ["text", "audio"])
+    egress_pacer_enabled: bool = Field(default=False)
+    egress_pacer_warmup_ms: int = Field(default=320)
+    # Multi-tenant display metadata (admin UI surfaces these)
+    display_name: Optional[str] = None
+    customer: Optional[str] = None
+    # YAML escape hatch for xAI-native tools (file_search, web_search, x_search, mcp).
+    # Each entry is sent as-is in session.update.tools, appended after function tools.
+    extra_tools: List[Dict[str, Any]] = Field(default_factory=list)
+    # 30-min session cap: warn at this elapsed second count
+    session_warn_after_seconds: int = Field(default=28 * 60)
+
+    class TurnDetectionConfig(BaseModel):
+        type: str = Field(default="server_vad")
+        silence_duration_ms: int = Field(default=200)
+        threshold: float = Field(default=0.5)
+        prefix_padding_ms: int = Field(default=200)
+
+    turn_detection: Optional[TurnDetectionConfig] = None
+
+
 class BargeInConfig(BaseModel):
     enabled: bool = Field(default=True)
     initial_protection_ms: int = Field(default=200)

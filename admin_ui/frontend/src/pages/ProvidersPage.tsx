@@ -18,6 +18,7 @@ import OllamaProviderForm from '../components/config/providers/OllamaProviderFor
 import OpenAIRealtimeProviderForm from '../components/config/providers/OpenAIRealtimeProviderForm';
 import DeepgramProviderForm from '../components/config/providers/DeepgramProviderForm';
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
+import GrokProviderForm from '../components/config/providers/GrokProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
 import TelnyxProviderForm from '../components/config/providers/TelnyxProviderForm';
@@ -26,7 +27,7 @@ import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider } 
 import { GOOGLE_LIVE_DEFAULT_MODEL } from '../utils/googleLiveModels';
 
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
-const FULL_AGENT_TYPES = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'local'];
+const FULL_AGENT_TYPES = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'local'];
 const providerLabel = (name: string, provider: any): string => provider?.display_name || provider?.customer || name;
 
 const ProvidersPage: React.FC = () => {
@@ -669,6 +670,9 @@ const ProvidersPage: React.FC = () => {
         if (providerName === 'openai_realtime' || providerName.includes('realtime')) {
             return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} />;
         }
+        if (providerName === 'grok' || providerName.includes('grok') || providerForm.type === 'grok') {
+            return <GrokProviderForm config={providerForm} onChange={updateForm} />;
+        }
         if (providerName.includes('elevenlabs')) {
             return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} />;
         }
@@ -684,6 +688,8 @@ const ProvidersPage: React.FC = () => {
                 return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
             case 'google_live':
                 return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={providerForm.name} />;
+            case 'grok':
+                return <GrokProviderForm config={providerForm} onChange={updateForm} />;
             case 'openai':
                 return <OpenAIProviderForm config={providerForm} onChange={updateForm} />;
             case 'elevenlabs_agent':
@@ -1121,6 +1127,7 @@ const ProvidersPage: React.FC = () => {
                                         <option value="deepgram">Deepgram Voice Agent</option>
                                         <option value="google_live">Google Live</option>
                                         <option value="elevenlabs_agent">ElevenLabs Agent</option>
+                                        <option value="grok">xAI Grok Voice Agent</option>
                                         <option value="local">Local</option>
                                     </select>
                                 </div>
@@ -1231,6 +1238,7 @@ const ProvidersPage: React.FC = () => {
                             { id: 'deepgram', name: 'Deepgram', desc: 'Nova-3 STT + Aura-2 TTS voice agent (Flux available)' },
                             { id: 'google_live', name: 'Google Live', desc: 'Gemini 2.5 Native Audio real-time agent' },
                             { id: 'elevenlabs_agent', name: 'ElevenLabs Agent', desc: 'ElevenLabs conversational AI' },
+                            { id: 'grok', name: 'xAI Grok Voice Agent', desc: 'Grok Voice (μ-law direct, 5 named voices, 30-min session cap)' },
                         ].map(template => (
                             <label key={template.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 cursor-pointer">
                                 <input

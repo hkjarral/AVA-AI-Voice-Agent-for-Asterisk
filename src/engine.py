@@ -44,6 +44,7 @@ from .config import (
     DeepgramProviderConfig,
     GoogleProviderConfig,
     OpenAIRealtimeProviderConfig,
+    GrokProviderConfig,
 )
 from .config.provider_instances import (
     FULL_AGENT_KINDS,
@@ -60,6 +61,7 @@ from .providers.deepgram import DeepgramProvider
 from .providers.local import LocalProvider
 from .providers.openai_realtime import OpenAIRealtimeProvider
 from .providers.google_live import GoogleLiveProvider
+from .providers.grok import GrokProvider
 from .providers.elevenlabs_agent import ElevenLabsAgentProvider
 from .providers.elevenlabs_config import ElevenLabsAgentConfig
 from .core import SessionStore, PlaybackManager, ConversationCoordinator
@@ -2278,6 +2280,44 @@ class Engine:
                         provider=name,
                         kind=kind,
                         audio_gating_enabled=self.audio_gating_manager is not None
+                    )
+
+                    runtime_issues = self._describe_provider_alignment(name, provider)
+                    if runtime_issues:
+                        self.provider_alignment_issues.setdefault(name, []).extend(runtime_issues)
+                elif kind == "grok":
+                    grok_cfg = self._build_grok_config(provider_config_data, name)
+                    if not grok_cfg:
+                        continue
+
+                    provider = GrokProvider(
+                        grok_cfg,
+                        self.on_provider_event,
+                        gating_manager=self.audio_gating_manager,
+                        provider_key=name,
+                    )
+                    self._set_provider_identity(provider, name, kind)
+                    # Set session store for turn latency tracking (Milestone 21)
+                    provider._session_store = self.session_store
+                    self.providers[name] = provider
+                    # Per-call factory (supports concurrent calls).
+                    self.provider_factories[name] = (
+                        lambda cfg=grok_cfg, key=name, p_kind=kind: self._provider_with_identity(
+                            GrokProvider(
+                                self._clone_config(cfg),
+                                self.on_provider_event,
+                                gating_manager=self.audio_gating_manager,
+                                provider_key=key,
+                            ),
+                            key,
+                            p_kind,
+                        )
+                    )
+                    logger.info(
+                        "Provider loaded successfully",
+                        provider=name,
+                        kind=kind,
+                        audio_gating_enabled=self.audio_gating_manager is not None,
                     )
 
                     runtime_issues = self._describe_provider_alignment(name, provider)
@@ -7187,11 +7227,12 @@ class Engine:
                 # Other providers unaffected: Deepgram uses continuous_input path (line 2204 early return)
                 # CRITICAL: Only apply if TTS has actually started (not during pre-TTS initialization)
                 try:
-                    if self._get_provider_kind(provider_name) == "openai_realtime" and getattr(session, 'tts_started_ts', 0.0) > 0.0:
+                    if self._get_provider_kind(provider_name) in ("openai_realtime", "grok") and getattr(session, 'tts_started_ts', 0.0) > 0.0:
                         initial_protect = 5000  # 5 seconds to prevent echo feedback loop
                         logger.debug(
-                            "Extended TTS protection for OpenAI Realtime (echo prevention)",
+                            "Extended TTS protection for native-VAD provider (echo prevention)",
                             call_id=caller_channel_id,
+                            provider_kind=self._get_provider_kind(provider_name),
                             protect_ms=initial_protect,
                             tts_started_ts=session.tts_started_ts
                         )
@@ -7291,18 +7332,19 @@ class Engine:
                 )
                 should_trigger = not in_cooldown and session.barge_in_candidate_ms >= min_ms
                 
-                # CRITICAL FIX #2: Skip engine-level barge-in for OpenAI Realtime
-                # OpenAI Realtime handles turn-taking/interruption internally via its own VAD
-                # Engine-level barge-in causes double-cancellation (both systems fighting)
+                # CRITICAL FIX #2: Skip engine-level barge-in for providers with native server-VAD
+                # (OpenAI Realtime, Grok). These handle turn-taking/interruption internally via
+                # their own VAD. Engine-level barge-in causes double-cancellation.
                 provider_name = getattr(session, 'provider_name', None)
-                if should_trigger and self._get_provider_kind(provider_name) == 'openai_realtime':
+                if should_trigger and self._get_provider_kind(provider_name) in ('openai_realtime', 'grok'):
                     logger.debug(
-                        "Local barge-in detected for OpenAI Realtime - sending cancellation to server",
+                        "Local barge-in detected for native-VAD provider - sending cancellation to server",
                         call_id=caller_channel_id,
+                        provider_kind=self._get_provider_kind(provider_name),
                         energy=energy,
                         criteria_met=criteria_met,
                     )
-                    # Notify OpenAI to cancel any in-progress response generation
+                    # Notify the provider to cancel any in-progress response generation
                     try:
                         provider = self._call_providers.get(caller_channel_id)
                         if provider and hasattr(provider, 'cancel_response'):
@@ -8622,6 +8664,43 @@ class Engine:
             return cfg
         except Exception as exc:
             logger.error("Failed to build OpenAIRealtimeProviderConfig", error=str(exc), exc_info=True)
+            return None
+
+    def _build_grok_config(self, provider_cfg: Dict[str, Any], provider_key: str = "grok") -> Optional[GrokProviderConfig]:
+        """Construct a GrokProviderConfig from raw provider settings."""
+        try:
+            merged = dict(provider_cfg)
+
+            merged['api_key'] = resolve_secret_value(
+                merged,
+                file_field="api_key_file",
+                env_field="api_key_env",
+                inline_field="api_key",
+                legacy_env_names=("XAI_API_KEY",),
+            )
+
+            try:
+                instr = (merged.get("instructions") or "").strip()
+            except Exception:
+                instr = ""
+            if not instr:
+                merged["instructions"] = getattr(self.config.llm, "prompt", None)
+            try:
+                greet = (merged.get("greeting") or "").strip()
+            except Exception:
+                greet = ""
+            if not greet:
+                merged["greeting"] = getattr(self.config.llm, "initial_greeting", None)
+
+            cfg = GrokProviderConfig(**merged)
+            if not cfg.enabled:
+                logger.info("Grok provider disabled in configuration; skipping initialization.", provider=provider_key)
+                return None
+            if not cfg.api_key:
+                logger.warning("Grok provider API key missing - provider will show as Not Ready", provider=provider_key)
+            return cfg
+        except Exception as exc:
+            logger.error("Failed to build GrokProviderConfig", error=str(exc), exc_info=True, provider=provider_key)
             return None
 
     def _build_elevenlabs_config(self, provider_cfg: Dict[str, Any], provider_key: str = "elevenlabs_agent") -> Optional[ElevenLabsAgentConfig]:

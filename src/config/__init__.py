@@ -41,6 +41,7 @@ GroqTTSProviderConfig = _parent_config.GroqTTSProviderConfig
 ElevenLabsProviderConfig = _parent_config.ElevenLabsProviderConfig
 CambAiProviderConfig = _parent_config.CambAiProviderConfig
 OpenAIRealtimeProviderConfig = _parent_config.OpenAIRealtimeProviderConfig
+GrokProviderConfig = _parent_config.GrokProviderConfig
 AzureSTTProviderConfig = _parent_config.AzureSTTProviderConfig
 AzureTTSProviderConfig = _parent_config.AzureTTSProviderConfig
 validate_azure_region = _parent_config.validate_azure_region
@@ -74,6 +75,7 @@ __all__ = [
     'ElevenLabsProviderConfig',
     'CambAiProviderConfig',
     'OpenAIRealtimeProviderConfig',
+    'GrokProviderConfig',
     'AzureSTTProviderConfig',
     'AzureTTSProviderConfig',
     'validate_azure_region',

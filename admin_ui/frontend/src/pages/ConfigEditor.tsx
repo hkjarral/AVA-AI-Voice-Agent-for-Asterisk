@@ -20,6 +20,7 @@ import AudioSocketConfig from '../components/config/AudioSocketConfig';
 import DeepgramProviderForm from '../components/config/providers/DeepgramProviderForm';
 import OpenAIRealtimeProviderForm from '../components/config/providers/OpenAIRealtimeProviderForm';
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
+import GrokProviderForm from '../components/config/providers/GrokProviderForm';
 import LocalProviderForm from '../components/config/providers/LocalProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
@@ -335,6 +336,9 @@ const ConfigEditor = () => {
                 break;
             case 'google_live':
                 FormComponent = GoogleLiveProviderForm;
+                break;
+            case 'grok':
+                FormComponent = GrokProviderForm;
                 break;
             case 'local':
                 FormComponent = LocalProviderForm;
