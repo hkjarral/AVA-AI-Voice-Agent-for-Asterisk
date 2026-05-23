@@ -1408,7 +1408,16 @@ class GrokProvider(AIProviderInterface):
         # Turn start tracking moved to response.done event to count conversational turns correctly
         
         # If server VAD is enabled, just append frames; do not commit.
-        vad_enabled = getattr(self.config, "turn_detection", None) is not None
+        # NOTE: _send_session_update always sends a default server_vad turn_detection
+        # block (see line ~1011), so VAD is effectively enabled even when YAML omits it.
+        # The previous check `config.turn_detection is not None` caused the manual
+        # batching branch to run with default configs, which buffered sub-threshold
+        # tail audio and clipped utterance endings. Treat VAD as enabled unless the
+        # operator has explicitly disabled it via _vad_disabled_for_greeting or sets
+        # turn_detection to a falsy value.
+        td = getattr(self.config, "turn_detection", None)
+        vad_explicitly_disabled = td is not None and getattr(td, "type", None) in (None, "none", "off", "disabled")
+        vad_enabled = not vad_explicitly_disabled
         if vad_enabled:
             try:
                 audio_b64 = base64.b64encode(pcm16).decode("ascii")

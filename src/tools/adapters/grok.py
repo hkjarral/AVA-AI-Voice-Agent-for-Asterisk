@@ -45,18 +45,30 @@ class GrokToolAdapter:
         event: Dict[str, Any],
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Handle a ``response.function_call_arguments.done`` event from Grok.
+        """Handle a Grok tool-call event.
 
-        Grok event shape (flat — no ``item`` wrapper):
+        xAI emits tool calls via ``response.output_item.done`` with the function-call
+        fields nested under ``item``:
+
             {
-                "type": "response.function_call_arguments.done",
-                "name": "function_name",
-                "call_id": "call_123",
-                "arguments": "{...JSON string...}"
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "name": "function_name",
+                    "call_id": "call_123",
+                    "arguments": "{...JSON string...}"
+                }
             }
+
+        The docs also describe a flat ``response.function_call_arguments.done`` shape
+        where the fields live at the top level. We accept both: prefer the nested
+        ``item`` payload if present, otherwise fall through to top-level lookup so
+        either dispatch path works.
         """
-        function_call_id = event.get("call_id")
-        function_name = event.get("name")
+        item = event.get("item") if isinstance(event.get("item"), dict) else None
+        source = item if item else event
+        function_call_id = source.get("call_id")
+        function_name = source.get("name")
 
         tools_cfg = (context.get("config") or {}).get("tools") or {}
         if isinstance(tools_cfg, dict) and tools_cfg.get("enabled") is False:
@@ -78,9 +90,10 @@ class GrokToolAdapter:
                 "function_name": function_name,
                 "status": "error",
                 "message": error_msg,
+                "ai_should_speak": False,
             }
 
-        arguments_str = event.get("arguments", "{}")
+        arguments_str = source.get("arguments", "{}")
         try:
             parameters = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
         except json.JSONDecodeError as e:
@@ -115,6 +128,7 @@ class GrokToolAdapter:
                 "function_name": function_name,
                 "status": "error",
                 "message": error_msg,
+                "ai_should_speak": False,
             }
 
         exec_context = ToolExecutionContext(

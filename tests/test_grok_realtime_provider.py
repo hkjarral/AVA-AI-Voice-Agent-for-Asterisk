@@ -279,3 +279,110 @@ def test_capabilities_advertise_native_vad_and_barge_in(provider):
     assert caps.has_native_vad is True
     assert caps.has_native_barge_in is True
     assert "ulaw" in caps.input_encodings
+
+
+# --------------------------------------------------------------------------- #
+# 7. Tool adapter — event shape compatibility                                 #
+# --------------------------------------------------------------------------- #
+# Regression: the GrokProvider dispatches tool calls from response.output_item.done
+# (the xAI Voice Agent emits function-call fields nested under `item`). The adapter
+# must extract from `item` when present, and still accept the flat
+# response.function_call_arguments.done shape described in the docs.
+
+
+@pytest.mark.asyncio
+async def test_tool_adapter_extracts_fields_from_item_wrapper():
+    """response.output_item.done shape: name/call_id/arguments nested under `item`."""
+    from src.tools.adapters.grok import GrokToolAdapter
+
+    class _Registry:
+        def to_openai_realtime_schema_filtered(self, names):
+            return []
+
+        def is_tool_allowed(self, name, allowed):
+            return True
+
+        def get(self, name):
+            return None  # forces the unknown-tool branch — exercises field extraction
+
+    event = {
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "name": "lookup_customer",
+            "call_id": "call_abc123",
+            "arguments": '{"id": 42}',
+        },
+    }
+    context = {"call_id": "test-call", "config": {"tools": {"enabled": True}}}
+    adapter = GrokToolAdapter(_Registry())
+    result = await adapter.handle_tool_call_event(event, context)
+    # Even on the unknown-tool error path, the adapter must have populated
+    # call_id and function_name from the nested item — proving extraction worked.
+    assert result["call_id"] == "call_abc123"
+    assert result["function_name"] == "lookup_customer"
+    assert result["ai_should_speak"] is False  # error path must suppress speech
+
+
+@pytest.mark.asyncio
+async def test_tool_adapter_accepts_flat_event_shape():
+    """response.function_call_arguments.done shape: fields at top level (docs shape)."""
+    from src.tools.adapters.grok import GrokToolAdapter
+
+    class _Registry:
+        def to_openai_realtime_schema_filtered(self, names):
+            return []
+
+        def is_tool_allowed(self, name, allowed):
+            return True
+
+        def get(self, name):
+            return None
+
+    event = {
+        "type": "response.function_call_arguments.done",
+        "name": "lookup_customer",
+        "call_id": "call_xyz789",
+        "arguments": '{"id": 7}',
+    }
+    context = {"call_id": "test-call", "config": {"tools": {"enabled": True}}}
+    adapter = GrokToolAdapter(_Registry())
+    result = await adapter.handle_tool_call_event(event, context)
+    assert result["call_id"] == "call_xyz789"
+    assert result["function_name"] == "lookup_customer"
+    assert result["ai_should_speak"] is False
+
+
+@pytest.mark.asyncio
+async def test_tool_adapter_disallowed_tool_suppresses_speech():
+    """Disallowed-tool error must include ai_should_speak=False to suppress speech."""
+    from src.tools.adapters.grok import GrokToolAdapter
+
+    class _Registry:
+        def to_openai_realtime_schema_filtered(self, names):
+            return []
+
+        def is_tool_allowed(self, name, allowed):
+            return False  # disallow everything
+
+        def get(self, name):
+            return object()  # any truthy
+
+    event = {
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "name": "forbidden_tool",
+            "call_id": "call_blocked",
+            "arguments": "{}",
+        },
+    }
+    context = {
+        "call_id": "test-call",
+        "config": {"tools": {"enabled": True}},
+        "allowed_tools": ["other_tool"],
+    }
+    adapter = GrokToolAdapter(_Registry())
+    result = await adapter.handle_tool_call_event(event, context)
+    assert result["status"] == "error"
+    assert result["ai_should_speak"] is False

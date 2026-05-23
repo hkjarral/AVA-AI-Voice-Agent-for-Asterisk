@@ -1263,7 +1263,7 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
             audio_transport = getattr(config, "audio_transport", "externalmedia")
             
             # Check for monolithic providers
-            monolithic_names = ("openai_realtime", "deepgram", "google_live")
+            monolithic_names = ("openai_realtime", "deepgram", "google_live", "grok")
             monolithic_enabled = []
             for name, cfg in providers.items():
                 if name not in monolithic_names:
