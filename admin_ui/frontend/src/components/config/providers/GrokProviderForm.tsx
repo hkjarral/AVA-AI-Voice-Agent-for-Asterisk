@@ -59,38 +59,6 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange })
             </div>
 
             <div>
-                <h4 className="font-semibold mb-3">Identity</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Display Name</label>
-                        <input
-                            type="text"
-                            className="w-full p-2 rounded border border-input bg-background"
-                            value={config.display_name || ''}
-                            onChange={(e) => handleChange('display_name', e.target.value || null)}
-                            placeholder="e.g. Acme Grok"
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            Operator-facing label. Shown in topology and call history.
-                        </p>
-                    </div>
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Customer</label>
-                        <input
-                            type="text"
-                            className="w-full p-2 rounded border border-input bg-background"
-                            value={config.customer || ''}
-                            onChange={(e) => handleChange('customer', e.target.value || null)}
-                            placeholder="e.g. Acme"
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            Optional customer tag for multi-tenant deployments.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            <div>
                 <h4 className="font-semibold mb-3">Model & Voice</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
