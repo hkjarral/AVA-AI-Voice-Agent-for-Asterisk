@@ -492,86 +492,8 @@ export const SystemTopology = () => {
       }
     >
       <div>
-        {/* === SUMMARY STRIP === */}
-        {/* Compact at-a-glance health row: gives operators a single-line
-            answer to "is anything wrong" without scanning the diagram. */}
-        {(() => {
-          const totalProviders = state.configuredProviders.length;
-          const readyProviders = state.configuredProviders.filter(
-            p => state.providerReady[p.name] === 'ready'
-          ).length;
-          const totalModels = 3; // STT + LLM + TTS
-          const loadedModels = [
-            state.localAIModels?.stt?.loaded,
-            state.localAIModels?.llm?.loaded,
-            state.localAIModels?.tts?.loaded,
-          ].filter(Boolean).length;
-          // Overall system status — green if every indicator is green,
-          // red if any is red, otherwise still resolving.
-          const allKnown =
-            state.aiEngineStatus !== 'unknown'
-            && state.localAIStatus !== 'unknown'
-            && state.ariConnected !== null;
-          const anyError =
-            state.aiEngineStatus === 'error'
-            || state.localAIStatus === 'error'
-            || state.ariConnected === false;
-          const overallStatus: 'healthy' | 'issue' | 'checking' =
-            !allKnown ? 'checking' : anyError ? 'issue' : 'healthy';
-          const statusColor = overallStatus === 'healthy'
-            ? 'text-green-500'
-            : overallStatus === 'issue'
-              ? 'text-red-500'
-              : 'text-muted-foreground';
-          const statusLabel = overallStatus === 'healthy'
-            ? 'All systems healthy'
-            : overallStatus === 'issue'
-              ? 'Issue detected'
-              : 'Checking…';
-          return (
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 mb-3 rounded-lg bg-muted/30 border border-border/50 text-xs">
-              <div className={`flex items-center gap-1.5 font-medium ${statusColor}`}>
-                {overallStatus === 'healthy' ? (
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                ) : overallStatus === 'issue' ? (
-                  <XCircle className="w-3.5 h-3.5" />
-                ) : (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                )}
-                <span>{statusLabel}</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Phone className={`w-3.5 h-3.5 ${hasActiveCalls ? 'text-green-500' : ''}`} />
-                <span>
-                  <span className={hasActiveCalls ? 'text-green-500 font-medium' : 'text-foreground'}>
-                    {totalActiveCalls}
-                  </span>
-                  {' '}call{totalActiveCalls !== 1 ? 's' : ''}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Zap className="w-3.5 h-3.5" />
-                <span>
-                  <span className="text-foreground font-medium">{readyProviders}</span>
-                  /{totalProviders} providers ready
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Server className="w-3.5 h-3.5" />
-                <span>
-                  <span className="text-foreground font-medium">{loadedModels}</span>
-                  /{totalModels} local models loaded
-                </span>
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* Grid Layout — col 5 now flex-grows so the providers section can
-            use the full canvas width instead of leaving everything to the
-            right of 616px empty. SVG T-junction (col-span-4) stays in the
-            fixed-width cols 1-4 so its paths still align. */}
-        <div className="relative grid grid-cols-[160px_48px_160px_48px_minmax(420px,1fr)] gap-y-4 justify-center items-center py-4">
+        {/* Grid Layout for proper alignment */}
+        <div className="relative grid grid-cols-[160px_48px_160px_48px_200px] gap-y-4 justify-center items-center py-4">
 
           {/* === ROW 1: Asterisk → AI Engine → Providers === */}
 
@@ -697,13 +619,9 @@ export const SystemTopology = () => {
                 className="inline-block px-3 py-1 mx-auto rounded-full bg-muted/40 border border-border/50 text-[10px] text-muted-foreground uppercase tracking-wider mb-3 text-center cursor-pointer hover:text-primary transition-colors"
               >Providers</div>
             </div>
-            {/* Responsive provider grid: 1 col on narrow viewports, 2 on tablet,
-                3 on desktop. Each card stays the same shape — we just lay them
-                out in parallel instead of stacking. Previous single-column
-                stack required ~540px of vertical scroll for 6 provider kinds. */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+            <div className="flex flex-col gap-2">
               {providerGroups.length === 0 ? (
-                <div className="col-span-full p-3 rounded-lg border border-dashed border-border text-xs text-muted-foreground text-center">
+                <div className="p-3 rounded-lg border border-dashed border-border text-xs text-muted-foreground text-center">
                   No agents
                 </div>
               ) : (
@@ -816,18 +734,15 @@ export const SystemTopology = () => {
 
           {/* === ROW 2: SVG-based T-junction from AI Engine === */}
 
-          {/* Spans only cols 1-4 (fixed widths totaling 416px), because all
-              the T-junction paths reference x=80 (col 1 center) and x=288
-              (col 3 center) which both live within that range. Col 5
-              (providers, now flex-grow) gets a separate inline connector. */}
-          <div className="col-span-4 h-14 relative">
+          {/* Full width SVG spanning columns 1-5 for precise arrow drawing */}
+          <div className="col-span-5 h-14 relative">
             <svg
               className="absolute inset-0 w-full h-full"
-              viewBox="0 0 416 56"
+              viewBox="0 0 616 56"
               preserveAspectRatio="xMidYMid meet"
             >
-              {/* Cols 1-4 widths: 160 + 48 + 160 + 48 = 416 total. */}
-              {/* Col 1 center: 80, Col 3 center: 160+48+80 = 288. */}
+              {/* Grid columns: 160 + 48 + 160 + 48 + 200 = 616 total */}
+              {/* Col 1 center: 80, Col 3 center: 160+48+80 = 288 */}
 
               {/* Center bezier path from AI Engine to Local AI using smooth corners */}
               <path
@@ -1014,10 +929,7 @@ export const SystemTopology = () => {
                 className="inline-block px-3 py-1 mx-auto rounded-full bg-muted/40 border border-border/50 text-[10px] text-muted-foreground uppercase tracking-wider mb-3 text-center cursor-pointer hover:text-primary transition-colors"
               >Models</div>
             </div>
-            {/* Models row uses a 3-col grid so STT/LLM/TTS sit side-by-side
-                instead of stacking ~210px vertically. The Models column now
-                has flex-grow room (col 5 = minmax(420px, 1fr)). */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="flex flex-col gap-2">
               {/* STT */}
               <div onClick={() => navigate('/models')} title="Go to Models →" className={`relative flex items-center gap-2 p-2 px-3 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-[1px] ${activeLocalModels.stt && state.localAIModels?.stt?.loaded
                 ? 'border-green-500/50 bg-green-500/10 shadow-[0_4px_15px_rgb(34,197,94,0.1)] ring-1 ring-green-500/30'
