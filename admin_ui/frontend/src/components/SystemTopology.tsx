@@ -199,13 +199,22 @@ export const SystemTopology = () => {
                   ? 'ready'
                   : 'unknown';
           }
+          // Keep the last known local AI model details on transient probe
+          // failures. When the WebSocket probe to local_ai_server times out
+          // the backend returns `local_ai_server.status: 'error'` with
+          // `details: {error: "..."}` — no `models` field. Replacing the
+          // models with `null` then flips the MODELS section to "Not
+          // loaded" placeholders even though the server is healthy. Use ??
+          // (not ||) so genuine empty/cleared model state still flows
+          // through, but missing-data responses keep the previous snapshot.
+          const newLocalAIModels = res.data.local_ai_server?.details?.models ?? prev.localAIModels;
           return {
             ...prev,
             aiEngineStatus: debouncedTri(aiEngineConnected, aiEngineFailStreak, prev.aiEngineStatus),
             ariConnected: debouncedBool(ariReported, ariFailStreak, prev.ariConnected),
             asteriskChannels: aiEngineDetails.asterisk_channels ?? 0,
             localAIStatus: debouncedTri(localAIConnected, localAIFailStreak, prev.localAIStatus),
-            localAIModels: res.data.local_ai_server?.details?.models || null,
+            localAIModels: newLocalAIModels,
             providerHealth: providerHealthData,
             providerReady: nextProviderReady,
           };
