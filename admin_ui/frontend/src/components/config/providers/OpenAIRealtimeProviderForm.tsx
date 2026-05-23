@@ -1,5 +1,5 @@
 import React from 'react';
-import ProviderCredentialsCard from './ProviderCredentialsCard';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface OpenAIRealtimeProviderFormProps {
     config: any;
@@ -39,6 +39,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                     placeholder="sk-..."
                     envVarFallback="OPENAI_API_KEY"
                     inlineValue={config.api_key}
+                    onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
                     helpText={
                         <>
                             Find your key at{' '}

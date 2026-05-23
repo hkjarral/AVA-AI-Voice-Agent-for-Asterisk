@@ -51,7 +51,26 @@ interface ProviderCredentialsCardProps {
      * "Find your key in the xAI console at console.x.ai".
      */
     helpText?: React.ReactNode;
+    /**
+     * Called after a successful upload or delete with a patch describing the
+     * field change. The parent form should merge this into its `providerForm`
+     * state so that any subsequent Save sends the new value back. Without this
+     * callback, the form's local state would be stale (still missing
+     * `api_key_file`/`agent_id_file`) and the next Save would write a stale
+     * provider entry, wiping the credential reference from the YAML.
+     *
+     * Patch shape: `{ api_key_file: "/path/to/file" }` after upload, or
+     *              `{ api_key_file: undefined }` after delete.
+     */
+    onConfigPatch?: (patch: Record<string, any>) => void;
 }
+
+/** Map credential-type → YAML field name the backend writes. Kept in sync with
+ *  `CREDENTIAL_NAME_TO_FIELD` in src/config/provider_instances.py. */
+const CREDENTIAL_FIELD: Record<string, string> = {
+    'api-key': 'api_key_file',
+    'agent-id': 'agent_id_file',
+};
 
 const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
     providerKey,
@@ -61,6 +80,7 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
     envVarFallback,
     inlineValue,
     helpText,
+    onConfigPatch,
 }) => {
     const { confirm } = useConfirmDialog();
     const [status, setStatus] = useState<CredentialStatus | null>(null);
@@ -97,7 +117,7 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
         setSubmitting(true);
         try {
             const fieldName = credentialType === 'api-key' ? 'api_key' : 'agent_id';
-            await axios.post(
+            const res = await axios.post(
                 `/api/config/providers/${encodeURIComponent(providerKey || '')}/credentials/${credentialType}`,
                 { [fieldName]: value },
             );
@@ -105,6 +125,14 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
             setSecretInput('');
             setShowUploadField(false);
             await fetchStatus();
+            // Notify the parent form so its in-memory state reflects the new
+            // field. Without this, a subsequent form Save would overwrite the
+            // YAML with stale data and strip the just-written reference.
+            const yamlField = CREDENTIAL_FIELD[credentialType];
+            const writtenPath = (res.data && (res.data as any).path) || undefined;
+            if (yamlField && onConfigPatch) {
+                onConfigPatch({ [yamlField]: writtenPath });
+            }
         } catch (e: any) {
             toast.error(e.response?.data?.detail || `Failed to save ${label}.`);
         } finally {
@@ -127,6 +155,10 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
             );
             toast.success(`${label} deleted.`);
             await fetchStatus();
+            const yamlField = CREDENTIAL_FIELD[credentialType];
+            if (yamlField && onConfigPatch) {
+                onConfigPatch({ [yamlField]: undefined });
+            }
         } catch (e: any) {
             toast.error(e.response?.data?.detail || `Failed to delete ${label}.`);
         } finally {
@@ -353,3 +385,22 @@ const UploadField: React.FC<UploadFieldProps> = ({
 );
 
 export default ProviderCredentialsCard;
+
+/**
+ * Helper for provider forms: apply a credential patch to the form's config and
+ * propagate via onChange. Keys with `undefined` values are deleted from the
+ * config (so the resulting YAML doesn't end up with `field: null` after a
+ * credential delete).
+ */
+export const applyCredentialPatch = (
+    config: Record<string, any>,
+    patch: Record<string, any>,
+    onChange: (next: Record<string, any>) => void,
+) => {
+    const next: Record<string, any> = { ...config };
+    Object.entries(patch).forEach(([k, v]) => {
+        if (v === undefined) delete next[k];
+        else next[k] = v;
+    });
+    onChange(next);
+};

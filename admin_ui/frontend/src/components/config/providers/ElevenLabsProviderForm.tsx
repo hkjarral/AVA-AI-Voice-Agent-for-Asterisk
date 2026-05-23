@@ -1,6 +1,6 @@
 import React from 'react';
 import { Info, Mic } from 'lucide-react';
-import ProviderCredentialsCard from './ProviderCredentialsCard';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface ElevenLabsProviderFormProps {
     config: any;
@@ -43,6 +43,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                         placeholder="xi-..."
                         envVarFallback="ELEVENLABS_API_KEY"
                         inlineValue={config.api_key}
+                        onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
                         helpText={
                             <>
                                 Find your key in the{' '}
@@ -66,6 +67,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                             placeholder="agent_..."
                             envVarFallback="ELEVENLABS_AGENT_ID"
                             inlineValue={config.agent_id}
+                            onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
                             helpText="The Agent ID identifies which Conversational AI agent to use."
                         />
                     )}

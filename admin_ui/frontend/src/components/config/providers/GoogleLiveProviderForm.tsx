@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../../../hooks/useConfirmDialog';
 import { AlertTriangle, Upload, Trash2, CheckCircle, XCircle, Loader2, FileJson } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
-import ProviderCredentialsCard from './ProviderCredentialsCard';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import {
     GOOGLE_LIVE_MODEL_GROUPS,
     GOOGLE_LIVE_SUPPORTED_MODELS,
@@ -371,6 +371,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 placeholder="AIza..."
                                 envVarFallback="GOOGLE_API_KEY"
                                 inlineValue={config.api_key}
+                                onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
                                 helpText={
                                     <>
                                         Get a key from{' '}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import ProviderCredentialsCard from './ProviderCredentialsCard';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface DeepgramProviderFormProps {
     config: any;
@@ -32,6 +32,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     placeholder="Token..."
                     envVarFallback="DEEPGRAM_API_KEY"
                     inlineValue={config.api_key}
+                    onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
                     helpText={
                         <>
                             Find your key in the{' '}

@@ -1,5 +1,5 @@
 import React from 'react';
-import ProviderCredentialsCard from './ProviderCredentialsCard';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface GrokProviderFormProps {
     config: any;
@@ -69,6 +69,7 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                     placeholder="xai-..."
                     envVarFallback="XAI_API_KEY"
                     inlineValue={config.api_key}
+                    onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
                     helpText={
                         <>
                             Find your key in the{' '}
