@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface DeepgramProviderFormProps {
@@ -8,6 +8,12 @@ interface DeepgramProviderFormProps {
 }
 
 const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onChange, providerKey }) => {
+    // Latest-config ref for race-free credential patches.
+    const configRef = useRef(config);
+    useEffect(() => {
+        configRef.current = config;
+    }, [config]);
+
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -32,7 +38,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     placeholder="Token..."
                     envVarFallback="DEEPGRAM_API_KEY"
                     inlineValue={config.api_key}
-                    onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
+                    onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
                     helpText={
                         <>
                             Find your key in the{' '}

@@ -665,7 +665,11 @@ const ProvidersPage: React.FC = () => {
     };
 
     const renderProviderForm = () => {
-        const updateForm = (newValues: any) => setProviderForm({ ...providerForm, ...newValues });
+        // Functional setState so async callbacks (e.g. credential uploads
+        // resolving after the user has edited other fields) don't merge against
+        // a stale `providerForm` captured at render time.
+        const updateForm = (newValues: any) =>
+            setProviderForm((prev: any) => ({ ...prev, ...newValues }));
 
         // Check provider name for specific forms, fallback to type
         const providerName = (providerForm.name || '').toLowerCase();

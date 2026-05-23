@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface OpenAIRealtimeProviderFormProps {
@@ -8,6 +8,12 @@ interface OpenAIRealtimeProviderFormProps {
 }
 
 const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({ config, onChange, providerKey }) => {
+    // Latest-config ref for race-free credential patches.
+    const configRef = useRef(config);
+    useEffect(() => {
+        configRef.current = config;
+    }, [config]);
+
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -39,7 +45,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                     placeholder="sk-..."
                     envVarFallback="OPENAI_API_KEY"
                     inlineValue={config.api_key}
-                    onConfigPatch={(patch) => applyCredentialPatch(config, patch, onChange)}
+                    onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
                     helpText={
                         <>
                             Find your key at{' '}

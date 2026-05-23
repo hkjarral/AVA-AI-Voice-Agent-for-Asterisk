@@ -275,7 +275,11 @@ const ConfigEditor = () => {
 
     const renderProviderForm = () => {
         // Helper to update provider form state
-        const updateForm = (newValues: any) => setProviderForm({ ...providerForm, ...newValues });
+        // Functional setState so async callbacks (e.g. credential uploads
+        // resolving after the user has edited other fields) don't merge against
+        // a stale `providerForm` captured at render time.
+        const updateForm = (newValues: any) =>
+            setProviderForm((prev: any) => ({ ...prev, ...newValues }));
 
         // Common fields (Name)
         const commonFields = (

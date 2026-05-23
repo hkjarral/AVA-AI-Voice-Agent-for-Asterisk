@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Upload, Trash2, CheckCircle, Loader2, KeyRound, ExternalLink } from 'lucide-react';
@@ -72,6 +72,23 @@ const CREDENTIAL_FIELD: Record<string, string> = {
     'agent-id': 'agent_id_file',
 };
 
+/**
+ * Normalize an axios error's `detail` field for display.
+ *
+ * The backend's DELETE endpoint returns a structured payload when a credential
+ * file is referenced by multiple providers (`{ message, references }`). Naively
+ * passing that object to toast.error renders as `[object Object]`. This helper
+ * extracts `.message` when the detail is an object.
+ */
+const formatErrorDetail = (err: any, fallback: string): string => {
+    const detail = err?.response?.data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+        return detail.message;
+    }
+    return fallback;
+};
+
 const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
     providerKey,
     credentialType,
@@ -88,6 +105,16 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
     const [showUploadField, setShowUploadField] = useState(false);
     const [secretInput, setSecretInput] = useState('');
     const [submitting, setSubmitting] = useState(false);
+
+    // Hold a ref to the latest `onConfigPatch` so async upload/delete handlers
+    // dispatch through the parent's most-recent callback (not the one captured
+    // when the request started). Pairs with each form's configRef pattern so
+    // patches build off the latest in-memory provider config — even if the
+    // user edited other fields while the request was in flight.
+    const onConfigPatchRef = useRef(onConfigPatch);
+    useEffect(() => {
+        onConfigPatchRef.current = onConfigPatch;
+    }, [onConfigPatch]);
 
     const fetchStatus = useCallback(async () => {
         if (!providerKey) return;
@@ -127,14 +154,16 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
             await fetchStatus();
             // Notify the parent form so its in-memory state reflects the new
             // field. Without this, a subsequent form Save would overwrite the
-            // YAML with stale data and strip the just-written reference.
+            // YAML with stale data and strip the just-written reference. Read
+            // through the ref so we always invoke the latest callback.
             const yamlField = CREDENTIAL_FIELD[credentialType];
             const writtenPath = (res.data && (res.data as any).path) || undefined;
-            if (yamlField && onConfigPatch) {
-                onConfigPatch({ [yamlField]: writtenPath });
+            const patchCb = onConfigPatchRef.current;
+            if (yamlField && patchCb) {
+                patchCb({ [yamlField]: writtenPath });
             }
         } catch (e: any) {
-            toast.error(e.response?.data?.detail || `Failed to save ${label}.`);
+            toast.error(formatErrorDetail(e, `Failed to save ${label}.`));
         } finally {
             setSubmitting(false);
         }
@@ -156,11 +185,15 @@ const ProviderCredentialsCard: React.FC<ProviderCredentialsCardProps> = ({
             toast.success(`${label} deleted.`);
             await fetchStatus();
             const yamlField = CREDENTIAL_FIELD[credentialType];
-            if (yamlField && onConfigPatch) {
-                onConfigPatch({ [yamlField]: undefined });
+            const patchCb = onConfigPatchRef.current;
+            if (yamlField && patchCb) {
+                patchCb({ [yamlField]: undefined });
             }
         } catch (e: any) {
-            toast.error(e.response?.data?.detail || `Failed to delete ${label}.`);
+            // Backend can return a structured detail like
+            //   { message: "Credential file is referenced by other providers", references: [...] }
+            // when the file is shared. Render the human-readable message.
+            toast.error(formatErrorDetail(e, `Failed to delete ${label}.`));
         } finally {
             setSubmitting(false);
         }
@@ -391,13 +424,24 @@ export default ProviderCredentialsCard;
  * propagate via onChange. Keys with `undefined` values are deleted from the
  * config (so the resulting YAML doesn't end up with `field: null` after a
  * credential delete).
+ *
+ * Takes a `configRef` (a React ref-like object with a `current` property) so
+ * the patch is built from the *latest* config at the moment the credential
+ * upload/delete settles — not from the snapshot captured when the parent's
+ * render closure was created. Without this, an upload that takes >100ms can
+ * complete with the user's intervening field edits already applied, and
+ * spreading a stale snapshot onto the latest state would silently clobber
+ * those edits.
+ *
+ * Pair this with each parent page's functional `setProviderForm` so the
+ * `onChange` (updateForm) step is also race-free.
  */
 export const applyCredentialPatch = (
-    config: Record<string, any>,
+    configRef: { current: Record<string, any> },
     patch: Record<string, any>,
     onChange: (next: Record<string, any>) => void,
 ) => {
-    const next: Record<string, any> = { ...config };
+    const next: Record<string, any> = { ...configRef.current };
     Object.entries(patch).forEach(([k, v]) => {
         if (v === undefined) delete next[k];
         else next[k] = v;

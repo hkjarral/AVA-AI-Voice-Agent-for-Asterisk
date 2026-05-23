@@ -148,6 +148,17 @@ const EnvPage = () => {
     }, [authLoading, token]);
 
     /**
+     * Manual refresh hook used by the toolbar "Refresh" button and the
+     * error-state Retry button. Re-fetches BOTH the env-var values and the
+     * per-instance provider credential status so the audit section reflects
+     * provider/credential edits without remounting the page.
+     */
+    const refreshAll = () => {
+        fetchEnv();
+        fetchPerInstanceCredentials();
+    };
+
+    /**
      * Enumerate all full-agent provider instances and probe each for credential status.
      * Read-only audit — actual uploads happen on the Providers page.
      */
@@ -167,31 +178,36 @@ const EnvPage = () => {
                 providers = raw?.providers || {};
             }
 
-            // For each provider entry, identify its kind and fetch credential status.
+            // For each provider entry, probe the credentials endpoint. The backend
+            // returns the authoritative provider kind (it knows about legacy
+            // `type: full` entries, custom keys like `acme_voice`, and applies
+            // the same full-agent inference the engine uses) plus the list of
+            // credentials valid for that kind. Use that response — don't gate
+            // on a frontend whitelist of canonical keys, which would silently
+            // omit custom-keyed full-agent providers.
             const entries = Object.entries(providers) as Array<[string, any]>;
             const tasks = entries.map(async ([key, cfg]) => {
-                const explicitType = (cfg?.type || '').toLowerCase();
-                // Map either explicit type OR canonical YAML key to a full-agent kind.
-                const kind =
-                    explicitType in PROVIDER_CREDENTIAL_TYPES
-                        ? explicitType
-                        : key in PROVIDER_CREDENTIAL_TYPES
-                            ? key
-                            : null;
-                if (!kind) return [];
-
-                const credTypes = PROVIDER_CREDENTIAL_TYPES[kind];
-                const rows: PerInstanceCredentialRow[] = [];
-
-                // Best-effort: GET /credentials may 404 if the provider is being created or
-                // misconfigured. We render what we can from the YAML in that case.
                 let credStatus: any = {};
+                let kind: string | null = null;
                 try {
                     const res = await axios.get(`/api/config/providers/${encodeURIComponent(key)}/credentials`);
                     credStatus = res.data?.credentials || {};
+                    kind = (res.data?.type || null) as string | null;
                 } catch {
-                    // Leave credStatus empty; classify rows from inline YAML below.
+                    // 400/404 here means the backend doesn't recognise this entry as a
+                    // full-agent provider (modular providers, unknown kinds, in-flight
+                    // creations). Skip it — modular providers don't have per-instance
+                    // credential files in this design.
+                    return [];
                 }
+
+                if (!kind) return [];
+
+                // If the backend reports a kind we don't know about locally, fall back
+                // to api-key as the only credential to render (covers future provider
+                // kinds added server-side without a frontend update).
+                const credTypes = PROVIDER_CREDENTIAL_TYPES[kind] ?? ['api-key'];
+                const rows: PerInstanceCredentialRow[] = [];
 
                 for (const credentialType of credTypes) {
                     const status = credStatus[credentialType] || {};
@@ -481,7 +497,7 @@ const EnvPage = () => {
             <h3 className="text-lg font-semibold">Error Loading Configuration</h3>
             <p className="mt-2">{error}</p>
             <button
-                onClick={fetchEnv}
+                onClick={refreshAll}
                 className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
             >
                 Retry
@@ -638,7 +654,7 @@ const EnvPage = () => {
                         Setup Wizard
                     </button>
                     <button
-                        onClick={fetchEnv}
+                        onClick={refreshAll}
                         className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
                     >
                         <RefreshCw className="w-4 h-4 mr-2" />
