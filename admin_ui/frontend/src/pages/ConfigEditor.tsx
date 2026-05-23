@@ -305,6 +305,7 @@ const ConfigEditor = () => {
                             <option value="elevenlabs">ElevenLabs TTS / Agent</option>
                             <option value="openai_realtime">OpenAI Realtime</option>
                             <option value="google_live">Google Live</option>
+                            <option value="grok">xAI Grok Voice Agent</option>
                             <option value="local">Local</option>
                             <option value="openai">OpenAI (Standard)</option>
                             <option value="telnyx">Telnyx (LLM)</option>
@@ -315,7 +316,14 @@ const ConfigEditor = () => {
         );
 
         const guessType = (data: any) => {
+            // Prefer explicit type field (multi-instance YAML) over shape inference.
+            if (data.type === 'grok') return 'grok';
             if (data.type === 'elevenlabs' || data.type === 'elevenlabs_agent' || data.agent_id || data.voice_id) return 'elevenlabs';
+            // Grok shape detection (legacy single-instance YAML without explicit type):
+            // - WebSocket base URL pointing at x.ai
+            // - Model name beginning with "grok-voice"
+            if ((data.base_url || '').includes('x.ai')) return 'grok';
+            if ((data.model || '').toString().startsWith('grok-voice')) return 'grok';
             if (data.realtime_base_url || data.turn_detection) return 'openai_realtime';
             if (data.google_live || data.llm_model?.includes('gemini')) return 'google_live';
             if (data.ws_url) return 'local';

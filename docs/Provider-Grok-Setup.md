@@ -102,18 +102,24 @@ Entries in `extra_tools` are forwarded verbatim into the `session.update.tools` 
 
 After enabling, place a test call and verify the logs show, in order:
 
-```
+```text
 Provider loaded successfully ... kind=grok
 Connecting to Grok Voice Agent
 ✅ Received session.created
 Grok session.update payload ... input_format=audio/pcmu ... voice=eve
-✅ Grok session.updated ACK received
 response.output_audio.delta  (audio streaming to caller)
 ```
 
+> **Note on `session.updated` ACK:** xAI does NOT consistently send a
+> `session.updated` ACK in response to `session.update`. AAVA waits up to ~2 seconds
+> and proceeds either way — you may see `✅ Grok session.updated ACK received` if
+> xAI sends one, or `⚠️ Grok session.updated ACK timeout - proceeding anyway` if
+> it doesn't. Both are healthy; the call still works. Don't diagnose the timeout
+> log as a failure.
+
 If a tool fires:
 
-```
+```text
 Grok tool call received ... tool=<your_tool>
 ✅ Sent function output to Grok: ok
 ✅ Triggered Grok response generation (audio+text)

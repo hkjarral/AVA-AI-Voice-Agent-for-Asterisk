@@ -269,6 +269,30 @@ const ProvidersPage: React.FC = () => {
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.'
             },
+            grok: {
+                enabled: false,
+                type: 'grok',
+                capabilities: ['stt', 'llm', 'tts'],
+                api_key: '${XAI_API_KEY}',
+                base_url: 'wss://api.x.ai/v1/realtime',
+                model: 'grok-voice-latest',
+                voice: 'eve',
+                // μ-law @ 8 kHz inbound passthrough (matches Asterisk native telephony)
+                input_encoding: 'ulaw',
+                input_sample_rate_hz: 8000,
+                provider_input_encoding: 'ulaw',
+                provider_input_sample_rate_hz: 8000,
+                // xAI emits 24 kHz PCM16; we resample down to μ-law for Asterisk
+                output_encoding: 'linear16',
+                output_sample_rate_hz: 24000,
+                target_encoding: 'ulaw',
+                target_sample_rate_hz: 8000,
+                response_modalities: ['audio', 'text'],
+                greeting: 'Hello, how can I help you today?',
+                instructions: 'You are a helpful AI assistant.',
+                turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 200, prefix_padding_ms: 200 },
+                session_warn_after_seconds: 1680,
+            },
             elevenlabs_agent: {
                 enabled: false,
                 type: 'elevenlabs_agent',
@@ -330,7 +354,11 @@ const ProvidersPage: React.FC = () => {
                     }
                 });
             } else if (!nextProviders[templateKey]) {
-                nextProviders[templateKey] = templates[templateKey];
+                const template = templates[templateKey];
+                if (!template) {
+                    return;
+                }
+                nextProviders[templateKey] = template;
                 changed = true;
             }
         });
