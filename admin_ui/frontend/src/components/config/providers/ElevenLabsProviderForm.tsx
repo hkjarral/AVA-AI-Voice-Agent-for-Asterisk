@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import { Info, Mic } from 'lucide-react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
@@ -9,12 +9,6 @@ interface ElevenLabsProviderFormProps {
 }
 
 const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config, onChange, providerKey }) => {
-    // Latest-config ref for race-free credential patches.
-    const configRef = useRef(config);
-    useEffect(() => {
-        configRef.current = config;
-    }, [config]);
-
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -53,7 +47,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                         placeholder="xi-..."
                         envVarFallback="ELEVENLABS_API_KEY"
                         inlineValue={config.api_key}
-                        onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                        onConfigPatch={(patch) => applyCredentialPatch(patch, onChange)}
                         helpText={
                             <>
                                 Find your key in the{' '}
@@ -77,7 +71,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                             placeholder="agent_..."
                             envVarFallback="ELEVENLABS_AGENT_ID"
                             inlineValue={config.agent_id}
-                            onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                            onConfigPatch={(patch) => applyCredentialPatch(patch, onChange)}
                             helpText="The Agent ID identifies which Conversational AI agent to use."
                         />
                     )}

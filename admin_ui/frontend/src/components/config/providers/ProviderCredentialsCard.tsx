@@ -420,31 +420,26 @@ const UploadField: React.FC<UploadFieldProps> = ({
 export default ProviderCredentialsCard;
 
 /**
- * Helper for provider forms: apply a credential patch to the form's config and
- * propagate via onChange. Keys with `undefined` values are deleted from the
- * config (so the resulting YAML doesn't end up with `field: null` after a
- * credential delete).
+ * Helper for provider forms: forward a credential patch to the parent's
+ * `onChange`. The patch contains only the changed keys — never a snapshot of
+ * the surrounding config — so the parent's functional `updateForm` can merge
+ * it into the latest in-memory state without risk of clobbering concurrent
+ * field edits.
  *
- * Takes a `configRef` (a React ref-like object with a `current` property) so
- * the patch is built from the *latest* config at the moment the credential
- * upload/delete settles — not from the snapshot captured when the parent's
- * render closure was created. Without this, an upload that takes >100ms can
- * complete with the user's intervening field edits already applied, and
- * spreading a stale snapshot onto the latest state would silently clobber
- * those edits.
+ * A patch value of `undefined` means "delete this key from the YAML". The
+ * parent's `updateForm` must honor that contract (see ProvidersPage /
+ * ConfigEditor) — a plain `{ ...prev, api_key_file: undefined }` spread would
+ * leave the key in place (just as `undefined`), which `yaml.dump` then writes
+ * as `field: null`, OR a subsequent shallow spread re-preserves the previous
+ * non-undefined value. The functional updater explicitly deletes such keys.
  *
- * Pair this with each parent page's functional `setProviderForm` so the
- * `onChange` (updateForm) step is also race-free.
+ * This helper is intentionally tiny — it exists for naming clarity at the
+ * call site, and to colocate the credential-patch contract documentation
+ * with the card that emits it.
  */
 export const applyCredentialPatch = (
-    configRef: { current: Record<string, any> },
     patch: Record<string, any>,
     onChange: (next: Record<string, any>) => void,
 ) => {
-    const next: Record<string, any> = { ...configRef.current };
-    Object.entries(patch).forEach(([k, v]) => {
-        if (v === undefined) delete next[k];
-        else next[k] = v;
-    });
-    onChange(next);
+    onChange(patch);
 };

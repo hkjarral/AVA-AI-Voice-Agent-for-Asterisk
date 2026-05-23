@@ -278,8 +278,22 @@ const ConfigEditor = () => {
         // Functional setState so async callbacks (e.g. credential uploads
         // resolving after the user has edited other fields) don't merge against
         // a stale `providerForm` captured at render time.
+        //
+        // Delete semantics: a key set to `undefined` in `newValues` is treated
+        // as "remove this key from the form state". This is how the credential
+        // card signals deletion of `api_key_file` / `agent_id_file` after the
+        // user clicks Delete — without this, a shallow merge would preserve
+        // the prior path and a later form Save would write that stale
+        // reference back to YAML. (Reported in PR #395 review.)
         const updateForm = (newValues: any) =>
-            setProviderForm((prev: any) => ({ ...prev, ...newValues }));
+            setProviderForm((prev: any) => {
+                const next: any = { ...prev };
+                for (const [k, v] of Object.entries(newValues)) {
+                    if (v === undefined) delete next[k];
+                    else next[k] = v;
+                }
+                return next;
+            });
 
         // Common fields (Name)
         const commonFields = (

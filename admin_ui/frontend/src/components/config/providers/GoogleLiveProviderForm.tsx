@@ -68,13 +68,6 @@ interface GoogleLiveProviderFormProps {
 
 const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config, onChange, providerKey }) => {
     const { confirm } = useConfirmDialog();
-
-    // Latest-config ref for race-free credential patches.
-    const configRef = useRef(config);
-    useEffect(() => {
-        configRef.current = config;
-    }, [config]);
-
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -378,7 +371,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                 placeholder="AIza..."
                                 envVarFallback="GOOGLE_API_KEY"
                                 inlineValue={config.api_key}
-                                onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                                onConfigPatch={(patch) => applyCredentialPatch(patch, onChange)}
                                 helpText={
                                     <>
                                         Get a key from{' '}
