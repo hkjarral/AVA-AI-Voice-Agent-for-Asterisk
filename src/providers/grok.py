@@ -2144,47 +2144,6 @@ class GrokProvider(AIProviderInterface):
         if not raw_bytes:
             return
 
-        # DEBUG: one-shot per-call hex dump + RMS fingerprint for format diagnosis.
-        if not getattr(self, "_first_chunk_hex_dumped", False):
-            try:
-                hex_head = raw_bytes[:64].hex()
-                hex_mid_off = max(0, (len(raw_bytes) // 2) - 32)
-                hex_mid = raw_bytes[hex_mid_off:hex_mid_off + 64].hex()
-                # Compute RMS interpreted as PCM16 LE
-                even_len = len(raw_bytes) - (len(raw_bytes) % 2)
-                rms_pcm16 = audioop.rms(raw_bytes[:even_len], 2) if even_len else 0
-                # Compute RMS interpreted as μ-law (decode to pcm16 first)
-                try:
-                    mulaw_to_pcm = mulaw_to_pcm16le(raw_bytes[:min(1024, len(raw_bytes))])
-                    rms_ulaw = audioop.rms(mulaw_to_pcm, 2) if mulaw_to_pcm else 0
-                except Exception:
-                    rms_ulaw = -1
-                # Byte distribution: count bytes that look like μ-law silence (0xff/0x7f)
-                ulaw_silence_bytes = sum(1 for b in raw_bytes[:1024] if b in (0xff, 0x7f))
-                # PCM16 zero-cross count in first 1024 bytes (samples per 512)
-                zero_cross = 0
-                for i in range(2, min(1024, len(raw_bytes)) - 1, 2):
-                    s_prev = int.from_bytes(raw_bytes[i-2:i], "little", signed=True)
-                    s_curr = int.from_bytes(raw_bytes[i:i+2], "little", signed=True)
-                    if (s_prev >= 0) != (s_curr >= 0):
-                        zero_cross += 1
-                logger.info(
-                    "🔬 Grok first-chunk byte signature",
-                    call_id=self._call_id,
-                    bytes_total=len(raw_bytes),
-                    hex_head_64=hex_head,
-                    hex_mid_64=hex_mid,
-                    rms_as_pcm16=rms_pcm16,
-                    rms_as_ulaw=rms_ulaw,
-                    ulaw_silence_byte_count_first_1k=ulaw_silence_bytes,
-                    pcm16_zero_crossings_first_1k_samples=zero_cross,
-                    declared_output_encoding=self.config.output_encoding,
-                    declared_output_sample_rate=self.config.output_sample_rate_hz,
-                )
-                self._first_chunk_hex_dumped = True
-            except Exception:
-                logger.debug("first-chunk byte signature dump failed", exc_info=True)
-        
         # Mark audio observed for this response id (used for reliable hangup behavior).
         try:
             if self._current_response_id:
