@@ -147,7 +147,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
     }));
 
     const providerOptions = Object.entries(providers || {})
-        .filter(([_, p]: [string, any]) => isFullAgentProvider(p))
+        .filter(([name, p]: [string, any]) => isFullAgentProvider(p, name))
         .map(([name, p]: [string, any]) => ({
             value: `provider:${name}`,
             label: `[Provider] ${p.display_name || p.customer || name} (${name}, ${p.type || name})${p.customer ? ` · ${p.customer}` : ''}${p.enabled === false ? ' (Disabled)' : ''}`,

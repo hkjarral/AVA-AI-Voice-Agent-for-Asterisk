@@ -292,7 +292,7 @@ const PipelinesPage = () => {
         }
 
         // Block full agents in modular slots
-        if (isFullAgentProvider(providers[normalizedForm.stt]) || isFullAgentProvider(providers[normalizedForm.llm]) || isFullAgentProvider(providers[normalizedForm.tts])) {
+        if (isFullAgentProvider(providers[normalizedForm.stt], normalizedForm.stt) || isFullAgentProvider(providers[normalizedForm.llm], normalizedForm.llm) || isFullAgentProvider(providers[normalizedForm.tts], normalizedForm.tts)) {
             toast.error('Full-agent providers cannot be used in modular pipeline slots. Please select modular providers with a single capability.');
             return;
         }

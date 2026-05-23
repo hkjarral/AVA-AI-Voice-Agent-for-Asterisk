@@ -126,7 +126,7 @@ const ProvidersPage: React.FC = () => {
         Object.entries(providers).forEach(([providerKey, providerData]) => {
             if (!providerData || typeof providerData !== 'object' || Array.isArray(providerData)) return;
             // Only auto-fill for modular providers.
-            if (isFullAgentProvider(providerData)) return;
+            if (isFullAgentProvider(providerData, providerKey)) return;
 
             const caps = Array.isArray((providerData as any).capabilities) ? (providerData as any).capabilities : [];
             if (caps.length > 0) return;
@@ -161,12 +161,13 @@ const ProvidersPage: React.FC = () => {
         const providerData = { ...(config.providers?.[name] || {}) };
 
         if (!providerData.type || providerData.type === 'full') {
-            if (isFullAgentProvider(providerData)) {
+            if (isFullAgentProvider(providerData, name)) {
                 const lowerName = name.toLowerCase();
                 if (lowerName === 'local' || lowerName.includes('local')) providerData.type = 'local';
                 else if (lowerName.includes('google') || lowerName.includes('gemini')) providerData.type = 'google_live';
                 else if (lowerName.includes('elevenlabs')) providerData.type = 'elevenlabs_agent';
                 else if (lowerName.includes('deepgram')) providerData.type = 'deepgram';
+                else if (lowerName.includes('grok')) providerData.type = 'grok';
                 else providerData.type = 'openai_realtime';
             } else {
                 const lowerName = name.toLowerCase();
@@ -182,7 +183,7 @@ const ProvidersPage: React.FC = () => {
         }
 
         // Legacy migration: if capabilities are missing for a modular provider, infer from suffix for UX.
-        if (!isFullAgentProvider(providerData)) {
+        if (!isFullAgentProvider(providerData, name)) {
             const caps = Array.isArray(providerData.capabilities) ? providerData.capabilities : [];
             if (caps.length === 0) {
                 const inferred = capabilityFromKey(name);
@@ -377,7 +378,7 @@ const ProvidersPage: React.FC = () => {
         const newConfig = { ...config };
         newConfig.default_provider = name;
         // Clear active_pipeline for full agents
-        if (isFullAgentProvider(config.providers?.[name])) {
+        if (isFullAgentProvider(config.providers?.[name], name)) {
             newConfig.active_pipeline = null;
         }
         // Auto-enable the provider when setting as default
@@ -825,7 +826,7 @@ const ProvidersPage: React.FC = () => {
 
             <ConfigSection title="Full Agents" description="End-to-end agents (STT+LLM+TTS) that bypass pipelines.">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {Object.entries(config.providers || {}).filter(([_, p]) => isFullAgentProvider(p)).map(([name, providerData]: [string, any]) => (
+                    {Object.entries(config.providers || {}).filter(([name, p]) => isFullAgentProvider(p, name)).map(([name, providerData]: [string, any]) => (
                         <ConfigCard key={name} className="group relative hover:border-primary/50 transition-colors">
                             {/* Row 1: Provider info */}
                             <div className="flex items-start gap-3">
@@ -984,7 +985,7 @@ const ProvidersPage: React.FC = () => {
                             )}
                         </ConfigCard>
                     ))}
-                    {Object.entries(config.providers || {}).filter(([_, p]) => isFullAgentProvider(p)).length === 0 && (
+                    {Object.entries(config.providers || {}).filter(([name, p]) => isFullAgentProvider(p, name)).length === 0 && (
                         <div className="col-span-full p-8 border border-dashed rounded-lg text-center text-muted-foreground">
                             No full agents configured. Click "Add Provider" to get started.
                         </div>
@@ -994,7 +995,7 @@ const ProvidersPage: React.FC = () => {
 
             <ConfigSection title="Modular Providers" description="Providers you can mix in pipelines (STT/LLM/TTS) based on their capabilities.">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {Object.entries(config.providers || {}).filter(([_, p]) => !isFullAgentProvider(p)).map(([name, providerData]: [string, any]) => (
+                    {Object.entries(config.providers || {}).filter(([name, p]) => !isFullAgentProvider(p, name)).map(([name, providerData]: [string, any]) => (
                         <ConfigCard key={name} className="group relative hover:border-primary/50 transition-colors">
                             {/* Row 1: Provider info */}
                             <div className="flex items-start gap-3">
@@ -1075,7 +1076,7 @@ const ProvidersPage: React.FC = () => {
                             )}
                         </ConfigCard>
                     ))}
-                    {Object.entries(config.providers || {}).filter(([_, p]) => !isFullAgentProvider(p)).length === 0 && (
+                    {Object.entries(config.providers || {}).filter(([name, p]) => !isFullAgentProvider(p, name)).length === 0 && (
                         <div className="col-span-full p-8 border border-dashed rounded-lg text-center text-muted-foreground">
                             No composable providers configured. Click "Add Provider" to get started.
                         </div>

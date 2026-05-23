@@ -141,7 +141,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         const base = Object.entries(providers || {})
             .filter(([providerKey, p]: [string, any]) => {
                 // Exclude Full Agents from modular slots
-                if (isFullAgentProvider(p)) return false;
+                if (isFullAgentProvider(p, providerKey)) return false;
 
                 // Exclude unregistered providers (no engine adapter)
                 if (!isRegisteredOrInferred(providerKey, p)) return false;

@@ -43,17 +43,40 @@ export const getModularCapability = (provider: any): Capability | null => {
 };
 
 /**
+ * Canonical YAML keys for built-in full-agent provider kinds. When a YAML
+ * provider entry uses one of these keys with NO explicit `type` field (the
+ * legacy single-instance form), the engine treats it as a full agent of that
+ * kind. The frontend mirrors that behavior here so the UI categorizes those
+ * entries correctly.
+ */
+const CANONICAL_FULL_AGENT_KEYS = new Set([
+    'openai_realtime',
+    'deepgram',
+    'google_live',
+    'elevenlabs_agent',
+    'grok',
+]);
+
+/**
  * Check if a provider is a Full Agent (handles STT+LLM+TTS together).
  * Full agents can be used as default_provider but NOT in modular pipeline slots.
- * 
+ *
  * A provider is a full agent if:
- * - type is one of: openai_realtime, deepgram, google_live, full
- * - OR has all three capabilities: stt, llm, tts
- * 
+ * - explicit `type` is one of: openai_realtime, deepgram, google_live,
+ *   elevenlabs_agent, grok, full
+ * - OR it has all three capabilities: stt, llm, tts
+ * - OR (legacy single-instance form) the YAML key matches a canonical
+ *   full-agent kind AND no `type` field is set that contradicts it
+ *
  * Note: 'local' with type='full' is a full agent (Local AI Server monolithic mode)
  *       'local' with type='local' is modular (local_stt, local_llm, local_tts)
+ *
+ * @param provider The provider config object
+ * @param key Optional YAML key for the provider (e.g. 'grok', 'acme_grok').
+ *            When supplied, legacy single-instance form (canonical key with
+ *            no explicit `type` field) is recognized.
  */
-export const isFullAgentProvider = (provider: any): boolean => {
+export const isFullAgentProvider = (provider: any, key?: string): boolean => {
     const type = (provider?.type || '').toLowerCase();
     const caps = provider?.capabilities || [];
     const hasAllCaps = caps.includes('stt') && caps.includes('llm') && caps.includes('tts');
@@ -62,6 +85,9 @@ export const isFullAgentProvider = (provider: any): boolean => {
     if (fullAgentTypes.includes(type)) return true;
     // Any provider with all 3 capabilities is a full agent
     if (hasAllCaps) return true;
+    // Legacy single-instance form: YAML key matches a canonical full-agent kind
+    // AND no `type` field is set (so we don't override an explicit `type: modular`).
+    if (key && !type && CANONICAL_FULL_AGENT_KEYS.has(key)) return true;
     return false;
 };
 
