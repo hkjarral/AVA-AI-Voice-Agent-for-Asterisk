@@ -1437,7 +1437,18 @@ async def get_system_health():
                 "http://host.docker.internal:15000/health",
             ])
 
-            timeout = httpx.Timeout(5.0, connect=1.5)
+            # connect=5s (was 1.5s): the engine's event loop can be blocked
+            # for >1s during heavy call traffic / audio processing, which made
+            # localhost TCP connects fluctuate close to or past the 1.5s
+            # ceiling. Hitting that ceiling makes /api/system/health return
+            # `ai_engine.status: error`, which the dashboard's 2-strike
+            # debounce eventually surfaces as a red "Error" badge even though
+            # the engine is functionally healthy. 5s leaves plenty of headroom
+            # without masking a genuine outage (the engine still has to refuse
+            # for 5s+ to flip red, and any real failure mode pushes far past
+            # that). Investigate why localhost connects are slow in a
+            # follow-up — see dashboard topology discussion in PR #395+.
+            timeout = httpx.Timeout(5.0, connect=5.0)
             last_error: Optional[str] = None
 
             async with httpx.AsyncClient(timeout=timeout) as client:
