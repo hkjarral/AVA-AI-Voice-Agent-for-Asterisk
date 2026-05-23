@@ -1,11 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface DeepgramProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
+    providerKey?: string;
 }
 
-const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onChange }) => {
+const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onChange, providerKey }) => {
+    // Latest-config ref for race-free credential patches.
+    const configRef = useRef(config);
+    useEffect(() => {
+        configRef.current = config;
+    }, [config]);
+
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -21,6 +29,33 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
 
     return (
         <div className="space-y-6">
+            <div>
+                <h4 className="font-semibold mb-3">Credentials</h4>
+                <ProviderCredentialsCard
+                    providerKey={providerKey}
+                    credentialType="api-key"
+                    label="Deepgram API Key"
+                    placeholder="Token..."
+                    envVarFallback="DEEPGRAM_API_KEY"
+                    inlineValue={config.api_key}
+                    onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                    helpText={
+                        <>
+                            Find your key in the{' '}
+                            <a
+                                href="https://console.deepgram.com/"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline"
+                            >
+                                Deepgram Console
+                            </a>
+                            . Per-instance keys override the env var fallback.
+                        </>
+                    }
+                />
+            </div>
+
             {/* Base URL Section */}
             <div>
                 <h4 className="font-semibold mb-3">API Endpoints</h4>

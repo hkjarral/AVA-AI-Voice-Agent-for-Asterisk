@@ -14,6 +14,8 @@ interface TelnyxConfig {
 interface TelnyxProviderFormProps {
     config: TelnyxConfig;
     onChange: (newConfig: TelnyxConfig) => void;
+    /** Unused here; accepted for prop-shape parity with full-agent forms. */
+    providerKey?: string;
 }
 
 const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChange }) => {

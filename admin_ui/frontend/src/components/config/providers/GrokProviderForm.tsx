@@ -1,8 +1,10 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface GrokProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
+    providerKey?: string;
 }
 
 const GROK_VOICES = [
@@ -18,7 +20,14 @@ const GROK_MODELS = [
     { value: 'grok-voice-think-fast-1.0', label: 'grok-voice-think-fast-1.0 (flagship)' },
 ];
 
-const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange }) => {
+const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, providerKey }) => {
+    // Keep a ref to the latest `config` so async credential patches read the
+    // freshest in-memory provider state (see applyCredentialPatch docstring).
+    const configRef = useRef(config);
+    useEffect(() => {
+        configRef.current = config;
+    }, [config]);
+
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -56,6 +65,33 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange })
                         xAI Grok Voice Agent WebSocket endpoint. Override only for proxy / regional routes.
                     </p>
                 </div>
+            </div>
+
+            <div>
+                <h4 className="font-semibold mb-3">Credentials</h4>
+                <ProviderCredentialsCard
+                    providerKey={providerKey}
+                    credentialType="api-key"
+                    label="xAI API Key"
+                    placeholder="xai-..."
+                    envVarFallback="XAI_API_KEY"
+                    inlineValue={config.api_key}
+                    onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                    helpText={
+                        <>
+                            Find your key in the{' '}
+                            <a
+                                href="https://console.x.ai/team/default/api-keys"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline"
+                            >
+                                xAI Console
+                            </a>
+                            . For multi-instance setups, each YAML provider key gets its own credential file.
+                        </>
+                    }
+                />
             </div>
 
             <div>

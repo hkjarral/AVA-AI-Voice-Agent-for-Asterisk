@@ -1,12 +1,20 @@
-import React from 'react';
-import { ExternalLink, Info, Mic } from 'lucide-react';
+import React, { useEffect, useRef } from 'react';
+import { Info, Mic } from 'lucide-react';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 
 interface ElevenLabsProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
+    providerKey?: string;
 }
 
-const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config, onChange }) => {
+const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config, onChange, providerKey }) => {
+    // Latest-config ref for race-free credential patches.
+    const configRef = useRef(config);
+    useEffect(() => {
+        configRef.current = config;
+    }, [config]);
+
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -23,14 +31,59 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
             const { voice_id, model_id, ...rest } = config;
             onChange({ ...rest, mode: 'agent', type: 'elevenlabs_agent' });
         } else {
-            // Switch to TTS: keep voice_id if exists, clear agent_id
-            const { agent_id, ...rest } = config;
+            // Switch to TTS: keep voice_id if exists, clear agent_id AND
+            // any per-instance agent_id_file. Leaving agent_id_file behind
+            // would persist a stale credential reference pointing at an
+            // agent-id file that's no longer relevant in TTS mode (and may
+            // cause the engine to fail provider validation).
+            const { agent_id, agent_id_file, ...rest } = config;
             onChange({ ...rest, mode: 'tts', type: 'elevenlabs' });
         }
     };
 
     return (
         <div className="space-y-6">
+            <div>
+                <h4 className="font-semibold mb-3">Credentials</h4>
+                <div className="space-y-3">
+                    <ProviderCredentialsCard
+                        providerKey={providerKey}
+                        credentialType="api-key"
+                        label="ElevenLabs API Key"
+                        placeholder="xi-..."
+                        envVarFallback="ELEVENLABS_API_KEY"
+                        inlineValue={config.api_key}
+                        onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                        helpText={
+                            <>
+                                Find your key in the{' '}
+                                <a
+                                    href="https://elevenlabs.io/app/settings/api-keys"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline"
+                                >
+                                    ElevenLabs Console
+                                </a>
+                                .
+                            </>
+                        }
+                    />
+                    {mode === 'agent' && (
+                        <ProviderCredentialsCard
+                            providerKey={providerKey}
+                            credentialType="agent-id"
+                            label="ElevenLabs Agent ID"
+                            placeholder="agent_..."
+                            envVarFallback="ELEVENLABS_AGENT_ID"
+                            inlineValue={config.agent_id}
+                            onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                            helpText="The Agent ID identifies which Conversational AI agent to use."
+                        />
+                    )}
+                </div>
+            </div>
+
             {/* Mode Selection */}
             <div className="space-y-2">
                 <label className="text-sm font-medium">Provider Mode</label>

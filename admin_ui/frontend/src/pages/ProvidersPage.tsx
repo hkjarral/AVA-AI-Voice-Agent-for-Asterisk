@@ -665,7 +665,11 @@ const ProvidersPage: React.FC = () => {
     };
 
     const renderProviderForm = () => {
-        const updateForm = (newValues: any) => setProviderForm({ ...providerForm, ...newValues });
+        // Functional setState so async callbacks (e.g. credential uploads
+        // resolving after the user has edited other fields) don't merge against
+        // a stale `providerForm` captured at render time.
+        const updateForm = (newValues: any) =>
+            setProviderForm((prev: any) => ({ ...prev, ...newValues }));
 
         // Check provider name for specific forms, fallback to type
         const providerName = (providerForm.name || '').toLowerCase();
@@ -687,23 +691,26 @@ const ProvidersPage: React.FC = () => {
 
         // Check by provider NAME first (for full agents that have type='full')
         // This ensures Deepgram, Google Live, etc. use their specific forms
+        // Per-instance credentials require a saved YAML entry; pass `editingProvider`
+        // when editing an existing provider, undefined for unsaved new ones.
+        const credKey = isNewProvider ? undefined : (editingProvider || undefined);
         if (providerName === 'deepgram' || providerName.includes('deepgram')) {
-            return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
+            return <DeepgramProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName === 'google_live' || providerName.includes('google') || providerName.includes('gemini')) {
-            return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={providerForm.name} />;
+            return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName.includes('azure')) {
             return <AzureProviderForm config={providerForm} onChange={updateForm} />;
         }
         if (providerName === 'openai_realtime' || providerName.includes('realtime')) {
-            return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} />;
+            return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName === 'grok' || providerName.includes('grok') || providerForm.type === 'grok') {
-            return <GrokProviderForm config={providerForm} onChange={updateForm} />;
+            return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName.includes('elevenlabs')) {
-            return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} />;
+            return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
         }
         if (providerName.includes('telnyx') || providerName.includes('telenyx')) {
             return <TelnyxProviderForm config={providerForm} onChange={updateForm} />;
@@ -712,18 +719,18 @@ const ProvidersPage: React.FC = () => {
         // Fall back to type-based selection (for full agents only at this point)
         switch (providerForm.type) {
             case 'openai_realtime':
-                return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} />;
+                return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'deepgram':
-                return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
+                return <DeepgramProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'google_live':
-                return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={providerForm.name} />;
+                return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'grok':
-                return <GrokProviderForm config={providerForm} onChange={updateForm} />;
+                return <GrokProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'openai':
                 return <OpenAIProviderForm config={providerForm} onChange={updateForm} />;
             case 'elevenlabs_agent':
             case 'elevenlabs':
-                return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} />;
+                return <ElevenLabsProviderForm config={providerForm} onChange={updateForm} providerKey={credKey} />;
             case 'ollama':
                 return <OllamaProviderForm config={providerForm} onChange={updateForm} />;
             case 'telnyx':

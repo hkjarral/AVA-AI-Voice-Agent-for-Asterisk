@@ -5,6 +5,8 @@ import { AlertCircle, RefreshCw } from 'lucide-react';
 interface LocalProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
+    /** Unused here; accepted for prop-shape parity with full-agent forms. */
+    providerKey?: string;
 }
 
 const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange }) => {

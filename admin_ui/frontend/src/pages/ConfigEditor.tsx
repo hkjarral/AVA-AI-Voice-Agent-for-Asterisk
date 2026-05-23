@@ -275,7 +275,11 @@ const ConfigEditor = () => {
 
     const renderProviderForm = () => {
         // Helper to update provider form state
-        const updateForm = (newValues: any) => setProviderForm({ ...providerForm, ...newValues });
+        // Functional setState so async callbacks (e.g. credential uploads
+        // resolving after the user has edited other fields) don't merge against
+        // a stale `providerForm` captured at render time.
+        const updateForm = (newValues: any) =>
+            setProviderForm((prev: any) => ({ ...prev, ...newValues }));
 
         // Common fields (Name)
         const commonFields = (
@@ -361,11 +365,14 @@ const ConfigEditor = () => {
                 FormComponent = DeepgramProviderForm;
         }
 
+        // Per-instance credentials only work for saved YAML entries.
+        const credKey = isNewProvider ? undefined : (editingProvider || undefined);
+
         return (
             <div className="space-y-4">
                 {commonFields}
                 <div className="border-t pt-4">
-                    <FormComponent config={providerForm} onChange={updateForm} />
+                    <FormComponent config={providerForm} onChange={updateForm} providerKey={credKey} />
                 </div>
             </div>
         );

@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../../../hooks/useConfirmDialog';
 import { AlertTriangle, Upload, Trash2, CheckCircle, XCircle, Loader2, FileJson } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
+import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import {
     GOOGLE_LIVE_MODEL_GROUPS,
     GOOGLE_LIVE_SUPPORTED_MODELS,
@@ -67,6 +68,13 @@ interface GoogleLiveProviderFormProps {
 
 const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config, onChange, providerKey }) => {
     const { confirm } = useConfirmDialog();
+
+    // Latest-config ref for race-free credential patches.
+    const configRef = useRef(config);
+    useEffect(() => {
+        configRef.current = config;
+    }, [config]);
+
     const handleChange = (field: string, value: any) => {
         onChange({ ...config, [field]: value });
     };
@@ -362,15 +370,46 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
 
                     {/* Developer API key — shown when Vertex AI is OFF */}
                     {!config.use_vertex_ai && (
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium">API Key (Environment Variable)</label>
-                            <input
-                                type="text"
-                                className="w-full p-2 rounded border border-input bg-background"
-                                value={config.api_key || '${GOOGLE_API_KEY}'}
-                                onChange={(e) => handleChange('api_key', e.target.value)}
-                                placeholder="${GOOGLE_API_KEY}"
+                        <div className="space-y-3">
+                            <ProviderCredentialsCard
+                                providerKey={providerKey}
+                                credentialType="api-key"
+                                label="Google API Key"
+                                placeholder="AIza..."
+                                envVarFallback="GOOGLE_API_KEY"
+                                inlineValue={config.api_key}
+                                onConfigPatch={(patch) => applyCredentialPatch(configRef, patch, onChange)}
+                                helpText={
+                                    <>
+                                        Get a key from{' '}
+                                        <a
+                                            href="https://aistudio.google.com/apikey"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-primary hover:underline"
+                                        >
+                                            Google AI Studio
+                                        </a>
+                                        . Per-instance keys override the env var fallback.
+                                    </>
+                                }
                             />
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-muted-foreground">
+                                    API Key (inline / env var) — legacy
+                                </label>
+                                <input
+                                    type="text"
+                                    className="w-full p-2 rounded border border-input bg-background"
+                                    value={config.api_key || ''}
+                                    onChange={(e) => handleChange('api_key', e.target.value)}
+                                    placeholder="${GOOGLE_API_KEY}"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Direct value or <code>${'{'}GOOGLE_API_KEY{'}'}</code> reference. Per-instance uploads above
+                                    take precedence over this field.
+                                </p>
+                            </div>
                         </div>
                     )}
                 </div>

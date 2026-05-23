@@ -3,6 +3,8 @@ import React from 'react';
 interface OpenAIProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
+    /** Unused here; accepted for prop-shape parity with full-agent forms. */
+    providerKey?: string;
 }
 
 const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChange }) => {
