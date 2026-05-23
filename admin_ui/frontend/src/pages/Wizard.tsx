@@ -22,7 +22,6 @@ interface SetupConfig {
     elevenlabs_key?: string;
     elevenlabs_agent_id?: string;
     cartesia_key?: string;
-    camb_key?: string;
     xai_key?: string;
     greeting: string;
     ai_name: string;
@@ -876,20 +875,6 @@ exten => s,1,NoOp(AI Agent Call)
                     return;
                 }
             }
-            if (config.provider === 'cambai') {
-                if (!config.camb_key) {
-                    showToast('CAMB AI API key is required.', 'error');
-                    return;
-                }
-                if (!config.deepgram_key) {
-                    showToast('Deepgram API key is required for CAMB AI pipeline (STT).', 'error');
-                    return;
-                }
-                if (!config.openai_key) {
-                    showToast('OpenAI API key is required for CAMB AI pipeline (LLM).', 'error');
-                    return;
-                }
-            }
             if (config.provider === 'grok' && !config.xai_key) {
                 showToast('xAI API key is required for Grok Voice Agent.', 'error');
                 return;
@@ -998,36 +983,6 @@ exten => s,1,NoOp(AI Agent Call)
                     } else {
                         throw new Error('ElevenLabs API Key is required');
                     }
-                }
-
-                if (config.provider === 'cambai') {
-                    // CAMB AI pipeline requires three keys: CAMB AI (TTS), Deepgram (STT), OpenAI (LLM)
-                    if (!config.camb_key) {
-                        throw new Error('CAMB AI API Key is required');
-                    }
-                    const cambRes = await axios.post('/api/wizard/validate-key', {
-                        provider: 'cambai',
-                        api_key: config.camb_key
-                    });
-                    if (!cambRes.data.valid) throw new Error(`CAMB AI Key Invalid: ${cambRes.data.error}`);
-
-                    if (!config.deepgram_key) {
-                        throw new Error('Deepgram API Key is required for CAMB AI pipeline (STT)');
-                    }
-                    const dgRes = await axios.post('/api/wizard/validate-key', {
-                        provider: 'deepgram',
-                        api_key: config.deepgram_key
-                    });
-                    if (!dgRes.data.valid) throw new Error(`Deepgram Key Invalid: ${dgRes.data.error}`);
-
-                    if (!config.openai_key) {
-                        throw new Error('OpenAI API Key is required for CAMB AI pipeline (LLM)');
-                    }
-                    const oaRes = await axios.post('/api/wizard/validate-key', {
-                        provider: 'openai',
-                        api_key: config.openai_key
-                    });
-                    if (!oaRes.data.valid) throw new Error(`OpenAI Key Invalid: ${oaRes.data.error}`);
                 }
 
                 if (config.provider === 'grok') {
@@ -1244,12 +1199,6 @@ exten => s,1,NoOp(AI Agent Call)
                                 id="grok"
                                 title="xAI Grok Voice Agent"
                                 description="Multilingual realtime (24+ languages including Hindi, Urdu, Arabic). $3/hr flat. μ-law direct telephony path; OpenAI-Realtime-compatible API."
-                                icon={Cloud}
-                            />
-                            <ProviderCard
-                                id="cambai"
-                                title="CAMB AI"
-                                description="Multilingual MARS TTS (mars-flash ~150ms latency, voice cloning, 16+ languages). Pipeline: Deepgram STT + OpenAI LLM + CAMB AI TTS."
                                 icon={Cloud}
                             />
                         </div>
@@ -1919,86 +1868,6 @@ exten => s,1,NoOp(AI Agent Call)
                                         <li>Cost: $3/hour flat (≈ $0.05/min), regardless of voice or model.</li>
                                         <li>Output is PCM16 @ 24 kHz (xAI emits this regardless of session.update declaration).</li>
                                     </ul>
-                                </div>
-                            </div>
-                        )}
-
-                        {config.provider === 'cambai' && (
-                            <div className="space-y-4">
-                                <div className="bg-blue-50/50 dark:bg-blue-900/10 p-4 rounded-md border border-blue-100 dark:border-blue-900/20 text-sm text-blue-800 dark:text-blue-300">
-                                    <p className="font-semibold mb-1">CAMB AI Pipeline</p>
-                                    <p className="text-blue-700 dark:text-blue-400">
-                                        Pipeline mode using <strong>Deepgram STT</strong> + <strong>OpenAI LLM</strong> + <strong>CAMB AI TTS</strong> (mars-flash, ~150ms latency).
-                                        Requires three API keys.
-                                    </p>
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">CAMB AI API Key</label>
-                                    <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.camb_key}
-                                            onChange={e => setConfig({ ...config, camb_key: e.target.value })}
-                                            placeholder="UUID..."
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => handleTestKey('cambai', config.camb_key || '')}
-                                            className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
-                                            disabled={loading}
-                                        >
-                                            Test
-                                        </button>
-                                    </div>
-                                    <p className="text-xs text-muted-foreground">
-                                        Get yours at{' '}
-                                        <a href="https://studio.camb.ai" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                                            studio.camb.ai
-                                        </a>
-                                    </p>
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">Deepgram API Key (for STT)</label>
-                                    <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.deepgram_key}
-                                            onChange={e => setConfig({ ...config, deepgram_key: e.target.value })}
-                                            placeholder="Token..."
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => handleTestKey('deepgram', config.deepgram_key || '')}
-                                            className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
-                                            disabled={loading}
-                                        >
-                                            Test
-                                        </button>
-                                    </div>
-                                    <p className="text-xs text-muted-foreground">For speech-to-text transcription.</p>
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">OpenAI API Key (for LLM)</label>
-                                    <div className="flex space-x-2">
-                                        <input
-                                            type="password"
-                                            className="w-full p-2 rounded-md border border-input bg-background"
-                                            value={config.openai_key}
-                                            onChange={e => setConfig({ ...config, openai_key: e.target.value })}
-                                            placeholder="sk-..."
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => handleTestKey('openai', config.openai_key || '')}
-                                            className="px-3 py-2 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80"
-                                            disabled={loading}
-                                        >
-                                            Test
-                                        </button>
-                                    </div>
-                                    <p className="text-xs text-muted-foreground">For LLM reasoning (gpt-4o-mini by default).</p>
                                 </div>
                             </div>
                         )}
