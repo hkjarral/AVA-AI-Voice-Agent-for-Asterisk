@@ -9,6 +9,7 @@ import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
+import HelpTooltip from '../components/ui/HelpTooltip';
 import { usePendingChanges } from '../hooks/usePendingChanges';
 
 // Provider Forms
@@ -1285,11 +1286,97 @@ const ProvidersPage: React.FC = () => {
                     <div className="space-y-2">
                         <h4 className="text-sm font-medium">Full Agents (Cloud)</h4>
                         {[
-                            { id: 'openai_realtime', name: 'OpenAI Realtime', desc: 'GPT-4o real-time voice agent' },
-                            { id: 'deepgram', name: 'Deepgram', desc: 'Nova-3 STT + Aura-2 TTS voice agent (Flux available)' },
-                            { id: 'google_live', name: 'Google Live', desc: 'Gemini 2.5 Native Audio real-time agent' },
-                            { id: 'elevenlabs_agent', name: 'ElevenLabs Agent', desc: 'ElevenLabs conversational AI' },
-                            { id: 'grok', name: 'xAI Grok Voice Agent', desc: 'Grok Voice (μ-law direct, 5 named voices, 30-min session cap)' },
+                            {
+                                id: 'openai_realtime',
+                                name: 'OpenAI Realtime',
+                                desc: 'GPT-4o real-time voice agent',
+                                doc: 'https://platform.openai.com/docs/guides/realtime',
+                                tooltip: (
+                                    <>
+                                        <strong>OpenAI Realtime</strong> — native speech-to-speech with the gpt-4o-realtime model.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>~5–8¢/min (~3¢ with realtime-mini)</li>
+                                            <li>10 voices (alloy, echo, ash, ballad, etc.)</li>
+                                            <li>Server-side VAD, native barge-in</li>
+                                            <li>Most natural conversational quality</li>
+                                            <li>Requires <code>OPENAI_API_KEY</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'deepgram',
+                                name: 'Deepgram',
+                                desc: 'Nova-3 STT + Aura-2 TTS voice agent (Flux available)',
+                                doc: 'https://developers.deepgram.com/docs/voice-agent',
+                                tooltip: (
+                                    <>
+                                        <strong>Deepgram Voice Agent</strong> — Nova-3 STT + Aura-2 TTS, with built-in Think stage for reasoning.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>~8¢/min</li>
+                                            <li>Lowest STT latency (Nova-3)</li>
+                                            <li>Flux variant available for sub-200ms turn-taking</li>
+                                            <li>Best for enterprise telephony workloads</li>
+                                            <li>Requires <code>DEEPGRAM_API_KEY</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'google_live',
+                                name: 'Google Live',
+                                desc: 'Gemini 2.5 Native Audio real-time agent',
+                                doc: 'https://ai.google.dev/gemini-api/docs/live',
+                                tooltip: (
+                                    <>
+                                        <strong>Google Gemini Live</strong> — fastest response time + best multilingual support.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>~1.5¢/min (cheapest cloud option)</li>
+                                            <li>&lt;1s response latency</li>
+                                            <li>24+ languages out of the box</li>
+                                            <li>Two auth modes: Developer API or Vertex AI</li>
+                                            <li>Requires <code>GOOGLE_API_KEY</code> or service-account JSON</li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'elevenlabs_agent',
+                                name: 'ElevenLabs Agent',
+                                desc: 'ElevenLabs conversational AI',
+                                doc: 'https://elevenlabs.io/docs/conversational-ai/overview',
+                                tooltip: (
+                                    <>
+                                        <strong>ElevenLabs Conversational AI</strong> — premium voice quality, hosted agent platform.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>~8–10¢/min</li>
+                                            <li>Highest TTS voice quality (eleven_flash_v2_5)</li>
+                                            <li>Voice cloning supported in ElevenLabs dashboard</li>
+                                            <li>Best for English-first deployments</li>
+                                            <li>Requires <code>ELEVENLABS_API_KEY</code> + <code>ELEVENLABS_AGENT_ID</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'grok',
+                                name: 'xAI Grok Voice Agent',
+                                desc: 'Grok Voice (μ-law direct, 5 named voices, 30-min session cap)',
+                                doc: 'https://docs.x.ai/developers/model-capabilities/audio/voice-agent',
+                                tooltip: (
+                                    <>
+                                        <strong>xAI Grok Voice Agent</strong> — newest cloud option.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>~5¢/min ($3/hr flat)</li>
+                                            <li>5 named voices (eve, ara, rex, sal, leo) + custom cloned IDs</li>
+                                            <li>μ-law direct @ 8 kHz — no resampling for telephony</li>
+                                            <li>30-minute hard session cap (xAI limit)</li>
+                                            <li>Multi-instance ready (per-tenant keys via secret files)</li>
+                                            <li>Requires <code>XAI_API_KEY</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
                         ].map(template => (
                             <label key={template.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 cursor-pointer">
                                 <input
@@ -1308,6 +1395,18 @@ const ProvidersPage: React.FC = () => {
                                 <div className="flex-1">
                                     <div className="flex items-center gap-2">
                                         <span className="font-medium">{template.name}</span>
+                                        {/* Hover for pricing, voice options, env var requirements, doc link. */}
+                                        <span
+                                            // Tooltip is a button — keep clicks from toggling the parent
+                                            // <label>'s checkbox when the user clicks the help icon.
+                                            onClick={(e) => e.preventDefault()}
+                                        >
+                                            <HelpTooltip
+                                                content={template.tooltip}
+                                                link={template.doc}
+                                                linkText="Setup docs"
+                                            />
+                                        </span>
                                         {config.providers?.[template.id] && (
                                             <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded">Already exists</span>
                                         )}
@@ -1336,6 +1435,24 @@ const ProvidersPage: React.FC = () => {
                             <div className="flex-1">
                                 <div className="flex items-center gap-2">
                                     <span className="font-medium">Local Modular (STT + LLM + TTS)</span>
+                                    <span onClick={(e) => e.preventDefault()}>
+                                        <HelpTooltip
+                                            content={
+                                                <>
+                                                    <strong>Local Modular Stack</strong> — three role-split providers backed by the on-premises Local AI Server.
+                                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                        <li>~0.2¢/min (Kroko ASR + Kokoro/Piper TTS)</li>
+                                                        <li>100% on-premises — no API egress for audio</li>
+                                                        <li>Requires 4+ CPU cores; GPU optional for faster inference</li>
+                                                        <li>Use these slots inside a Pipeline (mix &amp; match with cloud roles)</li>
+                                                        <li>No API key needed</li>
+                                                    </ul>
+                                                </>
+                                            }
+                                            link="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk#local-hybrid"
+                                            linkText="Setup docs"
+                                        />
+                                    </span>
                                     {config.providers?.local_stt && config.providers?.local_llm && config.providers?.local_tts && (
                                         <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded">Already exists</span>
                                     )}
@@ -1347,9 +1464,58 @@ const ProvidersPage: React.FC = () => {
                     <div className="space-y-2">
                         <h4 className="text-sm font-medium">Modular Providers (Cloud)</h4>
                         {[
-                            { id: 'telnyx_llm', name: 'Telnyx LLM', desc: 'Telnyx AI Inference (OpenAI-compatible /chat/completions)' },
-                            { id: 'azure_stt', name: 'Azure STT', desc: 'Microsoft Azure Speech-to-Text (realtime or fast transcription)' },
-                            { id: 'azure_tts', name: 'Azure TTS', desc: 'Microsoft Azure Text-to-Speech (neural voices, SSML)' },
+                            {
+                                id: 'telnyx_llm',
+                                name: 'Telnyx LLM',
+                                desc: 'Telnyx AI Inference (OpenAI-compatible /chat/completions)',
+                                doc: 'https://developers.telnyx.com/docs/inference/overview',
+                                tooltip: (
+                                    <>
+                                        <strong>Telnyx LLM</strong> — modular LLM slot. Use inside a Pipeline alongside any STT/TTS.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>OpenAI-compatible <code>/chat/completions</code> endpoint</li>
+                                            <li>Default model: <code>Qwen/Qwen3-235B-A22B</code></li>
+                                            <li>Pay per token (~$0.40 / 1M input)</li>
+                                            <li>Requires <code>TELNYX_API_KEY</code></li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'azure_stt',
+                                name: 'Azure STT',
+                                desc: 'Microsoft Azure Speech-to-Text (realtime or fast transcription)',
+                                doc: 'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/',
+                                tooltip: (
+                                    <>
+                                        <strong>Azure STT</strong> — modular STT slot.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Two variants: realtime streaming OR fast transcription</li>
+                                            <li>100+ languages with auto-detection</li>
+                                            <li>~$1/hour realtime; pay-per-second fast transcription</li>
+                                            <li>Requires <code>AZURE_SPEECH_KEY</code> + region (e.g. eastus)</li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
+                            {
+                                id: 'azure_tts',
+                                name: 'Azure TTS',
+                                desc: 'Microsoft Azure Text-to-Speech (neural voices, SSML)',
+                                doc: 'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/text-to-speech',
+                                tooltip: (
+                                    <>
+                                        <strong>Azure TTS</strong> — modular TTS slot.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>400+ neural voices across 140 languages</li>
+                                            <li>Full SSML support (pitch, rate, emphasis)</li>
+                                            <li>~$16 / 1M characters (Neural)</li>
+                                            <li>Output formats include μ-law @ 8 kHz for telephony</li>
+                                            <li>Requires <code>AZURE_SPEECH_KEY</code> + region</li>
+                                        </ul>
+                                    </>
+                                ),
+                            },
                         ].map(template => (
                             <label key={template.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 cursor-pointer">
                                 <input
@@ -1368,6 +1534,13 @@ const ProvidersPage: React.FC = () => {
                                 <div className="flex-1">
                                     <div className="flex items-center gap-2">
                                         <span className="font-medium">{template.name}</span>
+                                        <span onClick={(e) => e.preventDefault()}>
+                                            <HelpTooltip
+                                                content={template.tooltip}
+                                                link={template.doc}
+                                                linkText="Setup docs"
+                                            />
+                                        </span>
                                         {config.providers?.[template.id] && (
                                             <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded">Already exists</span>
                                         )}
