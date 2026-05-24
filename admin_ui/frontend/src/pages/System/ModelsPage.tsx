@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { HardDrive, Download, Trash2, RefreshCw, CheckCircle2, XCircle, Loader2, Mic, Volume2, Brain, AlertTriangle, Cpu, Terminal, Settings, Play, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { ConfigCard } from '../../components/ui/ConfigCard';
+import HelpTooltip from '../../components/ui/HelpTooltip';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { RebuildBackendDialog } from '../../components/models/RebuildBackendDialog';
 import { CustomModelsPanel } from '../../components/models/CustomModelsPanel';
@@ -1022,6 +1023,19 @@ const ModelsPage = () => {
                                     <div className="flex items-center gap-2 mb-2">
                                         <Mic className="w-4 h-4 text-blue-500" />
                                         <span className="text-sm font-medium">STT</span>
+                                        <HelpTooltip
+                                            content={
+                                                <>
+                                                    <strong>STT</strong> — speech-to-text engine currently loaded by the Local AI Server.
+                                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                        <li><code>faster_whisper</code> — accurate, multilingual; needs more RAM.</li>
+                                                        <li><code>whisper_cpp</code> — smaller CPU footprint.</li>
+                                                        <li><code>sherpa</code> — streaming, low latency.</li>
+                                                        <li><code>tone</code> — Russian-specialized.</li>
+                                                    </ul>
+                                                </>
+                                            }
+                                        />
                                         <span className={`ml-auto px-2 py-0.5 rounded text-xs ${activeModels.stt.loaded ? 'bg-green-500/10 text-green-500' : 'bg-yellow-500/10 text-yellow-500'
                                             }`}>
                                             {activeModels.stt.loaded ? 'Loaded' : 'Not Loaded'}
@@ -1079,7 +1093,20 @@ const ModelsPage = () => {
                                         if (selectedBackend === 'faster_whisper' || selectedBackend === 'whisper_cpp') {
                                             return (
                                                 <div className="mt-2 space-y-2">
-                                                    <label className="text-[10px] text-muted-foreground">Language (ISO 639-1)</label>
+                                                    <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                        Language (ISO 639-1)
+                                                        <HelpTooltip
+                                                            content={
+                                                                <>
+                                                                    <strong>Language</strong> — ISO 639-1 code passed to Whisper to skip auto-detection.
+                                                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                        <li>Faster startup, more reliable transcription.</li>
+                                                                        <li>Examples: <code>en</code>, <code>es</code>, <code>fr</code>, <code>ru</code>.</li>
+                                                                    </ul>
+                                                                </>
+                                                            }
+                                                        />
+                                                    </label>
                                                     <input
                                                         type="text"
                                                         className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.language ? 'border-yellow-500' : 'border-border'}`}
@@ -1100,7 +1127,21 @@ const ModelsPage = () => {
                                                             return (
                                                                 <div className="grid grid-cols-2 gap-2">
                                                                     <div>
-                                                                        <label className="text-[10px] text-muted-foreground">Device</label>
+                                                                        <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                            Device
+                                                                            <HelpTooltip
+                                                                                content={
+                                                                                    <>
+                                                                                        <strong>Device</strong> — where Faster-Whisper runs inference.
+                                                                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                                            <li><code>cpu</code> — works everywhere; slowest.</li>
+                                                                                            <li><code>cuda</code> — NVIDIA GPU; needs CUDA libs in image.</li>
+                                                                                            <li><code>auto</code> — pick GPU if available.</li>
+                                                                                        </ul>
+                                                                                    </>
+                                                                                }
+                                                                            />
+                                                                        </label>
                                                                         <select
                                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.device ? 'border-yellow-500' : 'border-border'}`}
                                                                             value={fwDevice}
@@ -1124,7 +1165,21 @@ const ModelsPage = () => {
                                                                         </select>
                                                                     </div>
                                                                     <div>
-                                                                        <label className="text-[10px] text-muted-foreground">Compute</label>
+                                                                        <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                                            Compute
+                                                                            <HelpTooltip
+                                                                                content={
+                                                                                    <>
+                                                                                        <strong>Compute Type</strong> — numeric precision Faster-Whisper uses for inference.
+                                                                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                                            <li><code>int8</code> — fastest on CPU, smallest memory.</li>
+                                                                                            <li><code>float16</code> — best speed on CUDA; CPU not supported.</li>
+                                                                                            <li><code>float32</code> — highest accuracy, slowest.</li>
+                                                                                        </ul>
+                                                                                    </>
+                                                                                }
+                                                                            />
+                                                                        </label>
                                                                         <select
                                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.compute_type ? 'border-yellow-500' : 'border-border'}`}
                                                                             value={cpuDevice && fwCompute === 'float16' ? 'int8' : fwCompute}
@@ -1150,7 +1205,20 @@ const ModelsPage = () => {
                                             return (
                                                 <div className="mt-2 space-y-1.5">
                                                     <div>
-                                                        <label className="text-[10px] text-muted-foreground">Model Type</label>
+                                                        <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                            Model Type
+                                                            <HelpTooltip
+                                                                content={
+                                                                    <>
+                                                                        <strong>Sherpa Model Type</strong> — streaming vs. batched inference mode.
+                                                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                            <li><code>online</code> — true streaming; lowest latency, partial transcripts.</li>
+                                                                            <li><code>offline</code> — VAD-gated batched chunks; better accuracy.</li>
+                                                                        </ul>
+                                                                    </>
+                                                                }
+                                                            />
+                                                        </label>
                                                         <select
                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.sherpa_model_type ? 'border-yellow-500' : 'border-border'}`}
                                                             value={pendingSttExtra.sherpa_model_type ?? (activeModels.stt as any).sherpa_model_type ?? 'online'}
@@ -1186,7 +1254,20 @@ const ModelsPage = () => {
                                             return (
                                                 <div className="mt-2 space-y-1.5">
                                                     <div>
-                                                        <label className="text-[10px] text-muted-foreground">Decoder</label>
+                                                        <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                            Decoder
+                                                            <HelpTooltip
+                                                                content={
+                                                                    <>
+                                                                        <strong>T-one Decoder</strong> — decoding strategy.
+                                                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                            <li><code>beam_search</code> — explores multiple hypotheses with KenLM rescoring; more accurate.</li>
+                                                                            <li><code>greedy</code> — takes the top token each step; faster, lower accuracy.</li>
+                                                                        </ul>
+                                                                    </>
+                                                                }
+                                                            />
+                                                        </label>
                                                         <select
                                                             className={`w-full text-xs p-1.5 rounded border bg-background ${pendingSttExtra.tone_decoder_type ? 'border-yellow-500' : 'border-border'}`}
                                                             value={pendingSttExtra.tone_decoder_type ?? (activeModels.stt as any).tone_decoder_type ?? 'beam_search'}
@@ -1227,6 +1308,18 @@ const ModelsPage = () => {
                                     <div className="flex items-center gap-2 mb-3">
                                         <Brain className="w-4 h-4 text-purple-500" />
                                         <span className="text-sm font-medium">LLM</span>
+                                        <HelpTooltip
+                                            content={
+                                                <>
+                                                    <strong>LLM</strong> — large language model loaded by <code>llama-cpp-python</code> in the Local AI Server.
+                                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                        <li>GGUF format only; quantized weights are fine (Q4_K_M is a good default).</li>
+                                                        <li>Larger models = better quality but slower TTFT.</li>
+                                                        <li>Chat format is auto-set when switching here.</li>
+                                                    </ul>
+                                                </>
+                                            }
+                                        />
                                         <span className={`ml-auto px-2 py-0.5 rounded text-xs ${activeModels.llm.loaded ? 'bg-green-500/10 text-green-500' : 'bg-yellow-500/10 text-yellow-500'
                                             }`}>
                                             {activeModels.llm.loaded ? 'Loaded' : 'Not Loaded'}
@@ -1248,7 +1341,21 @@ const ModelsPage = () => {
                                     {/* Tuning Controls */}
                                     <div className="mt-3 flex gap-2">
                                         <div className="flex-1 min-w-0">
-                                            <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Context</label>
+                                            <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1">
+                                                Context
+                                                <HelpTooltip
+                                                    content={
+                                                        <>
+                                                            <strong>Context</strong> — context-window size (<code>n_ctx</code>) passed to llama.cpp.
+                                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                <li>Larger = more memory of conversation, slower & more RAM.</li>
+                                                                <li>Must be {`≤`} the model's trained context length.</li>
+                                                                <li>Change requires LLM reload.</li>
+                                                            </ul>
+                                                        </>
+                                                    }
+                                                />
+                                            </label>
                                             <select
                                                 value={pendingLlmConfig.context ?? activeModels.llm.config?.context ?? ''}
                                                 onChange={(e) => {
@@ -1266,7 +1373,20 @@ const ModelsPage = () => {
                                             </select>
                                         </div>
                                         <div className="flex-1 min-w-0">
-                                            <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Max Tokens</label>
+                                            <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1">
+                                                Max Tokens
+                                                <HelpTooltip
+                                                    content={
+                                                        <>
+                                                            <strong>Max Tokens</strong> — upper bound on tokens generated per local LLM response.
+                                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                <li>Caps response length and worst-case TTS latency.</li>
+                                                                <li>For voice, 80–200 is usually enough.</li>
+                                                            </ul>
+                                                        </>
+                                                    }
+                                                />
+                                            </label>
                                             <input
                                                 type="number"
                                                 min={1}
@@ -1284,7 +1404,20 @@ const ModelsPage = () => {
 
                                     <div className="mt-3 grid grid-cols-1 gap-2 text-xs">
                                         <label className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-2 py-1.5">
-                                            <span className="text-muted-foreground">Filler audio</span>
+                                            <span className="text-muted-foreground flex items-center gap-1">
+                                                Filler audio
+                                                <HelpTooltip
+                                                    content={
+                                                        <>
+                                                            <strong>Filler audio</strong> — play a short "thinking" sound while the LLM is still generating its first token.
+                                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                <li>Hides first-token latency for slower local models.</li>
+                                                                <li>Disable if you prefer pure silence before speech.</li>
+                                                            </ul>
+                                                        </>
+                                                    }
+                                                />
+                                            </span>
                                             <input
                                                 type="checkbox"
                                                 className="rounded border-border"
@@ -1294,7 +1427,20 @@ const ModelsPage = () => {
                                             />
                                         </label>
                                         <label className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-2 py-1.5">
-                                            <span className="text-muted-foreground">LLM/TTS overlap</span>
+                                            <span className="text-muted-foreground flex items-center gap-1">
+                                                LLM/TTS overlap
+                                                <HelpTooltip
+                                                    content={
+                                                        <>
+                                                            <strong>LLM/TTS overlap</strong> — start synthesizing TTS for each LLM sentence as it streams, instead of waiting for the full response.
+                                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                                <li>Dramatically cuts perceived response latency.</li>
+                                                                <li>Disable only when debugging streaming glitches.</li>
+                                                            </ul>
+                                                        </>
+                                                    }
+                                                />
+                                            </span>
                                             <input
                                                 type="checkbox"
                                                 className="rounded border-border"
@@ -1341,6 +1487,19 @@ const ModelsPage = () => {
                                     <div className="flex items-center gap-2 mb-2">
                                         <Volume2 className="w-4 h-4 text-green-500" />
                                         <span className="text-sm font-medium">TTS</span>
+                                        <HelpTooltip
+                                            content={
+                                                <>
+                                                    <strong>TTS</strong> — text-to-speech engine currently loaded by the Local AI Server.
+                                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                        <li><code>piper</code> — fast, lightweight, good voice quality.</li>
+                                                        <li><code>kokoro</code> — natural prosody; multiple voice files.</li>
+                                                        <li><code>melotts</code> — multilingual; requires backend rebuild.</li>
+                                                        <li><code>silero</code> — Russian/EU languages; rebuild required.</li>
+                                                    </ul>
+                                                </>
+                                            }
+                                        />
                                         <span className={`ml-auto px-2 py-0.5 rounded text-xs ${activeModels.tts.loaded ? 'bg-green-500/10 text-green-500' : 'bg-yellow-500/10 text-yellow-500'
                                             }`}>
                                             {activeModels.tts.loaded ? 'Loaded' : 'Not Loaded'}
