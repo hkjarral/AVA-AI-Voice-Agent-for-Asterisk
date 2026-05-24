@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
+import HelpTooltip from '../../ui/HelpTooltip';
 
 interface DeepgramProviderFormProps {
     config: any;
@@ -55,10 +56,26 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                 <h4 className="font-semibold mb-3">API Endpoints</h4>
                 <div className="grid grid-cols-1 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                            Voice Agent WebSocket URL
-                            <span className="text-xs text-muted-foreground ml-2">(voice_agent_base_url)</span>
-                        </label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">
+                                Voice Agent WebSocket URL
+                                <span className="text-xs text-muted-foreground ml-2">(voice_agent_base_url)</span>
+                            </label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Voice Agent WebSocket</strong> — endpoint for Deepgram's all-in-one Voice Agent (Listen + Think + Speak over a single WS).
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>US: <code>wss://agent.deepgram.com/v1/agent/converse</code></li>
+                                            <li>EU: <code>wss://agent.eu.deepgram.com/v1/agent/converse</code></li>
+                                        </ul>
+                                        Only change for region routing or a proxy.
+                                    </>
+                                }
+                                link="https://developers.deepgram.com/docs/voice-agent"
+                                linkText="Voice Agent docs"
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -71,10 +88,25 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                            REST API Base URL
-                            <span className="text-xs text-muted-foreground ml-2">(base_url)</span>
-                        </label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">
+                                REST API Base URL
+                                <span className="text-xs text-muted-foreground ml-2">(base_url)</span>
+                            </label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>REST API Base URL</strong> — used by Deepgram in pipeline mode (separate STT/TTS HTTP calls), not the Voice Agent WS.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>US: <code>https://api.deepgram.com</code></li>
+                                            <li>EU: <code>https://api.eu.deepgram.com</code></li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://developers.deepgram.com/reference/deepgram-api-overview"
+                                linkText="API reference"
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -94,7 +126,25 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                 <h4 className="font-semibold mb-3">Models & Voice</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">STT Model</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">STT Model</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Listen (STT) Model</strong> — which Deepgram STT model the Voice Agent (or pipeline) uses for transcription.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>flux-general-en</code> — beta, sub-200ms turn-taking with built-in EOT detection (best for voice agents)</li>
+                                            <li><code>nova-3</code> — recommended general default, 47+ languages</li>
+                                            <li><code>nova-2-phonecall</code> — tuned for telephony audio</li>
+                                            <li><code>nova-2-medical</code> / <code>nova-2-finance</code> — domain-specific</li>
+                                        </ul>
+                                        Switching away from a <code>flux-*</code> model clears Flux-only tuning fields.
+                                    </>
+                                }
+                                link="https://developers.deepgram.com/docs/models-languages-overview"
+                                linkText="STT models"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.model || 'nova-3'}
@@ -159,10 +209,26 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                            STT Language
-                            <span className="text-xs text-muted-foreground ml-2">(stt_language)</span>
-                        </label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">
+                                STT Language
+                                <span className="text-xs text-muted-foreground ml-2">(stt_language)</span>
+                            </label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>STT Language</strong> — default BCP-47 language tag passed to Deepgram for transcription in pipeline mode.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>en-US</code>, <code>en-GB</code>, <code>es</code>, <code>fr</code>, <code>de</code>, <code>multi</code>, etc.</li>
+                                            <li>Must be supported by the selected STT model</li>
+                                        </ul>
+                                        Pipelines/contexts can override this per-call.
+                                    </>
+                                }
+                                link="https://developers.deepgram.com/docs/models-languages-overview"
+                                linkText="Language support"
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -176,10 +242,25 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                            Agent Language
-                            <span className="text-xs text-muted-foreground ml-2">(agent_language)</span>
-                        </label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">
+                                Agent Language
+                                <span className="text-xs text-muted-foreground ml-2">(agent_language)</span>
+                            </label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Agent Language</strong> — language for the full Voice Agent conversation (Listen + Speak).
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Must match the language of your selected TTS voice</li>
+                                            <li>Aura-2 voices are language-tagged (e.g. <code>-en</code>, <code>-es</code>, <code>-de</code>)</li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://developers.deepgram.com/docs/configure-voice-agent"
+                                linkText="Configure Voice Agent"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.agent_language || 'en'}
@@ -235,10 +316,27 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">
-                            Voice Model
-                            <span className="text-xs text-muted-foreground ml-2">(tts_model)</span>
-                        </label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">
+                                Voice Model
+                                <span className="text-xs text-muted-foreground ml-2">(tts_model)</span>
+                            </label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Speak (TTS) Voice</strong> — Deepgram Aura voice that synthesizes the agent's replies.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>aura-2-*</code> — newest generation, best naturalness</li>
+                                            <li><code>aura-*</code> — legacy, still supported</li>
+                                            <li>Voice locale (<code>-en</code>, <code>-es</code>, etc.) must match Agent Language</li>
+                                            <li>⭐ featured, 🔄 codeswitching ES↔EN</li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://developers.deepgram.com/docs/tts-models"
+                                linkText="All Aura voices"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.tts_model || 'aura-2-thalia-en'}
@@ -373,7 +471,22 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Input Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Input Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Input Encoding</strong> — audio codec of frames coming FROM Asterisk into the agent.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>mulaw</code> — standard US telephony (G.711 μ-law)</li>
+                                            <li><code>alaw</code> — standard EU telephony (G.711 A-law)</li>
+                                            <li><code>linear16</code> — uncompressed PCM, higher quality</li>
+                                        </ul>
+                                        Must match Asterisk's channel codec.
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.input_encoding || 'linear16'}
@@ -389,7 +502,21 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Input Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Input Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Input Sample Rate</strong> — sample rate of audio coming FROM Asterisk.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>8000</code> Hz — standard telephony (G.711)</li>
+                                            <li><code>16000</code> Hz — wideband (G.722, Opus)</li>
+                                        </ul>
+                                        Must match the codec on the Asterisk channel.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -402,7 +529,21 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Output Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Output Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Output Encoding</strong> — codec Deepgram returns TTS audio in.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>mulaw</code> @ 8 kHz — passes straight to G.711 telephony (no transcoding)</li>
+                                            <li><code>linear16</code> — uncompressed PCM, needs resample/encode</li>
+                                        </ul>
+                                        Match telephony for lowest latency.
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.output_encoding || 'mulaw'}
@@ -418,7 +559,20 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Output Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Output Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Output Sample Rate</strong> — sample rate of TTS audio coming FROM Deepgram.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>8000</code> Hz — narrowband, telephony native</li>
+                                            <li><code>16000</code> / <code>24000</code> Hz — higher fidelity, requires downsampling for G.711</li>
+                                        </ul>
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -431,7 +585,19 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Target Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Target Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Target Encoding</strong> — final codec written to the Asterisk channel (after any internal transcoding).
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Should match your Asterisk dialplan codec (usually <code>mulaw</code> for US, <code>alaw</code> for EU)</li>
+                                        </ul>
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.target_encoding || 'mulaw'}
@@ -447,7 +613,20 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Target Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Target Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Target Sample Rate</strong> — final sample rate written to the Asterisk channel.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>8000</code> Hz for G.711 (μ-law / A-law)</li>
+                                            <li><code>16000</code> Hz for wideband channels</li>
+                                        </ul>
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -460,7 +639,20 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider Input Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Provider Input Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Provider Input Encoding</strong> — codec the engine sends TO Deepgram (after any internal upsampling from telephony).
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>linear16</code> — recommended for best STT accuracy</li>
+                                            <li><code>mulaw</code> — saves bandwidth, slightly lower accuracy</li>
+                                        </ul>
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.provider_input_encoding || 'linear16'}
@@ -475,7 +667,20 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider Input Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Provider Input Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Provider Input Sample Rate</strong> — sample rate sent TO Deepgram for STT.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>16000</code> Hz — optimal for Nova / Flux models</li>
+                                            <li><code>8000</code> Hz — telephony-native, skips upsampling</li>
+                                        </ul>
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -489,7 +694,22 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                 </div>
 
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">System Instructions</label>
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">System Instructions</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>System Instructions</strong> — system prompt sent to the Voice Agent's Think (LLM) stage. Defines persona, scope, and behavior.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>Keep it concise — long prompts add latency on every turn</li>
+                                        <li>Use the prompt to declare tools, refusal policies, and language</li>
+                                    </ul>
+                                </>
+                            }
+                            link="https://developers.deepgram.com/docs/configure-voice-agent"
+                            linkText="Agent config"
+                        />
+                    </div>
                     <textarea
                         className="w-full p-2 rounded border border-input bg-background min-h-[100px] font-mono text-sm"
                         value={config.instructions || ''}
@@ -499,7 +719,20 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                 </div>
 
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">Greeting</label>
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">Greeting</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Greeting</strong> — first utterance the agent speaks when the call connects, before any user input.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>Spoken via the configured TTS voice immediately on session start</li>
+                                        <li>Leave empty for a silent open (agent waits for caller to speak)</li>
+                                    </ul>
+                                </>
+                            }
+                        />
+                    </div>
                     <input
                         type="text"
                         className="w-full p-2 rounded border border-input bg-background"
@@ -519,6 +752,13 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                             onChange={(e) => handleChange('enabled', e.target.checked)}
                         />
                         <label htmlFor="enabled" className="text-sm font-medium">Enabled</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Enabled</strong> — when off, this provider instance is skipped during pipeline selection and the engine falls back to another configured provider.
+                                </>
+                            }
+                        />
                     </div>
 
                     <div className="flex items-center space-x-2">
@@ -530,6 +770,17 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                             onChange={(e) => handleChange('continuous_input', e.target.checked)}
                         />
                         <label htmlFor="continuous_input" className="text-sm font-medium">Continuous Input</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Continuous Input</strong> — keep streaming Asterisk audio to Deepgram even while the agent is speaking, enabling barge-in.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>On: caller can interrupt the agent mid-utterance</li>
+                                        <li>Off: input is paused while TTS plays</li>
+                                    </ul>
+                                </>
+                            }
+                        />
                     </div>
 
                     <div className="flex items-center space-x-2">
@@ -541,11 +792,38 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                             onChange={(e) => handleChange('vad_turn_detection', e.target.checked)}
                         />
                         <label htmlFor="vad_turn_detection" className="text-sm font-medium">VAD Turn Detection</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>VAD Turn Detection</strong> — use Deepgram's server-side Voice Activity Detection / endpointing to decide when the caller is done speaking.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>On: Deepgram emits <code>UtteranceEnd</code> and the agent responds</li>
+                                        <li>Off: rely on client-side turn-taking (not recommended for telephony)</li>
+                                        <li>Flux models have their own EOT detection — see Flux tuning below</li>
+                                    </ul>
+                                </>
+                            }
+                            link="https://developers.deepgram.com/docs/endpointing"
+                            linkText="Endpointing docs"
+                        />
                     </div>
                 </div>
 
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">Farewell Hangup Delay (seconds)</label>
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">Farewell Hangup Delay (seconds)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Farewell Hangup Delay</strong> — wait this long after the agent finishes its final TTS playback before hanging up the channel.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>Prevents clipping the last word</li>
+                                        <li>Leave empty to use the global default (2.5s)</li>
+                                    </ul>
+                                </>
+                            }
+                        />
+                    </div>
                     <input
                         type="number"
                         step="0.5"
@@ -579,7 +857,23 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">EndOfTurn Threshold (eot_threshold)</label>
+                                <div className="flex items-center gap-1.5">
+                                    <label className="text-sm font-medium">EndOfTurn Threshold (eot_threshold)</label>
+                                    <HelpTooltip
+                                        content={
+                                            <>
+                                                <strong>EndOfTurn Threshold</strong> — confidence Flux requires to commit "the caller is done speaking" and let the agent respond.
+                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                    <li>Range <code>0.5</code>–<code>0.9</code>, default <code>0.7</code></li>
+                                                    <li>Higher = wait longer, fewer early cut-offs but more lag</li>
+                                                    <li>Lower = snappier turn-taking, risk of interrupting the caller</li>
+                                                </ul>
+                                            </>
+                                        }
+                                        link="https://developers.deepgram.com/docs/configure-voice-agent"
+                                        linkText="Flux tuning"
+                                    />
+                                </div>
                                 <input
                                     type="number"
                                     step="0.05"
@@ -600,7 +894,23 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                                 </p>
                             </div>
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">EagerEndOfTurn Threshold (eager_eot_threshold)</label>
+                                <div className="flex items-center gap-1.5">
+                                    <label className="text-sm font-medium">EagerEndOfTurn Threshold (eager_eot_threshold)</label>
+                                    <HelpTooltip
+                                        content={
+                                            <>
+                                                <strong>EagerEndOfTurn Threshold</strong> — earlier, lower-confidence signal that lets the LLM start "thinking ahead" before the final EOT fires.
+                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                    <li>Range <code>0.3</code>–<code>0.9</code>; must be strictly less than <code>eot_threshold</code></li>
+                                                    <li>Empty = disabled (no eager processing)</li>
+                                                    <li>Trades extra LLM cost for lower perceived latency</li>
+                                                </ul>
+                                            </>
+                                        }
+                                        link="https://developers.deepgram.com/docs/configure-voice-agent"
+                                        linkText="Flux tuning"
+                                    />
+                                </div>
                                 <input
                                     type="number"
                                     step="0.05"
@@ -622,7 +932,23 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                             </div>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Keyterms (comma-separated)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Keyterms (comma-separated)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Keyterms</strong> — domain vocabulary (brand names, jargon, place names) to bias Flux STT toward.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Comma-separated, e.g. <code>NEMT, dispatcher, Medicaid</code></li>
+                                                <li>Useful for proper nouns that generic models mis-transcribe</li>
+                                                <li>Empty to skip</li>
+                                            </ul>
+                                        </>
+                                    }
+                                    link="https://developers.deepgram.com/docs/keyterm"
+                                    linkText="Keyterm prompting"
+                                />
+                            </div>
                             <input
                                 type="text"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -676,7 +1002,20 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
             <div>
                 <h4 className="font-semibold mb-3">Authentication</h4>
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">API Key (Environment Variable)</label>
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">API Key (Environment Variable)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>API Key (env var reference)</strong> — legacy fallback field. Prefer the Credentials card above for per-instance keys.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>Use <code>${'${DEEPGRAM_API_KEY}'}</code> syntax to read from an environment variable</li>
+                                        <li>Plain strings are stored in config (avoid checking secrets into git)</li>
+                                    </ul>
+                                </>
+                            }
+                        />
+                    </div>
                     <input
                         type="text"
                         className="w-full p-2 rounded border border-input bg-background"
