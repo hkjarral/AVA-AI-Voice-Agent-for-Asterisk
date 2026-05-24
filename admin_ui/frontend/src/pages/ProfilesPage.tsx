@@ -571,12 +571,14 @@ const ProfilesPage = () => {
                                     { value: 'pcm16', label: 'PCM16' },
                                     { value: 'linear16', label: 'Linear16' }
                                 ]}
+                                tooltip="Audio encoding sent TO the provider (STT/realtime). Match the provider's preferred format to avoid extra resampling: mulaw for PSTN-grade telephony, pcm16/linear16 for wideband cloud APIs."
                             />
                             <FormInput
                                 label="Input Sample Rate (Hz)"
                                 type="number"
                                 value={profileForm.provider_pref?.input_sample_rate_hz || 8000}
                                 onChange={(e) => updateNestedField('provider_pref', 'input_sample_rate_hz', parseInt(e.target.value))}
+                                tooltip="Sample rate of the audio sent to the provider. Common values: 8000 (telephony), 16000 (wideband), 24000 (OpenAI Realtime)."
                             />
                             <FormSelect
                                 label="Output Encoding"
@@ -587,12 +589,14 @@ const ProfilesPage = () => {
                                     { value: 'pcm16', label: 'PCM16' },
                                     { value: 'linear16', label: 'Linear16' }
                                 ]}
+                                tooltip="Audio encoding the provider returns (TTS output). Match the format the provider natively produces to avoid a transcoding step."
                             />
                             <FormInput
                                 label="Output Sample Rate (Hz)"
                                 type="number"
                                 value={profileForm.provider_pref?.output_sample_rate_hz || 8000}
                                 onChange={(e) => updateNestedField('provider_pref', 'output_sample_rate_hz', parseInt(e.target.value))}
+                                tooltip="Sample rate of the audio the provider returns. Will be resampled down to transport_out rate before going to Asterisk."
                             />
                         </div>
                     </div>
@@ -610,12 +614,14 @@ const ProfilesPage = () => {
                                     { value: 'slin16', label: 'SLIN16 (16kHz)' },
                                     { value: 'ulaw', label: 'μ-law' }
                                 ]}
+                                tooltip="Encoding written back to the Asterisk ExternalMedia socket. SLIN/SLIN16 are 16-bit linear PCM; μ-law is the PSTN-native G.711 codec."
                             />
                             <FormInput
                                 label="Sample Rate (Hz)"
                                 type="number"
                                 value={profileForm.transport_out?.sample_rate_hz || 8000}
                                 onChange={(e) => updateNestedField('transport_out', 'sample_rate_hz', parseInt(e.target.value))}
+                                tooltip="Sample rate of the audio frames sent to Asterisk. Must match the encoding above (slin=8000, slin16=16000, ulaw=8000)."
                             />
                         </div>
                     </div>
