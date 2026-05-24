@@ -1,5 +1,6 @@
 import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
+import HelpTooltip from '../../ui/HelpTooltip';
 
 interface GrokProviderFormProps {
     config: any;
@@ -43,10 +44,24 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
             <div>
                 <h4 className="font-semibold mb-3">Connection</h4>
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">
-                        Realtime Base URL
-                        <span className="text-xs text-muted-foreground ml-2">(base_url)</span>
-                    </label>
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">
+                            Realtime Base URL
+                            <span className="text-xs text-muted-foreground ml-2">(base_url)</span>
+                        </label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Realtime Base URL</strong> — WebSocket endpoint for xAI's Grok Voice Agent.
+                                    Default: <code>wss://api.x.ai/v1/realtime</code>. Override only if you route through a
+                                    corporate proxy or xAI publishes a regional endpoint. The <code>?model=</code> query
+                                    param is appended automatically.
+                                </>
+                            }
+                            link="https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
+                            linkText="xAI Grok docs"
+                        />
+                    </div>
                     <input
                         type="text"
                         className="w-full p-2 rounded border border-input bg-background"
@@ -91,7 +106,23 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                 <h4 className="font-semibold mb-3">Model & Voice</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Model</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Model</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Model</strong> — sent as <code>?model=</code> query param on the WebSocket URL.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>grok-voice-latest</code> — recommended default, tracks xAI's current stable voice model</li>
+                                            <li><code>grok-voice-think-fast-1.0</code> — flagship reasoning model, higher quality for complex tasks</li>
+                                        </ul>
+                                        Pricing is currently $3/hr flat (~5¢/min) across models.
+                                    </>
+                                }
+                                link="https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
+                                linkText="xAI Grok docs"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.model || 'grok-voice-latest'}
@@ -108,7 +139,27 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Voice</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Voice</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Voice</strong> — which speaker xAI uses for synthesized audio.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>eve</code> — energetic, upbeat</li>
+                                            <li><code>ara</code> — warm, friendly</li>
+                                            <li><code>rex</code> — confident, clear</li>
+                                            <li><code>sal</code> — smooth, balanced</li>
+                                            <li><code>leo</code> — authoritative, strong</li>
+                                        </ul>
+                                        Switch to <em>Custom voice ID</em> to use a voice cloned in the xAI dashboard
+                                        (paste the voice ID it returns).
+                                    </>
+                                }
+                                link="https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
+                                linkText="xAI voice options"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={voiceMode}
@@ -152,7 +203,23 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                 <h4 className="font-semibold mb-3">Audio Format — Inbound (Asterisk → xAI)</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">AudioSocket Source Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">AudioSocket Source Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>AudioSocket Source Encoding</strong> — what Asterisk's AudioSocket
+                                        channel sends us on the inbound leg.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>ulaw</code> — G.711 μ-law, default for Asterisk telephony (PSTN/SIP)</li>
+                                            <li><code>slin16</code> — PCM16 at 16 kHz, used for wideband HD voice</li>
+                                            <li><code>slin</code> — PCM16 at 8 kHz</li>
+                                        </ul>
+                                        Match whatever the dialplan's <code>AudioSocket()</code> app emits.
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.input_encoding || 'ulaw'}
@@ -167,7 +234,22 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">AudioSocket Source Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">AudioSocket Source Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>AudioSocket Source Sample Rate</strong> — sample rate of the bytes
+                                        AudioSocket sends us.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>8000</code> — for <code>ulaw</code> and <code>slin</code> (narrowband telephony)</li>
+                                            <li><code>16000</code> — for <code>slin16</code> (wideband HD voice)</li>
+                                        </ul>
+                                        Must match the codec in Asterisk's dialplan.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -179,7 +261,23 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider Input Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Provider Input Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Provider Input Encoding</strong> — format we declare to xAI in
+                                        <code>session.update.audio.input.format</code>.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>ulaw</code> — μ-law direct at 8 kHz, <strong>recommended</strong>. Passes Asterisk's native frames straight through with zero resampling — lower CPU, lower latency, no quality loss from conversion.</li>
+                                            <li><code>linear16</code> — PCM16 fallback. We resample 8 kHz μ-law up to 16/24 kHz PCM before sending. Only useful if xAI rejects ulaw for a given model.</li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
+                                linkText="xAI audio formats"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.provider_input_encoding || 'ulaw'}
@@ -194,7 +292,23 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider Input Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Provider Input Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Provider Input Sample Rate</strong> — sample rate declared to xAI for
+                                        the audio we send.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>8000</code> — for <code>ulaw</code> (telephony-native, no resample)</li>
+                                            <li><code>16000</code> — typical PCM16 rate</li>
+                                            <li><code>24000</code> — high-quality PCM16 rate</li>
+                                        </ul>
+                                        Stick to <code>8000</code> when using μ-law direct.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -212,7 +326,19 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                 <h4 className="font-semibold mb-3">Audio Format — Outbound (xAI → AudioSocket)</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider Output Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Provider Output Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Provider Output Encoding</strong> — what xAI sends us. As of 2026-05,
+                                        xAI ignores per-session output format declarations and always emits PCM16 at 24 kHz.
+                                        Leave on <code>linear16</code> unless xAI's behavior changes. The engine downsamples
+                                        to the AudioSocket target encoding below before forwarding to Asterisk.
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.output_encoding || 'linear16'}
@@ -228,7 +354,19 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider Output Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Provider Output Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Provider Output Sample Rate</strong> — xAI's actual native output rate.
+                                        <code>24000</code> Hz is correct as of 2026-05; setting anything else will produce
+                                        chipmunk or sub-bass audio because the engine uses this to drive the downsampler.
+                                        Only change if xAI publishes a new rate.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -240,7 +378,23 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">AudioSocket Target Encoding</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">AudioSocket Target Encoding</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>AudioSocket Target Encoding</strong> — what we send back to Asterisk
+                                        after downsampling xAI's 24 kHz PCM16.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>ulaw</code> — G.711 μ-law, Asterisk default for PSTN/SIP</li>
+                                            <li><code>slin</code> — PCM16 at 8 kHz</li>
+                                            <li><code>slin16</code> — PCM16 at 16 kHz (only if AudioSocket is wideband)</li>
+                                        </ul>
+                                        Must match what AudioSocket expects on the playback leg.
+                                    </>
+                                }
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.target_encoding || 'ulaw'}
@@ -255,7 +409,22 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">AudioSocket Target Sample Rate (Hz)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">AudioSocket Target Sample Rate (Hz)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>AudioSocket Target Sample Rate</strong> — sample rate of audio sent to
+                                        Asterisk.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><code>8000</code> — narrowband telephony (matches <code>ulaw</code>/<code>slin</code>)</li>
+                                            <li><code>16000</code> — only if AudioSocket is wideband (<code>slin16</code>)</li>
+                                        </ul>
+                                        Must match the encoding above.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -306,7 +475,20 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                 <h4 className="font-semibold mb-3">Prompt & Greeting</h4>
                 <div className="space-y-3">
                     <div>
-                        <label className="text-sm font-medium">System Instructions</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">System Instructions</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>System Instructions</strong> — the system prompt sent to Grok on session
+                                        start. Defines the assistant's persona, scope, tone, and guardrails. Leave blank
+                                        to fall back to the global LLM prompt configured elsewhere. Keep it focused — for
+                                        voice agents, brevity and turn-taking instructions matter more than long
+                                        policy text.
+                                    </>
+                                }
+                            />
+                        </div>
                         <textarea
                             className="w-full p-2 rounded border border-input bg-background"
                             rows={4}
@@ -319,7 +501,20 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         </p>
                     </div>
                     <div>
-                        <label className="text-sm font-medium">Initial Greeting</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Initial Greeting</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Initial Greeting</strong> — first utterance the assistant speaks when
+                                        the call connects, before the caller says anything. Keep it short and end with
+                                        an open question (e.g. <em>"Hello, how can I help you today?"</em>) so the
+                                        server VAD has something to detect against. Leave blank to wait silently for
+                                        the caller to speak first.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -335,7 +530,22 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                 <h4 className="font-semibold mb-3">Turn Detection (server VAD)</h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Threshold</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Threshold</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>VAD Threshold</strong> — voice activity detection sensitivity (0.1 to 0.9).
+                                        Default <code>0.5</code>.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Lower (e.g. <code>0.3</code>) — picks up quiet/soft callers, but may trigger on background noise</li>
+                                            <li>Higher (e.g. <code>0.7</code>) — ignores noisy environments, but may miss soft-spoken callers</li>
+                                        </ul>
+                                        Tune up for call-center floors, down for quiet office lines.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             step="0.1"
@@ -347,7 +557,21 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Silence (ms)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Silence (ms)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Silence Duration</strong> — how long of a silence before xAI considers
+                                        the caller's turn done and starts responding. Default <code>200</code> ms.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Lower (100–200 ms) — snappier, but may cut off slow speakers mid-sentence</li>
+                                            <li>Higher (400–800 ms) — more patient, but adds noticeable response latency</li>
+                                        </ul>
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -356,7 +580,19 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Prefix Padding (ms)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Prefix Padding (ms)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Prefix Padding</strong> — how much audio before the detected speech-start
+                                        to include when sending the turn to xAI. Default <code>200</code> ms.
+                                        Prevents clipping the leading consonant of words like "yes" or "no". Raise
+                                        slightly (300–500 ms) if you hear cut-off word beginnings in transcripts.
+                                    </>
+                                }
+                            />
+                        </div>
                         <input
                             type="number"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -370,7 +606,25 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
             <div>
                 <h4 className="font-semibold mb-3">Session Cap Warning</h4>
                 <div className="space-y-2">
-                    <label className="text-sm font-medium">Warn after (seconds)</label>
+                    <div className="flex items-center gap-1.5">
+                        <label className="text-sm font-medium">Warn after (seconds)</label>
+                        <HelpTooltip
+                            content={
+                                <>
+                                    <strong>Session Cap Warning</strong> — xAI enforces a hard 30-minute (1800 s) cap
+                                    per realtime session. The engine logs a structured warning at this elapsed
+                                    threshold so you can detect long calls before xAI tears them down mid-sentence.
+                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                        <li>Default <code>1680</code> sec = 28 min (2-minute buffer before the cap)</li>
+                                        <li>Set to <code>0</code> to disable the warning</li>
+                                    </ul>
+                                    Long calls should hand off to a human or close out before 30 min.
+                                </>
+                            }
+                            link="https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
+                            linkText="xAI session limits"
+                        />
+                    </div>
                     <input
                         type="number"
                         className="w-full p-2 rounded border border-input bg-background"
