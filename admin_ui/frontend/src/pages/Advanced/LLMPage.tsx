@@ -7,6 +7,7 @@ import { YamlErrorBanner, YamlErrorInfo } from '../../components/ui/YamlErrorBan
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput } from '../../components/ui/FormComponents';
+import HelpTooltip from '../../components/ui/HelpTooltip';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
 const CHAT_FORMAT_OPTIONS = [
@@ -247,9 +248,22 @@ const LLMPage = () => {
                             tooltip="The first message spoken by the AI when the call starts."
                         />
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                                System Prompt
-                            </label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                                    System Prompt
+                                </label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>System Prompt</strong> — core instructions defining the AI's persona, role, and behavior. Sent as the <code>system</code> message at the start of every conversation.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Overridden by a context's <code>prompt</code> when one is matched.</li>
+                                                <li>Keep it focused; long prompts eat into the LLM context window.</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <textarea
                                 className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                                 value={llmConfig.prompt || ''}
@@ -268,7 +282,21 @@ const LLMPage = () => {
                 <ConfigCard>
                     <div className="space-y-6">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none">Chat Format</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium leading-none">Chat Format</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Chat Format</strong> — the prompt template <code>llama-cpp-python</code> uses for <code>create_chat_completion()</code>. Each model family expects a specific format (special tokens, role markers).
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Auto-set when you pick a model on the Models page.</li>
+                                                <li>Wrong format = garbled / looping output.</li>
+                                                <li>Leave empty for legacy raw Phi-style prompting.</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background text-sm"
                                 value={env['LOCAL_LLM_CHAT_FORMAT'] || ''}
@@ -284,7 +312,21 @@ const LLMPage = () => {
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium leading-none">Voice Preamble</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium leading-none">Voice Preamble</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Voice Preamble</strong> — meta-instructions prepended to the system prompt so the local LLM produces voice-friendly output.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>No markdown / bullets / headings (TTS would read them literally).</li>
+                                                <li>Encourages short, conversational replies.</li>
+                                                <li>Applied on every call for the local provider.</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <textarea
                                 className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                                 value={env['LOCAL_LLM_VOICE_PREAMBLE'] || ''}
@@ -305,7 +347,22 @@ const LLMPage = () => {
                     <div className="space-y-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">Tool Policy Override</label>
+                                <div className="flex items-center gap-1.5">
+                                    <label className="text-sm font-medium">Tool Policy Override</label>
+                                    <HelpTooltip
+                                        content={
+                                            <>
+                                                <strong>Tool Policy Override</strong> — how aggressively the full-local provider attempts tool calls.
+                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                    <li><code>auto</code> — pick based on model capability probe (recommended).</li>
+                                                    <li><code>strict</code> — only structured tool-decision path.</li>
+                                                    <li><code>compatible</code> — structured + parser/repair fallback for weaker models.</li>
+                                                    <li><code>off</code> — disable model tool execution entirely.</li>
+                                                </ul>
+                                            </>
+                                        }
+                                    />
+                                </div>
                                 <select
                                     className="w-full p-2 rounded border border-input bg-background"
                                     value={configuredToolPolicy || 'auto'}
@@ -327,7 +384,20 @@ const LLMPage = () => {
                                 </div>
                             </div>
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">Structured Tool Gateway</label>
+                                <div className="flex items-center gap-1.5">
+                                    <label className="text-sm font-medium">Structured Tool Gateway</label>
+                                    <HelpTooltip
+                                        content={
+                                            <>
+                                                <strong>Structured Tool Gateway</strong> — runs a dedicated full-local tool-decision pass separate from spoken-response parsing.
+                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                    <li>Helps weaker LLMs reliably emit tool calls without polluting the spoken reply.</li>
+                                                    <li>STT-only and TTS-only modular pipelines are unaffected.</li>
+                                                </ul>
+                                            </>
+                                        }
+                                    />
+                                </div>
                                 <label className="flex items-center gap-2 p-2 rounded border border-input bg-background">
                                     <input
                                         type="checkbox"
