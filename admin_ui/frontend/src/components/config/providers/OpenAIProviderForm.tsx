@@ -1,4 +1,5 @@
 import React from 'react';
+import HelpTooltip from '../../ui/HelpTooltip';
 
 interface OpenAIProviderFormProps {
     config: any;
@@ -23,7 +24,23 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                 <h4 className="font-semibold text-sm border-b pb-2">Authentication</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">API Key (env or literal)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">API Key (env or literal)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>OpenAI API Key</strong> — credential for platform.openai.com.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Recommended: env var reference like <code>${'${OPENAI_API_KEY}'}</code></li>
+                                            <li>Generate at platform.openai.com/api-keys</li>
+                                            <li>Avoid committing literal keys to YAML</li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://platform.openai.com/api-keys"
+                                linkText="Get API key"
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -33,7 +50,22 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Organization (optional)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Organization (optional)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Organization ID</strong> — sent as the <code>OpenAI-Organization</code> header to route usage/billing.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Format: <code>org_…</code></li>
+                                            <li>Only needed if your key belongs to multiple orgs</li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://platform.openai.com/docs/api-reference/authentication"
+                                linkText="API auth docs"
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -43,7 +75,22 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Project (optional)</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Project (optional)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Project ID</strong> — sent as the <code>OpenAI-Project</code> header for per-project usage tracking.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li>Format: <code>proj_…</code></li>
+                                            <li>Required for project-scoped API keys</li>
+                                        </ul>
+                                    </>
+                                }
+                                link="https://platform.openai.com/docs/api-reference/authentication"
+                                linkText="Projects docs"
+                            />
+                        </div>
                         <input
                             type="text"
                             className="w-full p-2 rounded border border-input bg-background"
@@ -53,7 +100,23 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Realtime API Version</label>
+                        <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Realtime API Version</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Realtime API Version</strong> — controls whether the engine sends the <code>OpenAI-Beta</code> header on Realtime calls.
+                                        <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                            <li><strong>Beta</strong> (default): broadest compatibility</li>
+                                            <li><strong>GA</strong>: drops the beta header; may require additional account verification</li>
+                                        </ul>
+                                        Mostly cosmetic for modular STT/LLM/TTS slots — only the Realtime full-agent honors this.
+                                    </>
+                                }
+                                link="https://platform.openai.com/docs/guides/realtime"
+                                linkText="Realtime API"
+                            />
+                        </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.api_version || 'beta'}
@@ -75,10 +138,26 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                     <h4 className="font-semibold text-sm border-b pb-2">LLM (Chat Completions)</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">
-                                Chat API Base URL
-                                <span className="text-xs text-muted-foreground ml-2">(chat_base_url)</span>
-                            </label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">
+                                    Chat API Base URL
+                                    <span className="text-xs text-muted-foreground ml-2">(chat_base_url)</span>
+                                </label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Chat API Base URL</strong> — root URL for the Chat Completions endpoint.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default: <code>https://api.openai.com/v1</code></li>
+                                                <li>Override for Azure OpenAI, OpenRouter, LM Studio, or local proxies</li>
+                                                <li>Must speak the OpenAI Chat Completions wire format</li>
+                                            </ul>
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/api-reference/chat"
+                                    linkText="Chat API docs"
+                                />
+                            </div>
                             <input
                                 type="text"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -88,7 +167,24 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Chat Model</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Chat Model</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Chat Model</strong> — which OpenAI model generates responses.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>gpt-4o-mini</code> — cheap, fast, default for voice</li>
+                                                <li><code>gpt-4o</code> — higher quality, more expensive</li>
+                                                <li><code>gpt-4.1</code> / <code>gpt-3.5-turbo</code> — alternative tiers</li>
+                                            </ul>
+                                            Standard pay-per-token pricing.
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/models"
+                                    linkText="Model list & pricing"
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.chat_model || 'gpt-4o-mini'}
@@ -106,7 +202,23 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </select>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Default Modalities</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Default Modalities</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Default Modalities</strong> — what kind of output the model is asked to produce.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>text</code> — standard chat output; default for modular LLM slot</li>
+                                                <li><code>audio</code> — only meaningful on audio-capable models (gpt-4o realtime/audio)</li>
+                                            </ul>
+                                            For a modular LLM slot (text-only, no audio), leave as <code>text</code>.
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/api-reference/chat/create#chat-create-modalities"
+                                    linkText="Modalities param"
+                                />
+                            </div>
                             <select
                                 multiple
                                 className="w-full p-2 rounded border border-input bg-background h-24"
@@ -119,7 +231,21 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             <p className="text-xs text-muted-foreground">Hold Ctrl/Cmd to select multiple.</p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Response Timeout (sec)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Response Timeout (sec)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Response Timeout</strong> — max wait for the LLM to return a complete response.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default <code>5s</code></li>
+                                                <li>Raise for long-context prompts or slower models like <code>gpt-4</code></li>
+                                                <li>Streamed tokens don't count against the per-token deadline; this is whole-response budget</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -139,10 +265,25 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                     <h4 className="font-semibold text-sm border-b pb-2">STT (audio.transcriptions)</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">
-                                STT API Base URL
-                                <span className="text-xs text-muted-foreground ml-2">(stt_base_url)</span>
-                            </label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">
+                                    STT API Base URL
+                                    <span className="text-xs text-muted-foreground ml-2">(stt_base_url)</span>
+                                </label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>STT API Base URL</strong> — full endpoint for the audio.transcriptions API.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default: <code>https://api.openai.com/v1/audio/transcriptions</code></li>
+                                                <li>Override for Azure OpenAI Whisper deployment, on-prem Whisper, or proxies</li>
+                                            </ul>
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/api-reference/audio/createTranscription"
+                                    linkText="Transcription API"
+                                />
+                            </div>
                             <input
                                 type="text"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -152,7 +293,23 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">STT Model</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">STT Model</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>STT Model</strong> — which transcription model to call.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>whisper-1</code> — classic Whisper, broadest <code>response_format</code> support</li>
+                                                <li><code>gpt-4o-mini-transcribe</code> / <code>gpt-4o-transcribe</code> — newer, often more accurate but fewer format options</li>
+                                            </ul>
+                                            If a <code>response_format</code> error appears, fall back to <code>whisper-1</code>.
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/guides/speech-to-text"
+                                    linkText="STT guide"
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.stt_model || 'whisper-1'}
@@ -169,7 +326,21 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Input Encoding</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Input Encoding</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Input Encoding</strong> — codec of the audio Asterisk forwards to the engine for transcription.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>linear16</code> — recommended for Whisper (16-bit PCM)</li>
+                                                <li><code>pcm16</code> — same family, alternate label</li>
+                                                <li><code>ulaw</code> — direct from telephony, engine resamples</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.input_encoding || 'linear16'}
@@ -184,7 +355,20 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Input Sample Rate (Hz)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Input Sample Rate (Hz)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Input Sample Rate</strong> — sample rate of the audio sent for transcription.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>16000 Hz</code> — optimal for Whisper</li>
+                                                <li><code>8000 Hz</code> — raw telephony; engine usually upsamples</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -196,7 +380,20 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Chunk Size (ms)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Chunk Size (ms)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Chunk Size</strong> — duration of each audio frame fed into the STT buffer.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default <code>20ms</code> — standard SIP/RTP frame</li>
+                                                <li>Smaller = lower latency, more overhead</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -216,10 +413,25 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                     <h4 className="font-semibold text-sm border-b pb-2">TTS (audio.speech)</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">
-                                TTS API Base URL
-                                <span className="text-xs text-muted-foreground ml-2">(tts_base_url)</span>
-                            </label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">
+                                    TTS API Base URL
+                                    <span className="text-xs text-muted-foreground ml-2">(tts_base_url)</span>
+                                </label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>TTS API Base URL</strong> — full endpoint for the audio.speech API.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default: <code>https://api.openai.com/v1/audio/speech</code></li>
+                                                <li>Override for Azure OpenAI TTS deployments or proxies</li>
+                                            </ul>
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/api-reference/audio/createSpeech"
+                                    linkText="Speech API"
+                                />
+                            </div>
                             <input
                                 type="text"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -229,7 +441,24 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">TTS Model</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">TTS Model</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>TTS Model</strong> — which OpenAI speech model synthesizes audio.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>tts-1</code> — fastest, lowest cost, standard fidelity</li>
+                                                <li><code>tts-1-hd</code> — higher fidelity, slower</li>
+                                                <li><code>gpt-4o-mini-tts</code> — newer; accepts instructions for tone/style</li>
+                                            </ul>
+                                            If you see "invalid model ID", fall back to <code>tts-1</code>.
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/guides/text-to-speech"
+                                    linkText="TTS guide"
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.tts_model || 'tts-1'}
@@ -245,7 +474,23 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Voice</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Voice</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Voice</strong> — which preset voice OpenAI synthesizes.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Classic: <code>alloy</code>, <code>echo</code>, <code>fable</code>, <code>onyx</code>, <code>nova</code>, <code>shimmer</code></li>
+                                                <li>Newer (gpt-4o-mini-tts): <code>ash</code>, <code>ballad</code>, <code>coral</code>, <code>sage</code>, <code>verse</code>, <code>marin</code>, <code>cedar</code></li>
+                                                <li>No cloning; only these named voices</li>
+                                            </ul>
+                                        </>
+                                    }
+                                    link="https://platform.openai.com/docs/guides/text-to-speech#voice-options"
+                                    linkText="Voice samples"
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.voice || 'alloy'}
@@ -267,7 +512,21 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </select>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Target Encoding</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Target Encoding</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Target Encoding</strong> — final codec the engine outputs to Asterisk after decoding OpenAI's MP3/PCM response.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>mulaw</code>/<code>ulaw</code> — telephony standard</li>
+                                                <li><code>pcm16</code>/<code>linear16</code> — 16-bit PCM</li>
+                                            </ul>
+                                            Match your Asterisk channel codec.
+                                        </>
+                                    }
+                                />
+                            </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
                                 value={config.target_encoding || 'mulaw'}
@@ -283,7 +542,21 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Target Sample Rate (Hz)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Target Sample Rate (Hz)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Target Sample Rate</strong> — final playback sample rate.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li><code>8000 Hz</code> — telephony / PSTN</li>
+                                                <li><code>16000 Hz</code> — wideband HD voice</li>
+                                                <li><code>24000 Hz</code> — OpenAI's native synthesis rate; best fidelity</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -295,7 +568,20 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Chunk Size (ms)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Chunk Size (ms)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Chunk Size</strong> — duration of each audio frame the engine yields downstream.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default <code>20ms</code> — standard SIP/RTP frame</li>
+                                                <li>Smaller frames = lower time-to-first-audio</li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
@@ -307,7 +593,20 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             </p>
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Response Timeout (sec)</label>
+                            <div className="flex items-center gap-1.5">
+                                <label className="text-sm font-medium">Response Timeout (sec)</label>
+                                <HelpTooltip
+                                    content={
+                                        <>
+                                            <strong>Response Timeout</strong> — max wait for the full TTS audio response.
+                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                                <li>Default <code>5s</code></li>
+                                                <li>Raise for very long passages or <code>tts-1-hd</code></li>
+                                            </ul>
+                                        </>
+                                    }
+                                />
+                            </div>
                             <input
                                 type="number"
                                 className="w-full p-2 rounded border border-input bg-background"
