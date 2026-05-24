@@ -698,8 +698,11 @@ export const SystemTopology = () => {
             </div>
             {/* Responsive provider grid: 1 col on narrow, 2 on tablet, 3 on
                 desktop. Used to be a single column = ~540px of vertical scroll
-                for 6 kinds; now ~180px in 2 rows of 3 on a desktop viewport. */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                for 6 kinds; now ~180px in 2 rows of 3 on a desktop viewport.
+                items-start so singleton cards (Deepgram, Google, OpenAI…) don't
+                stretch to match a multi-instance card (e.g. Grok ×2) in the
+                same row — each card keeps its natural height. */}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 items-start">
               {providerGroups.length === 0 ? (
                 <div className="col-span-full p-3 rounded-lg border border-dashed border-border text-xs text-muted-foreground text-center">
                   No agents
