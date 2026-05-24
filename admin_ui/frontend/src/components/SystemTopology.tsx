@@ -575,17 +575,22 @@ export const SystemTopology = () => {
           {/* === ROW 1: Asterisk → AI Engine → Providers === */}
 
           {/* Asterisk PBX */}
+          {/* self-stretch lets the card grow to match the row height — which
+              is now driven by the Providers grid (col 5). As more providers
+              are configured, the Providers grid gets taller and Asterisk +
+              AI Engine grow alongside it. justify-center keeps the icon /
+              label / status pills visually centered inside the now-taller card. */}
           <div
             onClick={() => navigate('/env')}
             title="Go to Asterisk Settings →"
-            className={`relative p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${hasAsteriskChannels
+            className={`self-stretch relative p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${hasAsteriskChannels
               ? 'border-green-500/50 bg-green-500/10 shadow-[0_8px_30px_rgb(34,197,94,0.15)] ring-1 ring-green-500/50'
               : 'border-border/60 bg-card/60 hover:bg-card/80 hover:border-primary/40 shadow-sm'
               }`}>
             {hasAsteriskChannels && (
               <div className="absolute inset-0 rounded-lg border-2 border-green-500 animate-ping opacity-20" />
             )}
-            <div className="flex flex-col items-center gap-2">
+            <div className="flex flex-col items-center justify-center gap-2 h-full">
               <Phone className={`w-8 h-8 ${hasAsteriskChannels ? 'text-green-500' : 'text-muted-foreground'}`} />
               <div className="text-center">
                 <div className={`font-semibold ${hasAsteriskChannels ? 'text-green-500' : 'text-foreground'}`}>Asterisk</div>
@@ -633,10 +638,12 @@ export const SystemTopology = () => {
           </div>
 
           {/* AI Engine Core */}
+          {/* self-stretch + inner justify-center: same treatment as Asterisk so
+              AI Engine grows with the Providers grid height. */}
           <div
             onClick={() => navigate('/env#ai-engine')}
             title="Go to AI Engine Settings →"
-            className={`relative p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${state.aiEngineStatus === 'error'
+            className={`self-stretch relative p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${state.aiEngineStatus === 'error'
               ? 'border-red-500/50 bg-red-500/10 ring-1 ring-red-500/50'
               : hasActiveCalls && state.aiEngineStatus === 'connected'
                 ? 'border-green-500/50 bg-green-500/10 shadow-[0_8px_30px_rgb(34,197,94,0.15)] ring-1 ring-green-500/50'
@@ -645,7 +652,7 @@ export const SystemTopology = () => {
             {hasActiveCalls && state.aiEngineStatus === 'connected' && (
               <div className="absolute inset-0 rounded-lg border-2 border-green-500 animate-ping opacity-20" />
             )}
-            <div className="flex flex-col items-center gap-2">
+            <div className="flex flex-col items-center justify-center gap-2 h-full">
               <Cpu className={`w-8 h-8 ${state.aiEngineStatus === 'error' ? 'text-red-500' : hasActiveCalls && state.aiEngineStatus === 'connected' ? 'text-green-500' : 'text-muted-foreground'
                 }`} />
               <div className="text-center">
