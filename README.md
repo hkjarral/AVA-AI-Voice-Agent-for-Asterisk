@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-6.5.1-blue.svg)
+![Version](https://img.shields.io/badge/version-6.5.2-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -27,7 +27,7 @@ The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Fea
 ## 📖 Table of Contents
 
 - [🚀 Quick Start](#-quick-start)
-- [🎉 What's New](#-whats-new-in-v642)
+- [🎉 What's New](#-whats-new-in-v652)
 - [🌟 Why Asterisk AI Voice Agent?](#-why-asterisk-ai-voice-agent)
 - [✨ Features](#-features)
 - [🎥 Demo](#-demo)
@@ -161,27 +161,41 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 ---
 
-## 🎉 What's New in v6.5.1
+## 🎉 What's New in v6.5.2
 
 <details open>
 <summary><b>Latest Updates</b></summary>
 
-### 💻 CPU-demo profile end-to-end (NEW, v6.5.1)
-- **Faster-Whisper `tiny.en` + Piper + Qwen 0.5B** profile wired through the Admin UI for low-resource boxes
-- Models page exposes new **Device** (`cpu`/`cuda`/`auto`) and **Compute** (`int8`/`float16`/`float32`) selectors for Faster-Whisper, with client-side gating that disables `float16` on CPU and snaps invalid pairs to `int8`
-- Two new **runtime toggles** — Filler Audio and LLM/TTS Overlap — flip without reloading STT/LLM/TTS; enabling filler audio pre-synthesizes phrases via the active TTS, disabling clears the cache
-- New env vars persisted: `FASTER_WHISPER_DEVICE`, `FASTER_WHISPER_COMPUTE_TYPE`, `LOCAL_ENABLE_FILLER_AUDIO`, `LOCAL_LLM_STREAMING_TTS_OVERLAP`
-- New WS protocol field `runtime_config` for runtime toggles; control plane skips no-op values and the admin layer accepts `no_change` so a runtime-only flip with the toggle in its current position no longer triggers a container recreate
+### 🆕 xAI Grok Voice Agent realtime provider (NEW, v6.5.2)
+- Fifth full-agent realtime provider — structurally parallel to OpenAI Realtime and Google Live, built on a multi-instance foundation from day one
+- μ-law @ 8 kHz both directions by default (xAI accepts `audio/pcmu` natively; matches Asterisk telephony format with no resampling)
+- Five named voices (`eve`, `ara`, `rex`, `sal`, `leo`) plus custom voice ID free-text for cloned voices
+- Custom function-tools identical to OpenAI Realtime; xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) accepted via YAML `extra_tools` escape hatch
+- 30-minute hard session cap per xAI's docs — structured warning at 28 minutes so operators can correlate call drops with this limit
+- Setup guide: [docs/Provider-Grok-Setup.md](docs/Provider-Grok-Setup.md)
 
-### 🛡️ Local provider hot-path hardening (v6.5.1)
-- `send_audio()` no longer awaits `_reconnect()` per audio frame on disconnect (was blocking the producer for ~157s of backoff); drops the chunk and kicks `_start_background_reconnect()` instead, gated on prior-connection state to avoid spinning port-checks for never-reachable servers
-- Added `asyncio.Lock` around `_reconnect()` so concurrent attempts from `send_audio` and the `_send_loop`'s direct on-`ConnectionClosed` path serialize and don't race on websocket / listener / sender lifecycle
-- STT fragment suppression in full/llm modes narrowed to filler only (`{a, an, the, then, uh, um, hmm}`) so common confirmations like `"ok"`, names, numbers, and short commands like `"do it"` reach the LLM
-- Faster-Whisper verify path tolerates the runtime CUDA→CPU fallback so working CPU/int8 fallback configurations no longer get rolled back as "verification failed"
+### 🏢 Multi-instance full-agent providers (NEW, v6.5.2)
+- Run multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live` both using `type: google_live`)
+- Per-instance credential files at `/app/project/secrets/providers/<provider_key>/{api-key,agent-id,vertex-json}` — the new per-provider Vertex upload path does NOT mutate `.env`
+- Route via `AI_PROVIDER` channel var, `contexts.<name>.provider:` YAML, or DID-based dispatch with Asterisk `Gosub`
+- Setup guide: [docs/Multi-Instance-Full-Agent-Providers.md](docs/Multi-Instance-Full-Agent-Providers.md)
+- **Breaking for multi-tenant setups:** short aliases `AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent` now fail validation — use exact provider instance keys instead. Single-instance setups using the canonical block names are unaffected.
 
-### 🎨 Frontend & CLI polish (v6.5.1)
-- CUDA compatibility gate on the Models page now reads the **pending dropdown selection** in addition to env, so picking CUDA on a CPU-only host is caught client-side
-- CLI diagnostics (`agent check --local`, `local_test_report.py`) report runtime device/compute/flags and dispatch the env-fallback STT model lookup on `LOCAL_STT_BACKEND` so reports stay correct under sherpa/vosk/whisper_cpp/tone/kroko in fallback mode
+### 🎛 Admin UI polish (v6.5.2)
+- Uniform per-instance credentials paste-style uploader across all full-agent provider forms (Grok, OpenAI Realtime, Deepgram, Google Live, ElevenLabs Agent)
+- EnvPage adds a new "Per-Instance Provider Credentials" status section so operators can audit credential file presence without SSH
+- Dashboard System Topology rebuilt: tri-state per-component health with 2-strike debounce (transient probe blips no longer flip dots red), responsive provider grid, multi-instance sub-rows grouped by provider type, Asterisk + AI Engine cards stretched to match Providers height
+- Backend probe timeouts bumped (ai_engine 1.5s → 5s; local_ai_server 2.5s → 5s) to stop legitimate localhost probes timing out under load
+- ~260 inline help tooltips backfilled across provider forms, Setup Wizard, and System pages — new `HelpTooltip` is viewport-aware (flips placement to keep popovers visible in scrolled modals)
+
+### 📞 Call recordings (v6.5.2)
+- Browser playback for compact `.ulaw` recordings (Asterisk's 8 kHz μ-law output, ~10× smaller than PCM WAV) via server-side `audioop.ulaw2lin` WAV wrapping — no transcode dependency
+- Uppercase `.WAV`, compressed WAV, and `.gsm` recordings transcode via `sox`; `AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC` env var (default 120s) governs the timeout
+
+### Previously in v6.5.1
+- 💻 CPU-demo profile end-to-end — Faster-Whisper `tiny.en` + Piper + Qwen 0.5B wired through the Admin UI; runtime Device/Compute selectors with CPU/`float16` gating; Filler Audio and LLM/TTS Overlap runtime toggles
+- 🛡️ Local provider hot-path hardening — `send_audio()` no longer blocks on per-frame reconnect; `asyncio.Lock` serializes `_reconnect()` against `_send_loop`'s on-`ConnectionClosed` path
+- 🎨 Faster-Whisper verify path tolerates the runtime CUDA→CPU fallback so working CPU/int8 configurations no longer get rolled back as "verification failed"
 
 ### Previously in v6.5.0
 - 🔧 Local LLM tool-gated response (#368) — new WS protocol message types `tool_context` / `tool_result` v2; per-WebSocket fail-closed sync prevents cross-call ACL/policy/prompt leakage on reused connections

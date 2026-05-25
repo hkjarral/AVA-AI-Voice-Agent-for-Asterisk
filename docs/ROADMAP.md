@@ -49,6 +49,17 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 | **#351 Google Live barge-in** | Resolved as a documentation issue — production answer is `use_vertex_ai: true`. Architectural silence-gating refactor deferred to v6.6 (the experiment in `1763a441` was reverted in `cead273a` because the AudioSocket forwarding path needs a broader audio-path overhaul). | ✅ Documented |
 | **#370 HTTP-tool-test `.env`-first guard** | Admin UI Environment-page edits to `AAVA_HTTP_TOOL_TEST_*` take effect without an `ai_engine` restart. | ✅ Shipped |
 
+### v6.5.2 — xAI Grok provider, multi-instance full-agent providers, Admin UI polish (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **xAI Grok Voice Agent realtime provider (PR #394)** | Fifth full-agent realtime provider, structurally parallel to OpenAI Realtime and Google Live. μ-law @ 8 kHz both directions (xAI accepts `audio/pcmu` natively, no resampling), five named voices + custom voice ID, custom function-tools identical to OpenAI Realtime, YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`). 30-min hard session cap per xAI's docs; structured warning at 28 min. Multi-instance from day one. Setup: [docs/Provider-Grok-Setup.md](Provider-Grok-Setup.md). | ✅ Shipped |
+| **Multi-instance full-agent providers** | Multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live`). Provider instance keys are immutable call-routing identities; YAML `type` selects the kind. Per-instance credentials at `/app/project/secrets/providers/<provider_key>/`. Routing via `AI_PROVIDER`, `contexts.<name>.provider`, or DID-based dispatch. Setup: [docs/Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). | ✅ Shipped |
+| **Uniform per-instance credentials UX (PR #395)** | Shared `ProviderCredentialsCard` paste-style uploader wired into Grok, OpenAI Realtime, Deepgram, Google Live, and ElevenLabs Agent forms. EnvPage adds a "Per-Instance Provider Credentials" status section so operators can audit credentials without SSH. | ✅ Shipped |
+| **Dashboard System Topology overhaul** | Tri-state per-component health (`null` / `true` / `false`) with 2-strike debounce so transient probe blips don't flip dots red. Backend probe timeouts bumped (ai_engine 1.5 s → 5 s; local_ai_server 2.5 s → 5 s). Layout rebuilt as explicit CSS grid with responsive provider grid, Models 3-col grid, and Asterisk + AI Engine cards stretched to match Providers height. Provider cards grouped by type. | ✅ Shipped |
+| **HelpTooltip backfill (~260 tooltips)** | Inline help across provider forms, Setup Wizard, LLM/MCP/Profiles/Models pages. New `HelpTooltip` is viewport-aware: measures the trigger via `getBoundingClientRect` and flips placement to keep the popover visible inside scrolled modals. | ✅ Shipped |
+| **`.ulaw` call recording playback** | Call Details modal plays compact `.ulaw` recordings via server-side `audioop.ulaw2lin` WAV wrapping. `.WAV` uppercase, compressed WAV, and `.gsm` recordings transcode via `sox` with `AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC` (default 120 s). | ✅ Shipped |
+
 ### v6.5.1 — CPU-demo profile + local provider hardening (Shipped May 2026)
 
 | Feature | Description | Status |
@@ -148,4 +159,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: May 2026 | **Current Version**: v6.5.1
+**Last Updated**: May 2026 | **Current Version**: v6.5.2

@@ -4,12 +4,12 @@ This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
 ## v6.4.2 to v6.5.x
 
-**Fully back-compatible.** v6.5.0 and v6.5.1 are additive — no required config changes, no breaking schema changes, no behavioral changes for existing deployments.
+**Fully back-compatible.** v6.5.0, v6.5.1, and v6.5.2 are additive — no required config changes, no breaking schema changes, no behavioral changes for existing single-instance deployments. v6.5.2 does introduce one **breaking change for multi-instance deployments**: short provider aliases (`AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent`) are now rejected at config load — use exact provider instance keys instead. See "New in v6.5.2" below for details.
 
 ```bash
 # Standard upgrade
 git fetch --tags
-git checkout v6.5.1
+git checkout v6.5.2
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate
 ```
 
@@ -25,7 +25,25 @@ New in v6.5.1 (opt-in):
 - **Runtime toggles** — Filler Audio and LLM/TTS Overlap can be flipped from the Models page without a model reload (filler-audio enable triggers a quick TTS pre-synthesis; disable clears the cache).
 - **Local provider hot-path hardening** — internal change, no operator-visible config; if you observed audio glitching on `local_ai_server` reconnect events under v6.5.0, those should be fixed.
 
-No removed options. No required schema migrations. No required Docker volume migrations.
+New in v6.5.2:
+- **xAI Grok Voice Agent realtime provider (NEW)** — fifth full-agent realtime provider. Single-instance setup: set `XAI_API_KEY` in `.env` and add a `grok:` block to `config/ai-agent.yaml`. Multi-tenant setup: create instances like `acme_grok` / `globex_grok` with `type: grok` and per-instance `api_key_file: /app/project/secrets/providers/<key>/api-key`. See [Provider-Grok-Setup.md](Provider-Grok-Setup.md) and [Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). 30-minute hard session cap per xAI's docs — AAVA logs a structured warning at 28 minutes (configurable via `session_warn_after_seconds`).
+- **Multi-instance full-agent providers (NEW)** — operators can now configure multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live` both using `type: google_live`). Single-instance YAML (legacy `openai_realtime:` / `google_live:` / `deepgram:` / `elevenlabs:` / `grok:` block where the YAML key equals the kind) continues to work unchanged.
+- **Per-instance credentials UX in Admin UI** — Add/Edit Provider modal exposes a uniform paste-style credentials uploader across all full-agent providers. Credential files are written under `/app/project/secrets/providers/<provider_key>/`. EnvPage adds a new "Per-Instance Provider Credentials" section that surfaces credential file presence per provider.
+- **Browser playback for `.ulaw` recordings** — the Call Details modal now plays compact `.ulaw` recordings (and uppercase `.WAV`, compressed WAV, and `.gsm` via `sox`) in addition to PCM `.wav`. New env var `AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC` (default `120`) for the `sox` transcode timeout.
+- **Dashboard System Topology** — debounced indicators so transient probe blips don't flip dots red; ai_engine and local_ai_server probe timeouts bumped to 5s; provider cards grouped by type with multi-instance sub-rows; layout polish.
+- **HelpTooltip backfill (~260 inline tooltips)** — provider forms, Setup Wizard, LLM/MCP/Profiles/Models pages all gain inline help. Tooltip popovers are viewport-aware and flip to render below the trigger when the icon is near the top of a scrolled modal.
+
+**Breaking change in v6.5.2 (multi-instance deployments only):** Short provider aliases `AI_PROVIDER=openai`, `AI_PROVIDER=google`, and YAML `provider: deepgram_agent` are removed and now fail config validation instead of silently selecting an ambiguous provider when multiple provider instances exist.
+
+| Old (rejected) | New (required) |
+|---|---|
+| `AI_PROVIDER=openai` | `AI_PROVIDER=openai_realtime` |
+| `AI_PROVIDER=google` | `AI_PROVIDER=google_live` |
+| `provider: deepgram_agent` | `provider: deepgram` |
+
+Single-instance deployments using the canonical block names (`openai_realtime:` / `google_live:` / `deepgram:` / `elevenlabs:` / `grok:` where the YAML key equals the kind) are unaffected — only the short aliases are rejected. Audit your Asterisk dialplan `Set(AI_PROVIDER=…)` lines and any `contexts.<name>.provider:` YAML keys before upgrading.
+
+No removed config options outside the alias removal above. No required schema migrations. No required Docker volume migrations.
 
 ## v6.4.1 to v6.4.2
 

@@ -19,9 +19,11 @@
 - **[Deepgram Voice Agent Setup](Provider-Deepgram-Setup.md)** - Deepgram all-in-one provider
 - **[OpenAI Realtime API Setup](Provider-OpenAI-Setup.md)** - GPT-4o Realtime integration
 - **[ElevenLabs Agent Setup](Provider-ElevenLabs-Setup.md)** - ElevenLabs Conversational AI with premium voices
+- **[xAI Grok Voice Agent Setup](Provider-Grok-Setup.md)** - Grok realtime full-agent provider (μ-law @ 8 kHz, 30-min cap)
 - **[Telnyx AI Inference Setup](Provider-Telnyx-Setup.md)** - OpenAI-compatible LLM via Telnyx
 - **[Azure Speech Service Setup](Provider-Azure-Setup.md)** - Azure STT & TTS pipeline adapters
 - **[MiniMax LLM Setup](Provider-MiniMax-Setup.md)** - MiniMax M2.7 LLM via OpenAI-compatible API
+- **[Multi-Instance Full-Agent Providers](Multi-Instance-Full-Agent-Providers.md)** - Run multiple instances of the same provider type with isolated credentials
 
 ## Local AI & GPU Setup
 

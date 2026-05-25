@@ -299,6 +299,22 @@ Common pitfalls:
 - providers.openai_realtime.turn_detection: Server‑side VAD (type, silence_duration_ms, threshold, prefix_padding_ms); improves turn handling.
   - Metrics: `ai_agent_openai_assumed_output_sample_rate_hz`, `ai_agent_openai_provider_output_sample_rate_hz`, and `ai_agent_openai_measured_output_sample_rate_hz` are **low-cardinality gauges** (latest observed across calls). Use Call History for per-call debugging.
 
+### xAI Grok Voice Agent (monolithic agent, NEW in v6.5.2)
+
+- providers.grok.api_key: injected from `XAI_API_KEY` (env-only legacy fallback for single-instance setups). Multi-tenant deployments should use per-instance `api_key_file: /app/project/secrets/providers/<provider_key>/api-key` instead — never commit secrets to YAML.
+- providers.grok.model: `grok-voice-latest` (default; xAI's only published Voice Agent model as of v6.5.2).
+- providers.grok.voice: One of `eve`, `ara`, `rex`, `sal`, `leo`, or a custom cloned-voice ID from your xAI workspace.
+- providers.grok.instructions / greeting: Persona override + explicit greeting. Leave empty to inherit `llm.prompt` / `llm.initial_greeting`.
+- providers.grok.input_encoding / input_sample_rate_hz: AudioSocket inbound format. Default `ulaw` @ 8 kHz (matches Asterisk telephony format with no resampling).
+- providers.grok.provider_input_encoding / provider_input_sample_rate_hz: Format actually sent to xAI. Default `ulaw` @ 8 kHz (xAI accepts `audio/pcmu` natively). Set to `linear16` @ 24 kHz for wideband AudioSocket (`slin16`) setups.
+- providers.grok.output_encoding / output_sample_rate_hz: Downstream format expected by Asterisk. Default `ulaw` @ 8 kHz.
+- providers.grok.turn_detection: Server-side VAD (default `server_vad` with `threshold: 0.5`, `silence_duration_ms: 200`, `prefix_padding_ms: 200`).
+- providers.grok.session_warn_after_seconds: How long after session start to log a structured warning about the imminent 30-minute hard cap (default `1680` = 28 minutes; set to `0` to disable).
+- providers.grok.extra_tools: YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) not exposed in the Admin UI. Forwarded verbatim into `session.update.tools`. See [docs/Provider-Grok-Setup.md](Provider-Grok-Setup.md).
+- providers.grok.display_name / customer: Free-text labels surfaced in the Admin UI and call-history attribution. Used to identify multi-instance deployments.
+
+xAI does not consistently send `session.updated` ACK; the provider waits ~2s and proceeds either way. 30-minute hard session cap per xAI's docs — the warning at `session_warn_after_seconds` lets operators correlate user-visible call drops with this documented limit. See [docs/Provider-Grok-Setup.md](Provider-Grok-Setup.md) for the full setup walk-through and [docs/Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md) for multi-tenant routing.
+
 ### OpenAI (pipelines)
 
 Modular OpenAI pipeline components use `type: openai` provider blocks:
