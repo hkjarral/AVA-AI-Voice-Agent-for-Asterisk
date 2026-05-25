@@ -48,15 +48,9 @@ paths-ignore:
   #   - delete path also uses safe_secret_path() to compute target
   - admin_ui/backend/api/config.py
 
-  # src/config/provider_instances.py — read_secret_file() reads
-  # operator-managed YAML paths (api_key_file / agent_id_file /
-  # credentials_path). The path is operator-controlled, not request-
-  # controlled, but CodeQL still flows YAML loads through Pydantic and
-  # flags Path(path).read_text().
-  #
-  # Defenses in place (verified):
-  #   - explicit `..` rejection in path parts
-  #   - Path.relative_to(PROVIDER_SECRETS_ROOT) containment check;
-  #     paths outside the secrets root are operator-trusted (legacy
-  #     single-instance configs use /etc/aava/openai.key etc.)
-  - src/config/provider_instances.py
+  # NOTE: src/config/provider_instances.py was previously listed here
+  # but has been refactored to use a strict constant-allowlist of root
+  # prefixes (_ALLOWED_SECRET_ROOTS) plus os.open with O_NOFOLLOW. That
+  # is the CodeQL-recognized validated-against-known-constant sanitizer
+  # pattern; if CodeQL still flags read_secret_file after these changes,
+  # re-add the file path here.

@@ -142,9 +142,26 @@ def safe_secret_path(provider_key: str, filename: str, *, root: str = PROVIDER_S
 
 
 def read_secret_file_for_provider(provider_key: str, filename: str, *, root: str = PROVIDER_SECRETS_ROOT) -> str:
-    """Read a per-provider secret file through safe_secret_path."""
+    """Read a per-provider secret file through safe_secret_path.
+
+    Uses os.open with O_NOFOLLOW to defeat symlink attacks at the
+    leaf — even though safe_secret_path() validates the directory
+    structure, a symlink planted at the credential file itself could
+    redirect the read to an arbitrary location.
+    """
+    import os as _os
+
     safe_path = safe_secret_path(provider_key, filename, root=root)
-    return Path(safe_path).read_text(encoding="utf-8").strip()
+    fd = _os.open(safe_path, _os.O_RDONLY | _os.O_NOFOLLOW)
+    try:
+        with _os.fdopen(fd, "rb") as f:
+            return f.read().decode("utf-8").strip()
+    except BaseException:
+        try:
+            _os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def validate_provider_instances(config_data: Dict[str, Any]) -> None:
@@ -293,56 +310,81 @@ def full_agent_default(config_data: Dict[str, Any]) -> bool:
     return provider_kind(default_provider, cfg) in FULL_AGENT_KINDS
 
 
+# Allowed roots for secret files referenced from provider YAML. The
+# Admin UI always writes under PROVIDER_SECRETS_ROOT; operator-managed
+# legacy configs may also reference well-known system paths. Anything
+# outside this allowlist is rejected before any filesystem operation.
+_ALLOWED_SECRET_ROOTS = (
+    PROVIDER_SECRETS_ROOT,           # /app/project/secrets/providers (new style)
+    "/app/project/secrets",          # legacy /app/project/secrets/openai.key etc.
+    "/run/secrets",                  # Docker / systemd secrets
+    "/etc/aava",                     # legacy operator paths under /etc/aava
+    "/var/lib/aava",                 # legacy operator paths under /var/lib/aava
+)
+
+
 def read_secret_file(path: str) -> str:
     """Read a secret file referenced from provider config.
 
     The ``path`` value originates from operator-managed YAML
-    (``api_key_file`` / ``agent_id_file`` / ``credentials_path``). Two
-    guards apply here:
+    (``api_key_file`` / ``agent_id_file`` / ``credentials_path``). The
+    Admin UI always writes paths under :data:`PROVIDER_SECRETS_ROOT`
+    via :func:`safe_secret_path`; hand-edited configs may reference
+    well-known legacy roots like ``/etc/aava`` or ``/run/secrets``.
+    Anything outside the allowlist is rejected before any filesystem
+    operation — closes the operator-typo → arbitrary-file-read gap
+    that the previous "trust any absolute path" fallback left open
+    (CodeRabbit major on PR #396).
 
-    1. The Admin UI writes these values via :func:`safe_secret_path`, so
-       any path produced by the Admin UI is already bounded to
-       :data:`PROVIDER_SECRETS_ROOT`.
-    2. For configs hand-edited outside the Admin UI, we still trust the
-       operator (the YAML is on disk, owned by them) — but we explicitly
-       reject obviously hostile shapes (empty/whitespace, NUL byte,
-       relative traversal, non-string) so a typo'd config can't read
-       e.g. ``/etc/passwd`` because of a renderer bug.
-
-    We deliberately do NOT bound this to :data:`PROVIDER_SECRETS_ROOT`
-    because legacy single-instance configs pass an arbitrary
-    operator-chosen path (``/etc/aava/openai.key`` etc.).
+    File is opened with ``O_RDONLY | O_NOFOLLOW`` to defeat symlink
+    attacks (if an attacker can plant a symlink at the resolved path,
+    ``O_NOFOLLOW`` refuses to traverse it).
     """
+    import os as _os
+
     if not isinstance(path, str) or not path.strip():
         raise ProviderInstanceError("Secret file path is required")
     if "\x00" in path:
         raise ProviderInstanceError("Secret file path contains NUL byte")
-    # Reject explicit traversal even before resolving. An operator-set
-    # YAML path like ``../../etc/passwd`` would have escaped via the
-    # process working directory because the resolve→relative_to fallback
-    # below ultimately calls ``read_text`` on the resolved absolute
-    # path. Blocking `..` at the parts level here closes that gap
-    # (CodeRabbit major on PR #396).
-    candidate = Path(path.strip())
-    if any(part == ".." for part in candidate.parts):
-        raise ProviderInstanceError("Secret file path may not contain '..'")
 
-    # For Admin-UI-managed paths, additionally bound to the secrets
-    # root. Hand-edited operator YAML paths fall through this branch
-    # (we don't bound them — they're trusted operator input, and
-    # legacy single-instance configs use paths like
-    # /etc/aava/openai.key outside the new providers/<key>/ layout).
-    # The Path.relative_to() call gives CodeQL a recognized sanitizer
-    # (CWE-022 / alert ID 1714 / 1727).
-    resolved = candidate.resolve()
+    # Normalize before any other check so `..` collapses out.
+    normalized = _os.path.normpath(path.strip())
+    if not _os.path.isabs(normalized):
+        raise ProviderInstanceError(
+            "Secret file path must be absolute (no relative paths allowed)"
+        )
+
+    # Containment check against the static allowlist. This is the
+    # CodeQL-recognized "validated against a known constant" sanitizer
+    # pattern (CWE-022). The allowlist roots are all module-level
+    # string constants — never request-derived.
+    allowed = False
+    for root in _ALLOWED_SECRET_ROOTS:
+        root_norm = _os.path.normpath(root)
+        if normalized == root_norm or normalized.startswith(root_norm + _os.sep):
+            allowed = True
+            break
+    if not allowed:
+        raise ProviderInstanceError(
+            f"Secret file path must live under one of: {', '.join(_ALLOWED_SECRET_ROOTS)}"
+        )
+
+    # Open with O_NOFOLLOW to refuse traversing a symlink at the
+    # leaf — defense against an attacker planting a symlink to
+    # /etc/passwd at one of the legacy paths. Explicit os.open with
+    # an int fd also gives CodeQL a different sink pattern than
+    # Path.read_text(), which may avoid the false positive entirely.
+    fd = _os.open(normalized, _os.O_RDONLY | _os.O_NOFOLLOW)
     try:
-        root = Path(PROVIDER_SECRETS_ROOT).resolve()
-        resolved.relative_to(root)
-        return resolved.read_text(encoding="utf-8").strip()
-    except ValueError:
-        # Outside secrets root — operator-set path. Read directly via
-        # the resolved (no-`..`) candidate.
-        return resolved.read_text(encoding="utf-8").strip()
+        with _os.fdopen(fd, "rb") as f:
+            return f.read().decode("utf-8").strip()
+    except BaseException:
+        # If fdopen failed before claiming the fd, close it manually.
+        try:
+            _os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def resolve_secret_value(
