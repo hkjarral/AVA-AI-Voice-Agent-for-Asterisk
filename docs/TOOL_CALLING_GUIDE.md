@@ -52,6 +52,8 @@ Tool calling enables AI agents to perform real-world actions during conversation
 | **OpenAI Realtime** | ✅ Full Support | Production validated (Nov 9, 2025) |
 | **Deepgram Voice Agent** | ✅ Full Support | Production validated (Nov 9, 2025) |
 | **Google Gemini Live** | ✅ Full Support | Production validated (Nov 2025) |
+| **xAI Grok Voice Agent** | ✅ Full Support (v6.5.2) | Custom function-tools identical to OpenAI Realtime schema. xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) accepted via YAML `extra_tools` escape hatch — forwarded verbatim to the session. |
+| **ElevenLabs Agent** | ✅ Full Support | Full-agent provider |
 | **Modular Pipelines (local_hybrid)** | ✅ Full Support | Production validated (Nov 19, 2025) - AAVA-85 |
 
 All tools work identically across supported providers—no code changes needed when switching providers.
@@ -1441,6 +1443,7 @@ request_transcript:
 **Provider Adapters**:
 - `src/tools/adapters/deepgram.py` (202 lines) - Deepgram integration
 - `src/tools/adapters/openai.py` (215 lines) - OpenAI Realtime integration
+- `src/tools/adapters/grok.py` (266 lines) - xAI Grok integration (OpenAI-Realtime-compatible function schema + `extra_tools` escape hatch for xAI-native tools)
 
 **Tools**:
 - `src/tools/telephony/unified_transfer.py` - Unified transfer tool (registered as `blind_transfer`; aliases: `transfer`, `transfer_call`, `transfer_to_queue`)

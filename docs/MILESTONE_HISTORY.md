@@ -32,6 +32,7 @@ Archive of completed development milestones for the Asterisk AI Voice Agent. For
 | 22 | [Outbound Campaign Dialer](contributing/milestones/milestone-22-outbound-campaign-dialer.md) | Jan 2026 | Alpha — scheduled outbound campaigns, AMD, voicemail drop, consent gate, Admin UI Call Scheduling |
 | 23 | [NAT/Advertise Host](contributing/milestones/milestone-23-nat-advertise-host.md) | Feb 2026 | Separate bind vs advertise host for NAT/VPN/hybrid cloud deployments |
 | 24 | [Phase Tools & Tool Enhancements](contributing/milestones/milestone-24-tools-enhancements.md) | Feb 2026 | Pre-call HTTP lookups, in-call HTTP tools, post-call webhooks, extension status checking |
+| 25 | Multi-Instance Full-Agent Providers + xAI Grok | May 2026 | Multiple instances of the same full-agent provider type with isolated credentials (`acme_grok`, `globex_google_live`, etc.); per-instance secret files under `/app/project/secrets/providers/<key>/`. Fifth full-agent realtime provider: xAI Grok Voice Agent (μ-law @ 8 kHz, 5 voices, 30-min cap). Uniform credential UX, dashboard System Topology overhaul, ~260 admin UI tooltips, `.ulaw` recording playback. Breaking for multi-tenant: short provider aliases (`AI_PROVIDER=openai/google`, `provider: deepgram_agent`) removed. |
 
 ---
 
@@ -39,6 +40,8 @@ Archive of completed development milestones for the Asterisk AI Voice Agent. For
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v6.5.2 | May 2026 | xAI Grok Voice Agent realtime provider (5th full-agent), multi-instance full-agent providers (`acme_grok`, `globex_google_live`, …), uniform per-instance credentials UX, dashboard System Topology overhaul, ~260 admin UI tooltips, `.ulaw` call recording playback. Breaking for multi-tenant: short provider aliases removed. |
+| v6.5.1 | May 2026 | CPU-demo profile (Faster-Whisper `tiny.en` + Piper + Qwen 0.5B) wired through Admin UI; runtime Device/Compute selectors; Filler Audio + LLM/TTS Overlap runtime toggles; local provider hot-path hardening (no per-frame `_reconnect` blocking). |
 | v6.5.0 | May 2026 | Local LLM tool-gated response (`tool_context`/`tool_result` v2 protocol), Deepgram Flux v2 + nova-3 default, Gemini 3.1 verified, Admin UI Flux tuning panel, #351 / #370 fixes |
 | v6.4.2 | Apr 2026 | Calendar improvements, custom (community) model entries via Admin UI, Vertex AI onboarding script |
 | v6.1.1 | Feb 2026 | Operator config overrides, live agent transfer, ViciDial compatibility, Admin UI Asterisk audit |

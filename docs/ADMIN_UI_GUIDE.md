@@ -115,6 +115,28 @@ The "best-effort" framing is genuine: catalog URL liveness, GGUF magic verificat
 - Path-traversal blocked on every endpoint that touches a model file
 - The `/delete-file` endpoint refuses to act on community-model files (community models must go through `DELETE /api/custom-models/{id}` so JSON and disk stay in sync)
 
+## Per-Instance Provider Credentials (v6.5.2)
+
+Full-agent provider forms (Grok, OpenAI Realtime, Deepgram, Google Live, ElevenLabs Agent) include a uniform **Provider Credentials** card. Paste the API key (or upload service-account JSON for Google Vertex) directly into the card; the Admin UI writes it to a per-instance file under `/app/project/secrets/providers/<provider_key>/` on the server (chmod 0600). The provider's `api_key_file` / `agent_id_file` / `credentials_path` field in YAML is updated automatically — no manual editing required, no secrets stored in `.env` or YAML.
+
+This is the canonical credential storage path for multi-instance deployments (e.g. `acme_grok` and `globex_grok` each with isolated keys). Legacy single-instance configs that set `XAI_API_KEY` / `OPENAI_API_KEY` / etc. in `.env` continue to work as a fallback.
+
+The **System → Environment** page includes a "Per-Instance Provider Credentials" status section listing every configured provider's credential file presence. Lets operators audit which instances have credentials on disk without SSH access.
+
+## System Topology (v6.5.2)
+
+The dashboard System Topology card uses tri-state health indicators (`Checking…` / healthy / error) with a 2-strike debounce: a single failed probe does not immediately flip a dot red. This eliminates the false-positive red flashes that previously appeared during engine warmup or transient localhost probe timeouts.
+
+- ARI, AI Engine, and Local AI Server each get the tri-state + debounce treatment
+- Per-provider readiness uses the same 2-strike pattern so providers start at `Checking…` instead of red on first paint
+- Backend probe timeouts raised (`ai_engine` `/health` connect 1.5s → 5s; `local_ai_server` WebSocket open_timeout 2.5s → 5s)
+- Provider cards are grouped by provider type with multi-instance sub-rows, so two `*_grok` or `*_google_live` instances render as the same provider kind with separate readiness dots
+- Asterisk + AI Engine cards stretch to match the Providers column height; Models live AI Server output in a 3-column responsive grid
+
+## Help tooltips (v6.5.2)
+
+~260 inline help tooltips were backfilled across the admin UI in v6.5.2 — provider forms (Grok 17, OpenAI Realtime 24, Deepgram 22, ElevenLabs 10, Local 30, Google Live 29, Azure 21, OpenAI 17, Telnyx 7, Ollama 6), Setup Wizard (26 fields), LLM/MCP/Profiles/Models pages. The `HelpTooltip` component is viewport-aware: it measures the trigger and flips the popover from above to below when the icon is near the top of a scrolled modal, so the content stays visible.
+
 ## Security
 
 The Admin UI has Docker socket access for container management. Treat it as a control plane with elevated privileges.

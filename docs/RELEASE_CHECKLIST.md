@@ -27,7 +27,7 @@ Run at least one successful call for each baseline you intend to claim as suppor
 - Provider + transport
 - Config snippet (redacted)
 - Any warnings in logs
-- Matrix row in `docs/baselines/golden/v6.1.1-validation-matrix.md` (latest baseline; refresh per release per `docs/RELEASE_CHECKLIST.md` workflow)
+- Matrix row in `docs/baselines/golden/` — refresh per release: copy the most recent `v*-validation-matrix.md` to `v<NEW>-validation-matrix.md` and fill in the row for each provider/transport pair you validated. The on-disk format is pinned by the existing files in that directory.
 
 ### Providers (AudioSocket)
 
