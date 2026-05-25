@@ -554,9 +554,9 @@ const CallHistoryPage = () => {
             return;
         }
 
-        // Fresh play: fetch WAV as blob (auth header required)
+        // Fresh play: fetch browser-playable recording audio as blob (auth header required)
         try {
-            const res = await axios.get(`/api/calls/${recordId}/recording.wav`, { responseType: 'blob' });
+            const res = await axios.get(`/api/calls/${recordId}/recording/audio`, { responseType: 'blob' });
             const url = URL.createObjectURL(res.data);
             audioBlobUrl.current = url;
 
