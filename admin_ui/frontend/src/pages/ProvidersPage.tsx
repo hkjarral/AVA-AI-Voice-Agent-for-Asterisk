@@ -1179,6 +1179,8 @@ const ProvidersPage: React.FC = () => {
                                     disabled={!isNewProvider}
                                     onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value.toLowerCase().replace(/[^a-z0-9_.-]/g, '') })}
                                     placeholder="acme_google_live"
+                                    autoComplete="off"
+                                    spellCheck={false}
                                 />
                             </div>
                             {isFullAgentProvider(providerForm) && (
@@ -1234,7 +1236,24 @@ const ProvidersPage: React.FC = () => {
                                     className="w-full p-2 rounded border border-input bg-background"
                                     value={providerForm.display_name || ''}
                                     onChange={(e) => setProviderForm({ ...providerForm, display_name: e.target.value })}
-                                    placeholder="Acme Google Live"
+                                    // Placeholder mirrors the selected provider type so it reads
+                                    // sensibly while the user is editing (was hard-coded to
+                                    // "Acme Google Live" regardless of provider type).
+                                    placeholder={(() => {
+                                        const t = (providerForm.type || '').toLowerCase();
+                                        const kindLabel =
+                                            t === 'openai_realtime' ? 'OpenAI Realtime' :
+                                            t === 'google_live' ? 'Google Live' :
+                                            t === 'deepgram' ? 'Deepgram' :
+                                            t === 'elevenlabs_agent' || t === 'elevenlabs' ? 'ElevenLabs' :
+                                            t === 'grok' ? 'Grok' :
+                                            t === 'local' ? 'Local' :
+                                            t ? t.charAt(0).toUpperCase() + t.slice(1) :
+                                            'Provider';
+                                        return `Acme ${kindLabel}`;
+                                    })()}
+                                    autoComplete="off"
+                                    spellCheck={false}
                                 />
                             </div>
                             <div className="space-y-2">
@@ -1258,6 +1277,8 @@ const ProvidersPage: React.FC = () => {
                                     value={providerForm.customer || ''}
                                     onChange={(e) => setProviderForm({ ...providerForm, customer: e.target.value })}
                                     placeholder="Acme"
+                                    autoComplete="off"
+                                    spellCheck={false}
                                 />
                             </div>
                         </div>
