@@ -870,6 +870,12 @@ Engine-side (see `config/ai-agent.*.yaml` and `.env.example`):
 - Timeouts: `${LOCAL_WS_CONNECT_TIMEOUT}`, `${LOCAL_WS_RESPONSE_TIMEOUT}`
 - Chunk size (ms): `${LOCAL_WS_CHUNK_MS}`
 
+Client connection behavior:
+
+- Treat the WebSocket handshake as the availability check. A raw TCP port probe is not sufficient to prove protocol readiness and should not gate the real `websockets.connect()` attempt.
+- Use `LOCAL_WS_CONNECT_TIMEOUT` for the WebSocket open/auth path. Avoid separate sub-second preflight timeouts; they can falsely mark a healthy local server unavailable on loaded hosts.
+- A refused connection means the server is not listening and the provider may become inactive immediately. A timeout should be handled as a retryable connect failure according to the engine/provider retry policy.
+
 Dependencies:
 
 - sox (used for resampling and μ-law conversion). The container image includes it; if running outside Docker ensure `sox` is installed.
