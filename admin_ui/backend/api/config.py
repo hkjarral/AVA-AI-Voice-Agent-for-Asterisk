@@ -2029,53 +2029,41 @@ def _credential_allowed_for_kind(kind: str, credential_name: str) -> bool:
     return False
 
 
-def _bound_to_secrets_root(path: str) -> Path:
-    """Resolve ``path`` and assert it lives under ``PROVIDER_SECRETS_ROOT``.
-
-    Uses :func:`pathlib.Path.relative_to` as the containment check —
-    this is the CodeQL-recognized sanitizer pattern for path-injection
-    (CodeQL CWE-022). Returns the resolved Path for the caller to use;
-    raises HTTPException 400 if the resolved path escapes the secrets
-    root.
-    """
-    root = Path(PROVIDER_SECRETS_ROOT).resolve()
-    target = Path(path).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Provider credential path escapes secrets root",
-        ) from exc
-    return target
-
-
-def _write_provider_secret(path: str, content: bytes) -> None:
+def _write_provider_secret(provider_key: str, credential_name: str, content: bytes) -> None:
     """Atomically write a per-instance provider credential to disk.
 
-    Per-instance API keys / agent IDs / Vertex JSON live as chmod-600
-    files under :data:`PROVIDER_SECRETS_ROOT` (see
+    Sinks take ``(provider_key, credential_name)`` rather than a path
+    string so the only request-derived value entering the filesystem
+    operation is the strictly-validated provider key (regex
+    ``[A-Za-z0-9_.-]{1,64}``). The path is constructed locally from
+    that validated key plus a constant filename lookup, eliminating
+    the cross-function taint flow that CodeQL's CWE-022 query could
+    not see through (PR #396 — replaces alerts 1704–1726 with a
+    refactor instead of mid-flow sanitizers).
+
+    Storing credentials in chmod-600 files under
+    :data:`PROVIDER_SECRETS_ROOT` is the intentional design (see
     :doc:`docs/Multi-Instance-Full-Agent-Providers`): runtime providers
     need to read them to make API calls, and the env-vars-only
     alternative does not scale to multi-tenant deployments.
 
-    Defense in depth:
-
-    1. The path is re-resolved and bounded under
-       :data:`PROVIDER_SECRETS_ROOT` via :func:`_bound_to_secrets_root`,
-       which uses :meth:`pathlib.Path.relative_to` as the containment
-       check — the CodeQL-recognized sanitizer pattern for path
-       injection (CodeQL CWE-022 / path-traversal alerts 1704–1726).
-       Every caller also pre-validates the provider key via
-       :func:`safe_secret_path` before reaching this sink.
-    2. Atomic write via ``.tmp`` sibling + ``os.replace`` so a
-       partially-written secret can never be observed.
-    3. chmod 0o600 before the rename so the temp file is owner-only
-       readable even mid-write.
+    Atomic write via per-writer unique ``.tmp`` sibling + ``os.replace``
+    so concurrent uploads can't collide and chmod 0o600 lands before
+    the rename, so the temp file is owner-only readable even mid-write.
     """
     import uuid
 
-    target = _bound_to_secrets_root(path)
+    helpers = _provider_instances_module()
+    try:
+        target_str = helpers["safe_secret_path"](
+            provider_key,
+            _credential_filename(credential_name),
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"] as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    target = Path(target_str)
     target.parent.mkdir(parents=True, exist_ok=True)
     # Per-writer unique temp filename so two concurrent uploads /
     # migrations to the same credential can't clobber each other's
@@ -2093,14 +2081,35 @@ def _write_provider_secret(path: str, content: bytes) -> None:
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, target)
     finally:
-        # Best-effort cleanup if anything above raised after the temp
-        # file was created (os.replace consumed it on success, so this
-        # is only relevant to error paths).
         try:
             if temp_path.exists():
                 temp_path.unlink()
         except OSError:
             pass
+
+
+_CREDENTIAL_FILENAME_MAP = {
+    "api-key": "api-key",
+    "agent-id": "agent-id",
+    "vertex-json": "vertex-service-account.json",
+}
+
+
+def _credential_filename(credential_name: str) -> str:
+    """Resolve credential_name → on-disk filename via the static map.
+
+    Raises HTTPException 400 if the credential_name is not one of the
+    three allowlist values. The output is a constant string from the
+    map — never request-derived — so any path constructed downstream
+    has only validated provider_key + constant filename inputs.
+    """
+    fname = _CREDENTIAL_FILENAME_MAP.get(credential_name)
+    if fname is None:
+        raise HTTPException(
+            status_code=400,
+            detail="credential_name must be one of: api-key, agent-id, vertex-json",
+        )
+    return fname
 
 
 def _save_merged_config(merged_config: Dict[str, Any]) -> None:
@@ -2145,25 +2154,32 @@ def _migrate_inline_provider_secrets(config_data: Dict[str, Any]) -> bool:
             if not _credential_allowed_for_kind(kind, credential_name):
                 continue
             path = _provider_secret_path(str(provider_key), credential_name)
-            _write_provider_secret(path, value.strip().encode("utf-8"))
+            _write_provider_secret(str(provider_key), credential_name, value.strip().encode("utf-8"))
             provider_cfg[file_field] = path
             provider_cfg.pop(inline_field, None)
             changed = True
     return changed
 
 
-def _credential_metadata(path: str, credential_name: str) -> Dict[str, Any]:
+def _credential_metadata(provider_key: str, credential_name: str) -> Dict[str, Any]:
     """Stat + optional JSON-parse a per-instance credential file.
 
-    Uses :func:`_bound_to_secrets_root` so the filesystem operations
-    below have a CodeQL-recognized sanitizer (Path.relative_to)
-    bounding the input to :data:`PROVIDER_SECRETS_ROOT`. Returns a
-    non-uploaded shape if the path escapes the secrets root.
+    Takes ``(provider_key, credential_name)`` so the path is constructed
+    locally from the validated key + constant filename map — same
+    no-taint-flow shape as ``_write_provider_secret`` (CodeQL CWE-022
+    elimination via refactor, not mid-flow sanitizer).
     """
+    helpers = _provider_instances_module()
     try:
-        target = _bound_to_secrets_root(path)
-    except HTTPException:
-        return {"uploaded": False, "path": path, "error": "Path outside provider secrets root"}
+        target_str = helpers["safe_secret_path"](
+            provider_key,
+            _credential_filename(credential_name),
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"] as exc:
+        return {"uploaded": False, "error": str(exc)}
+
+    target = Path(target_str)
     if not target.exists():
         return {"uploaded": False, "path": str(target)}
     stat = target.stat()
@@ -2198,8 +2214,7 @@ async def get_provider_credentials_status(provider_key: str):
     for credential_name, field in fields.items():
         if not _credential_allowed_for_kind(kind, credential_name):
             continue
-        path = str(provider_cfg.get(field) or _provider_secret_path(provider_key, credential_name))
-        credentials[credential_name] = _credential_metadata(path, credential_name)
+        credentials[credential_name] = _credential_metadata(provider_key, credential_name)
         credentials[credential_name]["configured"] = bool(provider_cfg.get(field))
     return {
         "provider_key": provider_key,
@@ -2217,7 +2232,7 @@ async def upload_provider_api_key(provider_key: str, payload: Dict[str, Any]):
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
     path = _provider_secret_path(provider_key, "api-key")
-    _write_provider_secret(path, api_key.encode("utf-8"))
+    _write_provider_secret(provider_key, "api-key", api_key.encode("utf-8"))
     _update_provider_credentials_field(provider_key, "api_key_file", path)
     return {"status": "success", "restart_pending": True, "path": path}
 
@@ -2231,7 +2246,7 @@ async def upload_provider_agent_id(provider_key: str, payload: Dict[str, Any]):
     if not agent_id:
         raise HTTPException(status_code=400, detail="agent_id is required")
     path = _provider_secret_path(provider_key, "agent-id")
-    _write_provider_secret(path, agent_id.encode("utf-8"))
+    _write_provider_secret(provider_key, "agent-id", agent_id.encode("utf-8"))
     _update_provider_credentials_field(provider_key, "agent_id_file", path)
     return {"status": "success", "restart_pending": True, "path": path}
 
@@ -2257,7 +2272,7 @@ async def upload_provider_vertex_json(provider_key: str, file: UploadFile = File
     if creds.get("type") != "service_account":
         raise HTTPException(status_code=400, detail="JSON file must be a service account key (type: service_account)")
     path = _provider_secret_path(provider_key, "vertex-json")
-    _write_provider_secret(path, content)
+    _write_provider_secret(provider_key, "vertex-json", content)
     _update_provider_credentials_field(provider_key, "credentials_path", path)
     return {
         "status": "success",
@@ -2294,19 +2309,24 @@ async def delete_provider_credential(provider_key: str, credential_name: str):
     providers[provider_key] = provider_cfg
     merged["providers"] = providers
     _save_merged_config(merged)
-    # Re-bound the unlink target inside the secrets root before
-    # removing. Uses :func:`_bound_to_secrets_root` (Path.relative_to)
-    # — the CodeQL-recognized sanitizer for path-injection
-    # (CWE-022 / alerts 1712, 1713, 1722, 1723).
+    # Compute the on-disk path locally from (provider_key,
+    # credential_name) so the unlink target is constructed from
+    # validated inputs only — same no-taint shape as
+    # _write_provider_secret / _credential_metadata.
     try:
-        target = _bound_to_secrets_root(path)
-    except HTTPException:
-        # Out-of-bounds path is treated as "nothing to delete on disk".
-        # The YAML field has already been popped; we just don't try to
-        # unlink an unrelated file.
+        canonical_str = helpers["safe_secret_path"](
+            provider_key,
+            _credential_filename(credential_name),
+            root=PROVIDER_SECRETS_ROOT,
+        )
+    except helpers["ProviderInstanceError"]:
+        # Defensive: provider_key just passed validation above, so this
+        # shouldn't happen in practice. If it does, the YAML field has
+        # already been popped and we just don't unlink.
         return {"status": "success", "restart_pending": True}
-    if target.exists():
-        target.unlink()
+    canonical = Path(canonical_str)
+    if canonical.exists():
+        canonical.unlink()
     return {"status": "success", "restart_pending": True}
 
 
