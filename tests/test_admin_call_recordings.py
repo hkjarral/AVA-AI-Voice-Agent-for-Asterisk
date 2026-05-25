@@ -77,3 +77,17 @@ def test_uppercase_wav_requires_transcode(tmp_path):
     recording.write_bytes(b"RIFF" + b"\0" * 128)
 
     assert calls._wav_recording_requires_transcode(recording) is True
+
+
+def test_uppercase_pcm_wav_does_not_require_transcode(tmp_path):
+    """Pin the v6.5.2 fix: a valid PCM WAV with uppercase .WAV ext must
+    NOT require sox transcode. Header-based probing supersedes case
+    sensitivity (CodeRabbit on PR #396)."""
+    recording = tmp_path / "recording-1779665339.911.WAV"
+    with wave.open(str(recording), "wb") as wavf:
+        wavf.setnchannels(1)
+        wavf.setsampwidth(2)
+        wavf.setframerate(8000)
+        wavf.writeframes(b"\0" * 160)
+
+    assert calls._wav_recording_requires_transcode(recording) is False

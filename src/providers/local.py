@@ -916,6 +916,28 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         if data.get("type") != "auth_response" or data.get("status") != "ok":
             raise RuntimeError(f"Auth rejected: {data}")
 
+    async def _close_failed_reconnect_socket(self):
+        """Close + clear self.websocket after a failed reconnect attempt.
+
+        Prevents socket leaks and stale "looks connected but no listener"
+        state when _connect_ws() succeeded but a follow-up step
+        (auth, task creation) raised. CodeRabbit critical on PR #396.
+        """
+        ws = self.websocket
+        if ws is None:
+            return
+        self.websocket = None
+        try:
+            state = getattr(ws, "state", None)
+            state_name = getattr(state, "name", "") or ""
+            if state_name == "OPEN":
+                await ws.close()
+        except Exception:
+            logger.debug(
+                "Failed closing reconnect socket after partial init",
+                exc_info=True,
+            )
+
     async def _reconnect(self):
         # Single-flight: serialize concurrent reconnect attempts so the
         # background task and _send_loop's direct on-close call don't race
@@ -937,7 +959,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             connect_timeout_sec=self.connect_timeout,
         )
         self._server_unavailable = False
-        
+
         # Exponential backoff up to 30s, total ~3 minutes to cover LLM warmup (~111s)
         backoff_schedule = [2, 5, 10, 20, 30, 30, 30, 30]  # Total: ~157s
         total_elapsed = 0
@@ -981,6 +1003,16 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 return True
                 
             except (ConnectionRefusedError, OSError) as e:
+                # Close any half-initialized socket from this attempt
+                # before retrying. If _connect_ws() succeeded but a
+                # later step failed (auth, task creation), self.websocket
+                # would otherwise point at a live but un-driven socket;
+                # is_connected()/initialize() would report healthy
+                # while no listener/sender is running, and we'd leak
+                # one socket per failed attempt (CodeRabbit critical on
+                # PR #396).
+                await self._close_failed_reconnect_socket()
+
                 # ConnectionRefused (incl. OSError errno 61 macOS / 111 Linux
                 # / 10061 Windows) is the normal symptom while the
                 # local-ai-server container is warming up — models can take
@@ -1025,6 +1057,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         error=str(e),
                     )
             except Exception as e:
+                # Same cleanup as the OSError branch — if auth or task
+                # creation raised after _connect_ws() succeeded, the
+                # socket needs explicit close + clear (CodeRabbit
+                # critical on PR #396).
+                await self._close_failed_reconnect_socket()
                 logger.warning(
                     f"Reconnect attempt {attempt} failed",
                     error=f"{type(e).__name__}: {str(e)}",

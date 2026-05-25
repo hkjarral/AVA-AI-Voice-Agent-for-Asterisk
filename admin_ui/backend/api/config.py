@@ -2073,16 +2073,34 @@ def _write_provider_secret(path: str, content: bytes) -> None:
     3. chmod 0o600 before the rename so the temp file is owner-only
        readable even mid-write.
     """
+    import uuid
+
     target = _bound_to_secrets_root(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = target.with_suffix(target.suffix + ".tmp")
-    # nosec B306: writing the credential to a chmod-600 file under the
-    # secrets root is the intended storage layer for per-instance API
-    # keys; see docstring above.
-    with open(temp_path, "wb") as f:
-        f.write(content)
-    os.chmod(temp_path, 0o600)
-    os.replace(temp_path, target)
+    # Per-writer unique temp filename so two concurrent uploads /
+    # migrations to the same credential can't clobber each other's
+    # ``.tmp`` mid-write or race on ``os.replace`` (CodeRabbit on
+    # PR #396).
+    temp_path = target.with_name(
+        f"{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    )
+    try:
+        # nosec B306: writing the credential to a chmod-600 file under
+        # the secrets root is the intended storage layer for
+        # per-instance API keys; see docstring above.
+        with open(temp_path, "wb") as f:
+            f.write(content)
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, target)
+    finally:
+        # Best-effort cleanup if anything above raised after the temp
+        # file was created (os.replace consumed it on success, so this
+        # is only relevant to error paths).
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
 
 
 def _save_merged_config(merged_config: Dict[str, Any]) -> None:

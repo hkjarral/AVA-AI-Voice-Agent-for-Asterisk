@@ -208,23 +208,57 @@ def validate_provider_instances(config_data: Dict[str, Any]) -> None:
             + ", ".join(sorted(map(str, local_instances)))
         )
 
+    def _is_full_agent_provider_key(target: str) -> bool:
+        """A routing target may name a provider only if that provider is
+        a full-agent kind. Modular `*_stt` / `*_llm` / `*_tts` adapters
+        live in `providers` for pipeline composition; they are NOT
+        valid call-routing destinations (the engine's
+        `_load_providers` loop skips them when assembling routable
+        providers). Codex P1 on PR #396."""
+        cfg = providers.get(target)
+        if not isinstance(cfg, Mapping):
+            return False
+        return provider_kind(str(target), cfg) in FULL_AGENT_KINDS
+
     def _target_exists(target: Any) -> bool:
-        return isinstance(target, str) and (target in provider_names or target in pipeline_names)
+        if not isinstance(target, str):
+            return False
+        if target in pipeline_names:
+            return True
+        # Reject modular provider keys (e.g. `deepgram_stt`) — only
+        # full-agent provider instances can be routing targets.
+        return target in provider_names and _is_full_agent_provider_key(target)
 
     default_provider = config_data.get("default_provider")
     if default_provider and not _target_exists(default_provider):
-        errors.append(
-            f"default_provider '{default_provider}' does not match a provider key or pipeline name."
-        )
+        if isinstance(default_provider, str) and default_provider in provider_names:
+            errors.append(
+                f"default_provider '{default_provider}' references a modular provider "
+                "(STT/LLM/TTS adapter), not a full-agent provider or pipeline. "
+                "Use a full-agent provider instance key or a pipeline name instead."
+            )
+        else:
+            errors.append(
+                f"default_provider '{default_provider}' does not match a full-agent "
+                "provider instance key or pipeline name."
+            )
 
     for ctx_name, ctx_cfg in contexts.items():
         if not isinstance(ctx_cfg, Mapping):
             continue
         target = ctx_cfg.get("provider")
         if target and not _target_exists(target):
-            errors.append(
-                f"contexts.{ctx_name}.provider '{target}' does not match a provider key or pipeline name."
-            )
+            if isinstance(target, str) and target in provider_names:
+                errors.append(
+                    f"contexts.{ctx_name}.provider '{target}' references a modular provider "
+                    "(STT/LLM/TTS adapter), not a full-agent provider or pipeline. "
+                    "Use a full-agent provider instance key or a pipeline name instead."
+                )
+            else:
+                errors.append(
+                    f"contexts.{ctx_name}.provider '{target}' does not match a full-agent "
+                    "provider instance key or pipeline name."
+                )
 
     for pipeline_name, pipeline_cfg in pipelines.items():
         if not isinstance(pipeline_cfg, Mapping):
@@ -283,24 +317,32 @@ def read_secret_file(path: str) -> str:
         raise ProviderInstanceError("Secret file path is required")
     if "\x00" in path:
         raise ProviderInstanceError("Secret file path contains NUL byte")
+    # Reject explicit traversal even before resolving. An operator-set
+    # YAML path like ``../../etc/passwd`` would have escaped via the
+    # process working directory because the resolve→relative_to fallback
+    # below ultimately calls ``read_text`` on the resolved absolute
+    # path. Blocking `..` at the parts level here closes that gap
+    # (CodeRabbit major on PR #396).
+    candidate = Path(path.strip())
+    if any(part == ".." for part in candidate.parts):
+        raise ProviderInstanceError("Secret file path may not contain '..'")
+
     # For Admin-UI-managed paths, additionally bound to the secrets
     # root. Hand-edited operator YAML paths fall through this branch
-    # (we don't bound them — they're trusted operator input). This
-    # gives CodeQL a recognized sanitizer (Path.relative_to) for the
-    # common case and keeps legacy single-instance configs working
-    # (CodeQL CWE-022 / alert ID 1714 / 1727).
-    resolved = Path(path).resolve()
+    # (we don't bound them — they're trusted operator input, and
+    # legacy single-instance configs use paths like
+    # /etc/aava/openai.key outside the new providers/<key>/ layout).
+    # The Path.relative_to() call gives CodeQL a recognized sanitizer
+    # (CWE-022 / alert ID 1714 / 1727).
+    resolved = candidate.resolve()
     try:
         root = Path(PROVIDER_SECRETS_ROOT).resolve()
-        # If the path lives under the secrets root, this succeeds and
-        # CodeQL recognizes it as a sanitizer. If not (operator-set
-        # custom path), ValueError falls through and we still read —
-        # the operator's YAML is trusted.
         resolved.relative_to(root)
         return resolved.read_text(encoding="utf-8").strip()
     except ValueError:
-        # Outside secrets root — operator-set path. Read directly.
-        return Path(path).read_text(encoding="utf-8").strip()
+        # Outside secrets root — operator-set path. Read directly via
+        # the resolved (no-`..`) candidate.
+        return resolved.read_text(encoding="utf-8").strip()
 
 
 def resolve_secret_value(
