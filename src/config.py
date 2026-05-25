@@ -1262,30 +1262,40 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
             # Audio transport vs provider/pipeline availability
             audio_transport = getattr(config, "audio_transport", "externalmedia")
             
-            # Check for monolithic providers
-            monolithic_names = ("openai_realtime", "deepgram", "google_live", "grok")
+            # Check for full-agent (monolithic) providers via the
+            # provider-kind registry so multi-instance keys like
+            # `acme_grok` or `globex_openai_realtime` are recognized too
+            # — previously this only matched the canonical key names
+            # (`grok`, `openai_realtime`, …), so a multi-instance-only
+            # config was incorrectly flagged as "no provider configured"
+            # (CodeRabbit on PR #396).
+            from src.config.provider_instances import FULL_AGENT_KINDS, provider_kind
             monolithic_enabled = []
             for name, cfg in providers.items():
-                if name not in monolithic_names:
+                try:
+                    kind = provider_kind(str(name), cfg)
+                except Exception:
+                    continue
+                if kind not in FULL_AGENT_KINDS:
                     continue
                 enabled = True
                 if isinstance(cfg, dict):
                     enabled = bool(cfg.get("enabled", True))
                 monolithic_enabled.append((name, enabled))
             has_monolithic = any(enabled for _, enabled in monolithic_enabled)
-            
+
             # Check for pipelines
             pipelines = getattr(config, "pipelines", {}) or {}
             if not isinstance(pipelines, dict):
                 pipelines = {}
             has_pipelines = bool(pipelines)
-            
+
             # Warn if transport has neither providers nor pipelines to use
             if audio_transport == "audiosocket":
                 if not has_monolithic and not has_pipelines:
                     warnings.append(
-                        "audio_transport=audiosocket but neither monolithic providers "
-                        "(openai_realtime, deepgram, google_live, grok) nor pipelines are configured; "
+                        "audio_transport=audiosocket but neither a full-agent provider "
+                        "nor pipelines are configured; "
                         "AudioSocket requires at least one provider type to function"
                     )
             
