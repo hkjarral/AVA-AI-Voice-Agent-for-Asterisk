@@ -1275,6 +1275,16 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
                 try:
                     kind = provider_kind(str(name), cfg)
                 except Exception:
+                    # Surface parsing bugs at debug level so they're visible
+                    # in dev logs without spamming production (CodeRabbit
+                    # nitpick on PR #396). `continue` preserves the existing
+                    # "skip-unparseable-entries" behavior for the
+                    # has_monolithic determination.
+                    logger.debug(
+                        "provider_kind() failed during monolithic detection; skipping entry",
+                        provider=str(name),
+                        exc_info=True,
+                    )
                     continue
                 if kind not in FULL_AGENT_KINDS:
                     continue
