@@ -19,6 +19,22 @@ const OPENAI_REALTIME_MODELS = [
     { value: 'gpt-realtime-mini', label: 'GPT Realtime Mini — cost-optimized (~3¢/min)' },
 ];
 
+// Known sunset preview model aliases — values OpenAI removed on 2026-05-07.
+// The legacy banner / "Custom (legacy — will not connect)" optgroup only
+// flags values matching one of these patterns. Operators pinning compatible-
+// gateway models or specialty Realtime IDs (gpt-realtime-translate /
+// gpt-realtime-whisper) won't be incorrectly warned that their YAML override
+// is broken (Codex P2 on PR #398).
+const OPENAI_REALTIME_SUNSET_PREFIXES = [
+    'gpt-4o-realtime-preview',
+    'gpt-4o-mini-realtime-preview',
+];
+
+const isSunsetPreviewModel = (model: string | undefined): boolean => {
+    if (!model) return false;
+    return OPENAI_REALTIME_SUNSET_PREFIXES.some(prefix => model.startsWith(prefix));
+};
+
 // Realtime API voice catalog (10 voices). `cedar` + `marin` were added on
 // 2026-05-14 with the Realtime API GA launch and are Realtime-exclusive.
 // Voice membership is enforced by OpenAI's session.update accepted-values set.
@@ -219,7 +235,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                     but we make the broken state highly visible above the form so the
                     cause of the call failure isn't a mystery. Banner only renders
                     when config.model is set to a value not in the GA catalog. */}
-                {config.model && !OPENAI_REALTIME_MODELS.some(m => m.value === config.model) && (
+                {isSunsetPreviewModel(config.model) && (
                     <div className="mb-3 p-3 rounded border border-yellow-500/40 bg-yellow-500/10 text-sm">
                         <strong className="text-yellow-700 dark:text-yellow-300">⚠ Legacy preview model pinned.</strong>
                         {' '}This provider's <code>model</code> field is set to <code>{config.model}</code>, which OpenAI removed on 2026-05-07. Calls using this configuration will fail with <code>model_not_found</code>. Select a current GA model from the dropdown below to migrate. See <a href="https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/MIGRATION.md" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">MIGRATION.md</a> for context.
@@ -257,7 +273,11 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                 ))}
                             </optgroup>
                             {config.model && !OPENAI_REALTIME_MODELS.some(m => m.value === config.model) && (
-                                <optgroup label="Custom (legacy preview model — will not connect)">
+                                <optgroup label={
+                                    isSunsetPreviewModel(config.model)
+                                        ? 'Custom (legacy preview model — will not connect)'
+                                        : 'Custom (YAML override — not in GA catalog)'
+                                }>
                                     <option value={config.model}>{config.model}</option>
                                 </optgroup>
                             )}

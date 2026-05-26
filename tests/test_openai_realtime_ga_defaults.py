@@ -50,12 +50,16 @@ def test_openai_realtime_provider_config_defaults_to_ga():
 # --- Beta-deprecation warning (one-shot guard) ----------------------------
 
 
-def test_warn_if_beta_deprecated_fires_exactly_once(caplog):
+def test_warn_if_beta_deprecated_fires_exactly_once(monkeypatch):
     """The beta-deprecation warning must fire exactly once per provider
     lifetime — even though it's called from both start_session() and the
     reconnect path. Critical for log-readability: operators must see the
-    one explanatory line, not a flood per reconnect attempt."""
+    one explanatory line, not a flood per reconnect attempt.
+
+    The provider uses structlog, which doesn't reliably flow through
+    pytest's caplog fixture. Patch logger.warning directly to count calls."""
     from src.config import OpenAIRealtimeProviderConfig
+    from src.providers import openai_realtime as openai_realtime_module
     from src.providers.openai_realtime import OpenAIRealtimeProvider
 
     cfg = OpenAIRealtimeProviderConfig(
@@ -65,36 +69,48 @@ def test_warn_if_beta_deprecated_fires_exactly_once(caplog):
         model="gpt-4o-realtime-preview",  # legacy literal, irrelevant to the warning
     )
 
-    # on_event is a no-op for this test — we only exercise the helper.
     async def _noop_on_event(*args, **kwargs):
         return None
 
     provider = OpenAIRealtimeProvider(cfg, _noop_on_event)
     assert provider._beta_warned is False
 
-    with caplog.at_level(logging.WARNING, logger="src.providers.openai_realtime"):
-        provider._warn_if_beta_deprecated("call-1")  # first time — fires
-        provider._warn_if_beta_deprecated("call-2")  # simulated reconnect — silent
-        provider._warn_if_beta_deprecated("call-3")  # another reconnect — silent
+    # Count every logger.warning call. We don't care about the exact message
+    # shape — that's verified by the existence of the keyword in the helper
+    # source. We DO care that exactly one call occurs across three invocations.
+    warning_calls: list = []
+    original_warning = openai_realtime_module.logger.warning
 
-    matching = [r for r in caplog.records if "beta_api_shape_disabled" in r.getMessage()]
-    assert len(matching) == 1, (
-        f"Expected exactly one beta-deprecation warning, got {len(matching)}. "
+    def _capture(*args, **kwargs):
+        warning_calls.append((args, kwargs))
+        return original_warning(*args, **kwargs)
+
+    monkeypatch.setattr(openai_realtime_module.logger, "warning", _capture)
+
+    provider._warn_if_beta_deprecated("call-1")  # first time — fires
+    provider._warn_if_beta_deprecated("call-2")  # simulated reconnect — silent
+    provider._warn_if_beta_deprecated("call-3")  # another reconnect — silent
+
+    # Filter to calls whose message text mentions beta_api_shape_disabled, in
+    # case other warnings from constructor / setup were also captured.
+    beta_warnings = [c for c in warning_calls if c[0] and "beta_api_shape_disabled" in str(c[0][0])]
+    assert len(beta_warnings) == 1, (
+        f"Expected exactly one beta-deprecation warning, got {len(beta_warnings)}. "
         "The one-shot guard via self._beta_warned must serialise calls from "
         "both start_session() and the reconnect path."
     )
     assert provider._beta_warned is True
 
 
-def test_warn_if_beta_deprecated_silent_when_ga():
+def test_warn_if_beta_deprecated_silent_when_ga(monkeypatch):
     """When api_version=ga (the default), the warning must NOT fire even
     on the first call. This guards against accidentally re-introducing the
     warning into the GA hot path."""
     from src.config import OpenAIRealtimeProviderConfig
+    from src.providers import openai_realtime as openai_realtime_module
     from src.providers.openai_realtime import OpenAIRealtimeProvider
 
     cfg = OpenAIRealtimeProviderConfig(enabled=True, api_key="test-key")
-    # GA is the default — no need to set explicitly.
     assert cfg.api_version == "ga"
 
     async def _noop(*args, **kwargs):
@@ -102,19 +118,14 @@ def test_warn_if_beta_deprecated_silent_when_ga():
 
     provider = OpenAIRealtimeProvider(cfg, _noop)
 
-    import logging as _logging
-    handler_records: list[_logging.LogRecord] = []
-    handler = _logging.Handler()
-    handler.emit = handler_records.append  # type: ignore[assignment]
-    logger = _logging.getLogger("src.providers.openai_realtime")
-    logger.addHandler(handler)
-    try:
-        provider._warn_if_beta_deprecated("call-1")
-    finally:
-        logger.removeHandler(handler)
+    warning_calls: list = []
+    monkeypatch.setattr(openai_realtime_module.logger, "warning", lambda *a, **kw: warning_calls.append((a, kw)))
+
+    provider._warn_if_beta_deprecated("call-1")
 
     assert provider._beta_warned is False
-    assert not any("beta_api_shape_disabled" in r.getMessage() for r in handler_records)
+    beta_warnings = [c for c in warning_calls if c[0] and "beta_api_shape_disabled" in str(c[0][0])]
+    assert not beta_warnings
 
 
 # --- Admin UI provider template grep (TSX defaults) -----------------------
@@ -148,9 +159,16 @@ def test_providers_page_template_defaults_to_ga():
     assert "model: 'gpt-realtime'" in body, (
         "ProvidersPage.tsx openai_realtime template must seed model: 'gpt-realtime'."
     )
-    # And it must NOT carry the legacy preview model literal.
-    assert "gpt-4o-realtime-preview" not in body, (
-        "ProvidersPage.tsx template still references a removed preview model."
+    # And it must NOT carry the legacy preview model as a FIELD VALUE. We scope
+    # the check to quoted-string field assignments to avoid false-positive
+    # matches on explanatory comments inside the template body that legitimately
+    # mention "removed gpt-4o-realtime-preview-* on 2026-05-07" as historical context.
+    import re
+    field_value_re = re.compile(r":\s*['\"]gpt-4o-realtime-preview")
+    assert not field_value_re.search(body), (
+        "ProvidersPage.tsx template assigns a removed preview model as a field value. "
+        "Field-value-shaped matches (e.g. `model: 'gpt-4o-realtime-preview-*'`) "
+        "are forbidden; historical references inside `//` comments are OK."
     )
 
 
