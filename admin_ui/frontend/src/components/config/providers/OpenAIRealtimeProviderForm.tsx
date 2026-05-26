@@ -168,11 +168,21 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             value={config.api_version || 'ga'}
                             onChange={(e) => {
                                 const apiVersion = e.target.value;
-                                // Always seed gpt-realtime when switching to GA; leave the
-                                // model alone when switching to beta so an operator who is
-                                // intentionally debugging beta keeps their pinned value.
+                                // Switching to GA: preserve the current model only if it's
+                                // already a valid GA selection (gpt-realtime, gpt-realtime-1.5,
+                                // gpt-realtime-2, gpt-realtime-mini). Otherwise seed
+                                // gpt-realtime so operators coming from a sunset preview value
+                                // don't carry the broken model literal into the GA path
+                                // (CodeRabbit nit on PR #398). Switching to beta leaves the
+                                // model alone so an operator debugging beta keeps their
+                                // pinned value.
                                 if (apiVersion === 'ga') {
-                                    onChange({ ...config, api_version: apiVersion, model: 'gpt-realtime' });
+                                    const isGaModel = OPENAI_REALTIME_MODELS.some(m => m.value === config.model);
+                                    onChange({
+                                        ...config,
+                                        api_version: apiVersion,
+                                        model: isGaModel ? config.model : 'gpt-realtime',
+                                    });
                                 } else {
                                     onChange({ ...config, api_version: apiVersion });
                                 }
