@@ -234,3 +234,40 @@ async def test_modelTurn_with_text_parts_only_buffers_model_text():
     await provider._handle_server_content(envelope)
     assert "internal reasoning" in provider._model_text_buffer
     assert provider._model_text_buffer != initial
+
+
+@pytest.mark.asyncio
+async def test_generationComplete_triggers_turn_completion_flow():
+    """Developer API variants may emit generationComplete without turnComplete."""
+    provider = _make_provider()
+    provider._in_audio_burst = True
+
+    envelope = {"serverContent": {"generationComplete": True}}
+    await provider._handle_server_content(envelope)
+
+    assert provider._in_audio_burst is False
+    provider.on_event.assert_any_await(
+        {
+            "type": "AgentAudioDone",
+            "call_id": provider._call_id,
+            "streaming_done": True,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_complete_snake_case_is_supported():
+    provider = _make_provider()
+    provider._in_audio_burst = True
+
+    envelope = {"serverContent": {"turn_complete": True}}
+    await provider._handle_server_content(envelope)
+
+    assert provider._in_audio_burst is False
+    provider.on_event.assert_any_await(
+        {
+            "type": "AgentAudioDone",
+            "call_id": provider._call_id,
+            "streaming_done": True,
+        }
+    )

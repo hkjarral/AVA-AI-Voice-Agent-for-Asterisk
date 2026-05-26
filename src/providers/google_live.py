@@ -1465,7 +1465,7 @@ class GoogleLiveProvider(AIProviderInterface):
             keys=list(content.keys()),
             has_input=bool(content.get("inputTranscription")),
             has_output=bool(content.get("outputTranscription")),
-            has_turn_complete=bool(content.get("turnComplete")),
+            has_turn_complete=self._is_turn_complete(content),
             has_model_turn=bool(content.get("modelTurn")),
             interrupted=bool(content.get("interrupted")),
         )
@@ -1564,7 +1564,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     )
         
         # Check if model turn is complete - THIS is when we save the final transcription
-        turn_complete = content.get("turnComplete", False)
+        turn_complete = self._is_turn_complete(content)
 
         # Save final transcriptions when turn completes (per API recommendation)
         if turn_complete:
@@ -1777,6 +1777,34 @@ class GoogleLiveProvider(AIProviderInterface):
             return int(m.group(1))
         except Exception:
             return None
+
+    @staticmethod
+    def _coerce_completion_flag(value: Any) -> bool:
+        """Normalize completion-like flags that may vary across API surfaces."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "done", "complete"}
+        if isinstance(value, dict):
+            for key in ("value", "done", "complete", "isComplete", "is_complete"):
+                if key in value:
+                    return GoogleLiveProvider._coerce_completion_flag(value.get(key))
+        return False
+
+    @staticmethod
+    def _is_turn_complete(content: Dict[str, Any]) -> bool:
+        """
+        Determine turn completion from known Google Live variants.
+
+        Vertex and Developer API can differ in completion field naming depending
+        on endpoint/version rollouts. Accept both canonical and observed aliases.
+        """
+        for key in ("turnComplete", "turn_complete", "generationComplete", "generation_complete"):
+            if key in content and GoogleLiveProvider._coerce_completion_flag(content.get(key)):
+                return True
+        return False
 
     async def _handle_audio_output(self, audio_b64: str, *, mime_type: str = "") -> None:
         """
