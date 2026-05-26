@@ -203,8 +203,8 @@ providers:
   openai_realtime:
     enabled: true
     api_key: "${OPENAI_API_KEY}"
-    api_version: "ga"  # "ga" (default; "beta" was sunset by OpenAI on 2026-05-12 — do not set "beta")
-    model: "gpt-4o-realtime-preview-2024-12-17"  # GA: gpt-realtime / gpt-realtime-mini | Beta: gpt-4o-realtime-preview-*
+    api_version: "ga"  # Only supported value as of 2026-05-12 (Beta API was sunset on that date)
+    model: "gpt-realtime"  # GA models: gpt-realtime (default), gpt-realtime-1.5 (best audio quality), gpt-realtime-2 (reasoning), gpt-realtime-mini (cost-optimized)
     voice: "alloy"
     base_url: "wss://api.openai.com/v1/realtime"
   # xAI Grok Voice Agent — full-agent realtime provider with native μ-law support.

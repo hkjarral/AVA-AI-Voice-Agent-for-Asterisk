@@ -59,8 +59,12 @@ const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
         voice: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy', 'fahad', 'sultan', 'lulwa', 'noura'],
     },
     openai_realtime: {
-        model: ['gpt-4o-realtime-preview', 'gpt-4o-realtime-preview-2024-10-01'],
-        voice: ['alloy', 'echo', 'shimmer', 'ash', 'ballad', 'coral', 'sage', 'verse'],
+        // Current GA Realtime models (verified against OpenAI's official docs on
+        // 2026-05-25). Preview models (gpt-4o-realtime-preview-*) were removed
+        // on 2026-05-07 and the Beta Realtime API was sunset on 2026-05-12.
+        model: ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-mini'],
+        // 10-voice Realtime API catalog. cedar + marin added 2026-05-14.
+        voice: ['alloy', 'ash', 'ballad', 'cedar', 'coral', 'echo', 'marin', 'sage', 'shimmer', 'verse'],
     },
     google_live: {
         model: GOOGLE_LIVE_SUGGESTED_MODELS,

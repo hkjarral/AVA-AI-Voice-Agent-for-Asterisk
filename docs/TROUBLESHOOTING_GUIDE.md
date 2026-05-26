@@ -988,12 +988,17 @@ ERROR: received 4000 (private use) invalid_request_error.missing_model
 
 **Cause:** Wrong model specified for Realtime API.
 
-**Fix:** Use correct model:
+**Fix:** Use a current GA Realtime model (OpenAI sunset the Beta Realtime API on 2026-05-12 and removed `gpt-4o-realtime-preview-*` snapshots on 2026-05-07):
 ```yaml
 providers:
   openai_realtime:
-    model: "gpt-4o-realtime-preview-2024-12-17"  # NOT gpt-4o!
+    api_version: ga
+    model: gpt-realtime         # NOT gpt-4o, NOT gpt-4o-realtime-preview-*
+    # Other current GA options: gpt-realtime-1.5 (best audio quality),
+    #                           gpt-realtime-2 (reasoning voice model),
+    #                           gpt-realtime-mini (cost-optimized).
 ```
+If you see `error.code: model_not_found` despite a valid key, your OpenAI org may not have Realtime API access enabled — check **OpenAI Console → Settings → Limits**.
 
 **3. Authentication Failed**
 ```

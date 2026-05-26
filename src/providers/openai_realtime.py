@@ -97,6 +97,13 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._keepalive_task: Optional[asyncio.Task] = None
         self._send_lock = asyncio.Lock()
 
+        # One-shot guard for the api_version=beta deprecation warning.
+        # OpenAI sunset the Beta Realtime API on 2026-05-12; we log a single
+        # warning per provider lifetime when a config still pins beta so
+        # operators can correlate the OpenAI 'beta_api_shape_disabled' error
+        # back to the YAML override. See _warn_if_beta_deprecated().
+        self._beta_warned: bool = False
+
         self._call_id: Optional[str] = None
         self._pending_response: bool = False
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
@@ -390,6 +397,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
         url = self._build_ws_url()
         use_beta = getattr(self.config, 'api_version', 'ga').lower() == 'beta'
+        self._warn_if_beta_deprecated(call_id)
         headers = [
             ("Authorization", f"Bearer {self.config.api_key}"),
         ]
@@ -938,6 +946,31 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             base = "wss://api.openai.com/v1/realtime"
         base = base.rstrip("/")
         return f"{base}?model={self.config.model}"
+
+    def _warn_if_beta_deprecated(self, call_id: Optional[str]) -> None:
+        """One-shot warning when api_version=beta is configured.
+
+        OpenAI sunset the Beta Realtime API on 2026-05-12; calls with
+        api_version=beta now fail with `beta_api_shape_disabled` on the
+        first session frame. We can't tell the operator's YAML override
+        from a real outage, so we log a single warning per provider
+        lifetime so the cause is unambiguous in the logs.
+
+        Gated by self._beta_warned to fire exactly once across both
+        start_session() and the reconnect path — code paths share the
+        same provider instance.
+        """
+        use_beta = getattr(self.config, 'api_version', 'ga').lower() == 'beta'
+        if not use_beta or self._beta_warned:
+            return
+        logger.warning(
+            "OpenAI Realtime api_version=beta is set, but OpenAI sunset the "
+            "Beta Realtime API on 2026-05-12. Calls will fail with "
+            "beta_api_shape_disabled. Change api_version to 'ga' in your "
+            "config — see docs/MIGRATION.md.",
+            call_id=call_id,
+        )
+        self._beta_warned = True
 
     async def _send_session_update(self):
         # Map config modalities to output_modalities per latest guide
@@ -2475,6 +2508,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             try:
                 url = self._build_ws_url()
                 use_beta = getattr(self.config, 'api_version', 'ga').lower() == 'beta'
+                self._warn_if_beta_deprecated(self._call_id)
                 headers = [
                     ("Authorization", f"Bearer {self.config.api_key}"),
                 ]

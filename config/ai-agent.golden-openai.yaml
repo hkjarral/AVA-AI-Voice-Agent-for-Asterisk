@@ -129,8 +129,8 @@ providers:
     input_encoding: ulaw
     input_sample_rate_hz: 8000
     instructions: You are a concise voice assistant. Respond clearly and keep answers under 20 words unless more detail is requested.
-    api_version: beta
-    model: gpt-4o-realtime-preview-2024-12-17
+    api_version: ga
+    model: gpt-realtime
     organization: ''
     output_encoding: linear16
     output_sample_rate_hz: 24000

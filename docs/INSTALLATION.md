@@ -1,12 +1,12 @@
-# Asterisk AI Voice Agent - Installation Guide (v6.5.3)
+# Asterisk AI Voice Agent - Installation Guide (v6.5.4)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v6.5.3 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v6.5.4 on your server.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v6.5.3 (Existing Checkout)
+## Upgrade to v6.5.4 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -19,11 +19,11 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 
 ### 1) Pull the new release
 
-To upgrade to the tagged `v6.5.3` release (once the tag is published):
+To upgrade to the tagged `v6.5.4` release (once the tag is published):
 
 ```bash
 git fetch --tags
-git checkout v6.5.3
+git checkout v6.5.4
 ```
 
 If the tag is not published yet, track `main` temporarily:
@@ -268,7 +268,7 @@ agent setup
 
 **Best for:** Headless servers, scripted deployments, CLI preference
 
-> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v6.5.3.
+> Note: `agent quickstart` and `agent init` are still available for backward compatibility, but `agent setup` is the recommended CLI wizard for v6.5.4.
 
 ---
 

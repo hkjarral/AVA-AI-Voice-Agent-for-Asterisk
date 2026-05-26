@@ -2,6 +2,39 @@ import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
 
+// Current GA Realtime model catalog. Verified against OpenAI's official model
+// pages on 2026-05-25:
+//   - https://developers.openai.com/api/docs/models/gpt-realtime
+//   - https://developers.openai.com/api/docs/models/gpt-realtime-1.5
+//   - https://developers.openai.com/api/docs/models/gpt-realtime-2
+//   - https://developers.openai.com/api/docs/models/gpt-realtime-mini
+// The Beta Realtime API and `gpt-4o-realtime-preview-*` model snapshots were
+// removed on 2026-05-12 / 2026-05-07 respectively. Operators with pinned legacy
+// values are rendered in a "Custom (legacy preview model — will not connect)"
+// optgroup so the form displays the YAML state honestly without swapping it.
+const OPENAI_REALTIME_MODELS = [
+    { value: 'gpt-realtime', label: 'GPT Realtime — stable conversational (~5–8¢/min)' },
+    { value: 'gpt-realtime-1.5', label: 'GPT Realtime 1.5 — best audio-in/audio-out quality' },
+    { value: 'gpt-realtime-2', label: 'GPT Realtime 2 — reasoning voice model (GPT-5-class, configurable effort)' },
+    { value: 'gpt-realtime-mini', label: 'GPT Realtime Mini — cost-optimized (~3¢/min)' },
+];
+
+// Realtime API voice catalog (10 voices). `cedar` + `marin` were added on
+// 2026-05-14 with the Realtime API GA launch and are Realtime-exclusive.
+// Voice membership is enforced by OpenAI's session.update accepted-values set.
+const OPENAI_REALTIME_VOICES = [
+    { value: 'alloy', label: 'Alloy — neutral, balanced' },
+    { value: 'ash', label: 'Ash — clear, direct' },
+    { value: 'ballad', label: 'Ballad — warm, storytelling' },
+    { value: 'cedar', label: 'Cedar — warm, natural (Realtime-exclusive, added 2026-05-14)' },
+    { value: 'coral', label: 'Coral — friendly, conversational' },
+    { value: 'echo', label: 'Echo — soft, calm' },
+    { value: 'marin', label: 'Marin — clear, professional (Realtime-exclusive, added 2026-05-14)' },
+    { value: 'sage', label: 'Sage — wise, authoritative' },
+    { value: 'shimmer', label: 'Shimmer — bright, optimistic' },
+    { value: 'verse', label: 'Verse — expressive, dynamic' },
+];
+
 interface OpenAIRealtimeProviderFormProps {
     config: any;
     onChange: (newConfig: any) => void;
@@ -105,33 +138,35 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                                     <>
                                         <strong>API Version</strong> — selects the OpenAI Realtime API surface.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>beta</code> — sends the <code>OpenAI-Beta: realtime=v1</code> header; broad compatibility, works with preview models</li>
-                                            <li><code>ga</code> — omits the Beta header; may require additional OpenAI account verification, uses GA models like <code>gpt-realtime</code></li>
+                                            <li><code>ga</code> — the only supported value. Omits the <code>OpenAI-Beta</code> header; uses the GA <code>gpt-realtime</code> model family.</li>
+                                            <li><code>beta</code> — retained for forward-compat / debugging only. OpenAI sunset the Beta Realtime API on 2026-05-12; setting this value will fail with <code>beta_api_shape_disabled</code>.</li>
                                         </ul>
-                                        Switching versions auto-selects an appropriate default model.
                                     </>
                                 }
-                                link="https://platform.openai.com/docs/guides/realtime"
-                                linkText="OpenAI Realtime docs"
+                                link="https://developers.openai.com/api/docs/deprecations"
+                                linkText="OpenAI deprecations"
                             />
                         </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.api_version || 'beta'}
+                            value={config.api_version || 'ga'}
                             onChange={(e) => {
                                 const apiVersion = e.target.value;
-                                const defaultModel = apiVersion === 'ga'
-                                    ? 'gpt-realtime'
-                                    : 'gpt-4o-realtime-preview-2024-12-17';
-                                onChange({ ...config, api_version: apiVersion, model: defaultModel });
+                                // Always seed gpt-realtime when switching to GA; leave the
+                                // model alone when switching to beta so an operator who is
+                                // intentionally debugging beta keeps their pinned value.
+                                if (apiVersion === 'ga') {
+                                    onChange({ ...config, api_version: apiVersion, model: 'gpt-realtime' });
+                                } else {
+                                    onChange({ ...config, api_version: apiVersion });
+                                }
                             }}
                         >
-                            <option value="beta">Beta (default)</option>
-                            <option value="ga">GA</option>
+                            <option value="ga">GA (default)</option>
+                            <option value="beta">Beta (sunset 2026-05-12 — will not connect)</option>
                         </select>
                         <p className="text-xs text-muted-foreground">
-                            <strong>Beta</strong> is the default for broad compatibility and uses the <code>OpenAI-Beta</code> header.
-                            <strong className="ml-1">GA</strong> removes that header and may require additional OpenAI account verification.
+                            <strong>GA</strong> is the only supported value as of 2026-05-12. The <code>beta</code> option is retained so operators with legacy YAML overrides see their pinned state — calls will fail at OpenAI until the override is removed.
                         </p>
                     </div>
                     <div className="space-y-2">
@@ -179,6 +214,17 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
 
             <div>
                 <h4 className="font-semibold mb-3">Model & Voice</h4>
+                {/* Diagnostic banner for operators with a YAML-pinned legacy preview
+                    model. We do NOT auto-rewrite their YAML — that's too invasive —
+                    but we make the broken state highly visible above the form so the
+                    cause of the call failure isn't a mystery. Banner only renders
+                    when config.model is set to a value not in the GA catalog. */}
+                {config.model && !OPENAI_REALTIME_MODELS.some(m => m.value === config.model) && (
+                    <div className="mb-3 p-3 rounded border border-yellow-500/40 bg-yellow-500/10 text-sm">
+                        <strong className="text-yellow-700 dark:text-yellow-300">⚠ Legacy preview model pinned.</strong>
+                        {' '}This provider's <code>model</code> field is set to <code>{config.model}</code>, which OpenAI removed on 2026-05-07. Calls using this configuration will fail with <code>model_not_found</code>. Select a current GA model from the dropdown below to migrate. See <a href="https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/MIGRATION.md" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">MIGRATION.md</a> for context.
+                    </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
@@ -186,49 +232,34 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Model</strong> — which realtime model the WebSocket uses.
+                                        <strong>Model</strong> — which Realtime model the WebSocket connects to. All four current GA options:
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>gpt-4o-realtime-preview</code> / <code>gpt-realtime</code> — full quality (~5–8¢/min)</li>
-                                            <li><code>gpt-4o-mini-realtime-preview</code> / <code>gpt-realtime-mini</code> — lower cost (~3¢/min), good for high-volume</li>
-                                            <li>Dated snapshots (e.g. <code>2024-12-17</code>) pin behavior; "Latest" tracks the moving alias</li>
+                                            <li><code>gpt-realtime</code> — stable conversational baseline (~5–8¢/min)</li>
+                                            <li><code>gpt-realtime-1.5</code> — best audio-in/audio-out quality (per OpenAI's model page)</li>
+                                            <li><code>gpt-realtime-2</code> — reasoning voice model, GPT-5-class, configurable reasoning effort (slower + higher cost — better for hard requests)</li>
+                                            <li><code>gpt-realtime-mini</code> — cost-optimized (~3¢/min), good for high-volume</li>
                                         </ul>
-                                        Available options depend on the API Version selected above.
+                                        Preview models (<code>gpt-4o-realtime-preview-*</code>) were removed by OpenAI on 2026-05-07 — pinned values render in a "Custom (legacy)" optgroup but will not connect.
                                     </>
                                 }
-                                link="https://platform.openai.com/docs/guides/realtime"
-                                linkText="OpenAI Realtime docs"
+                                link="https://developers.openai.com/api/docs/models/gpt-realtime"
+                                linkText="OpenAI Realtime models"
                             />
                         </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={
-                                config.model
-                                || ((config.api_version || 'beta') === 'ga'
-                                    ? 'gpt-realtime'
-                                    : 'gpt-4o-realtime-preview-2024-12-17')
-                            }
+                            value={config.model || 'gpt-realtime'}
                             onChange={(e) => handleChange('model', e.target.value)}
                         >
-                            {(config.api_version || 'beta') === 'ga' ? (
-                                <>
-                                    <optgroup label="GA Models">
-                                        <option value="gpt-realtime">GPT Realtime</option>
-                                        <option value="gpt-realtime-mini">GPT Realtime Mini</option>
-                                    </optgroup>
-                                </>
-                            ) : (
-                                <>
-                                    <optgroup label="Beta Preview Models">
-                                        <option value="gpt-4o-realtime-preview">GPT-4o Realtime (Latest)</option>
-                                        <option value="gpt-4o-realtime-preview-2025-06-03">GPT-4o Realtime (2025-06-03)</option>
-                                        <option value="gpt-4o-realtime-preview-2024-12-17">GPT-4o Realtime (2024-12-17)</option>
-                                        <option value="gpt-4o-realtime-preview-2024-10-01">GPT-4o Realtime (2024-10-01)</option>
-                                    </optgroup>
-                                    <optgroup label="Beta Mini Models">
-                                        <option value="gpt-4o-mini-realtime-preview">GPT-4o Mini Realtime (Latest)</option>
-                                        <option value="gpt-4o-mini-realtime-preview-2024-12-17">GPT-4o Mini Realtime (2024-12-17)</option>
-                                    </optgroup>
-                                </>
+                            <optgroup label="GA Models">
+                                {OPENAI_REALTIME_MODELS.map((m) => (
+                                    <option key={m.value} value={m.value}>{m.label}</option>
+                                ))}
+                            </optgroup>
+                            {config.model && !OPENAI_REALTIME_MODELS.some(m => m.value === config.model) && (
+                                <optgroup label="Custom (legacy preview model — will not connect)">
+                                    <option value={config.model}>{config.model}</option>
+                                </optgroup>
                             )}
                         </select>
                     </div>
@@ -239,16 +270,15 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Voice</strong> — speaker identity used for synthesized audio.
+                                        <strong>Voice</strong> — speaker identity used for synthesized audio. 10 voices total, sourced from OpenAI's <code>session.update</code> accepted-values set.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li><code>alloy</code>, <code>coral</code>, <code>shimmer</code>, <code>sage</code>, <code>marin</code> — female</li>
-                                            <li><code>ash</code>, <code>ballad</code>, <code>echo</code>, <code>verse</code>, <code>cedar</code> — male</li>
-                                            <li>Voice identity is consistent across the call; pick one matching the agent's persona</li>
-                                            <li>Newer voices (<code>cedar</code>, <code>marin</code>) may only be available on newer models</li>
+                                            <li><code>cedar</code> and <code>marin</code> — Realtime-exclusive voices added 2026-05-14 with the Realtime API GA launch</li>
+                                            <li>Voice identity stays consistent across the call; pick one matching the agent's persona</li>
+                                            <li>Voice availability may depend on the model selected; if a chosen voice is rejected on session.update, switch back to <code>alloy</code> (universally accepted)</li>
                                         </ul>
                                     </>
                                 }
-                                link="https://platform.openai.com/docs/guides/realtime"
+                                link="https://developers.openai.com/api/docs/guides/realtime"
                                 linkText="OpenAI Realtime docs"
                             />
                         </div>
@@ -258,17 +288,15 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                             onChange={(e) => handleChange('voice', e.target.value)}
                         >
                             <optgroup label="Realtime Voices">
-                                <option value="alloy">Alloy - Female (neutral, balanced)</option>
-                                <option value="ash">Ash - Male (clear, direct)</option>
-                                <option value="ballad">Ballad - Male (warm, storytelling)</option>
-                                <option value="coral">Coral - Female (friendly, conversational)</option>
-                                <option value="echo">Echo - Male (soft, calm)</option>
-                                <option value="sage">Sage - Female (wise, authoritative)</option>
-                                <option value="shimmer">Shimmer - Female (bright, optimistic)</option>
-                                <option value="verse">Verse - Male (expressive, dynamic)</option>
-                                <option value="cedar">Cedar - Male (warm, natural)</option>
-                                <option value="marin">Marin - Female (clear, professional)</option>
+                                {OPENAI_REALTIME_VOICES.map((v) => (
+                                    <option key={v.value} value={v.value}>{v.label}</option>
+                                ))}
                             </optgroup>
+                            {config.voice && !OPENAI_REALTIME_VOICES.some(v => v.value === config.voice) && (
+                                <optgroup label="Custom (non-catalog voice ID)">
+                                    <option value={config.voice}>{config.voice}</option>
+                                </optgroup>
+                            )}
                         </select>
                     </div>
 

@@ -229,15 +229,24 @@ class OpenAIProviderConfig(BaseModel):
     organization: Optional[str] = None
     project: Optional[str] = None
     tools_enabled: bool = Field(default=True)
-    # "ga" = GA Realtime API (no beta header, gpt-realtime models)
+    # "ga" = GA Realtime API (no beta header, gpt-realtime model family) — DEFAULT
     # "beta" = Beta Realtime API (OpenAI-Beta header, gpt-4o-realtime-preview models)
-    # Default to beta for widest account compatibility out-of-box.
-    api_version: str = Field(default="beta")
+    # OpenAI sunset the Beta Realtime API on 2026-05-12 and removed the
+    # gpt-4o-realtime-preview-* model snapshots on 2026-05-07. Beta is retained
+    # as a config knob for forward-compat / debugging only; setting it now
+    # produces a one-shot warning and OpenAI rejects the WebSocket with
+    # beta_api_shape_disabled. See docs/MIGRATION.md and the v6.5.3 hotfix.
+    api_version: str = Field(default="ga")
     realtime_base_url: str = Field(default="wss://api.openai.com/v1/realtime")
     chat_base_url: str = Field(default="https://api.openai.com/v1")
     stt_base_url: str = Field(default="https://api.openai.com/v1/audio/transcriptions")
     tts_base_url: str = Field(default="https://api.openai.com/v1/audio/speech")
-    realtime_model: str = Field(default="gpt-4o-realtime-preview-2024-12-17")
+    # Current GA Realtime models (verified against OpenAI's official docs):
+    #   gpt-realtime        — stable conversational (default; what v6.5.3 hotfix flipped to)
+    #   gpt-realtime-1.5    — best audio-in/audio-out quality
+    #   gpt-realtime-2      — reasoning voice model with configurable effort
+    #   gpt-realtime-mini   — cost-optimized
+    realtime_model: str = Field(default="gpt-realtime")
     chat_model: str = Field(default="gpt-4o-mini")
     stt_model: str = Field(default="whisper-1")
     # NOTE: Default to widely-available TTS model to avoid silent-call failures when
@@ -634,11 +643,20 @@ class OpenAIRealtimeProviderConfig(BaseModel):
     type: Optional[str] = None
     display_name: Optional[str] = None
     customer: Optional[str] = None
-    # "ga" = GA Realtime API (no beta header, gpt-realtime models)
+    # "ga" = GA Realtime API (no beta header, gpt-realtime model family) — DEFAULT
     # "beta" = Beta Realtime API (OpenAI-Beta header, gpt-4o-realtime-preview models)
-    # Default to beta for widest account compatibility out-of-box.
-    api_version: str = Field(default="beta")
-    model: str = Field(default="gpt-4o-realtime-preview-2024-12-17")
+    # OpenAI sunset the Beta Realtime API on 2026-05-12 and removed the
+    # gpt-4o-realtime-preview-* model snapshots on 2026-05-07. Beta is retained
+    # as a config knob for forward-compat / debugging only; setting it now
+    # produces a one-shot warning and OpenAI rejects the WebSocket with
+    # beta_api_shape_disabled. See docs/MIGRATION.md and the v6.5.3 hotfix.
+    api_version: str = Field(default="ga")
+    # Current GA Realtime models (verified against OpenAI's official docs):
+    #   gpt-realtime        — stable conversational (default)
+    #   gpt-realtime-1.5    — best audio-in/audio-out quality
+    #   gpt-realtime-2      — reasoning voice model with configurable effort
+    #   gpt-realtime-mini   — cost-optimized
+    model: str = Field(default="gpt-realtime")
     voice: str = Field(default="alloy")
     base_url: str = Field(default="wss://api.openai.com/v1/realtime")
     instructions: Optional[str] = None

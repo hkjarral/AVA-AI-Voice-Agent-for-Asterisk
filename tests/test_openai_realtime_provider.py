@@ -149,6 +149,12 @@ async def test_session_requests_pcm_when_ga_mode(openai_config):
 @pytest.mark.asyncio
 async def test_session_requests_g711_when_beta_mode():
     """Beta mode uses flat output_audio_format string tokens."""
+    # NOTE: Intentionally keeps api_version="beta" + a legacy model literal here
+    # to assert that the beta wire-protocol code path is still preserved (we did
+    # NOT delete the beta branch in v6.5.4 — we only flipped the default to ga).
+    # OpenAI will reject the real WS connection with beta_api_shape_disabled,
+    # but the code under test in this fixture is the URL-and-header builder,
+    # not the live socket. See _warn_if_beta_deprecated() for the one-shot log.
     beta_config = OpenAIRealtimeProviderConfig(
         api_key="test-key",
         api_version="beta",

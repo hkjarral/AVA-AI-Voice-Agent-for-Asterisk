@@ -119,15 +119,14 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                         </div>
                         <select
                             className="w-full p-2 rounded border border-input bg-background"
-                            value={config.api_version || 'beta'}
+                            value={config.api_version || 'ga'}
                             onChange={(e) => handleChange('api_version', e.target.value)}
                         >
-                            <option value="beta">Beta (default)</option>
-                            <option value="ga">GA</option>
+                            <option value="ga">GA (default)</option>
+                            <option value="beta">Beta (sunset 2026-05-12 — will not connect)</option>
                         </select>
                         <p className="text-xs text-muted-foreground">
-                            <strong>Beta</strong> uses the <code>OpenAI-Beta</code> header and is the default for broad compatibility.
-                            <strong className="ml-1">GA</strong> removes that header and may require additional OpenAI account verification.
+                            <strong>GA</strong> is the only supported value as of 2026-05-12. The <code>beta</code> option is retained so operators with legacy YAML overrides see their pinned state — OpenAI rejects beta sessions with <code>beta_api_shape_disabled</code>.
                         </p>
                     </div>
                 </div>
@@ -210,7 +209,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                             <strong>Default Modalities</strong> — what kind of output the model is asked to produce.
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li><code>text</code> — standard chat output; default for modular LLM slot</li>
-                                                <li><code>audio</code> — only meaningful on audio-capable models (gpt-4o realtime/audio)</li>
+                                                <li><code>audio</code> — only meaningful on audio-capable models (the <code>gpt-realtime</code> family)</li>
                                             </ul>
                                             For a modular LLM slot (text-only, no audio), leave as <code>text</code>.
                                         </>

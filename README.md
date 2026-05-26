@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-6.5.3-blue.svg)
+![Version](https://img.shields.io/badge/version-6.5.4-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -164,6 +164,20 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v6.5.4 (2026-05-25) — OpenAI Realtime GA cleanup across every code path</b></summary>
+
+Follow-up to the v6.5.3 hotfix. v6.5.3 only flipped `config/ai-agent.yaml`; v6.5.4 brings the rest of the codebase in line:
+
+- **Pydantic defaults** in `src/config.py` now default to `api_version: ga` + `model: gpt-realtime` (so fresh wizard installs are correct).
+- **Admin UI "Add Provider" template** for OpenAI Realtime no longer seeds the sunset preview model.
+- **Model dropdown** removes the 5 sunset preview options and adds 3 new GA models — `gpt-realtime-1.5` (best audio-in/audio-out quality), `gpt-realtime-2` (reasoning voice model, GPT-5-class), and `gpt-realtime-mini` (cost-optimized) — alongside the existing `gpt-realtime`.
+- **Legacy preview values in operator YAML** now render in a "Custom (legacy — will not connect)" optgroup with a yellow warning banner above the form so the broken state is visible without silently swapping the operator's config.
+- **Engine** emits a one-shot warning when `api_version: beta` is detected in config (exactly once per provider lifetime, not per reconnect attempt).
+- **Docs**: full rewrite of `docs/Provider-OpenAI-Setup.md` model section + fix to `docs/TROUBLESHOOTING_GUIDE.md`.
+
+</details>
+
+<details>
 <summary><b>v6.5.3 hotfix (2026-05-25) — OpenAI Realtime restored</b></summary>
 
 OpenAI sunset the Realtime **Beta** API on 2026-05-12 and removed the `gpt-4o-realtime-preview-2024-12-17` model on 2026-05-07. Shipped `config/ai-agent.yaml` still pinned `api_version: beta` + that preview model, so every operator using OpenAI Realtime hit `error.code: beta_api_shape_disabled` and the WebSocket closed immediately. **Two-line config flip — no code change required**. The provider's GA wire-protocol path has shipped since v6.0.0; v6.5.3 just makes it the default everyone gets:

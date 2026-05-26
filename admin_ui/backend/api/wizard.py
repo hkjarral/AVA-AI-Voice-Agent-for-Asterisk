@@ -3186,8 +3186,11 @@ async def save_setup_config(config: SetupConfig):
                 # Only set full config if provider doesn't exist yet
                 if not provider_exists("openai_realtime"):
                     providers["openai_realtime"].update({
-                        "api_version": "beta",
-                        "model": "gpt-4o-realtime-preview-2024-12-17",
+                        # GA defaults — OpenAI sunset the Beta Realtime API on
+                        # 2026-05-12 and removed gpt-4o-realtime-preview-* on
+                        # 2026-05-07. See docs/MIGRATION.md.
+                        "api_version": "ga",
+                        "model": "gpt-realtime",
                         "voice": "alloy",
                         "input_encoding": "ulaw",
                         "input_sample_rate_hz": 8000,

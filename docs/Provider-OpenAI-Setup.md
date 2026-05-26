@@ -50,10 +50,10 @@ providers:
     enabled: true
     greeting: "Hi {caller_name}, I'm your AI assistant. How can I help you today?"
     
-    # API Version: "beta" (default — works for all accounts) or "ga" (requires verified org)
-    api_version: beta
-    # Model Configuration — see "Choosing a model" below
-    model: gpt-4o-realtime-preview-2024-12-17
+    # API Version: "ga" (only supported value as of 2026-05-12 — Beta was sunset that day)
+    api_version: ga
+    # Model: choose from the GA Realtime catalog — see "Choosing a model" below
+    model: gpt-realtime
     temperature: 0.6                          # Creativity (0.0-1.0)
     max_response_output_tokens: 4096          # Max output length
     
@@ -85,30 +85,43 @@ providers:
 ```
 
 **Key Settings**:
-- `api_version`: `beta` (shipped default — works for any OpenAI account) or `ga` (requires a [verified organization](https://help.openai.com/en/articles/10910291-api-organization-verification)). GA removes the `OpenAI-Beta` header and uses the nested audio schema.
+- `api_version`: `ga` is the only supported value. OpenAI sunset the Beta Realtime API on 2026-05-12; setting `beta` will fail with `error.code: beta_api_shape_disabled`. The Admin UI emits a one-shot warning if it detects a legacy `beta` override in your YAML.
 - `model`: see **Choosing a model** below.
-- `provider_input_sample_rate_hz`: must be `24000` for GA (minimum enforced by API). Beta accepts 16000 or 24000.
+- `provider_input_sample_rate_hz`: must be `24000` for GA (minimum enforced by API).
 - `output_sample_rate_hz`: `24000` — OpenAI outputs PCM16 @ 24kHz; engine transcodes to mulaw @ 8kHz downstream
 - `turn_detection.type`: use `server_vad` for turn-taking (nested under `audio.input` in GA)
 - GA mode internally manages `turn_detection.create_response`; do not add `create_response` in YAML.
 
 #### Choosing a model
 
-OpenAI Realtime exposes two API versions and several models. The right choice depends on your OpenAI account tier:
+> **Important:** OpenAI sunset the Beta Realtime API on **2026-05-12** and removed every `gpt-4o-realtime-preview-*` model snapshot on **2026-05-07**. The shipped default is now `api_version: ga` + `model: gpt-realtime`. The `beta` value is retained as a config knob (the wire-protocol code path still exists) but OpenAI rejects beta sessions with `error.code: beta_api_shape_disabled`. See [docs/MIGRATION.md](MIGRATION.md) under "New in v6.5.3" / "New in v6.5.4" for the operator migration steps.
 
-| `api_version` | Compatible models | Account requirement | Notes |
-|---------------|-------------------|---------------------|-------|
-| `beta` *(default)* | `gpt-4o-realtime-preview-2024-12-17` | Any OpenAI account | Shipped default — works out of the box. |
-| `beta` | `gpt-4o-mini-realtime-preview` | Any account | Lower cost, smaller model. |
-| `ga` | `gpt-realtime` | **Verified organization** | First GA Realtime model (graduated GA Aug 2025). Better instruction-following and tool-calling. |
-| `ga` | `gpt-realtime-1.5` *(snapshot 2026-02-23)* | Verified organization | Latest snapshot; further gains on instruction-following and tool-calling. |
-| `ga` | `gpt-realtime-mini` *(snapshot 2025-12-15)* | Verified organization | Cost-efficient GA option. |
+OpenAI publishes four current GA Realtime models. All require `api_version: ga`:
+
+| Model | Best for | Latency / cost | Notes |
+|-------|----------|----------------|-------|
+| `gpt-realtime` *(default)* | Stable conversational baseline — what v6.5.3 hotfix flipped to | ~5–8¢/min, low latency | Battle-tested. The right pick unless you have a specific reason to deviate. |
+| `gpt-realtime-1.5` | Best audio-in/audio-out quality | Comparable to `gpt-realtime` | Drop-in upgrade per OpenAI's own model page. Try this if you want better-sounding voice with no behavior change. |
+| `gpt-realtime-2` | Reasoning voice model (GPT-5-class) | Higher cost, higher latency | Configurable reasoning effort. Pick this for hard requests / complex tool-use; overkill for FAQ-style agents. |
+| `gpt-realtime-mini` | Cost-optimized, high-volume | ~3¢/min, fastest | Lower-quality audio than `gpt-realtime` but materially cheaper. Pick this for high-volume IVR-style use. |
+
+OpenAI also publishes two specialty models for non-conversational use cases: `gpt-realtime-translate` (live multilingual translation, 70+ input languages) and `gpt-realtime-whisper` (streaming speech-to-text). These are not exposed in the Admin UI model dropdown because they're not drop-in replacements for the conversational use case AAVA targets — operators who need them can pin via YAML.
 
 **Recommendation:**
-- **New deployments without verified org** → keep the shipped `api_version: beta` + `gpt-4o-realtime-preview-2024-12-17`.
-- **Verified org / production** → flip to `api_version: ga` + `gpt-realtime-1.5` (or `gpt-realtime-mini` if cost-sensitive). You'll also need to bump `provider_input_sample_rate_hz` to `24000`.
+- **First time setting up** → `api_version: ga` + `model: gpt-realtime`. That's the shipped default and what the Admin UI's "Add Provider" template creates.
+- **Want better voice quality** → switch to `gpt-realtime-1.5`. No other config change needed.
+- **Hard tool-use workflows** → switch to `gpt-realtime-2`. Expect higher latency and cost; tune `turn_detection` accordingly.
+- **High-volume cost-optimized** → switch to `gpt-realtime-mini`.
 
-To check whether your org is verified, see **OpenAI Console → Settings → Organization → API verification**. Verification involves a government-ID check and is generally available to all paid accounts.
+**Account access:** the Realtime API is a separate provisioning flag on your OpenAI org, independent of general model access. If you see `error.code: model_not_found: The model 'gpt-realtime' does not exist or you do not have access to it` even with a valid key, your org doesn't have Realtime enabled — check **OpenAI Console → Settings → Limits**, and verify the key is project-scoped (`sk-proj-…`) rather than a legacy user-scoped key.
+
+References:
+- [OpenAI Deprecations](https://developers.openai.com/api/docs/deprecations) — beta sunset + preview model removal dates
+- [`gpt-realtime`](https://developers.openai.com/api/docs/models/gpt-realtime)
+- [`gpt-realtime-1.5`](https://developers.openai.com/api/docs/models/gpt-realtime-1.5) — best audio-in/audio-out quality
+- [`gpt-realtime-2`](https://developers.openai.com/api/docs/models/gpt-realtime-2) — reasoning voice model
+- [`gpt-realtime-mini`](https://developers.openai.com/api/docs/models/gpt-realtime-mini) — cost-optimized
+- [Realtime model prompting guide](https://developers.openai.com/api/docs/guides/realtime-models-prompting)
 
 ### 4. Critical Turn Detection Configuration ⚠️
 

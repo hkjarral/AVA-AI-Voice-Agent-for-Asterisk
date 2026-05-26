@@ -235,8 +235,12 @@ const ProvidersPage: React.FC = () => {
                 enabled: false,
                 type: 'openai_realtime',
                 capabilities: ['stt', 'llm', 'tts'],
-                api_version: 'beta',
-                model: 'gpt-4o-realtime-preview-2024-12-17',
+                // GA defaults — OpenAI sunset the Beta Realtime API on 2026-05-12
+                // and removed gpt-4o-realtime-preview-* on 2026-05-07. The
+                // OpenAI Realtime provider form lists all four current GA models
+                // (gpt-realtime, gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-mini).
+                api_version: 'ga',
+                model: 'gpt-realtime',
                 voice: 'alloy',
                 input_encoding: 'ulaw',
                 input_sample_rate_hz: 8000,
@@ -1399,13 +1403,13 @@ const ProvidersPage: React.FC = () => {
                                 doc: 'https://platform.openai.com/docs/guides/realtime',
                                 tooltip: (
                                     <>
-                                        <strong>OpenAI Realtime</strong> — native speech-to-speech with the gpt-4o-realtime model.
+                                        <strong>OpenAI Realtime</strong> — native speech-to-speech with the <code>gpt-realtime</code> model family (gpt-realtime, gpt-realtime-1.5, gpt-realtime-2, gpt-realtime-mini).
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                            <li>~5–8¢/min (~3¢ with realtime-mini)</li>
-                                            <li>10 voices (alloy, echo, ash, ballad, etc.)</li>
+                                            <li>~5–8¢/min (gpt-realtime) · ~3¢/min (gpt-realtime-mini)</li>
+                                            <li>10 voices (alloy, echo, ash, ballad, cedar, coral, marin, sage, shimmer, verse)</li>
                                             <li>Server-side VAD, native barge-in</li>
                                             <li>Most natural conversational quality</li>
-                                            <li>Requires <code>OPENAI_API_KEY</code></li>
+                                            <li>Requires <code>OPENAI_API_KEY</code> with Realtime API access</li>
                                         </ul>
                                     </>
                                 ),

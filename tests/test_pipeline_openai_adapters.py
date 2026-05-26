@@ -21,7 +21,7 @@ def _build_app_config() -> AppConfig:
             "realtime_base_url": "wss://api.openai.com/v1/realtime",
             "chat_base_url": "https://api.openai.com/v1",
             "tts_base_url": "https://api.openai.com/v1/audio/speech",
-            "realtime_model": "gpt-4o-realtime-preview-2024-12-17",
+            "realtime_model": "gpt-realtime",
             "chat_model": "gpt-4o-mini",
             "tts_model": "gpt-4o-mini-tts",
             "voice": "alloy",

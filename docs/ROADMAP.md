@@ -49,6 +49,15 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 | **#351 Google Live barge-in** | Resolved as a documentation issue — production answer is `use_vertex_ai: true`. Architectural silence-gating refactor deferred to v6.6 (the experiment in `1763a441` was reverted in `cead273a` because the AudioSocket forwarding path needs a broader audio-path overhaul). | ✅ Documented |
 | **#370 HTTP-tool-test `.env`-first guard** | Admin UI Environment-page edits to `AAVA_HTTP_TOOL_TEST_*` take effect without an `ai_engine` restart. | ✅ Shipped |
 
+### v6.5.4 — OpenAI Realtime GA cleanup across code/UI/docs (Shipped May 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **GA defaults across all code paths** | Follow-up to v6.5.3 hotfix. Pydantic defaults (`src/config.py`), Admin UI provider template (`ProvidersPage.tsx`), wizard backend, golden config, and example YAML all flipped to `api_version: ga` + `model: gpt-realtime`. Provider form (`OpenAIRealtimeProviderForm.tsx`) refactored to lift catalogs to module-scope constants and expose 3 new GA models (`gpt-realtime-1.5`, `gpt-realtime-2`, `gpt-realtime-mini`) verified against OpenAI's official model pages. | ✅ Shipped |
+| **Diagnostic legacy-value handling** | Operators with sunset preview models pinned in their `ai-agent.local.yaml` now see a yellow warning banner above the form + their value rendered in a "Custom (legacy — will not connect)" optgroup. No auto-rewrite (too invasive); just makes broken state visible. | ✅ Shipped |
+| **One-shot beta deprecation warning** | New `_warn_if_beta_deprecated()` helper in `src/providers/openai_realtime.py`, called from both `start_session` and the reconnect path, gated by `_beta_warned` to fire exactly once per provider lifetime when `api_version: beta` is configured. | ✅ Shipped |
+| **Provider-OpenAI-Setup.md rewrite** | Model section rewritten with all four current GA options, use-case guidance, and the org-access caveat (Realtime API is a separate provisioning flag — even valid keys can return `model_not_found`). | ✅ Shipped |
+
 ### v6.5.3 — OpenAI Realtime GA migration hotfix (Shipped May 2026)
 
 | Feature | Description | Status |
@@ -165,4 +174,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: May 2026 | **Current Version**: v6.5.3
+**Last Updated**: May 2026 | **Current Version**: v6.5.4
