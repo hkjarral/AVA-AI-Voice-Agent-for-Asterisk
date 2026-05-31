@@ -2011,6 +2011,7 @@ class GoogleLiveProvider(AIProviderInterface):
                     bridge_id=getattr(self, '_bridge_id', None),
                     called_number=getattr(self, '_called_number', None),
                     context_name=getattr(self, '_context_name', None),
+                    vicidial_session=getattr(self, '_vicidial_session', None),
                     session_store=getattr(self, '_session_store', None),
                     ari_client=getattr(self, '_ari_client', None),
                     config=getattr(self, '_full_config', None),

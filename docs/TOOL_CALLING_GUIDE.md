@@ -1021,6 +1021,25 @@ SMTP_TIMEOUT_SECONDS=10
 
 ---
 
+## ViciDial Remote Agent Calls
+
+ViciDial is configured under `integrations.vicidial`, not under `tools`.
+The AI-facing tool names stay the same:
+
+- `hangup_call`
+- `live_agent_transfer`
+- `blind_transfer`
+
+When a call has explicit ViciDial Remote Agent channel vars (`VICIDIAL_RA_CALL_ID`
+and `VICIDIAL_RA_AGENT_USER`), those tools dispatch through ViciDial Agent API
+`ra_call_control` instead of normal ARI transfer/hangup behavior. Warm transfer
+tools such as `attended_transfer` are hidden on ViciDial sessions because
+`ra_call_control` supports cold transfer and hangup only.
+Legacy ARI transfer surfaces such as `transfer_call` and `transfer_to_queue`
+are also hidden so ViciDial remains the call-control owner.
+
+---
+
 ## Dialplan Setup
 
 ### Prerequisites

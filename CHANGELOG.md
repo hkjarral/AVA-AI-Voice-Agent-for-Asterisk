@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ViciDial Remote Agent integration (experimental)**: Added `integrations.vicidial` config, Admin UI **Core Configuration -> Integrations -> ViciDial Remote Agent**, Agent API `ra_call_control` support for AI hangup/ingroup transfer/extension transfer, and community validation docs (`docs/Vicidial-Setup.md`, `docs/Vicidial-Community-Test-Checklist.md`, `docs/Vicidial-Migration-From-Experimental-Outbound.md`).
+
+### Breaking Changes
+
+- **Experimental ViciDial outbound mode removed**: `AAVA_OUTBOUND_PBX_TYPE=vicidial` now fails startup with migration guidance. Use the ViciDial Remote Agent integration instead. FreePBX and generic Asterisk outbound campaign paths are unchanged.
+
 ## [6.5.4] - 2026-05-25
 
 ### Fixed
@@ -471,7 +479,7 @@ nudge, which is non-breaking.
 - **Graceful Stash Pop Recovery**: `agent update` now automatically recovers from `git stash pop` merge conflicts by resetting the working tree, dropping the failed stash, and restoring operator config (`.env`, `ai-agent.yaml`, `ai-agent.local.yaml`, `users.json`, `contexts/`) from the pre-update backup.
 - **Live Agent Transfer Tool**: Explicit `live_agent_transfer` tool with ARI-based extension status checks, auto-derived internal extension keys, and fallback routing to configured live-agent destinations.
 - **ARI Extension Status API**: Admin UI endpoint to query Asterisk device/endpoint state for live agent availability before transferring.
-- **ViciDial Outbound Dialer Compatibility**: Configurable `AAVA_OUTBOUND_DIAL_CONTEXT`, `AAVA_OUTBOUND_DIAL_PREFIX`, `AAVA_OUTBOUND_CHANNEL_TECH`, and `AAVA_OUTBOUND_PBX_TYPE` (`freepbx`/`vicidial`/`generic`) for outbound campaign origination.
+- **ViciDial Outbound Dialer Compatibility**: Historical experimental support for `AAVA_OUTBOUND_PBX_TYPE=vicidial` was added here. This mode is removed in `[Unreleased]`; use ViciDial Remote Agent integration instead.
 - **GPU Host/Runtime Indicators**: Runtime GPU probe details in local AI server status with CUDA guard for STT/TTS backend selection and CPU fallback when GPU is unavailable.
 - **GPU-Aware Compatibility Checks**: Force rebuild flow for incompatible runtime/device combinations with `force_incompatible_apply` flag for intentional overrides.
 - **Local-Hybrid Wizard Persistence**: Setup wizard correctly persists `local_hybrid` pipeline, local STT/TTS backend selections, and model mappings through env and YAML config.
@@ -508,7 +516,7 @@ nudge, which is non-breaking.
 1. **No breaking changes.** All new features are additive or opt-in.
 2. Existing `config/ai-agent.yaml` continues to work unchanged. The new `ai-agent.local.yaml` is optional.
 3. **Docker rebuild required**: Run `docker compose up -d --build --force-recreate` for all containers.
-4. **ViciDial users**: Set `AAVA_OUTBOUND_PBX_TYPE=vicidial` in `.env` and configure dial context/prefix as needed.
+4. **ViciDial users**: This historical instruction is superseded by `[Unreleased]`; use ViciDial Remote Agent integration instead of `AAVA_OUTBOUND_PBX_TYPE=vicidial`.
 
 ## [6.0.0] - 2026-02-07
 

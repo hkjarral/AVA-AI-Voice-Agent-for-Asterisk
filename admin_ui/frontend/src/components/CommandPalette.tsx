@@ -24,6 +24,7 @@ import {
     Phone,
     CalendarClock,
     Search,
+    Webhook,
 } from 'lucide-react';
 
 type PageEntry = {
@@ -44,6 +45,7 @@ const pages: PageEntry[] = [
     { label: 'Contexts', path: '/contexts', icon: MessageSquare, group: 'Core Configuration', keywords: ['prompt', 'system'] },
     { label: 'Audio Profiles', path: '/profiles', icon: Sliders, group: 'Core Configuration', keywords: ['audio', 'voice'] },
     { label: 'Tools', path: '/tools', icon: Wrench, group: 'Core Configuration', keywords: ['function'] },
+    { label: 'Integrations', path: '/integrations', icon: Webhook, group: 'Core Configuration', keywords: ['vicidial', 'crm', 'platform'] },
     { label: 'MCP', path: '/mcp', icon: Plug, group: 'Core Configuration', keywords: ['model context'] },
     { label: 'Voice Activity Detection', path: '/vad', icon: Activity, group: 'Advanced', keywords: ['vad', 'silence'] },
     { label: 'Streaming', path: '/streaming', icon: Zap, group: 'Advanced', keywords: ['stream', 'real-time'] },

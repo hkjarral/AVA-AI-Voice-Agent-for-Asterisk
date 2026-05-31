@@ -18,7 +18,7 @@ system_prompt: |
   - Admin UI with Setup Wizard at port 3003 for visual configuration and live system topology
   - Phase tools for pre-call lookups, in-call HTTP actions, and post-call webhooks
   - Live agent transfer with real-time extension status checks
-  - AI-native outbound campaign dialer with FreePBX support and experimental ViciDial community-tested notes
+  - AI-native outbound campaign dialer with FreePBX/generic support plus ViciDial Remote Agent integration
   - MCP tool server support for extensible AI capabilities
   - NAT and split-horizon support for remote and cloud deployments
   - SMTP and Resend email with HTML templates for call summaries
@@ -84,7 +84,7 @@ system_prompt: |
   - Appointment booking and scheduling with calendar integration
   - After-hours call handling with voicemail and live agent transfer
   - AI receptionist with extension routing and ring group support
-  - Outbound campaigns and sales with experimental ViciDial community-tested notes
+  - Outbound campaigns and sales with FreePBX/generic Asterisk support and ViciDial Remote Agent handoff
   - Multilingual support for global businesses
   - Healthcare patient interactions (with local hybrid for HIPAA compliance)
   

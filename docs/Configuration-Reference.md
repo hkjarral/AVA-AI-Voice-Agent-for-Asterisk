@@ -147,9 +147,9 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 |----------|---------|-------------|
 | `AAVA_OUTBOUND_EXTENSION_IDENTITY` | `6789` | Extension identity for FreePBX routing (sets `AMPUSER` + `CALLERID(num)` on originate) |
 | `AAVA_OUTBOUND_AMD_CONTEXT` | `aava-outbound-amd` | Dialplan context name used for AMD hop (`continueInDialplan`) |
-| `AAVA_OUTBOUND_PBX_TYPE` | `freepbx` | PBX-specific channel vars: `freepbx` \| `vicidial` experimental/community-tested \| `generic` |
+| `AAVA_OUTBOUND_PBX_TYPE` | `freepbx` | PBX-specific channel vars: `freepbx` \| `generic`. `vicidial` has been removed; use `integrations.vicidial` Remote Agent mode. |
 | `AAVA_OUTBOUND_DIAL_CONTEXT` | `from-internal` | Asterisk dialplan context for `Local/` channel origination |
-| `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for carrier selection (e.g. `911` in the experimental ViciDial notes) |
+| `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for carrier selection |
 | `AAVA_OUTBOUND_CHANNEL_TECH` | `auto` | Channel tech for extension probing: `auto` \| `pjsip` \| `sip` \| `local_only` |
 | `AAVA_MEDIA_DIR` | `/mnt/asterisk_media/ai-generated` | Where the Admin UI uploads voicemail drop `.ulaw` files |
 
@@ -161,6 +161,52 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
   - `${AMDSTATUS}` and `${AMDCAUSE}`
 
 See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for the full snippet and smoke test checklist.
+
+## ViciDial Remote Agent Integration
+
+ViciDial is configured as an integration, not as an AI-callable tool. ViciDial owns dialing, campaign state, compliance behavior, and reporting; AAVA receives connected Remote Agent calls and uses Agent API `ra_call_control` for AI-initiated hangup or cold transfer.
+
+```yaml
+integrations:
+  vicidial:
+    enabled: false
+    api_url: "https://vicidial.example.com/agc/api.php"
+    source: "aava"
+    user: "${VICIDIAL_API_USER}"
+    pass: "${VICIDIAL_API_PASS}"
+    timeout_ms: 5000
+    verify_ssl: true
+    fallback_to_ari_on_hangup_failure: false
+    default_agent_user: ""
+    status_codes:
+      ai_hangup: "AIHU"
+      ai_ingroup_transfer: "AIXFR"
+      ai_extension_transfer: "AIEXT"
+    default_live_agent_destination: "default_ingroup"
+    destinations:
+      default_ingroup:
+        type: ingroup
+        ingroup_choices: DEFAULTINGROUP
+        description: "Default ViciDial ingroup"
+```
+
+Validation rules:
+
+- `api_url`, `source`, `user`, and `pass` are required when enabled.
+- `source` must be allowed for the API user in ViciDial Admin -> API Users.
+- `user` and `pass` must resolve to non-empty values from `.env`.
+- status codes must be at most 6 characters.
+- ingroup destinations require `ingroup_choices`.
+- extension destinations require `phone_number`.
+- `default_live_agent_destination` must point to a configured destination when set.
+- `.env` value `AAVA_OUTBOUND_PBX_TYPE=vicidial` fails startup with migration guidance.
+
+Required dialplan channel vars:
+
+- `VICIDIAL_RA_CALL_ID`
+- `VICIDIAL_RA_AGENT_USER`
+
+See `docs/Vicidial-Setup.md` for the full setup guide.
 
 ## Canonical persona and greeting
 

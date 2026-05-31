@@ -78,6 +78,10 @@ from src.tools.telephony.hangup_policy import (
     text_is_short_polite_closing,
     normalize_marker_list,
 )
+from src.tools.telephony.vicidial import (
+    filter_tool_names_for_vicidial_session,
+    read_vicidial_channel_vars,
+)
 
 logger = get_logger(__name__)
 
@@ -284,12 +288,15 @@ class Engine:
         self._outbound_amd_context = str(os.getenv("AAVA_OUTBOUND_AMD_CONTEXT", "aava-outbound-amd")).strip() or "aava-outbound-amd"
         self._outbound_pjsip_endpoint_cache: Dict[str, Dict[str, Any]] = {}
         self._outbound_pjsip_endpoint_cache_ttl_seconds = float(os.getenv("AAVA_OUTBOUND_PJSIP_ENDPOINT_CACHE_TTL_SECONDS", "300") or "300")
-        # Generic PBX routing plus experimental/community-tested ViciDial notes.
+        # Generic PBX routing. ViciDial uses the Remote Agent integration path, not AAVA outbound originate.
         # Defaults preserve FreePBX behavior.
         self._outbound_dial_context = str(os.getenv("AAVA_OUTBOUND_DIAL_CONTEXT", "from-internal")).strip() or "from-internal"
         self._outbound_dial_prefix = str(os.getenv("AAVA_OUTBOUND_DIAL_PREFIX", "")).strip()
         self._outbound_channel_tech = str(os.getenv("AAVA_OUTBOUND_CHANNEL_TECH", "auto")).strip().lower() or "auto"
         self._outbound_pbx_type = str(os.getenv("AAVA_OUTBOUND_PBX_TYPE", "freepbx")).strip().lower() or "freepbx"
+        if self._outbound_pbx_type == "vicidial":
+            from src.tools.telephony.vicidial import REMOVED_OUTBOUND_VICIDIAL_MESSAGE
+            raise RuntimeError(REMOVED_OUTBOUND_VICIDIAL_MESSAGE)
         
         # Initialize streaming playback manager
         streaming_config = {}
@@ -1471,7 +1478,7 @@ class Engine:
             "__CALLERID(num)": caller_id_num,
             "__CALLERID(name)": caller_id_name,
         }
-        # FreePBX-specific routing vars (AMPUSER/FROMEXTEN are not used by ViciDial or generic Asterisk).
+        # FreePBX-specific routing vars (AMPUSER/FROMEXTEN are not used by generic Asterisk).
         if self._outbound_pbx_type == "freepbx":
             channel_vars["AMPUSER"] = caller_id_num
             channel_vars["FROMEXTEN"] = caller_id_num
@@ -1568,10 +1575,9 @@ class Engine:
         """
         Choose best endpoint for outbound dialing.
 
-        Configurable via env vars for FreePBX, generic Asterisk, or the experimental
-        ViciDial community-tested notes:
+        Configurable via env vars for FreePBX or generic Asterisk:
         - AAVA_OUTBOUND_DIAL_CONTEXT  (default: from-internal)
-        - AAVA_OUTBOUND_DIAL_PREFIX   (default: empty; ViciDial notes use e.g. '911')
+        - AAVA_OUTBOUND_DIAL_PREFIX   (default: empty)
         - AAVA_OUTBOUND_CHANNEL_TECH  (auto | pjsip | sip | local_only)
 
         When channel_tech is 'auto', probes PJSIP then SIP for internal extensions.
@@ -3247,6 +3253,42 @@ class Engine:
                        call_id=caller_channel_id,
                        called_number=session.called_number)
 
+            # ViciDial Remote Agent integration detection. Operators must set explicit channel
+            # variables in dialplan; we do not sniff CallerID(name) here because normal AAVA
+            # contexts should not accidentally become ViciDial-controlled sessions.
+            try:
+                vicidial_vars = await self._read_vicidial_channel_vars(caller_channel_id)
+                if vicidial_vars.get("VICIDIAL_RA_CALL_ID"):
+                    from src.tools.telephony.vicidial import build_session_from_channel_vars, is_enabled
+
+                    if not is_enabled(self.config):
+                        logger.warning(
+                            "ViciDial channel vars present but integrations.vicidial.enabled is false",
+                            call_id=caller_channel_id,
+                        )
+                        session.vicidial_session = None
+                    else:
+                        session.vicidial_session = build_session_from_channel_vars(vicidial_vars, self.config)
+                    if session.vicidial_session:
+                        try:
+                            await self._save_session(session)
+                        except Exception:
+                            logger.warning(
+                                "Failed to persist ViciDial Remote Agent session metadata",
+                                call_id=caller_channel_id,
+                                vicidial_call_id=getattr(session.vicidial_session, "call_id", ""),
+                                exc_info=True,
+                            )
+                        logger.info(
+                            "ViciDial Remote Agent session detected",
+                            call_id=caller_channel_id,
+                            vicidial_call_id=getattr(session.vicidial_session, "call_id", ""),
+                            vicidial_agent_user=getattr(session.vicidial_session, "agent_user", ""),
+                            source=getattr(session.vicidial_session, "source", ""),
+                        )
+            except Exception:
+                logger.debug("Failed to read ViciDial Remote Agent channel vars", call_id=caller_channel_id, exc_info=True)
+
             # If outbound, pull outbound metadata from channel vars (set during origination).
             if is_outbound:
                 try:
@@ -3590,6 +3632,9 @@ class Engine:
                         caller_channel_id=caller_channel_id, 
                         error=str(e), exc_info=True)
             await self._cleanup_call(caller_channel_id)
+
+    async def _read_vicidial_channel_vars(self, channel_id: str) -> Dict[str, str]:
+        return await read_vicidial_channel_vars(self.ari_client, channel_id)
 
     async def _handle_local_stasis_start_hybrid(self, local_channel_id: str, channel: dict):
         """Handle Local channel entering Stasis - Hybrid ARI approach."""
@@ -5675,6 +5720,57 @@ class Engine:
         except Exception:
             logger.debug("ChannelTalkingFinished handler failed", ari_event=event, exc_info=True)
 
+    async def _hangup_session_caller(self, session: "CallSession", *, reason: str, ari_channel_id: Optional[str] = None) -> None:
+        """Hang up caller, delegating AI-initiated ViciDial hangups to Agent API."""
+        vicidial_session = getattr(session, "vicidial_session", None)
+        if vicidial_session:
+            try:
+                from src.tools.telephony.vicidial import VicidialAgentApiClient, status_code
+
+                result = await VicidialAgentApiClient(self.config).call_control(
+                    vicidial_session,
+                    stage="HANGUP",
+                    status=status_code(self.config, "ai_hangup"),
+                )
+                if result.success:
+                    logger.info(
+                        "ViciDial Remote Agent hangup completed",
+                        call_id=session.call_id,
+                        vicidial_call_id=getattr(vicidial_session, "call_id", ""),
+                        reason=reason,
+                    )
+                    return
+                logger.warning(
+                    "ViciDial Remote Agent hangup failed",
+                    call_id=session.call_id,
+                    reason=reason,
+                    response=result.raw,
+                )
+                vicidial_cfg = {}
+                try:
+                    integrations = getattr(self.config, "integrations", {}) or {}
+                    vicidial_cfg = integrations.get("vicidial") if isinstance(integrations, dict) else {}
+                except Exception:
+                    vicidial_cfg = {}
+                if not (isinstance(vicidial_cfg, dict) and bool(vicidial_cfg.get("fallback_to_ari_on_hangup_failure"))):
+                    return
+                logger.warning(
+                    "Falling back to ARI hangup after ViciDial API failure; ViciDial reporting may drift",
+                    call_id=session.call_id,
+                    reason=reason,
+                )
+            except Exception:
+                logger.warning("ViciDial hangup path failed", call_id=session.call_id, reason=reason, exc_info=True)
+                try:
+                    integrations = getattr(self.config, "integrations", {}) or {}
+                    vicidial_cfg = integrations.get("vicidial") if isinstance(integrations, dict) else {}
+                    if not (isinstance(vicidial_cfg, dict) and bool(vicidial_cfg.get("fallback_to_ari_on_hangup_failure"))):
+                        return
+                except Exception:
+                    return
+
+        await self.ari_client.hangup_channel(ari_channel_id or session.caller_channel_id)
+
     async def _cleanup_call(self, channel_or_call_id: str) -> None:
         """Shared cleanup for StasisEnd/ChannelDestroyed paths."""
         resolved_call_id = None  # Track for finally block cleanup
@@ -5859,7 +5955,10 @@ class Engine:
             # Hang up caller channel ONLY if not transferred
             if not transfer_active:
                 try:
-                    await self.ari_client.hangup_channel(session.caller_channel_id)
+                    if call_outcome == "agent_hangup":
+                        await self._hangup_session_caller(session, reason="cleanup_agent_hangup")
+                    else:
+                        await self.ari_client.hangup_channel(session.caller_channel_id)
                 except Exception:
                     logger.debug("Hangup failed during cleanup", call_id=call_id, channel_id=session.caller_channel_id, exc_info=True)
             else:
@@ -9847,7 +9946,7 @@ class Engine:
                                 pass
                             await asyncio.sleep(hangup_delay)
                             try:
-                                await self.ari_client.hangup_channel(session.caller_channel_id)
+                                await self._hangup_session_caller(session, reason="agent_audio_done")
                                 logger.info("✅ Call hung up successfully", call_id=call_id, channel_id=session.caller_channel_id)
                             except Exception as e:
                                 logger.error("Failed to hang up call", call_id=call_id, error=str(e), exc_info=True)
@@ -9930,7 +10029,7 @@ class Engine:
                 try:
                     session = await self.session_store.get_by_call_id(call_id)
                     if session:
-                        await self.ari_client.hangup_channel(session.caller_channel_id)
+                        await self._hangup_session_caller(session, reason="hangup_ready")
                         logger.info(
                             "✅ Call hung up successfully (farewell completed)",
                             call_id=call_id,
@@ -10087,7 +10186,7 @@ class Engine:
                                                 timeout_sec=farewell_timeout,
                                             )
                                             try:
-                                                await self.ari_client.hangup_channel(current.caller_channel_id)
+                                                await self._hangup_session_caller(current, reason="farewell_timeout")
                                             except Exception:
                                                 logger.debug(
                                                     "Forced hangup failed (may already be hung up)",
@@ -10122,7 +10221,7 @@ class Engine:
 
                             # Explicitly hang up after farewell playback (asterisk mode only)
                             try:
-                                await self.ari_client.hangup_channel(session.caller_channel_id)
+                                await self._hangup_session_caller(session, reason="farewell_complete")
                                 logger.info("✅ Call hung up after farewell", call_id=call_id)
                             except Exception:
                                 logger.debug("Hangup after farewell failed (may already be hung up)", call_id=call_id)
@@ -10346,6 +10445,7 @@ class Engine:
                         allowed_tools = filtered
                     except Exception:
                         pass
+                allowed_tools = filter_tool_names_for_vicidial_session(allowed_tools, session)
 
                 # Always override any legacy pipeline/provider tool settings.
                 llm_options = dict(llm_options)
@@ -11505,12 +11605,11 @@ class Engine:
                                             except Exception as e:
                                                 logger.error("Farewell TTS failed", error=str(e))
                                         
-                                        logger.info("Executing explicit hangup via ARI", call_id=call_id)
+                                        logger.info("Executing explicit hangup", call_id=call_id)
                                         try:
-                                            channel_id = getattr(session, "caller_channel_id", None) or call_id
-                                            await self.ari_client.hangup_channel(channel_id)
+                                            await self._hangup_session_caller(session, reason="pipeline_explicit_hangup")
                                         except Exception as e:
-                                            logger.error("ARI hangup failed", error=str(e))
+                                            logger.error("Hangup failed", error=str(e))
                                         return
 
                                     canonical_tool = tool_registry.canonicalize_tool_name(name)
@@ -11626,7 +11725,11 @@ class Engine:
                                                                             fw_pid,
                                                                             timeout_sec=(len(fw_bytes) / 8000.0 + 3.0),
                                                                         )
-                                                                await self.ari_client.hangup_channel(getattr(session, 'channel_id', call_id))
+                                                                await self._hangup_session_caller(
+                                                                    session,
+                                                                    reason="pipeline_continuation_hangup",
+                                                                    ari_channel_id=getattr(session, "channel_id", None) or call_id,
+                                                                )
                                                                 return
                                         except Exception as e:
                                             logger.error("LLM continuation failed", error=str(e), exc_info=True)
@@ -13377,6 +13480,10 @@ class Engine:
                             provider_context["tools"] = [t.definition.name for t in tools]
                         except Exception:
                             provider_context["tools"] = allowed
+                        provider_context["tools"] = filter_tool_names_for_vicidial_session(
+                            list(provider_context.get("tools") or []),
+                            session,
+                        )
                         # Local provider can choose strict context-only tools while other providers
                         # keep effective (global+context) tools in provider_context["tools"].
                         provider_context["context_tools"] = list(explicit_context_tools)
@@ -13466,6 +13573,7 @@ class Engine:
             # Always pass these with defaults - ElevenLabs requires them if used in first message
             provider_context["caller_name"] = session.caller_name or "there"
             provider_context["caller_id"] = session.caller_number or ""
+            provider_context["vicidial_session"] = getattr(session, "vicidial_session", None)
             
             # Inject tool execution context into provider if it supports tools (Deepgram, Google Live)
             if hasattr(provider, 'tool_adapter') or hasattr(provider, '_tool_adapter'):
@@ -13474,6 +13582,7 @@ class Engine:
                     provider._bridge_id = session.bridge_id
                     provider._called_number = getattr(session, 'called_number', None)
                     provider._context_name = getattr(session, 'context_name', None)
+                    provider._vicidial_session = getattr(session, 'vicidial_session', None)
                     provider._session_store = self.session_store
                     provider._ari_client = self.ari_client
                     provider._full_config = self.config.dict()  # Convert Pydantic model to dict
@@ -13818,6 +13927,7 @@ class Engine:
                     ari_client=self.ari_client,
                     config=self.config.dict() if hasattr(self.config, 'dict') else {},
                     provider_name=provider_name,
+                    vicidial_session=getattr(session, "vicidial_session", None),
                 )
 
                 # Execute tool via registry (tool_registry is a module-level singleton)
@@ -13853,7 +13963,7 @@ class Engine:
                                 try:
                                     current_session = await self.session_store.get_by_call_id(call_id)
                                     if current_session:
-                                        await self.ari_client.hangup_channel(current_session.caller_channel_id)
+                                        await self._hangup_session_caller(current_session, reason="delayed_tool_hangup")
                                         logger.info("✅ Call hung up after farewell", call_id=call_id)
                                 except Exception as e:
                                     logger.debug(f"Delayed hangup failed (may already be hung up): {e}", call_id=call_id)

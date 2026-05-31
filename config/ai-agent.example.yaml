@@ -277,6 +277,29 @@ providers:
     style: 0.0
     use_speaker_boost: true
 
+# External platform integrations.
+integrations:
+  vicidial:
+    enabled: false
+    api_url: "https://vicidial.example.com/agc/api.php"
+    source: "aava"  # Must be allowed for the API user in ViciDial Admin -> API Users.
+    user: "${VICIDIAL_API_USER}"
+    pass: "${VICIDIAL_API_PASS}"
+    timeout_ms: 5000
+    verify_ssl: true
+    fallback_to_ari_on_hangup_failure: false
+    default_agent_user: ""
+    status_codes:
+      ai_hangup: "AIHU"
+      ai_ingroup_transfer: "AIXFR"
+      ai_extension_transfer: "AIEXT"
+    default_live_agent_destination: "default_ingroup"
+    destinations:
+      default_ingroup:
+        type: ingroup
+        ingroup_choices: DEFAULTINGROUP
+        description: "Default ViciDial ingroup"
+
 # Canonical LLM defaults (used by providers/pipelines unless overridden)
 llm:
   initial_greeting: "Hello, how can I help you today?"

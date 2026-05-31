@@ -142,6 +142,7 @@ class GrokToolAdapter:
             config=context.get('config'),
             provider_name="grok",
             user_input=context.get('user_input'),
+            vicidial_session=context.get('vicidial_session'),
         )
 
         block_result = await exec_context.get_tool_block_response(function_name)

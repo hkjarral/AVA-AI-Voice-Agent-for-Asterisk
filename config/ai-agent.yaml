@@ -115,7 +115,7 @@ contexts:
 
       - AI receptionist with extension routing and ring group support
 
-      - Outbound campaigns and sales with experimental ViciDial community-tested notes
+      - Outbound campaigns and sales with FreePBX/generic Asterisk support and ViciDial Remote Agent handoff
 
       - Multilingual support for global businesses
 
@@ -128,7 +128,7 @@ contexts:
 
       - Live agent transfer with real-time extension status checks
 
-      - AI-native outbound campaign dialer with FreePBX support and experimental ViciDial community-tested notes
+      - AI-native outbound campaign dialer with FreePBX/generic support plus ViciDial Remote Agent integration
 
       - MCP tool server support for extensible AI capabilities
 
@@ -314,7 +314,7 @@ contexts:
 
       - AI receptionist with extension routing and ring group support
 
-      - Outbound campaigns and sales with experimental ViciDial community-tested notes
+      - Outbound campaigns and sales with FreePBX/generic Asterisk support and ViciDial Remote Agent handoff
 
       - Multilingual support for global businesses
 
@@ -327,7 +327,7 @@ contexts:
 
       - Live agent transfer with real-time extension status checks
 
-      - AI-native outbound campaign dialer with FreePBX support and experimental ViciDial community-tested notes
+      - AI-native outbound campaign dialer with FreePBX/generic support plus ViciDial Remote Agent integration
 
       - MCP tool server support for extensible AI capabilities
 
@@ -503,12 +503,13 @@ contexts:
       - Outbound campaign dialer (v1): single-node, scheduled campaigns, CSV lead import,
         voicemail detection + prerecorded voicemail drop, manual recycle for retries
 
-      - ViciDial notes: experimental/community-tested configuration exists for
-        AAVA_OUTBOUND_PBX_TYPE=vicidial. It is not production-reviewed by ViciDial
-        maintainers; production ViciDial deployments should prefer a ViciDial-native
-        Remote Agent design.
+      - ViciDial notes: production ViciDial deployments should use the ViciDial
+        Remote Agent integration under integrations.vicidial. AAVA receives
+        already-connected Remote Agent calls and uses ViciDial Agent API
+        ra_call_control for AI hangup and cold transfer.
 
-      - Also supports FreePBX and generic Asterisk setups via AAVA_OUTBOUND_PBX_TYPE
+      - Outbound campaign origination supports FreePBX and generic Asterisk setups
+        via AAVA_OUTBOUND_PBX_TYPE
 
 
       DEMO CONTEXTS AVAILABLE IN THIS INSTALL (if asked):
@@ -520,8 +521,8 @@ contexts:
       OBJECTIONS / COMPARISONS (be balanced):
 
       - If they mention Vicidial: acknowledge it's powerful for predictive dialing.
-        Explain that AAVA has experimental community-tested ViciDial notes, but
-        production use should be designed around ViciDial Remote Agents.
+        Explain that AAVA integrates through ViciDial Remote Agents so ViciDial
+        keeps ownership of campaign state, dialing, compliance, and reporting.
 
       - If they worry about trunks/callerid: explain it uses their existing outbound routes/trunks
 
@@ -600,7 +601,7 @@ contexts:
 
       - AI receptionist with extension routing and ring group support
 
-      - Outbound campaigns and sales with experimental ViciDial community-tested notes
+      - Outbound campaigns and sales with FreePBX/generic Asterisk support and ViciDial Remote Agent handoff
 
       - Multilingual support for global businesses
 
@@ -613,7 +614,7 @@ contexts:
 
       - Live agent transfer with real-time extension status checks
 
-      - AI-native outbound campaign dialer with FreePBX support and experimental ViciDial community-tested notes
+      - AI-native outbound campaign dialer with FreePBX/generic support plus ViciDial Remote Agent integration
 
       - MCP tool server support for extensible AI capabilities
 
@@ -845,7 +846,7 @@ contexts:
 
       - AI receptionist with extension routing and ring group support
 
-      - Outbound campaigns and sales with experimental ViciDial community-tested notes
+      - Outbound campaigns and sales with FreePBX/generic Asterisk support and ViciDial Remote Agent handoff
 
       - Multilingual support for global businesses
 
@@ -858,7 +859,7 @@ contexts:
 
       - Live agent transfer with real-time extension status checks
 
-      - AI-native outbound campaign dialer with FreePBX support and experimental ViciDial community-tested notes
+      - AI-native outbound campaign dialer with FreePBX/generic support plus ViciDial Remote Agent integration
 
       - MCP tool server support for extensible AI capabilities
 
@@ -1036,7 +1037,7 @@ contexts:
 
       - AI receptionist with extension routing and ring group support
 
-      - Outbound campaigns and sales with experimental ViciDial community-tested notes
+      - Outbound campaigns and sales with FreePBX/generic Asterisk support and ViciDial Remote Agent handoff
 
       - Multilingual support for global businesses
 
@@ -1049,7 +1050,7 @@ contexts:
 
       - Live agent transfer with real-time extension status checks
 
-      - AI-native outbound campaign dialer with FreePBX support and experimental ViciDial community-tested notes
+      - AI-native outbound campaign dialer with FreePBX/generic support plus ViciDial Remote Agent integration
 
       - MCP tool server support for extensible AI capabilities
 
@@ -2153,6 +2154,27 @@ tools:
     enabled: false
   google_calendar:
     enabled: false
+integrations:
+  vicidial:
+    enabled: false
+    api_url: https://vicidial.example.com/agc/api.php
+    source: aava
+    user: ${VICIDIAL_API_USER}
+    pass: ${VICIDIAL_API_PASS}
+    timeout_ms: 5000
+    verify_ssl: true
+    fallback_to_ari_on_hangup_failure: false
+    default_agent_user: ''
+    status_codes:
+      ai_hangup: AIHU
+      ai_ingroup_transfer: AIXFR
+      ai_extension_transfer: AIEXT
+    default_live_agent_destination: default_ingroup
+    destinations:
+      default_ingroup:
+        type: ingroup
+        ingroup_choices: DEFAULTINGROUP
+        description: Default ViciDial ingroup
 mcp:
   enabled: false
   servers:

@@ -114,7 +114,7 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
         _uvicorn_host,
     )
 
-from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models  # noqa: E402
+from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models, integrations  # noqa: E402
 import auth  # noqa: E402
 
 # Allow disabling API docs in production for security hardening
@@ -167,6 +167,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
         {"name": "logs", "description": "Container logs and events"},
         {"name": "mcp", "description": "MCP server status (proxied from AI Engine)"},
         {"name": "ollama", "description": "Ollama integration testing"},
+        {"name": "integrations", "description": "External platform integration testing"},
         {"name": "documentation", "description": "In-app documentation browser"},
         {"name": "custom-models", "description": "Community-contributed model entries (off by default)"},
     ],
@@ -220,6 +221,7 @@ app.include_router(ollama.router, tags=["ollama"], dependencies=[Depends(auth.ge
 app.include_router(calls.router, prefix="/api", tags=["calls"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(outbound.router, prefix="/api", tags=["outbound"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(tools.router, prefix="/api/tools", tags=["tools"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(integrations.router, prefix="/api/integrations", tags=["integrations"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(docs.router, tags=["documentation"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(custom_models.router, prefix="/api/custom-models", tags=["custom-models"], dependencies=[Depends(auth.get_current_user)])
 

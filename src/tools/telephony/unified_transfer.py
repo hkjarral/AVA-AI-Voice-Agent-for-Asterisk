@@ -147,6 +147,9 @@ class UnifiedTransferTool(Tool):
         """
         # Support both 'destination' (canonical) and 'target' (ElevenLabs uses this)
         destination = parameters.get('destination') or parameters.get('target')
+
+        if getattr(context, "vicidial_session", None):
+            return await self._transfer_via_vicidial(context, destination)
         
         # Get destinations from config via context
         config = context.get_config_value("tools.transfer") or {}
@@ -244,6 +247,83 @@ class UnifiedTransferTool(Tool):
                 "status": "failed",
                 "message": f"Invalid transfer type: {transfer_type}"
             }
+
+    async def _transfer_via_vicidial(
+        self,
+        context: ToolExecutionContext,
+        destination: Any,
+    ) -> Dict[str, Any]:
+        from src.tools.telephony.vicidial import (
+            VicidialAgentApiClient,
+            is_enabled,
+            resolve_destination,
+            status_code,
+        )
+
+        if not is_enabled(context.config):
+            return {"status": "failed", "message": "ViciDial integration is disabled"}
+
+        destination_key, dest_cfg, reason = resolve_destination(context.config, str(destination or "").strip())
+        if not destination_key or not dest_cfg:
+            return {
+                "status": "failed",
+                "message": f"Unknown ViciDial destination: {destination or ''}".strip(),
+                "reason": reason,
+            }
+
+        dest_type = str(dest_cfg.get("type") or "").strip().lower()
+        client = VicidialAgentApiClient(context.config)
+
+        if dest_type == "ingroup":
+            result = await client.call_control(
+                context.vicidial_session,
+                stage="INGROUPTRANSFER",
+                ingroup_choices=str(dest_cfg.get("ingroup_choices") or "").strip(),
+                status=status_code(context.config, "ai_ingroup_transfer"),
+            )
+            transfer_type = "ingroup"
+            transfer_target = str(dest_cfg.get("ingroup_choices") or "").strip()
+        elif dest_type == "extension":
+            result = await client.call_control(
+                context.vicidial_session,
+                stage="EXTENSIONTRANSFER",
+                phone_number=str(dest_cfg.get("phone_number") or "").strip(),
+                status=status_code(context.config, "ai_extension_transfer"),
+            )
+            transfer_type = "extension"
+            transfer_target = str(dest_cfg.get("phone_number") or "").strip()
+        else:
+            return {"status": "failed", "message": f"Invalid ViciDial destination type: {dest_type}"}
+
+        if not result.success:
+            return {
+                "status": "failed",
+                "message": f"ViciDial transfer failed: {result.message}",
+                "destination": destination_key,
+                "type": transfer_type,
+            }
+
+        description = str(dest_cfg.get("description") or destination_key)
+        await context.update_session(
+            transfer_active=True,
+            transfer_state=f"vicidial_{transfer_type}",
+            transfer_target=description,
+            transfer_destination=destination_key,
+        )
+        logger.info(
+            "ViciDial transfer initiated",
+            call_id=context.call_id,
+            destination=destination_key,
+            type=transfer_type,
+            target=transfer_target,
+        )
+        return {
+            "status": "success",
+            "message": f"Transferring you to {description} now.",
+            "destination": destination_key,
+            "target": transfer_target,
+            "type": f"vicidial_{transfer_type}",
+        }
     
     async def _transfer_to_extension(
         self,

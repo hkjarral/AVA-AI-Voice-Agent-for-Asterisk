@@ -176,7 +176,8 @@ class OpenAIToolAdapter:
             ari_client=context['ari_client'],
             config=context.get('config'),
             provider_name="openai_realtime",
-            user_input=context.get('user_input')
+            user_input=context.get('user_input'),
+            vicidial_session=context.get('vicidial_session'),
         )
 
         block_result = await exec_context.get_tool_block_response(function_name)

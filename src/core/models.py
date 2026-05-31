@@ -174,6 +174,10 @@ class CallSession:
     outbound_attempt_id: Optional[str] = None
     outbound_custom_vars: Dict[str, Any] = field(default_factory=dict)
 
+    # External platform integrations
+    vicidial_session: Optional[Any] = None
+    allowed_tools: List[str] = field(default_factory=list)
+
     def __post_init__(self):
         """Initialize default VAD and fallback state."""
         if not self.vad_state:

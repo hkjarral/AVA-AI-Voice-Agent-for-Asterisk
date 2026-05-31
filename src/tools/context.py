@@ -40,6 +40,7 @@ class ToolExecutionContext:
     # Provider information
     provider_name: str = None  # "deepgram", "openai_realtime", "custom_pipeline"
     provider_session: Any = None
+    vicidial_session: Any = None
     
     # Request metadata
     user_input: Optional[str] = None  # Original user utterance

@@ -253,6 +253,11 @@ class LiveAgentTransferTool(Tool):
 
     async def execute(self, parameters: Dict[str, Any], context: ToolExecutionContext) -> Dict[str, Any]:
         unified = UnifiedTransferTool()
+        if getattr(context, "vicidial_session", None):
+            target = str((parameters or {}).get("target", "") or "").strip()
+            logger.info("Executing live agent transfer via ViciDial integration", call_id=context.call_id, target=target)
+            return await unified.execute({"destination": target} if target else {}, context)
+
         transfer_cfg = context.get_config_value("tools.transfer") or {}
         if isinstance(transfer_cfg, dict) and transfer_cfg.get("enabled") is False:
             return {"status": "failed", "message": "Transfer service is disabled"}

@@ -161,6 +161,7 @@ class ElevenLabsToolAdapter:
                     config=context.get("config"),
                     provider_name="elevenlabs",
                     user_input=context.get("user_input"),
+                    vicidial_session=context.get("vicidial_session"),
                 )
 
             if isinstance(exec_context, ToolExecutionContext):

@@ -976,6 +976,8 @@ class AppConfig(BaseModel):
     contexts: Dict[str, Any] = Field(default_factory=dict)
     # Tool calling configuration (v4.1)
     tools: Dict[str, Any] = Field(default_factory=dict)
+    # External platform integrations (ViciDial Remote Agent, future CRM/contact-center systems).
+    integrations: Dict[str, Any] = Field(default_factory=dict)
     # In-call HTTP tool definitions (Milestone 24)
     # Admin UI stores AI-invokable HTTP tool configs under `in_call_tools:`.
     in_call_tools: Dict[str, Any] = Field(default_factory=dict)
@@ -1095,6 +1097,15 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     normalize_pipelines(config_data)
     normalize_profiles(config_data)
     normalize_local_provider_tokens(config_data)
+    if str(os.getenv("AAVA_OUTBOUND_PBX_TYPE", "") or "").strip().lower() == "vicidial":
+        from src.tools.telephony.vicidial import REMOVED_OUTBOUND_VICIDIAL_MESSAGE
+        raise ValueError(REMOVED_OUTBOUND_VICIDIAL_MESSAGE)
+    try:
+        from src.tools.telephony.vicidial import validate_vicidial_config
+        validate_vicidial_config(config_data)
+    except Exception as e:
+        logger.error("ViciDial integration validation failed", error=str(e))
+        raise
     
     # Phase 4b: Validate normalized configuration
     from src.config.normalization import validate_providers, validate_pipelines, ConfigValidationError
@@ -1187,6 +1198,10 @@ def validate_production_config(config: AppConfig) -> tuple[list[str], list[str]]
                 f"config_version={config_version} is older than the v6 baseline (6); "
                 "review release migration notes before production rollout"
             )
+
+        if str(os.getenv("AAVA_OUTBOUND_PBX_TYPE", "") or "").strip().lower() == "vicidial":
+            from src.tools.telephony.vicidial import REMOVED_OUTBOUND_VICIDIAL_MESSAGE
+            errors.append(REMOVED_OUTBOUND_VICIDIAL_MESSAGE)
 
         # VAD configuration consistency
         if hasattr(config, 'vad') and config.vad:

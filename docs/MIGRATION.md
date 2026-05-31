@@ -254,7 +254,7 @@ docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate
 New in v6.1.1:
 - Operator config overrides via `config/ai-agent.local.yaml` (optional, git-ignored)
 - Live agent transfer tool (opt-in via tool allowlist)
-- Experimental ViciDial outbound dialer configuration notes (opt-in via `.env`)
+- ViciDial Remote Agent migration notes for former experimental outbound users
 
 ## v5.x to v6.0.0
 

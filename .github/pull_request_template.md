@@ -45,4 +45,11 @@ Which docs were updated (if any)?
 - [ ] Provider/tool-specific docs
 - [ ] `docs/DEVELOPER_ONBOARDING.md` / other onboarding content
 
+Community validation docs included:
+- [ ] Main setup guide
+- [ ] Migration guide
+- [ ] Community test checklist
+- [ ] Config reference
+- [ ] Release notes
+
 If no docs were needed, explain why.

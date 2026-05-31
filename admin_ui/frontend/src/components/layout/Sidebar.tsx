@@ -25,7 +25,8 @@ import {
     Phone,
     CalendarClock,
     LogOut,
-    Lock
+    Lock,
+    Webhook
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
 import ChangePasswordModal from '../auth/ChangePasswordModal';
@@ -92,6 +93,7 @@ const Sidebar = () => {
                     <SidebarItem to="/contexts" icon={MessageSquare} label="Contexts" />
                     <SidebarItem to="/profiles" icon={Sliders} label="Audio Profiles" />
                     <SidebarItem to="/tools" icon={Wrench} label="Tools" />
+                    <SidebarItem to="/integrations" icon={Webhook} label="Integrations" />
                     <SidebarItem to="/mcp" icon={Plug} label="MCP" />
                 </SidebarGroup>
 

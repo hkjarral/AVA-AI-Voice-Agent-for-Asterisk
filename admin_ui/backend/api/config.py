@@ -87,6 +87,7 @@ def _ai_engine_env_key(key: str) -> bool:
             "TZ",
             "STREAMING_LOG_LEVEL",
         )
+        or _is_prefix(key, ("VICIDIAL_",))
         or _is_prefix(key, ("AUDIO_TRANSPORT", "DOWNSTREAM_MODE", "AUDIOSOCKET_", "EXTERNAL_MEDIA_", "BARGE_IN_"))
         or _is_prefix(key, ("SMTP_",))
         # Local provider runtime uses these env vars via ${LOCAL_WS_*} placeholders in ai-agent.yaml
