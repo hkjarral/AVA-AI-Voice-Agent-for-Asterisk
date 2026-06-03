@@ -20,6 +20,9 @@ Use **Admin UI -> Core Configuration -> Integrations -> ViciDial Remote Agent**.
 
 Set:
 
+- Deployment mode:
+  - `remote_aava_asterisk` for a separate AAVA Asterisk server behind a cross-connect
+  - `same_box` for running AAVA Stasis on the ViciDial Asterisk server
 - Agent API URL, for example `https://vicidial.example.com/agc/api.php`
 - Source, for example `aava`
 - API user reference: `${VICIDIAL_API_USER}`
@@ -41,9 +44,61 @@ VICIDIAL_API_PASS=your_api_password
 
 Restart the AI Engine after saving.
 
-## Required Dialplan Variables
+## Deployment Modes
 
-AAVA detects ViciDial calls only when the dialplan sets explicit ViciDial Remote Agent variables. Use a real AAVA context for `AI_CONTEXT`; do not set it to `vicidial_remote_agent` unless that is an actual context you created.
+AAVA supports two deployment modes. Both modes use the same runtime rule: the dialplan must set explicit ViciDial Remote Agent variables before `Stasis(...)`. AAVA does not sniff SIP headers or CallerID directly in Python.
+
+Required final channel vars on the AAVA call:
+
+- `VICIDIAL_RA_CALL_ID`
+- `VICIDIAL_RA_AGENT_USER`
+
+Optional channel vars captured in AAVA logs/RCA when present:
+
+- `VICIDIAL_LEAD_ID`
+- `VICIDIAL_CAMPAIGN_ID`
+- `VICIDIAL_LIST_ID`
+- `VICIDIAL_PHONE_NUMBER`
+- `VICIDIAL_CALLER_NAME`
+- `VICIDIAL_INGROUP`
+
+Use a real AAVA context for `AI_CONTEXT`; do not set it to `vicidial_remote_agent` unless that is an actual context you created.
+
+### Remote AAVA Asterisk Server
+
+Recommended for production and higher-volume ViciDial systems.
+
+```text
+ViciDial server -> Remote Agent extension/cross-connect -> AAVA Asterisk server -> Stasis/AAVA
+```
+
+In this mode, ViciDial sends the Remote Agent call to a trunk or extension that lands on a separate Asterisk server running AAVA ARI/Stasis. This keeps ARI/WebSocket/Stasis load away from the production ViciDial Asterisk process.
+
+The ViciDial side should preserve normal ViciDial call lifecycle and logging. Do not add ViciDial `call_log` AGI lines to the separate AAVA Asterisk server.
+
+On the AAVA Asterisk server, map forwarded metadata into AAVA channel vars. Example using placeholder PJSIP headers:
+
+```asterisk
+same => n,Set(__AI_CONTEXT=sales)
+same => n,Set(__VICIDIAL_RA_CALL_ID=${PJSIP_HEADER(read,X-VICIDIAL-CALL-ID)})
+same => n,Set(__VICIDIAL_RA_AGENT_USER=${PJSIP_HEADER(read,X-VICIDIAL-AGENT-USER)})
+same => n,Set(__VICIDIAL_LEAD_ID=${PJSIP_HEADER(read,X-VICIDIAL-LEAD-ID)})
+same => n,Set(__VICIDIAL_CAMPAIGN_ID=${PJSIP_HEADER(read,X-VICIDIAL-CAMPAIGN-ID)})
+same => n,Set(__VICIDIAL_CALLER_NAME=${PJSIP_HEADER(read,X-VICIDIAL-CALLER-NAME)})
+same => n,Stasis(asterisk-ai-voice-agent)
+```
+
+The header names above are examples. Use the exact SIP/PJSIP/IAX metadata names your ViciDial-side forwarding script provides.
+
+### Same-Box ViciDial Asterisk
+
+Useful for labs, smaller installs, and users who cannot run a second Asterisk server.
+
+```text
+ViciDial Asterisk server -> local AAVA Stasis app
+```
+
+Same-box mode is simpler, but it runs ARI/Stasis/WebSocket activity on the same Asterisk process ViciDial depends on. Avoid this mode for high-volume production testing unless you understand and accept that operational risk.
 
 ```asterisk
 same => n,Set(__AI_CONTEXT=sales)
@@ -51,12 +106,10 @@ same => n,Set(__VICIDIAL_RA_CALL_ID=${CALLERID(name)})
 same => n,Set(__VICIDIAL_RA_AGENT_USER=1028)
 same => n,Stasis(asterisk-ai-voice-agent)
 
-exten => h,1,AGI(agi://127.0.0.1:4577/call_log)
+exten => h,1,AGI(agi://127.0.0.1:4577/call_log--HVcauses--PRI-----NODEBUG-----${HANGUPCAUSE}-----${DIALSTATUS}-----${DIALEDTIME}-----${ANSWEREDTIME}-----${HANGUPCAUSE(${HANGUPCAUSE_KEYS()},tech)})
 ```
 
-If your ViciDial install sends the Remote Agent call ID in a SIP header, extract that header in dialplan and set `VICIDIAL_RA_CALL_ID` before calling `Stasis(...)`.
-
-> Required: every context on a ViciDial server must include the `h` extension. Missing it can leave calls stuck in ViciDial tables such as `vicidial_log` or `vicidial_live_agents` and break reporting.
+> Required for same-box mode: every context on a ViciDial server must include the correct ViciDial `h` extension. Missing it can leave calls stuck in ViciDial tables such as `vicidial_log` or `vicidial_live_agents` and break reporting.
 
 ## Runtime Behavior
 

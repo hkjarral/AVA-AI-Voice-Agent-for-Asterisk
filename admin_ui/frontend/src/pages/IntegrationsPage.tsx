@@ -12,6 +12,7 @@ import { sanitizeConfigForSave } from '../utils/configSanitizers';
 
 const DEFAULT_VICIDIAL = {
     enabled: false,
+    deployment_mode: 'remote_aava_asterisk',
     api_url: '',
     source: 'aava',
     user: '${VICIDIAL_API_USER}',
@@ -35,12 +36,22 @@ const DEFAULT_VICIDIAL = {
     },
 };
 
-const DIALPLAN_SNIPPET = `same => n,Set(__AI_CONTEXT=sales)
+const REMOTE_AAVA_DIALPLAN_SNIPPET = `; AAVA Asterisk server receiving cross-connect call from ViciDial
+same => n,Set(__AI_CONTEXT=sales)
+same => n,Set(__VICIDIAL_RA_CALL_ID=\${PJSIP_HEADER(read,X-VICIDIAL-CALL-ID)})
+same => n,Set(__VICIDIAL_RA_AGENT_USER=\${PJSIP_HEADER(read,X-VICIDIAL-AGENT-USER)})
+same => n,Set(__VICIDIAL_LEAD_ID=\${PJSIP_HEADER(read,X-VICIDIAL-LEAD-ID)})
+same => n,Set(__VICIDIAL_CAMPAIGN_ID=\${PJSIP_HEADER(read,X-VICIDIAL-CAMPAIGN-ID)})
+same => n,Set(__VICIDIAL_CALLER_NAME=\${PJSIP_HEADER(read,X-VICIDIAL-CALLER-NAME)})
+same => n,Stasis(asterisk-ai-voice-agent)`;
+
+const SAME_BOX_DIALPLAN_SNIPPET = `; ViciDial Asterisk server running AAVA Stasis locally
+same => n,Set(__AI_CONTEXT=sales)
 same => n,Set(__VICIDIAL_RA_CALL_ID=\${CALLERID(name)})
 same => n,Set(__VICIDIAL_RA_AGENT_USER=1028)
 same => n,Stasis(asterisk-ai-voice-agent)
 
-exten => h,1,AGI(agi://127.0.0.1:4577/call_log)`;
+exten => h,1,AGI(agi://127.0.0.1:4577/call_log--HVcauses--PRI-----NODEBUG-----\${HANGUPCAUSE}-----\${DIALSTATUS}-----\${DIALEDTIME}-----\${ANSWEREDTIME}-----\${HANGUPCAUSE(\${HANGUPCAUSE_KEYS()},tech)})`;
 
 type DestinationDraft = {
     key: string;
@@ -221,6 +232,8 @@ const IntegrationsPage = () => {
         { value: '', label: 'None' },
         ...Object.keys(vicidial.destinations || {}).sort().map((key) => ({ value: key, label: key })),
     ];
+    const isSameBox = vicidial.deployment_mode === 'same_box';
+    const dialplanSnippet = isSameBox ? SAME_BOX_DIALPLAN_SNIPPET : REMOTE_AAVA_DIALPLAN_SNIPPET;
 
     return (
         <div className="space-y-6">
@@ -249,6 +262,15 @@ const IntegrationsPage = () => {
                     />
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormSelect
+                            label="Deployment Mode"
+                            value={vicidial.deployment_mode || 'remote_aava_asterisk'}
+                            onChange={(e) => updateVicidial('deployment_mode', e.target.value)}
+                            options={[
+                                { value: 'remote_aava_asterisk', label: 'Remote AAVA Asterisk (recommended)' },
+                                { value: 'same_box', label: 'Same ViciDial Asterisk box' },
+                            ]}
+                        />
                         <FormInput label="Agent API URL" value={vicidial.api_url || ''} onChange={(e) => updateVicidial('api_url', e.target.value)} placeholder="https://vicidial.example.com/agc/api.php" />
                         <FormInput label="Source" tooltip="Must be allowed for the API user in ViciDial Admin -> API Users." value={vicidial.source || 'aava'} onChange={(e) => updateVicidial('source', e.target.value)} />
                         <FormInput label="API User Env Reference" value={vicidial.user || '${VICIDIAL_API_USER}'} onChange={(e) => updateVicidial('user', e.target.value)} />
@@ -342,9 +364,18 @@ const IntegrationsPage = () => {
                 <div className="rounded-lg border border-amber-300/40 bg-amber-500/5 p-4">
                     <div className="flex gap-2 text-amber-700 dark:text-amber-400 text-sm">
                         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-                        <p>Every context on a ViciDial server must include the h extension. Missing it can leave calls stuck in ViciDial tables and break reporting.</p>
+                        <p>
+                            {isSameBox
+                                ? 'Same-box mode runs AAVA Stasis on the ViciDial Asterisk process. Keep ViciDial hangup logging in every ViciDial context.'
+                                : 'Remote mode is recommended for production and high-volume testing. Map cross-connect headers or IAX vars into AAVA channel vars on the AAVA Asterisk server.'}
+                        </p>
                     </div>
-                    <pre className="mt-4 overflow-x-auto rounded bg-muted p-3 text-xs"><code>{DIALPLAN_SNIPPET}</code></pre>
+                    <pre className="mt-4 overflow-x-auto rounded bg-muted p-3 text-xs"><code>{dialplanSnippet}</code></pre>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                        {isSameBox
+                            ? 'Same-box mode should keep the full ViciDial h extension in every ViciDial context that participates in this call path.'
+                            : 'Header names shown for remote mode are placeholders until your ViciDial-side forwarding script defines the exact names. The AAVA requirement is the final channel vars: VICIDIAL_RA_CALL_ID and VICIDIAL_RA_AGENT_USER.'}
+                    </p>
                 </div>
             </ConfigSection>
         </div>

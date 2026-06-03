@@ -3285,6 +3285,7 @@ class Engine:
                             vicidial_call_id=getattr(session.vicidial_session, "call_id", ""),
                             vicidial_agent_user=getattr(session.vicidial_session, "agent_user", ""),
                             source=getattr(session.vicidial_session, "source", ""),
+                            metadata=getattr(session.vicidial_session, "metadata", None) or {},
                         )
             except Exception:
                 logger.debug("Failed to read ViciDial Remote Agent channel vars", call_id=caller_channel_id, exc_info=True)

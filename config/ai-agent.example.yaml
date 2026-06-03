@@ -281,6 +281,7 @@ providers:
 integrations:
   vicidial:
     enabled: false
+    deployment_mode: "remote_aava_asterisk"  # remote_aava_asterisk (recommended) or same_box.
     api_url: "https://vicidial.example.com/agc/api.php"
     source: "aava"  # Must be allowed for the API user in ViciDial Admin -> API Users.
     user: "${VICIDIAL_API_USER}"

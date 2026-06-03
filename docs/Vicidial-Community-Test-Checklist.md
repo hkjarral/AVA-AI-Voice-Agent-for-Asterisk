@@ -11,20 +11,46 @@ Use this checklist when testing the ViciDial Remote Agent integration and sharin
 - Audio transport: AudioSocket / ExternalMedia
 - AI provider/context used:
 
+Deployment mode:
+
+- [ ] Remote AAVA Asterisk server via SIP/PJSIP/IAX cross-connect
+- [ ] Same ViciDial Asterisk server
+
+Metadata transport:
+
+- [ ] CALLERID(name) on same ViciDial Asterisk server
+- [ ] SIP header
+- [ ] PJSIP header
+- [ ] IAXVAR
+- [ ] Other:
+
 ## Setup
 
 - [ ] `VICIDIAL_API_USER` and `VICIDIAL_API_PASS` set in `.env`
 - [ ] ViciDial API user allows the configured `source`
 - [ ] `integrations.vicidial.enabled=true`
+- [ ] `integrations.vicidial.deployment_mode` matches the tested architecture
 - [ ] `VICIDIAL_RA_CALL_ID` set before `Stasis(...)`
 - [ ] `VICIDIAL_RA_AGENT_USER` set before `Stasis(...)`
-- [ ] `h` extension present in every ViciDial context
+- [ ] Same-box only: full ViciDial `h` extension present in every ViciDial context
+- [ ] Remote AAVA Asterisk only: ViciDial-side call lifecycle/logging preserved before cross-connect
 
 Call ID source:
 
 - [ ] `CALLERID(name)`
 - [ ] SIP header extracted in dialplan
+- [ ] PJSIP header extracted in dialplan
+- [ ] IAXVAR extracted in dialplan
 - [ ] Other:
+
+Optional metadata forwarded to AAVA:
+
+- [ ] `VICIDIAL_LEAD_ID`
+- [ ] `VICIDIAL_CAMPAIGN_ID`
+- [ ] `VICIDIAL_LIST_ID`
+- [ ] `VICIDIAL_PHONE_NUMBER`
+- [ ] `VICIDIAL_CALLER_NAME`
+- [ ] `VICIDIAL_INGROUP`
 
 ## Single-Call Tests
 

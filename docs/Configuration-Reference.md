@@ -170,6 +170,7 @@ ViciDial is configured as an integration, not as an AI-callable tool. ViciDial o
 integrations:
   vicidial:
     enabled: false
+    deployment_mode: "remote_aava_asterisk"
     api_url: "https://vicidial.example.com/agc/api.php"
     source: "aava"
     user: "${VICIDIAL_API_USER}"
@@ -193,6 +194,7 @@ integrations:
 Validation rules:
 
 - `api_url`, `source`, `user`, and `pass` are required when enabled.
+- `deployment_mode` must be `remote_aava_asterisk` or `same_box`; it controls UI/docs guidance, not call-control behavior.
 - `source` must be allowed for the API user in ViciDial Admin -> API Users.
 - `user` and `pass` must resolve to non-empty values from `.env`.
 - status codes must be at most 6 characters.
@@ -205,6 +207,15 @@ Required dialplan channel vars:
 
 - `VICIDIAL_RA_CALL_ID`
 - `VICIDIAL_RA_AGENT_USER`
+
+Optional dialplan channel vars captured for logs/RCA/community testing:
+
+- `VICIDIAL_LEAD_ID`
+- `VICIDIAL_CAMPAIGN_ID`
+- `VICIDIAL_LIST_ID`
+- `VICIDIAL_PHONE_NUMBER`
+- `VICIDIAL_CALLER_NAME`
+- `VICIDIAL_INGROUP`
 
 See `docs/Vicidial-Setup.md` for the full setup guide.
 

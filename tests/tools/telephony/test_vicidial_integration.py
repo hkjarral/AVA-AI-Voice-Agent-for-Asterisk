@@ -87,6 +87,14 @@ def test_vicidial_validation_checks_status_length_and_destinations():
         validate_vicidial_config(cfg)
 
 
+def test_vicidial_validation_checks_deployment_mode():
+    validate_vicidial_config(_config(deployment_mode="remote_aava_asterisk"))
+    validate_vicidial_config(_config(deployment_mode="same_box"))
+
+    with pytest.raises(VicidialConfigError, match="deployment_mode"):
+        validate_vicidial_config(_config(deployment_mode="sideways"))
+
+
 def test_build_session_requires_explicit_call_id_and_agent_user():
     cfg = _config()
 
@@ -102,6 +110,32 @@ def test_build_session_requires_explicit_call_id_and_agent_user():
     )
 
     assert session == VicidialSession(call_id="Y0315201639000402027", agent_user="1028")
+
+
+def test_build_session_captures_optional_vicidial_metadata():
+    session = build_session_from_channel_vars(
+        {
+            "VICIDIAL_RA_CALL_ID": "Y0315",
+            "VICIDIAL_RA_AGENT_USER": "1028",
+            "VICIDIAL_LEAD_ID": "123",
+            "VICIDIAL_CAMPAIGN_ID": "SALES",
+            "VICIDIAL_LIST_ID": "9001",
+            "VICIDIAL_PHONE_NUMBER": "16005551212",
+            "VICIDIAL_CALLER_NAME": "Jane Caller",
+            "VICIDIAL_INGROUP": "SUPPORT",
+        },
+        _config(),
+    )
+
+    assert session is not None
+    assert session.metadata == {
+        "lead_id": "123",
+        "campaign_id": "SALES",
+        "list_id": "9001",
+        "phone_number": "16005551212",
+        "caller_name": "Jane Caller",
+        "ingroup": "SUPPORT",
+    }
 
 
 def test_removed_vicidial_outbound_env_fails_production_validation(monkeypatch):
@@ -242,10 +276,14 @@ async def test_vicidial_channel_var_detection_reads_metadata_after_call_id():
         "VICIDIAL_SOURCE": "source-a",
         "VICIDIAL_CAMPAIGN_ID": "",
         "VICIDIAL_INGROUP": "SUPPORT",
+        "VICIDIAL_LEAD_ID": "123",
+        "VICIDIAL_LIST_ID": "",
+        "VICIDIAL_PHONE_NUMBER": "16005551212",
+        "VICIDIAL_CALLER_NAME": "Jane Caller",
     }
 
     async def send_command(method, resource, params=None, tolerate_statuses=None):
-        return {"value": values[params["variable"]]}
+        return {"value": values.get(params["variable"], "")}
 
     engine = SimpleNamespace(ari_client=SimpleNamespace(send_command=AsyncMock(side_effect=send_command)))
 
@@ -256,6 +294,9 @@ async def test_vicidial_channel_var_detection_reads_metadata_after_call_id():
         "VICIDIAL_RA_AGENT_USER": "1028",
         "VICIDIAL_SOURCE": "source-a",
         "VICIDIAL_INGROUP": "SUPPORT",
+        "VICIDIAL_LEAD_ID": "123",
+        "VICIDIAL_PHONE_NUMBER": "16005551212",
+        "VICIDIAL_CALLER_NAME": "Jane Caller",
     }
 
 

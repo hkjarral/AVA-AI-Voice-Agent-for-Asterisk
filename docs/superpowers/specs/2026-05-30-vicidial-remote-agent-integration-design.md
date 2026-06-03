@@ -26,6 +26,7 @@ Delivery slices:
 - Require explicit `VICIDIAL_RA_CALL_ID` and `VICIDIAL_RA_AGENT_USER`.
 - Do not infer call IDs inside AAVA; the dialplan owns call-id extraction from `CALLERID(name)` or a verified SIP header.
 - Use real `AI_CONTEXT` values such as `sales` or `support`; ViciDial detection comes from ViciDial channel vars.
+- Support `remote_aava_asterisk` and `same_box` deployment modes with the same explicit channel-var contract.
 - Delegate existing `hangup_call`, `live_agent_transfer`, and `blind_transfer` on ViciDial sessions.
 - Hide warm-transfer tools such as `attended_transfer` on ViciDial sessions.
 - Fail startup if `AAVA_OUTBOUND_PBX_TYPE=vicidial` is still present.
@@ -34,6 +35,8 @@ Delivery slices:
 ## Runtime Shape
 
 At `StasisStart`, AAVA reads explicit channel vars. When `integrations.vicidial.enabled=true` and `VICIDIAL_RA_CALL_ID` is present, AAVA attaches a `VicidialSession` to the call and passes it through `ToolExecutionContext.vicidial_session`.
+
+Optional ViciDial metadata channel vars (`VICIDIAL_LEAD_ID`, `VICIDIAL_CAMPAIGN_ID`, `VICIDIAL_LIST_ID`, `VICIDIAL_PHONE_NUMBER`, `VICIDIAL_CALLER_NAME`, `VICIDIAL_INGROUP`) are captured in `VicidialSession.metadata` for logs/RCA/community testing when the dialplan provides them.
 
 ViciDial sessions dispatch:
 
@@ -50,6 +53,7 @@ Config lives under:
 integrations:
   vicidial:
     enabled: true
+    deployment_mode: "remote_aava_asterisk"
     api_url: "https://vicidial.example.com/agc/api.php"
     source: "aava"
     user: "${VICIDIAL_API_USER}"
@@ -74,11 +78,16 @@ integrations:
 
 `source` must be allowlisted for the API user in ViciDial Admin -> API Users.
 
+## Deployment Modes
+
+- `remote_aava_asterisk`: recommended for production and higher-volume testing. ViciDial sends the Remote Agent call through a SIP/PJSIP/IAX cross-connect to a separate AAVA Asterisk server. The AAVA-side dialplan maps received metadata headers/vars into `VICIDIAL_*` channel vars.
+- `same_box`: lab/smaller-install path where AAVA Stasis runs on the ViciDial Asterisk server. ViciDial contexts must keep the full ViciDial `h` extension/call_log lifecycle.
+
 ## UI
 
 Admin UI adds Core Configuration -> Integrations -> ViciDial Remote Agent.
 
-The page includes connection settings, env-backed credentials, remote-agent metadata, destination editor, status codes, dialplan snippet, warnings, and a connection test. The test sends `ra_call_control` with a deliberately invalid call ID and treats the expected "no active call" style response as proof that URL, credentials, and source allowlisting work.
+The page includes deployment mode, connection settings, env-backed credentials, remote-agent metadata, destination editor, status codes, deployment-specific dialplan snippet, warnings, and a connection test. The test sends `ra_call_control` with a deliberately invalid call ID and treats the expected "no active call" style response as proof that URL, credentials, and source allowlisting work.
 
 The existing System -> Environment page exposes `VICIDIAL_API_USER` and `VICIDIAL_API_PASS`. The old outbound PBX dropdown no longer offers ViciDial.
 
@@ -101,10 +110,10 @@ same => n,Set(__VICIDIAL_RA_CALL_ID=${CALLERID(name)})
 same => n,Set(__VICIDIAL_RA_AGENT_USER=1028)
 same => n,Stasis(asterisk-ai-voice-agent)
 
-exten => h,1,AGI(agi://127.0.0.1:4577/call_log)
+exten => h,1,AGI(agi://127.0.0.1:4577/call_log--HVcauses--PRI-----NODEBUG-----${HANGUPCAUSE}-----${DIALSTATUS}-----${DIALEDTIME}-----${ANSWEREDTIME}-----${HANGUPCAUSE(${HANGUPCAUSE_KEYS()},tech)})
 ```
 
-Every context on a ViciDial server must include the `h` extension. Missing it can leave calls stuck in ViciDial tables and break reporting.
+In same-box mode, every ViciDial context must include the correct ViciDial `h` extension. Missing it can leave calls stuck in ViciDial tables and break reporting. In remote mode, the separate AAVA Asterisk server should not run ViciDial `call_log`; ViciDial-side contexts should preserve their normal lifecycle before the cross-connect.
 
 ## Forum Question Draft
 

@@ -2157,6 +2157,7 @@ tools:
 integrations:
   vicidial:
     enabled: false
+    deployment_mode: remote_aava_asterisk
     api_url: https://vicidial.example.com/agc/api.php
     source: aava
     user: ${VICIDIAL_API_USER}

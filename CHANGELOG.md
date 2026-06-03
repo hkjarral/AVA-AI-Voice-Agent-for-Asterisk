@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **ViciDial Remote Agent integration (experimental)**: Added `integrations.vicidial` config, Admin UI **Core Configuration -> Integrations -> ViciDial Remote Agent**, Agent API `ra_call_control` support for AI hangup/ingroup transfer/extension transfer, and community validation docs (`docs/Vicidial-Setup.md`, `docs/Vicidial-Community-Test-Checklist.md`, `docs/Vicidial-Migration-From-Experimental-Outbound.md`).
+- **ViciDial Remote Agent integration (experimental)**: Added `integrations.vicidial` config, Admin UI **Core Configuration -> Integrations -> ViciDial Remote Agent**, deployment-mode guidance for remote AAVA Asterisk vs same-box ViciDial Asterisk, Agent API `ra_call_control` support for AI hangup/ingroup transfer/extension transfer, optional ViciDial metadata capture, and community validation docs (`docs/Vicidial-Setup.md`, `docs/Vicidial-Community-Test-Checklist.md`, `docs/Vicidial-Migration-From-Experimental-Outbound.md`).
 
 ### Breaking Changes
 

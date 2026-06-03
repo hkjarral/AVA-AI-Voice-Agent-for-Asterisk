@@ -25,7 +25,17 @@ REMOVED_OUTBOUND_VICIDIAL_MESSAGE = (
     "docs/Vicidial-Migration-From-Experimental-Outbound.md."
 )
 VICIDIAL_UNSUPPORTED_TOOL_NAMES = {"attended_transfer", "transfer_call", "transfer_to_queue"}
-VICIDIAL_EXTRA_CHANNEL_VARS = ["VICIDIAL_RA_AGENT_USER", "VICIDIAL_SOURCE", "VICIDIAL_CAMPAIGN_ID", "VICIDIAL_INGROUP"]
+VICIDIAL_DEPLOYMENT_MODES = {"remote_aava_asterisk", "same_box"}
+VICIDIAL_EXTRA_CHANNEL_VARS = [
+    "VICIDIAL_RA_AGENT_USER",
+    "VICIDIAL_SOURCE",
+    "VICIDIAL_CAMPAIGN_ID",
+    "VICIDIAL_INGROUP",
+    "VICIDIAL_LEAD_ID",
+    "VICIDIAL_LIST_ID",
+    "VICIDIAL_PHONE_NUMBER",
+    "VICIDIAL_CALLER_NAME",
+]
 
 
 class VicidialConfigError(ValueError):
@@ -39,6 +49,7 @@ class VicidialSession:
     call_id: str
     agent_user: str
     source: str = "channel_vars"
+    metadata: Dict[str, str] | None = None
 
 
 @dataclass
@@ -181,6 +192,12 @@ def validate_vicidial_config(config_data: Dict[str, Any]) -> None:
     if not source:
         raise VicidialConfigError("integrations.vicidial.source is required when enabled")
 
+    deployment_mode = str(vicidial.get("deployment_mode") or "remote_aava_asterisk").strip()
+    if deployment_mode not in VICIDIAL_DEPLOYMENT_MODES:
+        raise VicidialConfigError(
+            "integrations.vicidial.deployment_mode must be remote_aava_asterisk or same_box"
+        )
+
     if not _resolve_secret(vicidial.get("user")):
         raise VicidialConfigError(
             "integrations.vicidial.user must resolve to a non-empty value "
@@ -254,7 +271,22 @@ def build_session_from_channel_vars(
         )
         return None
 
-    return VicidialSession(call_id=call_id, agent_user=agent_user, source=source)
+    metadata: Dict[str, str] = {}
+    metadata_map = {
+        "VICIDIAL_SOURCE": "source",
+        "VICIDIAL_CAMPAIGN_ID": "campaign_id",
+        "VICIDIAL_INGROUP": "ingroup",
+        "VICIDIAL_LEAD_ID": "lead_id",
+        "VICIDIAL_LIST_ID": "list_id",
+        "VICIDIAL_PHONE_NUMBER": "phone_number",
+        "VICIDIAL_CALLER_NAME": "caller_name",
+    }
+    for channel_var, metadata_key in metadata_map.items():
+        value = str(channel_vars.get(channel_var) or "").strip()
+        if value:
+            metadata[metadata_key] = value
+
+    return VicidialSession(call_id=call_id, agent_user=agent_user, source=source, metadata=metadata or None)
 
 
 def resolve_destination(config: Any, requested: Optional[str]) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:
