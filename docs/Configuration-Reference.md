@@ -214,8 +214,12 @@ Optional dialplan channel vars captured for logs/RCA/community testing:
 - `VICIDIAL_CAMPAIGN_ID`
 - `VICIDIAL_LIST_ID`
 - `VICIDIAL_PHONE_NUMBER`
+- `VICIDIAL_DIALED_NUMBER`
 - `VICIDIAL_CALLER_NAME`
 - `VICIDIAL_INGROUP`
+- `VICIDIAL_INGROUP_ID`
+
+`VICIDIAL_CAMPAIGN_ID` is stored as raw ViciDial metadata. On inbound and transfer calls, some ViciDial flows may use this value as the ingroup ID.
 
 See `docs/Vicidial-Setup.md` for the full setup guide.
 

@@ -121,8 +121,10 @@ def test_build_session_captures_optional_vicidial_metadata():
             "VICIDIAL_CAMPAIGN_ID": "SALES",
             "VICIDIAL_LIST_ID": "9001",
             "VICIDIAL_PHONE_NUMBER": "16005551212",
+            "VICIDIAL_DIALED_NUMBER": "18005559876",
             "VICIDIAL_CALLER_NAME": "Jane Caller",
             "VICIDIAL_INGROUP": "SUPPORT",
+            "VICIDIAL_INGROUP_ID": "SUPPORT_IN",
         },
         _config(),
     )
@@ -133,8 +135,10 @@ def test_build_session_captures_optional_vicidial_metadata():
         "campaign_id": "SALES",
         "list_id": "9001",
         "phone_number": "16005551212",
+        "dialed_number": "18005559876",
         "caller_name": "Jane Caller",
         "ingroup": "SUPPORT",
+        "ingroup_id": "SUPPORT_IN",
     }
 
 
@@ -276,9 +280,11 @@ async def test_vicidial_channel_var_detection_reads_metadata_after_call_id():
         "VICIDIAL_SOURCE": "source-a",
         "VICIDIAL_CAMPAIGN_ID": "",
         "VICIDIAL_INGROUP": "SUPPORT",
+        "VICIDIAL_INGROUP_ID": "SUPPORT_IN",
         "VICIDIAL_LEAD_ID": "123",
         "VICIDIAL_LIST_ID": "",
         "VICIDIAL_PHONE_NUMBER": "16005551212",
+        "VICIDIAL_DIALED_NUMBER": "18005559876",
         "VICIDIAL_CALLER_NAME": "Jane Caller",
     }
 
@@ -294,8 +300,10 @@ async def test_vicidial_channel_var_detection_reads_metadata_after_call_id():
         "VICIDIAL_RA_AGENT_USER": "1028",
         "VICIDIAL_SOURCE": "source-a",
         "VICIDIAL_INGROUP": "SUPPORT",
+        "VICIDIAL_INGROUP_ID": "SUPPORT_IN",
         "VICIDIAL_LEAD_ID": "123",
         "VICIDIAL_PHONE_NUMBER": "16005551212",
+        "VICIDIAL_DIALED_NUMBER": "18005559876",
         "VICIDIAL_CALLER_NAME": "Jane Caller",
     }
 

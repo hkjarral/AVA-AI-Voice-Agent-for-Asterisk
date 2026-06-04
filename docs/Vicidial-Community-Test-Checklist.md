@@ -49,8 +49,14 @@ Optional metadata forwarded to AAVA:
 - [ ] `VICIDIAL_CAMPAIGN_ID`
 - [ ] `VICIDIAL_LIST_ID`
 - [ ] `VICIDIAL_PHONE_NUMBER`
+- [ ] `VICIDIAL_DIALED_NUMBER`
 - [ ] `VICIDIAL_CALLER_NAME`
 - [ ] `VICIDIAL_INGROUP`
+- [ ] `VICIDIAL_INGROUP_ID`
+
+Campaign/ingroup semantics:
+
+- [ ] Confirmed whether `campaign_id` is campaign ID or ingroup ID for this call type
 
 ## Single-Call Tests
 

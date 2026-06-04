@@ -59,8 +59,10 @@ Optional channel vars captured in AAVA logs/RCA when present:
 - `VICIDIAL_CAMPAIGN_ID`
 - `VICIDIAL_LIST_ID`
 - `VICIDIAL_PHONE_NUMBER`
+- `VICIDIAL_DIALED_NUMBER`
 - `VICIDIAL_CALLER_NAME`
 - `VICIDIAL_INGROUP`
+- `VICIDIAL_INGROUP_ID`
 
 Use a real AAVA context for `AI_CONTEXT`; do not set it to `vicidial_remote_agent` unless that is an actual context you created.
 
@@ -76,19 +78,24 @@ In this mode, ViciDial sends the Remote Agent call to a trunk or extension that 
 
 The ViciDial side should preserve normal ViciDial call lifecycle and logging. Do not add ViciDial `call_log` AGI lines to the separate AAVA Asterisk server.
 
-On the AAVA Asterisk server, map forwarded metadata into AAVA channel vars. Example using placeholder PJSIP headers:
+On the AAVA Asterisk server, map forwarded metadata into AAVA channel vars. Current `agi-set_variables.agi,PJSIP` forwarding uses `X-VICIDIAL-<variable>` headers for lead/campaign fields. `call_id` and `ingroup_id` may not be present until the ViciDial-side script version you are testing adds them, so use `CALLERID(name)` for the call ID unless your install exposes a verified `call_id` header.
 
 ```asterisk
 same => n,Set(__AI_CONTEXT=sales)
-same => n,Set(__VICIDIAL_RA_CALL_ID=${PJSIP_HEADER(read,X-VICIDIAL-CALL-ID)})
-same => n,Set(__VICIDIAL_RA_AGENT_USER=${PJSIP_HEADER(read,X-VICIDIAL-AGENT-USER)})
-same => n,Set(__VICIDIAL_LEAD_ID=${PJSIP_HEADER(read,X-VICIDIAL-LEAD-ID)})
-same => n,Set(__VICIDIAL_CAMPAIGN_ID=${PJSIP_HEADER(read,X-VICIDIAL-CAMPAIGN-ID)})
-same => n,Set(__VICIDIAL_CALLER_NAME=${PJSIP_HEADER(read,X-VICIDIAL-CALLER-NAME)})
+same => n,Set(__VICIDIAL_RA_CALL_ID=${CALLERID(name)})
+same => n,Set(__VICIDIAL_RA_AGENT_USER=${PJSIP_HEADER(read,X-VICIDIAL-user)})
+same => n,Set(__VICIDIAL_LEAD_ID=${PJSIP_HEADER(read,X-VICIDIAL-lead_id)})
+same => n,Set(__VICIDIAL_LIST_ID=${PJSIP_HEADER(read,X-VICIDIAL-list_id)})
+same => n,Set(__VICIDIAL_PHONE_NUMBER=${PJSIP_HEADER(read,X-VICIDIAL-phone_number)})
+same => n,Set(__VICIDIAL_DIALED_NUMBER=${PJSIP_HEADER(read,X-VICIDIAL-dialed_number)})
+same => n,Set(__VICIDIAL_CAMPAIGN_ID=${PJSIP_HEADER(read,X-VICIDIAL-campaign_id)})
+same => n,Set(__VICIDIAL_CALLER_NAME=${PJSIP_HEADER(read,X-VICIDIAL-first_name)} ${PJSIP_HEADER(read,X-VICIDIAL-last_name)})
 same => n,Stasis(asterisk-ai-voice-agent)
 ```
 
-The header names above are examples. Use the exact SIP/PJSIP/IAX metadata names your ViciDial-side forwarding script provides.
+For inbound and transfer calls, ViciDial may populate `campaign_id` with the ingroup ID. Treat captured metadata as raw ViciDial context unless your local ViciDial version/script confirms the semantics.
+
+If your cross-connect uses IAX instead of SIP/PJSIP, the same script can expose these values as `IAXVAR()` values rather than headers. Map those into the same final `VICIDIAL_*` channel vars before `Stasis(...)`.
 
 ### Same-Box ViciDial Asterisk
 

@@ -31,9 +31,11 @@ VICIDIAL_EXTRA_CHANNEL_VARS = [
     "VICIDIAL_SOURCE",
     "VICIDIAL_CAMPAIGN_ID",
     "VICIDIAL_INGROUP",
+    "VICIDIAL_INGROUP_ID",
     "VICIDIAL_LEAD_ID",
     "VICIDIAL_LIST_ID",
     "VICIDIAL_PHONE_NUMBER",
+    "VICIDIAL_DIALED_NUMBER",
     "VICIDIAL_CALLER_NAME",
 ]
 
@@ -276,9 +278,11 @@ def build_session_from_channel_vars(
         "VICIDIAL_SOURCE": "source",
         "VICIDIAL_CAMPAIGN_ID": "campaign_id",
         "VICIDIAL_INGROUP": "ingroup",
+        "VICIDIAL_INGROUP_ID": "ingroup_id",
         "VICIDIAL_LEAD_ID": "lead_id",
         "VICIDIAL_LIST_ID": "list_id",
         "VICIDIAL_PHONE_NUMBER": "phone_number",
+        "VICIDIAL_DIALED_NUMBER": "dialed_number",
         "VICIDIAL_CALLER_NAME": "caller_name",
     }
     for channel_var, metadata_key in metadata_map.items():

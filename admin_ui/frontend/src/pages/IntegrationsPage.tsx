@@ -38,11 +38,14 @@ const DEFAULT_VICIDIAL = {
 
 const REMOTE_AAVA_DIALPLAN_SNIPPET = `; AAVA Asterisk server receiving cross-connect call from ViciDial
 same => n,Set(__AI_CONTEXT=sales)
-same => n,Set(__VICIDIAL_RA_CALL_ID=\${PJSIP_HEADER(read,X-VICIDIAL-CALL-ID)})
-same => n,Set(__VICIDIAL_RA_AGENT_USER=\${PJSIP_HEADER(read,X-VICIDIAL-AGENT-USER)})
-same => n,Set(__VICIDIAL_LEAD_ID=\${PJSIP_HEADER(read,X-VICIDIAL-LEAD-ID)})
-same => n,Set(__VICIDIAL_CAMPAIGN_ID=\${PJSIP_HEADER(read,X-VICIDIAL-CAMPAIGN-ID)})
-same => n,Set(__VICIDIAL_CALLER_NAME=\${PJSIP_HEADER(read,X-VICIDIAL-CALLER-NAME)})
+same => n,Set(__VICIDIAL_RA_CALL_ID=\${CALLERID(name)})
+same => n,Set(__VICIDIAL_RA_AGENT_USER=\${PJSIP_HEADER(read,X-VICIDIAL-user)})
+same => n,Set(__VICIDIAL_LEAD_ID=\${PJSIP_HEADER(read,X-VICIDIAL-lead_id)})
+same => n,Set(__VICIDIAL_LIST_ID=\${PJSIP_HEADER(read,X-VICIDIAL-list_id)})
+same => n,Set(__VICIDIAL_PHONE_NUMBER=\${PJSIP_HEADER(read,X-VICIDIAL-phone_number)})
+same => n,Set(__VICIDIAL_DIALED_NUMBER=\${PJSIP_HEADER(read,X-VICIDIAL-dialed_number)})
+same => n,Set(__VICIDIAL_CAMPAIGN_ID=\${PJSIP_HEADER(read,X-VICIDIAL-campaign_id)})
+same => n,Set(__VICIDIAL_CALLER_NAME=\${PJSIP_HEADER(read,X-VICIDIAL-first_name)} \${PJSIP_HEADER(read,X-VICIDIAL-last_name)})
 same => n,Stasis(asterisk-ai-voice-agent)`;
 
 const SAME_BOX_DIALPLAN_SNIPPET = `; ViciDial Asterisk server running AAVA Stasis locally
@@ -374,7 +377,7 @@ const IntegrationsPage = () => {
                     <p className="mt-3 text-xs text-muted-foreground">
                         {isSameBox
                             ? 'Same-box mode should keep the full ViciDial h extension in every ViciDial context that participates in this call path.'
-                            : 'Header names shown for remote mode are placeholders until your ViciDial-side forwarding script defines the exact names. The AAVA requirement is the final channel vars: VICIDIAL_RA_CALL_ID and VICIDIAL_RA_AGENT_USER.'}
+                            : 'Header names shown for remote mode follow the current agi-set_variables.agi PJSIP pattern. Use CALLERID(name) for call ID until your ViciDial script exposes a call_id header. The AAVA requirement is the final channel vars: VICIDIAL_RA_CALL_ID and VICIDIAL_RA_AGENT_USER.'}
                     </p>
                 </div>
             </ConfigSection>
