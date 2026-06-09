@@ -116,7 +116,9 @@ RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
 
 RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
         echo "📦 Installing llama-cpp-python LLM..." && \
-        pip install --no-cache-dir llama-cpp-python==0.3.21; \
+        LLAMA_CPP_REQUIREMENT="$(grep -m 1 '^llama-cpp-python' requirements.txt)" && \
+        test -n "$LLAMA_CPP_REQUIREMENT" && \
+        pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
 
 # Pre-install spacy model for Kokoro TTS (only if Kokoro included)
