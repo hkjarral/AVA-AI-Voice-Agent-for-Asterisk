@@ -4149,9 +4149,9 @@ async def updates_branches(build_updater: bool = False):
     """
     Return the list of remote branches on origin for the Updates UI dropdown.
     """
-    host_root = _project_host_root_from_admin_ui_container()
-
     try:
+        host_root = _project_host_root_from_admin_ui_container()
+
         code, out = _run_updater_ephemeral(
             host_root,
             env={"PROJECT_ROOT": host_root},
@@ -4165,6 +4165,8 @@ async def updates_branches(build_updater: bool = False):
             allow_build=bool(build_updater),
         )
     except HTTPException:
+        code, out = 1, ""
+    except Exception:
         code, out = 1, ""
     if code != 0:
         return UpdateBranchesResponse(branches=[], error="Remote branches unavailable (offline or blocked)")
@@ -4189,6 +4191,52 @@ async def updates_branches(build_updater: bool = False):
     return UpdateBranchesResponse(branches=branches, error=None)
 
 
+def _extract_json_object_from_output(raw_output: str) -> Optional[dict]:
+    """
+    Best-effort JSON extractor for updater stdout.
+
+    The updater should return pure JSON in plan mode, but in some environments
+    wrappers/plugins can still emit informational lines to stdout. We first try a
+    strict parse, then scan for decodable JSON objects and return the most likely
+    candidate.
+    """
+    text = (raw_output or "").strip()
+    if not text:
+        return None
+
+    import json
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    decoder = json.JSONDecoder()
+    fallback = None
+    idx = 0
+    while True:
+        brace = text.find("{", idx)
+        if brace == -1:
+            break
+        try:
+            candidate, end = decoder.raw_decode(text[brace:])
+        except Exception:
+            idx = brace + 1
+            continue
+
+        if isinstance(candidate, dict):
+            tail = text[brace + end :].strip()
+            if not tail:
+                return candidate
+            fallback = candidate
+
+        idx = brace + 1
+
+    return fallback
+
+
 @router.get("/updates/plan", response_model=UpdatePlanResponse)
 async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bool = True):
     """
@@ -4205,7 +4253,7 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if checkout else "false",
     }
-    # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
+    # First pass: capture stdout only so JSON output isn't polluted by stderr hints.
     code, out = _run_updater_ephemeral(
         host_root,
         env=env,
@@ -4214,15 +4262,40 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         prefer_pull_ref="latest",
         allow_build=True,
     )
-    if code != 0:
-        raise HTTPException(status_code=500, detail=f"Failed to compute update plan: {out.strip()[:400]}")
+    plan = _extract_json_object_from_output(out) if code == 0 else None
+    if code == 0 and plan is not None:
+        return UpdatePlanResponse(plan=plan)
 
-    import json
-    try:
-        plan = json.loads(out)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Updater returned invalid JSON")
-    return UpdatePlanResponse(plan=plan)
+    # Failure fallback: rerun with stderr so we can return actionable diagnostics.
+    code2, out2 = _run_updater_ephemeral(
+        host_root,
+        env=env,
+        timeout_sec=120,
+        capture_stderr=True,
+        prefer_pull_ref="latest",
+        allow_build=True,
+    )
+
+    plan2 = _extract_json_object_from_output(out2) if code2 == 0 else None
+    if code2 == 0 and plan2 is not None:
+        return UpdatePlanResponse(plan=plan2)
+
+    err_text = (out2 or out or "").strip()
+    err_lower = err_text.lower()
+    if any(k in err_lower for k in ["could not resolve host", "temporary failure in name resolution", "no such host", "name or service not known"]):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to reach GitHub while computing update plan (DNS/network issue). "
+                "Verify host DNS/egress, then retry."
+            ),
+        )
+
+    if code != 0 or code2 != 0:
+        tail = "\n".join(err_text.splitlines()[-8:]).strip()[:800]
+        raise HTTPException(status_code=500, detail=f"Failed to compute update plan: {tail or 'unknown updater error'}")
+
+    raise HTTPException(status_code=500, detail="Updater returned invalid JSON")
 
 
 class UpdateRunRequest(BaseModel):
