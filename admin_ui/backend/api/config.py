@@ -1495,9 +1495,34 @@ async def export_configuration():
             if os.path.exists(settings.ENV_PATH):
                 zip_file.write(settings.ENV_PATH, '.env')
             
+            # agents.db snapshot (operator agents config) — via sqlite online backup
+            import sqlite3
+            agents_db = os.environ.get("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+            if os.path.exists(agents_db):
+                tmp_name = None
+                src = sqlite3.connect(f"file:{agents_db}?mode=ro", uri=True)
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+                        tmp_name = tf.name
+                    disk = sqlite3.connect(tmp_name)
+                    try:
+                        src.backup(disk)
+                    finally:
+                        disk.close()
+                    zip_file.write(tmp_name, "operator/agents.db")
+                finally:
+                    src.close()
+                    if tmp_name:
+                        try:
+                            os.unlink(tmp_name)
+                        except OSError:
+                            pass
+
             # Add timestamp file
             timestamp = datetime.now().isoformat()
-            zip_file.writestr('backup_info.txt', f'Backup created: {timestamp}\n')
+            zip_file.writestr('backup_info.txt',
+                              f'Backup created: {timestamp}\n'
+                              'operator/agents.db contains your agent configurations including prompts.\n')
         
         zip_buffer.seek(0)
         

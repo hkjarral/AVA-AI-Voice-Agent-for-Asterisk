@@ -2003,6 +2003,18 @@ def _detect_project_version(project_root: str) -> dict:
     return {"version": "unknown", "source": "unknown"}
 
 
+def get_basic_system_info() -> dict:
+    """Minimal, secret-free system info for the support bundle. Best-effort; never raises."""
+    import platform
+    info = {"os": platform.platform(), "python": platform.python_version()}
+    try:
+        project_root = os.getenv("PROJECT_ROOT", "/app/project")
+        info["version"] = _detect_project_version(project_root).get("version")
+    except Exception:
+        info["version"] = None
+    return info
+
+
 def _github_docs_url(path_or_url: Optional[str]) -> Optional[str]:
     if not path_or_url:
         return None
