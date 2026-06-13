@@ -1,13 +1,17 @@
 import os
 import json
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from settings import USERS_PATH
+
+# Paths exempt from the must_change_password 403 gate (router mounted at prefix="/api/auth" in main.py)
+_EXEMPT_PATHS = {"/api/auth/change-password", "/api/auth/me"}
 
 # Configuration
 DEFAULT_DEV_SECRET = "dev-secret-key-change-in-prod"
@@ -59,22 +63,43 @@ def get_password_hash(password):
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
-def load_users():
-    if not os.path.exists(USERS_PATH):
-        # Create default admin user with must_change_password flag
-        default_users = {
-            "admin": {
-                "username": "admin",
-                "hashed_password": get_password_hash("admin"),
-                "disabled": False,
-                "must_change_password": True  # Force password change on first login
-            }
+def ensure_default_user() -> "str | None":
+    """Create the initial admin user with a random one-time password.
+
+    Returns the plaintext password on first creation (for log output), else None.
+    Idempotent: if the users file already exists, does nothing and returns None.
+    """
+    if os.path.exists(USERS_PATH):
+        return None
+    password = secrets.token_urlsafe(16)
+    users = {
+        "admin": {
+            "username": "admin",
+            "hashed_password": get_password_hash(password),
+            "disabled": False,
+            "must_change_password": True,
         }
-        os.makedirs(os.path.dirname(USERS_PATH), exist_ok=True)
-        with open(USERS_PATH, "w") as f:
-            json.dump(default_users, f, indent=2)
-        return default_users
-    
+    }
+    os.makedirs(os.path.dirname(USERS_PATH), exist_ok=True)
+    with open(USERS_PATH, "w") as f:
+        json.dump(users, f, indent=2)
+    try:
+        os.chmod(USERS_PATH, 0o600)
+    except OSError:
+        pass
+    return password
+
+
+def load_users():
+    """Load users from the users file.
+
+    If the file does not yet exist, ensure_default_user() must be called first
+    (main.py does this at startup). Callers that reach here before startup
+    completes get an empty dict, which causes a 401 rather than a crash.
+    """
+    if not os.path.exists(USERS_PATH):
+        return {}
+
     with open(USERS_PATH, "r") as f:
         return json.load(f)
 
@@ -100,7 +125,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -114,10 +139,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    
+
     user = get_user(token_data.username)
     if user is None:
         raise credentials_exception
+
+    # 403 gate: block protected endpoints until the user changes their one-time password.
+    # _EXEMPT_PATHS allows the user to reach change-password and me to complete the rotation.
+    if user.must_change_password and request.url.path not in _EXEMPT_PATHS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password change required before using the API",
+        )
+
     return user
 
 # --- Routes ---

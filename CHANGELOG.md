@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Replace hardcoded `admin`/`admin` default with a generated one-time password**: On first start, `auth.ensure_default_user()` creates `config/users.json` with a `secrets.token_urlsafe(16)` random password (file mode `0o600`) and logs it prominently via the Admin UI container logger (`docker compose logs admin_ui | grep PASSWORD`). The `must_change_password` flag is set, and a new 403 gate in `get_current_user` blocks all protected endpoints until the password is rotated — `/auth/change-password` and `/auth/me` are explicitly exempt so the user can complete the rotation. The old `load_users()` path that baked in the literal `"admin"` hash is removed. **Note for operators using external log forwarding (e.g. Datadog, CloudWatch):** the one-time password appears in container stdout at startup; change it promptly at first login to avoid it persisting in log archives.
+
 ## [6.5.4] - 2026-05-25
 
 ### Fixed
