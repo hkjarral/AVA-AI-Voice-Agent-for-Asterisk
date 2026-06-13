@@ -17,6 +17,7 @@ import LoginPage from './pages/LoginPage';
 import ProvidersPage from './pages/ProvidersPage';
 import PipelinesPage from './pages/PipelinesPage';
 import AgentsPage from './pages/AgentsPage';
+import MigrationStatusPage from './pages/MigrationStatusPage';
 import ContextsPage from './pages/ContextsPage';
 import ProfilesPage from './pages/ProfilesPage';
 import ToolsPage from './pages/ToolsPage';
@@ -144,6 +145,7 @@ function App() {
                                             <Route path="/providers" element={<ProvidersPage />} />
                                             <Route path="/pipelines" element={<PipelinesPage />} />
                                             <Route path="/agents" element={<AgentsPage />} />
+                                            <Route path="/agents/migration" element={<MigrationStatusPage />} />
                                             <Route path="/contexts" element={<ContextsPage />} />
                                             <Route path="/profiles" element={<ProfilesPage />} />
                                             <Route path="/tools" element={<ToolsPage />} />

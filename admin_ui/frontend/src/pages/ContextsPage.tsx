@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
@@ -11,6 +12,8 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import ContextForm from '../components/config/ContextForm';
 import { usePendingChanges } from '../hooks/usePendingChanges';
+
+const READ_ONLY = true;
 
 const ContextsPage = () => {
     const { confirm } = useConfirmDialog();
@@ -184,6 +187,7 @@ const ContextsPage = () => {
     };
 
     const handleApplyChanges = async (force: boolean = false) => {
+        if (READ_ONLY) return;
         setRestartingEngine(true);
         try {
             const endpoint = applyMethod === 'hot_reload'
@@ -253,6 +257,7 @@ const ContextsPage = () => {
     };
 
     const handleAddContext = () => {
+        if (READ_ONLY) return;
         const transferToolName = availableTools.includes('blind_transfer')
             ? 'blind_transfer'
             : (availableTools.includes('transfer') ? 'transfer' : '');
@@ -289,6 +294,7 @@ const ContextsPage = () => {
     };
 
     const handleDeleteContext = async (name: string) => {
+        if (READ_ONLY) return;
         const confirmed = await confirm({
             title: 'Delete Context?',
             description: `Are you sure you want to delete context "${name}"?`,
@@ -302,6 +308,7 @@ const ContextsPage = () => {
     };
 
     const handleSaveContext = async () => {
+        if (READ_ONLY) return;
         if (!contextForm.name) return;
 
         // Validation: Check provider
@@ -383,6 +390,18 @@ const ContextsPage = () => {
 
     return (
         <div className="space-y-6">
+            {/* Deprecation banner */}
+            <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                <span>
+                    Contexts are now managed in the{' '}
+                    <Link to="/agents" className="underline font-medium">
+                        Agents
+                    </Link>{' '}
+                    tab. This page is read-only and will be removed in a future release.
+                </span>
+            </div>
+
             {pendingApply && (
                 <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
@@ -439,13 +458,15 @@ const ContextsPage = () => {
                         Define AI personalities and behaviors for different use cases.
                     </p>
                 </div>
-                <button
-                    onClick={handleAddContext}
-                    className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-                >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Context
-                </button>
+                {!READ_ONLY && (
+                    <button
+                        onClick={handleAddContext}
+                        className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
+                    >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Context
+                    </button>
+                )}
             </div>
 
             <ConfigSection title="Defined Contexts" description="Manage conversation contexts and their settings.">
@@ -476,28 +497,30 @@ const ContextsPage = () => {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button
-                                        onClick={() => handleCloneContext(name)}
-                                        className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                        aria-label={`Clone context ${name}`}
-                                        title="Clone context"
-                                    >
-                                        <Copy className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                        onClick={() => handleEditContext(name)}
-                                        className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
-                                    >
-                                        <Settings className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                        onClick={() => handleDeleteContext(name)}
-                                        className="p-2 hover:bg-destructive/10 rounded-md text-destructive"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                </div>
+                                {!READ_ONLY && (
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button
+                                            onClick={() => handleCloneContext(name)}
+                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                            aria-label={`Clone context ${name}`}
+                                            title="Clone context"
+                                        >
+                                            <Copy className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleEditContext(name)}
+                                            className="p-2 hover:bg-accent rounded-md text-muted-foreground hover:text-foreground"
+                                        >
+                                            <Settings className="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteContext(name)}
+                                            className="p-2 hover:bg-destructive/10 rounded-md text-destructive"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="space-y-3 text-sm">
