@@ -239,6 +239,30 @@ If you hit permission/container/health issues during setup, start with:
 > ⚠️ **Security:** The Admin UI is accessible on the network by default.  
 > **Change the admin password on first login** and restrict port 3003 (firewall/VPN/reverse proxy) for production.
 
+#### Securing the Admin UI
+
+The Admin UI is a privileged control plane — it has root-equivalent access to the host via the Docker socket. See [SECURITY.md "2.1 Admin UI Security"](../SECURITY.md#21-admin-ui-security) for the full threat model, Docker socket hardening options, and an nginx mTLS example.
+
+**Caddy reverse proxy (TLS + basic auth)** — a quick production-grade option:
+
+```text
+# /etc/caddy/Caddyfile
+admin.example.com {
+    basicauth {
+        # Generate hash: caddy hash-password --plaintext 'your-password'
+        operator $2a$14$...bcrypt-hash-here...
+    }
+    reverse_proxy localhost:3003
+}
+```
+
+```bash
+# Install Caddy, then:
+sudo caddy reload --config /etc/caddy/Caddyfile
+```
+
+**VPN alternative** — put the host on a WireGuard tunnel and leave port 3003 bound to localhost; `wg-quick up wg0` is the simplest path if you already have a WireGuard peer set up.
+
 The Setup Wizard will:
 1. ✅ Guide you through provider selection (OpenAI, Deepgram, Google, ElevenLabs, Local)
 2. ✅ Validate your API keys with live testing

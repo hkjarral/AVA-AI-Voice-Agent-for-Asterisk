@@ -165,6 +165,8 @@ services:
       - ${DOCKER_GID:-999}
     volumes:
       - ./:/app/project
+      # SECURITY: mounting the project root + Docker socket grants this container
+      # root-equivalent access to the host. See SECURITY.md "2.1 Admin UI Security".
       - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
       # The admin-ui image installs Docker CLI + Compose plugin internally.
       # Optional fallback (host binaries): use `docker compose -f docker-compose.yml -f docker-compose.admin-ui-host-binaries.yml up -d admin_ui`

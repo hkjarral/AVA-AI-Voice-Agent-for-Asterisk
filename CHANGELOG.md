@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Admin UI privileged control plane docs**: Added a cross-link comment in `docker-compose.yml` above the Docker socket mount making the root-equivalent risk explicit and pointing to `SECURITY.md §2.1`. Added a "Securing the Admin UI" subsection in `docs/INSTALLATION.md` with a Caddy TLS + basic-auth reverse-proxy example and a WireGuard VPN pointer. Added password-rotation requirement (item 5) to the Security Requirements list in `SECURITY.md §2.1`.
+
 ## [6.5.4] - 2026-05-25
 
 ### Fixed
