@@ -95,6 +95,12 @@ class TransportOrchestrator:
         self.profiles = self._load_profiles(config)
         self.contexts = self._load_contexts(config)
         self.default_profile_name = config.get('profiles', {}).get('default', 'telephony_ulaw_8k')
+
+        # agents.db (operator) is the source of truth when present; YAML contexts
+        # are the fallback for headless installs. Lazy import breaks the
+        # agent_store <-> transport_orchestrator circular import (ContextConfig).
+        from src.core.agent_store import EngineAgentStore
+        self.agent_store = EngineAgentStore()
         
         # Store audio transport config for wire format detection
         self.audio_transport = config.get('audio_transport', 'audiosocket')
@@ -573,7 +579,18 @@ class TransportOrchestrator:
         return transport
     
     def get_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
-        """Get context configuration by name."""
+        """Resolve a context. agents.db is the source of truth when present (v1a);
+        YAML is the fallback for headless installs and post-rollback recovery.
+        Spec: archived plan decisions D1/D2."""
+        if not context_name:
+            return None
+        db_config = self.agent_store.resolve(context_name)
+        if db_config is not None:
+            return db_config
+        return self._yaml_context_config(context_name)
+
+    def _yaml_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
+        """Original YAML-backed context lookup (fallback path)."""
         if not context_name:
             return None
         return self.contexts.get(context_name)

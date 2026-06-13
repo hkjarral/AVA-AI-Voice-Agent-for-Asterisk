@@ -11927,7 +11927,7 @@ class Engine:
         """
         # Read channel variables
         channel_vars = {}
-        for var_name in ['AI_PROVIDER', 'AI_AUDIO_PROFILE', 'AI_CONTEXT']:
+        for var_name in ['AI_PROVIDER', 'AI_AUDIO_PROFILE', 'AI_CONTEXT', 'AI_AGENT']:
             try:
                 resp = await self.ari_client.send_command(
                     "GET",
@@ -11970,7 +11970,15 @@ class Engine:
         
         # CRITICAL: Store context_name FIRST, before any early returns
         # This ensures pipeline mode gets the context even if provider lookup fails
-        session.context_name = channel_vars.get('AI_CONTEXT')
+        # AI_AGENT (new) takes precedence over the legacy AI_CONTEXT variable.
+        # When neither is set, fall back to the agents.db default agent slug
+        # (None when no agents.db — preserves the existing YAML/headless behavior).
+        resolved_context = (
+            channel_vars.get('AI_AGENT')
+            or channel_vars.get('AI_CONTEXT')
+            or self.transport_orchestrator.agent_store.default_slug()
+        )
+        session.context_name = resolved_context
         await self._save_session(session)
         logger.debug(
             "Stored context_name in session",
@@ -11982,9 +11990,8 @@ class Engine:
         provider_name = channel_vars.get('AI_PROVIDER')
         if not provider_name:
             # Check if context specifies provider
-            context_name = channel_vars.get('AI_CONTEXT')
-            if context_name:
-                context_config = self.transport_orchestrator.get_context_config(context_name)
+            if resolved_context:
+                context_config = self.transport_orchestrator.get_context_config(resolved_context)
                 if context_config and context_config.provider:
                     provider_name = str(context_config.provider).strip()
         
