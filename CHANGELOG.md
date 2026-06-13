@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **SECURITY.md / docker-compose health-bind reconciliation**: The SECURITY.md network table incorrectly implied the shipped deployment binds the ai-engine health server (port 15000) to localhost. In practice, `docker-compose.yml` sets `HEALTH_BIND_HOST=0.0.0.0` so the Admin UI container can reach `/sessions/stats` and `/reload`. Updated the table's Default Bind cell to reflect the code default vs. the shipped compose value, and added a blockquote note explaining the security implication and how to lock it down. Updated the docker-compose comment to cross-reference SECURITY.md.
+
 ## [6.5.4] - 2026-05-25
 
 ### Fixed

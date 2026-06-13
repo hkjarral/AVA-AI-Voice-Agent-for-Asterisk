@@ -81,11 +81,18 @@ We take security vulnerabilities seriously. If you discover a security issue, pl
 **Default Configuration** (Secure - all services bind to localhost):
 | Service | Default Bind | Port | Remote Opt-in |
 |---------|-------------|------|---------------|
-| ai-engine Health | `127.0.0.1` | 15000 | `HEALTH_BIND_HOST=0.0.0.0` |
+| ai-engine Health | `127.0.0.1` (code) / `0.0.0.0` (shipped compose — see note) | 15000 | `HEALTH_BIND_HOST=0.0.0.0` |
 | Admin UI | `127.0.0.1` | 3003 | `UVICORN_HOST=0.0.0.0` |
 | Local AI Server | `127.0.0.1` | 8765 | `LOCAL_WS_HOST=0.0.0.0` |
 | RTP Server | `127.0.0.1` | 18080 | `EXTERNAL_MEDIA_RTP_HOST=0.0.0.0` |
 | AudioSocket | `127.0.0.1` | 8090 | `AUDIOSOCKET_HOST=0.0.0.0` |
+
+> **Shipped docker-compose note:** `docker-compose.yml` sets `HEALTH_BIND_HOST=0.0.0.0`
+> for the ai-engine health server (port 15000) so the Admin UI container can reach
+> `/sessions/stats` and `/reload`. On host-network deployments this exposes port 15000
+> on all host interfaces. The health server carries no secrets but does expose
+> operational state and a `/reload` trigger — firewall port 15000 from untrusted
+> networks, or override `HEALTH_BIND_HOST=127.0.0.1` if you do not use the Admin UI.
 
 **If Remote Access Required**:
 ```bash
