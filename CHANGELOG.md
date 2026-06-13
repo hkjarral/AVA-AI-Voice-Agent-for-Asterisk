@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`agent check` reports agents.db status (`cli/internal/check/runner.go`)**: New `checkAgentsDB()` probe reports operator agents store presence, active agent count, and default agent slug. Absence is a PASS (headless/YAML installs never have the file); present-but-no-default is a WARN with a remediation hint; present-with-default is a PASS showing the count and slug.
+
 - **Migration Status page (`admin_ui/frontend/src/pages/MigrationStatusPage.tsx`)**: Operator utility page at `/agents/migration` showing initial migration result (imported count, skipped list), YAML drift state (stored vs current hash, first 12 chars each), and two actions when drift is detected: "Import YAML changes" (calls `POST /api/agents-migration/reconcile`, confirms via `useConfirmDialog`, toasts applied count) and "Acknowledge — keep DB as-is" (calls `POST /api/agents-migration/acknowledge`). Route registered in `App.tsx` in the Core Configuration group after `/agents`.
 
 ### Changed
