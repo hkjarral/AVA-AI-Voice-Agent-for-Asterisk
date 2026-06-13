@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agents store (`admin_ui/backend/agents_store.py`)**: WAL-mode SQLite schema and full CRUD for agent (context) configuration — the admin_ui write path for the Operator Version. Enforces an exactly-one-default-among-active-agents invariant: the first created agent auto-promotes to default; deleting or deactivating the current default promotes the oldest remaining active agent; deactivating the last active agent leaves no default (engine falls back to its hardcoded prompt). `CapError` stub wired for v1b entitlement enforcement. 8 pytest tests in `admin_ui/backend/tests/test_agents_store.py` cover schema/WAL, `slugify`, create/get, default promotion, atomic default swap, delete-promotes-oldest, deactivate-last-leaves-no-default, and duplicate-slug rejection.
+
 ## [6.5.4] - 2026-05-25
 
 ### Fixed
