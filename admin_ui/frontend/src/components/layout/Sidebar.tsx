@@ -5,6 +5,7 @@ import {
     Server,
     Workflow,
     MessageSquare,
+    Users,
     Wrench,
     Plug,
     Sliders,
@@ -89,6 +90,7 @@ const Sidebar = () => {
                 <SidebarGroup title="Core Configuration">
                     <SidebarItem to="/providers" icon={Server} label="Providers" />
                     <SidebarItem to="/pipelines" icon={Workflow} label="Pipelines" />
+                    <SidebarItem to="/agents" icon={Users} label="Agents" />
                     <SidebarItem to="/contexts" icon={MessageSquare} label="Contexts" />
                     <SidebarItem to="/profiles" icon={Sliders} label="Audio Profiles" />
                     <SidebarItem to="/tools" icon={Wrench} label="Tools" />

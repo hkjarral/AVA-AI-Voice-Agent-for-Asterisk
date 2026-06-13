@@ -16,6 +16,7 @@ import LoginPage from './pages/LoginPage';
 // Core Configuration Pages
 import ProvidersPage from './pages/ProvidersPage';
 import PipelinesPage from './pages/PipelinesPage';
+import AgentsPage from './pages/AgentsPage';
 import ContextsPage from './pages/ContextsPage';
 import ProfilesPage from './pages/ProfilesPage';
 import ToolsPage from './pages/ToolsPage';
@@ -142,6 +143,7 @@ function App() {
                                             {/* Core Configuration */}
                                             <Route path="/providers" element={<ProvidersPage />} />
                                             <Route path="/pipelines" element={<PipelinesPage />} />
+                                            <Route path="/agents" element={<AgentsPage />} />
                                             <Route path="/contexts" element={<ContextsPage />} />
                                             <Route path="/profiles" element={<ProfilesPage />} />
                                             <Route path="/tools" element={<ToolsPage />} />
