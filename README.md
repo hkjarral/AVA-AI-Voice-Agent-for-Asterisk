@@ -668,7 +668,9 @@ The `preflight.sh` script handles initial setup:
 
 ## 🤝 Contributing
 
-**You don't need to know how to code.** Our AI assistant AVA writes the code for you — just describe what you want to build.
+**You don't need to be a developer to contribute.** File feature ideas, report bugs
+with logs attached, improve documentation, or share your dialplan recipes — these are
+as valuable as code. If you do want to write code, see the Contributing Guide below.
 
 <!-- TODO: Add YouTube video link once recorded -->
 <!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->

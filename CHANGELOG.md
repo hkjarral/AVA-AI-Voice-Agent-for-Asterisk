@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Contributing section tone**: replaced the overpromising "AVA writes the code for you" opener in `README.md` with an honest description of non-code contribution paths. Softened matching "AVA writes the …" phrasings in `docs/ROADMAP.md` to "AVA helps you write the …" register.
+
 ## [6.5.4] - 2026-05-25
 
 ### Fixed
