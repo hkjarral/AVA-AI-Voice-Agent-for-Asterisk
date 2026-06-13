@@ -6,8 +6,10 @@ import glob
 import hashlib
 import json
 import os
+import uuid
 
 import yaml
+from agents_store import AgentsStore, slugify, _now
 
 
 def merged_effective_contexts(yaml_path: str, contexts_dir: str) -> dict:
@@ -78,3 +80,110 @@ def contexts_hash(merged: dict) -> str:
              for k, v in merged.items()}
     canon = json.dumps(clean, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canon.encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# One-time migration
+# ---------------------------------------------------------------------------
+
+MIGRATION_VERSION = 1
+
+# Fields stored in first-class columns; everything else goes into extra_json.
+_FIRST_CLASS = {"provider", "voice", "greeting", "prompt", "audio_profile", "profile", "tools"}
+
+
+def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict:
+    """One-time import of merged YAML contexts into agents.db.
+
+    Idempotent: returns immediately if the migration record already exists or
+    any agents row is present.  Per-context validation errors are *skipped*
+    (not raised), so a single invalid context does not block valid ones.
+
+    Transaction strategy: AgentsStore opens its connection with the default
+    isolation_level (autocommit OFF).  Python's sqlite3 module auto-issues an
+    implicit BEGIN before the first DML, so calling conn.execute("BEGIN")
+    explicitly would raise "cannot start a transaction within a transaction".
+    We use ``with store.conn:`` (the context-manager form) instead — it commits
+    on success and rolls back on any exception.  Per-context skips are plain
+    ``continue`` statements *outside* the context manager, so they do not
+    trigger a rollback; only an unexpected exception does.
+    """
+    already = store.conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)
+    ).fetchone()
+    if already or store.conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0] > 0:
+        return {"imported": 0, "skipped": [], "already_migrated": True}
+
+    merged = merged_effective_contexts(yaml_path, contexts_dir)
+    h = contexts_hash(merged)
+
+    # Validate every context and separate valid rows from skips *before* we
+    # open the transaction — skips are not errors and must not trigger rollback.
+    rows = []
+    skipped = []
+    for key, ctx in merged.items():
+        src = ctx.pop("_source_file", None)
+        prompt = ctx.get("prompt")
+        if not prompt:
+            skipped.append((key, "missing prompt"))
+            continue
+        provider = ctx.get("provider") or ""
+        extra = {k: v for k, v in ctx.items() if k not in _FIRST_CLASS}
+        now = _now()
+        rows.append((
+            uuid.uuid4().hex,
+            slugify(key),
+            key,
+            provider,
+            ctx.get("voice"),
+            ctx.get("greeting"),
+            prompt,
+            json.dumps(ctx["tools"]) if ctx.get("tools") else None,
+            ctx.get("profile") or ctx.get("audio_profile"),
+            json.dumps(extra) if extra else None,
+            1 if key == "default" else 0,  # is_default
+            src,
+            now,
+            now,
+        ))
+
+    with store.conn:
+        for r in rows:
+            store.conn.execute(
+                """INSERT INTO agents (id, slug, display_name, provider, voice, greeting,
+                   prompt, tools_json, audio_profile, extra_json, is_operator_managed,
+                   is_active, is_default, source_file, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?)""",
+                r,
+            )
+        store.conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at, contexts_hash) VALUES (?,?,?)",
+            (MIGRATION_VERSION, _now(), h),
+        )
+
+    store._ensure_default_invariant()
+    return {"imported": len(rows), "skipped": skipped, "already_migrated": False}
+
+
+def current_drift(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict | None:
+    """Return drift info if YAML contexts changed since migration (spec §7), else None."""
+    row = store.conn.execute(
+        "SELECT contexts_hash FROM schema_migrations WHERE version=?",
+        (MIGRATION_VERSION,),
+    ).fetchone()
+    if not row:
+        return None
+    current = contexts_hash(merged_effective_contexts(yaml_path, contexts_dir))
+    if current == row[0]:
+        return None
+    return {"stored_hash": row[0], "current_hash": current}
+
+
+def acknowledge_drift(store: AgentsStore, yaml_path: str, contexts_dir: str) -> None:
+    """Update the stored hash to the current YAML state (marks drift as acknowledged)."""
+    current = contexts_hash(merged_effective_contexts(yaml_path, contexts_dir))
+    with store.conn:
+        store.conn.execute(
+            "UPDATE schema_migrations SET contexts_hash=? WHERE version=?",
+            (current, MIGRATION_VERSION),
+        )

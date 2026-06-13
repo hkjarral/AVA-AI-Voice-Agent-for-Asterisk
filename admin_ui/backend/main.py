@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import settings
 from dotenv import load_dotenv
+import fcntl
 import os
 import logging
 import secrets
@@ -116,6 +117,8 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
 
 from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models  # noqa: E402
 import auth  # noqa: E402
+from agents_store import AgentsStore  # noqa: E402
+from agents_migration import run_migration, current_drift  # noqa: E402
 
 # Allow disabling API docs in production for security hardening
 _enable_api_docs = os.getenv("ENABLE_API_DOCS", "true").lower() in ("1", "true", "yes")
@@ -180,6 +183,37 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
     logging.getLogger(__name__).warning(
         "JWT_SECRET is missing/placeholder; Admin UI is using an insecure secret. "
         "Set JWT_SECRET in .env for production (recommended: openssl rand -hex 32)."
+    )
+
+# One-time YAML→agents.db migration (D2: headless/permission-constrained installs
+# must keep working on YAML — this block must never crash admin_ui startup).
+app.state.agents_migration_result = None
+try:
+    _op_dir = "/app/data/operator"
+    os.makedirs(_op_dir, exist_ok=True)
+    with open(os.path.join(_op_dir, ".migration.lock"), "w") as _lk:
+        fcntl.flock(_lk, fcntl.LOCK_EX)
+        _yaml_path = settings.CONFIG_PATH
+        _contexts_dir = os.path.join(os.path.dirname(settings.CONFIG_PATH), "contexts")
+        _store = AgentsStore()
+        _result = run_migration(_store, _yaml_path, _contexts_dir)
+        app.state.agents_migration_result = _result
+        if _result.get("imported"):
+            logging.getLogger(__name__).info(
+                "agents migration: imported %d (skipped: %s)",
+                _result["imported"], _result["skipped"],
+            )
+        _drift = current_drift(_store, _yaml_path, _contexts_dir)
+        if _drift:
+            logging.getLogger(__name__).warning(
+                "YAML contexts changed since agents.db migration "
+                "(stored=%s current=%s). Edits do NOT apply at runtime — "
+                "use the Agents tab or Migration Status page.",
+                _drift["stored_hash"][:12], _drift["current_hash"][:12],
+            )
+except Exception as _e:
+    logging.getLogger(__name__).warning(
+        "agents migration skipped (DB unavailable / headless mode): %s", _e,
     )
 
 # Configure CORS
