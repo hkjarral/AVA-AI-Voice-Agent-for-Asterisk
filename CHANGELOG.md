@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Merged-contexts loader + normalized drift hash (`admin_ui/backend/agents_migration.py`)**: `merged_effective_contexts(yaml_path, contexts_dir)` merges inline `ai-agent.yaml` contexts with external `config/contexts/*.yaml` and `*.yml` files, mirroring `src/config.py:_merge_external_contexts` (inline wins; `system_prompt`→`prompt` mapping; non-dict/unreadable files skipped). `contexts_hash(merged)` produces a normalized SHA-256 of the effective context dict for drift detection. 5 pytest tests in `admin_ui/backend/tests/test_contexts_hash.py`.
 - **Agents store (`admin_ui/backend/agents_store.py`)**: WAL-mode SQLite schema and full CRUD for agent (context) configuration — the admin_ui write path for the Operator Version. Enforces an exactly-one-default-among-active-agents invariant: the first created agent auto-promotes to default; deleting or deactivating the current default promotes the oldest remaining active agent; deactivating the last active agent leaves no default (engine falls back to its hardcoded prompt). `CapError` stub wired for v1b entitlement enforcement. 8 pytest tests in `admin_ui/backend/tests/test_agents_store.py` cover schema/WAL, `slugify`, create/get, default promotion, atomic default swap, delete-promotes-oldest, deactivate-last-leaves-no-default, and duplicate-slug rejection.
 
 ## [6.5.4] - 2026-05-25
