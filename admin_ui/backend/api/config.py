@@ -1474,27 +1474,39 @@ async def test_provider_connection(request: ProviderTestRequest):
         return {"success": False, "message": f"Test failed: {str(e)}"}
 
 @router.get("/export")
-async def export_configuration():
+async def export_configuration(include_secrets: bool = False):
     """Export configuration as a ZIP file"""
     try:
         import zipfile
         import io
         from datetime import datetime
-        
+
         # Create ZIP in memory
         zip_buffer = io.BytesIO()
-        
+
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             # Add YAML config (base + local override)
             if os.path.exists(settings.CONFIG_PATH):
                 zip_file.write(settings.CONFIG_PATH, 'ai-agent.yaml')
             if os.path.exists(settings.LOCAL_CONFIG_PATH):
                 zip_file.write(settings.LOCAL_CONFIG_PATH, 'ai-agent.local.yaml')
-            
-            # Add ENV file
-            if os.path.exists(settings.ENV_PATH):
+
+            # .env contains credentials — excluded by default; opt-in via include_secrets=true
+            env_actually_included = include_secrets and os.path.exists(settings.ENV_PATH)
+            if env_actually_included:
                 zip_file.write(settings.ENV_PATH, '.env')
-            
+
+            # README explaining what is (and is not) included
+            readme = (
+                "AVA configuration export\n"
+                f"Created: {datetime.utcnow().isoformat()}Z\n\n"
+                "Included: ai-agent.yaml, ai-agent.local.yaml"
+                + (", .env (REQUESTED — CONTAINS API KEYS/SECRETS)" if env_actually_included else "")
+                + ("" if env_actually_included else "\nExcluded by default: .env (pass include_secrets=true to include — the file contains credentials)")
+                + "\n"
+            )
+            zip_file.writestr("EXPORT_README.txt", readme)
+
             # Add timestamp file
             timestamp = datetime.now().isoformat()
             zip_file.writestr('backup_info.txt', f'Backup created: {timestamp}\n')
