@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **`docs/AGENTS.md` (new)**: Operator-facing guide covering what an agent is, `agents.db` as source of truth, `AI_AGENT` vs `AI_CONTEXT` channel variables (with dialplan example), the five starter templates, headless/YAML-only mode, per-agent stats semantics, and the read-only Contexts tab note. Cross-links `OPERATOR_MIGRATION.md`.
+- **`docs/OPERATOR_MIGRATION.md` (new)**: Covers the one-time YAML→agents.db migration flow, drift detection channels (startup log, Agents-page banner, `agent check`, Migration Status page), reconcile vs. acknowledge actions, `export-agents-yaml` disaster-recovery usage, and rollback playbook (host path `./data/operator/agents.db`).
+- **Dialplan examples updated to `AI_AGENT`**: `cli/cmd/agent/dialplan.go`, `README.md`, and `docs/FreePBX-Integration-Guide.md` now show `Set(AI_AGENT=…)` as the preferred variable with inline notes that `AI_CONTEXT` remains accepted (legacy). Runtime `src/` support for `AI_CONTEXT` is unchanged.
+
 ### Added
 
 - **`export_agents_yaml` disaster-recovery dump (`admin_ui/backend/export_agents_yaml.py`)**: Runnable as `docker exec admin_ui python -m export_agents_yaml > contexts-recovered.yaml`. Reads all agents from `agents.db` via `AgentsStore.list_all()` and emits a `contexts:` YAML block compatible with `ai-agent.yaml`, preserving `provider`, `prompt`, `voice`, `greeting`, `audio_profile` (→ `profile`), `tools_json` (→ `tools`), and all `extra_json` fields (e.g. `pipeline`, `background_music`). 1 pytest roundtrip test in `admin_ui/backend/tests/test_export_agents_yaml.py`.

@@ -137,15 +137,15 @@ Add this to your FreePBX (`extensions_custom.conf`):
 exten => s,1,NoOp(Asterisk AI Voice Agent)
  ; Optional per-call overrides:
  ; - AI_PROVIDER selects a provider/pipeline (otherwise uses default_provider from ai-agent.yaml)
- ; - AI_CONTEXT selects a context/persona (otherwise uses default context)
+ ; - AI_AGENT selects an agent by slug (AI_CONTEXT=sales-agent also works, legacy)
  same => n,Set(AI_PROVIDER=google_live)
- same => n,Set(AI_CONTEXT=sales-agent)
+ same => n,Set(AI_AGENT=sales-agent)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 Notes:
 - `AI_PROVIDER` is optional. If unset, the engine follows normal precedence (context provider → default_provider).
-- `AI_CONTEXT` is optional. Use it to change greeting/persona without changing your default provider/pipeline.
+- `AI_AGENT` is optional. Use it to select an agent by slug and change greeting/persona without changing your default provider/pipeline. `AI_CONTEXT` is also accepted (legacy, equivalent).
 - See `docs/FreePBX-Integration-Guide.md` for channel variable precedence and examples.
 
 ### Test Your Agent

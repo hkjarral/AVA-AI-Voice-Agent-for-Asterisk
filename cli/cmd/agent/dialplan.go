@@ -110,7 +110,7 @@ func runDialplan(cmd *cobra.Command, args []string) error {
 	fmt.Println("Per-Call Overrides:")
 	fmt.Println("  You can override the provider or context per-call using channel variables:")
 	fmt.Println("    Set(AI_PROVIDER=deepgram)       ; Use different provider")
-	fmt.Println("    Set(AI_CONTEXT=sales)            ; Use custom greeting/prompt")
+	fmt.Println("    Set(AI_AGENT=sales)              ; Select an agent (AI_CONTEXT=sales also works, legacy)")
 	fmt.Println("")
 	fmt.Println("For more details, see:")
 	fmt.Println("  docs/FreePBX-Integration-Guide.md")
