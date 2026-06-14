@@ -283,6 +283,13 @@ def test_aggregate_endpoints_resilient_to_missing_table(tmp_path, monkeypatch):
     assert r.json() == []
 
 
+def test_create_pipeline_only_agent_no_provider_key(client):
+    r = client.post("/api/agents", json={
+        "display_name": "NoPK", "prompt": "p",
+        "extra_json": '{"pipeline": "local_hybrid"}'})
+    assert r.status_code == 201
+    assert r.json()["provider"] == ""
+
 def test_create_pipeline_only_agent_succeeds(client):
     r = client.post("/api/agents", json={
         "display_name": "Hybrid", "provider": "", "prompt": "p",

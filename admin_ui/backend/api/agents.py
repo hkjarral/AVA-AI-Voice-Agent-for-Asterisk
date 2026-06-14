@@ -195,6 +195,7 @@ def routing_methods():
             result["unknown"] += cnt
     return result
 
+
 def _engine_ok(provider, extra_json) -> bool:
     """An agent must have either a monolithic provider or a pipeline (in extra_json)."""
     if (provider or "").strip():
@@ -210,6 +211,7 @@ def create_agent(body: AgentIn, request: Request):
     data = body.model_dump()
     if not _engine_ok(data.get("provider"), data.get("extra_json")):
         raise HTTPException(422, "agent must have a provider or a pipeline")
+    data["provider"] = (data.get("provider") or "").strip()
     try:
         return _store().create(**data)
     except ValueError as e:
@@ -228,6 +230,8 @@ def patch_agent(slug: str, body: AgentPatch):
         if not _engine_ok(eff_provider, eff_extra):
             raise HTTPException(422, "agent must have a provider or a pipeline")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "provider" in fields:
+        fields["provider"] = (fields["provider"] or "").strip()
     if "is_active" in fields:
         promoted = store.set_active(slug, fields.pop("is_active"))
         if promoted:                       # A4: surface promotion to the UI

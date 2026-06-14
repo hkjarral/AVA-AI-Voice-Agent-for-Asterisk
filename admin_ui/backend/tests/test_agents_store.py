@@ -66,9 +66,7 @@ def test_update_rejects_is_default(store):
     with pytest.raises(ValueError):
         store.update(a["slug"], is_default=1)
 
-def test_create_allows_empty_provider(tmp_path):
-    from agents_store import AgentsStore
-    store = AgentsStore(db_path=str(tmp_path / "a.db"))
+def test_create_allows_empty_provider(store):
     row = store.create(display_name="Hybrid", prompt="p",
                        extra_json='{"pipeline": "local_hybrid"}')
     assert row["provider"] == ""
