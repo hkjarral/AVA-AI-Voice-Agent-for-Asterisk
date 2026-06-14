@@ -1496,14 +1496,21 @@ async def export_configuration(include_secrets: bool = False):
             if env_actually_included:
                 zip_file.write(settings.ENV_PATH, '.env')
 
-            # README explaining what is (and is not) included
+            # README explaining what is (and is not) included — three distinct cases:
+            # (1) secrets requested and .env present  (2) requested but no .env on disk
+            # (3) not requested (default).
+            if env_actually_included:
+                env_line = "Included: ai-agent.yaml, ai-agent.local.yaml, .env (REQUESTED — CONTAINS API KEYS/SECRETS)\n"
+            elif include_secrets:
+                env_line = ("Included: ai-agent.yaml, ai-agent.local.yaml\n"
+                            "Note: .env was requested (include_secrets=true) but no .env file was found on disk.\n")
+            else:
+                env_line = ("Included: ai-agent.yaml, ai-agent.local.yaml\n"
+                            "Excluded by default: .env (pass include_secrets=true to include — the file contains credentials)\n")
             readme = (
                 "AVA configuration export\n"
                 f"Created: {datetime.utcnow().isoformat()}Z\n\n"
-                "Included: ai-agent.yaml, ai-agent.local.yaml"
-                + (", .env (REQUESTED — CONTAINS API KEYS/SECRETS)" if env_actually_included else "")
-                + ("" if env_actually_included else "\nExcluded by default: .env (pass include_secrets=true to include — the file contains credentials)")
-                + "\n"
+                + env_line
             )
             zip_file.writestr("EXPORT_README.txt", readme)
 

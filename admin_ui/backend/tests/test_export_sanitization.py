@@ -87,5 +87,5 @@ def test_export_include_secrets_no_env_file(tmp_path, monkeypatch):
     names = set(zf.namelist())
     assert ".env" not in names, ".env must not appear when it does not exist on disk"
     readme = zf.read("EXPORT_README.txt").decode()
-    included_line = next((l for l in readme.splitlines() if l.startswith("Included:")), "")
+    included_line = next((line_text for line_text in readme.splitlines() if line_text.startswith("Included:")), "")
     assert ".env" not in included_line, "README 'Included:' line must not mention .env when file is absent"
