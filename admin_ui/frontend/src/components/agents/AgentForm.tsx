@@ -2,10 +2,14 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import yaml from 'js-yaml';
-import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
+import { isFullAgentProvider } from '../../utils/providerNaming';
+import AgentToolPicker from './AgentToolPicker';
+import {
+    ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig,
+} from './agentToolConfig';
 
 export interface Agent {
     slug: string;
@@ -51,7 +55,6 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [displayName, setDisplayName] = useState('');
     const [slug, setSlug] = useState('');
     const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
-    const [provider, setProvider] = useState('');
     const [voice, setVoice] = useState('');
     const [audioProfile, setAudioProfile] = useState('');
     const [extension, setExtension] = useState('');
@@ -60,17 +63,14 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [prompt, setPrompt] = useState('');
     const [isActive, setIsActive] = useState(1);
 
-    // Advanced fields
-    const [showAdvanced, setShowAdvanced] = useState(false);
-    const [toolsJson, setToolsJson] = useState('');
-    const [mcpJson, setMcpJson] = useState('');
-    const [extraJson, setExtraJson] = useState('');
-    const [toolsJsonError, setToolsJsonError] = useState('');
-    const [mcpJsonError, setMcpJsonError] = useState('');
-    const [extraJsonError, setExtraJsonError] = useState('');
+    // Tool/engine config — single source of truth, round-tripped losslessly via the helper.
+    const [toolState, setToolState] = useState<AgentToolState>(() => parseAgentConfig(null));
 
-    // Config-sourced options
-    const [availableProviders, setAvailableProviders] = useState<string[]>([]);
+    // Tool catalog (for the picker) + engine option sources.
+    const [catalog, setCatalog] = useState<ToolDef[]>([]);
+    const [catalogError, setCatalogError] = useState(false);
+    const [providersRaw, setProvidersRaw] = useState<Record<string, any>>({});
+    const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, any>>({});
     const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
 
     // Templates (create only)
@@ -82,6 +82,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     useEffect(() => {
         if (!isOpen) return;
         loadConfig();
+        loadCatalog();
         if (isNew) loadTemplates();
     }, [isOpen, isNew]);
 
@@ -91,7 +92,6 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setDisplayName(agent.display_name);
             setSlug(agent.slug);
             setSlugManuallyEdited(false);
-            setProvider(agent.provider || '');
             setVoice(agent.voice || '');
             setAudioProfile(agent.audio_profile || '');
             setExtension(agent.extension || '');
@@ -99,15 +99,11 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setGreeting(agent.greeting || '');
             setPrompt(agent.prompt || '');
             setIsActive(agent.is_active);
-            setToolsJson(agent.tools_json || '');
-            setMcpJson(agent.mcp_json || '');
-            setExtraJson(agent.extra_json || '');
-            setShowAdvanced(false);
+            setToolState(parseAgentConfig(agent));
         } else {
             setDisplayName('');
             setSlug('');
             setSlugManuallyEdited(false);
-            setProvider('');
             setVoice('');
             setAudioProfile('');
             setExtension('');
@@ -115,15 +111,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setGreeting('Hi, how can I help you today?');
             setPrompt('You are a helpful voice assistant.');
             setIsActive(1);
-            setToolsJson('');
-            setMcpJson('');
-            setExtraJson('');
-            setShowAdvanced(false);
+            setToolState(parseAgentConfig(null));
             setSelectedTemplate('');
         }
-        setToolsJsonError('');
-        setMcpJsonError('');
-        setExtraJsonError('');
     }, [isOpen, agent]);
 
     const loadConfig = async () => {
@@ -133,12 +123,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             const parsed = yaml.load(res.data.content) as Record<string, unknown>;
             if (!parsed) return;
 
-            const providersBlock = (parsed.providers as Record<string, unknown>) || {};
-            const providerNames = Object.entries(providersBlock)
-                .filter(([, v]) => v && typeof v === 'object' && !Array.isArray(v) && (v as Record<string, unknown>).enabled !== false)
-                .map(([k]) => k)
-                .sort();
-            setAvailableProviders(providerNames);
+            const providersBlock = (parsed.providers as Record<string, any>) || {};
+            setProvidersRaw(providersBlock);
+            setPipelinesRaw((parsed.pipelines as Record<string, any>) || {});
 
             const profilesBlock = (parsed.profiles as Record<string, unknown>) || {};
             const profileNames = Object.entries(profilesBlock)
@@ -148,6 +135,18 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setAvailableProfiles(profileNames);
         } catch {
             // Non-blocking: dropdowns degrade gracefully to free-text
+        }
+    };
+
+    const loadCatalog = async () => {
+        try {
+            const res = await axios.get('/api/tools/catalog');
+            const tools = Array.isArray(res.data?.tools) ? res.data.tools : [];
+            setCatalog(tools);
+            setCatalogError(false);
+        } catch {
+            setCatalog([]);
+            setCatalogError(true);
         }
     };
 
@@ -184,44 +183,35 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         if (tpl.role_label) setRoleLabel(tpl.role_label);
     };
 
-    const validateJson = (value: string, setter: (e: string) => void): boolean => {
-        if (!value.trim()) { setter(''); return true; }
-        try { JSON.parse(value); setter(''); return true; }
-        catch { setter('Invalid JSON'); return false; }
-    };
-
     const handleSubmit = async () => {
         if (!displayName.trim()) { toast.error('Display name is required'); return; }
         if (isNew && !slug.trim()) { toast.error('Slug is required'); return; }
+        if (!toolState.provider && !toolState.pipeline) {
+            toast.error('Choose an AI engine (a provider or a pipeline)'); return;
+        }
 
-        const t1 = validateJson(toolsJson, setToolsJsonError);
-        const t2 = validateJson(mcpJson, setMcpJsonError);
-        const t3 = validateJson(extraJson, setExtraJsonError);
-        if (!t1 || !t2 || !t3) { toast.error('Fix JSON errors before saving'); return; }
-
+        const cfg = serializeAgentConfig(toolState);
         setSaving(true);
         try {
             const baseBody: Record<string, unknown> = {
                 display_name: displayName.trim(),
-                provider: provider || '',
+                provider: cfg.provider,
                 voice: voice || null,
                 audio_profile: audioProfile || null,
                 extension: extension || null,
                 role_label: roleLabel || null,
                 greeting: greeting || '',
                 prompt: prompt || '',
-                tools_json: toolsJson.trim() || null,
-                mcp_json: mcpJson.trim() || null,
-                extra_json: extraJson.trim() || null,
+                tools_json: cfg.tools_json,
+                mcp_json: cfg.mcp_json,
+                extra_json: cfg.extra_json,
             };
 
             if (isNew) {
-                const body = { ...baseBody, slug: slug.trim() };
-                await axios.post('/api/agents', body);
+                await axios.post('/api/agents', { ...baseBody, slug: slug.trim() });
                 toast.success('Agent created');
             } else {
-                const body = { ...baseBody, is_active: isActive };
-                await axios.patch(`/api/agents/${agent!.slug}`, body);
+                await axios.patch(`/api/agents/${agent!.slug}`, { ...baseBody, is_active: isActive });
                 toast.success('Agent saved');
             }
             onSaved();
@@ -234,10 +224,26 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         }
     };
 
-    const providerOptions = [
-        { value: '', label: '— select provider —' },
-        ...availableProviders.map((p) => ({ value: p, label: p })),
+    const engineOptions = [
+        { value: '', label: '— select provider or pipeline —' },
+        ...Object.keys(pipelinesRaw).sort().map((name) => ({
+            value: `pipeline:${name}`, label: `[Pipeline] ${name}`,
+        })),
+        ...Object.entries(providersRaw)
+            .filter(([name, p]) => isFullAgentProvider(p, name))
+            .filter(([name, p]) => (p as any).enabled !== false || toolState.provider === name)
+            .map(([name]) => ({ value: `provider:${name}`, label: `[Provider] ${name}` })),
     ];
+
+    const engineValue = toolState.pipeline
+        ? `pipeline:${toolState.pipeline}`
+        : (toolState.provider ? `provider:${toolState.provider}` : '');
+
+    const handleEngineChange = (raw: string) => {
+        if (!raw) setToolState((s) => ({ ...s, provider: '', pipeline: '' }));
+        else if (raw.startsWith('pipeline:')) setToolState((s) => ({ ...s, pipeline: raw.slice('pipeline:'.length), provider: '' }));
+        else if (raw.startsWith('provider:')) setToolState((s) => ({ ...s, provider: raw.slice('provider:'.length), pipeline: '' }));
+    };
 
     const profileOptions = [
         { value: '', label: '— default —' },
@@ -314,12 +320,12 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 )}
 
                 <FormSelect
-                    id="agent-provider"
-                    label="Provider"
-                    options={providerOptions}
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value)}
-                    tooltip="AI provider used for this agent's calls."
+                    id="agent-engine"
+                    label="AI Engine"
+                    options={engineOptions}
+                    value={engineValue}
+                    onChange={(e) => handleEngineChange(e.target.value)}
+                    tooltip="Choose a monolithic provider or a modular pipeline. They are mutually exclusive — picking one clears the other."
                 />
 
                 <div className="mb-4">
@@ -411,77 +417,23 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     </div>
                 )}
 
-                {/* Advanced collapsible */}
-                <div className="border border-border rounded-lg overflow-hidden">
-                    <button
-                        type="button"
-                        onClick={() => setShowAdvanced(!showAdvanced)}
-                        className="w-full flex items-center justify-between px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-sm font-medium"
-                    >
-                        <span>Advanced</span>
-                        {showAdvanced ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                    </button>
-                    {showAdvanced && (
-                        <div className="p-4 space-y-4">
-                            <div className="mb-4">
-                                <div className="flex items-center gap-1.5 mb-1.5">
-                                    <label htmlFor="agent-tools-json" className="block text-sm font-medium">
-                                        Tools JSON
-                                    </label>
-                                    <HelpTooltip content="JSON array or object of in-call tool overrides. Leave blank to use the provider/global defaults." />
-                                </div>
-                                <textarea
-                                    id="agent-tools-json"
-                                    value={toolsJson}
-                                    onChange={(e) => setToolsJson(e.target.value)}
-                                    onBlur={() => validateJson(toolsJson, setToolsJsonError)}
-                                    rows={3}
-                                    placeholder='["transfer", "hangup_call"]'
-                                    className={`flex w-full rounded-md border px-3 py-2 text-sm font-mono shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y bg-transparent ${toolsJsonError ? 'border-destructive' : 'border-input'}`}
-                                />
-                                {toolsJsonError && <p className="text-xs text-destructive mt-1">{toolsJsonError}</p>}
-                            </div>
-
-                            <div className="mb-4">
-                                <div className="flex items-center gap-1.5 mb-1.5">
-                                    <label htmlFor="agent-mcp-json" className="block text-sm font-medium">
-                                        MCP JSON
-                                    </label>
-                                    <HelpTooltip content="JSON object of MCP server overrides for this agent." />
-                                </div>
-                                <textarea
-                                    id="agent-mcp-json"
-                                    value={mcpJson}
-                                    onChange={(e) => setMcpJson(e.target.value)}
-                                    onBlur={() => validateJson(mcpJson, setMcpJsonError)}
-                                    rows={3}
-                                    placeholder="{}"
-                                    className={`flex w-full rounded-md border px-3 py-2 text-sm font-mono shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y bg-transparent ${mcpJsonError ? 'border-destructive' : 'border-input'}`}
-                                />
-                                {mcpJsonError && <p className="text-xs text-destructive mt-1">{mcpJsonError}</p>}
-                            </div>
-
-                            <div className="mb-4">
-                                <div className="flex items-center gap-1.5 mb-1.5">
-                                    <label htmlFor="agent-extra-json" className="block text-sm font-medium">
-                                        Extra JSON
-                                    </label>
-                                    <HelpTooltip content="JSON object of extra context fields (e.g. pipeline, background_music, pre_call_tools)." />
-                                </div>
-                                <textarea
-                                    id="agent-extra-json"
-                                    value={extraJson}
-                                    onChange={(e) => setExtraJson(e.target.value)}
-                                    onBlur={() => validateJson(extraJson, setExtraJsonError)}
-                                    rows={3}
-                                    placeholder='{"pipeline": "my_pipeline"}'
-                                    className={`flex w-full rounded-md border px-3 py-2 text-sm font-mono shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y bg-transparent ${extraJsonError ? 'border-destructive' : 'border-input'}`}
-                                />
-                                {extraJsonError && <p className="text-xs text-destructive mt-1">{extraJsonError}</p>}
-                            </div>
-                        </div>
-                    )}
+                <div className="mb-2">
+                    <FormInput
+                        id="agent-background-music"
+                        label="Background Music"
+                        value={toolState.backgroundMusic}
+                        onChange={(e) => setToolState((s) => ({ ...s, backgroundMusic: e.target.value }))}
+                        placeholder="e.g. jingle"
+                        tooltip="Asterisk music-on-hold class to play during the call. Leave blank for none."
+                    />
                 </div>
+
+                <AgentToolPicker
+                    catalog={catalog}
+                    catalogError={catalogError}
+                    state={toolState}
+                    onChange={setToolState}
+                />
             </div>
         </Modal>
     );
