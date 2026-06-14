@@ -60,3 +60,16 @@ def test_tools_json_structure_only(tmp_path, monkeypatch):
     z = zipfile.ZipFile(io.BytesIO(client.get("/api/support-bundle").content))
     agents = json.loads(z.read("agents_redacted.json"))
     assert "https://" not in json.dumps(agents)       # URLs scrubbed (structure only)
+
+
+def test_tools_json_string_list_does_not_leak_urls(tmp_path, monkeypatch):
+    """tools_json that is a JSON array of raw URL strings must never expose those URLs."""
+    secret_url = "https://secret.example.com/x?key=abc"
+    def seed(s):
+        s.create(display_name="U", provider="x", prompt="p",
+                 tools_json=json.dumps([secret_url]))
+    client = _client(tmp_path, monkeypatch, seed)
+    z = zipfile.ZipFile(io.BytesIO(client.get("/api/support-bundle").content))
+    bundle_text = z.read("agents_redacted.json").decode()
+    assert "https://" not in bundle_text
+    assert "secret.example.com" not in bundle_text

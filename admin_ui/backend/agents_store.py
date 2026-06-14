@@ -54,14 +54,16 @@ class AgentsStore:
                "created_at","updated_at","notes"]
 
     def __init__(self, db_path: str = DB_DEFAULT):
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        parent = os.path.dirname(db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
-        try: os.chmod(db_path, 0o640)
+        try: os.chmod(db_path, 0o600)
         except OSError: pass
 
     # -- reads -------------------------------------------------------------
@@ -120,10 +122,16 @@ class AgentsStore:
         return self.get_by_slug(slug)
 
     def set_default(self, slug):
+        # Validate target first — only clear the existing default when we know the new
+        # target exists and is active, so an invalid request never leaves zero defaults.
+        r = self.conn.execute(
+            "SELECT slug FROM agents WHERE slug=? AND is_active=1", (slug,)).fetchone()
+        if r is None:
+            return  # invalid / inactive target — leave current default untouched
         with self.conn:
             self.conn.execute("UPDATE agents SET is_default=0 WHERE is_default=1")
             self.conn.execute(
-                "UPDATE agents SET is_default=1 WHERE slug=? AND is_active=1", (slug,))
+                "UPDATE agents SET is_default=1 WHERE slug=?", (slug,))
         self._ensure_default_invariant()
 
     def set_active(self, slug, active: bool):

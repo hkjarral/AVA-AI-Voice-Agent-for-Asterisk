@@ -34,7 +34,12 @@ def _structure_only(raw):
     except json.JSONDecodeError:
         return ["<unparseable>"]
     if isinstance(data, list):
-        return [d if isinstance(d, str) else d.get("name", "<tool>") for d in data]
+        return [
+            d.get("name", "<tool>") if isinstance(d, dict)
+            else f"<tool len={len(d)}>" if isinstance(d, str)
+            else "<tool>"
+            for d in data
+        ]
     if isinstance(data, dict):
         return sorted(data.keys())
     return ["<unknown>"]
