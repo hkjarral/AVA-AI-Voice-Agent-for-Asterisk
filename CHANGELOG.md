@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`call_records.routing_method` column**: The engine now records how each call's agent was selected — `ai_agent` (dialplan set `AI_AGENT`), `ai_context` (dialplan set legacy `AI_CONTEXT`), `default` (fell back to agents.db default slug), or `NULL` (headless/YAML edge — no DB default and no vars). Stored on `CallSession.routing_method`, persisted into `CallRecord.routing_method`, and written to `call_records` via an additive `ALTER TABLE` migration (`_ensure_schema_sync`) so existing installs upgrade safely. 2 new tests in `tests/test_call_history_store.py`.
+
 - **`export_agents_yaml` disaster-recovery dump (`admin_ui/backend/export_agents_yaml.py`)**: Runnable as `docker exec admin_ui python -m export_agents_yaml > contexts-recovered.yaml`. Reads all agents from `agents.db` via `AgentsStore.list_all()` and emits a `contexts:` YAML block compatible with `ai-agent.yaml`, preserving `provider`, `prompt`, `voice`, `greeting`, `audio_profile` (→ `profile`), `tools_json` (→ `tools`), and all `extra_json` fields (e.g. `pipeline`, `background_music`). 1 pytest roundtrip test in `admin_ui/backend/tests/test_export_agents_yaml.py`.
 
 - **`agent check` reports agents.db status (`cli/internal/check/runner.go`)**: New `checkAgentsDB()` probe reports operator agents store presence, active agent count, and default agent slug. Absence is a PASS (headless/YAML installs never have the file); present-but-no-default is a WARN with a remediation hint; present-with-default is a PASS showing the count and slug.

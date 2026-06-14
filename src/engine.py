@@ -6185,6 +6185,7 @@ class Engine:
                 pipeline_name=session.pipeline_name,
                 pipeline_components=session.pipeline_components or {},
                 context_name=session.context_name,
+                routing_method=getattr(session, 'routing_method', None),
                 conversation_history=session.conversation_history or [],
                 outcome=outcome,
                 transfer_destination=session.transfer_destination,
@@ -11979,11 +11980,20 @@ class Engine:
             or self.transport_orchestrator.agent_store.default_slug()
         )
         session.context_name = resolved_context
+        if channel_vars.get('AI_AGENT'):
+            session.routing_method = 'ai_agent'
+        elif channel_vars.get('AI_CONTEXT'):
+            session.routing_method = 'ai_context'
+        elif resolved_context:
+            session.routing_method = 'default'   # neither var set; used agents.db default agent
+        else:
+            session.routing_method = None        # no DB default + no vars (headless/YAML edge)
         await self._save_session(session)
         logger.debug(
             "Stored context_name in session",
             call_id=session.call_id,
             context_name=session.context_name,
+            routing_method=session.routing_method,
         )
         
         # Get provider name (precedence: AI_PROVIDER > context > session.provider_name)

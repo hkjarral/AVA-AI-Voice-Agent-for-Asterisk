@@ -78,3 +78,59 @@ async def test_call_history_list_count_filter_parity(tmp_path, monkeypatch):
     assert listed[0].call_id == "call-1"
 
 
+@pytest.mark.asyncio
+async def test_routing_method_round_trips(tmp_path, monkeypatch):
+    """routing_method persists to DB and reads back unchanged."""
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    db_path = str(tmp_path / "routing_method.db")
+
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=db_path)
+
+    now = datetime.now(timezone.utc)
+
+    record = CallRecord(
+        call_id="rm-1",
+        caller_number="5550001",
+        start_time=now,
+        end_time=now + timedelta(seconds=30),
+        duration_seconds=30.0,
+        routing_method="ai_agent",
+    )
+
+    assert await store.save(record) is True
+
+    fetched = await store.get_by_call_id("rm-1")
+    assert fetched is not None
+    assert fetched.routing_method == "ai_agent"
+
+
+@pytest.mark.asyncio
+async def test_routing_method_defaults_to_none(tmp_path, monkeypatch):
+    """A record saved without routing_method reads back as None."""
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    db_path = str(tmp_path / "routing_method_none.db")
+
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=db_path)
+
+    now = datetime.now(timezone.utc)
+
+    record = CallRecord(
+        call_id="rm-2",
+        caller_number="5550002",
+        start_time=now,
+        end_time=now + timedelta(seconds=10),
+        duration_seconds=10.0,
+        # routing_method intentionally omitted — should default to None
+    )
+
+    assert await store.save(record) is True
+
+    fetched = await store.get_by_call_id("rm-2")
+    assert fetched is not None
+    assert fetched.routing_method is None
+
+
