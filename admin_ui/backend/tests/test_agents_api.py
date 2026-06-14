@@ -238,7 +238,9 @@ def test_routing_methods_missing_column(tmp_path, monkeypatch):
     r = c.get("/api/agents/routing-methods")
     assert r.status_code == 200
     data = r.json()
-    assert data == {"ai_agent": 0, "ai_context": 0, "default": 0, "unknown": 0}
+    # Column missing but the table has 1 legacy row: count it as 'unknown' (not hidden),
+    # so the panel agrees with the other dashboards on an upgraded-but-unmigrated install.
+    assert data == {"ai_agent": 0, "ai_context": 0, "default": 0, "unknown": 1}
 
 
 def test_aggregate_endpoints_resilient_to_missing_table(tmp_path, monkeypatch):

@@ -178,6 +178,15 @@ def routing_methods():
                 "SELECT routing_method, COUNT(*) FROM call_records GROUP BY routing_method"
             ).fetchall()
     except sqlite3.OperationalError:
+        # The routing_method column may not exist yet on a freshly-upgraded install
+        # (the engine/CallHistoryStore migration adds it on first use). Count existing
+        # rows as 'unknown' so the panel agrees with the other dashboards instead of
+        # hiding historical calls. If even the table is absent, fall through to zeros.
+        try:
+            with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+                result["unknown"] = c.execute("SELECT COUNT(*) FROM call_records").fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
         return result
     for method, cnt in rows:
         if method in ("ai_agent", "ai_context", "default"):
