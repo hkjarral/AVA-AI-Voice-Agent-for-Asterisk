@@ -77,11 +77,15 @@ Open in your browser:
 - **Local:** `http://localhost:3003`
 - **Remote server:** `http://<server-ip>:3003`
 
-**Default Login:** `admin` / `admin`
+**Default Login:** On first start, a one-time admin password is printed to the container logs. Retrieve it with:
+```bash
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+```
+You must change it at first login. Restrict port 3003 via firewall, VPN, or reverse proxy for production use.
 
 Follow the **Setup Wizard** to configure your providers and make a test call.
 
-> ⚠️ **Security:** The Admin UI is accessible on the network. **Change the default password immediately** and restrict port 3003 via firewall, VPN, or reverse proxy for production use.
+> ⚠️ **Security:** The Admin UI is accessible on the network. Restrict port 3003 via firewall, VPN, or reverse proxy for production use.
 
 ### 4. Verify Installation
 
@@ -437,7 +441,7 @@ Modern web interface for configuration and system management.
 ```bash
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 # Access at: http://localhost:3003
-# Login: admin / admin (change immediately!)
+# Retrieve one-time password: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
 ```
 
 **Key Features:**
@@ -668,7 +672,9 @@ The `preflight.sh` script handles initial setup:
 
 ## 🤝 Contributing
 
-**You don't need to know how to code.** Our AI assistant AVA writes the code for you — just describe what you want to build.
+**You don't need to be a developer to contribute.** File feature ideas, report bugs
+with logs attached, improve documentation, or share your dialplan recipes — these are
+as valuable as code. If you do want to write code, see the Contributing Guide below.
 
 <!-- TODO: Add YouTube video link once recorded -->
 <!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->

@@ -237,7 +237,11 @@ venv/
 # (Allow these specific artifacts to track on `develop` when needed.)
 !Agents.md
 !Gemini.md
-!CLAUDE.md
+# CLAUDE.md / CLAUDE.local.md — hard-ignored on ALL branches (2026-06-12).
+# Personal AI-assistant context stays local-only and must never reach GitHub,
+# including develop. (Previously `!CLAUDE.md` allowed develop-branch tracking.)
+CLAUDE.md
+CLAUDE.local.md
 
 # Local diagnostics bundles
 server_diagnostics/

@@ -120,15 +120,15 @@ Great for first-time contributors. **AVA helps you with all of these** — just 
 | Report and document edge cases in call flows | Testing + writing | You make real calls every day |
 | Translate a setup guide to your language | Any language | Help non-English speakers |
 
-#### AI-Assisted Code Tasks (AVA Writes the Code)
+#### AI-Assisted Code Tasks (AVA Helps You Write the Code)
 
 | Task | Contribution Area | Why YOU Can Do This |
 |------|-------------------|---------------------|
-| Add a new STT/TTS/LLM pipeline adapter | [open issues: pipeline adapter](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+pipeline+adapter) — see also `docs/contributing/pipeline-development.md` | You know which providers work best — AVA writes the adapter |
+| Add a new STT/TTS/LLM pipeline adapter | [open issues: pipeline adapter](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+pipeline+adapter) — see also `docs/contributing/pipeline-development.md` | You know which providers work best — AVA helps you write the adapter |
 | Add a pre-call CRM lookup hook | [open issues: pre-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+pre-call) — see also `docs/contributing/tool-development.md` | You have a CRM — AVA integrates it |
 | Add a post-call webhook (Slack, Discord, n8n) | [open issues: post-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+post-call) — see also `docs/TOOL_CALLING_GUIDE.md` (HTTP tools) | You use these tools daily — AVA connects them |
 | Add an in-call appointment checker | [open issues: in-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+in-call) — see also `docs/Google-calendar-tool.md` | You book appointments by phone — AVA builds it |
-| Test coverage for `src/tools/telephony/` | Python, pytest | You understand voicemail — AVA writes the tests |
+| Test coverage for `src/tools/telephony/` | Python, pytest | You understand voicemail — AVA helps you write the tests |
 | Improve error messages in `agent doctor` | Go CLI | You've seen the confusing errors — AVA fixes them |
 | Admin UI accessibility audit (Lighthouse/axe) | React, CSS | Run the audit, AVA fixes what it finds |
 | JSON Schema for `ai-agent.yaml` | JSON Schema, YAML | Define what's valid in the config you use daily |
