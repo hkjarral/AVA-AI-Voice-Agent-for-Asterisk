@@ -64,30 +64,60 @@ def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
 def ensure_default_user() -> "str | None":
-    """Create the initial admin user with a random one-time password.
+    """Create or rotate the initial admin user with a random one-time password.
 
-    Returns the plaintext password on first creation (for log output), else None.
-    Idempotent: if the users file already exists, does nothing and returns None.
+    Returns the plaintext password whenever it (re)generated one, else None.
+
+    Fresh install (no users.json):
+        Creates config/users.json atomically at mode 0o600 with a random
+        secrets.token_urlsafe(16) password and must_change_password=True.
+
+    Upgraded install (users.json exists but admin/admin still works):
+        Rotates the password to a new random value and sets must_change_password=True,
+        so legacy defaults cannot be exploited on upgraded installs.
+
+    Already secured (users.json exists and admin/admin does not verify):
+        Returns None — no action.
     """
-    if os.path.exists(USERS_PATH):
-        return None
-    password = secrets.token_urlsafe(16)
-    users = {
-        "admin": {
-            "username": "admin",
-            "hashed_password": get_password_hash(password),
-            "disabled": False,
-            "must_change_password": True,
-        }
-    }
     os.makedirs(os.path.dirname(USERS_PATH), exist_ok=True)
-    with open(USERS_PATH, "w") as f:
-        json.dump(users, f, indent=2)
+
+    # --- Fresh install path: create atomically so concurrent first-run processes
+    # cannot race and the file lands at mode 0o600 in one syscall.
     try:
-        os.chmod(USERS_PATH, 0o600)
-    except OSError:
+        fd = os.open(USERS_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # File exists — fall through to the upgrade-rotation check below.
         pass
-    return password
+    else:
+        password = secrets.token_urlsafe(16)
+        users = {
+            "admin": {
+                "username": "admin",
+                "hashed_password": get_password_hash(password),
+                "disabled": False,
+                "must_change_password": True,
+            }
+        }
+        with os.fdopen(fd, "w") as f:
+            json.dump(users, f, indent=2)
+        return password
+
+    # --- Existing-file path: rotate if the legacy admin/admin default is still in place.
+    with open(USERS_PATH, "r") as f:
+        users = json.load(f)
+
+    admin = users.get("admin", {})
+    if admin and verify_password("admin", admin.get("hashed_password", "")):
+        # Legacy default still active — regenerate and save.
+        password = secrets.token_urlsafe(16)
+        admin["hashed_password"] = get_password_hash(password)
+        admin["must_change_password"] = True
+        users["admin"] = admin
+        with open(USERS_PATH, "w") as f:
+            json.dump(users, f, indent=2)
+        return password
+
+    return None
 
 
 def load_users():

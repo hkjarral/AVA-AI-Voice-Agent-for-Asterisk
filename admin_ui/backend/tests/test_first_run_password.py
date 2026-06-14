@@ -254,6 +254,42 @@ def test_me_endpoint_accessible_when_must_change_password(tmp_path, monkeypatch)
     )
 
 
+def test_bootstrap_rotates_legacy_admin_admin(tmp_path, monkeypatch):
+    """ensure_default_user() rotates a still-default admin/admin hash on upgrade."""
+    users_file = tmp_path / "users.json"
+    _set_users_path(monkeypatch, users_file)
+
+    import json
+    from auth import ensure_default_user, get_password_hash, verify_password
+
+    # Simulate an upgraded install with the old admin/admin default still in place.
+    users_file.write_text(json.dumps({"admin": {"username": "admin",
+        "hashed_password": get_password_hash("admin"), "disabled": False,
+        "must_change_password": True}}))
+
+    pw = ensure_default_user()
+    assert pw is not None and pw != "admin" and len(pw) >= 16
+
+    data = json.loads(users_file.read_text())
+    assert not verify_password("admin", data["admin"]["hashed_password"])  # admin/admin no longer works
+    assert data["admin"]["must_change_password"] is True
+
+
+def test_bootstrap_leaves_already_rotated_user_alone(tmp_path, monkeypatch):
+    """ensure_default_user() does nothing when the password is already non-default."""
+    users_file = tmp_path / "users.json"
+    _set_users_path(monkeypatch, users_file)
+
+    import json
+    from auth import ensure_default_user, get_password_hash
+
+    users_file.write_text(json.dumps({"admin": {"username": "admin",
+        "hashed_password": get_password_hash("a-real-rotated-secret"), "disabled": False,
+        "must_change_password": False}}))
+
+    assert ensure_default_user() is None  # not the default -> no action
+
+
 def test_protected_endpoint_accessible_after_password_change(tmp_path, monkeypatch):
     """After changing password and clearing the flag, protected endpoints are accessible."""
     from fastapi.testclient import TestClient
