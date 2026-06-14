@@ -47,7 +47,8 @@ services:
       - PYTHONUNBUFFERED=1
       # Note: TZ is loaded from .env via env_file directive above
       # Do NOT add TZ here with ${TZ:-default} - it prevents UI env changes from taking effect
-      # Enable health endpoint access from other containers (admin-ui needs /sessions/stats)
+      # Health endpoint binds 0.0.0.0 so admin_ui can reach /sessions/stats and /reload.
+      # Security implications + lockdown instructions: SECURITY.md "Shipped docker-compose note".
       - HEALTH_BIND_HOST=0.0.0.0
       # Note: ASTERISK_HOST is loaded from .env via env_file directive above
       # Do NOT add ASTERISK_HOST here - it prevents UI env changes from taking effect
