@@ -215,7 +215,7 @@ def create_agent(body: AgentIn, request: Request):
     try:
         return _store().create(**data)
     except ValueError as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from e
 
 @router.patch("/agents/{slug}")
 def patch_agent(slug: str, body: AgentPatch):
@@ -223,13 +223,16 @@ def patch_agent(slug: str, body: AgentPatch):
     existing = store.get_by_slug(slug)
     if not existing:
         raise HTTPException(404, "agent not found")
-    sent = body.model_dump(exclude_unset=True)
-    if "provider" in sent or "extra_json" in sent:
-        eff_provider = sent.get("provider", existing.get("provider"))
-        eff_extra = sent.get("extra_json", existing.get("extra_json"))
+    # Apply exactly the fields the client sent (exclude_unset), INCLUDING explicit
+    # nulls — sending tools_json/extra_json/mcp_json=null must clear the column, so
+    # the engine doesn't keep serving stale config (e.g. an old pipeline after the
+    # agent is switched to a provider). Unsent fields are left untouched.
+    fields = body.model_dump(exclude_unset=True)
+    if "provider" in fields or "extra_json" in fields:
+        eff_provider = fields.get("provider", existing.get("provider"))
+        eff_extra = fields.get("extra_json", existing.get("extra_json"))
         if not _engine_ok(eff_provider, eff_extra):
             raise HTTPException(422, "agent must have a provider or a pipeline")
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if "provider" in fields:
         fields["provider"] = (fields["provider"] or "").strip()
     if "is_active" in fields:
