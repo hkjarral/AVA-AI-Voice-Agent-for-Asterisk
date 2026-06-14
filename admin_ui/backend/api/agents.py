@@ -8,7 +8,7 @@ from agents_migration import current_drift, acknowledge_drift, run_migration, \
 import settings  # for YAML paths
 
 router = APIRouter()
-CALL_HISTORY_DB = os.environ.get("CALL_HISTORY_DB", "/app/data/call_history.db")
+CALL_HISTORY_DB = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
 TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "agent_templates.json")
 # CORRECTION vs plan: the real default Stasis app is "asterisk-ai-voice-agent"
 # (confirmed from engine StasisStart logs + golden baselines), NOT "ai-voice-agent".
@@ -71,11 +71,14 @@ async def summary():
     total_routed = 0
     total_transfers = 0
     if os.path.exists(CALL_HISTORY_DB):
-        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
-            total_routed = c.execute("SELECT COUNT(*) FROM call_records").fetchone()[0]
-            total_transfers = c.execute(
-                "SELECT COUNT(*) FROM call_records WHERE outcome='transferred'"
-            ).fetchone()[0]
+        try:
+            with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+                total_routed = c.execute("SELECT COUNT(*) FROM call_records").fetchone()[0]
+                total_transfers = c.execute(
+                    "SELECT COUNT(*) FROM call_records WHERE outcome='transferred'"
+                ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
 
     active_calls = 0
     try:
@@ -112,15 +115,18 @@ def stats_batch():
 
     call_data: dict = {}
     if os.path.exists(CALL_HISTORY_DB):
-        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
-            rows = c.execute(
-                "SELECT context_name, COUNT(*) c, "
-                "SUM(CASE WHEN outcome='transferred' THEN 1 ELSE 0 END) t, "
-                "AVG(duration_seconds) d, MAX(start_time) m "
-                "FROM call_records GROUP BY context_name"
-            ).fetchall()
-        for ctx, cnt, transfers, avg_dur, last in rows:
-            call_data[ctx] = (cnt, transfers or 0, avg_dur, last)
+        try:
+            with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+                rows = c.execute(
+                    "SELECT context_name, COUNT(*) c, "
+                    "SUM(CASE WHEN outcome='transferred' THEN 1 ELSE 0 END) t, "
+                    "AVG(duration_seconds) d, MAX(start_time) m "
+                    "FROM call_records GROUP BY context_name"
+                ).fetchall()
+            for ctx, cnt, transfers, avg_dur, last in rows:
+                call_data[ctx] = (cnt, transfers or 0, avg_dur, last)
+        except sqlite3.OperationalError:
+            pass
 
     result = []
     for agent in agents:
@@ -149,12 +155,15 @@ def distribution():
     """Call distribution by context_name, ordered by count desc. Excludes NULL/empty names."""
     if not os.path.exists(CALL_HISTORY_DB):
         return []
-    with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
-        rows = c.execute(
-            "SELECT context_name, COUNT(*) c FROM call_records "
-            "WHERE context_name IS NOT NULL AND context_name != '' "
-            "GROUP BY context_name ORDER BY c DESC"
-        ).fetchall()
+    try:
+        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+            rows = c.execute(
+                "SELECT context_name, COUNT(*) c FROM call_records "
+                "WHERE context_name IS NOT NULL AND context_name != '' "
+                "GROUP BY context_name ORDER BY c DESC"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
     return [{"context_name": ctx, "count": cnt} for ctx, cnt in rows]
 
 @router.get("/agents/routing-methods")

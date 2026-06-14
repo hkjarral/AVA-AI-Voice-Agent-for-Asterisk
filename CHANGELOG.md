@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dashboard reads canonical `CALL_HISTORY_DB_PATH` env var** (`admin_ui/backend/api/agents.py`): the module constant was reading the wrong env var name (`CALL_HISTORY_DB` instead of `CALL_HISTORY_DB_PATH`), causing all aggregate endpoints to silently read the wrong DB path on deployments that set a custom location. Aligned to the canonical name used by the engine's `CallHistoryStore`.
+- **Aggregate dashboard endpoints resilient to missing `call_records` table** (`admin_ui/backend/api/agents.py`): `GET /api/agents/summary`, `stats-batch`, and `distribution` now catch `sqlite3.OperationalError` (e.g. DB file exists but table is absent on schema-incompatible or empty DBs) and fall back to the same zero/empty response they return when the file is missing, instead of raising a 500. Matches the existing defensive pattern on `routing-methods`.
+- **Frontend clears stale analytics state on failed fetches** (`admin_ui/frontend/src/pages/AgentsPage.tsx`): after a prior successful load, a subsequent partial failure left stale KPI/stats/distribution/routing values on screen. Failed optional fetches now reset their respective state slices to empty/null so the UI shows neutral `—`/empty values rather than misleading stale data.
+- **Keyboard-focusable card action buttons** (`admin_ui/frontend/src/pages/AgentsPage.tsx`): agent card actions were hidden behind `opacity-0 group-hover:opacity-100`, making them unreachable for keyboard users. Added `group-focus-within:opacity-100` so the controls appear when any button inside the card receives keyboard focus.
+
 ### Documentation
 
 - **`docs/AGENTS.md` (new)**: Operator-facing guide covering what an agent is, `agents.db` as source of truth, `AI_AGENT` vs `AI_CONTEXT` channel variables (with dialplan example), the five starter templates, headless/YAML-only mode, per-agent stats semantics, and the read-only Contexts tab note. Cross-links `OPERATOR_MIGRATION.md`.

@@ -241,6 +241,46 @@ def test_routing_methods_missing_column(tmp_path, monkeypatch):
     assert data == {"ai_agent": 0, "ai_context": 0, "default": 0, "unknown": 0}
 
 
+def test_aggregate_endpoints_resilient_to_missing_table(tmp_path, monkeypatch):
+    """summary, stats-batch, distribution return 200 with zero/empty when DB has no call_records."""
+    from api import agents as agents_api
+    from agents_store import AgentsStore
+
+    db = str(tmp_path / "agents.db")
+    monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+    store = AgentsStore(db_path=db)
+    store.create(display_name="Alpha", provider="x", prompt="p")
+
+    # DB file exists but has NO call_records table
+    hist = str(tmp_path / "empty.db")
+    conn = _sqlite3.connect(hist)
+    conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(agents_api, "CALL_HISTORY_DB", hist)
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(agents_api.router, prefix="/api")
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+
+    r = c.get("/api/agents/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_routed"] == 0
+    assert data["total_transfers"] == 0
+
+    r = c.get("/api/agents/stats-batch")
+    assert r.status_code == 200
+    batch = r.json()
+    assert isinstance(batch, list)
+    assert all(row["calls"] == 0 for row in batch)
+
+    r = c.get("/api/agents/distribution")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
 def test_reconcile_adds_new_yaml_context(client, tmp_path, monkeypatch):
     import yaml as _yaml
     from api import agents as agents_api

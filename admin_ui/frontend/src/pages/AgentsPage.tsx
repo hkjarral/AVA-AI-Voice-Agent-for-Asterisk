@@ -163,28 +163,35 @@ const AgentsPage = () => {
                 }
             }
 
-            // stats-batch: map by slug
+            // stats-batch: map by slug; reset to {} on failure to avoid stale values
             if (statsBatchRes && Array.isArray(statsBatchRes.data)) {
                 const map: Record<string, AgentStat> = {};
                 for (const s of statsBatchRes.data) {
                     map[s.slug] = s;
                 }
                 setStatsMap(map);
+            } else {
+                setStatsMap({});
             }
 
             if (summaryRes) {
                 setSummary(summaryRes.data);
                 setSystemOk(true);
             } else {
+                setSummary(null);
                 setSystemOk(false);
             }
 
             if (distributionRes && Array.isArray(distributionRes.data)) {
                 setDistribution(distributionRes.data);
+            } else {
+                setDistribution([]);
             }
 
             if (routingRes) {
                 setRoutingMethods(routingRes.data);
+            } else {
+                setRoutingMethods(null);
             }
         } catch (e: unknown) {
             const status = (e as { response?: { status?: number } })?.response?.status;
@@ -412,7 +419,7 @@ const AgentsPage = () => {
                                         </div>
 
                                         {/* Card actions */}
-                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
+                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity flex-shrink-0 ml-2">
                                             {agent.is_default !== 1 && agent.is_active === 1 && (
                                                 <button
                                                     onClick={() => handleMakeDefault(agent.slug)}
