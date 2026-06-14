@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Replace hardcoded `admin`/`admin` default with a generated one-time password**: On first start, `auth.ensure_default_user()` creates `config/users.json` atomically at mode `0o600` with a `secrets.token_urlsafe(16)` random password and `must_change_password=True`, then logs it via the Admin UI container logger (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`). A 403 gate in `get_current_user` blocks all protected endpoints until the password is rotated — `/api/auth/change-password` and `/api/auth/me` are explicitly exempt so the user can complete the rotation. **Upgraded installs:** if `config/users.json` already exists and the `admin` account still verifies against the literal password `"admin"`, `ensure_default_user()` rotates it to a new random password on next startup — closing the takeover window on upgraded installs. The `AuthContext` token-restore path now propagates `must_change_password` from `/api/auth/me` so the forced-rotation modal re-appears correctly after a page refresh. **Note for operators using external log forwarding (e.g. Datadog, CloudWatch):** the one-time password appears in container stdout at startup; change it promptly at first login to avoid it persisting in log archives.
+
 ### Documentation
 
 - **SECURITY.md / docker-compose health-bind reconciliation**: The SECURITY.md network table incorrectly implied the shipped deployment binds the ai-engine health server (port 15000) to localhost. In practice, `docker-compose.yml` sets `HEALTH_BIND_HOST=0.0.0.0` so the Admin UI container can reach `/sessions/stats` and `/reload`. Updated the table's Default Bind cell to reflect the code default vs. the shipped compose value, and added a blockquote note explaining the security implication and how to lock it down. Updated the docker-compose comment to cross-reference SECURITY.md.
