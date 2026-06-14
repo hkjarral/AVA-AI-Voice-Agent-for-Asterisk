@@ -23,6 +23,7 @@ interface CallRecordSummary {
     provider_name: string;
     pipeline_name: string | null;
     context_name: string | null;
+    routing_method: string | null;  // 'ai_agent' | 'ai_context' | 'default' | null
     outcome: string;
     error_message: string | null;
     avg_turn_latency_ms: number;
@@ -141,6 +142,21 @@ const OutcomeIcon = ({ outcome }: { outcome: string }) => {
     }
 };
 
+// How a call was routed to its agent (engine writes call_records.routing_method).
+// Older calls predating the column have method === null and render nothing.
+const RoutingBadge = ({ method }: { method: string | null }) => {
+    if (!method) return null;
+    const meta: Record<string, { label: string; cls: string }> = {
+        ai_agent:   { label: 'Agent',   cls: 'bg-blue-500/15 text-blue-500' },
+        ai_context: { label: 'Context', cls: 'bg-purple-500/15 text-purple-500' },
+        default:    { label: 'Default', cls: 'bg-muted text-muted-foreground' },
+    };
+    const m = meta[method] ?? { label: method, cls: 'bg-muted text-muted-foreground' };
+    return (
+        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${m.cls}`}>{m.label}</span>
+    );
+};
+
 // --- Tool execution UI helpers ---------------------------------------------
 
 const PHASE_LABELS: Record<ToolPhase, string> = {
@@ -254,6 +270,8 @@ const CallHistoryPage = () => {
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
     const [stats, setStats] = useState<CallStats | null>(null);
     const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
+    // slug -> display_name, so the call's context_name (== agent slug) shows the friendly name.
+    const [agentNames, setAgentNames] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [selectedCallSummary, setSelectedCallSummary] = useState<CallRecordSummary | null>(null);
@@ -375,6 +393,18 @@ const CallHistoryPage = () => {
         }
     }, []);
 
+    const fetchAgentNames = useCallback(async () => {
+        try {
+            const res = await axios.get('/api/agents');
+            const map: Record<string, string> = {};
+            for (const a of res.data || []) map[a.slug] = a.display_name;
+            setAgentNames(map);
+        } catch (err) {
+            // Non-fatal: rows fall back to the raw context slug if agents can't load.
+            console.error('Failed to fetch agent names:', err);
+        }
+    }, []);
+
     useEffect(() => {
         fetchCalls();
     }, [fetchCalls]);
@@ -386,6 +416,10 @@ const CallHistoryPage = () => {
     useEffect(() => {
         fetchFilterOptions();
     }, [fetchFilterOptions]);
+
+    useEffect(() => {
+        fetchAgentNames();
+    }, [fetchAgentNames]);
 
     const cleanupAudio = useCallback(() => {
         if (audioRef.current) {
@@ -456,6 +490,7 @@ const CallHistoryPage = () => {
                     provider_name: detail.provider_name,
                     pipeline_name: detail.pipeline_name,
                     context_name: detail.context_name,
+                    routing_method: detail.routing_method,
                     outcome: detail.outcome,
                     error_message: detail.error_message,
                     avg_turn_latency_ms: detail.avg_turn_latency_ms,
@@ -808,7 +843,7 @@ const CallHistoryPage = () => {
                             </select>
                         </div>
                         <div>
-                            <label className="text-sm text-muted-foreground">Context</label>
+                            <label className="text-sm text-muted-foreground">Agent</label>
                             <select
                                 value={filters.context_name}
                                 onChange={(e) => setFilters({ ...filters, context_name: e.target.value })}
@@ -816,7 +851,7 @@ const CallHistoryPage = () => {
                             >
                                 <option value="">All</option>
                                 {filterOptions?.contexts.map(c => (
-                                    <option key={c} value={c}>{c}</option>
+                                    <option key={c} value={c}>{agentNames[c] || c}</option>
                                 ))}
                             </select>
                         </div>
@@ -895,7 +930,7 @@ const CallHistoryPage = () => {
                                     <th className="text-left px-4 py-3 text-sm font-medium">Time</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Duration</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Provider / Pipeline</th>
-                                    <th className="text-left px-4 py-3 text-sm font-medium">Context</th>
+                                    <th className="text-left px-4 py-3 text-sm font-medium">Agent</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Outcome</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Turns</th>
                                     <th className="text-left px-4 py-3 text-sm font-medium">Latency</th>
@@ -919,7 +954,23 @@ const CallHistoryPage = () => {
                                         <td className="px-4 py-3 text-sm">{formatDate(call.start_time)}</td>
                                         <td className="px-4 py-3 text-sm">{formatDuration(call.duration_seconds)}</td>
                                         <td className="px-4 py-3 text-sm">{call.pipeline_name || call.provider_name}</td>
-                                        <td className="px-4 py-3 text-sm">{call.context_name || '-'}</td>
+                                        <td className="px-4 py-3">
+                                            {call.context_name ? (
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="text-sm font-medium">
+                                                        {agentNames[call.context_name] || call.context_name}
+                                                    </span>
+                                                    <div className="flex items-center gap-2">
+                                                        {agentNames[call.context_name] && (
+                                                            <span className="text-xs text-muted-foreground">{call.context_name}</span>
+                                                        )}
+                                                        <RoutingBadge method={call.routing_method} />
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <span className="text-sm">-</span>
+                                            )}
+                                        </td>
                                         <td className="px-4 py-3">
                                             <div className="flex items-center gap-2">
                                                 <OutcomeIcon outcome={call.outcome} />
@@ -1126,8 +1177,18 @@ const CallHistoryPage = () => {
                                         <span className="font-medium">{modalCall.pipeline_name || '-'}</span>
                                     </div>
                                     <div>
-                                        <span className="text-muted-foreground">Context:</span>{' '}
-                                        <span className="font-medium">{modalCall.context_name || '-'}</span>
+                                        <span className="text-muted-foreground">Agent:</span>{' '}
+                                        <span className="font-medium">
+                                            {modalCall.context_name
+                                                ? (agentNames[modalCall.context_name] || modalCall.context_name)
+                                                : '-'}
+                                        </span>
+                                        {modalCall.context_name && agentNames[modalCall.context_name] && (
+                                            <span className="text-xs text-muted-foreground"> ({modalCall.context_name})</span>
+                                        )}
+                                        {modalCall.routing_method && (
+                                            <span className="ml-2"><RoutingBadge method={modalCall.routing_method} /></span>
+                                        )}
                                     </div>
                                     <div>
                                         <span className="text-muted-foreground">Audio:</span>{' '}

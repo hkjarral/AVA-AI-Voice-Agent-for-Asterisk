@@ -93,6 +93,7 @@ class CallRecordSummaryResponse(BaseModel):
     provider_name: str = "unknown"
     pipeline_name: Optional[str] = None
     context_name: Optional[str] = None
+    routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
     outcome: str = "completed"
     error_message: Optional[str] = None
     avg_turn_latency_ms: float = 0.0
@@ -114,6 +115,7 @@ class CallRecordResponse(BaseModel):
     pipeline_name: Optional[str] = None
     pipeline_components: dict = {}
     context_name: Optional[str] = None
+    routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
     conversation_history: list = []
     outcome: str = "completed"
     transfer_destination: Optional[str] = None
@@ -241,6 +243,7 @@ def _record_to_response(record) -> CallRecordResponse:
         pipeline_name=record.pipeline_name,
         pipeline_components=record.pipeline_components or {},
         context_name=record.context_name,
+        routing_method=getattr(record, "routing_method", None),
         conversation_history=record.conversation_history or [],
         outcome=record.outcome,
         transfer_destination=record.transfer_destination,
@@ -275,6 +278,7 @@ def _record_to_summary_response(record) -> CallRecordSummaryResponse:
         provider_name=record.provider_name,
         pipeline_name=record.pipeline_name,
         context_name=record.context_name,
+        routing_method=getattr(record, "routing_method", None),
         outcome=record.outcome,
         error_message=record.error_message,
         avg_turn_latency_ms=record.avg_turn_latency_ms,
