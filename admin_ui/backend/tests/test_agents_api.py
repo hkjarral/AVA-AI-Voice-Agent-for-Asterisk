@@ -71,6 +71,176 @@ def test_deactivate_via_patch_promotes_other(client):
     assert agents["b"]["is_default"] == 1
     assert agents["a"]["is_active"] == 0
 
+import sqlite3 as _sqlite3
+
+def _seed_history(path, rows):
+    c = _sqlite3.connect(path)
+    c.execute(
+        "CREATE TABLE call_records (id TEXT, call_id TEXT, context_name TEXT, outcome TEXT, "
+        "duration_seconds REAL, start_time TEXT, routing_method TEXT)"
+    )
+    for i, (ctx, outcome, dur, rm) in enumerate(rows):
+        c.execute(
+            "INSERT INTO call_records VALUES (?,?,?,?,?,?,?)",
+            (str(i), str(i), ctx, outcome, dur, "2026-06-13T00:0%d:00" % (i % 6), rm),
+        )
+    c.commit()
+    c.close()
+
+
+def test_summary_counts(tmp_path, monkeypatch):
+    from api import agents as agents_api
+    from agents_store import AgentsStore
+    db = str(tmp_path / "agents.db")
+    monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+    store = AgentsStore(db_path=db)
+    store.create(display_name="Alpha", provider="x", prompt="p")
+    store.create(display_name="Beta", provider="x", prompt="p")
+
+    hist = str(tmp_path / "calls.db")
+    _seed_history(hist, [
+        ("alpha", None, 60.0, "ai_agent"),
+        ("alpha", "transferred", 30.0, "ai_agent"),
+        ("beta", "transferred", 45.0, "ai_context"),
+        ("beta", None, 90.0, "default"),
+        ("beta", None, 120.0, "ai_agent"),
+    ])
+    monkeypatch.setattr(agents_api, "CALL_HISTORY_DB", hist)
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(agents_api.router, prefix="/api")
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+    r = c.get("/api/agents/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_routed"] == 5
+    assert data["total_transfers"] == 2
+    assert data["active_agents"] == 2
+    assert data["active_calls"] == 0  # no engine running in tests
+
+
+def test_stats_batch(tmp_path, monkeypatch):
+    from api import agents as agents_api
+    from agents_store import AgentsStore
+    db = str(tmp_path / "agents.db")
+    monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+    store = AgentsStore(db_path=db)
+    store.create(display_name="Agent One", provider="x", prompt="p")
+    store.create(display_name="Agent Two", provider="x", prompt="p")
+
+    hist = str(tmp_path / "calls.db")
+    _seed_history(hist, [
+        ("agent_one", None, 60.0, "ai_agent"),
+        ("agent_one", "transferred", 40.0, "ai_agent"),
+        ("agent_one", None, 80.0, "ai_agent"),
+    ])
+    monkeypatch.setattr(agents_api, "CALL_HISTORY_DB", hist)
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(agents_api.router, prefix="/api")
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+    r = c.get("/api/agents/stats-batch")
+    assert r.status_code == 200
+    batch = {row["slug"]: row for row in r.json()}
+    assert batch["agent_one"]["calls"] == 3
+    assert batch["agent_one"]["transfers"] == 1
+    assert batch["agent_one"]["avg_duration_seconds"] == round((60.0 + 40.0 + 80.0) / 3, 1)
+    assert batch["agent_two"]["calls"] == 0
+    assert batch["agent_two"]["transfers"] == 0
+    assert batch["agent_two"]["avg_duration_seconds"] == 0.0
+    assert batch["agent_two"]["last_call"] is None
+
+
+def test_distribution(tmp_path, monkeypatch):
+    from api import agents as agents_api
+    from agents_store import AgentsStore
+    db = str(tmp_path / "agents.db")
+    monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+
+    hist = str(tmp_path / "calls.db")
+    _seed_history(hist, [
+        ("alpha", None, 10.0, "ai_agent"),
+        ("alpha", None, 10.0, "ai_agent"),
+        ("alpha", None, 10.0, "ai_agent"),
+        ("beta", None, 10.0, "ai_agent"),
+        ("beta", None, 10.0, "ai_agent"),
+        ("gamma", None, 10.0, "ai_agent"),
+        (None, None, 10.0, "ai_agent"),   # NULL context — should be excluded
+        ("", None, 10.0, "ai_agent"),     # empty context — should be excluded
+    ])
+    monkeypatch.setattr(agents_api, "CALL_HISTORY_DB", hist)
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(agents_api.router, prefix="/api")
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+    r = c.get("/api/agents/distribution")
+    assert r.status_code == 200
+    items = r.json()
+    assert items[0] == {"context_name": "alpha", "count": 3}
+    assert items[1] == {"context_name": "beta", "count": 2}
+    assert items[2] == {"context_name": "gamma", "count": 1}
+    assert len(items) == 3  # NULL/empty excluded
+
+
+def test_routing_methods(tmp_path, monkeypatch):
+    from api import agents as agents_api
+    from agents_store import AgentsStore
+    db = str(tmp_path / "agents.db")
+    monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+
+    hist = str(tmp_path / "calls.db")
+    _seed_history(hist, [
+        ("ctx", None, 10.0, "ai_agent"),
+        ("ctx", None, 10.0, "ai_agent"),
+        ("ctx", None, 10.0, "ai_context"),
+        ("ctx", None, 10.0, "default"),
+        ("ctx", None, 10.0, None),        # NULL → unknown
+    ])
+    monkeypatch.setattr(agents_api, "CALL_HISTORY_DB", hist)
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(agents_api.router, prefix="/api")
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+    r = c.get("/api/agents/routing-methods")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ai_agent"] == 2
+    assert data["ai_context"] == 1
+    assert data["default"] == 1
+    assert data["unknown"] == 1
+
+
+def test_routing_methods_missing_column(tmp_path, monkeypatch):
+    from api import agents as agents_api
+    from agents_store import AgentsStore
+    db = str(tmp_path / "agents.db")
+    monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+
+    # Create call_records table WITHOUT routing_method column
+    hist = str(tmp_path / "calls.db")
+    conn = _sqlite3.connect(hist)
+    conn.execute(
+        "CREATE TABLE call_records (id TEXT, context_name TEXT, outcome TEXT, duration_seconds REAL)"
+    )
+    conn.execute("INSERT INTO call_records VALUES ('1','ctx',NULL,30.0)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(agents_api, "CALL_HISTORY_DB", hist)
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(agents_api.router, prefix="/api")
+    from fastapi.testclient import TestClient
+    c = TestClient(app)
+    r = c.get("/api/agents/routing-methods")
+    assert r.status_code == 200
+    data = r.json()
+    assert data == {"ai_agent": 0, "ai_context": 0, "default": 0, "unknown": 0}
+
+
 def test_reconcile_adds_new_yaml_context(client, tmp_path, monkeypatch):
     import yaml as _yaml
     from api import agents as agents_api

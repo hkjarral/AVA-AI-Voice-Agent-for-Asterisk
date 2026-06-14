@@ -62,6 +62,121 @@ def templates():
     with open(TEMPLATES_PATH) as f:
         return json.load(f)
 
+@router.get("/agents/summary")
+async def summary():
+    """KPI summary: active agents, active calls (from engine), total routed, total transfers."""
+    store = _store()
+    active_agents = store.count_active()
+
+    total_routed = 0
+    total_transfers = 0
+    if os.path.exists(CALL_HISTORY_DB):
+        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+            total_routed = c.execute("SELECT COUNT(*) FROM call_records").fetchone()[0]
+            total_transfers = c.execute(
+                "SELECT COUNT(*) FROM call_records WHERE outcome='transferred'"
+            ).fetchone()[0]
+
+    active_calls = 0
+    try:
+        import aiohttp
+        ai_engine_url = os.getenv("AI_ENGINE_HEALTH_URL", "http://localhost:15000")
+        headers = {}
+        health_token = (os.getenv("HEALTH_API_TOKEN") or "").strip()
+        if health_token:
+            headers["Authorization"] = f"Bearer {health_token}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{ai_engine_url}/sessions/stats",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=2),
+            ) as resp:
+                if resp.status == 200:
+                    session_stats = await resp.json()
+                    active_calls = session_stats.get("active_calls", 0)
+    except Exception:
+        active_calls = 0
+
+    return {
+        "active_agents": active_agents,
+        "active_calls": active_calls,
+        "total_routed": total_routed,
+        "total_transfers": total_transfers,
+    }
+
+@router.get("/agents/stats-batch")
+def stats_batch():
+    """Per-agent call stats for all agents in the store."""
+    store = _store()
+    agents = store.list_all()
+
+    call_data: dict = {}
+    if os.path.exists(CALL_HISTORY_DB):
+        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+            rows = c.execute(
+                "SELECT context_name, COUNT(*) c, "
+                "SUM(CASE WHEN outcome='transferred' THEN 1 ELSE 0 END) t, "
+                "AVG(duration_seconds) d, MAX(start_time) m "
+                "FROM call_records GROUP BY context_name"
+            ).fetchall()
+        for ctx, cnt, transfers, avg_dur, last in rows:
+            call_data[ctx] = (cnt, transfers or 0, avg_dur, last)
+
+    result = []
+    for agent in agents:
+        slug = agent["slug"]
+        if slug in call_data:
+            cnt, transfers, avg_dur, last = call_data[slug]
+            result.append({
+                "slug": slug,
+                "calls": cnt,
+                "transfers": transfers,
+                "avg_duration_seconds": round(avg_dur, 1) if avg_dur is not None else 0.0,
+                "last_call": last,
+            })
+        else:
+            result.append({
+                "slug": slug,
+                "calls": 0,
+                "transfers": 0,
+                "avg_duration_seconds": 0.0,
+                "last_call": None,
+            })
+    return result
+
+@router.get("/agents/distribution")
+def distribution():
+    """Call distribution by context_name, ordered by count desc. Excludes NULL/empty names."""
+    if not os.path.exists(CALL_HISTORY_DB):
+        return []
+    with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+        rows = c.execute(
+            "SELECT context_name, COUNT(*) c FROM call_records "
+            "WHERE context_name IS NOT NULL AND context_name != '' "
+            "GROUP BY context_name ORDER BY c DESC"
+        ).fetchall()
+    return [{"context_name": ctx, "count": cnt} for ctx, cnt in rows]
+
+@router.get("/agents/routing-methods")
+def routing_methods():
+    """Routing method breakdown: ai_agent, ai_context, default, unknown (NULL/other)."""
+    result = {"ai_agent": 0, "ai_context": 0, "default": 0, "unknown": 0}
+    if not os.path.exists(CALL_HISTORY_DB):
+        return result
+    try:
+        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+            rows = c.execute(
+                "SELECT routing_method, COUNT(*) FROM call_records GROUP BY routing_method"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return result
+    for method, cnt in rows:
+        if method in ("ai_agent", "ai_context", "default"):
+            result[method] += cnt
+        else:
+            result["unknown"] += cnt
+    return result
+
 @router.post("/agents", status_code=201)
 def create_agent(body: AgentIn, request: Request):
     try:
