@@ -43,6 +43,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 .then(response => {
                     console.log("AuthProvider: user loaded");
                     setUser(response.data);
+                    setMustChangePassword(response.data.must_change_password || false);
                     setLoading(false);
                 })
                 .catch((err) => {
