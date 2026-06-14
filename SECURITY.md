@@ -92,7 +92,10 @@ We take security vulnerabilities seriously. If you discover a security issue, pl
 > `/sessions/stats` and `/reload`. On host-network deployments this exposes port 15000
 > on all host interfaces. The health server carries no secrets but does expose
 > operational state and a `/reload` trigger — firewall port 15000 from untrusted
-> networks, or override `HEALTH_BIND_HOST=127.0.0.1` if you do not use the Admin UI.
+> networks, or, if you do not use the Admin UI, set `HEALTH_BIND_HOST=127.0.0.1`
+> in the `ai_engine` service's `environment:` block in `docker-compose.yml`.
+> (Setting it only in `.env` has no effect: the compose `environment:` value takes
+> precedence over `env_file` — see the Docker Compose env-var precedence docs.)
 
 **If Remote Access Required**:
 ```bash
