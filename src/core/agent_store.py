@@ -39,12 +39,20 @@ class EngineAgentStore:
             return None
         if r is None:
             return None
-        extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
+        try:
+            extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
+            tools = json.loads(r["tools_json"]) if r["tools_json"] else None
+        except (json.JSONDecodeError, TypeError) as e:
+            # Corrupt/invalid JSON (manual edit, bad backup). Don't crash the call:
+            # return None so the caller falls back to YAML, same as a DB read error.
+            logger.warning("agents.db JSON parse failed for slug=%s (%s); falling back to YAML",
+                           slug, e)
+            return None
         kwargs = {k: extra[k] for k in _EXTRA_FIELDS if k in extra}
         return ContextConfig(
             prompt=r["prompt"], greeting=r["greeting"], profile=r["audio_profile"],
             provider=r["provider"],
-            tools=json.loads(r["tools_json"]) if r["tools_json"] else None,
+            tools=tools,
             **kwargs)
 
     def default_slug(self) -> Optional[str]:

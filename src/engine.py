@@ -12061,6 +12061,9 @@ class Engine:
                 provider_caps=provider_caps,
                 channel_vars=channel_vars,
                 provider_config=provider_cfg,
+                # AI_AGENT / DB-default calls expose no AI_CONTEXT channel var; pass the
+                # already-resolved context so the agent's audio_profile + greeting/prompt apply.
+                resolved_context=resolved_context,
             )
             
             # Store transport in session (keep as object, not dict, for legacy code compatibility)

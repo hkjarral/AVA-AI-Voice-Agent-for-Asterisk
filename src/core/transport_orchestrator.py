@@ -229,24 +229,30 @@ class TransportOrchestrator:
         provider_caps: Optional[ProviderCapabilities],
         channel_vars: Optional[Dict[str, str]] = None,
         provider_config: Optional[Any] = None,
+        resolved_context: Optional[str] = None,
     ) -> TransportProfile:
         """
         Resolve transport profile for a call.
-        
+
         Args:
             provider_name: Selected provider (deepgram, openai_realtime, etc.)
             provider_caps: Provider capabilities (static or from ACK)
             channel_vars: Asterisk channel variables (AI_PROVIDER, AI_AUDIO_PROFILE, AI_CONTEXT)
             provider_config: Provider configuration
-        
+            resolved_context: Context/agent slug already resolved by the caller
+                (from AI_AGENT, AI_CONTEXT, or the agents.db default). When given, it
+                is authoritative for context + audio-profile resolution so that
+                AI_AGENT / DB-default calls apply the agent's audio_profile even
+                though only AI_CONTEXT is present in channel_vars.
+
         Returns:
             TransportProfile with resolved settings
-        
+
         Raises:
             ValueError: If profile not found or negotiation fails
         """
         # Step 1: Resolve profile name with precedence
-        profile_name, context_name = self._resolve_profile_name(channel_vars)
+        profile_name, context_name = self._resolve_profile_name(channel_vars, resolved_context)
         profile = self.profiles.get(profile_name)
         
         if not profile:
@@ -279,19 +285,28 @@ class TransportOrchestrator:
     def _resolve_profile_name(
         self,
         channel_vars: Dict[str, str],
+        resolved_context: Optional[str] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Resolve profile name from channel vars with precedence.
-        
+
+        The context name is the caller-resolved context when provided
+        (from AI_AGENT / AI_CONTEXT / agents.db default); otherwise it falls back
+        to the AI_CONTEXT channel var. This ensures AI_AGENT and DB-default calls
+        apply the agent's audio_profile even though only AI_CONTEXT is present in
+        channel_vars.
+
         Returns:
             (profile_name, context_name) tuple
         """
-        context_name = None
-        
-        # Always read AI_CONTEXT first (needed for greeting/prompt injection)
-        context_name = channel_vars.get('AI_CONTEXT', '').strip() or None
-        
-        # Precedence 1: AI_AUDIO_PROFILE directly specified
+        # Context name: caller-resolved (DB-aware) takes precedence over AI_CONTEXT.
+        context_name = (
+            (resolved_context or '').strip()
+            or channel_vars.get('AI_CONTEXT', '').strip()
+            or None
+        )
+
+        # Precedence 1: AI_AUDIO_PROFILE directly specified (explicit per-call override)
         if 'AI_AUDIO_PROFILE' in channel_vars and channel_vars['AI_AUDIO_PROFILE']:
             profile_name = channel_vars['AI_AUDIO_PROFILE']
             logger.debug(
@@ -300,19 +315,18 @@ class TransportOrchestrator:
                 context=context_name,
             )
             return profile_name, context_name
-        
-        # Precedence 2: AI_CONTEXT maps to context config
-        context_name = channel_vars.get('AI_CONTEXT', '').strip()
-        if context_name and context_name in self.contexts:
-            context = self.contexts[context_name]
-            if context.profile:
+
+        # Precedence 2: context maps to a context config (DB-aware) with a profile
+        if context_name:
+            context = self.get_context_config(context_name)
+            if context and context.profile:
                 logger.debug(
-                    "Profile from AI_CONTEXT mapping",
+                    "Profile from context mapping",
                     context=context_name,
                     profile=context.profile,
                 )
                 return context.profile, context_name
-        
+
         # Precedence 3: Default from YAML
         profile_name = self.default_profile_name
         logger.debug("Profile from config default", profile=profile_name)
@@ -581,12 +595,16 @@ class TransportOrchestrator:
     def get_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
         """Resolve a context. agents.db is the source of truth when present (v1a);
         YAML is the fallback for headless installs and post-rollback recovery.
-        Spec: archived plan decisions D1/D2."""
+        When the DB is present, an inactive/unknown slug is NOT routable — we must
+        NOT silently fall through to a same-named legacy YAML context, or a
+        deactivated/deleted agent would keep routing. Only fall back to YAML when
+        the DB is absent/unavailable. Spec: archived plan decisions D1/D2."""
         if not context_name:
             return None
-        db_config = self.agent_store.resolve(context_name)
-        if db_config is not None:
-            return db_config
+        if self.agent_store.available():
+            # agents.db is authoritative when present: inactive/unknown slug => not routable.
+            return self.agent_store.resolve(context_name)
+        # No DB (headless / pre-migration): fall back to YAML contexts.
         return self._yaml_context_config(context_name)
 
     def _yaml_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:

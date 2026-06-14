@@ -38,3 +38,17 @@ def test_default_slug(db):
 def test_db_absent_means_unavailable(tmp_path):
     s = EngineAgentStore(db_path=str(tmp_path / "missing.db"))
     assert not s.available()
+
+def test_corrupt_json_returns_none_not_crash(db):
+    # Corrupt extra_json (manual edit / bad backup) must not crash the call:
+    # resolve() returns None so the caller can fall back to YAML.
+    c = sqlite3.connect(db)
+    c.execute("UPDATE agents SET extra_json='{not valid json' WHERE slug='sales'")
+    c.commit(); c.close()
+    assert EngineAgentStore(db_path=db).resolve("sales") is None
+
+def test_corrupt_tools_json_returns_none_not_crash(db):
+    c = sqlite3.connect(db)
+    c.execute("UPDATE agents SET tools_json='[oops' WHERE slug='sales'")
+    c.commit(); c.close()
+    assert EngineAgentStore(db_path=db).resolve("sales") is None
