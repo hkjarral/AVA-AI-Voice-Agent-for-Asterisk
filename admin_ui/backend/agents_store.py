@@ -47,9 +47,6 @@ def slugify(name: str) -> str:
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-class CapError(Exception):
-    """Raised at agent-creation when entitlements deny it (v1b; never raised in v1a)."""
-
 class AgentsStore:
     COLUMNS = ["id","slug","display_name","extension","role_label","provider","voice",
                "greeting","prompt","tools_json","mcp_json","audio_profile","extra_json",

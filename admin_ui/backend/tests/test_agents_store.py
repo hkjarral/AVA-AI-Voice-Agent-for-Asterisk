@@ -1,5 +1,5 @@
 import pytest
-from agents_store import AgentsStore, slugify, CapError  # CapError unused until v1b
+from agents_store import AgentsStore, slugify
 
 @pytest.fixture
 def store(tmp_path):

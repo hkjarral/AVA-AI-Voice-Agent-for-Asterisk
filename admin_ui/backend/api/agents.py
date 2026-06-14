@@ -64,7 +64,6 @@ def templates():
 
 @router.post("/agents", status_code=201)
 def create_agent(body: AgentIn, request: Request):
-    # v1b inserts the entitlements check here (Phase 8). v1a: unlimited.
     try:
         return _store().create(**body.model_dump())
     except ValueError as e:
