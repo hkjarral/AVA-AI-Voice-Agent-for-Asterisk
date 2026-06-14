@@ -69,8 +69,8 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     // Tool catalog (for the picker) + engine option sources.
     const [catalog, setCatalog] = useState<ToolDef[]>([]);
     const [catalogError, setCatalogError] = useState(false);
-    const [providersRaw, setProvidersRaw] = useState<Record<string, any>>({});
-    const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, any>>({});
+    const [providersRaw, setProvidersRaw] = useState<Record<string, unknown>>({});
+    const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, unknown>>({});
     const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
 
     // Templates (create only)
@@ -123,9 +123,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             const parsed = yaml.load(res.data.content) as Record<string, unknown>;
             if (!parsed) return;
 
-            const providersBlock = (parsed.providers as Record<string, any>) || {};
+            const providersBlock = (parsed.providers as Record<string, unknown>) || {};
             setProvidersRaw(providersBlock);
-            setPipelinesRaw((parsed.pipelines as Record<string, any>) || {});
+            setPipelinesRaw((parsed.pipelines as Record<string, unknown>) || {});
 
             const profilesBlock = (parsed.profiles as Record<string, unknown>) || {};
             const profileNames = Object.entries(profilesBlock)
@@ -230,8 +230,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             value: `pipeline:${name}`, label: `[Pipeline] ${name}`,
         })),
         ...Object.entries(providersRaw)
+            .sort(([a], [b]) => a.localeCompare(b))
             .filter(([name, p]) => isFullAgentProvider(p, name))
-            .filter(([name, p]) => (p as any).enabled !== false || toolState.provider === name)
+            .filter(([name, p]) => (p as Record<string, unknown>).enabled !== false || toolState.provider === name)
             .map(([name]) => ({ value: `provider:${name}`, label: `[Provider] ${name}` })),
     ];
 
