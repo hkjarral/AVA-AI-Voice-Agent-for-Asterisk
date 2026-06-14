@@ -25,7 +25,7 @@ def _contexts_dir() -> str:
 
 class AgentIn(BaseModel):
     display_name: str
-    provider: str
+    provider: str | None = None
     prompt: str
     slug: str | None = None
     extension: str | None = None
@@ -195,18 +195,38 @@ def routing_methods():
             result["unknown"] += cnt
     return result
 
+def _engine_ok(provider, extra_json) -> bool:
+    """An agent must have either a monolithic provider or a pipeline (in extra_json)."""
+    if (provider or "").strip():
+        return True
+    try:
+        extra = json.loads(extra_json) if extra_json else {}
+    except (json.JSONDecodeError, TypeError):
+        extra = {}
+    return bool(isinstance(extra, dict) and str(extra.get("pipeline") or "").strip())
+
 @router.post("/agents", status_code=201)
 def create_agent(body: AgentIn, request: Request):
+    data = body.model_dump()
+    if not _engine_ok(data.get("provider"), data.get("extra_json")):
+        raise HTTPException(422, "agent must have a provider or a pipeline")
     try:
-        return _store().create(**body.model_dump())
+        return _store().create(**data)
     except ValueError as e:
         raise HTTPException(422, str(e))
 
 @router.patch("/agents/{slug}")
 def patch_agent(slug: str, body: AgentPatch):
     store = _store()
-    if not store.get_by_slug(slug):
+    existing = store.get_by_slug(slug)
+    if not existing:
         raise HTTPException(404, "agent not found")
+    sent = body.model_dump(exclude_unset=True)
+    if "provider" in sent or "extra_json" in sent:
+        eff_provider = sent.get("provider", existing.get("provider"))
+        eff_extra = sent.get("extra_json", existing.get("extra_json"))
+        if not _engine_ok(eff_provider, eff_extra):
+            raise HTTPException(422, "agent must have a provider or a pipeline")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if "is_active" in fields:
         promoted = store.set_active(slug, fields.pop("is_active"))

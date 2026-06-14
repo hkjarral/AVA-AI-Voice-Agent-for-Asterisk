@@ -283,6 +283,32 @@ def test_aggregate_endpoints_resilient_to_missing_table(tmp_path, monkeypatch):
     assert r.json() == []
 
 
+def test_create_pipeline_only_agent_succeeds(client):
+    r = client.post("/api/agents", json={
+        "display_name": "Hybrid", "provider": "", "prompt": "p",
+        "extra_json": '{"pipeline": "local_hybrid"}'})
+    assert r.status_code == 201, r.text
+    assert r.json()["provider"] == ""
+
+def test_create_without_provider_or_pipeline_rejected(client):
+    r = client.post("/api/agents", json={
+        "display_name": "Nope", "provider": "", "prompt": "p"})
+    assert r.status_code == 422
+
+def test_create_with_provider_still_works(client):
+    r = client.post("/api/agents", json={
+        "display_name": "Mono", "provider": "openai_realtime", "prompt": "p"})
+    assert r.status_code == 201
+
+def test_patch_clearing_provider_requires_pipeline(client):
+    client.post("/api/agents", json={
+        "display_name": "Edit Me", "provider": "openai_realtime", "prompt": "p"})
+    bad = client.patch("/api/agents/edit_me", json={"provider": "", "extra_json": "{}"})
+    assert bad.status_code == 422
+    ok = client.patch("/api/agents/edit_me",
+                       json={"provider": "", "extra_json": '{"pipeline": "local_hybrid"}'})
+    assert ok.status_code == 200 and ok.json()["provider"] == ""
+
 def test_reconcile_adds_new_yaml_context(client, tmp_path, monkeypatch):
     import yaml as _yaml
     from api import agents as agents_api

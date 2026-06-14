@@ -87,7 +87,7 @@ class AgentsStore:
         return self.conn.execute(q).fetchone()[0]
 
     # -- writes ------------------------------------------------------------
-    def create(self, *, display_name, provider, prompt, slug=None, extension=None,
+    def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
                role_label=None, voice=None, greeting=None, tools_json=None,
                mcp_json=None, audio_profile=None, extra_json=None,
                is_operator_managed=1, source_file=None, notes=None) -> dict:
@@ -97,6 +97,7 @@ class AgentsStore:
         if self.get_by_slug(slug):
             raise ValueError(f"slug exists: {slug}")
         now = _now()
+        provider = provider or ""
         with self.conn:
             self.conn.execute(
                 """INSERT INTO agents (id,slug,display_name,extension,role_label,provider,
