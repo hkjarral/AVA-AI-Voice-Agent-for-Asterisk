@@ -32,6 +32,7 @@ const ConfigEditor = () => {
     const [activeTab, setActiveTab] = useState<'general' | 'asterisk' | 'contexts' | 'providers' | 'pipelines' | 'vad' | 'streaming' | 'llm' | 'tools' | 'audiosocket' | 'yaml'>('general');
     const [yamlContent, setYamlContent] = useState('');
     const [parsedConfig, setParsedConfig] = useState<any>({});
+    const [exportIncludeSecrets, setExportIncludeSecrets] = useState(false);
 
     // UI State
     const [loading, setLoading] = useState(false);
@@ -416,13 +417,26 @@ const ConfigEditor = () => {
                         <span className="font-medium">Warning:</span>
                         <span className="ml-1">Saves overwrite the full config file</span>
                     </div>
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            checked={exportIncludeSecrets}
+                            onChange={e => setExportIncludeSecrets(e.target.checked)}
+                            className="accent-primary"
+                        />
+                        Include secrets (.env)
+                        {exportIncludeSecrets && (
+                            <span className="text-amber-600 dark:text-amber-400 font-medium ml-1">— export will contain API keys</span>
+                        )}
+                    </label>
                     <button
                         onClick={async () => {
                             try {
-                                const response = await axios.get('/api/config/export', { responseType: 'blob' });
-                                const url = window.URL.createObjectURL(new Blob([response.data]));
+                                const exportUrl = exportIncludeSecrets ? '/api/config/export?include_secrets=true' : '/api/config/export';
+                                const response = await axios.get(exportUrl, { responseType: 'blob' });
+                                const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
                                 const link = document.createElement('a');
-                                link.href = url;
+                                link.href = blobUrl;
                                 const date = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
                                 link.setAttribute('download', `config-backup-${date}.zip`);
                                 document.body.appendChild(link);

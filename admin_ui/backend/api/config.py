@@ -1474,27 +1474,46 @@ async def test_provider_connection(request: ProviderTestRequest):
         return {"success": False, "message": f"Test failed: {str(e)}"}
 
 @router.get("/export")
-async def export_configuration():
+async def export_configuration(include_secrets: bool = False):
     """Export configuration as a ZIP file"""
     try:
         import zipfile
         import io
         from datetime import datetime
-        
+
         # Create ZIP in memory
         zip_buffer = io.BytesIO()
-        
+
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             # Add YAML config (base + local override)
             if os.path.exists(settings.CONFIG_PATH):
                 zip_file.write(settings.CONFIG_PATH, 'ai-agent.yaml')
             if os.path.exists(settings.LOCAL_CONFIG_PATH):
                 zip_file.write(settings.LOCAL_CONFIG_PATH, 'ai-agent.local.yaml')
-            
-            # Add ENV file
-            if os.path.exists(settings.ENV_PATH):
+
+            # .env contains credentials — excluded by default; opt-in via include_secrets=true
+            env_actually_included = include_secrets and os.path.exists(settings.ENV_PATH)
+            if env_actually_included:
                 zip_file.write(settings.ENV_PATH, '.env')
-            
+
+            # README explaining what is (and is not) included — three distinct cases:
+            # (1) secrets requested and .env present  (2) requested but no .env on disk
+            # (3) not requested (default).
+            if env_actually_included:
+                env_line = "Included: ai-agent.yaml, ai-agent.local.yaml, .env (REQUESTED — CONTAINS API KEYS/SECRETS)\n"
+            elif include_secrets:
+                env_line = ("Included: ai-agent.yaml, ai-agent.local.yaml\n"
+                            "Note: .env was requested (include_secrets=true) but no .env file was found on disk.\n")
+            else:
+                env_line = ("Included: ai-agent.yaml, ai-agent.local.yaml\n"
+                            "Excluded by default: .env (pass include_secrets=true to include — the file contains credentials)\n")
+            readme = (
+                "AVA configuration export\n"
+                f"Created: {datetime.utcnow().isoformat()}Z\n\n"
+                + env_line
+            )
+            zip_file.writestr("EXPORT_README.txt", readme)
+
             # Add timestamp file
             timestamp = datetime.now().isoformat()
             zip_file.writestr('backup_info.txt', f'Backup created: {timestamp}\n')
