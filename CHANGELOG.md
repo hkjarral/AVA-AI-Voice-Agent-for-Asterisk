@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-06-14
+
+> ### ⚠️ Upgrade Notes (read before upgrading from 6.x)
+> 7.0.0 introduces the **Agents** system and hardens security. A few changes need your attention:
+>
+> - **Default login removed.** On first start after upgrade, a one-time admin password is printed to the `admin_ui` container logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`) and you'll be required to change it at first login. `admin`/`admin` no longer works — and on upgraded installs that still had the old default, it is automatically rotated to a one-time password on first start.
+> - **Config export no longer includes `.env` by default.** Use `GET /api/config/export?include_secrets=true` if you need the old behavior.
+> - **Contexts are now "Agents."** Your existing contexts are imported automatically into a new local database (`./data/operator/agents.db`) on first start — nothing to do, and your existing dialplans keep working (`AI_CONTEXT` is still supported; `AI_AGENT` is the new preferred variable). The **Contexts** page is now read-only; manage agents in the new **Agents** tab. Editing context entries directly in `ai-agent.yaml` no longer takes effect at runtime (you'll be warned in the logs and UI); use the Agents tab or the Migration Status page to re-import.
+> - **Rollback:** if anything goes wrong, stop the stack, delete `./data/operator/agents.db*`, and restart — the engine falls back to reading your YAML contexts as before. See [`docs/OPERATOR_MIGRATION.md`](docs/OPERATOR_MIGRATION.md).
+
 ### Fixed
 
 - **Dashboard reads canonical `CALL_HISTORY_DB_PATH` env var** (`admin_ui/backend/api/agents.py`): the module constant was reading the wrong env var name (`CALL_HISTORY_DB` instead of `CALL_HISTORY_DB_PATH`), causing all aggregate endpoints to silently read the wrong DB path on deployments that set a custom location. Aligned to the canonical name used by the engine's `CallHistoryStore`.

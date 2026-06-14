@@ -1,29 +1,42 @@
-# Asterisk AI Voice Agent - Installation Guide (v6.5.4)
+# Asterisk AI Voice Agent - Installation Guide (v7.0.0)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v6.5.4 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v7.0.0 on your server.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v6.5.4 (Existing Checkout)
+## Upgrade to v7.0.0 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
+
+> ### ⚠️ v7.0.0 is a major release with breaking changes — read first
+> Before upgrading from 6.x, review the **Upgrade Notes** at the top of the
+> [v7.0.0 CHANGELOG entry](../CHANGELOG.md) and the
+> [Agents migration guide](OPERATOR_MIGRATION.md). In short:
+> - **Default `admin`/`admin` login is removed** — a one-time admin password is printed to the
+>   `admin_ui` logs on first start and must be changed at first login.
+> - **`/api/config/export` no longer bundles `.env`** by default (pass `include_secrets=true`).
+> - **Your contexts auto-migrate into `agents.db`** on first start; the **Contexts** page becomes
+>   read-only (manage agents in the new **Agents** tab). Existing dialplans keep working
+>   (`AI_CONTEXT` still supported; `AI_AGENT` is preferred). Rollback = delete
+>   `./data/operator/agents.db*` and restart.
 
 ### 0) Backup (recommended)
 
 - Backup `.env`
 - Backup `config/ai-agent.yaml`
 - Backup `config/ai-agent.local.yaml` (if it exists — contains your operator overrides)
-- If you rely on Call History persistence, backup `./data` as well
+- If you rely on Call History persistence, backup `./data` as well (this now also holds
+  `./data/operator/agents.db`, your migrated agent configuration)
 
 ### 1) Pull the new release
 
-To upgrade to the tagged `v6.5.4` release (once the tag is published):
+To upgrade to the tagged `v7.0.0` release (once the tag is published):
 
 ```bash
 git fetch --tags
-git checkout v6.5.4
+git checkout v7.0.0
 ```
 
 If the tag is not published yet, track `main` temporarily:
