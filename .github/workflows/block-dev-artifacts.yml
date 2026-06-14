@@ -30,6 +30,7 @@ jobs:
             "AVA\.mdc$"
             "Agents\.md$"
             "CLAUDE\.md$"
+            "CLAUDE\.local\.md$"
             "Gemini\.md$"
             "examples/"
             "docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE\.md$"
