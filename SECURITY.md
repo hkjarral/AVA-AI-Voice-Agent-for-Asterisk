@@ -126,7 +126,7 @@ The Admin UI has Docker socket access for container management. If exposed remot
 2. **JWT_SECRET is mandatory** - Service refuses to start if binding non-localhost without JWT_SECRET
 3. **Network isolation** - Place admin-ui on management network only
 4. **Least privilege** - Consider read-only Docker socket mounts if container management not needed
-5. **Rotate the admin password** - The default admin password is randomly generated and forced to change at first login (as of v1a). Never run with an unrotated/shared admin credential.
+5. **Rotate the admin password** - AVA generates a one-time admin password on first start and forces a change at first login; never run with a shared or unrotated admin credential.
 
 **Docker Socket Hardening**:
 ```yaml

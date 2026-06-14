@@ -243,7 +243,13 @@ If you hit permission/container/health issues during setup, start with:
 
 The Admin UI is a privileged control plane — it has root-equivalent access to the host via the Docker socket. See [SECURITY.md "2.1 Admin UI Security"](../SECURITY.md#21-admin-ui-security) for the full threat model, Docker socket hardening options, and an nginx mTLS example.
 
-**Caddy reverse proxy (TLS + basic auth)** — a quick production-grade option:
+**Caddy reverse proxy (TLS + basic auth)** — a quick production-grade option.
+
+First make sure the Admin UI is reachable **only** through the proxy — otherwise the
+default `0.0.0.0` bind leaves port 3003 directly exposed, bypassing Caddy's TLS/auth.
+Set `UVICORN_HOST=127.0.0.1` in `.env` (so it binds localhost, matching the
+`reverse_proxy localhost:3003` below), or firewall port 3003 from everything except the
+proxy. Then:
 
 ```text
 # /etc/caddy/Caddyfile
@@ -261,7 +267,11 @@ admin.example.com {
 sudo caddy reload --config /etc/caddy/Caddyfile
 ```
 
-**VPN alternative** — put the host on a WireGuard tunnel and leave port 3003 bound to localhost; `wg-quick up wg0` is the simplest path if you already have a WireGuard peer set up.
+**VPN alternative** — put the host on a WireGuard tunnel (`wg-quick up wg0`) and reach the
+UI only over it. A plain `localhost` bind is *not* reachable from a remote WireGuard peer,
+so do one of: bind the Admin UI to the host's WireGuard interface IP
+(`UVICORN_HOST=<wg-interface-ip>`), run a local reverse proxy listening on that interface,
+or SSH-forward port 3003 over the tunnel. Keep 3003 firewalled on all other interfaces.
 
 The Setup Wizard will:
 1. ✅ Guide you through provider selection (OpenAI, Deepgram, Google, ElevenLabs, Local)
