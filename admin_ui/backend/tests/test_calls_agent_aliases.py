@@ -44,6 +44,9 @@ def test_both_aliases_none_for_non_ai_agent_routing():
 def test_aliases_null_when_no_context_or_no_match():
     r = calls_api._record_to_summary_response(_rec(context_name=None, routing_method=None), {})
     assert r.agent_slug is None and r.agent_name is None
+    # ai_agent branch but no context_name -> both aliases stay null
+    r_no_ctx = calls_api._record_to_response(_rec(context_name=None, routing_method="ai_agent"), {})
+    assert r_no_ctx.agent_slug is None and r_no_ctx.agent_name is None
     r2 = calls_api._record_to_response(_rec(context_name="ghost", routing_method="ai_agent"), {})
     assert r2.agent_slug == "ghost"            # slug echoes context even with no name match
     assert r2.agent_name is None

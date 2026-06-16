@@ -248,11 +248,12 @@ def _agent_name_map() -> Dict[str, str]:
     avoid N+1 lookups."""
     try:
         from agents_store import AgentsStore
-        return {
-            a["slug"]: a.get("display_name")
-            for a in AgentsStore().list_all()
-            if a.get("slug")
-        }
+        with AgentsStore() as store:  # close the sqlite connection promptly
+            return {
+                a["slug"]: a.get("display_name")
+                for a in store.list_all()
+                if a.get("slug")
+            }
     except Exception:
         return {}
 

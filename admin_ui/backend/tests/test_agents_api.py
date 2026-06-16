@@ -387,4 +387,4 @@ def test_main_app_openapi_version_and_tag():
     assert main.app.version == "7.0.0"
     spec = main.app.openapi()
     tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}
-    assert "agents" in tags and tags["agents"]
+    assert tags.get("agents")  # present with a non-empty description

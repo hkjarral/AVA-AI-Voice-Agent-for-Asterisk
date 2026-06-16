@@ -66,6 +66,20 @@ class AgentsStore:
         try: os.chmod(db_path, 0o600)
         except OSError: pass
 
+    def close(self):
+        """Close the underlying sqlite connection. Safe to call more than once."""
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
     # -- reads -------------------------------------------------------------
     def get_by_slug(self, slug):  # -> dict | None
         r = self.conn.execute("SELECT * FROM agents WHERE slug=?", (slug,)).fetchone()
