@@ -70,7 +70,7 @@ class AgentsStore:
         """Close the underlying sqlite connection. Safe to call more than once."""
         try:
             self.conn.close()
-        except Exception:
+        except sqlite3.Error:
             pass
 
     def __enter__(self):
