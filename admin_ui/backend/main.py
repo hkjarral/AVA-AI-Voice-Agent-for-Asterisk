@@ -154,7 +154,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 |---------|-----------|
 | **AI Engine Health Server** (port 15000) | `/health`, `/metrics`, `/live`, `/ready`, `/reload` |
 """,
-    version="6.2.0",
+    version="7.0.0",
     docs_url="/docs" if _enable_api_docs else None,
     redoc_url="/redoc" if _enable_api_docs else None,
     openapi_url="/openapi.json" if _enable_api_docs else None,
@@ -164,6 +164,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
         {"name": "system", "description": "System operations, containers, updates, health"},
         {"name": "wizard", "description": "Setup wizard and local AI model downloads"},
         {"name": "local-ai", "description": "Local AI server management"},
+        {"name": "agents", "description": "Agents (v7) — CRUD, per-agent stats, dialplan snippets, templates, and YAML→DB migration status"},
         {"name": "calls", "description": "Call history and analytics"},
         {"name": "outbound", "description": "Outbound campaigns and lead management"},
         {"name": "tools", "description": "Tool catalog and HTTP tool testing"},

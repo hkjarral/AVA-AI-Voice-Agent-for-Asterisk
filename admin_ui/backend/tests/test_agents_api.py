@@ -342,3 +342,49 @@ def test_reconcile_adds_new_yaml_context(client, tmp_path, monkeypatch):
     assert r.status_code == 200
     assert any(c == ["added", "newctx"] or tuple(c) == ("added", "newctx") for c in r.json()["changed"])
     assert any(a["slug"] == "newctx" and a["is_operator_managed"] == 0 for a in client.get("/api/agents").json())
+
+
+# --- v7 Agents OpenAPI follow-up -------------------------------------------------
+
+def test_get_agent_by_slug(client):
+    client.post("/api/agents", json={"display_name": "Sales", "provider": "x",
+                                     "prompt": "p", "extension": "801"})
+    r = client.get("/api/agents/sales")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["slug"] == "sales" and body["display_name"] == "Sales"
+    # wire-compat: flags stay int 0/1, not bool
+    assert body["is_active"] in (0, 1) and isinstance(body["is_active"], int)
+
+def test_get_agent_by_slug_404(client):
+    assert client.get("/api/agents/does-not-exist").status_code == 404
+
+def test_slug_route_does_not_shadow_literal_routes(client):
+    # /agents/templates and friends must still resolve as literals, not as {slug}.
+    assert client.get("/api/agents/templates").status_code == 200
+    assert isinstance(client.get("/api/agents/templates").json(), list)
+    assert "ai_agent" in client.get("/api/agents/routing-methods").json()
+
+def test_openapi_surfaces_agents_schema(client):
+    """response_model wiring must produce typed schemas (not empty) in the spec."""
+    spec = client.get("/openapi.json").json()
+    assert "/api/agents/{slug}" in spec["paths"]
+    assert "AgentOut" in spec["components"]["schemas"]
+    agent_out = spec["components"]["schemas"]["AgentOut"]
+    # every stored column is declared so no field is silently dropped
+    for col in ("id", "slug", "display_name", "provider", "prompt",
+                "is_active", "is_default", "is_operator_managed",
+                "created_at", "updated_at"):
+        assert col in agent_out["properties"], col
+    # list endpoint returns an array of AgentOut, not a bare object
+    list_schema = spec["paths"]["/api/agents"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert list_schema.get("type") == "array"
+
+def test_main_app_openapi_version_and_tag():
+    """version literal + agents tag description live in main.py. Skips when the full
+    backend deps (docker, etc.) aren't installed in this environment."""
+    main = pytest.importorskip("main")
+    assert main.app.version == "7.0.0"
+    spec = main.app.openapi()
+    tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}
+    assert "agents" in tags and tags["agents"]

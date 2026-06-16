@@ -53,7 +53,65 @@ class AgentPatch(BaseModel):
     notes: str | None = None
     is_active: bool | None = None
 
-@router.get("/agents")
+class AgentOut(BaseModel):
+    """Full agent row as stored in agents.db. Declares every column so attaching this
+    as a response_model never drops a field (wire-compatible with the raw rows we
+    returned before). The is_* flags stay int 0/1 — existing consumers depend on that
+    shape, so they are NOT coerced to bool."""
+    id: str
+    slug: str
+    display_name: str
+    extension: str | None = None
+    role_label: str | None = None
+    provider: str
+    voice: str | None = None
+    greeting: str | None = None
+    prompt: str
+    tools_json: str | None = None
+    mcp_json: str | None = None
+    audio_profile: str | None = None
+    extra_json: str | None = None
+    is_operator_managed: int
+    is_active: int
+    is_default: int
+    source_file: str | None = None
+    created_at: str
+    updated_at: str
+    notes: str | None = None
+
+class AgentSummaryResponse(BaseModel):
+    active_agents: int
+    active_calls: int
+    total_routed: int
+    total_transfers: int
+
+class AgentStatsBatchItem(BaseModel):
+    slug: str
+    calls: int
+    transfers: int
+    avg_duration_seconds: float
+    last_call: str | None = None
+
+class DistributionItem(BaseModel):
+    context_name: str
+    count: int
+
+class RoutingMethodsResponse(BaseModel):
+    ai_agent: int
+    ai_context: int
+    default: int
+    unknown: int
+
+class AgentStatsResponse(BaseModel):
+    calls_30d: int
+    last_call: str | None = None
+
+class DialplanResponse(BaseModel):
+    dialplan: str
+    extension: str
+    stasis_app: str
+
+@router.get("/agents", response_model=list[AgentOut])
 def list_agents():
     return _store().list_all()
 
@@ -62,7 +120,7 @@ def templates():
     with open(TEMPLATES_PATH) as f:
         return json.load(f)
 
-@router.get("/agents/summary")
+@router.get("/agents/summary", response_model=AgentSummaryResponse)
 async def summary():
     """KPI summary: active agents, active calls (from engine), total routed, total transfers."""
     store = _store()
@@ -107,7 +165,7 @@ async def summary():
         "total_transfers": total_transfers,
     }
 
-@router.get("/agents/stats-batch")
+@router.get("/agents/stats-batch", response_model=list[AgentStatsBatchItem])
 def stats_batch():
     """Per-agent call stats for all agents in the store."""
     store = _store()
@@ -150,7 +208,7 @@ def stats_batch():
             })
     return result
 
-@router.get("/agents/distribution")
+@router.get("/agents/distribution", response_model=list[DistributionItem])
 def distribution():
     """Call distribution by context_name, ordered by count desc. Excludes NULL/empty names."""
     if not os.path.exists(CALL_HISTORY_DB):
@@ -166,7 +224,7 @@ def distribution():
         return []
     return [{"context_name": ctx, "count": cnt} for ctx, cnt in rows]
 
-@router.get("/agents/routing-methods")
+@router.get("/agents/routing-methods", response_model=RoutingMethodsResponse)
 def routing_methods():
     """Routing method breakdown: ai_agent, ai_context, default, unknown (NULL/other)."""
     result = {"ai_agent": 0, "ai_context": 0, "default": 0, "unknown": 0}
@@ -206,7 +264,7 @@ def _engine_ok(provider, extra_json) -> bool:
         extra = {}
     return bool(isinstance(extra, dict) and str(extra.get("pipeline") or "").strip())
 
-@router.post("/agents", status_code=201)
+@router.post("/agents", status_code=201, response_model=AgentOut)
 def create_agent(body: AgentIn, request: Request):
     data = body.model_dump()
     if not _engine_ok(data.get("provider"), data.get("extra_json")):
@@ -217,7 +275,7 @@ def create_agent(body: AgentIn, request: Request):
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
 
-@router.patch("/agents/{slug}")
+@router.patch("/agents/{slug}", response_model=AgentOut)
 def patch_agent(slug: str, body: AgentPatch):
     store = _store()
     existing = store.get_by_slug(slug)
@@ -241,7 +299,7 @@ def patch_agent(slug: str, body: AgentPatch):
             store.update(promoted, notes=None)  # no-op write keeps updated_at honest
     return store.update(slug, **fields) if fields else store.get_by_slug(slug)
 
-@router.post("/agents/{slug}/default")
+@router.post("/agents/{slug}/default", response_model=AgentOut)
 def set_default(slug: str):
     store = _store()
     if not store.get_by_slug(slug):
@@ -261,7 +319,17 @@ def delete_agent(slug: str, request: Request):
     else:
         store.delete(slug)
 
-@router.get("/agents/{slug}/stats")
+# NOTE: declared AFTER all literal /agents/... GET routes (templates, summary,
+# stats-batch, distribution, routing-methods) so the {slug} path param does not
+# shadow them. FastAPI matches in declaration order.
+@router.get("/agents/{slug}", response_model=AgentOut)
+def get_agent(slug: str):
+    row = _store().get_by_slug(slug)
+    if not row:
+        raise HTTPException(404, "agent not found")
+    return row
+
+@router.get("/agents/{slug}/stats", response_model=AgentStatsResponse)
 def stats(slug: str):
     if not _store().get_by_slug(slug):
         raise HTTPException(404)
@@ -274,7 +342,7 @@ def stats(slug: str):
                          (slug,)).fetchone()[0]
     return {"calls_30d": calls, "last_call": last}
 
-@router.get("/agents/{slug}/dialplan")
+@router.get("/agents/{slug}/dialplan", response_model=DialplanResponse)
 def dialplan(slug: str):
     row = _store().get_by_slug(slug)
     if not row:

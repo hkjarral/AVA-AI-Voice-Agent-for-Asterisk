@@ -112,6 +112,46 @@ curl -H "Authorization: Bearer eyJ..." \
 | GET | `/api/calls/export/csv` | Export calls as CSV |
 | GET | `/api/calls/export/json` | Export calls as JSON |
 
+> **Agent on a call record (v7).** Each call record reports the resolved agent as
+> `context_name` (the agent/context slug) plus `routing_method`
+> (`ai_agent` \| `ai_context` \| `default` \| `null`). v7.0.x adds two **additive**
+> aliases so integrations need not infer this: `agent_slug` and `agent_name`. Both are
+> populated **only when the call was explicitly routed via `AI_AGENT`**
+> (`routing_method == "ai_agent"`); for `ai_context`/`default`/`unknown` both are
+> `null`. `agent_name` is a best-effort display-name lookup and is `null` when the
+> agents database is unavailable or has no matching agent. `context_name` and
+> `routing_method` are unchanged.
+
+### Agents (`/api/agents`)
+The Agents system (v7) is the operator surface for managing AI agents. Manage agents
+over HTTP here; see also [`docs/AGENTS.md`](../AGENTS.md).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/agents` | List all agents |
+| GET | `/api/agents/{slug}` | Get a single agent by slug |
+| POST | `/api/agents` | Create an agent (requires a provider **or** a pipeline) |
+| PATCH | `/api/agents/{slug}` | Update an agent (partial; `is_active` can promote default) |
+| DELETE | `/api/agents/{slug}` | Delete an agent (promotes a new default if needed) |
+| POST | `/api/agents/{slug}/default` | Make this agent the default |
+| GET | `/api/agents/{slug}/stats` | Per-agent stats (calls in last 30d, last call) |
+| GET | `/api/agents/{slug}/dialplan` | Generate an `extensions_custom.conf` snippet |
+| GET | `/api/agents/templates` | List starter agent templates |
+| GET | `/api/agents/summary` | Dashboard KPIs (active agents, active calls, routed, transfers) |
+| GET | `/api/agents/stats-batch` | Per-agent stats for all agents in one response |
+| GET | `/api/agents/distribution` | Call counts grouped by agent, descending |
+| GET | `/api/agents/routing-methods` | Routing-method breakdown (`ai_agent`/`ai_context`/`default`/`unknown`) |
+| GET | `/api/agents-migration/status` | YAML→DB migration result and drift state |
+| POST | `/api/agents-migration/reconcile` | Re-import YAML context changes into the DB |
+| POST | `/api/agents-migration/acknowledge` | Keep the DB as-is and clear the drift flag |
+
+> **`AI_AGENT` is a dialplan/runtime channel variable, not an HTTP parameter.** Set
+> `AI_AGENT=<slug>` (or the legacy `AI_CONTEXT=<slug>`) in your Asterisk dialplan to
+> route a call to a specific agent — see `GET /api/agents/{slug}/dialplan` for a
+> ready-to-paste snippet. External integrations should manage agents via the Agents
+> API above and read the agent that handled a call from the call-record fields
+> (`context_name` / `agent_slug` / `agent_name` / `routing_method`).
+
 ### Outbound (`/api/outbound`, `/api/campaigns`, `/api/leads`, `/api/recordings`)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
