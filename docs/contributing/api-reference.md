@@ -32,16 +32,19 @@ When disabled, `/docs`, `/redoc`, and `/openapi.json` will return 404. Default i
 
 Most Admin UI endpoints require JWT authentication:
 
-> ⚠️ **Security Note:** The credentials below (`admin/admin`) are initial defaults. Change the admin password immediately after first login and never use default credentials in production.
+> **v7.0.0 and newer:** the default `admin/admin` login is removed. On first start, a one-time admin password is printed to the `admin_ui` container logs and must be changed at first login.
 
 ```bash
-# 1. Login to get a token
+# 1. Retrieve the first-run password
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+
+# 2. Login to get a token
 curl -X POST http://localhost:3003/api/auth/login \
-  -d "username=admin&password=admin"
+  -d "username=admin&password=<one-time-password>"
 
 # Response: {"access_token": "eyJ...", "token_type": "bearer"}
 
-# 2. Use the token in subsequent requests
+# 3. Use the token in subsequent requests
 curl -H "Authorization: Bearer eyJ..." \
   http://localhost:3003/api/config/yaml
 ```
@@ -305,4 +308,3 @@ curl -H "Authorization: Bearer your-token" http://localhost:15000/reload -X POST
 - Architecture deep dive: [`architecture-deep-dive.md`](architecture-deep-dive.md)
 - Engine source: [`src/engine.py`](../../src/engine.py)
 - Configuration: [`src/config.py`](../../src/config.py)
-
