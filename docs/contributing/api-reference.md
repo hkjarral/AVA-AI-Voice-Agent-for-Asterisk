@@ -115,11 +115,12 @@ curl -H "Authorization: Bearer eyJ..." \
 > **Agent on a call record (v7).** Each call record reports the resolved agent as
 > `context_name` (the agent/context slug) plus `routing_method`
 > (`ai_agent` \| `ai_context` \| `default` \| `null`). v7.0.x adds two **additive**
-> aliases so integrations need not infer this: `agent_slug` and `agent_name`. Both are
-> populated **only when the call was explicitly routed via `AI_AGENT`**
-> (`routing_method == "ai_agent"`); for `ai_context`/`default`/`unknown` both are
-> `null`. `agent_name` is a best-effort display-name lookup and is `null` when the
-> agents database is unavailable or has no matching agent. `context_name` and
+> aliases so integrations need not infer this: `agent_slug` and `agent_name`.
+> `agent_slug` mirrors the resolved agent (`context_name`) **whenever the call was
+> routed to one** — `ai_agent`, `ai_context` or `default` routing — and is `null`
+> only for `unknown`/`null` routing. `routing_method` still tells you *how* the agent
+> was selected. `agent_name` is a best-effort display-name lookup and is `null` when
+> the agents database is unavailable or has no matching agent. `context_name` and
 > `routing_method` are unchanged.
 
 ### Agents (`/api/agents`)

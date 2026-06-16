@@ -23,18 +23,19 @@ def _rec(**over):
     return SimpleNamespace(**base)
 
 
-def test_agent_slug_set_only_for_ai_agent():
+def test_agent_slug_set_for_resolved_agent_routing():
     names = {"sales": "Sales Agent"}
-    r = calls_api._record_to_summary_response(_rec(routing_method="ai_agent"), names)
-    assert r.context_name == "sales"          # unchanged
-    assert r.routing_method == "ai_agent"      # unchanged
-    assert r.agent_slug == "sales"
-    assert r.agent_name == "Sales Agent"
+    for rm in ("ai_agent", "ai_context", "default"):
+        r = calls_api._record_to_summary_response(_rec(routing_method=rm), names)
+        assert r.context_name == "sales"          # unchanged
+        assert r.routing_method == rm              # unchanged -- still explains how
+        assert r.agent_slug == "sales", rm
+        assert r.agent_name == "Sales Agent", rm
 
 
-def test_both_aliases_none_for_non_ai_agent_routing():
+def test_both_aliases_none_for_unresolved_routing():
     names = {"sales": "Sales Agent"}
-    for rm in ("ai_context", "default", "unknown", None):
+    for rm in ("unknown", None):
         r = calls_api._record_to_response(_rec(routing_method=rm), names)
         assert r.agent_slug is None and r.agent_name is None, rm
         assert r.context_name == "sales"       # unchanged

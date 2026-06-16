@@ -380,10 +380,25 @@ def test_openapi_surfaces_agents_schema(client):
     list_schema = spec["paths"]["/api/agents"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
     assert list_schema.get("type") == "array"
 
+def _load_backend_main():
+    """Load admin_ui/backend/main.py by path so it can't be shadowed by the
+    repo-root main.py (the CLI entrypoint, which has no `app`). Skips when the
+    full backend deps (docker, etc.) aren't installed in this environment."""
+    import importlib.util
+    from pathlib import Path
+
+    main_path = Path(__file__).resolve().parents[1] / "main.py"
+    spec = importlib.util.spec_from_file_location("admin_ui_backend_main", main_path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # missing optional backend deps in this environment
+        pytest.skip(f"admin_ui backend main.py not importable: {exc}")
+    return module
+
 def test_main_app_openapi_version_and_tag():
-    """version literal + agents tag description live in main.py. Skips when the full
-    backend deps (docker, etc.) aren't installed in this environment."""
-    main = pytest.importorskip("main")
+    """version literal + agents tag description live in admin_ui/backend/main.py."""
+    main = _load_backend_main()
     assert main.app.version == "7.0.0"
     spec = main.app.openapi()
     tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}

@@ -95,10 +95,11 @@ class CallRecordSummaryResponse(BaseModel):
     context_name: Optional[str] = None
     routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
     # Additive v7 aliases (do not replace context_name/routing_method):
-    # both are populated only when the call was explicitly routed via AI_AGENT
-    # (routing_method == 'ai_agent'); otherwise both are null. agent_name is a
-    # best-effort display-name lookup, null if agents.db is unavailable or the
-    # slug has no matching agent.
+    # agent_slug mirrors the resolved agent (context_name) whenever the call was
+    # routed to one -- ai_agent, ai_context or default routing -- and is null for
+    # unknown/None routing. routing_method still tells you *how* it was selected.
+    # agent_name is a best-effort display-name lookup, null if agents.db is
+    # unavailable or the slug has no matching agent.
     agent_slug: Optional[str] = None
     agent_name: Optional[str] = None
     outcome: str = "completed"
@@ -261,16 +262,19 @@ def _agent_name_map() -> Dict[str, str]:
 def _resolve_agent(record, agent_names: Optional[Dict[str, str]]):
     """Compute the additive (agent_slug, agent_name) aliases for a record.
 
-    Both are populated ONLY when the call was explicitly routed via AI_AGENT
-    (routing_method == 'ai_agent'); for ai_context/default/unknown they are both None
-    so integrations don't infer explicit agent routing from context/default fallbacks.
-    agent_name is a best-effort display-name lookup keyed on context_name (the resolved
-    agent slug) and is None when the agents DB is unavailable or has no matching slug."""
+    These reflect the resolved agent whenever the call was routed to one, so
+    integrations can consume the selected agent uniformly: agent_slug mirrors
+    context_name (the resolved agent slug) for ai_agent, ai_context and default
+    routing. routing_method remains the field that explains *how* the agent was
+    selected. For unknown/None routing they stay None.
+
+    agent_name is a best-effort display-name lookup keyed on the slug and is None
+    when the agents DB is unavailable or has no matching slug."""
     routing_method = getattr(record, "routing_method", None)
     context_name = record.context_name
-    if routing_method != "ai_agent":
+    if routing_method not in ("ai_agent", "ai_context", "default") or not context_name:
         return None, None
-    agent_name = (agent_names or {}).get(context_name) if context_name else None
+    agent_name = (agent_names or {}).get(context_name)
     return context_name, agent_name
 
 
