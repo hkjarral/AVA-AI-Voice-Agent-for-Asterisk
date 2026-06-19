@@ -71,7 +71,10 @@ const UpdatesPage = () => {
   const [targetMode, setTargetMode] = useState<'stable' | 'main' | 'advanced'>('stable');
   const [initialized, setInitialized] = useState(false);
 
-  const [includeUI, setIncludeUI] = useState(false);
+  // Default ON: the admin_ui frontend is image-baked, so skipping its rebuild leaves a
+  // stale UI (and possible FE/BE contract mismatch) after an update. Matches the CLI's
+  // --include-ui default (HIGH-6).
+  const [includeUI, setIncludeUI] = useState(true);
   const [updateCliHost, setUpdateCliHost] = useState(true);
   const [cliInstallPath, setCliInstallPath] = useState('');
   const [plan, setPlan] = useState<UpdatePlan | null>(null);

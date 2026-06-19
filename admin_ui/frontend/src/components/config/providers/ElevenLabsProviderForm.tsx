@@ -377,8 +377,8 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                     <input
                         type="number"
                         className="w-full p-2 rounded border border-input bg-background"
-                        value={config.input_sample_rate || 16000}
-                        onChange={(e) => handleChange('input_sample_rate', parseInt(e.target.value))}
+                        value={config.input_sample_rate_hz || 16000}
+                        onChange={(e) => handleChange('input_sample_rate_hz', parseInt(e.target.value))}
                     />
                     <p className="text-xs text-muted-foreground">
                         Audio sample rate for input. 16000 Hz recommended.
@@ -404,8 +404,8 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                     <input
                         type="number"
                         className="w-full p-2 rounded border border-input bg-background"
-                        value={config.output_sample_rate || 16000}
-                        onChange={(e) => handleChange('output_sample_rate', parseInt(e.target.value))}
+                        value={config.output_sample_rate_hz || 16000}
+                        onChange={(e) => handleChange('output_sample_rate_hz', parseInt(e.target.value))}
                     />
                     <p className="text-xs text-muted-foreground">
                         TTS output sample rate. 16000 Hz or 22050 Hz typical.
