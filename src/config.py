@@ -43,7 +43,7 @@ class AsteriskConfig(BaseModel):
     ssl_verify: bool = Field(default=True)  # Set to False to skip SSL certificate verification
     username: str
     password: str
-    app_name: str = Field(default="ai-voice-agent")
+    app_name: str = Field(default="asterisk-ai-voice-agent")
 
 class ExternalMediaConfig(BaseModel):
     # Network configuration

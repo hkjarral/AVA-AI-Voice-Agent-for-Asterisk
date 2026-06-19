@@ -20,6 +20,11 @@ def export_yaml(store: AgentsStore) -> str:
         ctx = {"provider": a["provider"], "prompt": a["prompt"]}
         for k in ("voice", "greeting"):
             if a[k]: ctx[k] = a[k]
+        # LOW-A5: preserve operator metadata across an export -> delete -> re-migrate
+        # cycle. These aren't first-class YAML context keys, so on re-import they land
+        # in extra_json (harmless to the engine) rather than being silently dropped.
+        for k in ("extension", "role_label", "notes"):
+            if a[k]: ctx[k] = a[k]
         if a["audio_profile"]: ctx["profile"] = a["audio_profile"]
         tools = _safe_json(a["tools_json"])
         if tools is not None: ctx["tools"] = tools

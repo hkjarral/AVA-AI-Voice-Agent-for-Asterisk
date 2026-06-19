@@ -208,8 +208,8 @@ try:
         app.state.agents_migration_result = _result
         if _result.get("imported"):
             logging.getLogger(__name__).info(
-                "agents migration: imported %d (skipped: %s)",
-                _result["imported"], _result["skipped"],
+                "agents migration: imported %d (skipped: %s); default agent = %s",
+                _result["imported"], _result["skipped"], _result.get("default_slug"),
             )
         _final_db = os.path.join(_op_dir, "agents.db")
         if os.path.exists(_final_db):

@@ -176,7 +176,16 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         )
 
     store._ensure_default_invariant()
-    return {"imported": len(rows), "skipped": skipped, "already_migrated": False}
+    # LOW-A6: surface which agent became the default. When no context is literally
+    # named "default", the invariant promotes the first-created active agent; making
+    # that visible lets the UI/log show the operator what was auto-selected.
+    default_row = store.get_default()
+    return {
+        "imported": len(rows),
+        "skipped": skipped,
+        "already_migrated": False,
+        "default_slug": default_row["slug"] if default_row else None,
+    }
 
 
 def migrate_if_needed(op_dir: str, yaml_path: str, contexts_dir: str) -> dict:

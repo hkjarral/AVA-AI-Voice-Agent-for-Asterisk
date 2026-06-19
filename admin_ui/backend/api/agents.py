@@ -181,8 +181,26 @@ def stats_batch():
                     "AVG(duration_seconds) d, MAX(start_time) m "
                     "FROM call_records GROUP BY context_name"
                 ).fetchall()
+            # MED-A3: call_records.context_name holds the raw dialplan name (e.g.
+            # "Tool_Example"), while agents are keyed by slug ("tool_example"). Fold
+            # the per-context aggregates into slug buckets so per-agent stats match
+            # the agent rows instead of silently under-counting legacy/non-slug-safe
+            # names. Multiple raw names that map to one slug are merged (duration is a
+            # call-weighted mean).
+            acc: dict = {}  # slug -> [calls, transfers, dur_sum, dur_cnt, last]
             for ctx, cnt, transfers, avg_dur, last in rows:
-                call_data[ctx] = (cnt, transfers or 0, avg_dur, last)
+                key = slugify(ctx) if ctx else ctx
+                a = acc.setdefault(key, [0, 0, 0.0, 0, None])
+                a[0] += cnt
+                a[1] += (transfers or 0)
+                if avg_dur is not None:
+                    a[2] += avg_dur * cnt
+                    a[3] += cnt
+                if last and (a[4] is None or last > a[4]):
+                    a[4] = last
+            for key, (calls, transfers, dur_sum, dur_cnt, last) in acc.items():
+                avg = (dur_sum / dur_cnt) if dur_cnt else None
+                call_data[key] = (calls, transfers, avg, last)
         except sqlite3.OperationalError:
             pass
 
