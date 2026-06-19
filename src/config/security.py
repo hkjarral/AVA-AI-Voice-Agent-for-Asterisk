@@ -241,16 +241,21 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
                     provider_cfg["api_key"] = azure_speech_key
                     providers_block[provider_name] = provider_cfg
 
-        # Inject DEEPGRAM_API_KEY
+        # Inject DEEPGRAM_API_KEY (only when set — otherwise leave any inline/file
+        # value intact instead of clobbering it with None — LOW-P7).
         deepgram_block = providers_block.get('deepgram', {}) or {}
         if isinstance(deepgram_block, dict):
-            deepgram_block['api_key'] = os.getenv('DEEPGRAM_API_KEY')
+            _dg_key = os.getenv('DEEPGRAM_API_KEY')
+            if _dg_key:
+                deepgram_block['api_key'] = _dg_key
             providers_block['deepgram'] = deepgram_block
-        
+
         # Inject GOOGLE_API_KEY (for google_live provider)
         google_live_block = providers_block.get('google_live', {}) or {}
         if isinstance(google_live_block, dict):
-            google_live_block['api_key'] = os.getenv('GOOGLE_API_KEY')
+            _g_key = os.getenv('GOOGLE_API_KEY')
+            if _g_key:
+                google_live_block['api_key'] = _g_key
             # Inject Vertex AI project/location when set (AAVA-191)
             gcp_project = os.getenv('GOOGLE_CLOUD_PROJECT')
             gcp_location = os.getenv('GOOGLE_CLOUD_LOCATION')

@@ -341,7 +341,15 @@ class GoogleProviderConfig(BaseModel):
     llm_max_output_tokens: int = Field(default=8192, ge=1, le=8192)  # Max output tokens (Gemini supports up to 8192)
     llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)  # Nucleus sampling parameter
     llm_top_k: int = Field(default=40, ge=1, le=100)  # Top-k sampling parameter
-    
+
+    # Google Live VAD / turn-taking tuning (MED-P3). Previously read via getattr with
+    # these same defaults but absent from the model, so they were untunable; declare
+    # them so YAML/UI values are honored.
+    vad_end_of_speech_sensitivity: str = Field(default="END_SENSITIVITY_HIGH")
+    vad_start_of_speech_sensitivity: str = Field(default="START_SENSITIVITY_HIGH")
+    vad_prefix_padding_ms: int = Field(default=20, ge=0)
+    vad_silence_duration_ms: int = Field(default=500, ge=0)
+
     # Google Live response configuration
     response_modalities: str = Field(default="audio")  # "audio", "text", or "audio_text"
     
