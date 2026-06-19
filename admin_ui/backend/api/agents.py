@@ -349,15 +349,27 @@ def get_agent(slug: str):
 
 @router.get("/agents/{slug}/stats", response_model=AgentStatsResponse)
 def stats(slug: str):
-    if not _store().get_by_slug(slug):
+    row = _store().get_by_slug(slug)
+    if not row:
         raise HTTPException(404)
     if not os.path.exists(CALL_HISTORY_DB):
         return {"calls_30d": 0, "last_call": None}
-    with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
-        calls = c.execute("SELECT COUNT(*) FROM call_records WHERE context_name=? "
-                          "AND start_time >= datetime('now','-30 days')", (slug,)).fetchone()[0]
-        last = c.execute("SELECT MAX(start_time) FROM call_records WHERE context_name=?",
-                         (slug,)).fetchone()[0]
+    # Match both the slug and the original name (call_records store the raw
+    # context_name, e.g. "Tool_Example") so legacy calls are counted (cf. MED-A3).
+    names = tuple({slug, row.get("display_name")} - {None})
+    placeholders = ",".join("?" * len(names))
+    # LOW-CH2: guard like the sibling endpoints so a missing call_records table
+    # (file exists but engine never ran) degrades to zeros instead of a 500.
+    try:
+        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+            calls = c.execute(
+                f"SELECT COUNT(*) FROM call_records WHERE context_name IN ({placeholders}) "
+                "AND start_time >= datetime('now','-30 days')", names).fetchone()[0]
+            last = c.execute(
+                f"SELECT MAX(start_time) FROM call_records WHERE context_name IN ({placeholders})",
+                names).fetchone()[0]
+    except sqlite3.OperationalError:
+        return {"calls_30d": 0, "last_call": None}
     return {"calls_30d": calls, "last_call": last}
 
 @router.get("/agents/{slug}/dialplan", response_model=DialplanResponse)

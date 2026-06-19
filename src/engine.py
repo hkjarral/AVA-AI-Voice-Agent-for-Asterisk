@@ -273,6 +273,7 @@ class Engine:
         # ------------------------------------------------------------------
         self.outbound_store = get_outbound_store()
         self._outbound_scheduler_task: Optional[asyncio.Task] = None
+        self._retention_cleanup_task: Optional[asyncio.Task] = None
         self._outbound_last_dial_ts: Dict[str, float] = {}
         self._outbound_attempt_meta_by_attempt_id: Dict[str, Dict[str, Any]] = {}
         self._outbound_attempt_meta_by_channel_id: Dict[str, Dict[str, Any]] = {}
@@ -911,6 +912,20 @@ class Engine:
                 self._outbound_scheduler_task = asyncio.create_task(self._outbound_scheduler_loop())
         except Exception:
             logger.debug("Failed to start outbound scheduler task", exc_info=True)
+        # LOW-CH1: warm the call-history store off the event loop so the first call's
+        # teardown doesn't pay a synchronous _init_db() (mkdir/connect/CREATE) on the loop.
+        try:
+            from src.core.call_history import get_call_history_store
+            await asyncio.get_event_loop().run_in_executor(None, get_call_history_store)
+        except Exception:
+            logger.debug("Call-history store warm-up failed", exc_info=True)
+        # Call-history retention cleanup (HIGH-7): only runs when retention is set
+        # (CALL_HISTORY_RETENTION_DAYS>0); otherwise the loop idles and exits.
+        try:
+            if not self._retention_cleanup_task:
+                self._retention_cleanup_task = asyncio.create_task(self._retention_cleanup_loop())
+        except Exception:
+            logger.debug("Failed to start retention cleanup task", exc_info=True)
         logger.info("Engine started and listening for calls.")
 
     def _on_ari_listener_task_done(self, task: "asyncio.Task") -> None:
@@ -1258,6 +1273,32 @@ class Engine:
             logger.info("Outbound campaign completed", campaign_id=campaign_id)
         except Exception:
             logger.debug("Failed to mark outbound campaign completed", exc_info=True)
+
+    async def _retention_cleanup_loop(self) -> None:
+        """Periodically prune call-history records past the retention window (HIGH-7).
+
+        Idles out immediately when CALL_HISTORY_RETENTION_DAYS is unset/<=0, so it
+        costs nothing on installs that don't configure retention. Runs once shortly
+        after startup, then daily."""
+        try:
+            from src.core.call_history import get_call_history_store
+            store = get_call_history_store()
+            if getattr(store, "_retention_days", 0) <= 0:
+                logger.debug("Retention cleanup disabled (CALL_HISTORY_RETENTION_DAYS unset)")
+                return
+            await asyncio.sleep(60)  # let startup settle before the first pass
+            while True:
+                try:
+                    deleted = await store.cleanup_old_records()
+                    if deleted:
+                        logger.info("Call-history retention cleanup removed records", count=deleted)
+                except Exception:
+                    logger.debug("Retention cleanup pass failed", exc_info=True)
+                await asyncio.sleep(24 * 60 * 60)  # daily
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Retention cleanup loop exited", exc_info=True)
 
     async def _outbound_scheduler_loop(self) -> None:
         """Background control-plane: lease leads and originate outbound calls."""
@@ -13542,6 +13583,18 @@ class Engine:
                     await provider.stop_session()
                 except Exception:
                     pass
+            # HIGH-1b: a session exists by the time provider start runs, so this call
+            # WILL be persisted at cleanup — record the failure on the session so its
+            # outcome is 'error' instead of being mislabeled 'completed'/'abandoned'.
+            try:
+                _sess = locals().get("session")
+                if _sess is not None:
+                    if not getattr(_sess, "error_message", None):
+                        _sess.error_message = f"provider_start_failed: {exc}"
+                    await self._save_session(_sess)
+            except Exception:
+                logger.debug("Failed to record provider-start error on session",
+                             call_id=call_id, exc_info=True)
             logger.error("Failed to start provider session", call_id=call_id, error=str(exc), exc_info=True)
 
     async def _on_playback_finished(self, event: Dict[str, Any]):

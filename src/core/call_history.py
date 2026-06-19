@@ -926,7 +926,9 @@ class CallHistoryStore:
         if not self._enabled or self._retention_days <= 0:
             return 0
         
-        cutoff = datetime.now() - timedelta(days=self._retention_days)
+        # UTC-aware to match stored start_time (ISO with +00:00); a naive local
+        # cutoff would string-compare incorrectly against the stored values (LOW-CH4).
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._retention_days)
         deleted = await self.delete_before(cutoff)
         if deleted > 0:
             logger.info(f"Cleaned up {deleted} old call history records (retention: {self._retention_days} days)")
