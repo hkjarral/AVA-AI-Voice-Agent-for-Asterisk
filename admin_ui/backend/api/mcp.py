@@ -56,7 +56,12 @@ async def test_mcp_server(server_id: str):
                     resp = await client.post(url)
                 if resp.status_code not in (200, 500):
                     raise HTTPException(status_code=resp.status_code, detail=resp.text)
-                return resp.json()
+                # LOW-T5: a 500 from the engine may carry a non-JSON body; surface the
+                # actual text instead of letting resp.json() raise an opaque 500.
+                try:
+                    return resp.json()
+                except ValueError:
+                    raise HTTPException(status_code=resp.status_code or 500, detail=resp.text)
             except httpx.ConnectError as e:
                 continue
         raise HTTPException(status_code=503, detail="AI Engine is not reachable")
