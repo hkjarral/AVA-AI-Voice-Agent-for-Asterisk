@@ -118,7 +118,7 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
 from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models, agents, support  # noqa: E402
 import auth  # noqa: E402
 from agents_store import AgentsStore  # noqa: E402
-from agents_migration import run_migration, current_drift  # noqa: E402
+from agents_migration import migrate_if_needed, current_drift  # noqa: E402
 
 # Allow disabling API docs in production for security hardening
 _enable_api_docs = os.getenv("ENABLE_API_DOCS", "true").lower() in ("1", "true", "yes")
@@ -202,25 +202,32 @@ try:
         fcntl.flock(_lk, fcntl.LOCK_EX)
         _yaml_path = settings.CONFIG_PATH
         _contexts_dir = os.path.join(os.path.dirname(settings.CONFIG_PATH), "contexts")
-        _store = AgentsStore()
-        _result = run_migration(_store, _yaml_path, _contexts_dir)
+        # Atomic: migrate into a temp DB and only promote on success, so a
+        # collision/empty import never leaves an authoritative empty DB (CRIT-3).
+        _result = migrate_if_needed(_op_dir, _yaml_path, _contexts_dir)
         app.state.agents_migration_result = _result
         if _result.get("imported"):
             logging.getLogger(__name__).info(
                 "agents migration: imported %d (skipped: %s)",
                 _result["imported"], _result["skipped"],
             )
-        _drift = current_drift(_store, _yaml_path, _contexts_dir)
-        if _drift:
-            logging.getLogger(__name__).warning(
-                "YAML contexts changed since agents.db migration "
-                "(stored=%s current=%s). Edits do NOT apply at runtime — "
-                "use the Agents tab or Migration Status page.",
-                _drift["stored_hash"][:12], _drift["current_hash"][:12],
-            )
+        _final_db = os.path.join(_op_dir, "agents.db")
+        if os.path.exists(_final_db):
+            _store = AgentsStore(db_path=_final_db)
+            try:
+                _drift = current_drift(_store, _yaml_path, _contexts_dir)
+            finally:
+                _store.close()
+            if _drift:
+                logging.getLogger(__name__).warning(
+                    "YAML contexts changed since agents.db migration "
+                    "(stored=%s current=%s). Edits do NOT apply at runtime — "
+                    "use the Agents tab or Migration Status page.",
+                    _drift["stored_hash"][:12], _drift["current_hash"][:12],
+                )
 except Exception as _e:
     logging.getLogger(__name__).warning(
-        "agents migration skipped (DB unavailable / headless mode): %s", _e,
+        "agents migration FAILED (%s) — keeping YAML routing", _e,
     )
 
 # Configure CORS

@@ -6,6 +6,7 @@ import glob
 import hashlib
 import json
 import os
+import sqlite3
 import uuid
 
 import yaml
@@ -121,6 +122,7 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
     # open the transaction — skips are not errors and must not trigger rollback.
     rows = []
     skipped = []
+    seen_slugs = set()
     for key, ctx in merged.items():
         src = ctx.pop("_source_file", None)
         prompt = ctx.get("prompt")
@@ -130,9 +132,21 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         provider = ctx.get("provider") or ""
         extra = {k: v for k, v in ctx.items() if k not in _FIRST_CLASS}
         now = _now()
+        # CRIT-3: two context names can slugify to the same value
+        # (e.g. "Sales-East" and "sales_east" -> "sales_east"). The `slug` column
+        # is UNIQUE, so disambiguate deterministically; the original name is kept
+        # in `display_name` and the engine resolves on that first, so legacy
+        # dialplans using either original name still route correctly.
+        base = slugify(key) or "agent"
+        slug = base
+        n = 2
+        while slug in seen_slugs:
+            slug = f"{base}_{n}"
+            n += 1
+        seen_slugs.add(slug)
         rows.append((
             uuid.uuid4().hex,
-            slugify(key),
+            slug,
             key,
             provider,
             ctx.get("voice"),
@@ -163,6 +177,58 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
 
     store._ensure_default_invariant()
     return {"imported": len(rows), "skipped": skipped, "already_migrated": False}
+
+
+def migrate_if_needed(op_dir: str, yaml_path: str, contexts_dir: str) -> dict:
+    """Run the one-time migration atomically so a failed/empty import never leaves
+    an authoritative empty agents.db (CRIT-3).
+
+    - If ``<op_dir>/agents.db`` already exists, open it and run the (idempotent)
+      migration — a no-op if already migrated — so drift detection still works.
+    - Otherwise migrate into a temporary DB and only promote it to the final path
+      when at least one agent was imported. Nothing to migrate ⇒ no file is left,
+      so the engine stays in YAML mode instead of treating an empty DB as
+      authoritative.
+    """
+    os.makedirs(op_dir, exist_ok=True)
+    final = os.path.join(op_dir, "agents.db")
+
+    if os.path.exists(final):
+        store = AgentsStore(db_path=final)
+        try:
+            return run_migration(store, yaml_path, contexts_dir)
+        finally:
+            store.close()
+
+    tmp = os.path.join(op_dir, "agents.db.migrating")
+    for ext in ("", "-wal", "-shm"):
+        try:
+            os.remove(tmp + ext)
+        except OSError:
+            pass
+
+    store = AgentsStore(db_path=tmp)
+    try:
+        result = run_migration(store, yaml_path, contexts_dir)
+        try:
+            # Fold the WAL back into the main file so a single rename is complete.
+            store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+    finally:
+        store.close()
+
+    if result.get("imported", 0) > 0:
+        os.replace(tmp, final)
+    # Remove any temp leftovers (the unpromoted tmp file, or stray -wal/-shm).
+    for ext in ("", "-wal", "-shm"):
+        leftover = tmp + ext
+        if os.path.exists(leftover):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+    return result
 
 
 def current_drift(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict | None:

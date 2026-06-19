@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from src.core.agent_store import AgentStoreReadError
 from src.core.transport_orchestrator import TransportOrchestrator, ContextConfig
 
 
@@ -32,6 +33,17 @@ def test_inactive_or_unknown_slug_not_routable_when_db_present():
     with patch.object(orch.agent_store, "available", return_value=True), \
          patch.object(orch.agent_store, "resolve", return_value=None):
         assert orch.get_context_config("sales") is None
+
+
+def test_corrupt_db_falls_back_to_yaml():
+    # HIGH-9: DB present but unreadable (corrupt/locked) => resolve() raises
+    # AgentStoreReadError and the orchestrator falls back to the legacy YAML context,
+    # so a corrupted agents.db doesn't take routing down entirely.
+    orch = _orch()
+    with patch.object(orch.agent_store, "available", return_value=True), \
+         patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("corrupt")):
+        cc = orch.get_context_config("sales")
+        assert cc is not None and cc.prompt == "from-yaml"
 
 
 def test_none_context_returns_none():

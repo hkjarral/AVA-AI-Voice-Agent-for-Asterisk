@@ -602,8 +602,18 @@ class TransportOrchestrator:
         if not context_name:
             return None
         if self.agent_store.available():
-            # agents.db is authoritative when present: inactive/unknown slug => not routable.
-            return self.agent_store.resolve(context_name)
+            # agents.db is authoritative when present: inactive/unknown agent => not
+            # routable. Fall back to YAML ONLY when the DB is present but unreadable
+            # (corrupt/locked) — HIGH-9 — never for a clean not-found, so a
+            # deactivated/deleted agent is not resurrected from YAML.
+            from src.core.agent_store import AgentStoreReadError
+            try:
+                return self.agent_store.resolve(context_name)
+            except AgentStoreReadError:
+                logger.warning(
+                    "agents.db unreadable; falling back to YAML contexts",
+                    context=context_name)
+                return self._yaml_context_config(context_name)
         # No DB (headless / pre-migration): fall back to YAML contexts.
         return self._yaml_context_config(context_name)
 
