@@ -193,7 +193,9 @@ Open your browser to:
 http://localhost:3003
 ```
 
-Login with `admin` / `admin` and change the password.
+Log in with the one-time password printed to the admin_ui logs on first start
+(`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`); you'll be
+required to set a new password at first login. `admin`/`admin` no longer works.
 
 ---
 
@@ -251,7 +253,8 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 
 **If you forget your password**:
 ```bash
-# Delete the users file (resets to admin/admin)
+# Delete the users file. On next start a new one-time password is generated and
+# printed to the admin_ui logs (retrieve with: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD).
 rm config/users.json
 
 # Restart admin-ui
@@ -753,7 +756,7 @@ cp config/users.json config/users.json.$(date +%Y%m%d)
 
 ### After Setup
 
-1. ✅ **Change default password** (admin/admin → your password)
+1. ✅ **Set your admin password** (forced at first login; one-time password comes from the admin_ui logs)
 2. ✅ **Complete setup wizard** (if new installation)
 3. ✅ **Test a phone call** to verify configuration
 4. ✅ **Explore the dashboard** and familiarize yourself with the UI
@@ -806,7 +809,7 @@ docker compose up -d --build admin_ui
 ### Emergency Recovery
 
 ```bash
-# Reset to admin/admin
+# Reset: regenerates a one-time password on next start (see admin_ui logs)
 rm config/users.json && docker compose restart admin_ui
 
 # Restore configuration
