@@ -5732,6 +5732,12 @@ class Engine:
                     session = await self.session_store.get_by_call_id(mapped_call_id)
             if not session:
                 logger.debug("No session found during cleanup", identifier=channel_or_call_id)
+                # HIGH-1a: calls that end before session registration (StasisStart
+                # exception, codec abort, immediate hangup before setup) otherwise
+                # leave no row in call_records and are invisible in history. Persist a
+                # minimal "abandoned" record. CallHistoryStore.save() is dedupe-by
+                # call_id, so this never double-writes a channel a session did persist.
+                await self._persist_abandoned_call_history(channel_or_call_id)
                 return
 
             call_id = session.call_id
@@ -6177,6 +6183,35 @@ class Engine:
             # Clean up in-memory guard
             if resolved_call_id:
                 _cleanup_in_progress.discard(resolved_call_id)
+
+    async def _persist_abandoned_call_history(self, channel_id: str) -> None:
+        """Persist a minimal 'abandoned' record for a call that ended before session registration (HIGH-1a).
+
+        Mirrors the store-write pattern of _persist_call_history. Idempotent via
+        CallHistoryStore.save() dedupe-by-call_id, so the normal path never double-writes.
+        """
+        try:
+            from src.core.call_history import CallRecord, get_call_history_store
+
+            store = get_call_history_store()
+            if not store._enabled:
+                return
+
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            record = CallRecord(
+                call_id=channel_id,
+                start_time=now,
+                end_time=now,
+                duration_seconds=0.0,
+                outcome="abandoned",
+                error_message="Call ended before session registration",
+            )
+            saved = await store.save(record)
+            if saved:
+                logger.info("Persisted abandoned call record (no session)", call_id=channel_id)
+        except Exception:
+            logger.debug("Failed to persist abandoned call record", channel_id=channel_id, exc_info=True)
 
     async def _persist_call_history(self, session: CallSession, call_id: str) -> None:
         """Persist call record to history database (Milestone 21)."""
