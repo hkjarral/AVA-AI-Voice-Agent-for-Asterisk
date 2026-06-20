@@ -1,13 +1,29 @@
 """Agents CRUD + stats + dialplan generator (A2) + templates (A3) + migration status."""
-import json, os, sqlite3
+import json, os, sqlite3, sys
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from agents_store import AgentsStore, slugify
 from agents_migration import current_drift, acknowledge_drift, run_migration, \
     merged_effective_contexts
 import settings  # for YAML paths
 
 router = APIRouter()
+
+# MED-E1: reuse the engine's canonical email validator so the admin UI rejects the
+# same addresses the call path would. Empty/None means "unset/inherit" and is allowed;
+# only non-empty values are validated. A pydantic field_validator raises ValueError,
+# which FastAPI surfaces as HTTP 422.
+if settings.PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, settings.PROJECT_ROOT)
+from src.utils.email_validator import EmailValidator
+
+
+def _validate_optional_email(v):
+    if v is None or str(v).strip() == "":
+        return v
+    if not EmailValidator.validate_email(str(v)):
+        raise ValueError(f"invalid email address: {v!r}")
+    return v
 CALL_HISTORY_DB = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
 TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "agent_templates.json")
 # CORRECTION vs plan: the real default Stasis app is "asterisk-ai-voice-agent"
@@ -41,6 +57,9 @@ class AgentIn(BaseModel):
     email_from: str | None = None
     email_enabled: bool | None = None
 
+    _check_emails = field_validator("email_recipient", "email_from")(
+        _validate_optional_email)
+
 class AgentPatch(BaseModel):
     display_name: str | None = None
     provider: str | None = None
@@ -58,6 +77,9 @@ class AgentPatch(BaseModel):
     email_from: str | None = None
     email_enabled: bool | None = None
     is_active: bool | None = None
+
+    _check_emails = field_validator("email_recipient", "email_from")(
+        _validate_optional_email)
 
 class AgentOut(BaseModel):
     """Full agent row as stored in agents.db. Declares every column so attaching this
