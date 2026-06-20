@@ -181,6 +181,11 @@ class DeepgramProviderConfig(BaseModel):
     # detection becomes a no-op or misbehaves.
     eot_threshold: Optional[float] = Field(default=0.7, ge=0.5, le=0.9)
     eager_eot_threshold: Optional[float] = Field(default=None, ge=0.3, le=0.9)
+    # Flux end-of-turn timeout in milliseconds: how long Flux waits after the
+    # last speech before forcing an end-of-turn. Read by the Flux adapter
+    # (src/pipelines/deepgram_flux.py); the default mirrors the adapter's
+    # historical hardcoded fallback of 5000ms (audit LOW-P6).
+    eot_timeout_ms: int = Field(default=5000)
     keyterms: Optional[List[str]] = Field(default=None)
     greeting: Optional[str] = None
     instructions: Optional[str] = None
@@ -329,6 +334,7 @@ class GoogleProviderConfig(BaseModel):
     type: Optional[str] = None
     display_name: Optional[str] = None
     customer: Optional[str] = None
+    # NOTE: not read by any adapter (audit LOW-P9)
     project_id: Optional[str] = None
     stt_base_url: str = Field(default="https://speech.googleapis.com/v1")
     tts_base_url: str = Field(default="https://texttospeech.googleapis.com/v1")
@@ -577,6 +583,8 @@ class AzureTTSProviderConfig(BaseModel):
     # "file"   → force file-based playback, regardless of global mode
     # Useful when you want Azure TTS streaming (chunked HTTP) but file-based Asterisk playback,
     # or when you want streaming Asterisk playback even if downstream_mode=file globally.
+    # NOTE: not read by any adapter (audit LOW-P9) — the Azure TTS adapter computes
+    # its own downstream_mode_override from streaming settings (src/pipelines/azure.py).
     downstream_mode_override: str = Field(default="auto")
     # Azure output audio format header value (X-Microsoft-OutputFormat).
     # PCM-based formats (riff-*) are decoded natively; raw-8khz-mulaw is used directly.

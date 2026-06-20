@@ -512,7 +512,10 @@ class DeepgramFluxSTTAdapter(STTComponent):
             ),
             "eot_timeout_ms": runtime_options.get(
                 "eot_timeout_ms",
-                self._pipeline_defaults.get("eot_timeout_ms", "5000"),
+                self._pipeline_defaults.get(
+                    "eot_timeout_ms",
+                    getattr(self._provider_defaults, "eot_timeout_ms", "5000"),
+                ),
             ),
         }
         

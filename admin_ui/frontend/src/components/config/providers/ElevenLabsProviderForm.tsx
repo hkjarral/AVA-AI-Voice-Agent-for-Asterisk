@@ -234,9 +234,10 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                             </div>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.model_id || 'eleven_turbo_v2_5'}
+                                value={config.model_id || 'eleven_flash_v2_5'}
                                 onChange={(e) => handleChange('model_id', e.target.value)}
                             >
+                                <option value="eleven_flash_v2_5">Flash v2.5 (Lowest latency, recommended for telephony)</option>
                                 <option value="eleven_turbo_v2_5">Turbo v2.5 (Fastest, English only)</option>
                                 <option value="eleven_multilingual_v2">Multilingual v2 (Better quality)</option>
                                 <option value="eleven_monolingual_v1">Monolingual v1 (Legacy)</option>

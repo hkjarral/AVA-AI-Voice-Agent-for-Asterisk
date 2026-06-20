@@ -1,8 +1,28 @@
 """
 ElevenLabs Provider Configuration
 """
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, fields
 from typing import List, Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+
+def _warn_unknown_keys(cls, data: Dict[str, Any]) -> None:
+    """Log a warning for any config keys not recognized by the dataclass.
+
+    The hand-rolled from_dict loaders below pull keys explicitly and silently
+    drop anything else, which hides typos/misconfig. Surface them (audit LOW-P10).
+    "voice_settings" is handled separately (popped before this runs) so is allowed.
+    """
+    known = {f.name for f in fields(cls)} | {"voice_settings"}
+    unknown = set(data) - known
+    if unknown:
+        logger.warning(
+            "%s: ignoring unknown config key(s): %s",
+            cls.__name__,
+            ", ".join(sorted(unknown)),
+        )
 
 
 @dataclass
@@ -69,7 +89,8 @@ class ElevenLabsAgentConfig:
         """Create config from dictionary (YAML)."""
         voice_settings_data = data.pop("voice_settings", {})
         voice_settings = ElevenLabsVoiceSettings(**voice_settings_data) if voice_settings_data else ElevenLabsVoiceSettings()
-        
+        _warn_unknown_keys(cls, data)
+
         return cls(
             api_key=data.get("api_key", ""),
             agent_id=data.get("agent_id", ""),
@@ -129,7 +150,8 @@ class ElevenLabsTTSConfig:
         """Create config from dictionary (YAML)."""
         voice_settings_data = data.pop("voice_settings", {})
         voice_settings = ElevenLabsVoiceSettings(**voice_settings_data) if voice_settings_data else ElevenLabsVoiceSettings()
-        
+        _warn_unknown_keys(cls, data)
+
         return cls(
             api_key=data.get("api_key", ""),
             type=data.get("type", "tts"),

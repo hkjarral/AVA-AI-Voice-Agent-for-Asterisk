@@ -114,8 +114,28 @@ class OllamaLLMAdapter(LLMComponent):
         model_base = model.split(":")[0].lower()
         return model_base in _TOOL_CAPABLE_MODELS
 
+    # Config keys the adapter actually consumes (plus provider-level meta keys
+    # that legitimately appear in the YAML provider block). Anything outside this
+    # set is silently ignored by the ad-hoc merged.get() reads, so warn about it
+    # to surface typos/misconfig (audit LOW-P10).
+    _KNOWN_KEYS = frozenset({
+        # consumed by the adapter
+        "base_url", "model", "temperature", "timeout_sec", "stream",
+        "max_tokens", "tools_enabled", "tools",
+        "num_ctx", "context_window", "context_length",
+        # provider-level meta keys from providers.ollama_llm
+        "enabled", "type", "display_name", "customer", "capabilities",
+        "api_key", "api_key_file", "api_key_env",
+    })
+
     async def start(self) -> None:
         """Initialize the adapter."""
+        unknown = set(self._pipeline_defaults) - self._KNOWN_KEYS
+        if unknown:
+            logger.warning(
+                "Ollama LLM adapter: ignoring unknown config key(s): %s",
+                ", ".join(sorted(unknown)),
+            )
         base_url = self._pipeline_defaults.get("base_url", _DEFAULT_BASE_URL)
         model = self._pipeline_defaults.get("model", _DEFAULT_MODEL)
         logger.info(

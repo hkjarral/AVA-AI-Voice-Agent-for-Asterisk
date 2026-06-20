@@ -31,13 +31,13 @@ const GOOGLE_LIVE_SUGGESTED_MODELS = GOOGLE_LIVE_MODEL_OPTIONS.map((modelOption)
 
 const PROVIDER_OPTIONS: Record<string, Record<string, string[]>> = {
     deepgram: {
-        model: ['nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base'],
-        stt_model: ['nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base'],
+        model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
+        stt_model: ['nova-3', 'nova-2', 'nova-2-general', 'nova-2-meeting', 'enhanced', 'base', 'flux-general-en', 'flux-general-multi'],
         tts_model: ['aura-asteria-en', 'aura-luna-en', 'aura-orion-en', 'aura-arcas-en', 'aura-perseus-en', 'aura-angus-en', 'aura-orpheus-en', 'aura-helios-en', 'aura-zeus-en'],
     },
     openai: {
-        model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-        llm_model: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+        model: ['gpt-4o', 'gpt-4o-mini'],
+        llm_model: ['gpt-4o', 'gpt-4o-mini'],
         // STT models per OpenAI Speech-to-Text guide.
         stt_model: [
             'whisper-1',
