@@ -12,6 +12,51 @@ class _DummyARI:
     pass
 
 
+def test_diag_taps_off_by_default():
+    """LOW-R1: diagnostic wave taps must default OFF."""
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={},
+    )
+    assert mgr.diag_enable_taps is False
+
+
+def test_diag_taps_not_enabled_by_debug_logging():
+    """LOW-R1: debug logging must NOT silently enable file-writing taps."""
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={"logging_level": "debug"},
+    )
+    assert mgr.diag_enable_taps is False
+
+
+def test_diag_taps_enabled_by_explicit_config():
+    """LOW-R1: explicit config flag opts in to diagnostic taps."""
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={"diag_enable_taps": True},
+    )
+    assert mgr.diag_enable_taps is True
+
+
+def test_diag_taps_enabled_by_env(monkeypatch):
+    """LOW-R1: AAVA_AUDIO_DIAGNOSTICS env var opts in to diagnostic taps."""
+    monkeypatch.setenv("AAVA_AUDIO_DIAGNOSTICS", "1")
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={},
+    )
+    assert mgr.diag_enable_taps is True
+
+
 @pytest.mark.asyncio
 async def test_end_segment_gating_only_clears_once_with_coordinator(monkeypatch):
     """

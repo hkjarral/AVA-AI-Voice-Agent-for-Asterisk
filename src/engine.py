@@ -4721,8 +4721,12 @@ class Engine:
             except Exception:
                 pass
             audio_file = os.path.join(media_dir, f"{playback_id}.ulaw")
-            with open(audio_file, "wb") as f:
-                f.write(audio_bytes)
+
+            def _write() -> None:
+                with open(audio_file, "wb") as f:
+                    f.write(audio_bytes)
+
+            await asyncio.to_thread(_write)
             # Leave file permissions to host/umask; avoid chmod here (CodeQL).
 
             # Ensure ARIClient cleans up this file on PlaybackFinished.

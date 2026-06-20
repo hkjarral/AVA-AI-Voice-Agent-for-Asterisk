@@ -875,13 +875,5 @@ async def test_http_tool(request: TestHTTPRequest):
         response_data.response_time_ms = (time.time() - start_time) * 1000
         response_data.error = f"Request failed: {e!s}"
         logger.exception("HTTP tool test failed")
-    
+
     return response_data
-
-
-@router.get("/test-values")
-async def get_default_test_values():
-    """
-    Get the default test values for template variable substitution.
-    """
-    return DEFAULT_TEST_VALUES

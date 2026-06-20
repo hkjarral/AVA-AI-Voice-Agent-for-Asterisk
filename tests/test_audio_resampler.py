@@ -120,3 +120,27 @@ def test_single_sample_upsample():
     out, state = resample_audio(pcm, 8000, 16000)
     assert len(out) == 4  # 1 sample @ 8k → 2 samples @ 16k = 4 bytes
     assert state is not None
+
+
+# ── Mono-only / PCM16-only guards (LOW-R3) ────────────────────────────
+
+
+def test_resample_rejects_non_mono():
+    """channels != 1 must raise rather than silently corrupt interleaved audio."""
+    pcm = b"\x00\x01" * 160
+    with pytest.raises(ValueError, match="mono-only"):
+        resample_audio(pcm, 8000, 16000, channels=2)
+
+
+def test_resample_rejects_non_pcm16_width():
+    """sample_width other than 2 must raise."""
+    pcm = b"\x00\x01" * 160
+    with pytest.raises(ValueError, match="PCM16-only"):
+        resample_audio(pcm, 8000, 16000, sample_width=1)
+
+
+def test_resample_mono_explicit_args_still_works():
+    """Explicit mono/PCM16 args resample exactly as the defaults do."""
+    pcm_8k = b"\x00\x01" * 160
+    out, _ = resample_audio(pcm_8k, 8000, 16000, sample_width=2, channels=1)
+    assert len(out) == 640
