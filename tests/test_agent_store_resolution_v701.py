@@ -47,15 +47,31 @@ def test_slug_name_still_resolves(tmp_path):
     assert EngineAgentStore(db_path=db).resolve("tool_example") is not None
 
 
-def test_collision_both_names_resolve_to_their_own_agent(tmp_path):
-    # Post-migration disambiguation: "Sales-East"->slug sales_east, "sales_east"->slug sales_east_2.
-    # display_name-exact lookup must win so each original name reaches its own agent.
+def test_collision_canonical_slug_wins(tmp_path):
+    # Codex P2: the canonical slug must win over a free-form display_name. Post-migration
+    # disambiguation: "Sales-East"->slug sales_east, "sales_east"->slug sales_east_2.
+    # resolve order is exact-slug -> slugify(name) -> display_name, so a real slug is
+    # never shadowed by another agent's display_name.
     db = str(tmp_path / "agents.db")
     _seed(db, [("sales_east", "Sales-East", "east", 1, 1),
                ("sales_east_2", "sales_east", "plain", 1, 0)])
     store = EngineAgentStore(db_path=db)
+    # "Sales-East" slugifies to sales_east -> agent A (slug match wins via slugify).
     assert store.resolve("Sales-East").prompt == "east"
-    assert store.resolve("sales_east").prompt == "plain"
+    # "sales_east" is an EXACT slug of agent A; it must NOT be hijacked by agent B's
+    # display_name "sales_east". Agent B stays reachable by its own slug sales_east_2.
+    assert store.resolve("sales_east").prompt == "east"
+    assert store.resolve("sales_east_2").prompt == "plain"
+
+
+def test_display_name_does_not_shadow_real_slug(tmp_path):
+    # Codex P2 anti-shadow: Set(AI_AGENT=sales) must route to the agent whose SLUG is
+    # "sales", even when a different agent has display_name "sales".
+    db = str(tmp_path / "agents.db")
+    _seed(db, [("display_sales", "sales", "from_display_name", 1, 0),
+               ("sales", "Sales Team", "from_slug", 1, 1)])
+    store = EngineAgentStore(db_path=db)
+    assert store.resolve("sales").prompt == "from_slug"
 
 
 def test_corrupt_db_raises_read_error(tmp_path):

@@ -124,6 +124,47 @@ def test_reconcile_imports_pipeline_context(env):
     assert json.loads(got.json()["extra_json"])["pipeline"] == "deepgram_openai_elevenlabs"
 
 
+def test_reconcile_skips_invalid_email(env):
+    # CodeRabbit Minor: reconcile writes email_recipient/email_from straight to the
+    # store, bypassing the AgentIn/AgentPatch email validation (H3/MED-E1). An invalid
+    # address must be skipped (recorded in `skipped`), not persisted.
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "Support": {
+            "provider": "openai",
+            "prompt": "you are support",
+            "email_recipient": "not-an-email",
+        },
+    })
+
+    r = client.post("/api/agents-migration/reconcile")
+    assert r.status_code == 200, r.text
+
+    # not persisted...
+    assert client.get("/api/agents/support").status_code == 404
+    # ...and reported as skipped with an invalid-email reason
+    assert ["support", "invalid email"] in r.json()["skipped"]
+
+
+def test_reconcile_imports_valid_email(env):
+    # Sanity: a valid email still imports (the validator does not over-reject).
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "Support": {
+            "provider": "openai",
+            "prompt": "you are support",
+            "email_recipient": "ops@example.com",
+            "email_from": "ava@example.com",
+        },
+    })
+
+    r = client.post("/api/agents-migration/reconcile")
+    assert r.status_code == 200, r.text
+    got = client.get("/api/agents/support").json()
+    assert got["email_recipient"] == "ops@example.com"
+    assert got["email_from"] == "ava@example.com"
+
+
 def test_reconcile_updates_existing_full_fields(env):
     # Idempotency / merge: an existing agent whose YAML changed gets its full field
     # set updated, not just prompt, and is not destructively recreated (slug stable).

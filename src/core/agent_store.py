@@ -51,10 +51,13 @@ class EngineAgentStore:
     def resolve(self, name: str) -> Optional[ContextConfig]:
         """Resolve a dialplan context/agent name to a ContextConfig.
 
-        Lookup order (CRIT-1): original-name match (``display_name``) → exact
-        ``slug`` → ``slugify(name)``. display_name-first means a slug-collision
-        pair (disambiguated at migration to e.g. ``sales_east`` / ``sales_east_2``)
-        each resolves to its own agent when the caller uses the original name.
+        Lookup order (CRIT-1 + Codex P2): exact ``slug`` → ``slugify(name)`` →
+        ``display_name``. The canonical slug is tried first so a free-form
+        ``display_name`` can never shadow a real slug (e.g. ``Set(AI_AGENT=sales)``
+        must reach the agent whose *slug* is ``sales``, not one whose display_name
+        happens to be "sales"). ``slugify(name)`` still resolves legacy raw context
+        names (CRIT-1); ``display_name`` last keeps the original-name lookup as a
+        final fallback.
 
         Returns ``None`` for a clean not-found/inactive result. Raises
         ``AgentStoreReadError`` if the DB is present but unreadable, so the caller
@@ -64,12 +67,12 @@ class EngineAgentStore:
         try:
             with closing(self._conn()) as c:
                 r = (
-                    c.execute("SELECT * FROM agents WHERE display_name=? AND is_active=1 LIMIT 1",
+                    c.execute("SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
                               (name,)).fetchone()
                     or c.execute("SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
-                                 (name,)).fetchone()
-                    or c.execute("SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
                                  (_slugify(name),)).fetchone()
+                    or c.execute("SELECT * FROM agents WHERE display_name=? AND is_active=1 LIMIT 1",
+                                 (name,)).fetchone()
                 )
         except sqlite3.Error as e:
             logger.warning("agents.db read failed (%s); caller will fall back to YAML", e)
