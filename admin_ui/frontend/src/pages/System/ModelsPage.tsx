@@ -166,6 +166,7 @@ const ModelsPage = () => {
     const [envConfig, setEnvConfig] = useState<Record<string, string>>({});
     const [forceIncompatibleApply, setForceIncompatibleApply] = useState(false);
     const [runtimeGpu, setRuntimeGpu] = useState<RuntimeGpuStatus | null>(null);
+    const [runtimeMode, setRuntimeMode] = useState<string | null>(null);
     const [applyProgress, setApplyProgress] = useState<ApplyProgressState | null>(null);
 
     // Rebuild dialog state
@@ -355,6 +356,7 @@ const ModelsPage = () => {
             if (localAI?.status === 'connected') {
                 setServerStatus('connected');
                 setRuntimeGpu((localAI.details?.gpu || null) as RuntimeGpuStatus | null);
+                setRuntimeMode((localAI.details?.config?.runtime_mode || null) as string | null);
                 setActiveModels({
                     stt: {
                         backend: localAI.details?.models?.stt?.backend || 'unknown',
@@ -386,10 +388,12 @@ const ModelsPage = () => {
             } else {
                 setServerStatus('error');
                 setRuntimeGpu(null);
+                setRuntimeMode(null);
             }
         } else {
             setServerStatus('error');
             setRuntimeGpu(null);
+            setRuntimeMode(null);
         }
 
         if (modelsRes.status === 'fulfilled' && modelsRes.value.data) {
@@ -1322,11 +1326,22 @@ const ModelsPage = () => {
                                                 </>
                                             }
                                         />
-                                        <span className={`ml-auto px-2 py-0.5 rounded text-xs ${activeModels.llm.loaded ? 'bg-green-500/10 text-green-500' : 'bg-yellow-500/10 text-yellow-500'
+                                        {runtimeMode === 'minimal' && (
+                                            <span className="ml-auto px-2 py-0.5 rounded text-xs bg-amber-500/10 text-amber-500">
+                                                Minimal mode
+                                            </span>
+                                        )}
+                                        <span className={`${runtimeMode === 'minimal' ? '' : 'ml-auto'} px-2 py-0.5 rounded text-xs ${activeModels.llm.loaded ? 'bg-green-500/10 text-green-500' : 'bg-yellow-500/10 text-yellow-500'
                                             }`}>
                                             {activeModels.llm.loaded ? 'Loaded' : 'Not Loaded'}
                                         </span>
                                     </div>
+                                    {runtimeMode === 'minimal' && (
+                                        <div className="mb-3 flex items-start gap-1.5 text-xs text-amber-500 bg-amber-500/10 rounded px-2 py-1.5">
+                                            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                                            <span>Minimal mode — no LLM loaded; tuning changes (context, max tokens, filler) have no effect. Set <code>LOCAL_AI_MODE=full</code> with an LLM model, or add a GPU.</span>
+                                        </div>
+                                    )}
                                     <select
                                         className="w-full text-xs p-2 rounded border border-border bg-background"
                                         value={pendingChanges.llm || activeModels.llm.path}

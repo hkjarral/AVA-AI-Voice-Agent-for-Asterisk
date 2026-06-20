@@ -47,6 +47,9 @@ class SessionContext:
     tone_buffer_8k: bytes = b""
     # Optional auth state (enabled if LOCAL_WS_AUTH_TOKEN set)
     authenticated: bool = False
+    # Set once we've logged a protocol_version mismatch for this connection,
+    # so the warning is emitted at most once per session instead of per message.
+    protocol_version_warned: bool = False
     # Whisper-only echo guard: suppress STT while Local AI Server is emitting TTS audio.
     stt_suppress_until: float = 0.0
     # Telephony utterance segmentation state (batch STT backends like Whisper).

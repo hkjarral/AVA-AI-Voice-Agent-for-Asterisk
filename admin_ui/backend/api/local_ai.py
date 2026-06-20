@@ -1207,6 +1207,30 @@ async def switch_model(request: SwitchModelRequest):
             or request.llm_streaming_tts_overlap is not None
         )
         if wants_llm_change:
+            # Tuning-only change (no model_path) in minimal runtime mode has no
+            # effect: minimal mode runs with llm_model=None, so context/max_tokens/
+            # filler tweaks land on a server that never loaded an LLM. The verify
+            # path only checks llm.loaded when model_path is set, so without this
+            # guard a tuning-only switch would falsely report success. Fail loudly.
+            if not request.model_path:
+                try:
+                    pre_status = await _fetch_status()
+                except Exception:
+                    pre_status = None
+                pre_runtime_mode = (
+                    ((pre_status or {}).get("config") or {}).get("runtime_mode") or ""
+                ).strip().lower()
+                if pre_runtime_mode == "minimal":
+                    return SwitchModelResponse(
+                        success=False,
+                        requires_restart=False,
+                        message=(
+                            "Cannot apply LLM tuning: local-ai-server is in minimal runtime "
+                            "mode (no LLM loaded), so context/max-tokens/filler changes have "
+                            "no effect. Set LOCAL_AI_MODE=full (and provide an LLM model) or "
+                            "add a GPU to enable LLM tuning."
+                        ),
+                    )
             # LLM flow supports best-effort hot switch + verification before falling back to recreate.
             payload: Dict[str, Any] = {"type": "switch_model"}
             if request.model_path:

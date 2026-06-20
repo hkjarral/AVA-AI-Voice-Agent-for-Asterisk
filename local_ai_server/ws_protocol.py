@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from constants import DEFAULT_MODE, SUPPORTED_MODES
+from constants import DEFAULT_MODE, PROTOCOL_VERSION, SUPPORTED_MODES
 from session import SessionContext
 
 
@@ -20,6 +20,26 @@ class WebSocketProtocol:
         except json.JSONDecodeError:
             logging.warning("❓ Invalid JSON message received (length=%d)", len(message))
             return
+
+        # Protocol-version handshake: messages that declare a protocol_version are
+        # validated against PROTOCOL_VERSION (single source of truth in constants).
+        # On mismatch we warn loudly (once per session) but keep processing, so a
+        # version skew during a rolling upgrade degrades rather than drops calls.
+        raw_version = data.get("protocol_version")
+        if raw_version is not None and not session.protocol_version_warned:
+            try:
+                client_version = int(raw_version)
+            except (TypeError, ValueError):
+                client_version = None
+            if client_version != PROTOCOL_VERSION:
+                session.protocol_version_warned = True
+                logging.warning(
+                    "⚠️ PROTOCOL MISMATCH - client protocol_version=%r server=%d call_id=%s; "
+                    "proceeding best-effort. Upgrade both engine and local-ai-server.",
+                    raw_version,
+                    PROTOCOL_VERSION,
+                    session.call_id,
+                )
 
         msg_type_raw = data.get("type")
         if msg_type_raw is None:

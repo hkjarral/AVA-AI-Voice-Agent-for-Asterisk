@@ -19,6 +19,11 @@ from ..tools.parser import parse_response_with_tools, validate_tool_call, has_to
 
 logger = get_logger(__name__)
 
+# WebSocket message protocol version sent on tool-gateway messages. Must stay in
+# sync with local_ai_server/constants.py PROTOCOL_VERSION (the canonical source);
+# the local-ai-server validates this at message time and warns on mismatch.
+PROTOCOL_VERSION = 2
+
 class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     """
     AI Provider that connects to the external Local AI Server via WebSockets.
@@ -666,7 +671,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         payload = {
             "type": "llm_tool_request",
             "mode": "llm",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "request_id": request_id,
             "call_id": call_id or self._active_call_id,
             "text": llm_text,
@@ -801,7 +806,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         effective_call_id = call_id or self._active_call_id
         payload = {
             "type": "tool_result",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "call_id": effective_call_id,
             "function_call_id": function_call_id,
             "tool_name": tool_name,
@@ -1449,7 +1454,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             return False
         payload = {
             "type": "tool_context",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "call_id": call_id,
             "allowed_tools": sorted(self._allowed_tools),
             "tools": list(self._allowed_tool_schemas or []),
