@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-agent email schema columns** (`admin_ui/backend/agents_store.py`): `agents.db` now carries `email_recipient`, `email_from`, and `email_enabled` (tri-state: NULL inherits) on the `agents` table, with an additive `PRAGMA table_info`-guarded migration so existing databases gain the columns on open. Schema only — API/UI/dispatch land in follow-up commits.
 - **v7 Agents API/OpenAPI follow-up (#433)**: Exposed the Agents API as a documented OpenAPI contract with typed response models, `GET /api/agents/{slug}`, v7 API metadata, and additive call-history agent aliases (`agent_slug`, `agent_name`) for integrations. Thanks [@YosefAdPro](https://github.com/YosefAdPro) for the contribution.
 
 ### Fixed

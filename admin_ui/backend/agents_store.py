@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS agents (
     source_file TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    notes TEXT
+    notes TEXT,
+    email_recipient TEXT,
+    email_from TEXT,
+    email_enabled INTEGER             -- tri-state: NULL=inherit, 0=off, 1=on
 );
 CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug);
 CREATE INDEX IF NOT EXISTS idx_agents_mgmt ON agents(is_operator_managed);
@@ -63,8 +66,28 @@ class AgentsStore:
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        self._ensure_schema_sync()
         try: os.chmod(db_path, 0o600)
         except OSError: pass
+
+    def _ensure_schema_sync(self):
+        """Best-effort additive migrations for existing installs.
+
+        SQLite has limited ALTER TABLE support; we only add nullable columns
+        when missing — never drop or rename. Safe on populated production DBs.
+        """
+        try:
+            existing = {str(r[1]) for r in
+                        self.conn.execute("PRAGMA table_info(agents)").fetchall()}
+            with self.conn:
+                if "email_recipient" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_recipient TEXT")
+                if "email_from" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_from TEXT")
+                if "email_enabled" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_enabled INTEGER")
+        except sqlite3.Error:
+            pass
 
     def close(self):
         """Close the underlying sqlite connection. Safe to call more than once."""
