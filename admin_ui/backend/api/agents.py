@@ -435,23 +435,68 @@ def migration_ack():
     acknowledge_drift(_store(), _yaml_path(), _contexts_dir())
     return {"ok": True}
 
+# First-class store columns a context maps onto directly. Everything else in the
+# context (e.g. pipeline, background_music, disable flags) goes into extra_json — the
+# same split run_migration() uses, kept symmetric with export_agents_yaml.export_yaml.
+_RECONCILE_FIRST_CLASS = {
+    "provider", "prompt", "voice", "greeting", "extension", "role_label", "notes",
+    "email_recipient", "email_from", "email_enabled", "tools", "audio_profile",
+    "profile",
+}
+
+
+def _context_to_agent_fields(ctx: dict) -> dict:
+    """Map a merged YAML context dict to AgentsStore create/update kwargs, mirroring
+    run_migration()'s field handling (tools->tools_json, profile/audio_profile,
+    leftover keys->extra_json) plus the per-context operator/email fields that
+    export_agents_yaml emits. Inverse of export_yaml so a round-trip is lossless."""
+    extra = {k: v for k, v in ctx.items() if k not in _RECONCILE_FIRST_CLASS}
+    fields = {
+        "provider": ctx.get("provider") or "",
+        "prompt": ctx.get("prompt"),
+        "voice": ctx.get("voice"),
+        "greeting": ctx.get("greeting"),
+        "extension": ctx.get("extension"),
+        "role_label": ctx.get("role_label"),
+        "notes": ctx.get("notes"),
+        "email_recipient": ctx.get("email_recipient"),
+        "email_from": ctx.get("email_from"),
+        "email_enabled": ctx.get("email_enabled"),
+        "tools_json": json.dumps(ctx["tools"]) if ctx.get("tools") else None,
+        "audio_profile": ctx.get("profile") or ctx.get("audio_profile"),
+        "extra_json": json.dumps(extra) if extra else None,
+    }
+    return fields
+
+
 @router.post("/agents-migration/reconcile")
 def migration_reconcile():
-    """Re-import YAML contexts: upsert by slug (spec §11 'Import YAML changes')."""
+    """Re-import YAML contexts: upsert by slug (spec §11 'Import YAML changes').
+
+    MED-A2: runs the same _engine_ok validation create/patch use (an unroutable
+    context — neither provider nor pipeline — is skipped, not silently created) and
+    imports the full field set, not just prompt. Upsert keeps the slug stable, so an
+    update is never a destructive recreate."""
     store = _store()
     merged = merged_effective_contexts(_yaml_path(), _contexts_dir())
     changed = []
+    skipped = []
     for key, ctx in merged.items():
         src = ctx.pop("_source_file", None)
         slug_key = slugify(key)
+        fields = _context_to_agent_fields(ctx)
+        if not fields["prompt"]:
+            continue
+        if not _engine_ok(fields["provider"], fields["extra_json"]):
+            skipped.append((slug_key, "no provider or pipeline"))
+            continue
         existing = store.get_by_slug(slug_key)
-        if existing is None and ctx.get("prompt"):
-            store.create(display_name=key, provider=ctx.get("provider", ""),
-                         prompt=ctx["prompt"], slug=slug_key,
-                         is_operator_managed=0, source_file=src)
+        if existing is None:
+            store.create(display_name=key, slug=slug_key,
+                         is_operator_managed=0, source_file=src, **fields)
             changed.append(("added", slug_key))
-        elif existing and ctx.get("prompt") and ctx["prompt"] != existing["prompt"]:
-            store.update(slug_key, prompt=ctx["prompt"])
+        elif any(existing.get(k) != v for k, v in fields.items()):
+            store.update(slug_key, **fields)
             changed.append(("updated", slug_key))
     acknowledge_drift(store, _yaml_path(), _contexts_dir())
-    return {"changed": changed}
+    return {"changed": changed, "skipped": skipped}
