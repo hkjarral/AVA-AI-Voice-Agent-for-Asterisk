@@ -69,6 +69,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._status_lock: asyncio.Lock = asyncio.Lock()
         # Track last applied system prompt to avoid spamming switch_model.
         self._last_system_prompt_digest: Optional[str] = None
+        # Pending switch_model confirmation. The digest is recorded only after
+        # the server acks with a successful switch_response (MED-R4 fail-closed).
+        self._pending_switch_future: Optional[asyncio.Future] = None
+        self._switch_lock: asyncio.Lock = asyncio.Lock()
         # Per-call tool allowlist (from context.tools). Used to drop hallucinated tool calls.
         self._allowed_tools: set[str] = set()
         self._allowed_tool_schemas: List[Dict[str, Any]] = []
@@ -1371,19 +1375,62 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 "system_prompt": prompt,
             },
         }
-        try:
-            await self.websocket.send(json.dumps(payload))
+        # Fail-closed: the WebSocket is reused across calls, so we must confirm
+        # the server actually applied the prompt before recording its digest.
+        # If we recorded it on send alone and the server-side apply failed, the
+        # matching-digest short-circuit would skip the re-send on the next call,
+        # leaving the PREVIOUS call's prompt live (cross-call leak). Wait for the
+        # switch_response and update the digest ONLY on confirmed success; on
+        # failure or timeout leave the digest untouched so the next send retries.
+        # Per MED-R4.
+        timeout_sec = max(0.5, min(float(self.response_timeout or 0.0), 5.0))
+        async with self._switch_lock:
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future = loop.create_future()
+            self._pending_switch_future = fut
+            try:
+                await self.websocket.send(json.dumps(payload))
+                response = await asyncio.wait_for(fut, timeout=timeout_sec)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Timed out waiting for Local AI Server switch_response; not recording prompt digest",
+                    call_id=call_id,
+                    chars=len(prompt),
+                    timeout_sec=timeout_sec,
+                )
+                return False
+            except Exception:
+                logger.error(
+                    "Failed applying Local AI Server system prompt",
+                    call_id=call_id,
+                    chars=len(prompt),
+                    exc_info=True,
+                )
+                return False
+            finally:
+                if self._pending_switch_future is fut:
+                    self._pending_switch_future = None
+
+        status = str((response or {}).get("status") or "").lower()
+        # "success" and "no_change" both mean the server's prompt now matches
+        # what we sent; "error" (or anything else) means it did not apply.
+        if status in ("success", "no_change"):
             self._last_system_prompt_digest = digest
-            logger.info("Applied Local AI Server system prompt (dry_run)", call_id=call_id, chars=len(prompt))
-            return True
-        except Exception:
-            logger.error(
-                "Failed applying Local AI Server system prompt",
+            logger.info(
+                "Applied Local AI Server system prompt (dry_run)",
                 call_id=call_id,
                 chars=len(prompt),
-                exc_info=True,
+                status=status,
             )
-            return False
+            return True
+        logger.error(
+            "Local AI Server rejected system prompt switch; not recording digest",
+            call_id=call_id,
+            chars=len(prompt),
+            status=status or "unknown",
+            message=(response or {}).get("message"),
+        )
+        return False
 
     async def _send_tool_context(self, *, call_id: str) -> bool:
         """Send tool_context to local_ai_server. Returns True on success.
@@ -1786,6 +1833,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                             if backend:
                                 self._runtime_stt_backend = backend
                             fut = self._pending_status_future
+                            if fut and not fut.done():
+                                fut.set_result(data)
+                            continue
+                        if data.get("type") == "switch_response":
+                            # Confirmation for a pending _apply_system_prompt
+                            # switch_model. Resolve the waiter so the digest is
+                            # recorded only on confirmed success (MED-R4).
+                            fut = self._pending_switch_future
                             if fut and not fut.done():
                                 fut.set_result(data)
                             continue
