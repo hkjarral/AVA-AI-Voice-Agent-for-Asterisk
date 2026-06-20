@@ -19,7 +19,7 @@ export interface AgentToolState {
     disableGlobalPostCall: string[];  // extra.disable_global_post_call_tools
     backgroundMusic: string;          // extra.background_music
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
-    mcpJsonRaw: string;               // mcp_json preserved verbatim
+    mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
 }
 
 const OWNED_EXTRA_KEYS = [

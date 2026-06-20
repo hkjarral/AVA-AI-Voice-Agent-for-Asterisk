@@ -50,6 +50,7 @@ class AgentIn(BaseModel):
     greeting: str | None = None
     audio_profile: str | None = None
     tools_json: str | None = None
+    # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
     notes: str | None = None
@@ -70,6 +71,7 @@ class AgentPatch(BaseModel):
     greeting: str | None = None
     audio_profile: str | None = None
     tools_json: str | None = None
+    # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
     notes: str | None = None
@@ -96,6 +98,7 @@ class AgentOut(BaseModel):
     greeting: str | None = None
     prompt: str
     tools_json: str | None = None
+    # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     audio_profile: str | None = None
     extra_json: str | None = None

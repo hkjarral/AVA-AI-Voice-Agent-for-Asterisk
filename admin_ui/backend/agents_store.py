@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS agents (
     greeting TEXT,
     prompt TEXT NOT NULL,
     tools_json TEXT,
-    mcp_json TEXT,
+    mcp_json TEXT,                    -- NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     audio_profile TEXT,
     extra_json TEXT,                 -- D3: pipeline, background_music, phase tools, disable flags, anything else
     is_operator_managed INTEGER NOT NULL DEFAULT 1,
