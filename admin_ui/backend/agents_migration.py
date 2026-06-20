@@ -118,6 +118,23 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
     merged = merged_effective_contexts(yaml_path, contexts_dir)
     h = contexts_hash(merged)
 
+    # H4: legacy per-context email overrides live in the GLOBAL tools config
+    # (ai-agent.yaml top-level `tools`), keyed by the ORIGINAL context name. Load
+    # the email tool block so we can (1) carry each context's override onto its
+    # agent row and (2) re-key the surviving map from original name -> slug.
+    email_tool_cfg = {}
+    if os.path.exists(yaml_path):
+        doc = yaml.safe_load(open(yaml_path)) or {}
+        tools_block = doc.get("tools") if isinstance(doc, dict) else None
+        if isinstance(tools_block, dict):
+            cfg = tools_block.get("send_email_summary")
+            if isinstance(cfg, dict):
+                email_tool_cfg = cfg
+    admin_email_by_ctx = email_tool_cfg.get("admin_email_by_context") or {}
+    from_email_by_ctx = email_tool_cfg.get("from_email_by_context") or {}
+    rekeyed_admin = {}
+    rekeyed_from = {}
+
     # Validate every context and separate valid rows from skips *before* we
     # open the transaction — skips are not errors and must not trigger rollback.
     rows = []
@@ -144,6 +161,15 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             slug = f"{base}_{n}"
             n += 1
         seen_slugs.add(slug)
+        # H4: carry the legacy per-context email override (keyed by original name)
+        # onto the agent row, and re-key the surviving map entry to the slug so the
+        # global-tools resolution path resolves once context_name is the slug.
+        email_recipient = admin_email_by_ctx.get(key)
+        email_from = from_email_by_ctx.get(key)
+        if email_recipient is not None:
+            rekeyed_admin[slug] = email_recipient
+        if email_from is not None:
+            rekeyed_from[slug] = email_from
         rows.append((
             uuid.uuid4().hex,
             slug,
@@ -159,6 +185,8 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             src,
             now,
             now,
+            email_recipient,
+            email_from,
         ))
 
     with store.conn:
@@ -166,8 +194,9 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             store.conn.execute(
                 """INSERT INTO agents (id, slug, display_name, provider, voice, greeting,
                    prompt, tools_json, audio_profile, extra_json, is_operator_managed,
-                   is_active, is_default, source_file, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?)""",
+                   is_active, is_default, source_file, created_at, updated_at,
+                   email_recipient, email_from)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?,?,?)""",
                 r,
             )
         store.conn.execute(
@@ -180,11 +209,21 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
     # named "default", the invariant promotes the first-created active agent; making
     # that visible lets the UI/log show the operator what was auto-selected.
     default_row = store.get_default()
+    # H4: expose the re-keyed send_email_summary map (original-name keys swapped for
+    # slugs) preserving the global default. The migration has no YAML write-back
+    # path, so this is returned for any consumer that persists the global tools cfg.
+    email_rekey = {}
+    if rekeyed_admin or rekeyed_from:
+        cfg = dict(email_tool_cfg)
+        cfg["admin_email_by_context"] = rekeyed_admin
+        cfg["from_email_by_context"] = rekeyed_from
+        email_rekey["send_email_summary"] = cfg
     return {
         "imported": len(rows),
         "skipped": skipped,
         "already_migrated": False,
         "default_slug": default_row["slug"] if default_row else None,
+        "email_by_context_rekey": email_rekey,
     }
 
 
