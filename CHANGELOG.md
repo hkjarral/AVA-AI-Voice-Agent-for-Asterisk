@@ -155,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`agents.db` file permissions tightened to `0o600` (`admin_ui/backend/agents_store.py`)**: Previously created at `0o640` (group-readable). Both admin_ui and ai_engine run as the same `appuser`, so owner-only permissions are sufficient and close a CodeQL `py/overly-permissive-file` finding.
 - **Support bundle no longer leaks raw strings from `tools_json` (`admin_ui/backend/api/support.py`)**: `_structure_only()` previously returned string-form tool entries verbatim, which could expose webhook URLs or other sensitive values. String entries are now replaced with a `<tool len=N>` placeholder; non-string/non-dict entries are replaced with `<tool>`. No raw content can pass through.
+- **CI guard against accidentally committed secrets (`scripts/check_no_committed_secrets.py`, `.github/workflows/ci.yml`)**: a new defense-in-depth CI step scans every git-tracked file for assignments of known secret keys (`SMTP_PASSWORD`, `JWT_SECRET`, `*_API_KEY`/`*_TOKEN`/`*_SECRET`/`*_PASSWORD`) and provider key formats (`sk-…`, `AKIA…`) with a non-placeholder value, failing the build on a hit. The matcher is conservative — empty values, `${ENV}` references, documented placeholders, and test fixtures are allowed, and in code only quoted string literals are considered (a bare RHS like `api_key = os.getenv(...)` is not). Gitignored files (e.g. a real `.env`) are out of scope. Covered by `tests/test_check_no_committed_secrets.py` (CRIT-2 / S2).
 
 ### Fixed
 
