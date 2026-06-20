@@ -37,6 +37,9 @@ class AgentIn(BaseModel):
     mcp_json: str | None = None
     extra_json: str | None = None
     notes: str | None = None
+    email_recipient: str | None = None
+    email_from: str | None = None
+    email_enabled: bool | None = None
 
 class AgentPatch(BaseModel):
     display_name: str | None = None
@@ -51,6 +54,9 @@ class AgentPatch(BaseModel):
     mcp_json: str | None = None
     extra_json: str | None = None
     notes: str | None = None
+    email_recipient: str | None = None
+    email_from: str | None = None
+    email_enabled: bool | None = None
     is_active: bool | None = None
 
 class AgentOut(BaseModel):
@@ -78,6 +84,9 @@ class AgentOut(BaseModel):
     created_at: str
     updated_at: str
     notes: str | None = None
+    email_recipient: str | None = None
+    email_from: str | None = None
+    email_enabled: bool | None = None
 
 class AgentSummaryResponse(BaseModel):
     active_agents: int

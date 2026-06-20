@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Per-agent email schema columns** (`admin_ui/backend/agents_store.py`): `agents.db` now carries `email_recipient`, `email_from`, and `email_enabled` (tri-state: NULL inherits) on the `agents` table, with an additive `PRAGMA table_info`-guarded migration so existing databases gain the columns on open. Schema only — API/UI/dispatch land in follow-up commits.
+- **Per-agent email schema columns** (`admin_ui/backend/agents_store.py`): `agents.db` now carries `email_recipient`, `email_from`, and `email_enabled` (tri-state: NULL inherits) on the `agents` table, with an additive `PRAGMA table_info`-guarded migration so existing databases gain the columns on open. Schema only — UI/dispatch land in follow-up commits. The Agents API (`admin_ui/backend/api/agents.py`) and the disaster-recovery YAML export (`admin_ui/backend/export_agents_yaml.py`) now carry these fields end-to-end: create/patch accept them, `GET /api/agents/{slug}` returns them (`email_enabled` as a tri-state bool/None), and the export emits them only when set (explicit `email_enabled: 0` round-trips; NULL stays absent).
 - **v7 Agents API/OpenAPI follow-up (#433)**: Exposed the Agents API as a documented OpenAPI contract with typed response models, `GET /api/agents/{slug}`, v7 API metadata, and additive call-history agent aliases (`agent_slug`, `agent_name`) for integrations. Thanks [@YosefAdPro](https://github.com/YosefAdPro) for the contribution.
 
 ### Fixed

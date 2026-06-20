@@ -54,7 +54,8 @@ class AgentsStore:
     COLUMNS = ["id","slug","display_name","extension","role_label","provider","voice",
                "greeting","prompt","tools_json","mcp_json","audio_profile","extra_json",
                "is_operator_managed","is_active","is_default","source_file",
-               "created_at","updated_at","notes"]
+               "created_at","updated_at","notes",
+               "email_recipient","email_from","email_enabled"]
 
     def __init__(self, db_path: str = DB_DEFAULT):
         parent = os.path.dirname(db_path)
@@ -127,7 +128,8 @@ class AgentsStore:
     def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
                role_label=None, voice=None, greeting=None, tools_json=None,
                mcp_json=None, audio_profile=None, extra_json=None,
-               is_operator_managed=1, source_file=None, notes=None) -> dict:
+               is_operator_managed=1, source_file=None, notes=None,
+               email_recipient=None, email_from=None, email_enabled=None) -> dict:
         slug = slug or slugify(display_name)
         if not slug or not _SLUG_RE.sub("", slug) == slug:
             raise ValueError(f"invalid slug: {slug!r}")
@@ -139,11 +141,13 @@ class AgentsStore:
             self.conn.execute(
                 """INSERT INTO agents (id,slug,display_name,extension,role_label,provider,
                    voice,greeting,prompt,tools_json,mcp_json,audio_profile,extra_json,
-                   is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?)""",
+                   is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes,
+                   email_recipient,email_from,email_enabled)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), slug, display_name, extension, role_label, provider,
                  voice, greeting, prompt, tools_json, mcp_json, audio_profile, extra_json,
-                 is_operator_managed, source_file, now, now, notes))
+                 is_operator_managed, source_file, now, now, notes,
+                 email_recipient, email_from, email_enabled))
         self._ensure_default_invariant()
         return self.get_by_slug(slug)
 

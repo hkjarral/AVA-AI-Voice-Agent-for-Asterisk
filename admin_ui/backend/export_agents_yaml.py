@@ -23,8 +23,11 @@ def export_yaml(store: AgentsStore) -> str:
         # LOW-A5: preserve operator metadata across an export -> delete -> re-migrate
         # cycle. These aren't first-class YAML context keys, so on re-import they land
         # in extra_json (harmless to the engine) rather than being silently dropped.
-        for k in ("extension", "role_label", "notes"):
+        for k in ("extension", "role_label", "notes", "email_recipient", "email_from"):
             if a[k]: ctx[k] = a[k]
+        # email_enabled is a tri-state INTEGER (NULL=inherit, 0=off, 1=on); emit only
+        # when explicitly set so an explicit 0 round-trips and NULL stays absent.
+        if a["email_enabled"] is not None: ctx["email_enabled"] = a["email_enabled"]
         if a["audio_profile"]: ctx["profile"] = a["audio_profile"]
         tools = _safe_json(a["tools_json"])
         if tools is not None: ctx["tools"] = tools
