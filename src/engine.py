@@ -12259,6 +12259,11 @@ class Engine:
                                 context=transport.context,
                                 prompt_length=len(prompt_to_apply or ""),
                             )
+                        # Thread per-agent post-call email overrides onto the session (H5)
+                        # so the email tool sees them at dispatch. None preserves fallback.
+                        session.email_recipient = getattr(context_config, "email_recipient", None)
+                        session.email_from = getattr(context_config, "email_from", None)
+                        session.email_enabled = getattr(context_config, "email_enabled", None)
                         await self._save_session(session)
                     except Exception as exc:
                         logger.error(

@@ -62,18 +62,8 @@ class SendEmailSummaryTool(Tool):
         call_id = context.call_id
         
         try:
-            # Check if tool is enabled
             config = context.get_config_value("tools.send_email_summary", {})
-            if not config.get("enabled", False):
-                logger.info(
-                    "Email summary tool disabled, skipping send",
-                    call_id=call_id
-                )
-                return {
-                    "status": "skipped",
-                    "message": "Email summary tool is disabled"
-                }
-            
+
             # Get session data
             session = await context.get_session()
             if not session:
@@ -82,7 +72,18 @@ class SendEmailSummaryTool(Tool):
                     "status": "error",
                     "message": "Session not found"
                 }
-            
+
+            # Gate: global enable + per-agent tri-state toggle (H5).
+            if not self._should_send(session, config):
+                logger.info(
+                    "Email summary disabled for this call, skipping send",
+                    call_id=call_id,
+                )
+                return {
+                    "status": "skipped",
+                    "message": "Email summary is disabled"
+                }
+
             # Gather call metadata
             email_data = self._prepare_email_data(session, config, call_id)
             
@@ -113,6 +114,20 @@ class SendEmailSummaryTool(Tool):
                 "message": f"Failed to send email: {str(e)}"
             }
     
+    def _should_send(self, session: Any, config: Dict[str, Any]) -> bool:
+        """Decide whether the summary email should be sent (H5).
+
+        Per-agent ``email_enabled`` is tri-state:
+        - ``False`` -> always skip (per-agent opt-out wins).
+        - ``None``  -> inherit the global ``tools.send_email_summary.enabled`` gate
+          (preserves today's default-enabled behavior exactly when unset).
+        - ``True``  -> still subject to the global gate; does not force-send when the
+          tool is globally disabled.
+        """
+        if getattr(session, "email_enabled", None) is False:
+            return False
+        return bool(config.get("enabled", False))
+
     def _prepare_email_data(
         self,
         session: Any,
@@ -200,14 +215,15 @@ class SendEmailSummaryTool(Tool):
             tool_name="send_email_summary",
         )
         
-        # Build email data
-        admin_email = resolve_context_value(
+        # Build email data. Per-agent override (session.email_*) wins; falls back to
+        # the existing per-context-map -> global resolution (H5).
+        admin_email = getattr(session, "email_recipient", None) or resolve_context_value(
             tool_config=config,
             key="admin_email",
             context_name=context_name,
             default="admin@company.com",
         )
-        from_email = resolve_context_value(
+        from_email = getattr(session, "email_from", None) or resolve_context_value(
             tool_config=config,
             key="from_email",
             context_name=context_name,

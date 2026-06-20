@@ -82,10 +82,22 @@ class EngineAgentStore:
                            name, e)
             raise AgentStoreReadError(str(e)) from e
         kwargs = {k: extra[k] for k in _EXTRA_FIELDS if k in extra}
+        # Per-agent post-call email overrides (H5): raw DB columns (added by H1
+        # migration), not extra_json. Guard column presence so a pre-migration DB
+        # resolves cleanly instead of raising. email_enabled is stored as int (0/1)
+        # or NULL; coerce to tri-state bool/None.
+        cols = r.keys()
+        email_recipient = r["email_recipient"] if "email_recipient" in cols else None
+        email_from = r["email_from"] if "email_from" in cols else None
+        email_enabled_raw = r["email_enabled"] if "email_enabled" in cols else None
+        email_enabled = None if email_enabled_raw is None else bool(email_enabled_raw)
         return ContextConfig(
             prompt=r["prompt"], greeting=r["greeting"], profile=r["audio_profile"],
             provider=r["provider"],
             tools=tools,
+            email_recipient=email_recipient,
+            email_from=email_from,
+            email_enabled=email_enabled,
             **kwargs)
 
     def default_slug(self) -> Optional[str]:

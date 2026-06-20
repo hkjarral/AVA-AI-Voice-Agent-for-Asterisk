@@ -62,6 +62,12 @@ class ContextConfig:
     disable_global_in_call_tools: Optional[List[str]] = None  # Global in-call tools to disable
     disable_global_post_call_tools: Optional[List[str]] = None  # Global post-call tools to disable
 
+    # Per-agent post-call email overrides (H5). None means "unset" -> fall back to
+    # per-context map / global config. email_enabled is tri-state (None = inherit).
+    email_recipient: Optional[str] = None
+    email_from: Optional[str] = None
+    email_enabled: Optional[bool] = None
+
 
 @dataclass
 class TransportProfile:

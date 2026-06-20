@@ -73,6 +73,11 @@ class CallSession:
     pipeline_components: Dict[str, str] = field(default_factory=dict)
     context_name: Optional[str] = None  # AI_CONTEXT from dialplan (for pipeline greeting/prompt resolution)
     routing_method: Optional[str] = None  # how context was selected: 'ai_agent' | 'ai_context' | 'default' | None
+    # Per-agent post-call email overrides (H5), threaded from ContextConfig at transport
+    # setup. None means "unset" -> dispatch falls back to per-context map / global config.
+    email_recipient: Optional[str] = None
+    email_from: Optional[str] = None
+    email_enabled: Optional[bool] = None  # tri-state: None inherits global enable, False skips
     # Per-call provider config overrides (do NOT mutate global provider templates).
     provider_overrides: Dict[str, Any] = field(default_factory=dict)
     conversation_state: str = "greeting"  # greeting | listening | processing
