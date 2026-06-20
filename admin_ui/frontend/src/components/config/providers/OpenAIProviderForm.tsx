@@ -42,7 +42,7 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                             />
                         </div>
                         <input
-                            type="text"
+                            type="password"
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.api_key || '${OPENAI_API_KEY}'}
                             onChange={(e) => handleChange('api_key', e.target.value)}

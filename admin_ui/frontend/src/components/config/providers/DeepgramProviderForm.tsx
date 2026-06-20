@@ -997,35 +997,6 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     </label>
                 </div>
             </div>
-
-            {/* Authentication Section */}
-            <div>
-                <h4 className="font-semibold mb-3">Authentication</h4>
-                <div className="space-y-2">
-                    <div className="flex items-center gap-1.5">
-                        <label className="text-sm font-medium">API Key (Environment Variable)</label>
-                        <HelpTooltip
-                            content={
-                                <>
-                                    <strong>API Key (env var reference)</strong> — legacy fallback field. Prefer the Credentials card above for per-instance keys.
-                                    <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                        <li>Use <code>${'${DEEPGRAM_API_KEY}'}</code> syntax to read from an environment variable</li>
-                                        <li>Plain strings are stored in config (avoid checking secrets into git)</li>
-                                    </ul>
-                                </>
-                            }
-                        />
-                    </div>
-                    <input
-                        type="text"
-                        className="w-full p-2 rounded border border-input bg-background"
-                        value={config.api_key || '${DEEPGRAM_API_KEY}'}
-                        onChange={(e) => handleChange('api_key', e.target.value)}
-                        placeholder="${DEEPGRAM_API_KEY}"
-                    />
-                    <p className="text-xs text-muted-foreground">Use {'${VAR_NAME}'} to reference environment variables</p>
-                </div>
-            </div>
         </div>
     );
 };

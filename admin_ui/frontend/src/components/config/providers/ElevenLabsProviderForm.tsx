@@ -167,43 +167,6 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                 <div>
                     <h4 className="font-semibold mb-3">Agent Details</h4>
                     <div className="space-y-4">
-                        <div className="space-y-2">
-                            <div className="flex items-center gap-1.5">
-                                <label className="text-sm font-medium">
-                                    Agent ID
-                                    <span className="text-destructive ml-1">*</span>
-                                </label>
-                                <HelpTooltip
-                                    content={
-                                        <>
-                                            <strong>Agent ID</strong> — identifies the pre-built Conversational AI agent that will handle the call. The agent (voice, system prompt, LLM, tools) is configured in the ElevenLabs dashboard, not here.
-                                            <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                                <li>Format: starts with <code>agent_</code> followed by an alphanumeric ID.</li>
-                                                <li>Best practice: store the literal value in a <code>.env</code> file and reference it here as <code>${'{'}ELEVENLABS_AGENT_ID{'}'}</code> so secrets stay out of config files.</li>
-                                                <li>Make sure any client tools the agent calls (e.g. <code>hangup_call</code>) are defined in the ElevenLabs agent's tool list.</li>
-                                            </ul>
-                                        </>
-                                    }
-                                    link="https://elevenlabs.io/app/conversational-ai"
-                                    linkText="ElevenLabs Agents Dashboard"
-                                />
-                            </div>
-                            <input
-                                type="text"
-                                className="w-full p-2 rounded border border-input bg-background font-mono text-sm"
-                                value={config.agent_id || ''}
-                                onChange={(e) => handleChange('agent_id', e.target.value)}
-                                placeholder="${ELEVENLABS_AGENT_ID}"
-                            />
-                            <p className="text-xs text-muted-foreground">
-                                Found in <a href="https://elevenlabs.io/app/agents" target="_blank" rel="noopener noreferrer" className="text-primary underline">Agents Dashboard</a>
-                            </p>
-                            <p className="text-xs text-amber-600 dark:text-amber-400">
-                                <strong>Tip:</strong> Use <code className="bg-muted px-1 rounded">${'{'}ELEVENLABS_AGENT_ID{'}'}</code> and set the actual value in{' '}
-                                <a href="/env" className="text-primary underline">System → Environment</a>
-                            </p>
-                        </div>
-
                         {/* Tools Hint */}
                         <div className="text-xs text-muted-foreground p-3 bg-muted rounded">
                             <strong>Note:</strong> Ensure client tools (hangup_call, etc.) are defined in the ElevenLabs dashboard for this agent.

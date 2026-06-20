@@ -48,7 +48,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                             />
                         </div>
                         <input
-                            type="text"
+                            type="password"
                             className="w-full p-2 rounded border border-input bg-background"
                             value={config.api_key ?? '${TELNYX_API_KEY}'}
                             onChange={(e) => handleChange('api_key', e.target.value)}
