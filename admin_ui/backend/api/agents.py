@@ -486,6 +486,7 @@ def migration_reconcile():
         slug_key = slugify(key)
         fields = _context_to_agent_fields(ctx)
         if not fields["prompt"]:
+            skipped.append((slug_key, "missing prompt"))
             continue
         if not _engine_ok(fields["provider"], fields["extra_json"]):
             skipped.append((slug_key, "no provider or pipeline"))

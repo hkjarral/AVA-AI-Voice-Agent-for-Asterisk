@@ -59,8 +59,15 @@ const MigrationStatusPage = () => {
         });
         if (!confirmed) return;
         try {
-            const res = await axios.post<{ changed: unknown[] }>('/api/agents-migration/reconcile');
+            const res = await axios.post<{ changed: unknown[]; skipped: [string, string][] }>('/api/agents-migration/reconcile');
             toast.success(`Applied: ${res.data.changed.length} change(s)`);
+            const skipped = res.data.skipped ?? [];
+            if (skipped.length > 0) {
+                toast.warning(
+                    `Skipped: ${skipped.length} context(s) — ` +
+                        skipped.map(([name, reason]) => `${name} (${reason})`).join(', ')
+                );
+            }
             loadStatus();
         } catch (e: unknown) {
             const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;

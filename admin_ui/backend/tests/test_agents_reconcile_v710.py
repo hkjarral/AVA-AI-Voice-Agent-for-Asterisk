@@ -85,10 +85,27 @@ def test_reconcile_rejects_unroutable_context(env):
         "Broken": {"prompt": "no provider, no pipeline"},
     })
 
-    client.post("/api/agents-migration/reconcile")
+    r = client.post("/api/agents-migration/reconcile")
 
     # the unroutable context must not have produced an agent row
     assert client.get("/api/agents/broken").status_code == 404
+    # ...and it must be reported in the skipped list with a reason
+    assert ["broken", "no provider or pipeline"] in r.json()["skipped"]
+
+
+def test_reconcile_records_promptless_skip(env):
+    # A context with no prompt is skipped, and (MED-A2 follow-up) must be recorded
+    # in the skipped list with a reason, matching how unroutable contexts are.
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "NoPrompt": {"provider": "openai"},
+    })
+
+    r = client.post("/api/agents-migration/reconcile")
+    assert r.status_code == 200, r.text
+
+    assert client.get("/api/agents/noprompt").status_code == 404
+    assert ["noprompt", "missing prompt"] in r.json()["skipped"]
 
 
 def test_reconcile_imports_pipeline_context(env):
