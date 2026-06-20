@@ -91,3 +91,62 @@ def test_email_enabled_true_does_not_override_config_disabled():
     tool = SendEmailSummaryTool()
     session = _session(email_enabled=True)
     assert tool._should_send(session, _config(enabled=False)) is False
+
+
+# --- Finding 1 (Codex P2): per-agent email must reach the session on the
+# PIPELINE resolution path, not only the monolithic-provider path. A pipeline
+# provider (e.g. local_hybrid) is NOT in engine.providers, so _resolve_audio_profile
+# returns at the provider lookup before the monolithic email block. The fix copies
+# the three email fields onto the session up-front, before that early return.
+
+
+@pytest.mark.asyncio
+async def test_pipeline_path_copies_per_agent_email_onto_session():
+    from src.engine import Engine
+
+    agent_ctx = SimpleNamespace(
+        email_recipient="agent-pipe@x.test",
+        email_from="agentfrom-pipe@x.test",
+        email_enabled=True,
+        provider="local_hybrid",  # a pipeline name, deliberately NOT in providers
+    )
+
+    class _ARI:
+        async def send_command(self, method, path, params=None, tolerate_statuses=None):
+            # AI_AGENT selects the agent context; everything else unset.
+            if params and params.get("variable") == "AI_AGENT":
+                return {"value": "sales"}
+            return {"value": ""}
+
+    class _Orchestrator:
+        agent_store = SimpleNamespace(default_slug=lambda: None)
+
+        def get_context_config(self, name):
+            return agent_ctx if name == "sales" else None
+
+    saved = []
+
+    class _StubEngine:
+        ari_client = _ARI()
+        transport_orchestrator = _Orchestrator()
+        providers = {}  # pipeline provider absent -> early return after email copy
+        config = SimpleNamespace(default_provider="local_hybrid")
+
+        async def _save_session(self, session, *, new=False):
+            saved.append(session)
+
+    session = SimpleNamespace(
+        call_id="call-pipe-1",
+        context_name=None,
+        routing_method=None,
+        provider_name=None,
+        email_recipient=None,
+        email_from=None,
+        email_enabled=None,
+    )
+
+    await Engine._resolve_audio_profile(_StubEngine(), session, "chan-1")
+
+    assert session.email_recipient == "agent-pipe@x.test"
+    assert session.email_from == "agentfrom-pipe@x.test"
+    assert session.email_enabled is True

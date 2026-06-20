@@ -12101,7 +12101,29 @@ class Engine:
             context_name=session.context_name,
             routing_method=session.routing_method,
         )
-        
+
+        # Thread per-agent post-call email overrides onto the session (H5) here,
+        # before any provider early-return. The monolithic path below also resolves
+        # these from transport.context, but pipeline providers are not in
+        # self.providers and return early at the provider lookup — so resolve them
+        # up-front from the already-resolved context so pipeline calls honor the
+        # per-agent email config too. None preserves the global/per-context fallback.
+        if resolved_context:
+            try:
+                email_ctx = self.transport_orchestrator.get_context_config(resolved_context)
+                if email_ctx:
+                    session.email_recipient = getattr(email_ctx, "email_recipient", None)
+                    session.email_from = getattr(email_ctx, "email_from", None)
+                    session.email_enabled = getattr(email_ctx, "email_enabled", None)
+                    await self._save_session(session)
+            except Exception:
+                logger.debug(
+                    "Failed to resolve per-agent email overrides for session",
+                    call_id=session.call_id,
+                    context_name=resolved_context,
+                    exc_info=True,
+                )
+
         # Get provider name (precedence: AI_PROVIDER > context > session.provider_name)
         provider_name = channel_vars.get('AI_PROVIDER')
         if not provider_name:

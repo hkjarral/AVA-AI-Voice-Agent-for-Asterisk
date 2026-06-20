@@ -56,7 +56,7 @@ http://localhost:3003
 **Login Credentials**:
 - Username: `admin`
 - Password: the one-time password printed to the admin_ui logs on first start
-  (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`) —
+  (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) —
   `admin`/`admin` no longer works.
 
 ⚠️ **Important**: You'll be required to set a new password at first login.
@@ -195,7 +195,7 @@ http://localhost:3003
 ```
 
 Log in with the one-time password printed to the admin_ui logs on first start
-(`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`); you'll be
+(`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you'll be
 required to set a new password at first login. `admin`/`admin` no longer works.
 
 ---
@@ -207,7 +207,7 @@ required to set a new password at first login. `admin`/`admin` no longer works.
 **Username**: `admin`  
 **Password**: a one-time password generated on first run (printed to the admin_ui logs):
 ```
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 
 The `admin` account is created automatically on first run with this one-time
@@ -259,7 +259,7 @@ kill $(cat admin_ui.pid) && nohup python main.py > admin_ui.log 2>&1 &
 **If you forget your password**:
 ```bash
 # Delete the users file. On next start a new one-time password is generated and
-# printed to the admin_ui logs (retrieve with: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD).
+# printed to the admin_ui logs (retrieve with: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password).
 rm config/users.json
 
 # Restart admin-ui

@@ -79,7 +79,7 @@ Open in your browser:
 
 **Default Login:** On first start, a one-time admin password is printed to the container logs. Retrieve it with:
 ```bash
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 You must change it at first login. Restrict port 3003 via firewall, VPN, or reverse proxy for production use.
 
@@ -455,7 +455,7 @@ Modern web interface for configuration and system management.
 ```bash
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 # Access at: http://localhost:3003
-# Retrieve one-time password: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+# Retrieve one-time password: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 
 **Key Features:**

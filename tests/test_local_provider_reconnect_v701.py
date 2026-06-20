@@ -107,8 +107,13 @@ async def test_reconnect_timeout_is_hard_ceiling_on_slow_inner_attempt():
     await asyncio.wait_for(provider._background_reconnect_loop(), timeout=15.0)
     duration = loop.time() - started
 
-    assert duration < 10.0, (
-        f"reconnect effort ran {duration:.1f}s — bound (1s) was not a hard ceiling"
+    # Threshold is relative to the configured bound plus a small jitter allowance,
+    # so a regression that waits on the 60s inner attempt is caught instead of
+    # slipping under a loose fixed ceiling.
+    allowed = provider.config.mid_call_reconnect_timeout_sec + 2.0
+    assert duration <= allowed, (
+        f"reconnect effort ran {duration:.1f}s — bound "
+        f"({provider.config.mid_call_reconnect_timeout_sec}s) was not a hard ceiling"
     )
     disconnect_events = [e for e in events if e.get("type") == "ProviderDisconnected"]
     assert disconnect_events, f"expected ProviderDisconnected give-up, got {events}"

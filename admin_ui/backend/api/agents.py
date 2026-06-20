@@ -20,8 +20,9 @@ from src.utils.email_validator import EmailValidator
 
 def _validate_optional_email(v):
     if v is None or str(v).strip() == "":
-        return v
-    if not EmailValidator.validate_email(str(v)):
+        return None
+    v = str(v).strip()
+    if not EmailValidator.validate_email(v):
         raise ValueError(f"invalid email address: {v!r}")
     return v
 CALL_HISTORY_DB = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
@@ -505,8 +506,8 @@ def migration_reconcile():
         # EmailValidator (MED-E1/H3) before persisting; skip invalid rather than
         # writing a bad address the call path would later reject.
         try:
-            _validate_optional_email(fields["email_recipient"])
-            _validate_optional_email(fields["email_from"])
+            fields["email_recipient"] = _validate_optional_email(fields["email_recipient"])
+            fields["email_from"] = _validate_optional_email(fields["email_from"])
         except ValueError:
             skipped.append((slug_key, "invalid email"))
             continue

@@ -1519,7 +1519,7 @@ start_services() {
             echo "  http://localhost:3003"
         fi
         echo "Login: a one-time admin password is printed to the admin_ui logs on first start."
-        echo "  Retrieve it: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD"
+        echo "  Retrieve it: $COMPOSE logs admin_ui | grep -i password"
         echo "  You'll be required to change it at first login (admin/admin no longer works)."
         echo ""
         
@@ -1788,9 +1788,10 @@ print_final_summary() {
     echo "║                                                                           ║"
     echo "║  REQUIRED ACTIONS:                                                        ║"
     echo "║    1. Get the one-time admin password from the admin_ui logs:             ║"
-    echo "║       docker compose -p asterisk-ai-voice-agent logs admin_ui|grep PASSWORD ║"
     echo "║    2. Restrict port 3003 via firewall, VPN, or reverse proxy              ║"
     echo "╚═══════════════════════════════════════════════════════════════════════════╝"
+    echo "       $COMPOSE logs admin_ui | grep -i password"
+    echo "       (or, as root, read config/.first-run-password)"
     echo ""
     print_info "🔍 Next steps:"
     print_info "  1. Access Admin UI: http://<server-ip>:3003"
