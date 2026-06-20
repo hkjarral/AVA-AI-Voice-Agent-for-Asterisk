@@ -84,3 +84,44 @@ async def test_cleanup_aux_channel_does_not_persist_abandoned_record(monkeypatch
     assert len(saved_records) == 1, "genuine pre-session caller must still persist (HIGH-1a)"
     assert saved_records[0].call_id == caller_channel_id
     assert saved_records[0].outcome in ("abandoned", "error")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_outbound_channel_does_not_persist_abandoned_record(monkeypatch):
+    """P2 (bot re-review): an OUTBOUND dial channel destroyed before a CallSession exists
+    (busy/no-answer/originate timeout) is finalized by _handle_outbound_channel_destroyed,
+    which records it in _seen_outbound_channels. The subsequent _cleanup_call must NOT
+    write a duplicate 'abandoned' row for that already-accounted-for outbound attempt,
+    while a genuine pre-session INBOUND caller channel still persists (HIGH-1a).
+    """
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()  # empty: get_by_* returns None
+    engine._attended_transfer_agent_channel_to_call_id = {}
+    engine._seen_aux_channels = set()
+    # Outbound channel already finalized by _handle_outbound_channel_destroyed.
+    outbound_channel_id = "PJSIP-outbound-leg-777"
+    engine._seen_outbound_channels = {outbound_channel_id}
+
+    saved_records = []
+
+    class _FakeStore:
+        _enabled = True
+
+        async def save(self, record):
+            saved_records.append(record)
+            return True
+
+    fake_store = _FakeStore()
+    monkeypatch.setattr(
+        "src.core.call_history.get_call_history_store", lambda: fake_store
+    )
+
+    await engine._cleanup_call(outbound_channel_id)
+    assert saved_records == [], "outbound channel must not persist a duplicate abandoned record"
+
+    # A genuine pre-session INBOUND caller channel (never recorded as outbound) still persists.
+    inbound_channel_id = "PJSIP-inbound-caller-002"
+    await engine._cleanup_call(inbound_channel_id)
+    assert len(saved_records) == 1, "genuine pre-session inbound caller must still persist (HIGH-1a)"
+    assert saved_records[0].call_id == inbound_channel_id
+    assert saved_records[0].outcome in ("abandoned", "error")

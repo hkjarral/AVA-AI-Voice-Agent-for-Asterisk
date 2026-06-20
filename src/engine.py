@@ -555,6 +555,14 @@ class Engine:
         # finds no session and must NOT persist a separate "abandoned" row for it.
         # The HIGH-1a abandoned path is scoped to caller channels by excluding these.
         self._seen_aux_channels: Set[str] = set()
+        # P2 (bot re-review): outbound dial channels finalized by
+        # _handle_outbound_channel_destroyed BEFORE a CallSession exists (busy/no-answer/
+        # originate timeout). _handle_channel_destroyed still falls through to _cleanup_call,
+        # which finds no session and would otherwise write a duplicate "abandoned" row for an
+        # outbound attempt already accounted for. Recording the channel id here lets the
+        # abandoned-persist path skip it (same mechanism as _seen_aux_channels), while the
+        # genuine pre-Stasis INBOUND abandoned case is preserved.
+        self._seen_outbound_channels: Set[str] = set()
         # Health server runner
         self._health_runner: Optional[web.AppRunner] = None
         # MCP client manager (experimental)
@@ -2058,6 +2066,12 @@ class Engine:
             session = await self.session_store.get_by_channel_id(channel_id)
             if session and getattr(session, "is_outbound", False):
                 return
+
+            # This is an outbound attempt being finalized without a CallSession. Mark the
+            # channel so the no-session abandoned-persist path in _cleanup_call skips it
+            # (otherwise it writes a duplicate "abandoned" row for an attempt already
+            # finished here as busy/no_answer/etc.).
+            self._seen_outbound_channels.add(channel_id)
 
             cause_txt = str(event.get("cause_txt") or "").lower()
             cause = str(event.get("cause") or "")
@@ -5759,6 +5773,18 @@ class Engine:
                     seen_aux.discard(channel_or_call_id)
                     logger.debug(
                         "Skipping abandoned record for auxiliary channel",
+                        identifier=channel_or_call_id,
+                    )
+                    return
+                # P2 (bot re-review): outbound dial channels destroyed before a CallSession
+                # exists are already finalized by _handle_outbound_channel_destroyed. Skip
+                # them so we don't write a duplicate "abandoned" row. The genuine inbound
+                # pre-session abandoned case (HIGH-1a) falls through below.
+                seen_outbound = getattr(self, "_seen_outbound_channels", None)
+                if seen_outbound is not None and channel_or_call_id in seen_outbound:
+                    seen_outbound.discard(channel_or_call_id)
+                    logger.debug(
+                        "Skipping abandoned record for outbound channel",
                         identifier=channel_or_call_id,
                     )
                     return

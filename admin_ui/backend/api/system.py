@@ -929,13 +929,21 @@ async def reload_ai_engine():
             if u and u not in seen:
                 seen.add(u)
                 urls.append(u)
-        
+
+        # The engine's /reload handler requires localhost OR a valid HEALTH_API_TOKEN.
+        # In Docker Compose admin_ui reaches ai_engine over service DNS (not localhost),
+        # so attach the token (mirrors the /sessions/stats proxy) or reload is rejected.
+        headers = {}
+        token = _get_health_api_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         resp = None
         async with httpx.AsyncClient(timeout=10.0) as client:
             for url in urls:
                 try:
                     logger.info(f"Sending reload request to AI Engine at {url}")
-                    resp = await client.post(url)
+                    resp = await client.post(url, headers=headers)
                     break
                 except httpx.ConnectError:
                     continue
