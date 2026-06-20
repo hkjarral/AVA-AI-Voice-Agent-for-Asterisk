@@ -57,7 +57,10 @@ class AgentsStore:
                "created_at","updated_at","notes",
                "email_recipient","email_from","email_enabled"]
 
-    def __init__(self, db_path: str = DB_DEFAULT):
+    def __init__(self, db_path: str = None):
+        # Honor AGENTS_DB_PATH so a relocated DB is written/read consistently with
+        # the engine reader; falls back to the historical default when unset.
+        db_path = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
         parent = os.path.dirname(db_path)
         if parent:
             os.makedirs(parent, exist_ok=True)

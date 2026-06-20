@@ -56,3 +56,17 @@ def test_corrupt_tools_json_raises_read_error(db):
     c.commit(); c.close()
     with pytest.raises(AgentStoreReadError):
         EngineAgentStore(db_path=db).resolve("sales")
+
+def test_no_arg_honors_agents_db_path_env(db, monkeypatch):
+    # MED-C2: EngineAgentStore() (constructed with no arg by the orchestrator)
+    # must pick up AGENTS_DB_PATH so a relocated DB is read at runtime.
+    monkeypatch.setenv("AGENTS_DB_PATH", db)
+    s = EngineAgentStore()
+    assert s.db_path == db
+    assert s.resolve("sales").provider == "openai_realtime"
+
+def test_no_arg_default_unchanged_when_env_unset(monkeypatch):
+    # MED-C2: with the env unset, the historical default is preserved exactly
+    # (no behavior change for existing installs).
+    monkeypatch.delenv("AGENTS_DB_PATH", raising=False)
+    assert EngineAgentStore().db_path == "/app/data/operator/agents.db"

@@ -32,8 +32,12 @@ class AgentStoreReadError(Exception):
     deactivated agent (HIGH-9)."""
 
 class EngineAgentStore:
-    def __init__(self, db_path: str = DB_DEFAULT):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        # Honor AGENTS_DB_PATH so a relocated DB is read at runtime; falls back
+        # to the historical default when unset (no behavior change for existing
+        # installs). EngineAgentStore() is constructed with no arg (see
+        # transport_orchestrator), so the env is the only relocation lever here.
+        self.db_path = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
 
     def available(self) -> bool:
         return os.path.exists(self.db_path)

@@ -30,12 +30,14 @@ Add to your `.env` file:
 ```bash
 # Microsoft Azure Speech Service
 AZURE_SPEECH_KEY=your_speech_key_here
-AZURE_SPEECH_REGION=eastus
 ```
+
+> The Azure **region** is not an environment variable -- set it via the `region`
+> field on each Azure provider in `config/ai-agent.yaml` (see below).
 
 **Test your key**:
 ```bash
-curl -v "https://${AZURE_SPEECH_REGION}.api.cognitive.microsoft.com/sts/v1.0/issuetoken" \
+curl -v "https://eastus.api.cognitive.microsoft.com/sts/v1.0/issuetoken" \
   -H "Ocp-Apim-Subscription-Key: ${AZURE_SPEECH_KEY}" \
   -H "Content-Length: 0" -X POST
 ```
@@ -52,7 +54,7 @@ providers:
     type: azure
     capabilities: [stt]
     enabled: true
-    region: eastus            # Must match AZURE_SPEECH_REGION
+    region: eastus            # Azure region for this resource (set here, not in .env)
     language: en-US           # BCP-47 locale
     variant: realtime         # "realtime" (REST one-shot) or "fast" (Fast Transcription API)
     request_timeout_sec: 15.0
@@ -185,7 +187,7 @@ providers:
 1. Open the Admin UI and navigate to **Provider Settings**
 2. Click **Add Provider**
 3. Select **Azure Speech STT** or **Azure Speech TTS**
-4. Enter your `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION`
+4. Enter your `AZURE_SPEECH_KEY` and select the Azure region
 5. Choose your voice (TTS) or variant (STT)
 6. Save -- the provider is auto-wired into your active pipeline
 
@@ -205,7 +207,7 @@ providers:
 **Cause**: Region mismatch or wrong audio format.
 
 **Fix**:
-1. Confirm `region` in YAML matches `AZURE_SPEECH_REGION` in `.env`
+1. Confirm `region` in YAML matches the region of your Azure Speech resource
 2. Verify upstream audio is PCM 16kHz 16-bit mono (expected by Azure STT)
 3. Check `variant` setting -- try switching between `realtime` and `fast`
 
