@@ -445,6 +445,25 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                     </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
+                            <label className="text-sm font-medium">Mid-Call Reconnect Timeout (sec)</label>
+                            <HelpTooltip
+                                content={
+                                    <>
+                                        <strong>Mid-Call Reconnect Timeout</strong> — if the local AI server WebSocket drops mid-call, how long (seconds) to keep trying to reconnect before playing an apology and hanging up. Default 20.
+                                    </>
+                                }
+                            />
+                        </div>
+                        <input
+                            type="number"
+                            step="1"
+                            className="w-full p-2 rounded border border-input bg-background"
+                            value={numericInputValue(config.mid_call_reconnect_timeout_sec, 20)}
+                            onChange={(e) => handleChange('mid_call_reconnect_timeout_sec', parseInt(e.target.value))}
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <div className="flex items-center gap-1.5">
                             <label className="text-sm font-medium">Farewell Mode</label>
                             <HelpTooltip
                                 content={
