@@ -352,9 +352,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 <div className="mb-4">
                     <div className="flex items-center gap-1.5 mb-1.5">
                         <label htmlFor="agent-voice" className="block text-sm font-medium">
-                            Voice
+                            Voice (display-only)
                         </label>
-                        <HelpTooltip content="Voice ID or name passed to the TTS provider. Leave blank to use the provider default." />
+                        <HelpTooltip content="Voice is configured on the provider, not per agent — this field is informational and does not change the call voice." />
                     </div>
                     <input
                         id="agent-voice"

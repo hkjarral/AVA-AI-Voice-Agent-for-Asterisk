@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **First-login docs reflect the one-time-password flow** (`install.sh`, `docs/MIGRATION.md`, `docs/ADMIN_UI_GUIDE.md`, `admin_ui/UI_Setup_Guide.md`): replaced stale `admin`/`admin` instructions with retrieving the generated password from the `admin_ui` logs.
+- **Agent `voice` field marked display-only** (`admin_ui/frontend/src/components/agents/AgentForm.tsx`, `docs/AGENTS.md`, `README.md`): voice is configured on the provider, not per agent, and the agent `voice` value has no runtime effect on the call. Relabeled the form field and tooltip and corrected docs that implied per-agent voice switching (MED-A1).
 
 ### Removed
 

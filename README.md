@@ -171,7 +171,7 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 The biggest release yet: **manage your AI agents from the Admin UI, not a config file.**
 
-- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt, voice, and provider, and copy a ready-to-paste dialplan snippet.
+- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt and provider, and copy a ready-to-paste dialplan snippet. (Voice is configured on the provider, not per agent.)
 - **📊 Multi-agent dashboard** — live KPIs (active agents, active calls, calls routed, transfers), per-agent stats, and routing breakdowns at a glance.
 - **☎️ New `AI_AGENT` dialplan variable** — route a call to an agent by name. Your existing `AI_CONTEXT` dialplans keep working unchanged.
 - **🔄 Automatic migration** — your existing contexts move into a local agents database on first start. Nothing to do, and rollback is one command.
