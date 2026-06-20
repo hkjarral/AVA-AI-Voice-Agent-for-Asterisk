@@ -124,6 +124,19 @@ def test_builtin_reserved_set_covers_static_names():
         assert n in reserved
 
 
+def test_create_rejects_dynamically_reserved_name(client, monkeypatch):
+    # Names contributed by the live registry probe (not in the static set) must
+    # also be rejected. Simulate one via the reserved-names seam.
+    monkeypatch.setattr(
+        tools_api, "_reserved_builtin_names",
+        lambda: frozenset(tools_api.BUILTIN_RESERVED_TOOL_NAMES) | {"synthetic_engine_tool"},
+    )
+    r = client.post("/api/tools/managed", json={
+        "name": "synthetic_engine_tool", "phase": "pre_call", "url": "https://a.example.com"})
+    assert r.status_code == 422
+    assert "synthetic_engine_tool" not in client.cfg_state["cfg"]["tools"]
+
+
 @pytest.mark.parametrize("phase,expected_kind", [
     ("pre_call", "generic_http_lookup"),
     ("in_call", "in_call_http_lookup"),

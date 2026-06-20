@@ -60,8 +60,17 @@ def test_converters_work_without_a_name_map():
 
 
 def test_agent_name_map_never_raises(monkeypatch):
-    # a broken / missing agents.db must degrade to an empty map, not an exception
-    def _boom(*a, **k):
-        raise RuntimeError("db locked")
-    monkeypatch.setattr("agents_store.AgentsStore", _boom, raising=False)
+    # a broken / missing agents.db must degrade to an empty map, not an exception.
+    # Use the realistic operational failures (locked DB, unreadable file): these
+    # are swallowed, while genuine logic bugs are intentionally left to propagate.
+    import sqlite3
+
+    def _locked(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr("agents_store.AgentsStore", _locked, raising=False)
+    assert calls_api._agent_name_map() == {}
+
+    def _unreadable(*a, **k):
+        raise OSError("permission denied")
+    monkeypatch.setattr("agents_store.AgentsStore", _unreadable, raising=False)
     assert calls_api._agent_name_map() == {}

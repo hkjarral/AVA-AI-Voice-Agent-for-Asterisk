@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import wave
@@ -255,7 +256,10 @@ def _agent_name_map() -> Dict[str, str]:
                 for a in store.list_all()
                 if a.get("slug")
             }
-    except Exception:
+    except (ImportError, OSError, sqlite3.Error):
+        # Expected best-effort failures: agents_store unavailable (ImportError),
+        # the agents.db dir/file is missing or unreadable (OSError), or the DB is
+        # locked/corrupt (sqlite3.Error). Genuine logic bugs still surface.
         return {}
 
 
