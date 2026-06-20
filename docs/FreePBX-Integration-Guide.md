@@ -259,8 +259,8 @@ You can customize agent behavior per-call using Asterisk channel variables:
 | `AI_AGENT` | Select an agent by slug (preferred) | `sales`, `support`, `after_hours` | No (uses default agent or `default` context) |
 | `AI_CONTEXT` | Select an agent by slug (legacy — equivalent to `AI_AGENT`) | `sales-agent`, `demo_google_live`, `sales`, `support` | No (uses default agent or `default` context) |
 | `AI_AUDIO_PROFILE` | Override which audio profile to use (format/sample rate/pacing) | `telephony_ulaw_8k`, `wideband_pcm_16k` | No (uses agent profile or `profiles.default`) |
-| `AI_GREETING` | Override the greeting for this call | `"Hello! Welcome to our sales team."` | No (deprecated - use AI_AGENT instead) |
-| `AI_PERSONA` | Override the AI persona/instructions | `"You are a helpful billing assistant."` | No (deprecated - use AI_AGENT instead) |
+| `AI_GREETING` | (Not read by the engine — no effect; set the greeting on the agent instead) | — | No (use AI_AGENT) |
+| `AI_PERSONA` | (Not read by the engine — no effect; set the prompt on the agent instead) | — | No (use AI_AGENT) |
 | `CALLERID(name)` | Caller's name (automatically available to AI) | Any string | No |
 | `CALLERID(num)` | Caller's number (automatically available to AI) | Phone number | No |
 

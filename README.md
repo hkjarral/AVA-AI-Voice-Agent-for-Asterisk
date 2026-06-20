@@ -97,7 +97,7 @@ docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 
 # Check ai_engine health
 curl http://localhost:15000/health
-# Expected: {"status":"healthy"}
+# Expected: {"status":"healthy"} ("degraded" is also possible if a subsystem is unhealthy)
 
 # View logs for any errors
 docker compose -p asterisk-ai-voice-agent logs ai_engine | tail -20
@@ -600,7 +600,10 @@ ASTERISK_ARI_PASSWORD=your-password
 ```
 
 ### Optional: Metrics (Bring Your Own Prometheus)
-The engine exposes Prometheus-format metrics at `http://<engine-host>:15000/metrics`.
+The engine exposes Prometheus-format metrics on its health/metrics HTTP endpoint at
+`/metrics` (port `15000`). This endpoint binds to `127.0.0.1` by default, so it is only
+reachable from the engine host — scrape it locally, or set the health endpoint `host` to
+`0.0.0.0` (and firewall it) to expose it to an external Prometheus.
 Per-call debugging is handled via **Admin UI → Call History**.
 
 ---
