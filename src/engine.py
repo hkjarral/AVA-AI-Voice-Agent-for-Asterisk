@@ -549,6 +549,12 @@ class Engine:
         self._called_number_cache: Dict[str, str] = {}  # channel_id -> called_number
         # Track channels that have entered Asterisk but not yet Stasis (for UI pre-stasis indicator)
         self._pre_stasis_channels: Set[str] = set()
+        # Codex P1: auxiliary/media channel ids seen at StasisStart (Local/AudioSocket/
+        # ExternalMedia helper legs). A single call has multiple channels; when an aux
+        # leg is destroyed after the main session is already cleaned up, _cleanup_call
+        # finds no session and must NOT persist a separate "abandoned" row for it.
+        # The HIGH-1a abandoned path is scoped to caller channels by excluding these.
+        self._seen_aux_channels: Set[str] = set()
         # Health server runner
         self._health_runner: Optional[web.AppRunner] = None
         # MCP client manager (experimental)
@@ -2606,6 +2612,8 @@ class Engine:
                 channel_id=channel_id,
                 channel_name=channel_name,
             )
+            # Codex P1: mark as aux so its later ChannelDestroyed doesn't persist a row.
+            self._seen_aux_channels.add(channel_id)
             # Now add the Local channel to the bridge
             await self._handle_local_stasis_start_hybrid(channel_id, channel)
         elif self._is_audiosocket_channel(channel):
@@ -2614,12 +2622,16 @@ class Engine:
                 channel_id=channel_id,
                 channel_name=channel_name,
             )
+            # Codex P1: mark as aux so its later ChannelDestroyed doesn't persist a row.
+            self._seen_aux_channels.add(channel_id)
             await self._handle_audiosocket_channel_stasis_start(channel_id, channel)
         elif self._is_external_media_channel(channel):
             # This is an ExternalMedia channel entering Stasis
-            logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel entered Stasis", 
+            logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel entered Stasis",
                        channel_id=channel_id,
                        channel_name=channel_name)
+            # Codex P1: mark as aux so its later ChannelDestroyed doesn't persist a row.
+            self._seen_aux_channels.add(channel_id)
             await self._handle_external_media_stasis_start(channel_id, channel)
         else:
             logger.warning("🎯 HYBRID ARI - Unknown channel type in StasisStart", 
@@ -5736,6 +5748,20 @@ class Engine:
                     session = await self.session_store.get_by_call_id(mapped_call_id)
             if not session:
                 logger.debug("No session found during cleanup", identifier=channel_or_call_id)
+                # Codex P1: a single call has multiple channels (caller + aux media legs:
+                # Local/AudioSocket/ExternalMedia). Aux legs are destroyed AFTER the main
+                # session is cleaned up, so they reach here with no session too. Persisting
+                # each as its own "abandoned" row pollutes history and inflates abandoned
+                # stats for otherwise-successful calls. Scope the HIGH-1a path to caller
+                # channels by skipping any channel we recorded as an aux leg at StasisStart.
+                seen_aux = getattr(self, "_seen_aux_channels", None)
+                if seen_aux is not None and channel_or_call_id in seen_aux:
+                    seen_aux.discard(channel_or_call_id)
+                    logger.debug(
+                        "Skipping abandoned record for auxiliary channel",
+                        identifier=channel_or_call_id,
+                    )
+                    return
                 # HIGH-1a: calls that end before session registration (StasisStart
                 # exception, codec abort, immediate hangup before setup) otherwise
                 # leave no row in call_records and are invisible in history. Persist a
