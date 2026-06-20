@@ -29,6 +29,9 @@ export interface Agent {
     mcp_json?: string;
     extra_json?: string;
     notes?: string;
+    email_recipient?: string;
+    email_from?: string;
+    email_enabled?: boolean | null;
 }
 
 interface AgentTemplate {
@@ -62,6 +65,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [greeting, setGreeting] = useState('');
     const [prompt, setPrompt] = useState('');
     const [isActive, setIsActive] = useState(1);
+    const [emailRecipient, setEmailRecipient] = useState('');
+    const [emailFrom, setEmailFrom] = useState('');
+    // Tri-state as a select value: '' = inherit (null), 'enabled' = true, 'disabled' = false.
+    const [emailEnabled, setEmailEnabled] = useState('');
 
     // Tool/engine config — single source of truth, round-tripped losslessly via the helper.
     const [toolState, setToolState] = useState<AgentToolState>(() => parseAgentConfig(null));
@@ -99,6 +106,11 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setGreeting(agent.greeting || '');
             setPrompt(agent.prompt || '');
             setIsActive(agent.is_active);
+            setEmailRecipient(agent.email_recipient || '');
+            setEmailFrom(agent.email_from || '');
+            setEmailEnabled(
+                agent.email_enabled == null ? '' : (agent.email_enabled ? 'enabled' : 'disabled'),
+            );
             setToolState(parseAgentConfig(agent));
         } else {
             setDisplayName('');
@@ -111,6 +123,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setGreeting('Hi, how can I help you today?');
             setPrompt('You are a helpful voice assistant.');
             setIsActive(1);
+            setEmailRecipient('');
+            setEmailFrom('');
+            setEmailEnabled('');
             setToolState(parseAgentConfig(null));
             setSelectedTemplate('');
         }
@@ -205,6 +220,11 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 tools_json: cfg.tools_json,
                 mcp_json: cfg.mcp_json,
                 extra_json: cfg.extra_json,
+                email_recipient: emailRecipient || null,
+                email_from: emailFrom || null,
+                // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
+                // never false. 'enabled' -> true, 'disabled' -> false.
+                email_enabled: emailEnabled === '' ? null : emailEnabled === 'enabled',
             };
 
             if (isNew) {
@@ -428,6 +448,38 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                         tooltip="Asterisk music-on-hold class to play during the call. Leave blank for none."
                     />
                 </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <FormInput
+                        id="agent-email-recipient"
+                        label="Email Recipient"
+                        value={emailRecipient}
+                        onChange={(e) => setEmailRecipient(e.target.value)}
+                        placeholder="e.g. ops@example.com"
+                        tooltip="Email address that receives this agent's call summaries. Overrides the global/per-context recipient. Leave blank to inherit."
+                    />
+                    <FormInput
+                        id="agent-email-from"
+                        label="Email From Address"
+                        value={emailFrom}
+                        onChange={(e) => setEmailFrom(e.target.value)}
+                        placeholder="e.g. ava@example.com"
+                        tooltip="From address for this agent's call-summary emails. Leave blank to inherit the global/per-context setting."
+                    />
+                </div>
+
+                <FormSelect
+                    id="agent-email-enabled"
+                    label="Email Summaries"
+                    options={[
+                        { value: '', label: 'Inherit' },
+                        { value: 'enabled', label: 'Enabled' },
+                        { value: 'disabled', label: 'Disabled' },
+                    ]}
+                    value={emailEnabled}
+                    onChange={(e) => setEmailEnabled(e.target.value)}
+                    tooltip="Whether this agent sends call-summary emails. 'Inherit' uses the global/per-context setting; 'Enabled'/'Disabled' override it for this agent."
+                />
 
                 <AgentToolPicker
                     catalog={catalog}
