@@ -35,12 +35,24 @@ async def get_mcp_status():
                     resp = await client.get(url)
                 if resp.status_code != 200:
                     raise HTTPException(status_code=resp.status_code, detail=resp.text)
-                return resp.json()
+                # LOW-T5: a non-JSON body must not crash with an opaque 500; surface
+                # the actual text instead of letting resp.json() raise.
+                try:
+                    return resp.json()
+                except ValueError:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"AI Engine returned a non-JSON MCP status response: {resp.text}",
+                    )
             except httpx.ConnectError as e:
                 continue
         raise HTTPException(status_code=503, detail="AI Engine is not reachable")
     except httpx.ConnectError:
         raise HTTPException(status_code=503, detail="AI Engine is not reachable")
+    except HTTPException:
+        # LOW-T5: preserve intentional status codes (e.g. 502 for non-JSON bodies);
+        # don't let the broad catch below flatten them to an opaque 500.
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -61,11 +73,18 @@ async def test_mcp_server(server_id: str):
                 try:
                     return resp.json()
                 except ValueError:
-                    raise HTTPException(status_code=resp.status_code or 500, detail=resp.text)
+                    raise HTTPException(
+                        status_code=resp.status_code or 502,
+                        detail=f"AI Engine returned a non-JSON MCP test response: {resp.text}",
+                    )
             except httpx.ConnectError as e:
                 continue
         raise HTTPException(status_code=503, detail="AI Engine is not reachable")
     except httpx.ConnectError:
         raise HTTPException(status_code=503, detail="AI Engine is not reachable")
+    except HTTPException:
+        # LOW-T5: preserve intentional status codes (e.g. the non-JSON-body error
+        # and engine status passthrough); don't flatten them to an opaque 500.
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

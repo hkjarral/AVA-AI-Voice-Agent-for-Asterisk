@@ -327,6 +327,31 @@ def _http_tool_names_from_config(cfg: dict) -> set[str]:
     return names
 
 
+def _classify_tool_source(name: str, http_tool_names: set[str]) -> str:
+    """Best-effort classification of a tool's origin (builtin / http / mcp).
+
+    LOW-T6: the engine does not expose an authoritative `source` field on its
+    tool definitions (`/tools/definitions`), so this is a heuristic. To reduce
+    mislabeling during an MCP/config reload race, we order checks by reliability:
+
+    1. The `mcp_` prefix is intrinsic to the exposed name (MCPTool always sets
+       `exposed_name = mcp_{server}_{tool}`; see src/tools/mcp_tool.py), so it is
+       a stable discriminator that does not depend on live engine state.
+    2. Membership in `http_tool_names` is derived from the merged YAML config
+       (the `kind` field), which is the source of truth for HTTP tools and is
+       independent of whether the engine has finished (re)registering them.
+    3. Everything else is a builtin.
+
+    If a future engine release adds an explicit `source` on tool definitions,
+    prefer it over this heuristic at the call site.
+    """
+    if name.startswith("mcp_"):
+        return "mcp"
+    if name in http_tool_names:
+        return "http"
+    return "builtin"
+
+
 @router.get("/catalog", response_model=ToolCatalogResponse)
 async def get_tool_catalog():
     """
@@ -365,11 +390,13 @@ async def get_tool_catalog():
                 name = str(item.get("name") or "").strip()
                 if not name:
                     continue
-                source = "builtin"
-                if name.startswith("mcp_"):
-                    source = "mcp"
-                elif name in http_tool_names:
-                    source = "http"
+                # LOW-T6: prefer an engine-provided authoritative source if present;
+                # otherwise fall back to the (robustified) heuristic.
+                engine_source = str(item.get("source") or "").strip().lower()
+                if engine_source in ("builtin", "http", "mcp"):
+                    source = engine_source
+                else:
+                    source = _classify_tool_source(name, http_tool_names)
 
                 params_raw = item.get("parameters") if isinstance(item.get("parameters"), list) else []
                 params_out: List[ToolParameterInfo] = []
@@ -437,11 +464,7 @@ async def get_tool_catalog():
             name = str(getattr(d, "name", "") or "").strip()
             if not name:
                 continue
-            source = "builtin"
-            if name.startswith("mcp_"):
-                source = "mcp"
-            elif name in http_tool_names:
-                source = "http"
+            source = _classify_tool_source(name, http_tool_names)  # LOW-T6
             params_out: List[ToolParameterInfo] = []
             for p in (getattr(d, "parameters", None) or []):
                 params_out.append(
@@ -676,6 +699,14 @@ def _validate_http_tool_test_target(resolved_url: str) -> None:
         pass
 
     # Resolve hostname and block private targets unless explicitly allowed.
+    #
+    # LOW-T4 (SECURITY, accepted): this DNS resolution and the later httpx connect
+    # (in test_http_tool) are separate lookups, so a residual DNS-rebinding TOCTOU
+    # window exists — an attacker-controlled resolver could return a public IP here
+    # and a private IP at connect time. This is accepted for an admin-only,
+    # authenticated tool-testing endpoint; closing it fully would require pinning the
+    # validated IP through httpx (custom transport). Do not treat this guard as a
+    # hard SSRF boundary on an untrusted network.
     port = parsed.port or (443 if scheme == "https" else 80)
     try:
         infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
@@ -786,6 +817,12 @@ async def test_http_tool(request: TestHTTPRequest):
                     kwargs["content"] = resolved_body
             
             # Make the request (manual redirects to prevent SSRF bypass via redirect-to-private targets).
+            #
+            # LOW-T4 (SECURITY, accepted): httpx resolves DNS again here, independently of
+            # the getaddrinfo() check in _validate_http_tool_test_target(). That leaves a
+            # residual DNS-rebinding TOCTOU window (validate sees a public IP, connect hits a
+            # private one). Accepted for this admin-only authenticated endpoint; see the note
+            # at the resolve site and docs/Configuration-Reference.md.
             max_hops = 10
             resp = None
             for _ in range(max_hops + 1):

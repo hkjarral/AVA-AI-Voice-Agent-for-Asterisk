@@ -16,6 +16,12 @@ This document describes how AVA integrates Model Context Protocol (MCP) tools in
 
 - Replacing existing tool calling or provider adapters.
 - Automatically discovering arbitrary MCP servers over the network without explicit config.
+- Pre-call or post-call MCP execution. MCP tools always run **in-call only**: their
+  definitions are hard-coded to the `IN_CALL` phase (`ToolPhase.IN_CALL` default in
+  `src/tools/base.py`; `MCPTool.definition` in `src/tools/mcp_tool.py` does not override
+  it). They are invoked by the provider during the conversation, not as pre-call
+  enrichment or post-call webhooks. Use a native HTTP tool (`pre_call` / `post_call`
+  phase) for those lifecycle stages.
 
 ## Admin UI
 

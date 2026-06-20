@@ -539,6 +539,8 @@ The Admin UI includes an HTTP tool **Test** feature that makes real outbound HTT
 
 By default, the Admin UI blocks test requests to localhost/private targets to reduce SSRF risk if the UI is exposed beyond a trusted network.
 
+> **Security note (accepted limitation):** the private-target check resolves DNS separately from the outbound HTTP connection, so a residual DNS-rebinding TOCTOU window exists. This is acceptable because the endpoint is admin-only and authenticated — do not rely on it as a hard SSRF boundary on an untrusted network.
+
 - `AAVA_HTTP_TOOL_TEST_ALLOW_PRIVATE=1`: allow private/localhost targets (trusted network only).
 - `AAVA_HTTP_TOOL_TEST_ALLOW_HOSTS=host1,host2`: allow specific hostnames.
 - `AAVA_HTTP_TOOL_TEST_FOLLOW_REDIRECTS=1`: allow redirects (default is disabled).
