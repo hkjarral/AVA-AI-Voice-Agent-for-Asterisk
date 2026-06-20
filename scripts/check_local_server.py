@@ -22,8 +22,6 @@ Exit codes:
     1 = Some checks failed
     2 = Connection error
 """
-from __future__ import annotations
-
 import argparse
 import asyncio
 import base64
@@ -48,7 +46,7 @@ def _reexec_in_container(argv: List[str]) -> int:
     """Re-run this script inside the local_ai_server container via docker exec."""
     script_path = os.path.abspath(__file__)
     try:
-        with open(script_path) as f:
+        with open(script_path, encoding="utf-8") as f:
             script_content = f.read()
     except Exception as exc:
         print(f"Cannot read script for container exec: {exc}", file=sys.stderr)
@@ -85,11 +83,13 @@ def _reexec_in_container(argv: List[str]) -> int:
 
     cmd = [
         "docker", "exec", "-i", "local_ai_server",
-        "python3", "-c", script_content,
+        "python3", "-",
     ] + filtered
 
     try:
-        result = subprocess.run(cmd, timeout=120)
+        result = subprocess.run(
+            cmd, input=script_content.encode("utf-8"), timeout=120
+        )
         return result.returncode
     except FileNotFoundError:
         print("docker not found. Install websockets on the host: pip3 install websockets", file=sys.stderr)
@@ -414,12 +414,20 @@ async def check_stt(url: str, auth_token: Optional[str]) -> CheckResult:
     except Exception as exc:
         return CheckResult("stt_test", False, f"Audio conversion failed: {exc}")
 
+    # The server intentionally suppresses STT while a synthetic TTS response
+    # would be playing, even across connections. Wait for that protection
+    # window before feeding the generated audio back into STT.
+    await asyncio.sleep(max(0.5, len(audio_mulaw) / 8000.0 + 0.5))
+
     # Step 3: Send to STT on fresh connection
     ws2, err = await _connect(url, auth_token)
     if err:
         return CheckResult("stt_test", False, f"STT connection: {err}")
 
-    await _send_recv_json(ws2, {"type": "set_mode", "mode": "stt"}, timeout=5.0)
+    check_call_id = "agent-cli-stt-check"
+    await _send_recv_json(
+        ws2, {"type": "set_mode", "mode": "stt", "call_id": check_call_id}, timeout=5.0
+    )
 
     t0 = time.time()
     audio_payload = {
@@ -427,9 +435,17 @@ async def check_stt(url: str, auth_token: Optional[str]) -> CheckResult:
         "data": base64.b64encode(pcm16k).decode(),
         "mode": "stt",
         "rate": 16000,
+        "call_id": check_call_id,
     }
     try:
         await ws2.send(json.dumps(audio_payload))
+        # Whisper-family STT uses a silence endpointer. A single batch of speech
+        # does not finalize until a later silent chunk arrives after the
+        # configured silence interval.
+        await asyncio.sleep(0.65)
+        silence_payload = dict(audio_payload)
+        silence_payload["data"] = base64.b64encode(b"\x00\x00" * 8000).decode()
+        await ws2.send(json.dumps(silence_payload))
     except Exception as exc:
         await ws2.close()
         return CheckResult("stt_test", False, f"Failed to send audio: {exc}")
@@ -515,7 +531,7 @@ def _load_auth_from_env(project_root: Optional[str]) -> Optional[str]:
     if not os.path.isfile(env_path):
         return None
     try:
-        with open(env_path) as f:
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
@@ -617,7 +633,12 @@ def main() -> None:
     if not auth_token:
         auth_token = _load_auth_from_env(args.project_root)
 
-    results, status_data = asyncio.run(run_all_checks(url, auth_token, llm_timeout=args.timeout))
+    # CentOS/RHEL 7 commonly ships Python 3.6.  Keep this operator-side helper
+    # usable there even though asyncio.run() was only added in Python 3.7.
+    loop = asyncio.get_event_loop()
+    results, status_data = loop.run_until_complete(
+        run_all_checks(url, auth_token, llm_timeout=args.timeout)
+    )
 
     if args.json_output:
         exit_code = _print_json_report(url, results, status_data)

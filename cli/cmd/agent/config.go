@@ -9,9 +9,8 @@ import (
 )
 
 var configCmd = &cobra.Command{
-	Use:    "config",
-	Short:  "Configuration validation and management",
-	Hidden: true, // v5.0: prefer `agent check`
+	Use:   "config",
+	Short: "Configuration validation and management",
 	Long: `Validate and manage AI agent configuration files.
 
 Validates config/ai-agent.yaml for:

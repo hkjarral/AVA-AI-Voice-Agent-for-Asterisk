@@ -122,7 +122,7 @@ For users who prefer the command line or need headless setup.
 agent setup
 ```
 
-> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v6.4.0.
+> Note: Legacy commands `agent init`, `agent quickstart`, `agent doctor`, `agent troubleshoot`, and `agent demo` remain as hidden compatibility aliases. New workflows should use the visible commands documented in [`docs/CLI_TOOLS_GUIDE.md`](docs/CLI_TOOLS_GUIDE.md).
 
 ### Option B: Manual Setup
 ```bash
@@ -139,17 +139,16 @@ Add this to your FreePBX (`extensions_custom.conf`):
 ```asterisk
 [from-ai-agent]
 exten => s,1,NoOp(Asterisk AI Voice Agent)
- ; Optional per-call overrides:
- ; - AI_PROVIDER selects a provider/pipeline (otherwise uses default_provider from ai-agent.yaml)
- ; - AI_AGENT selects an agent by slug (AI_CONTEXT=sales-agent also works, legacy)
- same => n,Set(AI_PROVIDER=google_live)
+ ; AI_AGENT selects an operator-managed agent by slug.
  same => n,Set(AI_AGENT=sales-agent)
+ ; Optional: override that agent's configured provider/pipeline for this call.
+ ; same => n,Set(AI_PROVIDER=google_live)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 Notes:
-- `AI_PROVIDER` is optional. If unset, the engine follows normal precedence (context provider → default_provider).
-- `AI_AGENT` is optional. Use it to select an agent by slug and change greeting/persona without changing your default provider/pipeline. `AI_CONTEXT` is also accepted (legacy, equivalent).
+- Use `AI_AGENT` to select an operator-managed agent. Its configured target is authoritative unless `AI_PROVIDER` is intentionally set as a per-call override.
+- Generate a current snippet with `agent dialplan --agent <slug>`.
 - See `docs/FreePBX-Integration-Guide.md` for channel variable precedence and examples.
 
 ### Test Your Agent
@@ -572,11 +571,14 @@ curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/mai
 **Commands:**
 ```bash
 agent setup               # Interactive setup wizard (recommended)
+agent setup --list-targets # List configured providers and pipelines without changes
 agent check               # Standard diagnostics report (share this output when asking for help)
 agent check --local       # Verify local AI server (STT, LLM, TTS) on this host
 agent check --remote <ip> # Verify local AI server on a remote GPU machine
 agent update              # Pull latest code + rebuild/restart as needed
-agent rca --call <call_id> # Post-call RCA (use Call History to find call_id)
+agent rca --call <call_id> --no-llm # Deterministic post-call RCA
+agent config validate     # Validate provider, pipeline, transport, and audio configuration
+agent dialplan --agent default # Generate an AI_AGENT dialplan snippet
 agent version             # Version information
 ```
 

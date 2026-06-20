@@ -15,17 +15,29 @@ type Context struct {
 
 // GenerateSnippet generates dialplan snippet for a provider
 func GenerateSnippet(provider string) string {
+	return GenerateAgentSnippet("default", provider)
+}
+
+// GenerateAgentSnippet emits the v7 dialplan form. AI_AGENT selects the
+// operator-managed agent; AI_PROVIDER is optional and only needed as an
+// explicit per-call override.
+func GenerateAgentSnippet(agent, provider string) string {
 	ctx := getContextForProvider(provider)
-	
+	if strings.TrimSpace(agent) == "" {
+		agent = "default"
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("; AI Voice Agent - %s\n", ctx.Description))
 	sb.WriteString(fmt.Sprintf("[%s]\n", ctx.Name))
 	sb.WriteString(fmt.Sprintf("exten => s,1,NoOp(%s)\n", ctx.Description))
-	sb.WriteString(fmt.Sprintf(" same => n,Set(AI_CONTEXT=%s)\n", ctx.AIContext))
-	sb.WriteString(fmt.Sprintf(" same => n,Set(AI_PROVIDER=%s)\n", ctx.Provider))
+	sb.WriteString(fmt.Sprintf(" same => n,Set(AI_AGENT=%s)\n", agent))
+	if strings.TrimSpace(provider) != "" {
+		sb.WriteString(fmt.Sprintf(" same => n,Set(AI_PROVIDER=%s)\n", ctx.Provider))
+	}
 	sb.WriteString(" same => n,Stasis(asterisk-ai-voice-agent)\n")
 	sb.WriteString(" same => n,Hangup()\n")
-	
+
 	return sb.String()
 }
 
@@ -57,11 +69,11 @@ func getContextForProvider(provider string) Context {
 			Description: "AI Agent - Google Live",
 		},
 	}
-	
+
 	if ctx, ok := contexts[provider]; ok {
 		return ctx
 	}
-	
+
 	// Default/fallback
 	return Context{
 		Name:        "from-ai-agent",
@@ -79,7 +91,7 @@ func GetProviderDisplayName(provider string) string {
 		"local_hybrid":    "Local Hybrid",
 		"google_live":     "Google Live API",
 	}
-	
+
 	if name, ok := names[provider]; ok {
 		return name
 	}

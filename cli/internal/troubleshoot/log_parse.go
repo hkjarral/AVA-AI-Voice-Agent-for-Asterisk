@@ -1,8 +1,8 @@
 package troubleshoot
 
 import (
-	"encoding/json"
 	"bytes"
+	"encoding/json"
 	"regexp"
 	"strings"
 )

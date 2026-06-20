@@ -13,8 +13,6 @@ Collects:
 Outputs a ready-to-paste COMMUNITY_TEST_MATRIX.md submission template.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json
@@ -37,15 +35,14 @@ def detect_cpu() -> str:
     """Return a short CPU description."""
     try:
         if platform.system() == "Linux":
-            with open("/proc/cpuinfo") as f:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("model name"):
                         return line.split(":", 1)[1].strip()
         elif platform.system() == "Darwin":
             out = subprocess.check_output(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                text=True, timeout=5,
-            ).strip()
+                ["sysctl", "-n", "machdep.cpu.brand_string"], timeout=5,
+            ).decode("utf-8", errors="replace").strip()
             if out:
                 return out
     except Exception:
@@ -56,15 +53,15 @@ def detect_cpu() -> str:
 def detect_ram_gb() -> str:
     try:
         if platform.system() == "Linux":
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("MemTotal"):
                         kb = int(re.search(r"\d+", line).group())
                         return f"{round(kb / 1024 / 1024)}GB"
         elif platform.system() == "Darwin":
             out = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"], text=True, timeout=5,
-            ).strip()
+                ["sysctl", "-n", "hw.memsize"], timeout=5,
+            ).decode("utf-8", errors="replace").strip()
             return f"{round(int(out) / 1024 / 1024 / 1024)}GB"
     except Exception:
         pass
@@ -78,8 +75,8 @@ def detect_gpu() -> str:
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-            text=True, timeout=10,
-        ).strip()
+            timeout=10,
+        ).decode("utf-8", errors="replace").strip()
         if out:
             parts = out.split("\n")[0].split(",")
             name = parts[0].strip()
@@ -97,7 +94,7 @@ def detect_os_version() -> str:
         if platform.system() == "Linux":
             for path in ["/etc/os-release", "/etc/lsb-release"]:
                 if os.path.exists(path):
-                    with open(path) as f:
+                    with open(path, encoding="utf-8") as f:
                         for line in f:
                             if line.startswith("PRETTY_NAME="):
                                 return line.split("=", 1)[1].strip().strip('"')
@@ -109,8 +106,8 @@ def detect_os_version() -> str:
 def detect_docker_version() -> str:
     try:
         out = subprocess.check_output(
-            ["docker", "--version"], text=True, timeout=5,
-        ).strip()
+            ["docker", "--version"], timeout=5,
+        ).decode("utf-8", errors="replace").strip()
         return out.replace("Docker version ", "").split(",")[0]
     except Exception:
         return "unknown"
@@ -126,7 +123,7 @@ def read_env(project_root: Path) -> Dict[str, str]:
     values: Dict[str, str] = {}
     if not env_path.exists():
         return values
-    with open(env_path) as f:
+    with open(env_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -148,7 +145,7 @@ def detect_pipeline(project_root: Path, env: Dict[str, str]) -> str:
     ]:
         if yaml_path.exists():
             try:
-                text = yaml_path.read_text()
+                text = yaml_path.read_text(encoding="utf-8")
                 m = re.search(r"provider:\s*(\S+)", text)
                 if m:
                     return m.group(1)
@@ -274,16 +271,17 @@ print(msg)
     try:
         proc = subprocess.run(
             ["docker", "exec", "-i", "local_ai_server", "python3", "-"],
-            input=inner_script, text=True, timeout=15,
-            capture_output=True,
+            input=inner_script.encode("utf-8"), timeout=15,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        out = proc.stdout.strip()
+        out = proc.stdout.decode("utf-8", errors="replace").strip()
         if out:
             data = json.loads(out)
             if data.get("type") == "status_response":
                 return data
-        if proc.returncode != 0 and proc.stderr.strip():
-            print(f"[WARN] docker exec stderr: {proc.stderr.strip()[:200]}", file=sys.stderr)
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0 and stderr:
+            print(f"[WARN] docker exec stderr: {stderr[:200]}", file=sys.stderr)
     except Exception as exc:
         print(f"[WARN] Could not query local_ai_server status: {exc}", file=sys.stderr)
     return None
@@ -293,18 +291,24 @@ print(msg)
 # Docker log parsing — extract last-call latency markers
 # ---------------------------------------------------------------------------
 
-def parse_local_ai_logs(lines: int = 2000) -> Dict[str, Any]:
+def parse_local_ai_logs(lines: int = 2000, call_id: str = "") -> Dict[str, Any]:
     """Parse recent local_ai_server docker logs for latency markers."""
     latency: Dict[str, Any] = {}
 
     try:
-        out = subprocess.check_output(
+        raw = subprocess.check_output(
             ["docker", "logs", "--tail", str(lines), "local_ai_server"],
-            text=True, timeout=15, stderr=subprocess.STDOUT,
+            timeout=15, stderr=subprocess.STDOUT,
         )
+        out = raw.decode("utf-8", errors="replace")
     except Exception as exc:
         print(f"[WARN] Could not read local_ai_server logs: {exc}", file=sys.stderr)
         return latency
+
+    if call_id:
+        out = "\n".join(line for line in out.splitlines() if call_id in line)
+        latency["call_id"] = call_id
+        latency["source"] = "local_ai_server logs filtered by call_id"
 
     # LLM latency: "🤖 LLM RESULT - Completed in <ms> ms"
     llm_matches = re.findall(r"LLM RESULT.*?Completed in (\d+(?:\.\d+)?) ms", out)
@@ -318,7 +322,10 @@ def parse_local_ai_logs(lines: int = 2000) -> Dict[str, Any]:
         latency["llm_startup_ms"] = float(startup_match[-1])
 
     # STT results count (proxy for call activity)
-    stt_matches = re.findall(r"STT RESULT.*?transcript: '([^']*)'", out, re.IGNORECASE)
+    stt_matches = re.findall(
+        r"STT RESULT.*?(?:transcript\s*[:=]|text=)[\"']([^\"']*)[\"']",
+        out, re.IGNORECASE,
+    )
     latency["stt_transcripts_count"] = len(stt_matches)
     if stt_matches:
         latency["stt_last_transcript"] = stt_matches[-1][:80]
@@ -344,6 +351,12 @@ def _extract_kv(line: str, key: str) -> str:
     """Extract a key=value or key='value' from a log line."""
     # Strip ANSI color codes first (structlog colored console output)
     clean = _strip_ansi(line)
+    try:
+        obj = json.loads(clean)
+        if key in obj and obj[key] is not None:
+            return str(obj[key])
+    except Exception:
+        pass
     m = re.search(rf'{key}=\'([^\']*)\'|{key}="([^"]*)"|{key}=(\S+)', clean)
     if m:
         return m.group(1) or m.group(2) or m.group(3) or ""
@@ -355,10 +368,11 @@ def parse_tool_calls(lines: int = 15000) -> List[Dict[str, Any]]:
     tool_calls: List[Dict[str, Any]] = []
 
     try:
-        out = subprocess.check_output(
+        raw = subprocess.check_output(
             ["docker", "logs", "--tail", str(lines), "ai_engine"],
-            text=True, timeout=15, stderr=subprocess.STDOUT,
+            timeout=15, stderr=subprocess.STDOUT,
         )
+        out = raw.decode("utf-8", errors="replace")
     except Exception as exc:
         print(f"[WARN] Could not read ai_engine logs: {exc}", file=sys.stderr)
         return tool_calls
@@ -489,6 +503,31 @@ def parse_tool_calls(lines: int = 15000) -> List[Dict[str, Any]]:
             continue
 
     return tool_calls
+
+
+def query_last_local_call() -> Dict[str, Any]:
+    """Return the newest persisted local/pipeline call from Call History."""
+    script = r'''
+import json, os, sqlite3
+p = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
+c = sqlite3.connect(p); c.row_factory = sqlite3.Row
+r = c.execute("""SELECT call_id, provider_name, pipeline_name, context_name,
+                        outcome, duration_seconds, total_turns,
+                        avg_turn_latency_ms, max_turn_latency_ms
+                 FROM call_records
+                 WHERE pipeline_name IS NOT NULL OR provider_name='local'
+                 ORDER BY start_time DESC LIMIT 1""").fetchone()
+print(json.dumps(dict(r) if r else {}))
+'''
+    try:
+        raw = subprocess.check_output(
+            ["docker", "exec", "ai_engine", "python3", "-c", script],
+            timeout=10, stderr=subprocess.STDOUT,
+        )
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        print(f"[WARN] Could not query last local call: {exc}", file=sys.stderr)
+        return {}
 
 
 def summarize_tool_calls(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -805,6 +844,7 @@ def format_json(
     pipeline: str,
     transport: str,
     tool_calls: Dict[str, Any],
+    last_call: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build JSON output."""
     return json.dumps({
@@ -815,6 +855,7 @@ def format_json(
         "pipeline": pipeline,
         "transport": transport,
         "tool_calls": tool_calls,
+        "last_call": last_call or None,
     }, indent=2)
 
 
@@ -843,19 +884,34 @@ async def async_main(args: argparse.Namespace) -> None:
     # Model info
     model = extract_model_info(status, env)
 
-    # Latency from docker logs
-    latency = parse_local_ai_logs(lines=args.log_lines)
+    # Anchor the report to the newest persisted local/pipeline call rather than
+    # whichever provider happens to be configured as the current default.
+    last_call = query_last_local_call()
 
-    # Tool calls from ai_engine logs (use full history for sparse tool events)
+    # Latency from logs is filtered to the selected call. Canonical aggregate
+    # turn latency comes from Call History and remains available when a modular
+    # pipeline's cloud LLM/TTS does not log inside local_ai_server.
+    latency = parse_local_ai_logs(lines=args.log_lines, call_id=last_call.get("call_id", ""))
+    if last_call.get("avg_turn_latency_ms") is not None:
+        latency["call_history_avg_turn_ms"] = last_call["avg_turn_latency_ms"]
+    if last_call.get("max_turn_latency_ms") is not None:
+        latency["call_history_max_turn_ms"] = last_call["max_turn_latency_ms"]
+
+    # Tool calls from ai_engine logs, filtered to that call when available.
     raw_tool_calls = parse_tool_calls()
+    if last_call.get("call_id"):
+        raw_tool_calls = [
+            call for call in raw_tool_calls
+            if call.get("call_id") == last_call["call_id"]
+        ]
     tool_calls = summarize_tool_calls(raw_tool_calls)
 
     # Pipeline + transport
-    pipeline = detect_pipeline(project_root, env)
+    pipeline = last_call.get("pipeline_name") or last_call.get("provider_name") or detect_pipeline(project_root, env)
     transport = detect_transport(env)
 
     if args.json:
-        print(format_json(hw, model, latency, pipeline, transport, tool_calls))
+        print(format_json(hw, model, latency, pipeline, transport, tool_calls, last_call))
     else:
         print(format_template(hw, model, latency, pipeline, transport, tool_calls))
 
@@ -885,7 +941,9 @@ def main() -> None:
         help="Number of docker log lines to parse (default: 2000)",
     )
     args = parser.parse_args()
-    asyncio.run(async_main(args))
+    # Python 3.6 compatibility for CentOS/RHEL 7 operator hosts.
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(async_main(args))
 
 
 if __name__ == "__main__":

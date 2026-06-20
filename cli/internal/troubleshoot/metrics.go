@@ -16,9 +16,10 @@ type CallMetrics struct {
 	WorstEnqueuedRatio float64
 
 	// Streaming performance
-	StreamingSummaries []StreamingSummary
-	WorstDriftPct      float64
-	UnderflowCount     int
+	StreamingSummaries     []StreamingSummary
+	WorstDriftPct          float64
+	UnderflowCount         int
+	DriftAssessmentSkipped string
 
 	// VAD/Audio gating
 	VADSettings         *VADSettings
@@ -44,7 +45,7 @@ type CallMetrics struct {
 // FormatAlignment tracks format/sampling configuration and actual behavior
 type FormatAlignment struct {
 	// From config
-	ConfigAudioTransport      string
+	ConfigAudioTransport       string
 	ConfigAudioSocketFormat    string
 	ConfigProviderInputFormat  string
 	ConfigProviderOutputFormat string
@@ -214,6 +215,48 @@ func ExtractMetrics(logData string) *CallMetrics {
 	return metrics
 }
 
+// ApplyCallContext removes timing comparisons that are not meaningful for a
+// given call shape. Pipeline TTS wall time includes synthesis/queue waits, so it
+// cannot be compared directly with audio duration. Extremely short or empty
+// segments also produce dramatic percentages from only a few milliseconds.
+func (m *CallMetrics) ApplyCallContext(header *RCAHeader) {
+	if m == nil {
+		return
+	}
+	m.WorstDriftPct = 0
+	if header != nil && strings.TrimSpace(header.PipelineName) != "" {
+		m.DriftAssessmentSkipped = "pipeline wall time includes synthesis and queueing"
+		return
+	}
+	for _, sum := range m.StreamingSummaries {
+		if sum.IsGreeting || sum.EffectiveSeconds < 0.25 || sum.BytesSent <= 0 {
+			continue
+		}
+		if abs(sum.DriftPct) > abs(m.WorstDriftPct) {
+			m.WorstDriftPct = sum.DriftPct
+		}
+	}
+}
+
+// UnderflowRatePct normalizes raw event counts by the estimated number of
+// 20 ms telephony frames. A handful of startup underflows in a long call should
+// not be labeled the same way as sustained buffer starvation.
+func (m *CallMetrics) UnderflowRatePct() float64 {
+	if m == nil || m.UnderflowCount <= 0 {
+		return 0
+	}
+	totalFrames := 0
+	for _, seg := range m.StreamingSummaries {
+		if seg.BytesSent > 0 {
+			totalFrames += seg.BytesSent / 160 // ulaw@8k: 160 bytes per 20 ms frame
+		}
+	}
+	if totalFrames <= 0 {
+		return 0
+	}
+	return float64(m.UnderflowCount) / float64(totalFrames) * 100
+}
+
 func extractProviderBytesFields(fields map[string]string, metrics *CallMetrics) {
 	segment := ProviderSegment{}
 
@@ -253,7 +296,7 @@ func extractStreamingSummaryFields(fields map[string]string, metrics *CallMetric
 	sum.LowWatermark = atoiSafe(fields["low_watermark"])
 	sum.MinStart = atoiSafe(fields["min_start"])
 
-	if sum.DriftPct != 0 && !sum.IsGreeting {
+	if sum.DriftPct != 0 && !sum.IsGreeting && sum.EffectiveSeconds >= 0.25 && sum.BytesSent > 0 {
 		if abs(sum.DriftPct) > abs(metrics.WorstDriftPct) {
 			metrics.WorstDriftPct = sum.DriftPct
 		}
@@ -469,14 +512,16 @@ func (m *CallMetrics) FormatForLLM() string {
 		out.WriteString("Streaming Performance:\n")
 		out.WriteString(fmt.Sprintf("  Streaming segments: %d\n", len(m.StreamingSummaries)))
 
-		if abs(m.WorstDriftPct) > 10.0 {
+		if m.DriftAssessmentSkipped != "" {
+			out.WriteString(fmt.Sprintf("  Drift assessment skipped: %s\n", m.DriftAssessmentSkipped))
+		} else if abs(m.WorstDriftPct) > 10.0 {
 			out.WriteString(fmt.Sprintf("  ⚠️  ISSUE: Worst drift: %.1f%% (should be <10%%)\n", m.WorstDriftPct))
 		} else {
 			out.WriteString(fmt.Sprintf("  Drift: %.1f%%\n", m.WorstDriftPct))
 		}
 
 		if m.UnderflowCount > 0 {
-			out.WriteString(fmt.Sprintf("  ⚠️  ISSUE: %d underflow events detected\n", m.UnderflowCount))
+			out.WriteString(fmt.Sprintf("  Underflows: %d (%.2f%% of estimated frames)\n", m.UnderflowCount, m.UnderflowRatePct()))
 		}
 		out.WriteString("\n")
 	}

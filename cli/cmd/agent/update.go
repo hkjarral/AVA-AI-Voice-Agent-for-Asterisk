@@ -72,6 +72,7 @@ var updateCmd = &cobra.Command{
 
 This command:
   - Backs up operator config (.env, config/ai-agent.local.yaml, config/users.json, config/contexts/)
+  - Takes consistent SQLite snapshots of agents.db and call_history.db when present
   - Also snapshots config/ai-agent.yaml for recovery/migration if it was edited locally
   - Safely fast-forwards to origin/main (no forced merges by default)
   - Preserves local tracked changes using git stash (optional)
@@ -828,6 +829,49 @@ func createUpdateBackups(ctx *updateContext) error {
 			return err
 		}
 	}
+	for _, rel := range []string{
+		filepath.Join("data", "operator", "agents.db"),
+		filepath.Join("data", "call_history.db"),
+	} {
+		if err := backupSQLiteIfExists(rel, backupDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backupSQLiteIfExists uses SQLite's online backup API inside ai_engine. A raw
+// file copy can miss committed pages that are still in the WAL and is not a
+// safe pre-migration backup while calls are active.
+func backupSQLiteIfExists(relPath, backupRoot string) error {
+	if _, err := os.Stat(relPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", relPath, err)
+	}
+	tmpName := fmt.Sprintf(".agent-sqlite-backup-%d-%s", os.Getpid(), filepath.Base(relPath))
+	hostTmp := filepath.Join("data", tmpName)
+	containerSrc := "/app/" + filepath.ToSlash(relPath)
+	containerTmp := "/app/data/" + tmpName
+	const script = `
+import sqlite3, sys
+src = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True, timeout=30)
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+dst.close(); src.close()
+`
+	cmd := exec.Command("docker", "exec", "ai_engine", "python3", "-c", script, containerSrc, containerTmp)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create consistent SQLite backup for %s: %w (%s)", relPath, err, strings.TrimSpace(string(out)))
+	}
+	defer os.Remove(hostTmp)
+	dst := filepath.Join(backupRoot, relPath)
+	if err := copyFile(hostTmp, dst); err != nil {
+		return err
+	}
+	printUpdateInfo("SQLite snapshot: %s", relPath)
 	return nil
 }
 
