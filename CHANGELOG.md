@@ -7,9 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.1] - 2026-06-19
+
+> Maintenance release: hardening and bug fixes from a full post-7.0.0 audit. No breaking changes — upgrade in place. Validated against six live provider calls on the integration box (see `docs/baselines/golden/v7.0.1-validation-matrix.md`).
+
 ### Added
 
 - **v7 Agents API/OpenAPI follow-up (#433)**: Exposed the Agents API as a documented OpenAPI contract with typed response models, `GET /api/agents/{slug}`, v7 API metadata, and additive call-history agent aliases (`agent_slug`, `agent_name`) for integrations. Thanks [@YosefAdPro](https://github.com/YosefAdPro) for the contribution.
+
+### Fixed
+
+- **Collision-safe, atomic agents migration** (`admin_ui/backend/agents_migration.py`, `admin_ui/backend/main.py`): the YAML→`agents.db` import now writes to a temporary database and `os.replace`s it into place only when at least one agent was imported, so a failed or empty migration never leaves an authoritative empty database — the engine keeps serving from YAML instead. Duplicate slugs are de-collided deterministically (`sales_east`, `sales_east_2`).
+- **Agent resolution falls back to the original context name** (`src/core/agent_store.py`, `src/core/transport_orchestrator.py`): contexts whose names slugify differently (e.g. a legacy `Sales East`) now resolve via display-name → slug → slugified-name, so existing dialplans keep routing after migration.
+- **Corrupt `agents.db` degrades to YAML instead of dropping calls** (`src/core/agent_store.py`, `src/core/transport_orchestrator.py`): a read/parse error on the agents database now raises `AgentStoreReadError`, which the orchestrator distinguishes from "agent not found" and uses to fall back to YAML routing — a corrupt DB no longer silently fails resolution.
+- **Dashboard per-agent stats join on slug** (`admin_ui/backend/api/agents.py`): aggregate stats fold `context_name` → slug (call-weighted) and match both slug and display name, so per-agent call counts render real numbers instead of zeros; guarded against `sqlite3.OperationalError`.
+- **Call-history retention actually runs** (`src/engine.py`, `src/core/call_history.py`): the retention-cleanup task is now scheduled (idles when `CALL_HISTORY_RETENTION_DAYS` is unset, daily otherwise) with a UTC-aware cutoff, and provider-start failures are now recorded on the call record.
+- **MCP stdio framing is newline-delimited** (`src/mcp/stdio_framing.py`, `src/mcp_servers/weather_mcp_server.py`): the stdio transport uses newline-delimited JSON (the MCP standard) with Content-Length auto-detection on decode, so off-the-shelf MCP servers interoperate.
+- **Azure STT start no longer blocks the event loop** (`src/pipelines/azure.py`): `start_continuous_recognition` runs via `asyncio.to_thread` instead of a blocking `.get()`.
+- **Admin UI "Update" rebuilds the frontend by default** (`admin_ui/frontend/src/pages/System/UpdatesPage.tsx`): the "Update UI too" option now defaults on, so an update no longer silently skips the frontend rebuild.
+- **ElevenLabs sample-rate keys corrected** (`admin_ui/frontend/src/components/config/providers/ElevenLabsProviderForm.tsx`): the form now writes `input_sample_rate_hz` / `output_sample_rate_hz` — the keys the engine actually reads.
+- **Hardened secret injection and config defaults** (`src/config/security.py`, `src/config.py`): Deepgram/Google key injection is guarded against empty values; added tunable Google VAD sensitivity/padding fields and a sane `app_name` default; the call-history DB path is resolved absolutely.
+
+### Changed
+
+- **First-login docs reflect the one-time-password flow** (`install.sh`, `docs/MIGRATION.md`, `docs/ADMIN_UI_GUIDE.md`, `admin_ui/UI_Setup_Guide.md`): replaced stale `admin`/`admin` instructions with retrieving the generated password from the `admin_ui` logs.
+
+### Removed
+
+- **Dead YAML config-editor page** (`admin_ui/frontend/src/pages/ConfigEditor.tsx`): removed an orphaned, unrouted editor superseded by the Monaco YAML editor.
 
 ## [7.0.0] - 2026-06-14
 
