@@ -55,10 +55,11 @@ http://localhost:3003
 
 **Login Credentials**:
 - Username: `admin`
-- Password: `admin`
+- Password: the one-time password printed to the admin_ui logs on first start
+  (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`) —
+  `admin`/`admin` no longer works.
 
-⚠️ **Important**: Change this password immediately after login!  
-Go to: User Menu (top right) → Change Password
+⚠️ **Important**: You'll be required to set a new password at first login.
 
 ### 3. Complete Setup (First Time Only)
 
@@ -204,14 +205,18 @@ required to set a new password at first login. `admin`/`admin` no longer works.
 ### Default Credentials
 
 **Username**: `admin`  
-**Password**: `admin`
+**Password**: a one-time password generated on first run (printed to the admin_ui logs):
+```
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+```
 
-These credentials are created automatically on first run. The user data is stored in:
+The `admin` account is created automatically on first run with this one-time
+password — `admin`/`admin` no longer works. The user data is stored in:
 ```
 config/users.json
 ```
 
-**⚠️ CRITICAL**: Change the default password immediately after first login!
+**⚠️ CRITICAL**: You are required to set a new password at first login.
 
 ### JWT Secret (Optional)
 

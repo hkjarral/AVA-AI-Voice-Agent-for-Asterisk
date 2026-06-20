@@ -78,3 +78,48 @@ func TestBackupPathIfExists(t *testing.T) {
 		t.Fatalf("backup content mismatch: got %q want %q", got, want)
 	}
 }
+
+// TestBackupSQLiteHostCopy proves the stopped-engine fallback copies the DB and
+// any present -wal/-shm sidecars while skipping absent sidecars. This is the path
+// taken when ai_engine is not running, so a stopped/unhealthy container no longer
+// aborts the update (Finding 1 / Codex P2 + CodeRabbit).
+func TestBackupSQLiteHostCopy(t *testing.T) {
+	chdirTemp(t)
+	backupRoot := t.TempDir()
+
+	rel := filepath.Join("data", "operator", "agents.db")
+	if err := os.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dbContent := []byte("SQLite format 3\x00")
+	walContent := []byte("wal-bytes")
+	if err := os.WriteFile(rel, dbContent, 0o644); err != nil {
+		t.Fatalf("write db: %v", err)
+	}
+	// Present WAL sidecar should be copied; SHM is absent and must be skipped.
+	if err := os.WriteFile(rel+"-wal", walContent, 0o644); err != nil {
+		t.Fatalf("write wal: %v", err)
+	}
+
+	if err := backupSQLiteHostCopy(rel, backupRoot); err != nil {
+		t.Fatalf("host copy should succeed, got: %v", err)
+	}
+
+	gotDB, err := os.ReadFile(filepath.Join(backupRoot, rel))
+	if err != nil {
+		t.Fatalf("db backup missing: %v", err)
+	}
+	if string(gotDB) != string(dbContent) {
+		t.Fatalf("db content mismatch: got %q want %q", gotDB, dbContent)
+	}
+	gotWAL, err := os.ReadFile(filepath.Join(backupRoot, rel+"-wal"))
+	if err != nil {
+		t.Fatalf("wal sidecar should be copied: %v", err)
+	}
+	if string(gotWAL) != string(walContent) {
+		t.Fatalf("wal content mismatch: got %q want %q", gotWAL, walContent)
+	}
+	if _, err := os.Stat(filepath.Join(backupRoot, rel+"-shm")); !os.IsNotExist(err) {
+		t.Fatalf("absent shm sidecar should not produce a backup artifact")
+	}
+}
