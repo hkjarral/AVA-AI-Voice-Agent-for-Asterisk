@@ -14573,7 +14573,13 @@ class Engine:
             if default_target in (self.providers or {}):
                 prov = self.providers[default_target]
                 try:
-                    default_ready = bool(prov.is_ready()) if hasattr(prov, "is_ready") else False
+                    # HIGH-2: local default provider readiness reflects active WS
+                    # connection, not just URL-present (see _ready_handler). Cheap,
+                    # non-blocking. Other kinds keep the existing is_ready() behavior.
+                    if self._get_provider_kind(default_target) == "local" and hasattr(prov, "is_connected"):
+                        default_ready = bool(prov.is_connected())
+                    else:
+                        default_ready = bool(prov.is_ready()) if hasattr(prov, "is_ready") else False
                 except Exception:
                     default_ready = False
             elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):
@@ -14659,7 +14665,16 @@ class Engine:
             if default_target in (self.providers or {}):
                 prov = self.providers[default_target]
                 try:
-                    provider_ok = bool(prov.is_ready()) if hasattr(prov, "is_ready") else True
+                    # HIGH-2: for a local default provider, readiness must reflect
+                    # an active WS connection (local_ai_server can take 5-10 min to
+                    # load models while is_ready()/URL-present is already True).
+                    # is_connected() is a cheap, non-blocking WS-state check. All
+                    # other provider kinds keep the URL-present behavior (admin_ui
+                    # also consumes /ready, so non-local readiness must not be stricter).
+                    if self._get_provider_kind(default_target) == "local" and hasattr(prov, "is_connected"):
+                        provider_ok = bool(prov.is_connected())
+                    else:
+                        provider_ok = bool(prov.is_ready()) if hasattr(prov, "is_ready") else True
                 except Exception:
                     provider_ok = True
             elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):

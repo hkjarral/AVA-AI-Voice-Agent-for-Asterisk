@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Admin UI "Update" rebuilds the frontend by default** (`admin_ui/frontend/src/pages/System/UpdatesPage.tsx`): the "Update UI too" option now defaults on, so an update no longer silently skips the frontend rebuild.
 - **ElevenLabs sample-rate keys corrected** (`admin_ui/frontend/src/components/config/providers/ElevenLabsProviderForm.tsx`): the form now writes `input_sample_rate_hz` / `output_sample_rate_hz` — the keys the engine actually reads.
 - **Hardened secret injection and config defaults** (`src/config/security.py`, `src/config.py`): Deepgram/Google key injection is guarded against empty values; added tunable Google VAD sensitivity/padding fields and a sane `app_name` default; the call-history DB path is resolved absolutely.
+- **`/ready` reflects local default-provider connectivity** (`src/engine.py`): when the default provider is the local AI server, `/ready` (and the `/health` readiness field) now require an active WebSocket connection (`is_connected()`) rather than just a configured URL. Previously readiness flipped healthy while `local_ai_server` was still loading models (a 5–10 min window), so load balancers routed calls into an engine whose default provider could not yet serve, answering callers into dead air. The stricter check is scoped strictly to local default providers — non-local providers keep the URL-present behavior (admin_ui also consumes `/ready`). The check is a cheap, non-blocking WS-state read.
 
 ### Changed
 
