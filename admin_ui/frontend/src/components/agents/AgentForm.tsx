@@ -64,6 +64,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [roleLabel, setRoleLabel] = useState('');
     const [greeting, setGreeting] = useState('');
     const [prompt, setPrompt] = useState('');
+    const [notes, setNotes] = useState('');
     const [isActive, setIsActive] = useState(1);
     const [emailRecipient, setEmailRecipient] = useState('');
     const [emailFrom, setEmailFrom] = useState('');
@@ -105,6 +106,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setRoleLabel(agent.role_label || '');
             setGreeting(agent.greeting || '');
             setPrompt(agent.prompt || '');
+            setNotes(agent.notes || '');
             setIsActive(agent.is_active);
             setEmailRecipient(agent.email_recipient || '');
             setEmailFrom(agent.email_from || '');
@@ -122,6 +124,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setRoleLabel('');
             setGreeting('Hi, how can I help you today?');
             setPrompt('You are a helpful voice assistant.');
+            setNotes('');
             setIsActive(1);
             setEmailRecipient('');
             setEmailFrom('');
@@ -217,6 +220,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 role_label: roleLabel || null,
                 greeting: greeting || '',
                 prompt: prompt || '',
+                notes: notes || null,
                 tools_json: cfg.tools_json,
                 mcp_json: cfg.mcp_json,
                 extra_json: cfg.extra_json,
@@ -416,6 +420,20 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                         onChange={(e) => setPrompt(e.target.value)}
                         rows={6}
                         placeholder="You are a helpful voice assistant…"
+                        className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                    />
+                </div>
+
+                <div className="mb-4">
+                    <FormLabel htmlFor="agent-notes" tooltip="Internal notes about this agent — not used at runtime.">
+                        Notes
+                    </FormLabel>
+                    <textarea
+                        id="agent-notes"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        rows={3}
+                        placeholder="Internal notes about this agent…"
                         className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
                     />
                 </div>
