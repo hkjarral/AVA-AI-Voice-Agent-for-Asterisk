@@ -994,6 +994,17 @@ class AppConfig(BaseModel):
     # Increase if farewell gets cut off (typical farewells need 2-4 seconds)
     farewell_hangup_delay_sec: float = Field(default=5.0)
 
+    # HIGH-3: behavior when the AI provider fails to start a session on an
+    # already-answered channel. "announce_hangup" (default) plays a short error
+    # prompt then hangs up so the caller is not left in silent dead air;
+    # "leave_open" preserves the legacy behavior (log + cleanup only, line stays
+    # open until the caller hangs up).
+    on_provider_failure: str = Field(default="announce_hangup")
+    # Asterisk sound file played to the caller before hangup when a provider fails
+    # to start. May be a bare sound name ("custom/foo") or a "sound:"/"recording:"
+    # URI. Best-effort: if missing/unplayable the channel is still hung up.
+    provider_failure_prompt: str = Field(default="sorry-youre-having-problems")
+
     # Ensure tests that construct AppConfig(**dict) directly still get normalized pipelines
     # similar to load_config(), which calls _normalize_pipelines().
     from pydantic import model_validator  # local import to keep top clear

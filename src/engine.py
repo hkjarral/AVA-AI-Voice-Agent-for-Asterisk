@@ -13621,8 +13621,8 @@ class Engine:
             # HIGH-1b: a session exists by the time provider start runs, so this call
             # WILL be persisted at cleanup — record the failure on the session so its
             # outcome is 'error' instead of being mislabeled 'completed'/'abandoned'.
+            _sess = locals().get("session")
             try:
-                _sess = locals().get("session")
                 if _sess is not None:
                     if not getattr(_sess, "error_message", None):
                         _sess.error_message = f"provider_start_failed: {exc}"
@@ -13631,6 +13631,44 @@ class Engine:
                 logger.debug("Failed to record provider-start error on session",
                              call_id=call_id, exc_info=True)
             logger.error("Failed to start provider session", call_id=call_id, error=str(exc), exc_info=True)
+
+            # HIGH-3: the channel was already answered/bridged before provider start,
+            # so on failure it stays open and SILENT (dead air) until the caller hangs
+            # up. Unless configured to leave the line open, play a best-effort error
+            # prompt and hang up so the caller is not stranded.
+            on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
+            if on_failure != "leave_open":
+                channel_id = getattr(_sess, "caller_channel_id", None) if _sess is not None else None
+                if channel_id:
+                    await self._announce_provider_failure_and_hangup(call_id, channel_id)
+
+    async def _announce_provider_failure_and_hangup(self, call_id: str, channel_id: str) -> None:
+        """HIGH-3: best-effort error prompt to the caller, then hang up the channel.
+
+        Provider TTS is unavailable here (the provider failed to start), so we play
+        an Asterisk sound file via ARI and wait for it to finish before hanging up.
+        Every step is best-effort: the core requirement is ending the dead air by
+        hanging up, so a missing/unplayable prompt must never prevent the hangup.
+        """
+        prompt = (getattr(self.config, "provider_failure_prompt", "") or "").strip()
+        if prompt:
+            try:
+                playback = await self.ari_client.play_sound(channel_id, prompt)
+                playback_id = (playback or {}).get("id") if isinstance(playback, dict) else None
+                if playback_id:
+                    await self._wait_for_ari_playback(str(playback_id), timeout_sec=10.0)
+            except Exception:
+                logger.debug(
+                    "Provider-failure error prompt playback failed",
+                    call_id=call_id, channel_id=channel_id, exc_info=True,
+                )
+        try:
+            await self.ari_client.hangup_channel(channel_id)
+        except Exception:
+            logger.debug(
+                "Provider-failure hangup failed",
+                call_id=call_id, channel_id=channel_id, exc_info=True,
+            )
 
     async def _on_playback_finished(self, event: Dict[str, Any]):
         """Delegate ARI PlaybackFinished to PlaybackManager for gating and cleanup."""

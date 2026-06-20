@@ -1627,6 +1627,24 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     onChange={(e) => updateConfig('farewell_hangup_delay_sec', parseFloat(e.target.value) || 2.5)}
                                     tooltip="Time to wait after farewell audio before hanging up. Increase if farewell gets cut off."
                                 />
+                                <FormSelect
+                                    label="On Provider Start Failure"
+                                    value={config.on_provider_failure ?? 'announce_hangup'}
+                                    onChange={(e) => updateConfig('on_provider_failure', e.target.value)}
+                                    options={[
+                                        { value: 'announce_hangup', label: 'Play error message and hang up (default)' },
+                                        { value: 'leave_open', label: 'Leave the line open' },
+                                    ]}
+                                    tooltip="What happens if the AI provider fails to start: play an error message and hang up (default), or leave the line open. Leaving the line open means the caller hears silence until they hang up."
+                                />
+                                {(config.on_provider_failure ?? 'announce_hangup') !== 'leave_open' && (
+                                    <FormInput
+                                        label="Provider Failure Prompt (sound file)"
+                                        value={config.provider_failure_prompt ?? 'sorry-youre-having-problems'}
+                                        onChange={(e) => updateConfig('provider_failure_prompt', e.target.value)}
+                                        tooltip="Asterisk sound file played to the caller before hanging up when the AI provider fails to start. Use a bare sound name (e.g. custom/oops) or a sound:/recording: URI. Best-effort: if it cannot play, the call is still hung up."
+                                    />
+                                )}
                             </div>
                             <p className="text-sm text-muted-foreground">
                                 <strong>Note:</strong> Call ending behavior (transcript offers, confirmation flows) is now controlled
