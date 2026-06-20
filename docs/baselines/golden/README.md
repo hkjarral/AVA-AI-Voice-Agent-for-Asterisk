@@ -7,7 +7,8 @@ This directory provides **quick reference links** for golden baselines, used in 
 - **Deepgram Agent**: see `deepgram.md`
 - **OpenAI Realtime**: see `openai.md`
 - **Google Live**: see `google-live.md`
-- **v6.1.1 Validation Matrix**: see `v6.1.1-validation-matrix.md` (current latest baseline)
+- **v7.0.1 Validation Matrix**: see `v7.0.1-validation-matrix.md` (current latest baseline — 6 live provider calls, 2026-06-19)
+- **v6.1.1 Validation Matrix**: see `v6.1.1-validation-matrix.md`
 - **ElevenLabs Agent**: see [`docs/contributing/references/Provider-ElevenLabs-Implementation.md`](../../contributing/references/Provider-ElevenLabs-Implementation.md)
 - **Full Local GPU** (Kroko + Qwen 2.5 + Kokoro): see `local-gpu.md`
 
