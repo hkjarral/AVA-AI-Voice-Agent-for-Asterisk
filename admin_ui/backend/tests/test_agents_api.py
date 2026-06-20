@@ -399,7 +399,7 @@ def _load_backend_main():
 def test_main_app_openapi_version_and_tag():
     """version literal + agents tag description live in admin_ui/backend/main.py."""
     main = _load_backend_main()
-    assert main.app.version == "7.0.0"
+    assert main.app.version == "7.0.1"
     spec = main.app.openapi()
     tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}
     assert tags.get("agents")  # present with a non-empty description
