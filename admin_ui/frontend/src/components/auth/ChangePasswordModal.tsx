@@ -16,7 +16,7 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen, onClo
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [loading, setLoading] = useState(false);
-    const { changePassword } = useAuth();
+    const { changePassword, logout } = useAuth();
 
     if (!isOpen) return null;
 
@@ -76,7 +76,7 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen, onClo
 
                 {mandatory && (
                     <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 rounded text-sm">
-                        For security, you must change your password before continuing.
+                        For security, you must change your password before continuing. If you mistyped your one-time password, use Logout to sign in again.
                     </div>
                 )}
 
@@ -116,7 +116,15 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen, onClo
                     />
 
                     <div className="flex justify-end gap-3 mt-6">
-                        {!mandatory && (
+                        {mandatory ? (
+                            <button
+                                type="button"
+                                onClick={logout}
+                                className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+                            >
+                                Logout
+                            </button>
+                        ) : (
                             <button
                                 type="button"
                                 onClick={onClose}
