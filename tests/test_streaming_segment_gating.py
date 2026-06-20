@@ -12,8 +12,9 @@ class _DummyARI:
     pass
 
 
-def test_diag_taps_off_by_default():
+def test_diag_taps_off_by_default(monkeypatch):
     """LOW-R1: diagnostic wave taps must default OFF."""
+    monkeypatch.delenv("AAVA_AUDIO_DIAGNOSTICS", raising=False)
     mgr = StreamingPlaybackManager(
         session_store=SessionStore(),
         ari_client=_DummyARI(),
@@ -23,8 +24,9 @@ def test_diag_taps_off_by_default():
     assert mgr.diag_enable_taps is False
 
 
-def test_diag_taps_not_enabled_by_debug_logging():
+def test_diag_taps_not_enabled_by_debug_logging(monkeypatch):
     """LOW-R1: debug logging must NOT silently enable file-writing taps."""
+    monkeypatch.delenv("AAVA_AUDIO_DIAGNOSTICS", raising=False)
     mgr = StreamingPlaybackManager(
         session_store=SessionStore(),
         ari_client=_DummyARI(),
@@ -34,8 +36,9 @@ def test_diag_taps_not_enabled_by_debug_logging():
     assert mgr.diag_enable_taps is False
 
 
-def test_diag_taps_enabled_by_explicit_config():
+def test_diag_taps_enabled_by_explicit_config(monkeypatch):
     """LOW-R1: explicit config flag opts in to diagnostic taps."""
+    monkeypatch.delenv("AAVA_AUDIO_DIAGNOSTICS", raising=False)
     mgr = StreamingPlaybackManager(
         session_store=SessionStore(),
         ari_client=_DummyARI(),
@@ -55,6 +58,46 @@ def test_diag_taps_enabled_by_env(monkeypatch):
         streaming_config={},
     )
     assert mgr.diag_enable_taps is True
+
+
+@pytest.mark.parametrize("falsey", ["false", "False", "0", "no", "off", ""])
+def test_diag_taps_disabled_by_falsey_string_config(monkeypatch, falsey):
+    """CodeRabbit Major: a string config value of 'false'/'0'/'no' must
+    DISABLE taps. bool('false') is True, so the parse must be strict."""
+    monkeypatch.delenv("AAVA_AUDIO_DIAGNOSTICS", raising=False)
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={"diag_enable_taps": falsey},
+    )
+    assert mgr.diag_enable_taps is False
+
+
+@pytest.mark.parametrize("truthy", ["true", "True", "1", "yes", "on", "ON"])
+def test_diag_taps_enabled_by_truthy_string_config(monkeypatch, truthy):
+    """CodeRabbit Major: a string config value of 'true'/'1'/'yes' enables taps."""
+    monkeypatch.delenv("AAVA_AUDIO_DIAGNOSTICS", raising=False)
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={"diag_enable_taps": truthy},
+    )
+    assert mgr.diag_enable_taps is True
+
+
+@pytest.mark.parametrize("falsey", ["false", "False", "0", "no", "off"])
+def test_diag_taps_disabled_by_falsey_env(monkeypatch, falsey):
+    """CodeRabbit Major: AAVA_AUDIO_DIAGNOSTICS='false'/'0' must DISABLE taps."""
+    monkeypatch.setenv("AAVA_AUDIO_DIAGNOSTICS", falsey)
+    mgr = StreamingPlaybackManager(
+        session_store=SessionStore(),
+        ari_client=_DummyARI(),
+        conversation_coordinator=None,
+        streaming_config={},
+    )
+    assert mgr.diag_enable_taps is False
 
 
 @pytest.mark.asyncio

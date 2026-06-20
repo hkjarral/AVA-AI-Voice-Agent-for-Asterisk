@@ -1122,8 +1122,27 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             # Wait before checking, but not past the bound.
             await asyncio.sleep(min(check_interval, max(0, max_duration - elapsed)))
 
+            # Codex P2: make the configured bound a HARD ceiling on the whole
+            # effort. _reconnect() carries its own backoff schedule (~157s);
+            # without this wrapper a single slow inner attempt would leave the
+            # caller deaf well past max_duration and delay the give-up signal.
+            # Cap each attempt to the remaining budget (with a small floor so a
+            # near-instant reconnect still gets a chance) and give up as soon as
+            # an attempt can't complete in time.
+            remaining = max_duration - (asyncio.get_event_loop().time() - start_time)
+            attempt_timeout = max(0.5, remaining)
+
             logger.info("🔄 Attempting Local AI Server background reconnect...")
-            success = await self._reconnect()
+            try:
+                success = await asyncio.wait_for(self._reconnect(), timeout=attempt_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "⏹️ Background reconnect gave up — reconnect attempt exceeded remaining window",
+                    timeout_sec=max_duration,
+                    note="Local AI Server did not come back online; signaling engine to hang up"
+                )
+                await self._signal_mid_call_reconnect_giveup()
+                break
             if success:
                 logger.info("✅ Background reconnect successful")
                 self._was_connected = True

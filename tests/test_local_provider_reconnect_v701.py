@@ -66,3 +66,50 @@ async def test_background_reconnect_success_does_not_signal_hangup():
     await asyncio.wait_for(provider._background_reconnect_loop(), timeout=10.0)
 
     assert not [e for e in events if e.get("type") == "ProviderDisconnected"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_timeout_is_hard_ceiling_on_slow_inner_attempt():
+    """Codex P2: the configured bound must cap the WHOLE reconnect effort.
+
+    A single `_reconnect()` call carries its own multi-attempt backoff
+    (~157s). If the loop only checks elapsed-vs-bound *between* attempts, a
+    slow inner attempt leaves the caller deaf far past
+    `mid_call_reconnect_timeout_sec`. The bound must be a hard ceiling: the
+    loop must give up (and emit ProviderDisconnected) within roughly the
+    bound even when an inner attempt hangs.
+    """
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(
+        LocalProviderConfig(mid_call_reconnect_timeout_sec=1),
+        on_event=on_event,
+    )
+    provider._was_connected = True
+    provider._active_call_id = "call-slow-inner"
+
+    # Inner reconnect hangs far longer than the bound (simulates the real
+    # backoff schedule running for minutes).
+    async def _hang():
+        await asyncio.sleep(60)
+        return True
+
+    provider._reconnect = _hang  # type: ignore[assignment]
+
+    loop = asyncio.get_event_loop()
+    started = loop.time()
+    # Generous wrapper timeout: a regression (waiting for the 60s inner
+    # attempt) hangs past this and fails; a correct hard ceiling returns
+    # within a few seconds of the 1s bound.
+    await asyncio.wait_for(provider._background_reconnect_loop(), timeout=15.0)
+    duration = loop.time() - started
+
+    assert duration < 10.0, (
+        f"reconnect effort ran {duration:.1f}s — bound (1s) was not a hard ceiling"
+    )
+    disconnect_events = [e for e in events if e.get("type") == "ProviderDisconnected"]
+    assert disconnect_events, f"expected ProviderDisconnected give-up, got {events}"
+    assert disconnect_events[-1].get("call_id") == "call-slow-inner"

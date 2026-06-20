@@ -268,9 +268,18 @@ class StreamingPlaybackManager:
         # coupled to debug logging — enabling debug logs must not silently start
         # writing files in the call path.
         try:
-            self.diag_enable_taps = bool(
-                self.streaming_config.get('diag_enable_taps', False)
-            ) or os.environ.get('AAVA_AUDIO_DIAGNOSTICS', '').lower() in ('1', 'true', 'yes', 'on')
+            def _truthy(value) -> bool:
+                # Strict parse: only explicit on-values enable taps. A bare
+                # bool(str) treats "false"/"0"/"no" as True, which would
+                # silently turn taps ON when set to those strings.
+                if isinstance(value, bool):
+                    return value
+                return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+            self.diag_enable_taps = (
+                _truthy(self.streaming_config.get('diag_enable_taps', False))
+                or _truthy(os.environ.get('AAVA_AUDIO_DIAGNOSTICS', ''))
+            )
         except Exception:
             self.diag_enable_taps = False
         # Log guards (avoid warning spam while waiting for ExternalMedia RTP endpoint).
