@@ -291,6 +291,28 @@ class TestInjectProviderApiKeys:
             }
         }
         inject_provider_api_keys(config_data)
-        
+
         # Environment variable should take precedence
         assert config_data['providers']['openai']['api_key'] == "sk-env-key"
+
+    def test_strip_inline_deepgram_key_when_env_unset(self, monkeypatch):
+        """SECURITY: inline deepgram api_key is stripped when env var is unset.
+
+        Provider keys come only from env; a YAML-embedded api_key must never
+        become an active credential.
+        """
+        monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+
+        config_data = {'providers': {'deepgram': {'api_key': 'dg-yaml-key'}}}
+        inject_provider_api_keys(config_data)
+
+        assert 'api_key' not in config_data['providers']['deepgram']
+
+    def test_strip_inline_google_live_key_when_env_unset(self, monkeypatch):
+        """SECURITY: inline google_live api_key is stripped when env var unset."""
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+        config_data = {'providers': {'google_live': {'api_key': 'g-yaml-key'}}}
+        inject_provider_api_keys(config_data)
+
+        assert 'api_key' not in config_data['providers']['google_live']

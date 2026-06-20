@@ -205,7 +205,9 @@ try:
     # Honor AGENTS_DB_PATH (MED-C2) so the migration seeds the SAME path the agent
     # stores read; otherwise a relocated DB is seeded at the default while the engine
     # reads the env path and falls back to YAML (half-wired knob = footgun).
-    _agents_db = os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+    # abspath() so a bare filename (e.g. AGENTS_DB_PATH=agents.db) resolves to a
+    # real directory instead of "" — makedirs("") would raise.
+    _agents_db = os.path.abspath(os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db"))
     _op_dir = os.path.dirname(_agents_db)
     _db_filename = os.path.basename(_agents_db)
     os.makedirs(_op_dir, exist_ok=True)

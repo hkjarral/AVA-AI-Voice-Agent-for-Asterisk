@@ -76,18 +76,23 @@ def _write_first_run_password_file(password: str) -> None:
     """
     try:
         # O_CREAT|O_TRUNC with mode 0o600 so the file is owner-only from creation.
+        # The mode arg is ignored for an existing file, so fchmod the fd to 0o600
+        # BEFORE writing — closing the window where an existing wider-perm file is
+        # truncated/written before perms are tightened. O_NOFOLLOW refuses to
+        # follow a symlink planted at the path.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        flags |= getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(
             FIRST_RUN_PASSWORD_PATH,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            flags,
             0o600,
         )
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(
                 f"{password}\n"
                 "One-time admin password — change it at first login, then delete this file.\n"
             )
-        # Re-assert perms in case the file pre-existed with looser modes.
-        os.chmod(FIRST_RUN_PASSWORD_PATH, 0o600)
     except Exception:
         # Stdout/log message remains the primary channel; the file is a bonus.
         pass

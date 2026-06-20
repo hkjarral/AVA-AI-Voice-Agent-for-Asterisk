@@ -25,7 +25,8 @@ REAL_SECRETS = [
     ('api_key = "sk-proj-abcd1234efgh5678ijkl9012mnop3456"', False),
     ("JWT_SECRET=9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a", True),
     ("SMTP_PASSWORD=Tr0ub4dor3xKpQzL9vNmW2aa", True),
-    ('aws_key = "AKIAIOSFODNN7EXAMPLE"', False),
+    # A real-looking AWS key (no placeholder marker) must still be caught.
+    ('aws_key = "AKIA1234567890ABCDEF"', False),
 ]
 
 # (line, is_config) pairs that MUST NOT be flagged (placeholders / code / env refs).
@@ -44,6 +45,11 @@ ALLOWED = [
     ("api_key = self._auto_detect_credentials(options)", False),
     ('"hashed_password": get_password_hash(password),', False),
     ("api_key = config.api_key", False),
+    # Provider-format detection must honor placeholder filtering: a documented
+    # example like AWS's AKIAIOSFODNN7EXAMPLE must NOT trip the guard.
+    ('aws_key = "AKIAIOSFODNN7EXAMPLE"', False),
+    ("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", True),
+    ("OPENAI_API_KEY=sk-EXAMPLE-not-a-real-key-placeholder", True),
 ]
 
 

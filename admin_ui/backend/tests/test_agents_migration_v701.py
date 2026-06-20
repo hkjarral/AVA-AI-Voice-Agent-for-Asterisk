@@ -3,6 +3,7 @@
 Covers CRIT-3: slug collisions must NOT raise IntegrityError and must NOT leave
 an empty-but-present (authoritative) agents.db.
 """
+import os
 import sqlite3
 
 import yaml as _yaml
@@ -76,3 +77,13 @@ def test_migrate_if_needed_honors_custom_db_filename(tmp_path):
     n = sqlite3.connect(str(op / "relocated.db")).execute(
         "SELECT count(*) FROM agents").fetchone()[0]
     assert n == 1
+
+
+def test_relative_agents_db_path_yields_nonempty_dirname():
+    # MED-C2 follow-up: a bare AGENTS_DB_PATH (e.g. "agents.db") must resolve to a
+    # real directory before dirname(); dirname("agents.db") == "" would make
+    # os.makedirs("") raise at startup. abspath() guards against that.
+    agents_db = os.path.abspath("agents.db")
+    op_dir = os.path.dirname(agents_db)
+    assert op_dir, "abspath() must yield a non-empty parent dir for a bare filename"
+    assert os.path.basename(agents_db) == "agents.db"

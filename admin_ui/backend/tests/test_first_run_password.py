@@ -118,6 +118,46 @@ def test_first_run_password_file_written_with_0600(tmp_path, monkeypatch):
     assert "delete this file" in contents.lower(), "File should carry a retrieval/cleanup note"
 
 
+def test_existing_wider_perm_password_file_tightened_before_write(tmp_path, monkeypatch):
+    """An EXISTING looser-perm file is fchmod'd to 0o600 BEFORE content is written.
+
+    The mode arg to os.open is ignored for an existing file, so without an fchmod
+    immediately after open() the truncate+write happens while the file is still
+    world-readable. We assert (a) the final perms are 0o600, and (b) an fchmod to
+    0o600 happened on the freshly-opened fd before the file was written — the
+    latter fails on the pre-fix truncate-then-chmod ordering (no fchmod at all).
+    """
+    import os
+    import stat as _stat
+    import auth
+
+    pw_file = tmp_path / ".first-run-password"
+    pw_file.write_text("stale\n")
+    os.chmod(pw_file, 0o644)
+    assert _stat.S_IMODE(pw_file.stat().st_mode) == 0o644
+
+    monkeypatch.setattr(auth, "FIRST_RUN_PASSWORD_PATH", str(pw_file))
+
+    real_fchmod = os.fchmod
+    fchmod_calls = []
+
+    def _spy_fchmod(fd, mode):
+        # Record (mode, on-disk-size) so we can prove the chmod preceded the write.
+        fchmod_calls.append((mode, os.fstat(fd).st_size))
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", _spy_fchmod)
+    auth._write_first_run_password_file("a-new-one-time-password")
+
+    assert fchmod_calls, "expected fchmod on the fd before writing (perms window)"
+    mode, size_at_chmod = fchmod_calls[0]
+    assert mode == 0o600, f"fd must be fchmod'd to 0o600, got {oct(mode)}"
+    # O_TRUNC empties the file; fchmod must run before any password bytes land.
+    assert size_at_chmod == 0, "fchmod must precede the write (file empty at chmod)"
+    assert _stat.S_IMODE(pw_file.stat().st_mode) == 0o600
+    assert "a-new-one-time-password" in pw_file.read_text()
+
+
 def test_first_run_password_file_written_on_legacy_rotation(tmp_path, monkeypatch):
     """LOW-U2: rotating a legacy admin/admin install also writes the 0600 file."""
     import stat as _stat

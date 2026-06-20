@@ -200,10 +200,15 @@ def scan_line(line: str, is_config: bool = False):
     always a variable / function call (``api_key = os.getenv(...)``), so only a
     QUOTED string literal is treated as a candidate secret there.
     """
-    # Provider key formats first (catch even outside KEY=VALUE form).
-    if OPENAI_KEY_RE.search(line):
+    # Provider key formats first (catch even outside KEY=VALUE form). Skip
+    # documented examples (e.g. AKIAIOSFODNN7EXAMPLE) by running the same
+    # placeholder/allowlist filter on the matched token — the guard must still
+    # catch real-looking keys.
+    _m = OPENAI_KEY_RE.search(line)
+    if _m and not is_placeholder_value(_m.group(0)):
         return "OpenAI-style key (sk-...)"
-    if AWS_KEY_RE.search(line):
+    _m = AWS_KEY_RE.search(line)
+    if _m and not is_placeholder_value(_m.group(0)):
         return "AWS access key id (AKIA...)"
 
     for m in ASSIGN_RE.finditer(line):
