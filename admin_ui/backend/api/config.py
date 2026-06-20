@@ -579,7 +579,8 @@ def persist_config_content(content: str) -> dict:
     if _migrate_inline_provider_secrets(new_parsed):
         content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
         validation = _validate_ai_agent_config(content)
-        warnings = validation.get("warnings") or warnings
+        migrated_warnings = validation.get("warnings")
+        warnings = warnings if migrated_warnings is None else migrated_warnings
 
     # Snapshot current merged config for hot-reload comparison
     old_merged = _read_merged_config_dict()
