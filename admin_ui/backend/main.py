@@ -196,7 +196,12 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
 # must keep working on YAML — this block must never crash admin_ui startup).
 app.state.agents_migration_result = None
 try:
-    _op_dir = "/app/data/operator"
+    # Honor AGENTS_DB_PATH (MED-C2) so the migration seeds the SAME path the agent
+    # stores read; otherwise a relocated DB is seeded at the default while the engine
+    # reads the env path and falls back to YAML (half-wired knob = footgun).
+    _agents_db = os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+    _op_dir = os.path.dirname(_agents_db)
+    _db_filename = os.path.basename(_agents_db)
     os.makedirs(_op_dir, exist_ok=True)
     with open(os.path.join(_op_dir, ".migration.lock"), "w") as _lk:
         fcntl.flock(_lk, fcntl.LOCK_EX)
@@ -204,14 +209,14 @@ try:
         _contexts_dir = os.path.join(os.path.dirname(settings.CONFIG_PATH), "contexts")
         # Atomic: migrate into a temp DB and only promote on success, so a
         # collision/empty import never leaves an authoritative empty DB (CRIT-3).
-        _result = migrate_if_needed(_op_dir, _yaml_path, _contexts_dir)
+        _result = migrate_if_needed(_op_dir, _yaml_path, _contexts_dir, _db_filename)
         app.state.agents_migration_result = _result
         if _result.get("imported"):
             logging.getLogger(__name__).info(
                 "agents migration: imported %d (skipped: %s); default agent = %s",
                 _result["imported"], _result["skipped"], _result.get("default_slug"),
             )
-        _final_db = os.path.join(_op_dir, "agents.db")
+        _final_db = _agents_db
         if os.path.exists(_final_db):
             _store = AgentsStore(db_path=_final_db)
             try:

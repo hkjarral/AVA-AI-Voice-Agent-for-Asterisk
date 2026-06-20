@@ -57,3 +57,22 @@ def test_migrate_if_needed_promotes_on_success(tmp_path):
     n = sqlite3.connect(str(op / "agents.db")).execute(
         "SELECT count(*) FROM agents").fetchone()[0]
     assert n == 2
+
+
+def test_migrate_if_needed_honors_custom_db_filename(tmp_path):
+    # MED-C2 follow-up: when AGENTS_DB_PATH relocates the DB to a custom basename,
+    # the migration must seed THAT file (matching the stores' read path), not the
+    # hardcoded agents.db. main.py derives op_dir + basename from AGENTS_DB_PATH and
+    # passes the basename through as db_filename.
+    op = tmp_path / "custom"
+    op.mkdir()
+    yaml_path = _write_yaml(tmp_path, {"default": {"prompt": "p", "provider": "openai"}})
+    result = migrate_if_needed(str(op), yaml_path, str(tmp_path / "contexts"),
+                               "relocated.db")
+    assert result["imported"] == 1
+    # Seeded at the relocated basename, NOT the default agents.db.
+    assert (op / "relocated.db").exists()
+    assert not (op / "agents.db").exists()
+    n = sqlite3.connect(str(op / "relocated.db")).execute(
+        "SELECT count(*) FROM agents").fetchone()[0]
+    assert n == 1

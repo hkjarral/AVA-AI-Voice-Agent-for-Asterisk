@@ -227,19 +227,24 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
     }
 
 
-def migrate_if_needed(op_dir: str, yaml_path: str, contexts_dir: str) -> dict:
+def migrate_if_needed(op_dir: str, yaml_path: str, contexts_dir: str,
+                      db_filename: str = "agents.db") -> dict:
     """Run the one-time migration atomically so a failed/empty import never leaves
     an authoritative empty agents.db (CRIT-3).
 
-    - If ``<op_dir>/agents.db`` already exists, open it and run the (idempotent)
+    - If ``<op_dir>/<db_filename>`` already exists, open it and run the (idempotent)
       migration — a no-op if already migrated — so drift detection still works.
     - Otherwise migrate into a temporary DB and only promote it to the final path
       when at least one agent was imported. Nothing to migrate ⇒ no file is left,
       so the engine stays in YAML mode instead of treating an empty DB as
       authoritative.
+
+    ``db_filename`` lets the caller honor a relocated ``AGENTS_DB_PATH`` whose
+    basename differs from the default, so the seed path matches the stores' read
+    path (the temp file is derived from it: ``<db_filename>.migrating``).
     """
     os.makedirs(op_dir, exist_ok=True)
-    final = os.path.join(op_dir, "agents.db")
+    final = os.path.join(op_dir, db_filename)
 
     if os.path.exists(final):
         store = AgentsStore(db_path=final)
@@ -248,7 +253,7 @@ def migrate_if_needed(op_dir: str, yaml_path: str, contexts_dir: str) -> dict:
         finally:
             store.close()
 
-    tmp = os.path.join(op_dir, "agents.db.migrating")
+    tmp = os.path.join(op_dir, db_filename + ".migrating")
     for ext in ("", "-wal", "-shm"):
         try:
             os.remove(tmp + ext)
