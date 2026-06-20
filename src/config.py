@@ -88,6 +88,12 @@ class LocalProviderConfig(BaseModel):
     auth_token: Optional[str] = None
     connect_timeout_sec: float = Field(default=5.0)
     response_timeout_sec: float = Field(default=5.0)
+    # MED-R3: max total wall-time the mid-call background reconnect will keep
+    # retrying after the Local AI Server WebSocket drops mid-call. While retrying,
+    # inbound caller audio is dropped (the caller hears silence), so this bounds
+    # that mute window. On exceed, the provider stops retrying and signals the
+    # engine (ProviderDisconnected) to play an apology and hang up.
+    mid_call_reconnect_timeout_sec: int = Field(default=20)
     # Farewell mode: how to play goodbye message when call ends
     # "tts" - Use local TTS (best for fast hardware with <5s LLM response)
     # "asterisk" - Use Asterisk's built-in goodbye sound (reliable for slow hardware)

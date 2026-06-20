@@ -1075,33 +1075,44 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         return False
 
     async def _background_reconnect_loop(self):
-        """Background task that periodically tries to reconnect for up to 12 minutes.
-        
+        """Background task that periodically tries to reconnect mid-call.
+
         Only runs when we were previously connected and got disconnected (e.g., server restart).
         Does not block anything - runs independently in the background.
+
+        MED-R3: while this retries, inbound caller audio is dropped (the caller
+        hears silence). Bound the total retry window with
+        ``mid_call_reconnect_timeout_sec`` so the caller is not left deaf for
+        minutes. On exceed, signal the engine (ProviderDisconnected) so it plays
+        a short apology and hangs up instead of leaving dead air.
         """
-        max_duration = 12 * 60  # 12 minutes
-        check_interval = 30  # Check every 30 seconds
+        max_duration = max(1, int(getattr(self.config, "mid_call_reconnect_timeout_sec", 20) or 20))
+        # Probe frequently enough to honor short bounds, but never spin tighter
+        # than ~1s. Cap so the bound is respected even when it's smaller than the
+        # legacy 30s cadence.
+        check_interval = min(30, max(1, max_duration))
         start_time = asyncio.get_event_loop().time()
-        
+
         logger.info(
             "🔄 Starting background reconnect (server was previously connected)",
-            max_duration="12 minutes",
-            check_interval="30s"
+            max_duration=f"{max_duration}s",
+            check_interval=f"{check_interval}s"
         )
-        
+
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed >= max_duration:
                 logger.warning(
-                    "⏹️ Background reconnect timed out after 12 minutes",
-                    note="Local AI Server did not come back online"
+                    "⏹️ Background reconnect gave up — mid-call reconnect window exceeded",
+                    timeout_sec=max_duration,
+                    note="Local AI Server did not come back online; signaling engine to hang up"
                 )
+                await self._signal_mid_call_reconnect_giveup()
                 break
-            
-            # Wait before checking
-            await asyncio.sleep(check_interval)
-            
+
+            # Wait before checking, but not past the bound.
+            await asyncio.sleep(min(check_interval, max(0, max_duration - elapsed)))
+
             logger.info("🔄 Attempting Local AI Server background reconnect...")
             success = await self._reconnect()
             if success:
@@ -1117,8 +1128,35 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     f"Local AI Server reconnect failed, will check again in {check_interval}s",
                     remaining=f"{remaining}s"
                 )
-        
+
         self._background_reconnect_task = None
+
+    async def _signal_mid_call_reconnect_giveup(self):
+        """MED-R3: tell the engine the provider is gone so it can apologize + hang up.
+
+        Reuses the existing ProviderDisconnected channel the engine already handles
+        for mid-call provider death (plays fallback media, then hangs up the
+        channel). Best-effort: only fires when a call is active and a callback is set.
+        """
+        call_id = self._active_call_id
+        if not self.on_event or not call_id:
+            return
+        try:
+            await self.on_event(
+                {
+                    "type": "ProviderDisconnected",
+                    "call_id": call_id,
+                    "provider": "local",
+                    "code": None,
+                    "reason": "mid_call_reconnect_timeout",
+                }
+            )
+        except Exception:
+            logger.debug(
+                "Failed to emit ProviderDisconnected after reconnect give-up",
+                call_id=call_id,
+                exc_info=True,
+            )
 
     def _start_background_reconnect(self):
         """Start background reconnect task if not already running."""
