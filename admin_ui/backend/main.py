@@ -179,11 +179,17 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 # Initialize users — generate a random one-time password on first run.
 _first_run_pw = auth.ensure_default_user()
 if _first_run_pw:
-    logging.getLogger(__name__).warning("=" * 60)
-    logging.getLogger(__name__).warning(
-        "FIRST-RUN ADMIN PASSWORD (change at first login): %s", _first_run_pw
+    _log = logging.getLogger(__name__)
+    _log.warning("=" * 60)
+    _log.warning("ONE-TIME ADMIN PASSWORD (username: admin) — change at first login")
+    _log.warning("Password: %s", _first_run_pw)
+    _log.warning(
+        "Also saved to root-only file: %s", auth.FIRST_RUN_PASSWORD_PATH
     )
-    logging.getLogger(__name__).warning("=" * 60)
+    _log.warning(
+        "If these logs are rotated/forwarded away, read the file above (host: ./config/.first-run-password)."
+    )
+    _log.warning("=" * 60)
 
 # Warn if JWT_SECRET isn't set (localhost-only is okay for dev)
 if getattr(auth, "USING_PLACEHOLDER_SECRET", False):

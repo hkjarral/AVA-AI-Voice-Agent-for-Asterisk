@@ -99,6 +99,59 @@ def test_bootstrap_file_permissions(tmp_path, monkeypatch):
     assert mode == 0o600
 
 
+def test_first_run_password_file_written_with_0600(tmp_path, monkeypatch):
+    """LOW-U2: fresh install writes the one-time password to a root-only 0600 file."""
+    import stat as _stat
+    users_file = tmp_path / "users.json"
+    _set_users_path(monkeypatch, users_file)
+
+    import auth
+    pw = auth.ensure_default_user()
+
+    pw_file = Path(auth.FIRST_RUN_PASSWORD_PATH)
+    assert pw_file.exists(), "Expected the one-time password file to be created"
+    mode = _stat.S_IMODE(pw_file.stat().st_mode)
+    assert mode == 0o600, f"Password file must be owner-only 0600, got {oct(mode)}"
+
+    contents = pw_file.read_text()
+    assert pw in contents, "File should contain the one-time password"
+    assert "delete this file" in contents.lower(), "File should carry a retrieval/cleanup note"
+
+
+def test_first_run_password_file_written_on_legacy_rotation(tmp_path, monkeypatch):
+    """LOW-U2: rotating a legacy admin/admin install also writes the 0600 file."""
+    import stat as _stat
+    users_file = tmp_path / "users.json"
+    _set_users_path(monkeypatch, users_file)
+
+    import auth
+    users_file.write_text(json.dumps({"admin": {"username": "admin",
+        "hashed_password": auth.get_password_hash("admin"), "disabled": False,
+        "must_change_password": True}}))
+
+    pw = auth.ensure_default_user()
+    assert pw is not None
+
+    pw_file = Path(auth.FIRST_RUN_PASSWORD_PATH)
+    assert pw_file.exists()
+    assert _stat.S_IMODE(pw_file.stat().st_mode) == 0o600
+    assert pw in pw_file.read_text()
+
+
+def test_no_password_file_when_already_secured(tmp_path, monkeypatch):
+    """LOW-U2: an already-rotated install creates no password file (no-op path)."""
+    users_file = tmp_path / "users.json"
+    _set_users_path(monkeypatch, users_file)
+
+    import auth
+    users_file.write_text(json.dumps({"admin": {"username": "admin",
+        "hashed_password": auth.get_password_hash("a-real-rotated-secret"),
+        "disabled": False, "must_change_password": False}}))
+
+    assert auth.ensure_default_user() is None
+    assert not Path(auth.FIRST_RUN_PASSWORD_PATH).exists()
+
+
 def test_load_users_after_bootstrap_returns_data(tmp_path, monkeypatch):
     """load_users() works correctly after ensure_default_user() has run."""
     users_file = tmp_path / "users.json"
