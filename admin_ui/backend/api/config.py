@@ -643,10 +643,14 @@ async def update_yaml_config(update: ConfigUpdate):
         try:
             if old_merged:
                 # Keys that can be hot-reloaded.
-                # vad/streaming/barge_in are read live from self.config (and the
-                # TransportOrchestrator is rebuilt) on /reload, so YAML tuning of
-                # these applies to new calls without dropping active ones (MED-R1).
-                hot_reload_keys = {'contexts', 'profiles', 'mcp', 'vad', 'streaming', 'barge_in'}
+                # vad/barge_in are read live from self.config per-call, so YAML tuning
+                # of these applies to new calls without dropping active ones (MED-R1).
+                # streaming is NOT hot-reloadable: StreamingPlaybackManager reads its
+                # params (jitter_buffer_ms/keepalive_interval_ms/fallback_timeout_ms/
+                # continuous_stream/...) once at CONSTRUCTION in Engine.__init__, and
+                # _reload_handler does not rebuild it — so a streaming-only save must
+                # use the restart path to actually apply (bot re-review, Finding 2).
+                hot_reload_keys = {'contexts', 'profiles', 'mcp', 'vad', 'barge_in'}
                 
                 # Check if only hot-reloadable keys changed
                 all_keys = set(old_merged.keys()) | set(new_parsed.keys())

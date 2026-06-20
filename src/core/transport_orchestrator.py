@@ -598,13 +598,19 @@ class TransportOrchestrator:
         
         return transport
     
-    def get_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
+    def get_context_config(
+        self, context_name: Optional[str], routing_method: Optional[str] = None
+    ) -> Optional[ContextConfig]:
         """Resolve a context. agents.db is the source of truth when present (v1a);
         YAML is the fallback for headless installs and post-rollback recovery.
         When the DB is present, an inactive/unknown slug is NOT routable — we must
         NOT silently fall through to a same-named legacy YAML context, or a
         deactivated/deleted agent would keep routing. Only fall back to YAML when
-        the DB is absent/unavailable. Spec: archived plan decisions D1/D2."""
+        the DB is absent/unavailable. Spec: archived plan decisions D1/D2.
+
+        ``routing_method`` carries the dialplan channel-variable INTENT (Finding 1):
+        ``'ai_context'`` (legacy original-name selector) resolves display_name-first;
+        ``'ai_agent'``/``'default'``/None resolve slug-first (canonical, anti-shadow)."""
         if not context_name:
             return None
         if self.agent_store.available():
@@ -613,8 +619,9 @@ class TransportOrchestrator:
             # (corrupt/locked) — HIGH-9 — never for a clean not-found, so a
             # deactivated/deleted agent is not resurrected from YAML.
             from src.core.agent_store import AgentStoreReadError
+            prefer = "display_name" if routing_method == "ai_context" else "slug"
             try:
-                return self.agent_store.resolve(context_name)
+                return self.agent_store.resolve(context_name, prefer=prefer)
             except AgentStoreReadError:
                 logger.warning(
                     "agents.db unreadable; falling back to YAML contexts",

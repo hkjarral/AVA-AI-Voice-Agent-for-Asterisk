@@ -48,32 +48,56 @@ class EngineAgentStore:
         c.row_factory = sqlite3.Row
         return c
 
-    def resolve(self, name: str) -> Optional[ContextConfig]:
+    def resolve(self, name: str, prefer: str = "slug") -> Optional[ContextConfig]:
         """Resolve a dialplan context/agent name to a ContextConfig.
 
-        Lookup order (CRIT-1 + Codex P2): exact ``slug`` → ``slugify(name)`` →
-        ``display_name``. The canonical slug is tried first so a free-form
-        ``display_name`` can never shadow a real slug (e.g. ``Set(AI_AGENT=sales)``
-        must reach the agent whose *slug* is ``sales``, not one whose display_name
-        happens to be "sales"). ``slugify(name)`` still resolves legacy raw context
-        names (CRIT-1); ``display_name`` last keeps the original-name lookup as a
-        final fallback.
+        ``prefer`` threads the dialplan channel-variable INTENT so each selector
+        resolves correctly (Finding 1, Codex P2 root cause):
+
+        * ``"slug"`` (default; value came from ``AI_AGENT``, the canonical slug
+          selector): exact ``slug`` → ``slugify(name)`` → ``display_name``. The
+          canonical slug is tried first so a free-form ``display_name`` can never
+          shadow a real slug — ``Set(AI_AGENT=sales)`` must reach the agent whose
+          *slug* is ``sales``, not one whose display_name happens to be "sales".
+        * ``"display_name"`` (value came from ``AI_CONTEXT``, the legacy
+          original-name selector): ``display_name`` → exact ``slug`` →
+          ``slugify(name)``. The original name wins so a migrated legacy context
+          whose collision was disambiguated still routes to the agent that carried
+          that original name (e.g. ``Set(AI_CONTEXT=sales_east)`` reaches the agent
+          whose display_name is ``sales_east``, not the first agent that happens to
+          own the bare slug ``sales_east``).
+
+        In both orders ``slugify(name)`` still resolves legacy raw context names
+        (CRIT-1). An unknown ``prefer`` falls back to slug-first (safest canonical).
 
         Returns ``None`` for a clean not-found/inactive result. Raises
         ``AgentStoreReadError`` if the DB is present but unreadable, so the caller
         can fall back to YAML without resurrecting deleted agents (HIGH-9)."""
         if not self.available():
             return None
+        slug_first = (
+            "SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
+            (name,),
+        )
+        slug_slugified = (
+            "SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
+            (_slugify(name),),
+        )
+        display = (
+            "SELECT * FROM agents WHERE display_name=? AND is_active=1 LIMIT 1",
+            (name,),
+        )
+        if prefer == "display_name":
+            lookups = (display, slug_first, slug_slugified)
+        else:
+            lookups = (slug_first, slug_slugified, display)
         try:
             with closing(self._conn()) as c:
-                r = (
-                    c.execute("SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
-                              (name,)).fetchone()
-                    or c.execute("SELECT * FROM agents WHERE slug=? AND is_active=1 LIMIT 1",
-                                 (_slugify(name),)).fetchone()
-                    or c.execute("SELECT * FROM agents WHERE display_name=? AND is_active=1 LIMIT 1",
-                                 (name,)).fetchone()
-                )
+                r = None
+                for sql, params in lookups:
+                    r = c.execute(sql, params).fetchone()
+                    if r is not None:
+                        break
         except sqlite3.Error as e:
             logger.warning("agents.db read failed (%s); caller will fall back to YAML", e)
             raise AgentStoreReadError(str(e)) from e

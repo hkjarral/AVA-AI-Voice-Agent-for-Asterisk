@@ -1379,7 +1379,11 @@ class Engine:
                             # Best-effort provider resolution for metadata/UI.
                             resolved_context_provider = None
                             try:
-                                ctx_cfg = self.transport_orchestrator.get_context_config(context_name)
+                                # Outbound sets AI_CONTEXT on the channel (see _outbound
+                                # set_channel_var) — resolve with the legacy original-name
+                                # intent so this metadata lookup matches the live routing.
+                                ctx_cfg = self.transport_orchestrator.get_context_config(
+                                    context_name, "ai_context")
                                 ctx_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
                                 if isinstance(ctx_provider, str):
                                     ctx_provider = ctx_provider.strip()
@@ -1474,7 +1478,8 @@ class Engine:
         # when the dialplan does not explicitly set AI_PROVIDER.
         context_provider = None
         try:
-            ctx_cfg = self.transport_orchestrator.get_context_config(context_name)
+            # Outbound routes via AI_CONTEXT — use the legacy original-name intent.
+            ctx_cfg = self.transport_orchestrator.get_context_config(context_name, "ai_context")
             context_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
         except Exception:
             context_provider = None
@@ -3485,7 +3490,8 @@ class Engine:
                 # If context specifies a pipeline, use modular pipeline even if provider is set
                 context_pipeline = None
                 if session.context_name:
-                    ctx_config = self.transport_orchestrator.get_context_config(session.context_name)
+                    ctx_config = self.transport_orchestrator.get_context_config(
+                        session.context_name, getattr(session, 'routing_method', None))
                     if ctx_config and getattr(ctx_config, 'pipeline', None):
                         context_pipeline = ctx_config.pipeline
                         logger.info(
@@ -10397,7 +10403,8 @@ class Engine:
                 context_prompt_injected = False
                 context_name = getattr(session, 'context_name', None)
                 if context_name:
-                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        context_name, getattr(session, 'routing_method', None))
                     if context_config and context_config.prompt:
                         # Create a copy to avoid mutating the pipeline's original options
                         llm_options = dict(llm_options)
@@ -10452,7 +10459,8 @@ class Engine:
                 context_name = getattr(session, "context_name", None)
                 allowed_tools: List[str] = []
                 if context_name:
-                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        context_name, getattr(session, "routing_method", None))
                     if context_config:
                         from src.tools.base import ToolPhase
                         from src.tools.registry import tool_registry
@@ -10538,7 +10546,8 @@ class Engine:
                 # Use session.context_name (persisted string) instead of transport_profile.context
                 context_name = getattr(session, 'context_name', None)
                 if context_name:
-                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        context_name, getattr(session, 'routing_method', None))
                     if context_config and context_config.greeting:
                         greeting = self._apply_prompt_template_substitution(context_config.greeting.strip(), session)
                         greeting_source = "context_injection"
@@ -12136,7 +12145,8 @@ class Engine:
         # per-agent email config too. None preserves the global/per-context fallback.
         if resolved_context:
             try:
-                email_ctx = self.transport_orchestrator.get_context_config(resolved_context)
+                email_ctx = self.transport_orchestrator.get_context_config(
+                    resolved_context, session.routing_method)
                 if email_ctx:
                     session.email_recipient = getattr(email_ctx, "email_recipient", None)
                     session.email_from = getattr(email_ctx, "email_from", None)

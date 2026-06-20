@@ -121,7 +121,7 @@ async def test_pipeline_path_copies_per_agent_email_onto_session():
     class _Orchestrator:
         agent_store = SimpleNamespace(default_slug=lambda: None)
 
-        def get_context_config(self, name):
+        def get_context_config(self, name, routing_method=None):
             return agent_ctx if name == "sales" else None
 
     saved = []

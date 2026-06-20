@@ -51,6 +51,26 @@ def test_none_context_returns_none():
     assert orch.get_context_config(None) is None
 
 
+def test_routing_method_threads_prefer_to_resolve():
+    # Finding 1: get_context_config must translate the dialplan channel-variable
+    # INTENT (session.routing_method) into the agent_store.resolve prefer arg.
+    orch = _orch()
+    db_cc = ContextConfig(prompt="p", provider="p")
+    with patch.object(orch.agent_store, "available", return_value=True), \
+         patch.object(orch.agent_store, "resolve", return_value=db_cc) as resolve:
+        # AI_CONTEXT (legacy original-name selector) => display_name-first.
+        orch.get_context_config("sales", "ai_context")
+        assert resolve.call_args.kwargs["prefer"] == "display_name"
+        # AI_AGENT (canonical slug selector) => slug-first (anti-shadow).
+        orch.get_context_config("sales", "ai_agent")
+        assert resolve.call_args.kwargs["prefer"] == "slug"
+        # default / unknown / None => slug-first (safest canonical).
+        orch.get_context_config("sales", "default")
+        assert resolve.call_args.kwargs["prefer"] == "slug"
+        orch.get_context_config("sales")
+        assert resolve.call_args.kwargs["prefer"] == "slug"
+
+
 def test_resolved_context_applies_agent_audio_profile():
     # AI_AGENT / DB-default calls expose no AI_CONTEXT channel var. The agent's
     # audio_profile must still apply when the resolved context is passed explicitly.
