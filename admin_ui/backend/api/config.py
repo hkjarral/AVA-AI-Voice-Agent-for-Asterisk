@@ -642,8 +642,11 @@ async def update_yaml_config(update: ConfigUpdate):
         # Check if change is limited to hot-reloadable sections
         try:
             if old_merged:
-                # Keys that can be hot-reloaded
-                hot_reload_keys = {'contexts', 'profiles', 'mcp'}
+                # Keys that can be hot-reloaded.
+                # vad/streaming/barge_in are read live from self.config (and the
+                # TransportOrchestrator is rebuilt) on /reload, so YAML tuning of
+                # these applies to new calls without dropping active ones (MED-R1).
+                hot_reload_keys = {'contexts', 'profiles', 'mcp', 'vad', 'streaming', 'barge_in'}
                 
                 # Check if only hot-reloadable keys changed
                 all_keys = set(old_merged.keys()) | set(new_parsed.keys())

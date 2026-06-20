@@ -967,13 +967,15 @@ const ModelsPage = () => {
                                 onClick={async () => {
                                     const confirmed = await confirm({
                                         title: 'Restart Local AI Server?',
-                                        description: 'Are you sure you want to restart the Local AI Server? This will temporarily interrupt model inference.',
+                                        description: 'This recreates the Local AI Server container so any .env changes (model paths, GPU settings) are re-read. Model inference will be interrupted briefly.',
                                         confirmText: 'Restart',
                                         variant: 'destructive'
                                     });
                                     if (!confirmed) return;
                                     setRestarting(true);
-                                    axios.post('/api/system/containers/local_ai_server/restart')
+                                    // recreate=true so env_file (.env) changes are applied (MED-R2);
+                                    // a plain restart does NOT re-read .env.
+                                    axios.post('/api/system/containers/local_ai_server/restart?recreate=true')
                                         .then(() => setTimeout(() => { fetchActiveModels(); setRestarting(false); }, 5000))
                                         .catch(() => setRestarting(false));
                                 }}
