@@ -94,7 +94,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'local',
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
-      { key: 'auth_token', label: 'Auth Token', type: 'text', required: false, placeholder: 'Optional WebSocket auth token' },
+      { key: 'auth_token', label: 'Auth Token', type: 'password', required: false, placeholder: 'Optional WebSocket auth token' },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 64 },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.4 },
     ],
@@ -146,7 +146,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'local',
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
-      { key: 'auth_token', label: 'Auth Token', type: 'text', required: false },
+      { key: 'auth_token', label: 'Auth Token', type: 'password', required: false },
       { key: 'stt_backend', label: 'STT Backend', type: 'combobox', required: false, default: 'vosk', suggestions: ['vosk', 'sherpa', 'kroko', 'faster_whisper', 'whisper_cpp'] },
       { key: 'chunk_ms', label: 'Chunk Size (ms)', type: 'number', required: false, default: 320 },
     ],
@@ -211,7 +211,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'local',
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
-      { key: 'auth_token', label: 'Auth Token', type: 'text', required: false },
+      { key: 'auth_token', label: 'Auth Token', type: 'password', required: false },
       { key: 'tts_backend', label: 'TTS Backend', type: 'combobox', required: false, default: 'piper', suggestions: ['piper', 'kokoro', 'silero', 'melotts'] },
     ],
   },
