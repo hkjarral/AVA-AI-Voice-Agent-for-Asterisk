@@ -1242,10 +1242,11 @@ class GoogleLiveProvider(AIProviderInterface):
             # Resample to provider's input rate (16kHz for Gemini Live)
             provider_rate = self.config.provider_input_sample_rate_hz
             if src_rate != provider_rate:
-                pcm16_provider, _ = resample_audio(
+                pcm16_provider, self._input_resample_state = resample_audio(
                     pcm16_src,
                     source_rate=src_rate,
                     target_rate=provider_rate,
+                    state=getattr(self, "_input_resample_state", None),
                 )
             else:
                 pcm16_provider = pcm16_src
@@ -1846,10 +1847,11 @@ class GoogleLiveProvider(AIProviderInterface):
                 logger.debug("Failed to emit Google Live output PCM rate log", call_id=self._call_id, exc_info=True)
             
             if provider_output_rate != target_rate:
-                pcm16_target, _ = resample_audio(
+                pcm16_target, self._output_resample_state = resample_audio(
                     pcm16_provider,
                     source_rate=provider_output_rate,
                     target_rate=target_rate,
+                    state=getattr(self, "_output_resample_state", None),
                 )
             else:
                 pcm16_target = pcm16_provider
