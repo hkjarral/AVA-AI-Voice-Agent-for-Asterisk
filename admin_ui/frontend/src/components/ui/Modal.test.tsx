@@ -62,4 +62,23 @@ describe('Modal — dialog accessibility', () => {
         await user.keyboard('{Escape}');
         expect(document.activeElement).toBe(trigger);
     });
+
+    it('traps Shift+Tab from the dialog boundary (reverse direction)', async () => {
+        const user = userEvent.setup();
+        render(<Harness initialOpen />); // focus starts on the dialog container
+        const dialog = screen.getByRole('dialog');
+        await user.tab({ shift: true }); // Shift+Tab as the very first key
+        expect(dialog.contains(document.activeElement)).toBe(true);
+    });
+
+    it('restores the previous body overflow on close (does not clobber it)', async () => {
+        document.body.style.overflow = 'scroll';
+        const user = userEvent.setup();
+        render(<Harness />);
+        await user.click(screen.getByRole('button', { name: 'Open' }));
+        expect(document.body.style.overflow).toBe('hidden'); // locked while open
+        await user.keyboard('{Escape}');
+        expect(document.body.style.overflow).toBe('scroll'); // restored, not 'unset'
+        document.body.style.overflow = '';
+    });
 });

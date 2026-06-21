@@ -44,7 +44,9 @@ export const Modal = ({ isOpen, onClose, title, children, footer, size = 'md' }:
             const last = focusables[focusables.length - 1];
             const active = document.activeElement;
             if (e.shiftKey) {
-                if (active === first || !dialog.contains(active)) {
+                // `active === dialog` covers the open state where focus is on the
+                // container itself: Shift+Tab must wrap to the last control, not escape.
+                if (active === first || active === dialog || !dialog.contains(active)) {
                     e.preventDefault();
                     last.focus();
                 }
@@ -55,6 +57,7 @@ export const Modal = ({ isOpen, onClose, title, children, footer, size = 'md' }:
         };
 
         document.addEventListener('keydown', handleKeyDown);
+        const previousBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
 
         // Move focus into the dialog so keyboard/SR users are taken there and the
@@ -63,7 +66,7 @@ export const Modal = ({ isOpen, onClose, title, children, footer, size = 'md' }:
 
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
-            document.body.style.overflow = 'unset';
+            document.body.style.overflow = previousBodyOverflow;
             previouslyFocused?.focus?.();
         };
     }, [isOpen]);
