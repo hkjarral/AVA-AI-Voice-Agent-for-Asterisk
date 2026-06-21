@@ -236,9 +236,8 @@ exten => s,1,NoOp(AI Agent Call)
                         provider: res.data.provider || prev.provider
                     }));
                 }
-            } catch (err) {
+            } catch {
                 // Non-fatal - continue with defaults
-                console.log('No existing config found');
             }
         };
         loadExistingConfig();
@@ -257,8 +256,8 @@ exten => s,1,NoOp(AI Agent Call)
                         region_names: res.data.region_names
                     });
                 }
-            } catch (err) {
-                console.log('Failed to load model catalog');
+            } catch {
+                // Non-fatal - keep defaults
             }
         };
         if (step === 3) {

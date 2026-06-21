@@ -104,7 +104,6 @@ const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     }, [navigate, location.pathname, retryCount]);
 
     if (loading) {
-        console.log("SetupGuard: loading");
         return (
             <div className="min-h-screen flex items-center justify-center flex-col gap-4">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -132,7 +131,6 @@ const SetupGuard = ({ children }: { children: React.ReactNode }) => {
         );
     }
 
-    console.log("SetupGuard: rendering children");
     return <>{children}</>;
 };
 

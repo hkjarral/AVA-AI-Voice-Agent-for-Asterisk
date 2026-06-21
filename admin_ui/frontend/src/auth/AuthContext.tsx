@@ -46,25 +46,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     useEffect(() => {
-        console.log("AuthProvider effect: token =", token);
         if (token) {
             // Verify token and get user info
             axios.get('/api/auth/me', {
                 headers: { Authorization: `Bearer ${token}` }
             })
                 .then(response => {
-                    console.log("AuthProvider: user loaded");
                     setUser(response.data);
                     setMustChangePassword(response.data.must_change_password || false);
                     setLoading(false);
                 })
-                .catch((err) => {
-                    console.log("AuthProvider: user load failed", err);
+                .catch(() => {
                     logout();
                     setLoading(false);
                 });
         } else {
-            console.log("AuthProvider: no token");
             setLoading(false);
         }
     }, [token]);
