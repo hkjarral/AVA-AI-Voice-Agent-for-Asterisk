@@ -79,7 +79,7 @@ const Sidebar = () => {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto py-6 px-3">
+            <nav aria-label="Main navigation" className="flex-1 overflow-y-auto py-6 px-3">
                 <SidebarGroup title="Overview">
                     <SidebarItem to="/" icon={LayoutDashboard} label="Dashboard" end />
                     <SidebarItem to="/history" icon={Phone} label="Call History" />
@@ -131,7 +131,7 @@ const Sidebar = () => {
                         API Docs
                     </a>
                 </SidebarGroup>
-            </div>
+            </nav>
 
             <div className="p-4 border-t border-border/50">
                 <div className="flex items-center gap-3 px-2 mb-3">
