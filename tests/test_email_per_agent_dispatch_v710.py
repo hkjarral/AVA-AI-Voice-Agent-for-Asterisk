@@ -1,7 +1,8 @@
 """H5: per-agent email recipient/from/enable honored at dispatch.
 
 Precedence at dispatch is agent (session.email_*) -> per-context map -> global default.
-email_enabled is tri-state: None preserves today's behavior, only explicit False skips.
+email_enabled is a tri-state TRUE override of the global enabled gate: True force-sends,
+False force-skips, None inherits the global setting (Codex P2).
 """
 
 from types import SimpleNamespace
@@ -86,11 +87,36 @@ def test_email_enabled_none_preserves_global_enabled():
     assert tool._should_send(session, _config(enabled=False)) is False
 
 
-def test_email_enabled_true_does_not_override_config_disabled():
-    """Per-agent True doesn't force-send when the tool is globally disabled."""
+def test_email_enabled_true_overrides_config_disabled():
+    """Codex P2: per-agent True force-sends even when the tool is globally disabled."""
     tool = SendEmailSummaryTool()
     session = _session(email_enabled=True)
-    assert tool._should_send(session, _config(enabled=False)) is False
+    assert tool._should_send(session, _config(enabled=False)) is True
+
+
+def test_email_enabled_false_overrides_config_enabled():
+    """Codex P2: per-agent False force-skips even when the tool is globally enabled."""
+    tool = SendEmailSummaryTool()
+    session = _session(email_enabled=False)
+    assert tool._should_send(session, _config(enabled=True)) is False
+
+
+# --- Codex P2: the shared decision helper is the single source of truth used by
+# BOTH the tool's _should_send and the engine's post-call invocation gate. The
+# four-way truth table below is what both gates must agree on.
+
+
+def test_should_send_helper_truth_table():
+    from src.tools.business.email_summary import should_send_email_summary
+
+    # (a) agent Enabled + global False -> SEND
+    assert should_send_email_summary(_session(email_enabled=True), _config(enabled=False)) is True
+    # (b) agent Disabled + global True -> SKIP
+    assert should_send_email_summary(_session(email_enabled=False), _config(enabled=True)) is False
+    # (c) agent None (Inherit) + global True -> SEND
+    assert should_send_email_summary(_session(email_enabled=None), _config(enabled=True)) is True
+    # (d) agent None (Inherit) + global False -> SKIP
+    assert should_send_email_summary(_session(email_enabled=None), _config(enabled=False)) is False
 
 
 # --- Finding 1 (Codex P2): per-agent email must reach the session on the

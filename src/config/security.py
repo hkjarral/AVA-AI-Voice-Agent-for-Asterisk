@@ -314,22 +314,33 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
                 deepgram_block.pop('api_key', None)
             providers_block['deepgram'] = deepgram_block
 
-        # Inject GOOGLE_API_KEY (for google_live provider). Same env-only contract.
-        google_live_block = providers_block.get('google_live', {}) or {}
-        if isinstance(google_live_block, dict):
-            _g_key = os.getenv('GOOGLE_API_KEY')
+        # Inject GOOGLE_API_KEY for google_live provider blocks. Same env-only
+        # contract, applied to EVERY google_live instance (canonical ``google_live``
+        # plus multi-instance / custom blocks like ``acme_google_live`` or any block
+        # whose ``type`` is google_live) so a YAML-embedded literal never becomes an
+        # active credential when GOOGLE_API_KEY is unset. ``api_key_file`` is untouched.
+        _g_key = os.getenv('GOOGLE_API_KEY')
+        gcp_project = os.getenv('GOOGLE_CLOUD_PROJECT')
+        gcp_location = os.getenv('GOOGLE_CLOUD_LOCATION')
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            if not (name_lower.startswith("google_live")
+                    or name_lower.endswith("_google_live")
+                    or cfg_type == "google_live"):
+                continue
             if _g_key:
-                google_live_block['api_key'] = _g_key
+                provider_cfg['api_key'] = _g_key
             else:
-                google_live_block.pop('api_key', None)
+                provider_cfg.pop('api_key', None)
             # Inject Vertex AI project/location when set (AAVA-191)
-            gcp_project = os.getenv('GOOGLE_CLOUD_PROJECT')
-            gcp_location = os.getenv('GOOGLE_CLOUD_LOCATION')
             if gcp_project:
-                google_live_block.setdefault('vertex_project', gcp_project)
+                provider_cfg.setdefault('vertex_project', gcp_project)
             if gcp_location:
-                google_live_block.setdefault('vertex_location', gcp_location)
-            providers_block['google_live'] = google_live_block
+                provider_cfg.setdefault('vertex_location', gcp_location)
+            providers_block[provider_name] = provider_cfg
         
         # Auto-set GOOGLE_APPLICATION_CREDENTIALS for Vertex AI ADC.
         # Case 1: env var not set at all → set it if the default file exists.

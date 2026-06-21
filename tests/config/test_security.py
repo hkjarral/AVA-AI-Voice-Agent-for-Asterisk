@@ -383,6 +383,39 @@ class TestEnvOnlyKeyStrippingAllProviders:
         assert cfg['providers']['custom_openai']['api_key'] == "k"
         assert cfg['providers']['openai_realtime']['api_key'] == "k"
 
+    def test_multi_instance_google_live_blocks_all_handled(self, monkeypatch):
+        # Codex P2: a custom multi-instance google_live block (matched by name suffix
+        # or by type) must follow the env-only contract just like the canonical block.
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("GOOGLE_API_KEY", "g-from-env")
+        cfg = {'providers': {
+            'google_live': {'api_key': 'should-be-replaced'},
+            'acme_google_live': {'api_key': 'should-be-replaced'},
+            'custom_voice': {'type': 'google_live', 'api_key': 'should-be-replaced'},
+        }}
+        inject_provider_api_keys(cfg)
+        assert cfg['providers']['google_live']['api_key'] == "g-from-env"
+        assert cfg['providers']['acme_google_live']['api_key'] == "g-from-env"
+        assert cfg['providers']['custom_voice']['api_key'] == "g-from-env"
+
+    def test_multi_instance_google_live_inline_key_stripped_when_env_unset(self, monkeypatch):
+        # Custom google_live instance keeps no inline key when GOOGLE_API_KEY is unset,
+        # but its file-backed api_key_file survives.
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        cfg = {'providers': {
+            'acme_google_live': {'api_key': 'yaml-literal',
+                                 'api_key_file': '/run/secrets/google'},
+            'custom_voice': {'type': 'google_live', 'api_key': 'yaml-literal'},
+        }}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers']['acme_google_live']
+        assert cfg['providers']['acme_google_live']['api_key_file'] == '/run/secrets/google'
+        assert 'api_key' not in cfg['providers']['custom_voice']
+
     def test_elevenlabs_agent_id_env_only(self, monkeypatch):
         # Finding 3: inline agent_id follows the same env-only contract as api_key,
         # but agent_id_file is preserved.

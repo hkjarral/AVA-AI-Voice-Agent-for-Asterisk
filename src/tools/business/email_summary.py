@@ -24,6 +24,27 @@ from src.tools.business.template_renderer import render_html_template_with_fallb
 
 logger = structlog.get_logger(__name__)
 
+
+def should_send_email_summary(session: Any, config: Dict[str, Any]) -> bool:
+    """Single source of truth for the post-call email decision (H5 / Codex P2).
+
+    Per-agent ``session.email_enabled`` is a tri-state TRUE override of the global
+    ``tools.send_email_summary.enabled`` gate:
+    - ``True``  -> SEND (overrides a globally-disabled tool).
+    - ``False`` -> SKIP (overrides a globally-enabled tool).
+    - ``None``  -> inherit the global ``enabled`` gate (today's behavior, unchanged).
+
+    Used by BOTH the engine's post-call invocation gate and the tool itself so they
+    always agree.
+    """
+    email_enabled = getattr(session, "email_enabled", None)
+    if email_enabled is True:
+        return True
+    if email_enabled is False:
+        return False
+    return bool(config.get("enabled", False))
+
+
 class SendEmailSummaryTool(Tool):
     """
     Send call summary email to admin after call completion.
@@ -115,18 +136,12 @@ class SendEmailSummaryTool(Tool):
             }
     
     def _should_send(self, session: Any, config: Dict[str, Any]) -> bool:
-        """Decide whether the summary email should be sent (H5).
+        """Decide whether the summary email should be sent (H5 / Codex P2).
 
-        Per-agent ``email_enabled`` is tri-state:
-        - ``False`` -> always skip (per-agent opt-out wins).
-        - ``None``  -> inherit the global ``tools.send_email_summary.enabled`` gate
-          (preserves today's default-enabled behavior exactly when unset).
-        - ``True``  -> still subject to the global gate; does not force-send when the
-          tool is globally disabled.
+        Delegates to :func:`should_send_email_summary` so the tool's gate and the
+        engine's post-call invocation gate share one source of truth.
         """
-        if getattr(session, "email_enabled", None) is False:
-            return False
-        return bool(config.get("enabled", False))
+        return should_send_email_summary(session, config)
 
     def _prepare_email_data(
         self,

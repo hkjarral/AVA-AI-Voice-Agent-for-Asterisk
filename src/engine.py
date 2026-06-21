@@ -6047,9 +6047,14 @@ class Engine:
 
             # Auto-send email summary if enabled (before session is removed)
             try:
-                # Auto-trigger email summary if configured and session has conversation history
+                # Auto-trigger email summary if configured and session has conversation history.
+                # Per-agent email_enabled is a true override of the global enabled gate
+                # (Codex P2): Enabled forces send even when global is off, Disabled forces
+                # skip even when global is on, None inherits global. Shared decision helper
+                # keeps this gate in agreement with the tool's own _should_send.
+                from src.tools.business.email_summary import should_send_email_summary
                 email_tool_config = self.config.tools.get('send_email_summary', {})
-                if email_tool_config.get('enabled', False):
+                if should_send_email_summary(session, email_tool_config):
                     from src.tools.registry import tool_registry
                     email_tool = tool_registry.get('send_email_summary')
                     if email_tool:
