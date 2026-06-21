@@ -93,6 +93,42 @@ export const isFullAgentProvider = (provider: any, key?: string): boolean => {
 };
 
 /**
+ * Concrete full-agent kinds that are unambiguous from the `type` field alone.
+ * 'local' is intentionally excluded: `type: local` is modular (single-capability),
+ * while the monolithic Local AI full agent uses `type: full` on the `local` key.
+ */
+const UNAMBIGUOUS_FULL_AGENT_KINDS = [
+    'openai_realtime',
+    'deepgram',
+    'google_live',
+    'elevenlabs_agent',
+    'grok',
+];
+
+/**
+ * Resolve the concrete full-agent kind for a provider, mirroring how the engine
+ * interprets canonical legacy entries. Returns null when the provider is not a
+ * full agent or its kind cannot be determined without name-guessing.
+ *
+ * - explicit unambiguous full-agent `type` (e.g. google_live) → that type
+ * - `type: full` (or no `type`) on a canonical key (e.g. google_live, local) → the key
+ * - neutral custom keys are NOT guessed → null
+ *
+ * The disabled provider-type selector and save validation use this so a canonical
+ * `google_live: { type: full }` entry displays and saves as Google Live.
+ *
+ * @see GitHub issue #436
+ */
+export const getEffectiveFullAgentKind = (provider: any, key?: string): string | null => {
+    const type = (provider?.type || '').toLowerCase();
+    if (UNAMBIGUOUS_FULL_AGENT_KINDS.includes(type)) return type;
+    if ((type === 'full' || type === '') && key && CANONICAL_FULL_AGENT_KEYS.has(key)) {
+        return key;
+    }
+    return null;
+};
+
+/**
  * Provider types that have registered adapter factories in the engine.
  * Only these providers can be used in pipelines.
  * 

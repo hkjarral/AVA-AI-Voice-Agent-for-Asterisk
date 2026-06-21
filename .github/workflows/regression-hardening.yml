@@ -127,6 +127,11 @@ jobs:
         run: |
           npm ci
 
+      - name: Run frontend tests
+        working-directory: admin_ui/frontend
+        run: |
+          npm run test
+
       - name: Build frontend
         working-directory: admin_ui/frontend
         run: |

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Frontend test runner (Vitest)** (`admin_ui/frontend`): added `vitest` with `npm run test` / `test:watch`, wired into CI (`.github/workflows/regression-hardening.yml` now runs `npm run test` before the frontend build). Establishes unit-test coverage for the admin UI; first suite covers provider-naming normalization (#436).
+
+### Fixed
+
+- **Provider editor: a canonical Google Live provider in legacy `type: full` form can be edited and saved again (#436)** (`admin_ui/frontend/src/utils/providerNaming.ts`, `admin_ui/frontend/src/pages/ProvidersPage.tsx`): a provider stored in the supported single-instance form `google_live: { type: full }` could not be edited — the editor only inferred a concrete full-agent kind when `type` was absent, so the disabled Provider Type selector showed *OpenAI Realtime* and **Save Changes** rejected the entry with `Select a full-agent provider type.` A new `getEffectiveFullAgentKind(provider, key)` resolves the concrete kind the way the engine does (explicit unambiguous kind → that; `type: full` or no `type` on a canonical key like `google_live`/`local` → the key; neutral custom keys are not name-guessed → `null`). The disabled selector now displays the resolved kind and save validation accepts it, while the persisted `type: full` is left unchanged so the YAML stays engine-valid. Regression-guarded in `admin_ui/frontend/src/utils/providerNaming.test.ts`.
+
 ## [7.0.1] - 2026-06-19
 
 > Maintenance release: hardening and bug fixes from a full post-7.0.0 audit. No breaking changes — upgrade in place. Validated against six live provider calls on the integration box (see `docs/baselines/golden/v7.0.1-validation-matrix.md`).

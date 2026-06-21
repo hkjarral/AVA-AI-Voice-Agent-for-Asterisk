@@ -24,7 +24,7 @@ import OpenAIProviderForm from '../components/config/providers/OpenAIProviderFor
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
 import TelnyxProviderForm from '../components/config/providers/TelnyxProviderForm';
 import AzureProviderForm from '../components/config/providers/AzureProviderForm';
-import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider } from '../utils/providerNaming';
+import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider, getEffectiveFullAgentKind } from '../utils/providerNaming';
 import { GOOGLE_LIVE_DEFAULT_MODEL } from '../utils/googleLiveModels';
 
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
@@ -551,7 +551,12 @@ const ProvidersPage: React.FC = () => {
             finalName = ensureModularKey(stripModularSuffix(finalName), cap);
             capabilities = [cap];
         } else {
-            if (!FULL_AGENT_TYPES.includes(String(providerForm.type || '').toLowerCase())) {
+            // Resolve the concrete full-agent kind the way the engine does, so a
+            // canonical legacy entry (e.g. google_live: { type: full }) validates
+            // and saves without forcing a type change. #436
+            const fullAgentKey = isNewProvider ? finalName : (editingProvider || '');
+            const effectiveKind = getEffectiveFullAgentKind(providerForm, fullAgentKey);
+            if (!effectiveKind || !FULL_AGENT_TYPES.includes(effectiveKind)) {
                 toast.error('Select a full-agent provider type.');
                 return;
             }
@@ -1217,7 +1222,10 @@ const ProvidersPage: React.FC = () => {
                                     </div>
                                     <select
                                         className="w-full p-2 rounded border border-input bg-background"
-                                        value={providerForm.type || 'openai_realtime'}
+                                        // Show the resolved concrete kind so a canonical legacy
+                                        // entry (e.g. google_live: { type: full }) displays correctly
+                                        // instead of falling back to the first option. #436
+                                        value={getEffectiveFullAgentKind(providerForm, editingProvider || undefined) || providerForm.type || 'openai_realtime'}
                                         disabled={!isNewProvider}
                                         onChange={(e) => setProviderForm({ ...providerForm, type: e.target.value, capabilities: ['stt', 'llm', 'tts'] })}
                                     >
