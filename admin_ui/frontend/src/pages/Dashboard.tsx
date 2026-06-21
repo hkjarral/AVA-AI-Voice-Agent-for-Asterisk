@@ -217,6 +217,7 @@ const Dashboard = () => {
                 <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
                 <button
                     onClick={() => { setRefreshing(true); fetchData(); }}
+                    aria-label="Refresh dashboard"
                     className="p-2 rounded-md hover:bg-accent hover:text-accent-foreground transition-colors"
                     disabled={refreshing}
                 >

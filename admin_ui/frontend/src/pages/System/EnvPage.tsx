@@ -58,6 +58,7 @@ const SecretInput = ({
         <button
             type="button"
             onClick={onToggleSecret}
+            aria-label={showSecret ? 'Hide value' : 'Show value'}
             className="absolute right-3 top-[38px] text-muted-foreground hover:text-foreground"
         >
             {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
