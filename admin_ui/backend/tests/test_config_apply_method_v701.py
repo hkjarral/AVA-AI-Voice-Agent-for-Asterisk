@@ -1,7 +1,9 @@
-"""Finding 2 (Codex P2 re-review): a streaming-only save must recommend RESTART,
-not hot_reload — StreamingPlaybackManager reads its params at construction in
-Engine.__init__, and _reload_handler does not rebuild it. vad/barge_in ARE read
-live per-call, so they stay hot_reload."""
+"""Finding 2 (Codex P2 re-review): a streaming-only OR vad-only save must recommend
+RESTART, not hot_reload. StreamingPlaybackManager AND the VAD/gating managers
+(EnhancedVADManager, webrtcvad.Vad, _vad_mode, AudioGatingManager) read their params
+at construction in Engine.__init__, and _reload_handler does not rebuild them. Only
+barge_in is read live per-call (getattr(self.config, "barge_in", None)), so it stays
+hot_reload."""
 import pytest
 
 from api import config as config_api
@@ -32,13 +34,14 @@ async def test_streaming_only_save_recommends_restart(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_vad_only_save_still_hot_reloads(monkeypatch):
+async def test_vad_only_save_recommends_restart(monkeypatch):
+    # vad is manager-backed (built once in Engine.__init__); reload can't apply it.
     old = {"vad": {"energy_threshold": 1500}}
     new = {"vad": {"energy_threshold": 1800}}
     _patch_io(monkeypatch, old, new)
     resp = await update_yaml_config(ConfigUpdate(content="x"))
-    assert resp["recommended_apply_method"] == "hot_reload"
-    assert resp["restart_required"] is False
+    assert resp["recommended_apply_method"] == "restart"
+    assert resp["restart_required"] is True
 
 
 @pytest.mark.asyncio
