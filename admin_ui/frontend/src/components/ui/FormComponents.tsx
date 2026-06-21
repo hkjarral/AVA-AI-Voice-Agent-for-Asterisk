@@ -118,18 +118,28 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const FormInput = React.forwardRef<HTMLInputElement, InputProps>(
-    ({ label, tooltip, error, className = '', ...props }, ref) => (
-        <div className="mb-4">
-            {label && <FormLabel htmlFor={props.id} tooltip={tooltip}>{label}</FormLabel>}
-            <input
-                ref={ref}
-                className={`flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'border-destructive' : ''} ${className}`}
-                {...props}
-            />
-            {error && <p className="text-xs text-destructive mt-1">{error}</p>}
-        </div>
-    )
+    ({ label, tooltip, error, className = '', id, 'aria-label': ariaLabel, ...props }, ref) => {
+        const reactId = React.useId();
+        const inputId = id ?? reactId;
+        const errorId = error ? `${inputId}-error` : undefined;
+        return (
+            <div className="mb-4">
+                {label && <FormLabel htmlFor={inputId} tooltip={tooltip}>{label}</FormLabel>}
+                <input
+                    ref={ref}
+                    id={inputId}
+                    aria-label={label ? undefined : ariaLabel}
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={errorId}
+                    className={`flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'border-destructive' : ''} ${className}`}
+                    {...props}
+                />
+                {error && <p id={errorId} className="text-xs text-destructive mt-1">{error}</p>}
+            </div>
+        );
+    }
 );
+FormInput.displayName = 'FormInput';
 
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
     label?: string;
@@ -139,31 +149,41 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
 }
 
 export const FormSelect = React.forwardRef<HTMLSelectElement, SelectProps>(
-    ({ label, tooltip, options, error, className = '', ...props }, ref) => (
-        <div className="mb-4">
-            {label && <FormLabel htmlFor={props.id} tooltip={tooltip}>{label}</FormLabel>}
-            <div className="relative">
-                <select
-                    ref={ref}
-                    className={`flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 appearance-none ${error ? 'border-destructive' : ''} ${className}`}
-                    {...props}
-                >
-                    {options.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                        </option>
-                    ))}
-                </select>
-                <div className="absolute right-3 top-2.5 pointer-events-none opacity-50">
-                    <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+    ({ label, tooltip, options, error, className = '', id, 'aria-label': ariaLabel, ...props }, ref) => {
+        const reactId = React.useId();
+        const selectId = id ?? reactId;
+        const errorId = error ? `${selectId}-error` : undefined;
+        return (
+            <div className="mb-4">
+                {label && <FormLabel htmlFor={selectId} tooltip={tooltip}>{label}</FormLabel>}
+                <div className="relative">
+                    <select
+                        ref={ref}
+                        id={selectId}
+                        aria-label={label ? undefined : ariaLabel}
+                        aria-invalid={error ? true : undefined}
+                        aria-describedby={errorId}
+                        className={`flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 appearance-none ${error ? 'border-destructive' : ''} ${className}`}
+                        {...props}
+                    >
+                        {options.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                            </option>
+                        ))}
+                    </select>
+                    <div className="absolute right-3 top-2.5 pointer-events-none opacity-50">
+                        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    </div>
                 </div>
+                {error && <p id={errorId} className="text-xs text-destructive mt-1">{error}</p>}
             </div>
-            {error && <p className="text-xs text-destructive mt-1">{error}</p>}
-        </div>
-    )
+        );
+    }
 );
+FormSelect.displayName = 'FormSelect';
 
 interface SwitchProps extends React.InputHTMLAttributes<HTMLInputElement> {
     label?: string;
@@ -172,7 +192,9 @@ interface SwitchProps extends React.InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const FormSwitch = React.forwardRef<HTMLInputElement, SwitchProps>(
-    ({ label, description, tooltip, className = '', ...props }, ref) => {
+    ({ label, description, tooltip, className = '', id, 'aria-label': ariaLabel, ...props }, ref) => {
+        const reactId = React.useId();
+        const inputId = id ?? reactId;
         const disabled = Boolean(props.disabled);
         return (
         <div
@@ -188,7 +210,7 @@ export const FormSwitch = React.forwardRef<HTMLInputElement, SwitchProps>(
                 {label && (
                     <div className="flex items-center gap-1.5">
                         <label
-                            htmlFor={props.id}
+                            htmlFor={inputId}
                             className={["text-sm font-medium", disabled ? "cursor-not-allowed" : "cursor-pointer"]
                                 .filter(Boolean)
                                 .join(" ")}
@@ -206,15 +228,18 @@ export const FormSwitch = React.forwardRef<HTMLInputElement, SwitchProps>(
                 <input
                     type="checkbox"
                     ref={ref}
+                    id={inputId}
+                    aria-label={label ? undefined : ariaLabel}
                     className="sr-only peer"
                     {...props}
                 />
-                <div className="w-9 h-5 bg-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-disabled:bg-muted/60 peer-disabled:after:bg-muted peer-disabled:after:border-muted"></div>
+                <div className="w-9 h-5 bg-muted peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-disabled:bg-muted/60 peer-disabled:after:bg-muted peer-disabled:after:border-muted"></div>
             </label>
         </div>
         );
     }
 );
+FormSwitch.displayName = 'FormSwitch';
 
 const FormSwitchTooltip = ({ tooltip }: { tooltip: string }) => {
     const iconRef = useRef<HTMLSpanElement>(null);
