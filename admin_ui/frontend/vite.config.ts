@@ -7,6 +7,11 @@ import autoprefixer from 'autoprefixer'
 // https://vitejs.dev/config/
 export default defineConfig({
     plugins: [react()],
+    // Vitest: globals enables @testing-library/react's automatic afterEach
+    // cleanup (so portal-rendered dialogs don't leak across component tests).
+    test: {
+        globals: true,
+    },
     css: {
         postcss: {
             plugins: [
