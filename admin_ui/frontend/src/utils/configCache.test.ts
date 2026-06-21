@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
-import { loadConfigYaml, invalidateConfigYaml, getCachedConfig } from './configCache';
+import { loadConfigYaml, invalidateConfigYaml, getCachedConfig, handleConfigWrite } from './configCache';
 
 vi.mock('axios');
 
@@ -33,6 +33,21 @@ describe('configCache', () => {
         expect(getCachedConfig()).toBeNull();
         await loadConfigYaml();
         expect(axios.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidates the cache when a config save (POST /api/config/yaml) succeeds', async () => {
+        vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
+        await loadConfigYaml();
+        expect(getCachedConfig()).not.toBeNull();
+        handleConfigWrite({ config: { method: 'post', url: '/api/config/yaml' } });
+        expect(getCachedConfig()).toBeNull(); // a save anywhere drops the shared cache
+    });
+
+    it('ignores writes to other endpoints', async () => {
+        vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
+        await loadConfigYaml();
+        handleConfigWrite({ config: { method: 'post', url: '/api/providers/health' } });
+        expect(getCachedConfig()).not.toBeNull();
     });
 
     it('refetches when forced even with a warm cache', async () => {

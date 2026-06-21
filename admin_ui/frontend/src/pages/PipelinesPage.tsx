@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
-import { getCachedConfig, loadConfigYaml, invalidateConfigYaml } from '../utils/configCache';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { Plus, Settings, Trash2, Copy, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
@@ -133,7 +133,6 @@ const PipelinesPage = () => {
         try {
             const sanitized = sanitizeConfigForSave(newConfig);
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
-            invalidateConfigYaml();
             setConfig(sanitized);
             setPendingChanges('restart');
         } catch (err) {

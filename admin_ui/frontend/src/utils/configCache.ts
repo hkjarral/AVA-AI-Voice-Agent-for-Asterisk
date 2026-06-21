@@ -74,3 +74,21 @@ export function invalidateConfigYaml(): void {
     generation++;
     inflight = null;
 }
+
+/** Invalidate when a response is a successful write to the shared config document. */
+export function handleConfigWrite(response: { config?: { method?: string; url?: string } }): void {
+    const cfg = response?.config;
+    const method = cfg?.method?.toLowerCase();
+    if (cfg?.url === '/api/config/yaml' && (method === 'post' || method === 'put')) {
+        invalidateConfigYaml();
+    }
+}
+
+// Any successful save to /api/config/yaml — including from config pages not yet
+// migrated to this cache — drops the cache, so migrated pages never seed stale
+// config after an edit made elsewhere. (Optional-chained so unit-test axios mocks
+// without an interceptor registry are a no-op.)
+axios.interceptors?.response?.use?.((response) => {
+    handleConfigWrite(response);
+    return response;
+});
