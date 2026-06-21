@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS agents (
     greeting TEXT,
     prompt TEXT NOT NULL,
     tools_json TEXT,
-    mcp_json TEXT,
+    mcp_json TEXT,                    -- NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     audio_profile TEXT,
     extra_json TEXT,                 -- D3: pipeline, background_music, phase tools, disable flags, anything else
     is_operator_managed INTEGER NOT NULL DEFAULT 1,
@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS agents (
     source_file TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    notes TEXT
+    notes TEXT,
+    email_recipient TEXT,
+    email_from TEXT,
+    email_enabled INTEGER             -- tri-state: NULL=inherit, 0=off, 1=on
 );
 CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(slug);
 CREATE INDEX IF NOT EXISTS idx_agents_mgmt ON agents(is_operator_managed);
@@ -51,9 +54,13 @@ class AgentsStore:
     COLUMNS = ["id","slug","display_name","extension","role_label","provider","voice",
                "greeting","prompt","tools_json","mcp_json","audio_profile","extra_json",
                "is_operator_managed","is_active","is_default","source_file",
-               "created_at","updated_at","notes"]
+               "created_at","updated_at","notes",
+               "email_recipient","email_from","email_enabled"]
 
-    def __init__(self, db_path: str = DB_DEFAULT):
+    def __init__(self, db_path: str = None):
+        # Honor AGENTS_DB_PATH so a relocated DB is written/read consistently with
+        # the engine reader; falls back to the historical default when unset.
+        db_path = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
         parent = os.path.dirname(db_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -63,8 +70,28 @@ class AgentsStore:
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        self._ensure_schema_sync()
         try: os.chmod(db_path, 0o600)
         except OSError: pass
+
+    def _ensure_schema_sync(self):
+        """Best-effort additive migrations for existing installs.
+
+        SQLite has limited ALTER TABLE support; we only add nullable columns
+        when missing — never drop or rename. Safe on populated production DBs.
+        """
+        try:
+            existing = {str(r[1]) for r in
+                        self.conn.execute("PRAGMA table_info(agents)").fetchall()}
+            with self.conn:
+                if "email_recipient" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_recipient TEXT")
+                if "email_from" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_from TEXT")
+                if "email_enabled" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN email_enabled INTEGER")
+        except sqlite3.Error:
+            pass
 
     def close(self):
         """Close the underlying sqlite connection. Safe to call more than once."""
@@ -104,7 +131,8 @@ class AgentsStore:
     def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
                role_label=None, voice=None, greeting=None, tools_json=None,
                mcp_json=None, audio_profile=None, extra_json=None,
-               is_operator_managed=1, source_file=None, notes=None) -> dict:
+               is_operator_managed=1, source_file=None, notes=None,
+               email_recipient=None, email_from=None, email_enabled=None) -> dict:
         slug = slug or slugify(display_name)
         if not slug or not _SLUG_RE.sub("", slug) == slug:
             raise ValueError(f"invalid slug: {slug!r}")
@@ -116,11 +144,13 @@ class AgentsStore:
             self.conn.execute(
                 """INSERT INTO agents (id,slug,display_name,extension,role_label,provider,
                    voice,greeting,prompt,tools_json,mcp_json,audio_profile,extra_json,
-                   is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?)""",
+                   is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes,
+                   email_recipient,email_from,email_enabled)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), slug, display_name, extension, role_label, provider,
                  voice, greeting, prompt, tools_json, mcp_json, audio_profile, extra_json,
-                 is_operator_managed, source_file, now, now, notes))
+                 is_operator_managed, source_file, now, now, notes,
+                 email_recipient, email_from, email_enabled))
         self._ensure_default_invariant()
         return self.get_by_slug(slug)
 

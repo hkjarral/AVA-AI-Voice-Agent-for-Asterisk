@@ -273,6 +273,13 @@ class Engine:
         # ------------------------------------------------------------------
         self.outbound_store = get_outbound_store()
         self._outbound_scheduler_task: Optional[asyncio.Task] = None
+        self._retention_cleanup_task: Optional[asyncio.Task] = None
+        # Warm/probe task for a local default provider (breaks the readiness
+        # deadlock: LocalProvider opens its WS lazily on the first call, so
+        # without this /ready -> is_connected() would never flip True until a
+        # call arrived — but a /ready-gating load balancer never routes the
+        # first call. The task connects proactively and re-arms on drop.)
+        self._local_warm_task: Optional[asyncio.Task] = None
         self._outbound_last_dial_ts: Dict[str, float] = {}
         self._outbound_attempt_meta_by_attempt_id: Dict[str, Dict[str, Any]] = {}
         self._outbound_attempt_meta_by_channel_id: Dict[str, Dict[str, Any]] = {}
@@ -548,6 +555,20 @@ class Engine:
         self._called_number_cache: Dict[str, str] = {}  # channel_id -> called_number
         # Track channels that have entered Asterisk but not yet Stasis (for UI pre-stasis indicator)
         self._pre_stasis_channels: Set[str] = set()
+        # Codex P1: auxiliary/media channel ids seen at StasisStart (Local/AudioSocket/
+        # ExternalMedia helper legs). A single call has multiple channels; when an aux
+        # leg is destroyed after the main session is already cleaned up, _cleanup_call
+        # finds no session and must NOT persist a separate "abandoned" row for it.
+        # The HIGH-1a abandoned path is scoped to caller channels by excluding these.
+        self._seen_aux_channels: Set[str] = set()
+        # P2 (bot re-review): outbound dial channels finalized by
+        # _handle_outbound_channel_destroyed BEFORE a CallSession exists (busy/no-answer/
+        # originate timeout). _handle_channel_destroyed still falls through to _cleanup_call,
+        # which finds no session and would otherwise write a duplicate "abandoned" row for an
+        # outbound attempt already accounted for. Recording the channel id here lets the
+        # abandoned-persist path skip it (same mechanism as _seen_aux_channels), while the
+        # genuine pre-Stasis INBOUND abandoned case is preserved.
+        self._seen_outbound_channels: Set[str] = set()
         # Health server runner
         self._health_runner: Optional[web.AppRunner] = None
         # MCP client manager (experimental)
@@ -911,6 +932,27 @@ class Engine:
                 self._outbound_scheduler_task = asyncio.create_task(self._outbound_scheduler_loop())
         except Exception:
             logger.debug("Failed to start outbound scheduler task", exc_info=True)
+        # LOW-CH1: warm the call-history store off the event loop so the first call's
+        # teardown doesn't pay a synchronous _init_db() (mkdir/connect/CREATE) on the loop.
+        try:
+            from src.core.call_history import get_call_history_store
+            await asyncio.get_event_loop().run_in_executor(None, get_call_history_store)
+        except Exception:
+            logger.debug("Call-history store warm-up failed", exc_info=True)
+        # Call-history retention cleanup (HIGH-7): only runs when retention is set
+        # (CALL_HISTORY_RETENTION_DAYS>0); otherwise the loop idles and exits.
+        try:
+            if not self._retention_cleanup_task:
+                self._retention_cleanup_task = asyncio.create_task(self._retention_cleanup_loop())
+        except Exception:
+            logger.debug("Failed to start retention cleanup task", exc_info=True)
+        # Local default-provider warm/probe: connect proactively so /ready can
+        # become true without a prior call (no-op for non-local defaults).
+        try:
+            if not self._local_warm_task:
+                self._local_warm_task = asyncio.create_task(self._local_warm_loop())
+        except Exception:
+            logger.debug("Failed to start local warm task", exc_info=True)
         logger.info("Engine started and listening for calls.")
 
     def _on_ari_listener_task_done(self, task: "asyncio.Task") -> None:
@@ -1259,6 +1301,78 @@ class Engine:
         except Exception:
             logger.debug("Failed to mark outbound campaign completed", exc_info=True)
 
+    async def _retention_cleanup_loop(self) -> None:
+        """Periodically prune call-history records past the retention window (HIGH-7).
+
+        Idles out immediately when CALL_HISTORY_RETENTION_DAYS is unset/<=0, so it
+        costs nothing on installs that don't configure retention. Runs once shortly
+        after startup, then daily."""
+        try:
+            from src.core.call_history import get_call_history_store
+            store = get_call_history_store()
+            if getattr(store, "_retention_days", 0) <= 0:
+                logger.debug("Retention cleanup disabled (CALL_HISTORY_RETENTION_DAYS unset)")
+                return
+            await asyncio.sleep(60)  # let startup settle before the first pass
+            while True:
+                try:
+                    deleted = await store.cleanup_old_records()
+                    if deleted:
+                        logger.info("Call-history retention cleanup removed records", count=deleted)
+                except Exception:
+                    logger.debug("Retention cleanup pass failed", exc_info=True)
+                await asyncio.sleep(24 * 60 * 60)  # daily
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Retention cleanup loop exited", exc_info=True)
+
+    async def _local_warm_probe_once(self) -> None:
+        """Establish the local default provider's WS once, if not already up.
+
+        Idempotent and non-blocking on the readiness signal: LocalProvider's
+        ``initialize()`` is a no-op when the WS is already OPEN and uses its own
+        TCP-port-check + bounded backoff when it is not. Calling it here means
+        ``is_connected()`` (the HIGH-2 readiness signal) can flip True without a
+        prior call — and stays False while the server is genuinely down/loading
+        (HIGH-2 intent preserved). No-op for non-local default providers.
+        """
+        default_target = getattr(self.config, "default_provider", None) if self.config else None
+        if not default_target or self._get_provider_kind(default_target) != "local":
+            return
+        prov = (self.providers or {}).get(default_target)
+        if prov is None or not hasattr(prov, "initialize"):
+            return
+        try:
+            if hasattr(prov, "is_connected") and prov.is_connected():
+                return
+        except Exception:
+            pass
+        await prov.initialize()
+
+    async def _local_warm_loop(self, interval_sec: float = 15.0) -> None:
+        """Keep a local default provider connected so /ready reflects the server.
+
+        Connects proactively at startup (warming the first call too) and re-arms
+        if the WS later drops while idle (e.g. local_ai_server restart with no
+        active call to trigger the per-call reconnect path). Exits immediately
+        for non-local defaults so it costs nothing on other installs.
+        """
+        default_target = getattr(self.config, "default_provider", None) if self.config else None
+        if not default_target or self._get_provider_kind(default_target) != "local":
+            return
+        try:
+            while True:
+                try:
+                    await self._local_warm_probe_once()
+                except Exception:
+                    logger.debug("Local warm probe pass failed", exc_info=True)
+                await asyncio.sleep(max(1.0, float(interval_sec)))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Local warm loop exited", exc_info=True)
+
     async def _outbound_scheduler_loop(self) -> None:
         """Background control-plane: lease leads and originate outbound calls."""
         logger.info("Outbound scheduler started")
@@ -1324,7 +1438,11 @@ class Engine:
                             # Best-effort provider resolution for metadata/UI.
                             resolved_context_provider = None
                             try:
-                                ctx_cfg = self.transport_orchestrator.get_context_config(context_name)
+                                # Outbound sets AI_CONTEXT on the channel (see _outbound
+                                # set_channel_var) — resolve with the legacy original-name
+                                # intent so this metadata lookup matches the live routing.
+                                ctx_cfg = self.transport_orchestrator.get_context_config(
+                                    context_name, "ai_context")
                                 ctx_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
                                 if isinstance(ctx_provider, str):
                                     ctx_provider = ctx_provider.strip()
@@ -1419,7 +1537,8 @@ class Engine:
         # when the dialplan does not explicitly set AI_PROVIDER.
         context_provider = None
         try:
-            ctx_cfg = self.transport_orchestrator.get_context_config(context_name)
+            # Outbound routes via AI_CONTEXT — use the legacy original-name intent.
+            ctx_cfg = self.transport_orchestrator.get_context_config(context_name, "ai_context")
             context_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
         except Exception:
             context_provider = None
@@ -2012,6 +2131,12 @@ class Engine:
             if session and getattr(session, "is_outbound", False):
                 return
 
+            # This is an outbound attempt being finalized without a CallSession. Mark the
+            # channel so the no-session abandoned-persist path in _cleanup_call skips it
+            # (otherwise it writes a duplicate "abandoned" row for an attempt already
+            # finished here as busy/no_answer/etc.).
+            self._seen_outbound_channels.add(channel_id)
+
             cause_txt = str(event.get("cause_txt") or "").lower()
             cause = str(event.get("cause") or "")
 
@@ -2073,6 +2198,16 @@ class Engine:
                 task.cancel()
         except Exception:
             pass
+
+        # Stop background loop tasks (warm/probe, retention) so they don't run
+        # after shutdown begins.
+        for attr in ("_local_warm_task", "_retention_cleanup_task"):
+            try:
+                t = getattr(self, attr, None)
+                if t and not t.done():
+                    t.cancel()
+            except Exception:
+                pass
         
         if active_count > 0 and graceful_timeout > 0:
             logger.info(
@@ -2565,6 +2700,8 @@ class Engine:
                 channel_id=channel_id,
                 channel_name=channel_name,
             )
+            # Codex P1: mark as aux so its later ChannelDestroyed doesn't persist a row.
+            self._seen_aux_channels.add(channel_id)
             # Now add the Local channel to the bridge
             await self._handle_local_stasis_start_hybrid(channel_id, channel)
         elif self._is_audiosocket_channel(channel):
@@ -2573,12 +2710,16 @@ class Engine:
                 channel_id=channel_id,
                 channel_name=channel_name,
             )
+            # Codex P1: mark as aux so its later ChannelDestroyed doesn't persist a row.
+            self._seen_aux_channels.add(channel_id)
             await self._handle_audiosocket_channel_stasis_start(channel_id, channel)
         elif self._is_external_media_channel(channel):
             # This is an ExternalMedia channel entering Stasis
-            logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel entered Stasis", 
+            logger.info("🎯 EXTERNAL MEDIA - ExternalMedia channel entered Stasis",
                        channel_id=channel_id,
                        channel_name=channel_name)
+            # Codex P1: mark as aux so its later ChannelDestroyed doesn't persist a row.
+            self._seen_aux_channels.add(channel_id)
             await self._handle_external_media_stasis_start(channel_id, channel)
         else:
             logger.warning("🎯 HYBRID ARI - Unknown channel type in StasisStart", 
@@ -3418,7 +3559,8 @@ class Engine:
                 # If context specifies a pipeline, use modular pipeline even if provider is set
                 context_pipeline = None
                 if session.context_name:
-                    ctx_config = self.transport_orchestrator.get_context_config(session.context_name)
+                    ctx_config = self.transport_orchestrator.get_context_config(
+                        session.context_name, getattr(session, 'routing_method', None))
                     if ctx_config and getattr(ctx_config, 'pipeline', None):
                         context_pipeline = ctx_config.pipeline
                         logger.info(
@@ -4680,8 +4822,12 @@ class Engine:
             except Exception:
                 pass
             audio_file = os.path.join(media_dir, f"{playback_id}.ulaw")
-            with open(audio_file, "wb") as f:
-                f.write(audio_bytes)
+
+            def _write() -> None:
+                with open(audio_file, "wb") as f:
+                    f.write(audio_bytes)
+
+            await asyncio.to_thread(_write)
             # Leave file permissions to host/umask; avoid chmod here (CodeQL).
 
             # Ensure ARIClient cleans up this file on PlaybackFinished.
@@ -5691,6 +5837,38 @@ class Engine:
                     session = await self.session_store.get_by_call_id(mapped_call_id)
             if not session:
                 logger.debug("No session found during cleanup", identifier=channel_or_call_id)
+                # Codex P1: a single call has multiple channels (caller + aux media legs:
+                # Local/AudioSocket/ExternalMedia). Aux legs are destroyed AFTER the main
+                # session is cleaned up, so they reach here with no session too. Persisting
+                # each as its own "abandoned" row pollutes history and inflates abandoned
+                # stats for otherwise-successful calls. Scope the HIGH-1a path to caller
+                # channels by skipping any channel we recorded as an aux leg at StasisStart.
+                seen_aux = getattr(self, "_seen_aux_channels", None)
+                if seen_aux is not None and channel_or_call_id in seen_aux:
+                    seen_aux.discard(channel_or_call_id)
+                    logger.debug(
+                        "Skipping abandoned record for auxiliary channel",
+                        identifier=channel_or_call_id,
+                    )
+                    return
+                # P2 (bot re-review): outbound dial channels destroyed before a CallSession
+                # exists are already finalized by _handle_outbound_channel_destroyed. Skip
+                # them so we don't write a duplicate "abandoned" row. The genuine inbound
+                # pre-session abandoned case (HIGH-1a) falls through below.
+                seen_outbound = getattr(self, "_seen_outbound_channels", None)
+                if seen_outbound is not None and channel_or_call_id in seen_outbound:
+                    seen_outbound.discard(channel_or_call_id)
+                    logger.debug(
+                        "Skipping abandoned record for outbound channel",
+                        identifier=channel_or_call_id,
+                    )
+                    return
+                # HIGH-1a: calls that end before session registration (StasisStart
+                # exception, codec abort, immediate hangup before setup) otherwise
+                # leave no row in call_records and are invisible in history. Persist a
+                # minimal "abandoned" record. CallHistoryStore.save() is dedupe-by
+                # call_id, so this never double-writes a channel a session did persist.
+                await self._persist_abandoned_call_history(channel_or_call_id)
                 return
 
             call_id = session.call_id
@@ -5938,9 +6116,14 @@ class Engine:
 
             # Auto-send email summary if enabled (before session is removed)
             try:
-                # Auto-trigger email summary if configured and session has conversation history
+                # Auto-trigger email summary if configured and session has conversation history.
+                # Per-agent email_enabled is a true override of the global enabled gate
+                # (Codex P2): Enabled forces send even when global is off, Disabled forces
+                # skip even when global is on, None inherits global. Shared decision helper
+                # keeps this gate in agreement with the tool's own _should_send.
+                from src.tools.business.email_summary import should_send_email_summary
                 email_tool_config = self.config.tools.get('send_email_summary', {})
-                if email_tool_config.get('enabled', False):
+                if should_send_email_summary(session, email_tool_config):
                     from src.tools.registry import tool_registry
                     email_tool = tool_registry.get('send_email_summary')
                     if email_tool:
@@ -6136,6 +6319,35 @@ class Engine:
             # Clean up in-memory guard
             if resolved_call_id:
                 _cleanup_in_progress.discard(resolved_call_id)
+
+    async def _persist_abandoned_call_history(self, channel_id: str) -> None:
+        """Persist a minimal 'abandoned' record for a call that ended before session registration (HIGH-1a).
+
+        Mirrors the store-write pattern of _persist_call_history. Idempotent via
+        CallHistoryStore.save() dedupe-by-call_id, so the normal path never double-writes.
+        """
+        try:
+            from src.core.call_history import CallRecord, get_call_history_store
+
+            store = get_call_history_store()
+            if not store._enabled:
+                return
+
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            record = CallRecord(
+                call_id=channel_id,
+                start_time=now,
+                end_time=now,
+                duration_seconds=0.0,
+                outcome="abandoned",
+                error_message="Call ended before session registration",
+            )
+            saved = await store.save(record)
+            if saved:
+                logger.info("Persisted abandoned call record (no session)", call_id=channel_id)
+        except Exception:
+            logger.debug("Failed to persist abandoned call record", channel_id=channel_id, exc_info=True)
 
     async def _persist_call_history(self, session: CallSession, call_id: str) -> None:
         """Persist call record to history database (Milestone 21)."""
@@ -10265,7 +10477,8 @@ class Engine:
                 context_prompt_injected = False
                 context_name = getattr(session, 'context_name', None)
                 if context_name:
-                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        context_name, getattr(session, 'routing_method', None))
                     if context_config and context_config.prompt:
                         # Create a copy to avoid mutating the pipeline's original options
                         llm_options = dict(llm_options)
@@ -10320,7 +10533,8 @@ class Engine:
                 context_name = getattr(session, "context_name", None)
                 allowed_tools: List[str] = []
                 if context_name:
-                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        context_name, getattr(session, "routing_method", None))
                     if context_config:
                         from src.tools.base import ToolPhase
                         from src.tools.registry import tool_registry
@@ -10406,7 +10620,8 @@ class Engine:
                 # Use session.context_name (persisted string) instead of transport_profile.context
                 context_name = getattr(session, 'context_name', None)
                 if context_name:
-                    context_config = self.transport_orchestrator.get_context_config(context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        context_name, getattr(session, 'routing_method', None))
                     if context_config and context_config.greeting:
                         greeting = self._apply_prompt_template_substitution(context_config.greeting.strip(), session)
                         greeting_source = "context_injection"
@@ -11995,13 +12210,37 @@ class Engine:
             context_name=session.context_name,
             routing_method=session.routing_method,
         )
-        
+
+        # Thread per-agent post-call email overrides onto the session (H5) here,
+        # before any provider early-return. The monolithic path below also resolves
+        # these from transport.context, but pipeline providers are not in
+        # self.providers and return early at the provider lookup — so resolve them
+        # up-front from the already-resolved context so pipeline calls honor the
+        # per-agent email config too. None preserves the global/per-context fallback.
+        if resolved_context:
+            try:
+                email_ctx = self.transport_orchestrator.get_context_config(
+                    resolved_context, session.routing_method)
+                if email_ctx:
+                    session.email_recipient = getattr(email_ctx, "email_recipient", None)
+                    session.email_from = getattr(email_ctx, "email_from", None)
+                    session.email_enabled = getattr(email_ctx, "email_enabled", None)
+                    await self._save_session(session)
+            except Exception:
+                logger.debug(
+                    "Failed to resolve per-agent email overrides for session",
+                    call_id=session.call_id,
+                    context_name=resolved_context,
+                    exc_info=True,
+                )
+
         # Get provider name (precedence: AI_PROVIDER > context > session.provider_name)
         provider_name = channel_vars.get('AI_PROVIDER')
         if not provider_name:
             # Check if context specifies provider
             if resolved_context:
-                context_config = self.transport_orchestrator.get_context_config(resolved_context)
+                context_config = self.transport_orchestrator.get_context_config(
+                    resolved_context, session.routing_method)
                 if context_config and context_config.provider:
                     provider_name = str(context_config.provider).strip()
         
@@ -12074,6 +12313,9 @@ class Engine:
                 # AI_AGENT / DB-default calls expose no AI_CONTEXT channel var; pass the
                 # already-resolved context so the agent's audio_profile + greeting/prompt apply.
                 resolved_context=resolved_context,
+                # Carry the routing INTENT so a colliding AI_CONTEXT slug resolves to the
+                # same agent for audio-profile lookup as for prompt/tools (Finding 1).
+                routing_method=session.routing_method,
             )
             
             # Store transport in session (keep as object, not dict, for legacy code compatibility)
@@ -12123,7 +12365,8 @@ class Engine:
                 transport_context=transport.context if hasattr(transport, "context") else None,
             )
             if transport.context:
-                context_config = self.transport_orchestrator.get_context_config(transport.context)
+                context_config = self.transport_orchestrator.get_context_config(
+                    transport.context, getattr(session, "routing_method", None))
                 logger.debug(
                     "Context config loaded",
                     call_id=session.call_id,
@@ -12183,6 +12426,11 @@ class Engine:
                                 context=transport.context,
                                 prompt_length=len(prompt_to_apply or ""),
                             )
+                        # Thread per-agent post-call email overrides onto the session (H5)
+                        # so the email tool sees them at dispatch. None preserves fallback.
+                        session.email_recipient = getattr(context_config, "email_recipient", None)
+                        session.email_from = getattr(context_config, "email_from", None)
+                        session.email_enabled = getattr(context_config, "email_enabled", None)
                         await self._save_session(session)
                     except Exception as exc:
                         logger.error(
@@ -13193,7 +13441,8 @@ class Engine:
                     # earlier during audio profile resolution, before pre-call tools run.
                     try:
                         if session and getattr(session, "context_name", None):
-                            ctx_cfg = self.transport_orchestrator.get_context_config(session.context_name)
+                            ctx_cfg = self.transport_orchestrator.get_context_config(
+                                session.context_name, getattr(session, "routing_method", None))
                             if ctx_cfg:
                                 session.provider_overrides = dict(getattr(session, "provider_overrides", {}) or {})
                                 greeting_tpl = getattr(ctx_cfg, "greeting", None)
@@ -13343,7 +13592,8 @@ class Engine:
             provider_context = {}
             try:
                 if session.context_name:
-                    context_config = self.transport_orchestrator.get_context_config(session.context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        session.context_name, getattr(session, "routing_method", None))
                     logger.debug(
                         "Building provider context",
                         call_id=call_id,
@@ -13542,7 +13792,57 @@ class Engine:
                     await provider.stop_session()
                 except Exception:
                     pass
+            # HIGH-1b: a session exists by the time provider start runs, so this call
+            # WILL be persisted at cleanup — record the failure on the session so its
+            # outcome is 'error' instead of being mislabeled 'completed'/'abandoned'.
+            _sess = locals().get("session")
+            try:
+                if _sess is not None:
+                    if not getattr(_sess, "error_message", None):
+                        _sess.error_message = f"provider_start_failed: {exc}"
+                    await self._save_session(_sess)
+            except Exception:
+                logger.debug("Failed to record provider-start error on session",
+                             call_id=call_id, exc_info=True)
             logger.error("Failed to start provider session", call_id=call_id, error=str(exc), exc_info=True)
+
+            # HIGH-3: the channel was already answered/bridged before provider start,
+            # so on failure it stays open and SILENT (dead air) until the caller hangs
+            # up. Unless configured to leave the line open, play a best-effort error
+            # prompt and hang up so the caller is not stranded.
+            on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
+            if on_failure != "leave_open":
+                channel_id = getattr(_sess, "caller_channel_id", None) if _sess is not None else None
+                if channel_id:
+                    await self._announce_provider_failure_and_hangup(call_id, channel_id)
+
+    async def _announce_provider_failure_and_hangup(self, call_id: str, channel_id: str) -> None:
+        """HIGH-3: best-effort error prompt to the caller, then hang up the channel.
+
+        Provider TTS is unavailable here (the provider failed to start), so we play
+        an Asterisk sound file via ARI and wait for it to finish before hanging up.
+        Every step is best-effort: the core requirement is ending the dead air by
+        hanging up, so a missing/unplayable prompt must never prevent the hangup.
+        """
+        prompt = (getattr(self.config, "provider_failure_prompt", "") or "").strip()
+        if prompt:
+            try:
+                playback = await self.ari_client.play_sound(channel_id, prompt)
+                playback_id = (playback or {}).get("id") if isinstance(playback, dict) else None
+                if playback_id:
+                    await self._wait_for_ari_playback(str(playback_id), timeout_sec=10.0)
+            except Exception:
+                logger.debug(
+                    "Provider-failure error prompt playback failed",
+                    call_id=call_id, channel_id=channel_id, exc_info=True,
+                )
+        try:
+            await self.ari_client.hangup_channel(channel_id)
+        except Exception:
+            logger.debug(
+                "Provider-failure hangup failed",
+                call_id=call_id, channel_id=channel_id, exc_info=True,
+            )
 
     async def _on_playback_finished(self, event: Dict[str, Any]):
         """Delegate ARI PlaybackFinished to PlaybackManager for gating and cleanup."""
@@ -13797,7 +14097,8 @@ class Engine:
             if not allowed_tools:
                 try:
                     if getattr(session, "context_name", None):
-                        ctx_cfg = self.transport_orchestrator.get_context_config(session.context_name)
+                        ctx_cfg = self.transport_orchestrator.get_context_config(
+                            session.context_name, getattr(session, "routing_method", None))
                         if ctx_cfg:
                             allowed = list(getattr(ctx_cfg, "tools", None) or [])
                             in_call_http_tools_cfg = getattr(ctx_cfg, "in_call_http_tools", None)
@@ -13996,8 +14297,9 @@ class Engine:
             # Get context config for this call
             ctx_config = None
             if session.context_name:
-                ctx_config = self.transport_orchestrator.get_context_config(session.context_name)
-            
+                ctx_config = self.transport_orchestrator.get_context_config(
+                    session.context_name, getattr(session, "routing_method", None))
+
             if not ctx_config:
                 logger.debug("No context config for pre-call tools", call_id=call_id)
                 return results
@@ -14210,8 +14512,9 @@ class Engine:
             # Get context config for this call
             ctx_config = None
             if session.context_name:
-                ctx_config = self.transport_orchestrator.get_context_config(session.context_name)
-            
+                ctx_config = self.transport_orchestrator.get_context_config(
+                    session.context_name, getattr(session, "routing_method", None))
+
             # Get post-call tools for this context (context-specific + global minus opt-outs)
             post_call_tool_names = list(getattr(ctx_config, 'post_call_tools', None) or []) if ctx_config else []
             disabled_global = list(getattr(ctx_config, 'disable_global_post_call_tools', None) or []) if ctx_config else []
@@ -14485,7 +14788,13 @@ class Engine:
             if default_target in (self.providers or {}):
                 prov = self.providers[default_target]
                 try:
-                    default_ready = bool(prov.is_ready()) if hasattr(prov, "is_ready") else False
+                    # HIGH-2: local default provider readiness reflects active WS
+                    # connection, not just URL-present (see _ready_handler). Cheap,
+                    # non-blocking. Other kinds keep the existing is_ready() behavior.
+                    if self._get_provider_kind(default_target) == "local" and hasattr(prov, "is_connected"):
+                        default_ready = bool(prov.is_connected())
+                    else:
+                        default_ready = bool(prov.is_ready()) if hasattr(prov, "is_ready") else False
                 except Exception:
                     default_ready = False
             elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):
@@ -14571,7 +14880,16 @@ class Engine:
             if default_target in (self.providers or {}):
                 prov = self.providers[default_target]
                 try:
-                    provider_ok = bool(prov.is_ready()) if hasattr(prov, "is_ready") else True
+                    # HIGH-2: for a local default provider, readiness must reflect
+                    # an active WS connection (local_ai_server can take 5-10 min to
+                    # load models while is_ready()/URL-present is already True).
+                    # is_connected() is a cheap, non-blocking WS-state check. All
+                    # other provider kinds keep the URL-present behavior (admin_ui
+                    # also consumes /ready, so non-local readiness must not be stricter).
+                    if self._get_provider_kind(default_target) == "local" and hasattr(prov, "is_connected"):
+                        provider_ok = bool(prov.is_connected())
+                    else:
+                        provider_ok = bool(prov.is_ready()) if hasattr(prov, "is_ready") else True
                 except Exception:
                     provider_ok = True
             elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):

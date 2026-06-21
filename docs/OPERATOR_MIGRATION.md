@@ -71,6 +71,19 @@ The output file can be merged back into `ai-agent.yaml` or used as a standalone 
 
 ## Rollback (if migration misbehaves)
 
+> **Two different rollback operations exist — pick the one that matches your problem.**
+> The procedure below is the **YAML-fallback rollback**: it deletes `agents.db` so the
+> engine reverts to reading `ai-agent.yaml` + `config/contexts/` directly. It does **not**
+> touch your code or config files. Use it when the *migration itself* misbehaves and you
+> want to go back to plain YAML mode.
+>
+> The separate **update rollback** (Admin UI → System → Updates → "Rollback", backed by
+> `updater/run.sh`) restores pre-update *code* + `.env` + `ai-agent.yaml` /
+> `ai-agent.local.yaml` / `users.json` / `config/contexts/` from a backup, but does **not**
+> restore or delete `agents.db`. Use it when a *code update* went wrong. If you need to
+> undo both an update and the migration, run the update rollback first, then this
+> YAML-fallback rollback.
+
 1. `docker compose stop ai_engine admin_ui`
 2. `rm ./data/operator/agents.db ./data/operator/agents.db-wal ./data/operator/agents.db-shm` (host path, relative to repo root — the compose bind is `./data` → `/app/data`)
 3. `docker compose start ai_engine admin_ui` — the engine falls back to reading

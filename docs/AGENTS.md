@@ -5,7 +5,7 @@ An **agent** is the v1a evolution of a "context": a named configuration bundle t
 - **Provider** — which AI backend handles the call (e.g. `deepgram`, `openai_realtime`, `local_hybrid`)
 - **Prompt** — the system-level instructions and persona
 - **Greeting** — the first thing the agent says when it picks up
-- **Voice** — provider-specific voice identifier
+- **Voice** — display-only label for reference; the actual voice is configured on the provider, not per agent
 - **Audio profile** — telephony format / sample-rate profile (e.g. `telephony_ulaw_8k`)
 - **Tools** — optional callable tools (calendar, HTTP, MCP, etc.)
 
@@ -62,7 +62,7 @@ If both `AI_AGENT` and `AI_CONTEXT` are present on the same channel, `AI_AGENT` 
  same => n,Stasis(asterisk-ai-voice-agent)
 ```
 
-`AI_PROVIDER` overrides which provider/pipeline handles the call; `AI_AGENT` selects the greeting, prompt, voice, and tools. If `AI_PROVIDER` is not set, the engine uses the provider field stored on the agent itself (or `default_provider` from `ai-agent.yaml` as the final fallback).
+`AI_PROVIDER` overrides which provider/pipeline handles the call; `AI_AGENT` selects the greeting, prompt, and tools (voice is provider-scoped, not selected per agent). If `AI_PROVIDER` is not set, the engine uses the provider field stored on the agent itself (or `default_provider` from `ai-agent.yaml` as the final fallback).
 
 > **Note:** Some docs in this repository may still show `AI_CONTEXT` in dialplan examples — that is the legacy, still-supported variable and works identically to `AI_AGENT`.
 

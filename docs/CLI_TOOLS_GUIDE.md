@@ -1,168 +1,158 @@
-# CLI Tools Guide (`agent`)
+# Agent CLI Tools Guide
 
-Operator-focused reference for the `agent` CLI (setup + diagnostics + post-call RCA + updates).
+Operator reference for the `agent` command shipped with Asterisk AI Voice Agent v7.0.1.
 
-## What it does
+Run commands from the repository root on the Docker Compose host. Global flags are `--verbose` and `--no-color`.
 
-- `agent setup`: interactive onboarding (providers, transport, dialplan hints).
-- `agent check`: shareable diagnostics report for support (recommended first step when debugging).
-- `agent check --local`: verify Local AI Server components (STT, LLM, TTS) on this host.
-- `agent check --remote <ip>`: verify Local AI Server on a remote GPU machine.
-- `agent check --fix`: one-shot recovery flow for config/update failures (restore from latest valid backup, restart core services, re-check).
-- `agent rca`: post-call RCA using Call History and logs.
-- `agent update`: safe pull + rebuild/restart + verify workflow for repo-based installs.
-- `agent version`: version/build info (attach to issues).
+## Primary commands
+
+| Command | Purpose |
+|---|---|
+| `agent setup` | Configure ARI, transport, and the active provider or pipeline |
+| `agent check` | Generate a shareable system-health report |
+| `agent rca` | Analyze a completed call using persisted Call History and logs |
+| `agent config validate` | Validate provider, pipeline, model, transport, and audio settings |
+| `agent dialplan` | Generate an `AI_AGENT` dialplan snippet |
+| `agent update` | Plan or apply a safe repository update |
+| `agent version` | Print CLI version and build information |
 
 ## Installation
 
-### If you installed the full project
-
-The CLI is included with standard installs (for example via `install.sh` / Admin UI workflows). If `agent` is already on your PATH, skip ahead to Usage.
-
-### CLI-only install (prebuilt binaries)
-
-From a Linux/macOS host:
+The normal project installer includes the CLI. To install only a released binary on Linux or macOS:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh | bash
-```
-
-Verify:
-
-```bash
 agent version
 ```
 
-## Usage
-
-Run these commands on the host that runs Docker Compose for this repo (the CLI shells out to Docker/Compose and reads your local `.env` and `config/ai-agent.yaml`).
-
-Global flags (all commands):
-
-```bash
-agent <command> --verbose
-agent <command> --no-color
-```
-
-### `agent setup`
+## Setup
 
 ```bash
 agent setup
 ```
 
-Typically guides:
-1) ARI host/credentials validation  
-2) transport selection (AudioSocket vs ExternalMedia)  
-3) provider selection (OpenAI/Deepgram/Google/Local/etc.)  
-4) writes config + restarts services  
+The wizard reads both `config/ai-agent.yaml` and `config/ai-agent.local.yaml`, discovers the providers and pipelines actually defined by the installation, writes secrets to `.env`, and writes operator selections to `config/ai-agent.local.yaml`. Switching from a pipeline to a full-agent provider explicitly clears `active_pipeline` so the old route cannot remain active.
 
-### `agent check`
+List available targets without changing configuration:
+
+```bash
+agent setup --list-targets
+```
+
+After an interactive setup, the CLI runs `agent check`.
+
+## System diagnostics
 
 ```bash
 agent check
-```
-
-Useful flags:
-
-```bash
 agent check --json
-agent check --verbose
-agent check --no-color
 agent check --fix
-agent check --local
-agent check --remote 10.0.0.50
 ```
 
-#### `agent check --local` / `agent check --remote`
+The standard report checks Docker and Compose, `ai_engine`, mounts and networking, ARI reachability and app registration, transport alignment, configuration, and best-effort DNS/internet reachability.
 
-Verify that STT, LLM, and TTS are working on a `local_ai_server` instance. Runs status, LLM generation, TTS synthesis, and a full STT round-trip test.
+Exit codes:
+
+- `0`: all checks passed
+- `1`: non-critical warnings
+- `2`: critical failure
+
+`agent check --fix` snapshots the current configuration, attempts recovery from the latest usable update or per-file backup, restarts core services, and runs the report again. It cannot be combined with `--json`.
+
+### Local AI Server round trip
 
 ```bash
-# Local AI Server on same host
 agent check --local
-
-# Remote GPU server
-agent check --remote 10.0.0.50
-
-# JSON output for CI/scripting
 agent check --local --json
+agent check --remote 10.0.0.50
 ```
 
-Example output:
+This verifies the WebSocket connection, loaded STT/LLM/TTS models, runtime configuration, GPU status, real LLM generation, Piper TTS synthesis, and a Faster-Whisper STT round trip. If the host does not have the Python `websockets` package, local mode runs the probe inside `local_ai_server`. The scripts remain compatible with Python 3.6 operator hosts.
 
-```text
-=== Local AI Server Check ===
-Host: ws://127.0.0.1:8765
-
-✅ connection: Connected to ws://127.0.0.1:8765
-✅ stt_loaded: faster_whisper | Faster-Whisper (tiny.en, en) | device=cpu, compute=int8
-✅ llm_loaded: qwen2.5-0.5b-instruct-q4_k_m.gguf | ctx=2048, max_tokens=32, gpu_layers=0, tools=none
-✅ tts_loaded: piper | en_US-lessac-medium.onnx
-✅ runtime_config: filler_audio=False, llm_tts_overlap=False
-✅ gpu: none | usable=False
-✅ llm_test: "Hello! How can I help you today?" (4.80s)
-✅ tts_test: 27600 bytes mulaw@8000Hz (0.12s)
-✅ stt_test: "Hello, this is a test of the speech recognition system." (1.47s)
-
-All checks passed ✅
-```
-
-Notes:
-
-- Auth token is read from `.env` (`LOCAL_WS_AUTH_TOKEN`) automatically. Override with `--auth-token`.
-- If `websockets` is not installed on the host, `--local` auto-runs the check inside the `local_ai_server` container.
-- LLM responses taking >15s trigger a warning that the model is too slow for telephony.
-- CPU full-local demo checks now report Faster-Whisper device/compute, LLM context/max tokens/tool capability, and runtime flags (`LOCAL_ENABLE_FILLER_AUDIO`, `LOCAL_LLM_STREAMING_TTS_OVERLAP`).
-- For standalone scripts: `python3 scripts/check_local_server.py --local` (same functionality without the Go CLI).
-
-`agent check --fix` behavior:
-
-- Runs diagnostics first and prints the report.
-- If failures/warnings exist, attempts backup-based recovery:
-  - snapshots current state to `.agent/check-fix-backups/<timestamp>/`
-  - restores from latest usable backup set (`.agent/update-backups/...`) or per-file `*.bak.*` backups
-  - restarts `ai_engine` and `admin_ui`
-- Re-runs diagnostics and exits with normal `agent check` exit codes.
-
-Notes:
-
-- `--fix` cannot be combined with `--json`.
-- Base `config/ai-agent.yaml` is restored only when current base YAML is missing/invalid/conflicted.
-
-### `agent rca`
+## Post-call RCA
 
 ```bash
 # Most recent call
 agent rca
 
-# Specific call ID
-agent rca --call <call_id>
+# Specific call: positional and flag forms are equivalent
+agent rca 1781929321.74
+agent rca --call 1781929321.74
+
+# Deterministic evidence only (recommended for automation)
+agent rca --call 1781929321.74 --no-llm --json
+
+# Force an LLM interpretation after deterministic analysis
+agent rca --call 1781929321.74 --llm
 ```
 
-Flags:
+RCA combines two evidence sources:
+
+- Call History supplies the canonical provider or pipeline, context, outcome, duration, turn count, turn latency, routing method, and codec-alignment result.
+- Call-scoped logs supply transport, streaming segments, byte ratios, underflows, VAD/gating evidence, format alignment, and tool execution.
+
+This prevents unrelated provider names elsewhere in the container logs from selecting the wrong baseline. A successful pipeline call is identified by its persisted `pipeline_name`, even when the provider field is `pipeline`.
+
+Interpretation notes:
+
+- Delivery drift compares encoded duration with wall time. Pauses, barge-in, synthesis, and queue waits can make it non-zero, so drift alone does not fail a call or trigger LLM diagnosis.
+- Modular pipeline wall time is not treated as provider streaming drift.
+- Very short or empty segments are ignored for drift assessment.
+- Underflows are evaluated as a percentage of estimated 20 ms audio frames; isolated events are informational below the alert threshold.
+- Recommendations use the observed runtime configuration instead of assuming fixed jitter-buffer values.
+
+`--llm` and `--no-llm` are mutually exclusive. `--local` cannot be combined with a call ID or either LLM flag.
+
+### Local-call report
 
 ```bash
-agent rca --call <call_id>
-agent rca --llm
-agent rca --json
+agent rca --local
+agent rca --local --json
 ```
 
-### `agent update`
+This selects the newest persisted local or modular-pipeline call by `start_time`, then reports hardware, loaded models, call outcome and latency, call-filtered local logs, and tool executions for that call. The text form is suitable for the Community Test Matrix.
+
+## Configuration validation
+
+```bash
+agent config validate
+agent config validate --file config/ai-agent.yaml
+agent config validate --strict
+agent config validate --fix
+```
+
+Validation accepts `default_provider` targets that refer to either a full provider or a configured pipeline. It understands dynamically named providers, current realtime/Deepgram models, and intentional input/output sample-rate differences. `--strict` treats warnings as errors. Auto-fix is deliberately limited; use `agent check --fix` for backup-based recovery.
+
+## Dialplan generation
+
+```bash
+# Select an operator-managed agent; use its configured target
+agent dialplan --agent default
+
+# Add an optional per-call provider or pipeline override
+agent dialplan --agent sales --provider local_hybrid
+
+# Change only the printed destination-file instruction
+agent dialplan --file /etc/asterisk/extensions_custom.conf
+```
+
+Generated snippets set `AI_AGENT`. `AI_PROVIDER` is emitted only when `--provider` is supplied, so the selected agent's configured target remains authoritative by default. The command prints a snippet; it does not edit Asterisk files.
+
+## Safe updates
+
+Preview an update before applying it:
+
+```bash
+agent update --plan
+agent update --plan --plan-json --ref main
+```
+
+Apply an update:
 
 ```bash
 agent update
-```
-
-Use this for repo-based installs when you want a conservative “update + rebuild + verify” flow.
-
-Flags:
-
-```bash
-agent update --remote origin
-agent update --ref main
-agent update --ref v6.3.1
-agent update --checkout
-agent update --include-ui
+agent update --ref v7.0.1
+agent update --checkout --ref main
 agent update --rebuild auto
 agent update --rebuild none
 agent update --rebuild all
@@ -170,43 +160,35 @@ agent update --force-recreate
 agent update --skip-check
 agent update --no-stash
 agent update --stash-untracked
-agent update --backup-id my-recovery-point
-agent update --plan
-agent update --plan --plan-json
-agent update --self-update
+agent update --backup-id before-upgrade
+agent update --self-update=false
 ```
 
-### `agent version`
+Before changing Git state, the updater backs up operator configuration and uses SQLite's online backup API to snapshot `data/operator/agents.db` and `data/call_history.db`. This includes committed WAL data without requiring containers to stop. Updates are fast-forward only and never use a hard reset.
+
+With `--plan --plan-json`, progress is written to stderr and stdout contains valid JSON for automation.
+
+## Compatibility aliases
+
+These commands remain hidden for existing scripts:
+
+- `agent doctor` delegates to `agent check`.
+- `agent troubleshoot` uses the same RCA engine and retains advanced legacy flags such as `--list`, `--symptom`, and `--collect-only`.
+- `agent init` and `agent quickstart` delegate to `agent setup`.
+- `agent demo` delegates to `agent check`.
+
+Legacy flags that no longer have an implementation return a clear error instead of silently claiming success. In particular, `agent init --non-interactive`, `agent init --template`, and the old `agent demo --wav/--loop/--save` workflow are not supported.
+
+## Recommended troubleshooting sequence
 
 ```bash
 agent version
+agent check
+agent config validate
+# Place or reproduce one test call
+agent rca --call <call_id> --no-llm
 ```
 
-## Functional legacy commands (hidden)
+For local inference problems, insert `agent check --local`. Attach JSON output from `agent check` and `agent rca` when opening an issue.
 
-These are still functional but hidden from the main help output:
-
-- `agent doctor` (alias of `agent check`)
-- `agent troubleshoot` (legacy alias path to RCA runner)
-- `agent init` and `agent quickstart` (legacy setup flows)
-- `agent dialplan` (dialplan snippet helper)
-- `agent demo` (audio pipeline validation)
-- `agent config validate` (legacy config validation)
-
-Useful legacy flags:
-
-```bash
-agent doctor --json
-agent troubleshoot --call <id> --list --last --symptom <symptom> --interactive --collect-only --no-llm --llm --json
-agent init --non-interactive --template <template>
-agent dialplan --provider <provider> --file <path>
-agent demo --wav <file.wav> --loop <n> --save
-agent config validate --file config/ai-agent.yaml --fix --strict
-```
-
-`agent config validate --fix` is functional but intentionally limited (it does not perform full backup-based recovery).
-
-## Notes
-
-- CLI details for building from source live in `cli/README.md`.
-- For call-level debugging, use **Admin UI → Call History** first, then `agent rca` for a concise root-cause summary.
+Build and development details are in [`cli/README.md`](../cli/README.md).

@@ -929,13 +929,21 @@ async def reload_ai_engine():
             if u and u not in seen:
                 seen.add(u)
                 urls.append(u)
-        
+
+        # The engine's /reload handler requires localhost OR a valid HEALTH_API_TOKEN.
+        # In Docker Compose admin_ui reaches ai_engine over service DNS (not localhost),
+        # so attach the token (mirrors the /sessions/stats proxy) or reload is rejected.
+        headers = {}
+        token = _get_health_api_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         resp = None
         async with httpx.AsyncClient(timeout=10.0) as client:
             for url in urls:
                 try:
                     logger.info(f"Sending reload request to AI Engine at {url}")
-                    resp = await client.post(url)
+                    resp = await client.post(url, headers=headers)
                     break
                 except httpx.ConnectError:
                     continue
@@ -1899,17 +1907,6 @@ _PLATFORMS_CACHE = None
 _PLATFORMS_CACHE_MTIME = None
 
 
-def _parse_semver(value: str) -> Optional[tuple[int, int, int]]:
-    """Extract first semantic version tuple from a string (vX.Y.Z or X.Y.Z)."""
-    m = re.search(r"\bv?(\d+)\.(\d+)\.(\d+)\b", value or "")
-    if not m:
-        return None
-    try:
-        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except Exception:
-        return None
-
-
 def _detect_latest_changelog_version(project_root: str) -> Optional[str]:
     """
     Parse the first released Keep-a-Changelog heading from CHANGELOG.md.
@@ -1937,8 +1934,10 @@ def _detect_project_version(project_root: str) -> dict:
 
     Preference order:
       1) AAVA_PROJECT_VERSION env var (operator override)
-      2) CHANGELOG.md latest release heading (`## [X.Y.Z] - YYYY-MM-DD`)
-      3) git describe (when repo checkout is present)
+      2) git release tag (`git describe --tags --abbrev=0 --match 'v*'`) — the
+         authoritative source, consistent with the Updates page (LOW-U1)
+      3) CHANGELOG.md latest release heading (`## [X.Y.Z] - YYYY-MM-DD`) — fallback
+         when git is unavailable (e.g. tarball install or no checkout)
       4) Parse README.md for a `vX.Y.Z` token
       5) unknown
     """
@@ -1946,9 +1945,9 @@ def _detect_project_version(project_root: str) -> dict:
     if override:
         return {"version": override, "source": "env"}
 
-    changelog_version = _detect_latest_changelog_version(project_root)
-    git_version = None
-
+    # Authoritative: the latest annotated/lightweight release tag, matching the
+    # Updates page `deployed_tag` logic. Use --abbrev=0 so we report the clean
+    # release version (e.g. "v7.0.0") rather than commit-distance output.
     try:
         # Use -c safe.directory to avoid "dubious ownership" failures on some hosts.
         proc = subprocess.run(
@@ -1960,34 +1959,25 @@ def _detect_project_version(project_root: str) -> dict:
                 project_root,
                 "describe",
                 "--tags",
-                "--always",
-                "--dirty",
+                "--abbrev=0",
+                "--match",
+                "v*",
             ],
             capture_output=True,
             text=True,
             timeout=1.5,
         )
         if proc.returncode == 0:
-            version = (proc.stdout or "").strip()
-            if version:
-                git_version = version
+            git_version = (proc.stdout or "").strip()
+            if git_version:
+                return {"version": git_version, "source": "git"}
     except Exception:
         pass
 
+    # Fallback: CHANGELOG release heading (git unavailable / no tags).
+    changelog_version = _detect_latest_changelog_version(project_root)
     if changelog_version:
-        changelog_semver = _parse_semver(changelog_version)
-        git_semver = _parse_semver(git_version or "")
-
-        # Prefer CHANGELOG when git describe is commit-distance/dirty output
-        # or when changelog clearly indicates a newer release series.
-        if not git_version or "-" in git_version:
-            if not git_semver or (changelog_semver and changelog_semver >= git_semver):
-                return {"version": changelog_version, "source": "changelog"}
-        if changelog_semver and git_semver and changelog_semver > git_semver:
-            return {"version": changelog_version, "source": "changelog"}
-
-    if git_version:
-        return {"version": git_version, "source": "git"}
+        return {"version": changelog_version, "source": "changelog"}
 
     try:
         readme_path = os.path.join(project_root, "README.md")

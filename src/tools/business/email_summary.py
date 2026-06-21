@@ -24,6 +24,27 @@ from src.tools.business.template_renderer import render_html_template_with_fallb
 
 logger = structlog.get_logger(__name__)
 
+
+def should_send_email_summary(session: Any, config: Dict[str, Any]) -> bool:
+    """Single source of truth for the post-call email decision (H5 / Codex P2).
+
+    Per-agent ``session.email_enabled`` is a tri-state TRUE override of the global
+    ``tools.send_email_summary.enabled`` gate:
+    - ``True``  -> SEND (overrides a globally-disabled tool).
+    - ``False`` -> SKIP (overrides a globally-enabled tool).
+    - ``None``  -> inherit the global ``enabled`` gate (today's behavior, unchanged).
+
+    Used by BOTH the engine's post-call invocation gate and the tool itself so they
+    always agree.
+    """
+    email_enabled = getattr(session, "email_enabled", None)
+    if email_enabled is True:
+        return True
+    if email_enabled is False:
+        return False
+    return bool(config.get("enabled", False))
+
+
 class SendEmailSummaryTool(Tool):
     """
     Send call summary email to admin after call completion.
@@ -62,18 +83,8 @@ class SendEmailSummaryTool(Tool):
         call_id = context.call_id
         
         try:
-            # Check if tool is enabled
             config = context.get_config_value("tools.send_email_summary", {})
-            if not config.get("enabled", False):
-                logger.info(
-                    "Email summary tool disabled, skipping send",
-                    call_id=call_id
-                )
-                return {
-                    "status": "skipped",
-                    "message": "Email summary tool is disabled"
-                }
-            
+
             # Get session data
             session = await context.get_session()
             if not session:
@@ -82,7 +93,18 @@ class SendEmailSummaryTool(Tool):
                     "status": "error",
                     "message": "Session not found"
                 }
-            
+
+            # Gate: global enable + per-agent tri-state toggle (H5).
+            if not self._should_send(session, config):
+                logger.info(
+                    "Email summary disabled for this call, skipping send",
+                    call_id=call_id,
+                )
+                return {
+                    "status": "skipped",
+                    "message": "Email summary is disabled"
+                }
+
             # Gather call metadata
             email_data = self._prepare_email_data(session, config, call_id)
             
@@ -113,6 +135,14 @@ class SendEmailSummaryTool(Tool):
                 "message": f"Failed to send email: {str(e)}"
             }
     
+    def _should_send(self, session: Any, config: Dict[str, Any]) -> bool:
+        """Decide whether the summary email should be sent (H5 / Codex P2).
+
+        Delegates to :func:`should_send_email_summary` so the tool's gate and the
+        engine's post-call invocation gate share one source of truth.
+        """
+        return should_send_email_summary(session, config)
+
     def _prepare_email_data(
         self,
         session: Any,
@@ -200,14 +230,15 @@ class SendEmailSummaryTool(Tool):
             tool_name="send_email_summary",
         )
         
-        # Build email data
-        admin_email = resolve_context_value(
+        # Build email data. Per-agent override (session.email_*) wins; falls back to
+        # the existing per-context-map -> global resolution (H5).
+        admin_email = getattr(session, "email_recipient", None) or resolve_context_value(
             tool_config=config,
             key="admin_email",
             context_name=context_name,
             default="admin@company.com",
         )
-        from_email = resolve_context_value(
+        from_email = getattr(session, "email_from", None) or resolve_context_value(
             tool_config=config,
             key="from_email",
             context_name=context_name,

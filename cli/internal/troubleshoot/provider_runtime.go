@@ -7,9 +7,9 @@ import "strings"
 type ProviderRuntimeAudio struct {
 	ProviderName string `json:"provider_name,omitempty"`
 
-	ConfiguredOutputSampleRateHz int `json:"configured_output_sample_rate_hz,omitempty"`
+	ConfiguredOutputSampleRateHz       int `json:"configured_output_sample_rate_hz,omitempty"`
 	ProviderReportedOutputSampleRateHz int `json:"provider_reported_output_sample_rate_hz,omitempty"`
-	UsedOutputSampleRateHz int `json:"used_output_sample_rate_hz,omitempty"`
+	UsedOutputSampleRateHz             int `json:"used_output_sample_rate_hz,omitempty"`
 }
 
 func ExtractProviderRuntimeAudio(logData string) *ProviderRuntimeAudio {
@@ -26,13 +26,12 @@ func ExtractProviderRuntimeAudio(logData string) *ProviderRuntimeAudio {
 		}
 
 		pr := &ProviderRuntimeAudio{
-			ProviderName: strings.TrimSpace(fields["provider"]),
-			ConfiguredOutputSampleRateHz: atoi(fields["configured_output_sample_rate_hz"]),
+			ProviderName:                       strings.TrimSpace(fields["provider"]),
+			ConfiguredOutputSampleRateHz:       atoi(fields["configured_output_sample_rate_hz"]),
 			ProviderReportedOutputSampleRateHz: atoi(fields["provider_reported_output_sample_rate_hz"]),
-			UsedOutputSampleRateHz: used,
+			UsedOutputSampleRateHz:             used,
 		}
 		return pr
 	}
 	return nil
 }
-

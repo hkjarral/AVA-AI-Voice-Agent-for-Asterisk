@@ -63,6 +63,40 @@ def get_password_hash(password):
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
+# Durable, root-only copy of the one-time admin password (LOW-U2). Stdout/log
+# output can be rotated or forwarded away, locking the operator out; this file is
+# the recoverable copy. Lives next to users.json under config/ (a gitignored data dir).
+FIRST_RUN_PASSWORD_PATH = os.path.join(os.path.dirname(USERS_PATH), ".first-run-password")
+
+def _write_first_run_password_file(password: str) -> None:
+    """Write the one-time admin password to a 0600 file. Best-effort; never raises.
+
+    Only called on the first-run/rotation path, so the file exists only while a
+    one-time password is outstanding (the operator deletes it after changing it).
+    """
+    try:
+        # O_CREAT|O_TRUNC with mode 0o600 so the file is owner-only from creation.
+        # The mode arg is ignored for an existing file, so fchmod the fd to 0o600
+        # BEFORE writing — closing the window where an existing wider-perm file is
+        # truncated/written before perms are tightened. O_NOFOLLOW refuses to
+        # follow a symlink planted at the path.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(
+            FIRST_RUN_PASSWORD_PATH,
+            flags,
+            0o600,
+        )
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(
+                f"{password}\n"
+                "One-time admin password — change it at first login, then delete this file.\n"
+            )
+    except Exception:
+        # Stdout/log message remains the primary channel; the file is a bonus.
+        pass
+
 def ensure_default_user() -> "str | None":
     """Create or rotate the initial admin user with a random one-time password.
 
@@ -100,6 +134,7 @@ def ensure_default_user() -> "str | None":
         }
         with os.fdopen(fd, "w") as f:
             json.dump(users, f, indent=2)
+        _write_first_run_password_file(password)
         return password
 
     # --- Existing-file path: rotate if the legacy admin/admin default is still in place.
@@ -115,6 +150,7 @@ def ensure_default_user() -> "str | None":
         users["admin"] = admin
         with open(USERS_PATH, "w") as f:
             json.dump(users, f, indent=2)
+        _write_first_run_password_file(password)
         return password
 
     return None

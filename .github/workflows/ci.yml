@@ -39,6 +39,10 @@ jobs:
         run: |
           bash -n install.sh
 
+      - name: Check for committed secrets (CRIT-2 defense-in-depth)
+        run: |
+          python scripts/check_no_committed_secrets.py
+
       - name: Run tests with coverage
         env:
           PYTHONPATH: ${{ github.workspace }}

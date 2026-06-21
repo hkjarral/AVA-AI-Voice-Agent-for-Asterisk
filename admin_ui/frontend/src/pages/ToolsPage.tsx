@@ -191,7 +191,7 @@ const ToolsPage = () => {
 
     const mergeToolsConfig = (baseConfig: any, newToolsConfig: any) => {
         // Extract root-level settings that should not be nested under tools
-        const { farewell_hangup_delay_sec, ...toolsOnly } = newToolsConfig;
+        const { farewell_hangup_delay_sec, on_provider_failure, provider_failure_prompt, ...toolsOnly } = newToolsConfig;
 
         // P1 Fix: Preserve ALL existing tool entries that are not being explicitly updated.
         // This prevents silent config loss of custom/unknown tool entries.
@@ -216,10 +216,16 @@ const ToolsPage = () => {
             }
         });
 
-        // Update both tools config and root-level farewell_hangup_delay_sec
+        // Update both tools config and root-level call-behavior settings
         const updatedConfig = { ...baseConfig, tools: { ...preservedTools, ...toolsOnly } };
         if (farewell_hangup_delay_sec !== undefined) {
             updatedConfig.farewell_hangup_delay_sec = farewell_hangup_delay_sec;
+        }
+        if (on_provider_failure !== undefined) {
+            updatedConfig.on_provider_failure = on_provider_failure;
+        }
+        if (provider_failure_prompt !== undefined) {
+            updatedConfig.provider_failure_prompt = provider_failure_prompt;
         }
         return updatedConfig;
     };
@@ -364,7 +370,7 @@ const ToolsPage = () => {
                     <ConfigSection title="Built-in Tools" description="Core tools available during the conversation (transfer, hangup, email, etc.)">
                         <ConfigCard>
                             <ToolForm
-                                config={{ ...(config.tools || {}), farewell_hangup_delay_sec: config.farewell_hangup_delay_sec }}
+                                config={{ ...(config.tools || {}), farewell_hangup_delay_sec: config.farewell_hangup_delay_sec, on_provider_failure: config.on_provider_failure, provider_failure_prompt: config.provider_failure_prompt }}
                                 contexts={config.contexts || {}}
                                 hangupUsage={hangupUsage}
                                 onChange={updateToolsConfig}

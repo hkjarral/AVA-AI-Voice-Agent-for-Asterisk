@@ -451,38 +451,6 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                                     </>
                                 }
                             />
-                            <div className="space-y-2">
-                                <div className="flex items-center gap-1.5">
-                                    <label className="text-sm font-medium text-muted-foreground">
-                                        API Key (inline / env var) — legacy
-                                    </label>
-                                    <HelpTooltip
-                                        content={
-                                            <>
-                                                <strong>Legacy API key field</strong> — kept for back-compat with older configs.
-                                                <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                                                    <li>Prefer the upload widget above (per-instance, encrypted at rest)</li>
-                                                    <li>Accepts a raw key or an env reference like <code>${'${'}GOOGLE_API_KEY{'}'}</code></li>
-                                                    <li>Get a Developer API key from Google AI Studio</li>
-                                                </ul>
-                                            </>
-                                        }
-                                        link="https://aistudio.google.com/apikey"
-                                        linkText="Google AI Studio"
-                                    />
-                                </div>
-                                <input
-                                    type="text"
-                                    className="w-full p-2 rounded border border-input bg-background"
-                                    value={config.api_key || ''}
-                                    onChange={(e) => handleChange('api_key', e.target.value)}
-                                    placeholder="${GOOGLE_API_KEY}"
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Direct value or <code>${'{'}GOOGLE_API_KEY{'}'}</code> reference. Per-instance uploads above
-                                    take precedence over this field.
-                                </p>
-                            </div>
                         </div>
                     )}
                 </div>

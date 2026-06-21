@@ -13,7 +13,7 @@ docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_u
 #   Remote: http://<server-ip>:3003
 ```
 
-**Default login**: `admin` / `admin` â€” change this immediately in production.
+**First login**: a one-time password is printed to the admin_ui logs on first start (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`); you must change it at first login. `admin`/`admin` no longer works.
 
 ## Pages Overview
 
@@ -142,7 +142,7 @@ The dashboard System Topology card uses tri-state health indicators (`Checkingâ€
 The Admin UI has Docker socket access for container management. Treat it as a control plane with elevated privileges.
 
 **Production requirements**:
-- Change the default `admin` / `admin` credentials immediately
+- `admin`/`admin` is removed: retrieve the one-time password from the admin_ui logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`) and set a new one at first login
 - Set `JWT_SECRET` in `.env` (preflight generates this automatically)
 - Restrict port 3003 via firewall, VPN, or reverse proxy
 - Never expose directly to the internet without authentication

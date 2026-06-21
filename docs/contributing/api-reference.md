@@ -36,7 +36,7 @@ Most Admin UI endpoints require JWT authentication:
 
 ```bash
 # 1. Retrieve the first-run password
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 
 # 2. Login to get a token
 curl -X POST http://localhost:3003/api/auth/login \

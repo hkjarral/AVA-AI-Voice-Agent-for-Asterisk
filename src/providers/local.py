@@ -19,6 +19,11 @@ from ..tools.parser import parse_response_with_tools, validate_tool_call, has_to
 
 logger = get_logger(__name__)
 
+# WebSocket message protocol version sent on tool-gateway messages. Must stay in
+# sync with local_ai_server/constants.py PROTOCOL_VERSION (the canonical source);
+# the local-ai-server validates this at message time and warns on mismatch.
+PROTOCOL_VERSION = 2
+
 class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     """
     AI Provider that connects to the external Local AI Server via WebSockets.
@@ -69,6 +74,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._status_lock: asyncio.Lock = asyncio.Lock()
         # Track last applied system prompt to avoid spamming switch_model.
         self._last_system_prompt_digest: Optional[str] = None
+        # Pending switch_model confirmation. The digest is recorded only after
+        # the server acks with a successful switch_response (MED-R4 fail-closed).
+        self._pending_switch_future: Optional[asyncio.Future] = None
+        self._switch_lock: asyncio.Lock = asyncio.Lock()
         # Per-call tool allowlist (from context.tools). Used to drop hallucinated tool calls.
         self._allowed_tools: set[str] = set()
         self._allowed_tool_schemas: List[Dict[str, Any]] = []
@@ -662,7 +671,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         payload = {
             "type": "llm_tool_request",
             "mode": "llm",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "request_id": request_id,
             "call_id": call_id or self._active_call_id,
             "text": llm_text,
@@ -797,7 +806,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         effective_call_id = call_id or self._active_call_id
         payload = {
             "type": "tool_result",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "call_id": effective_call_id,
             "function_call_id": function_call_id,
             "tool_name": tool_name,
@@ -1075,35 +1084,65 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         return False
 
     async def _background_reconnect_loop(self):
-        """Background task that periodically tries to reconnect for up to 12 minutes.
-        
+        """Background task that periodically tries to reconnect mid-call.
+
         Only runs when we were previously connected and got disconnected (e.g., server restart).
         Does not block anything - runs independently in the background.
+
+        MED-R3: while this retries, inbound caller audio is dropped (the caller
+        hears silence). Bound the total retry window with
+        ``mid_call_reconnect_timeout_sec`` so the caller is not left deaf for
+        minutes. On exceed, signal the engine (ProviderDisconnected) so it plays
+        a short apology and hangs up instead of leaving dead air.
         """
-        max_duration = 12 * 60  # 12 minutes
-        check_interval = 30  # Check every 30 seconds
+        max_duration = max(1, int(getattr(self.config, "mid_call_reconnect_timeout_sec", 20) or 20))
+        # Probe frequently enough to honor short bounds, but never spin tighter
+        # than ~1s. Cap so the bound is respected even when it's smaller than the
+        # legacy 30s cadence.
+        check_interval = min(30, max(1, max_duration))
         start_time = asyncio.get_event_loop().time()
-        
+
         logger.info(
             "🔄 Starting background reconnect (server was previously connected)",
-            max_duration="12 minutes",
-            check_interval="30s"
+            max_duration=f"{max_duration}s",
+            check_interval=f"{check_interval}s"
         )
-        
+
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed >= max_duration:
                 logger.warning(
-                    "⏹️ Background reconnect timed out after 12 minutes",
-                    note="Local AI Server did not come back online"
+                    "⏹️ Background reconnect gave up — mid-call reconnect window exceeded",
+                    timeout_sec=max_duration,
+                    note="Local AI Server did not come back online; signaling engine to hang up"
                 )
+                await self._signal_mid_call_reconnect_giveup()
                 break
-            
-            # Wait before checking
-            await asyncio.sleep(check_interval)
-            
+
+            # Wait before checking, but not past the bound.
+            await asyncio.sleep(min(check_interval, max(0, max_duration - elapsed)))
+
+            # Codex P2: make the configured bound a HARD ceiling on the whole
+            # effort. _reconnect() carries its own backoff schedule (~157s);
+            # without this wrapper a single slow inner attempt would leave the
+            # caller deaf well past max_duration and delay the give-up signal.
+            # Cap each attempt to the remaining budget (with a small floor so a
+            # near-instant reconnect still gets a chance) and give up as soon as
+            # an attempt can't complete in time.
+            remaining = max_duration - (asyncio.get_event_loop().time() - start_time)
+            attempt_timeout = max(0.5, remaining)
+
             logger.info("🔄 Attempting Local AI Server background reconnect...")
-            success = await self._reconnect()
+            try:
+                success = await asyncio.wait_for(self._reconnect(), timeout=attempt_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "⏹️ Background reconnect gave up — reconnect attempt exceeded remaining window",
+                    timeout_sec=max_duration,
+                    note="Local AI Server did not come back online; signaling engine to hang up"
+                )
+                await self._signal_mid_call_reconnect_giveup()
+                break
             if success:
                 logger.info("✅ Background reconnect successful")
                 self._was_connected = True
@@ -1117,8 +1156,35 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     f"Local AI Server reconnect failed, will check again in {check_interval}s",
                     remaining=f"{remaining}s"
                 )
-        
+
         self._background_reconnect_task = None
+
+    async def _signal_mid_call_reconnect_giveup(self):
+        """MED-R3: tell the engine the provider is gone so it can apologize + hang up.
+
+        Reuses the existing ProviderDisconnected channel the engine already handles
+        for mid-call provider death (plays fallback media, then hangs up the
+        channel). Best-effort: only fires when a call is active and a callback is set.
+        """
+        call_id = self._active_call_id
+        if not self.on_event or not call_id:
+            return
+        try:
+            await self.on_event(
+                {
+                    "type": "ProviderDisconnected",
+                    "call_id": call_id,
+                    "provider": "local",
+                    "code": None,
+                    "reason": "mid_call_reconnect_timeout",
+                }
+            )
+        except Exception:
+            logger.debug(
+                "Failed to emit ProviderDisconnected after reconnect give-up",
+                call_id=call_id,
+                exc_info=True,
+            )
 
     def _start_background_reconnect(self):
         """Start background reconnect task if not already running."""
@@ -1333,19 +1399,62 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 "system_prompt": prompt,
             },
         }
-        try:
-            await self.websocket.send(json.dumps(payload))
+        # Fail-closed: the WebSocket is reused across calls, so we must confirm
+        # the server actually applied the prompt before recording its digest.
+        # If we recorded it on send alone and the server-side apply failed, the
+        # matching-digest short-circuit would skip the re-send on the next call,
+        # leaving the PREVIOUS call's prompt live (cross-call leak). Wait for the
+        # switch_response and update the digest ONLY on confirmed success; on
+        # failure or timeout leave the digest untouched so the next send retries.
+        # Per MED-R4.
+        timeout_sec = max(0.5, min(float(self.response_timeout or 0.0), 5.0))
+        async with self._switch_lock:
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future = loop.create_future()
+            self._pending_switch_future = fut
+            try:
+                await self.websocket.send(json.dumps(payload))
+                response = await asyncio.wait_for(fut, timeout=timeout_sec)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Timed out waiting for Local AI Server switch_response; not recording prompt digest",
+                    call_id=call_id,
+                    chars=len(prompt),
+                    timeout_sec=timeout_sec,
+                )
+                return False
+            except Exception:
+                logger.error(
+                    "Failed applying Local AI Server system prompt",
+                    call_id=call_id,
+                    chars=len(prompt),
+                    exc_info=True,
+                )
+                return False
+            finally:
+                if self._pending_switch_future is fut:
+                    self._pending_switch_future = None
+
+        status = str((response or {}).get("status") or "").lower()
+        # "success" and "no_change" both mean the server's prompt now matches
+        # what we sent; "error" (or anything else) means it did not apply.
+        if status in ("success", "no_change"):
             self._last_system_prompt_digest = digest
-            logger.info("Applied Local AI Server system prompt (dry_run)", call_id=call_id, chars=len(prompt))
-            return True
-        except Exception:
-            logger.error(
-                "Failed applying Local AI Server system prompt",
+            logger.info(
+                "Applied Local AI Server system prompt (dry_run)",
                 call_id=call_id,
                 chars=len(prompt),
-                exc_info=True,
+                status=status,
             )
-            return False
+            return True
+        logger.error(
+            "Local AI Server rejected system prompt switch; not recording digest",
+            call_id=call_id,
+            chars=len(prompt),
+            status=status or "unknown",
+            message=(response or {}).get("message"),
+        )
+        return False
 
     async def _send_tool_context(self, *, call_id: str) -> bool:
         """Send tool_context to local_ai_server. Returns True on success.
@@ -1364,7 +1473,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             return False
         payload = {
             "type": "tool_context",
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
             "call_id": call_id,
             "allowed_tools": sorted(self._allowed_tools),
             "tools": list(self._allowed_tool_schemas or []),
@@ -1748,6 +1857,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                             if backend:
                                 self._runtime_stt_backend = backend
                             fut = self._pending_status_future
+                            if fut and not fut.done():
+                                fut.set_result(data)
+                            continue
+                        if data.get("type") == "switch_response":
+                            # Confirmation for a pending _apply_system_prompt
+                            # switch_model. Resolve the waiter so the digest is
+                            # recorded only on confirmed success (MED-R4).
+                            fut = self._pending_switch_future
                             if fut and not fut.done():
                                 fut.set_result(data)
                             continue

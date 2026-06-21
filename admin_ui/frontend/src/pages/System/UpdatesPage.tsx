@@ -71,7 +71,10 @@ const UpdatesPage = () => {
   const [targetMode, setTargetMode] = useState<'stable' | 'main' | 'advanced'>('stable');
   const [initialized, setInitialized] = useState(false);
 
-  const [includeUI, setIncludeUI] = useState(false);
+  // Default ON: the admin_ui frontend is image-baked, so skipping its rebuild leaves a
+  // stale UI (and possible FE/BE contract mismatch) after an update. Matches the CLI's
+  // --include-ui default (HIGH-6).
+  const [includeUI, setIncludeUI] = useState(true);
   const [updateCliHost, setUpdateCliHost] = useState(true);
   const [cliInstallPath, setCliInstallPath] = useState('');
   const [plan, setPlan] = useState<UpdatePlan | null>(null);
@@ -189,6 +192,8 @@ const UpdatesPage = () => {
     const composeTargets = job?.include_ui ? 'ai_engine local_ai_server admin_ui' : 'ai_engine local_ai_server';
     const text = [
       '# Roll back to pre-update code + restore operator config',
+      '# NOTE: this does NOT touch agents.db. To revert the YAML->agents.db',
+      '# migration as well, see docs/OPERATOR_MIGRATION.md (Rollback section).',
       '# NOTE: adjust REPO if your checkout path differs.',
       'REPO=/root/Asterisk-AI-Voice-Agent',
       'cd \"$REPO\"',
@@ -222,7 +227,7 @@ const UpdatesPage = () => {
     const backupRel = sourceJob?.backup_dir_rel || 'unknown';
     const ok = await confirm({
       title: 'Start Rollback?',
-      description: `Source job: ${fromJobId}\nPre-update branch: ${preBranch}\nBackup: ${backupRel}\n\nThis will checkout the pre-update branch and restore operator config from the backup. Services may rebuild/restart.`,
+      description: `Source job: ${fromJobId}\nPre-update branch: ${preBranch}\nBackup: ${backupRel}\n\nThis will checkout the pre-update branch and restore operator config from the backup. Services may rebuild/restart.\n\nNote: this restores code + config only — it does NOT touch agents.db. To revert the YAML->agents.db migration too, see docs/OPERATOR_MIGRATION.md (Rollback).`,
       confirmText: 'Start Rollback',
       variant: 'destructive'
     });

@@ -62,6 +62,12 @@ class ContextConfig:
     disable_global_in_call_tools: Optional[List[str]] = None  # Global in-call tools to disable
     disable_global_post_call_tools: Optional[List[str]] = None  # Global post-call tools to disable
 
+    # Per-agent post-call email overrides (H5). None means "unset" -> fall back to
+    # per-context map / global config. email_enabled is tri-state (None = inherit).
+    email_recipient: Optional[str] = None
+    email_from: Optional[str] = None
+    email_enabled: Optional[bool] = None
+
 
 @dataclass
 class TransportProfile:
@@ -230,6 +236,7 @@ class TransportOrchestrator:
         channel_vars: Optional[Dict[str, str]] = None,
         provider_config: Optional[Any] = None,
         resolved_context: Optional[str] = None,
+        routing_method: Optional[str] = None,
     ) -> TransportProfile:
         """
         Resolve transport profile for a call.
@@ -244,6 +251,9 @@ class TransportOrchestrator:
                 is authoritative for context + audio-profile resolution so that
                 AI_AGENT / DB-default calls apply the agent's audio_profile even
                 though only AI_CONTEXT is present in channel_vars.
+            routing_method: Dialplan channel-variable INTENT (Finding 1) used to
+                disambiguate colliding context slugs during audio-profile lookup
+                (``'ai_context'`` resolves display_name-first; otherwise slug-first).
 
         Returns:
             TransportProfile with resolved settings
@@ -252,7 +262,8 @@ class TransportOrchestrator:
             ValueError: If profile not found or negotiation fails
         """
         # Step 1: Resolve profile name with precedence
-        profile_name, context_name = self._resolve_profile_name(channel_vars, resolved_context)
+        profile_name, context_name = self._resolve_profile_name(
+            channel_vars, resolved_context, routing_method)
         profile = self.profiles.get(profile_name)
         
         if not profile:
@@ -286,6 +297,7 @@ class TransportOrchestrator:
         self,
         channel_vars: Dict[str, str],
         resolved_context: Optional[str] = None,
+        routing_method: Optional[str] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Resolve profile name from channel vars with precedence.
@@ -318,7 +330,7 @@ class TransportOrchestrator:
 
         # Precedence 2: context maps to a context config (DB-aware) with a profile
         if context_name:
-            context = self.get_context_config(context_name)
+            context = self.get_context_config(context_name, routing_method)
             if context and context.profile:
                 logger.debug(
                     "Profile from context mapping",
@@ -592,18 +604,35 @@ class TransportOrchestrator:
         
         return transport
     
-    def get_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
+    def get_context_config(
+        self, context_name: Optional[str], routing_method: Optional[str] = None
+    ) -> Optional[ContextConfig]:
         """Resolve a context. agents.db is the source of truth when present (v1a);
         YAML is the fallback for headless installs and post-rollback recovery.
         When the DB is present, an inactive/unknown slug is NOT routable — we must
         NOT silently fall through to a same-named legacy YAML context, or a
         deactivated/deleted agent would keep routing. Only fall back to YAML when
-        the DB is absent/unavailable. Spec: archived plan decisions D1/D2."""
+        the DB is absent/unavailable. Spec: archived plan decisions D1/D2.
+
+        ``routing_method`` carries the dialplan channel-variable INTENT (Finding 1):
+        ``'ai_context'`` (legacy original-name selector) resolves display_name-first;
+        ``'ai_agent'``/``'default'``/None resolve slug-first (canonical, anti-shadow)."""
         if not context_name:
             return None
         if self.agent_store.available():
-            # agents.db is authoritative when present: inactive/unknown slug => not routable.
-            return self.agent_store.resolve(context_name)
+            # agents.db is authoritative when present: inactive/unknown agent => not
+            # routable. Fall back to YAML ONLY when the DB is present but unreadable
+            # (corrupt/locked) — HIGH-9 — never for a clean not-found, so a
+            # deactivated/deleted agent is not resurrected from YAML.
+            from src.core.agent_store import AgentStoreReadError
+            prefer = "display_name" if routing_method == "ai_context" else "slug"
+            try:
+                return self.agent_store.resolve(context_name, prefer=prefer)
+            except AgentStoreReadError:
+                logger.warning(
+                    "agents.db unreadable; falling back to YAML contexts",
+                    context=context_name)
+                return self._yaml_context_config(context_name)
         # No DB (headless / pre-migration): fall back to YAML contexts.
         return self._yaml_context_config(context_name)
 

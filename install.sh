@@ -1518,7 +1518,9 @@ start_services() {
             echo "Admin UI access:"
             echo "  http://localhost:3003"
         fi
-        echo "Login: admin / admin (change on first login)"
+        echo "Login: a one-time admin password is printed to the admin_ui logs on first start."
+        echo "  Retrieve it: $COMPOSE logs admin_ui | grep -i password"
+        echo "  You'll be required to change it at first login (admin/admin no longer works)."
         echo ""
         
         if [ "${LOCAL_AI_SETUP:-0}" -eq 1 ]; then
@@ -1785,9 +1787,11 @@ print_final_summary() {
     echo "║  Admin UI binds to 0.0.0.0:3003 by default (accessible on network).       ║"
     echo "║                                                                           ║"
     echo "║  REQUIRED ACTIONS:                                                        ║"
-    echo "║    1. Change default password (admin/admin) on first login                ║"
+    echo "║    1. Get the one-time admin password from the admin_ui logs:             ║"
     echo "║    2. Restrict port 3003 via firewall, VPN, or reverse proxy              ║"
     echo "╚═══════════════════════════════════════════════════════════════════════════╝"
+    echo "       $COMPOSE logs admin_ui | grep -i password"
+    echo "       (or, as root, read config/.first-run-password)"
     echo ""
     print_info "🔍 Next steps:"
     print_info "  1. Access Admin UI: http://<server-ip>:3003"

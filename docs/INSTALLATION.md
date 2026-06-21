@@ -16,7 +16,7 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
 > - **Default `admin`/`admin` login is removed.** If your install was **still using `admin`/`admin`**,
 >   it is automatically rotated on first start to a one-time random password printed to the `admin_ui`
->   logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD`), which you must
+>   logs (`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`), which you must
 >   change at first login. **If you already changed the admin password, nothing changes — your existing
 >   login keeps working** and no new password is printed.
 > - **`/api/config/export` no longer bundles `.env`** by default (pass `include_secrets=true`).

@@ -46,6 +46,7 @@ logging.getLogger("websockets.server").addFilter(_WebSocketHandshakeFilter())
 from constants import (
     _level_name,
     DEBUG_AUDIO_FLOW,
+    PROTOCOL_VERSION,
     SUPPORTED_MODES,
     DEFAULT_MODE,
     ULAW_SAMPLE_RATE,
@@ -4548,7 +4549,7 @@ class LocalAIServer:
                 "tool_path": "none",
                 "tool_parse_failures": 0,
                 "repair_attempts": 0,
-                "protocol_version": 2,
+                "protocol_version": PROTOCOL_VERSION,
             }
             if request_id:
                 payload["request_id"] = request_id
@@ -4665,7 +4666,7 @@ class LocalAIServer:
             "tool_parse_failures": parse_failures,
             "repair_attempts": repair_attempts,
             "structured_attempts": structured_attempts,
-            "protocol_version": 2,
+            "protocol_version": PROTOCOL_VERSION,
         }
         if request_id:
             payload["request_id"] = request_id
@@ -5863,213 +5864,6 @@ class LocalAIServer:
             session,
             request_id,
             source_mode=mode or "llm",
-        )
-
-    async def _handle_json_message(self, websocket, session: SessionContext, message: str) -> None:
-        try:
-            data = json.loads(message)
-        except json.JSONDecodeError:
-            logging.warning("❓ Invalid JSON message: %s", message)
-            return
-
-        msg_type_raw = data.get("type")
-        if msg_type_raw is None:
-            logging.warning("JSON payload missing 'type': %s", data)
-            return
-        msg_type = (
-            str(msg_type_raw)
-            .replace("\x00", "")
-            .strip()
-            .lower()
-            .replace("-", "_")
-        )
-        if not msg_type:
-            logging.warning("JSON payload has invalid 'type': raw=%r payload=%s", msg_type_raw, data)
-            return
-
-        # Optional auth gate.
-        if msg_type == "auth":
-            token = (data.get("auth_token") or data.get("token") or "").strip()
-            call_id = data.get("call_id")
-            if call_id:
-                session.call_id = call_id
-            if not self.ws_auth_token or token == self.ws_auth_token:
-                session.authenticated = True
-                await self._send_json(websocket, {"type": "auth_response", "status": "ok"})
-                logging.info("🔐 WS AUTH - Authenticated session call_id=%s", session.call_id)
-            else:
-                await self._send_json(
-                    websocket,
-                    {
-                        "type": "auth_response",
-                        "status": "error",
-                        "message": "invalid_auth_token",
-                    },
-                )
-                logging.warning(
-                    "🔐 WS AUTH - Invalid token call_id=%s", session.call_id
-                )
-            return
-
-        if self.ws_auth_token and not session.authenticated:
-            await self._send_json(
-                websocket,
-                {
-                    "type": "auth_response",
-                    "status": "error",
-                    "message": "authentication_required",
-                },
-            )
-            logging.warning(
-                "🔐 WS AUTH - Message rejected before auth type=%s call_id=%s",
-                msg_type,
-                session.call_id,
-            )
-            return
-
-        if msg_type == "set_mode":
-            # Milestone7: allow clients to pre-select default mode for subsequent binary frames.
-            requested = data.get("mode", DEFAULT_MODE)
-            if requested in SUPPORTED_MODES:
-                session.mode = requested
-                logging.info("Session mode updated to %s", session.mode)
-            else:
-                logging.warning("Unsupported mode requested: %s", requested)
-            call_id = data.get("call_id")
-            if call_id:
-                session.call_id = call_id
-            response = {
-                "type": "mode_ready",
-                "mode": session.mode,
-                "call_id": session.call_id,
-            }
-            await self._send_json(websocket, response)
-            return
-
-        if msg_type == "audio":
-            await self._handle_audio_payload(websocket, session, data)
-            return
-
-        if msg_type == "barge_in":
-            call_id = data.get("call_id")
-            if call_id:
-                session.call_id = call_id
-            self._clear_whisper_stt_suppression(session, reason="engine_barge_in")
-            await self._send_json(
-                websocket,
-                {
-                    "type": "barge_in_ack",
-                    "status": "ok",
-                    "call_id": session.call_id,
-                    "request_id": data.get("request_id"),
-                },
-            )
-            return
-
-        if msg_type == "tts_request":
-            await self._handle_tts_request(websocket, session, data)
-            return
-
-        if msg_type == "llm_request":
-            await self._handle_llm_request(websocket, session, data)
-            return
-
-        if msg_type == "llm_tool_request":
-            await self._handle_llm_tool_request(websocket, session, data)
-            return
-
-        if msg_type == "tool_context":
-            await self._handle_tool_context(websocket, session, data)
-            return
-
-        if msg_type == "tool_result":
-            await self._handle_tool_result(websocket, session, data)
-            return
-
-        if msg_type == "reload_models":
-            logging.info("🔄 RELOAD REQUEST - Hot reloading all models...")
-            await self.reload_models()
-            response = {
-                "type": "reload_response",
-                "status": "success",
-                "message": "All models reloaded successfully",
-            }
-            await self._send_json(websocket, response)
-            return
-
-        if msg_type == "reload_llm":
-            logging.info("🔄 LLM RELOAD REQUEST - Hot reloading LLM with optimizations...")
-            requested_path = data.get("llm_model_path") or data.get("model_path")
-            if requested_path:
-                self.llm_model_path = requested_path
-            await self.reload_llm_only()
-            response = {
-                "type": "reload_response",
-                "status": "success",
-                "message": (
-                    "LLM model reloaded with optimizations (ctx="
-                    f"{self.llm_context}, batch={self.llm_batch}, temp={self.llm_temperature}, "
-                    f"max_tokens={self.llm_max_tokens})"
-                ),
-            }
-            await self._send_json(websocket, response)
-            return
-
-        if msg_type == "switch_model":
-            # Switch to a different model without container restart
-            # Supported:
-            # - STT: stt_backend, stt_model_path (vosk), sherpa_model_path, kroko_{embedded,port,language,url,model_path}
-            # - LLM: llm_model_path
-            # - TTS: tts_backend, tts_model_path (piper), kokoro_{voice,mode,model_path}
-            logging.info("🔄 MODEL SWITCH REQUEST - Switching model configuration...")
-            try:
-                response = await self.model_manager.switch_model(data)
-            except Exception as e:
-                logging.error("❌ Model switch failed: %s", e)
-                response = {
-                    "type": "switch_response",
-                    "status": "error",
-                    "message": str(e),
-                }
-            await self._send_json(websocket, response)
-            return
-
-        if msg_type == "status":
-            await self._send_json(websocket, self.model_manager.status())
-            return
-
-        if msg_type == "capabilities":
-            response = {
-                "type": "capabilities_response",
-                "capabilities": self.model_manager.capabilities(),
-            }
-            await self._send_json(websocket, response)
-            return
-
-        logging.warning("❓ Unknown message type: raw=%r normalized=%s", msg_type_raw, msg_type)
-
-    async def _handle_binary_message(self, websocket, session: SessionContext, message: bytes) -> None:
-        if self.ws_auth_token and not session.authenticated:
-            await self._send_json(
-                websocket,
-                {
-                    "type": "auth_response",
-                    "status": "error",
-                    "message": "authentication_required",
-                },
-            )
-            logging.warning(
-                "🔐 WS AUTH - Dropping binary audio before auth call_id=%s bytes=%d",
-                session.call_id,
-                len(message),
-            )
-            return
-        logging.info("🎵 AUDIO INPUT - Received binary audio: %s bytes", len(message))
-        await self._handle_audio_payload(
-            websocket,
-            session,
-            data={"mode": session.mode},
-            incoming_bytes=message,
         )
 
     async def handler(self, websocket):

@@ -20,6 +20,7 @@ const VADPage = () => {
     const [saving, setSaving] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
+    const [applyMethod, setApplyMethod] = useState<string>('restart');
     const [showUtteranceExpert, setShowUtteranceExpert] = useState<boolean>(() => {
         try {
             const v = localStorage.getItem(VAD_UTTERANCE_EXPERT_STORAGE_KEY);
@@ -66,9 +67,15 @@ const VADPage = () => {
         setSaving(true);
         try {
             const sanitized = sanitizeConfigForSave(config);
-            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            const response = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            const method = response.data?.recommended_apply_method || 'restart';
+            setApplyMethod(method);
             setPendingRestart(true);
-            toast.success('VAD configuration saved');
+            if (method === 'hot_reload') {
+                toast.success('VAD configuration saved. Changes can be applied via hot-reload.');
+            } else {
+                toast.success('VAD configuration saved. Restart AI Engine to apply changes.');
+            }
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -77,10 +84,30 @@ const VADPage = () => {
         }
     };
 
-    const handleReloadAIEngine = async (force: boolean = false) => {
+    const handleApplyAIEngine = async (force: boolean = false) => {
         setRestartingEngine(true);
         try {
-            // Use restart to ensure all changes are picked up
+            // Prefer hot-reload (no dropped calls) when the backend says it suffices (MED-R1).
+            if (applyMethod === 'hot_reload') {
+                const response = await axios.post('/api/system/containers/ai_engine/reload');
+
+                if (response.data?.restart_required) {
+                    setApplyMethod('restart');
+                    setPendingRestart(true);
+                    toast.warning('Hot reload applied partially', { description: response.data.message || 'Restart AI Engine to fully apply changes' });
+                    return;
+                }
+
+                if (response.data?.status === 'success') {
+                    setPendingRestart(false);
+                    toast.success('AI Engine hot reloaded! Changes are now active.');
+                    return;
+                }
+
+                toast.info(`Hot reload response: ${response.data?.message || 'unknown status'}`);
+                return;
+            }
+
             const response = await axios.post(`/api/system/containers/ai_engine/restart?force=${force}`);
 
             if (response.data.status === 'warning') {
@@ -92,7 +119,7 @@ const VADPage = () => {
                 });
                 if (confirmForce) {
                     setRestartingEngine(false);
-                    return handleReloadAIEngine(true);
+                    return handleApplyAIEngine(true);
                 }
                 return;
             }
@@ -107,7 +134,8 @@ const VADPage = () => {
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
-            toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
+            const actionLabel = applyMethod === 'hot_reload' ? 'hot reload' : 'restart';
+            toast.error(`Failed to ${actionLabel} AI Engine`, { description: error.response?.data?.detail || error.message });
         } finally {
             setRestartingEngine(false);
         }
@@ -148,15 +176,19 @@ const VADPage = () => {
     const effectiveVadMode =
         vadConfig.vad_mode ?? (vadConfig.use_provider_vad ? 'provider' : 'auto');
 
+    const bannerMessage = applyMethod === 'hot_reload'
+        ? 'Changes saved. Apply Changes to hot reload AI Engine without dropping active calls.'
+        : 'Changes to VAD configurations require an AI Engine restart to take effect.';
+
     return (
         <div className="space-y-6">
             <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
-                    Changes to VAD configurations require an AI Engine restart to take effect.
+                    {bannerMessage}
                 </div>
                 <button
-                    onClick={() => handleReloadAIEngine(false)}
+                    onClick={() => handleApplyAIEngine(false)}
                     disabled={restartingEngine}
                     className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
                         pendingRestart 
@@ -169,7 +201,9 @@ const VADPage = () => {
                     ) : (
                         <RefreshCw className="w-3 h-3 mr-1.5" />
                     )}
-                    {restartingEngine ? 'Restarting...' : 'Reload AI Engine'}
+                    {restartingEngine
+                        ? (applyMethod === 'hot_reload' ? 'Applying...' : 'Restarting...')
+                        : (applyMethod === 'hot_reload' ? 'Apply Changes' : 'Restart AI Engine')}
                 </button>
             </div>
 

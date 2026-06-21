@@ -693,8 +693,11 @@ class AzureSTTRealtimeAdapter(STTComponent):
         recognizer.canceled.connect(handle_canceled)
         recognizer.session_stopped.connect(handle_session_stopped)
         
-        # Start async recognition — .get() blocks until started and surfaces errors
-        recognizer.start_continuous_recognition_async().get()
+        # Start async recognition. The SDK's .get() blocks until the recognizer has
+        # started (a network round-trip), so run it off the event loop — otherwise it
+        # stalls every concurrent call, not just this one (HIGH-8a). Mirrors the
+        # asyncio.to_thread used in stop_stream.
+        await asyncio.to_thread(recognizer.start_continuous_recognition_async().get)
 
         self._active_sessions[call_id] = {
             "recognizer": recognizer,

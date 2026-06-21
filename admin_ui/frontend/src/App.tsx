@@ -57,6 +57,7 @@ const PageLoader = () => (
 const SetupGuard = ({ children }: { children: React.ReactNode }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [retryCount, setRetryCount] = useState(0);
     const navigate = useNavigate();
     const location = useLocation();
 
@@ -85,20 +86,22 @@ const SetupGuard = ({ children }: { children: React.ReactNode }) => {
             } catch (err) {
                 console.error('Failed to check setup status', err);
                 if (mounted) {
-                    // If API fails, we assume not configured or backend down
-                    // But we shouldn't block the UI entirely
-                    setError('Failed to connect to backend API');
+                    // Backend unreachable: surface a clear error instead of
+                    // rendering the app over a dead backend (broken-looking UI).
+                    setError('Could not reach the backend API.');
                     setLoading(false);
                 }
             }
         };
 
+        setLoading(true);
+        setError(null);
         checkStatus();
 
         return () => {
             mounted = false;
         };
-    }, [navigate, location.pathname]);
+    }, [navigate, location.pathname, retryCount]);
 
     if (loading) {
         console.log("SetupGuard: loading");
@@ -110,8 +113,23 @@ const SetupGuard = ({ children }: { children: React.ReactNode }) => {
         );
     }
 
-    if (error && location.pathname !== '/wizard') {
-        console.warn("Rendering app despite setup check failure:", error);
+    if (error) {
+        console.warn("SetupGuard: backend unreachable:", error);
+        return (
+            <div className="min-h-screen flex items-center justify-center flex-col gap-4 px-6 text-center">
+                <h1 className="text-xl font-semibold">Backend unavailable</h1>
+                <p className="text-muted-foreground text-sm max-w-md">
+                    {error} The admin UI cannot load until the AVA backend is running and reachable.
+                    Check that the service is up, then retry.
+                </p>
+                <button
+                    onClick={() => setRetryCount((c) => c + 1)}
+                    className="px-4 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+                >
+                    Retry
+                </button>
+            </div>
+        );
     }
 
     console.log("SetupGuard: rendering children");

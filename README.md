@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-7.0.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -79,7 +79,7 @@ Open in your browser:
 
 **Default Login:** On first start, a one-time admin password is printed to the container logs. Retrieve it with:
 ```bash
-docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 You must change it at first login. Restrict port 3003 via firewall, VPN, or reverse proxy for production use.
 
@@ -97,7 +97,7 @@ docker compose -p asterisk-ai-voice-agent up -d --build ai_engine
 
 # Check ai_engine health
 curl http://localhost:15000/health
-# Expected: {"status":"healthy"}
+# Expected: {"status":"healthy"} ("degraded" is also possible if a subsystem is unhealthy)
 
 # View logs for any errors
 docker compose -p asterisk-ai-voice-agent logs ai_engine | tail -20
@@ -122,7 +122,7 @@ For users who prefer the command line or need headless setup.
 agent setup
 ```
 
-> Note: Legacy commands `agent init`, `agent doctor`, and `agent troubleshoot` remain available as hidden aliases in CLI v6.4.0.
+> Note: Legacy commands `agent init`, `agent quickstart`, `agent doctor`, `agent troubleshoot`, and `agent demo` remain as hidden compatibility aliases. New workflows should use the visible commands documented in [`docs/CLI_TOOLS_GUIDE.md`](docs/CLI_TOOLS_GUIDE.md).
 
 ### Option B: Manual Setup
 ```bash
@@ -139,17 +139,16 @@ Add this to your FreePBX (`extensions_custom.conf`):
 ```asterisk
 [from-ai-agent]
 exten => s,1,NoOp(Asterisk AI Voice Agent)
- ; Optional per-call overrides:
- ; - AI_PROVIDER selects a provider/pipeline (otherwise uses default_provider from ai-agent.yaml)
- ; - AI_AGENT selects an agent by slug (AI_CONTEXT=sales-agent also works, legacy)
- same => n,Set(AI_PROVIDER=google_live)
+ ; AI_AGENT selects an operator-managed agent by slug.
  same => n,Set(AI_AGENT=sales-agent)
+ ; Optional: override that agent's configured provider/pipeline for this call.
+ ; same => n,Set(AI_PROVIDER=google_live)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 Notes:
-- `AI_PROVIDER` is optional. If unset, the engine follows normal precedence (context provider → default_provider).
-- `AI_AGENT` is optional. Use it to select an agent by slug and change greeting/persona without changing your default provider/pipeline. `AI_CONTEXT` is also accepted (legacy, equivalent).
+- Use `AI_AGENT` to select an operator-managed agent. Its configured target is authoritative unless `AI_PROVIDER` is intentionally set as a per-call override.
+- Generate a current snippet with `agent dialplan --agent <slug>`.
 - See `docs/FreePBX-Integration-Guide.md` for channel variable precedence and examples.
 
 ### Test Your Agent
@@ -172,7 +171,7 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 
 The biggest release yet: **manage your AI agents from the Admin UI, not a config file.**
 
-- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt, voice, and provider, and copy a ready-to-paste dialplan snippet.
+- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt and provider, and copy a ready-to-paste dialplan snippet. (Voice is configured on the provider, not per agent.)
 - **📊 Multi-agent dashboard** — live KPIs (active agents, active calls, calls routed, transfers), per-agent stats, and routing breakdowns at a glance.
 - **☎️ New `AI_AGENT` dialplan variable** — route a call to an agent by name. Your existing `AI_CONTEXT` dialplans keep working unchanged.
 - **🔄 Automatic migration** — your existing contexts move into a local agents database on first start. Nothing to do, and rollback is one command.
@@ -456,7 +455,7 @@ Modern web interface for configuration and system management.
 ```bash
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
 # Access at: http://localhost:3003
-# Retrieve one-time password: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep PASSWORD
+# Retrieve one-time password: docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
 
 **Key Features:**
@@ -572,11 +571,14 @@ curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/mai
 **Commands:**
 ```bash
 agent setup               # Interactive setup wizard (recommended)
+agent setup --list-targets # List configured providers and pipelines without changes
 agent check               # Standard diagnostics report (share this output when asking for help)
 agent check --local       # Verify local AI server (STT, LLM, TTS) on this host
 agent check --remote <ip> # Verify local AI server on a remote GPU machine
 agent update              # Pull latest code + rebuild/restart as needed
-agent rca --call <call_id> # Post-call RCA (use Call History to find call_id)
+agent rca --call <call_id> --no-llm # Deterministic post-call RCA
+agent config validate     # Validate provider, pipeline, transport, and audio configuration
+agent dialplan --agent default # Generate an AI_AGENT dialplan snippet
 agent version             # Version information
 ```
 
@@ -598,7 +600,10 @@ ASTERISK_ARI_PASSWORD=your-password
 ```
 
 ### Optional: Metrics (Bring Your Own Prometheus)
-The engine exposes Prometheus-format metrics at `http://<engine-host>:15000/metrics`.
+The engine exposes Prometheus-format metrics on its health/metrics HTTP endpoint at
+`/metrics` (port `15000`). This endpoint binds to `127.0.0.1` by default, so it is only
+reachable from the engine host — scrape it locally, or set the health endpoint `host` to
+`0.0.0.0` (and firewall it) to expose it to an external Prometheus.
 Per-call debugging is handled via **Admin UI → Call History**.
 
 ---

@@ -13,7 +13,7 @@ Keys in the local file win over the base file (deep merge — nested dicts are m
 
 This separation means `git pull` during updates will never conflict with operator config, eliminating the merge-conflict problem on `ai-agent.yaml`.
 
-## Configuration Architecture (v5.0)
+## Configuration Architecture
 
 Starting in v4.0, the project added a **modular pipeline architecture** alongside monolithic provider support:
 
@@ -89,10 +89,26 @@ On each call, the engine selects:
 
 This selection is intentionally flexible so you can keep safe defaults while still overriding behavior per extension.
 
-### Context selection
+### Context / agent selection
 
-- If your dialplan sets `AI_CONTEXT`, that context name is used.
-- Otherwise, the engine uses the `default` context.
+> **v7+ resolution is agents.db-first.** After the one-time YAML → `agents.db`
+> migration (see [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md)), the engine resolves
+> the agent for a call from `agents.db`, **not** from `ai-agent.yaml` at runtime. Editing
+> a context directly in `ai-agent.yaml` or `config/contexts/*.yaml` after migration has
+> **no runtime effect** — it only triggers a drift warning. Edit agents in
+> **Admin UI → Agents**, or reconcile YAML changes via **Agents → Migration Status**.
+
+Resolution order on each call:
+
+1. `AI_AGENT` channel var (preferred) → agent looked up by slug in `agents.db`.
+2. `AI_CONTEXT` channel var (legacy — equivalent to `AI_AGENT`) → agent looked up by slug.
+3. Otherwise, the default agent in `agents.db`.
+
+`AI_AGENT` wins if both `AI_AGENT` and `AI_CONTEXT` are set on the channel.
+
+If `agents.db` is absent (pre-migration, or after a YAML-fallback rollback), the engine
+reads `ai-agent.yaml` + `config/contexts/` directly and `AI_CONTEXT`/`AI_AGENT` select a
+context by name, falling back to the `default` context.
 
 ### Audio profile selection
 
@@ -122,7 +138,7 @@ If the selected provider path is a pipeline-based configuration, the engine uses
 ### Recommended approach
 
 - Keep `default_provider` + `active_pipeline` set to a known-good baseline.
-- Use `AI_CONTEXT` for persona/tool scoping.
+- Use `AI_AGENT` (preferred; `AI_CONTEXT` is the legacy equivalent) for persona/tool scoping.
 - Use `AI_PROVIDER` only when you want an explicit per-extension override.
 
 See also:
@@ -522,6 +538,8 @@ Notes:
 The Admin UI includes an HTTP tool **Test** feature that makes real outbound HTTP requests.
 
 By default, the Admin UI blocks test requests to localhost/private targets to reduce SSRF risk if the UI is exposed beyond a trusted network.
+
+> **Security note (accepted limitation):** the private-target check resolves DNS separately from the outbound HTTP connection, so a residual DNS-rebinding TOCTOU window exists. This is acceptable because the endpoint is admin-only and authenticated — do not rely on it as a hard SSRF boundary on an untrusted network.
 
 - `AAVA_HTTP_TOOL_TEST_ALLOW_PRIVATE=1`: allow private/localhost targets (trusted network only).
 - `AAVA_HTTP_TOOL_TEST_ALLOW_HOSTS=host1,host2`: allow specific hostnames.

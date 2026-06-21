@@ -72,6 +72,7 @@ var updateCmd = &cobra.Command{
 
 This command:
   - Backs up operator config (.env, config/ai-agent.local.yaml, config/users.json, config/contexts/)
+  - Takes consistent SQLite snapshots of agents.db and call_history.db when present
   - Also snapshots config/ai-agent.yaml for recovery/migration if it was edited locally
   - Safely fast-forwards to origin/main (no forced merges by default)
   - Preserves local tracked changes using git stash (optional)
@@ -828,6 +829,105 @@ func createUpdateBackups(ctx *updateContext) error {
 			return err
 		}
 	}
+	for _, rel := range []string{
+		filepath.Join("data", "operator", "agents.db"),
+		filepath.Join("data", "call_history.db"),
+	} {
+		if err := backupSQLiteIfExists(rel, backupDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backupSQLiteIfExists uses SQLite's online backup API inside ai_engine. A raw
+// file copy can miss committed pages that are still in the WAL and is not a
+// safe pre-migration backup while calls are active.
+//
+// When the ai_engine container is not running (a common recovery context for
+// running an update), the online-backup path is unavailable. In that case we
+// fall back to a host-side file copy of the .db plus its -wal/-shm sidecars,
+// which is safe precisely because a stopped engine means there are no concurrent
+// writers. Aborting the whole update just because the engine is down would defeat
+// the purpose, so we never fail here on a stopped container.
+func backupSQLiteIfExists(relPath, backupRoot string) error {
+	if _, err := os.Stat(relPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", relPath, err)
+	}
+
+	if !aiEngineRunning() {
+		printUpdateInfo("ai_engine not running; copying %s (and WAL/SHM) from host", relPath)
+		return backupSQLiteHostCopy(relPath, backupRoot)
+	}
+
+	tmpName := fmt.Sprintf(".agent-sqlite-backup-%d-%s", os.Getpid(), filepath.Base(relPath))
+	hostTmp := filepath.Join("data", tmpName)
+	containerSrc := "/app/" + filepath.ToSlash(relPath)
+	containerTmp := "/app/data/" + tmpName
+	const script = `
+import sqlite3, sys
+src = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True, timeout=30)
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+dst.close(); src.close()
+`
+	cmd := exec.Command("docker", "exec", "ai_engine", "python3", "-c", script, containerSrc, containerTmp)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// The container looked up as running but the exec failed (e.g. it became
+		// unhealthy mid-update). Fall back to a host copy rather than aborting.
+		printUpdateInfo("online SQLite backup failed for %s (%s); falling back to host copy", relPath, strings.TrimSpace(string(out)))
+		return backupSQLiteHostCopy(relPath, backupRoot)
+	}
+	defer os.Remove(hostTmp)
+	dst := filepath.Join(backupRoot, relPath)
+	if err := copyFile(hostTmp, dst); err != nil {
+		return err
+	}
+	printUpdateInfo("SQLite snapshot: %s", relPath)
+	return nil
+}
+
+// aiEngineRunning reports whether the ai_engine container is currently running.
+// A non-running or unreachable container (docker absent, daemon down) returns
+// false so callers fall back to a host-side copy.
+func aiEngineRunning() bool {
+	out, err := runCmd("docker", "ps", "--filter", "name=^ai_engine$", "--filter", "status=running", "--format", "{{.Names}}")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "ai_engine" {
+			return true
+		}
+	}
+	return false
+}
+
+// backupSQLiteHostCopy copies a SQLite DB and any -wal/-shm sidecars directly
+// from the host filesystem. Only valid when no process is writing the DB (i.e.
+// the engine is stopped); missing sidecars are skipped.
+func backupSQLiteHostCopy(relPath, backupRoot string) error {
+	dst := filepath.Join(backupRoot, relPath)
+	if err := copyFile(relPath, dst); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar := relPath + suffix
+		if _, err := os.Stat(sidecar); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to stat %s: %w", sidecar, err)
+		}
+		if err := copyFile(sidecar, filepath.Join(backupRoot, sidecar)); err != nil {
+			return err
+		}
+	}
+	printUpdateInfo("SQLite host copy: %s", relPath)
 	return nil
 }
 

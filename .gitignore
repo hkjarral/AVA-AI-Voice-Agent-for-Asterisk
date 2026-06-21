@@ -203,6 +203,9 @@ asterisk_media/
 # Admin UI user database (generated at first login)
 config/users.json
 
+# One-time admin password written on first run / rotation (root-only secret)
+config/.first-run-password
+
 # Operator-specific config overrides (deep-merged over ai-agent.yaml at runtime)
 config/ai-agent.local.yaml
 

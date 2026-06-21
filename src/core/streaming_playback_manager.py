@@ -262,13 +262,26 @@ class StreamingPlaybackManager:
             logger.warning("Streaming playback logging level set to WARNING")
         elif self.logging_level not in ("info", "debug", "warning"):
             logger.info("Streaming playback logging level", value=self.logging_level)
+        # Diagnostic wave taps write ~24 .wav files per call to disk in the
+        # playback path. They are OFF by default and gated behind an EXPLICIT
+        # opt-in (config 'diag_enable_taps' or env AAVA_AUDIO_DIAGNOSTICS), NOT
+        # coupled to debug logging — enabling debug logs must not silently start
+        # writing files in the call path.
         try:
-            self.diag_enable_taps = bool(self.streaming_config.get('diag_enable_taps', False))
+            def _truthy(value) -> bool:
+                # Strict parse: only explicit on-values enable taps. A bare
+                # bool(str) treats "false"/"0"/"no" as True, which would
+                # silently turn taps ON when set to those strings.
+                if isinstance(value, bool):
+                    return value
+                return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+            self.diag_enable_taps = (
+                _truthy(self.streaming_config.get('diag_enable_taps', False))
+                or _truthy(os.environ.get('AAVA_AUDIO_DIAGNOSTICS', ''))
+            )
         except Exception:
             self.diag_enable_taps = False
-        # If explicit flag is not set, enable taps when logging is DEBUG to aid diagnostics
-        if not self.diag_enable_taps and self.logging_level == "debug":
-            self.diag_enable_taps = True
         # Log guards (avoid warning spam while waiting for ExternalMedia RTP endpoint).
         self._rtp_remote_wait_logged: set[str] = set()
         try:

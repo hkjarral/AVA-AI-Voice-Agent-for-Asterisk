@@ -29,6 +29,9 @@ export interface Agent {
     mcp_json?: string;
     extra_json?: string;
     notes?: string;
+    email_recipient?: string;
+    email_from?: string;
+    email_enabled?: boolean | null;
 }
 
 interface AgentTemplate {
@@ -61,7 +64,12 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [roleLabel, setRoleLabel] = useState('');
     const [greeting, setGreeting] = useState('');
     const [prompt, setPrompt] = useState('');
+    const [notes, setNotes] = useState('');
     const [isActive, setIsActive] = useState(1);
+    const [emailRecipient, setEmailRecipient] = useState('');
+    const [emailFrom, setEmailFrom] = useState('');
+    // Tri-state as a select value: '' = inherit (null), 'enabled' = true, 'disabled' = false.
+    const [emailEnabled, setEmailEnabled] = useState('');
 
     // Tool/engine config — single source of truth, round-tripped losslessly via the helper.
     const [toolState, setToolState] = useState<AgentToolState>(() => parseAgentConfig(null));
@@ -98,7 +106,13 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setRoleLabel(agent.role_label || '');
             setGreeting(agent.greeting || '');
             setPrompt(agent.prompt || '');
+            setNotes(agent.notes || '');
             setIsActive(agent.is_active);
+            setEmailRecipient(agent.email_recipient || '');
+            setEmailFrom(agent.email_from || '');
+            setEmailEnabled(
+                agent.email_enabled == null ? '' : (agent.email_enabled ? 'enabled' : 'disabled'),
+            );
             setToolState(parseAgentConfig(agent));
         } else {
             setDisplayName('');
@@ -110,7 +124,11 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setRoleLabel('');
             setGreeting('Hi, how can I help you today?');
             setPrompt('You are a helpful voice assistant.');
+            setNotes('');
             setIsActive(1);
+            setEmailRecipient('');
+            setEmailFrom('');
+            setEmailEnabled('');
             setToolState(parseAgentConfig(null));
             setSelectedTemplate('');
         }
@@ -202,9 +220,15 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 role_label: roleLabel || null,
                 greeting: greeting || '',
                 prompt: prompt || '',
+                notes: notes || null,
                 tools_json: cfg.tools_json,
                 mcp_json: cfg.mcp_json,
                 extra_json: cfg.extra_json,
+                email_recipient: emailRecipient || null,
+                email_from: emailFrom || null,
+                // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
+                // never false. 'enabled' -> true, 'disabled' -> false.
+                email_enabled: emailEnabled === '' ? null : emailEnabled === 'enabled',
             };
 
             if (isNew) {
@@ -332,9 +356,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 <div className="mb-4">
                     <div className="flex items-center gap-1.5 mb-1.5">
                         <label htmlFor="agent-voice" className="block text-sm font-medium">
-                            Voice
+                            Voice (display-only)
                         </label>
-                        <HelpTooltip content="Voice ID or name passed to the TTS provider. Leave blank to use the provider default." />
+                        <HelpTooltip content="Voice is configured on the provider, not per agent — this field is informational and does not change the call voice." />
                     </div>
                     <input
                         id="agent-voice"
@@ -400,6 +424,20 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     />
                 </div>
 
+                <div className="mb-4">
+                    <FormLabel htmlFor="agent-notes" tooltip="Internal notes about this agent — not used at runtime.">
+                        Notes
+                    </FormLabel>
+                    <textarea
+                        id="agent-notes"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        rows={3}
+                        placeholder="Internal notes about this agent…"
+                        className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                    />
+                </div>
+
                 {!isNew && (
                     <div className="mb-4 flex items-center justify-between p-3 border border-border rounded-lg bg-card/50">
                         <div>
@@ -428,6 +466,38 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                         tooltip="Asterisk music-on-hold class to play during the call. Leave blank for none."
                     />
                 </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <FormInput
+                        id="agent-email-recipient"
+                        label="Email Recipient"
+                        value={emailRecipient}
+                        onChange={(e) => setEmailRecipient(e.target.value)}
+                        placeholder="e.g. ops@example.com"
+                        tooltip="Email address that receives this agent's call summaries. Overrides the global/per-context recipient. Leave blank to inherit."
+                    />
+                    <FormInput
+                        id="agent-email-from"
+                        label="Email From Address"
+                        value={emailFrom}
+                        onChange={(e) => setEmailFrom(e.target.value)}
+                        placeholder="e.g. ava@example.com"
+                        tooltip="From address for this agent's call-summary emails. Leave blank to inherit the global/per-context setting."
+                    />
+                </div>
+
+                <FormSelect
+                    id="agent-email-enabled"
+                    label="Email Summaries"
+                    options={[
+                        { value: '', label: 'Inherit' },
+                        { value: 'enabled', label: 'Enabled' },
+                        { value: 'disabled', label: 'Disabled' },
+                    ]}
+                    value={emailEnabled}
+                    onChange={(e) => setEmailEnabled(e.target.value)}
+                    tooltip="Whether this agent sends call-summary emails. 'Inherit' uses the global/per-context setting; 'Enabled'/'Disabled' override it for this agent."
+                />
 
                 <AgentToolPicker
                     catalog={catalog}

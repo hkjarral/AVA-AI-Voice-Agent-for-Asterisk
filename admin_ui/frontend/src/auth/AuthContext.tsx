@@ -1,5 +1,17 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import { toast } from 'sonner';
+
+// Decode the `exp` claim (seconds since epoch) from a JWT without verifying it.
+// Returns null if the token is malformed or has no exp.
+const getTokenExpiry = (jwt: string): number | null => {
+    try {
+        const payload = JSON.parse(atob(jwt.split('.')[1]));
+        return typeof payload.exp === 'number' ? payload.exp : null;
+    } catch {
+        return null;
+    }
+};
 
 interface User {
     username: string;
@@ -110,6 +122,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return () => {
             axios.interceptors.request.eject(interceptor);
         };
+    }, [token]);
+
+    // Proactively warn before the token expires so the operator can re-login
+    // without losing in-progress form state to an abrupt 401 logout.
+    useEffect(() => {
+        if (!token) return;
+
+        const exp = getTokenExpiry(token);
+        if (!exp) return;
+
+        const msUntilExpiry = exp * 1000 - Date.now();
+        const warnLeadMs = 5 * 60 * 1000; // warn 5 minutes before expiry
+        const msUntilWarn = msUntilExpiry - warnLeadMs;
+
+        // Already within the warning window (but not yet expired): warn now.
+        if (msUntilExpiry > 0 && msUntilWarn <= 0) {
+            toast.warning('Your session is about to expire. Save your work and log in again to avoid losing changes.', {
+                duration: 10000,
+            });
+            return;
+        }
+
+        if (msUntilWarn <= 0) return; // already expired; 401 handling will log out
+
+        const timer = setTimeout(() => {
+            toast.warning('Your session will expire soon. Save your work and log in again to avoid losing changes.', {
+                duration: 10000,
+            });
+        }, msUntilWarn);
+
+        return () => clearTimeout(timer);
     }, [token]);
 
     // Add interceptor to handle 401s

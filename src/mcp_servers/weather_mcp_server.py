@@ -8,9 +8,11 @@ import re
 
 def send_response(req_id, result):
     msg = {"jsonrpc": "2.0", "id": req_id, "result": result}
-    body = json.dumps(msg)
-    sys.stdout.write(f"Content-Length: {len(body)}\r\n\r\n{body}")
-    sys.stdout.flush()
+    # Newline-delimited JSON (MCP stdio standard). Write bytes so multi-byte
+    # (non-ASCII) payloads are framed correctly.
+    body = json.dumps(msg, ensure_ascii=False)
+    sys.stdout.buffer.write((body + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 def normalize_city(city):
     """Extract just the city name, stripping state/country."""
@@ -45,64 +47,46 @@ def get_weather(lat, lon):
     return temp, desc
 
 def main():
-    stdin = sys.stdin.buffer
-    buffer = b""
-    while True:
-        chunk = stdin.read(1)
-        if not chunk:
-            break
-        buffer += chunk
-        if b"Content-Length:" in buffer and b"\r\n\r\n" in buffer:
-            try:
-                header_end = buffer.index(b"\r\n\r\n")
-                header = buffer[:header_end].decode("ascii")
-                content_length = None
-                for h in header.split("\r\n"):
-                    if h.lower().startswith("content-length:"):
-                        content_length = int(h.split(":")[1].strip())
-                        break
-                if content_length is None:
-                    buffer = b""
-                    continue
-                body_start = header_end + 4
-                if len(buffer) >= body_start + content_length:
-                    body = buffer[body_start:body_start + content_length].decode("utf-8")
-                    buffer = buffer[body_start + content_length:]
-                    msg = json.loads(body)
-                    method = msg.get("method", "")
-                    req_id = msg.get("id")
-                    params = msg.get("params", {})
-                    
-                    if method == "initialize":
-                        send_response(req_id, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "weather", "version": "1.0.0"}})
-                    elif method == "tools/list":
-                        send_response(req_id, {"tools": [{"name": "get_weather_by_city", "description": "Get current weather for a city", "inputSchema": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}}]})
-                    elif method == "tools/call":
-                        tool_name = params.get("name", "")
-                        args = params.get("arguments", {})
-                        if tool_name == "get_weather_by_city":
-                            city = args.get("city", "")
-                            try:
-                                lat, lon, name = geocode(city)
-                                if lat is None:
-                                    spoken = f"I could not find weather data for {city}."
-                                else:
-                                    temp, desc = get_weather(lat, lon)
-                                    spoken = f"The weather in {name} is {desc} with a temperature of {temp} degrees Celsius."
-                                send_response(req_id, {"content": [{"type": "text", "text": spoken}], "structured": {"spoken": spoken}})
-                            except Exception as e:
-                                send_response(req_id, {"content": [{"type": "text", "text": f"Weather lookup failed: {e}"}], "structured": {"spoken": f"Sorry, I could not get the weather. {e}"}})
+    # Newline-delimited JSON (MCP stdio standard): one JSON-RPC object per line.
+    for raw in sys.stdin.buffer:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line.decode("utf-8"))
+            method = msg.get("method", "")
+            req_id = msg.get("id")
+            params = msg.get("params", {})
+
+            if method == "initialize":
+                send_response(req_id, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "weather", "version": "1.0.0"}})
+            elif method == "tools/list":
+                send_response(req_id, {"tools": [{"name": "get_weather_by_city", "description": "Get current weather for a city", "inputSchema": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]}}]})
+            elif method == "tools/call":
+                tool_name = params.get("name", "")
+                args = params.get("arguments", {})
+                if tool_name == "get_weather_by_city":
+                    city = args.get("city", "")
+                    try:
+                        lat, lon, name = geocode(city)
+                        if lat is None:
+                            spoken = f"I could not find weather data for {city}."
                         else:
-                            send_response(req_id, {"content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}]})
-                    elif method == "notifications/initialized":
-                        pass
-                    else:
-                        if req_id is not None:
-                            send_response(req_id, {})
-            except Exception as e:
-                sys.stderr.write(f"Error: {e}\n")
-                sys.stderr.flush()
-                buffer = b""
+                            temp, desc = get_weather(lat, lon)
+                            spoken = f"The weather in {name} is {desc} with a temperature of {temp} degrees Celsius."
+                        send_response(req_id, {"content": [{"type": "text", "text": spoken}], "structured": {"spoken": spoken}})
+                    except Exception as e:
+                        send_response(req_id, {"content": [{"type": "text", "text": f"Weather lookup failed: {e}"}], "structured": {"spoken": f"Sorry, I could not get the weather. {e}"}})
+                else:
+                    send_response(req_id, {"content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}]})
+            elif method == "notifications/initialized":
+                pass
+            else:
+                if req_id is not None:
+                    send_response(req_id, {})
+        except Exception as e:
+            sys.stderr.write(f"Error: {e}\n")
+            sys.stderr.flush()
 
 if __name__ == "__main__":
     main()

@@ -4,7 +4,13 @@ import pytest
 from fastapi import HTTPException
 
 import api.tools as tools_module
-from api.tools import _validate_http_tool_test_target
+from api.tools import _validate_http_tool_test_target, router as tools_router
+
+
+def test_dead_test_values_endpoint_removed():
+    """LOW-DEAD1: the unused GET /test-values endpoint must be gone."""
+    paths = {getattr(r, "path", None) for r in tools_router.routes}
+    assert "/test-values" not in paths
 
 
 def test_validate_http_tool_test_target_blocks_localhost_by_default(monkeypatch):

@@ -146,13 +146,150 @@ def inject_llm_config(config_data: Dict[str, Any]) -> None:
     }
 
 
+def _matches_provider_family(
+    name_lower: str,
+    cfg_type: str,
+    provider_cfg: Dict[str, Any],
+    spec: Dict[str, Any],
+) -> bool:
+    """Return True if a provider instance belongs to ``spec``'s family.
+
+    A block matches by (in priority order):
+      - ``type``: cfg_type in spec["types"]
+      - name: name_lower starts with any prefix in spec["name_prefixes"], OR
+        equals any name in spec["name_exact"], OR ends with any suffix in
+        spec["name_suffixes"]
+      - host: any of the block's URL fields resolves to a host in spec["hosts"]
+
+    ``type``-only families (e.g. a custom ``type: openai`` block) may carry a
+    ``host_gate`` host set: such a block matches *only* when one of its URL
+    fields points at that host, so we never stomp OpenAI-compatible providers
+    (Groq/OpenRouter/etc.) that legitimately use ``type: openai`` semantics.
+    """
+    if cfg_type and cfg_type in spec["types"]:
+        # type matches directly. For families with a host_gate, a bare type
+        # match still counts ONLY for the canonical type names; the gate only
+        # applies to ambiguous shared types (handled via "gated_types").
+        if cfg_type in spec.get("gated_types", set()):
+            hosts = {_url_host(provider_cfg.get(f, "")) for f in spec["url_fields"]}
+            if hosts & spec["hosts"]:
+                return True
+        else:
+            return True
+    for prefix in spec.get("name_prefixes", ()):  # name-based match
+        if name_lower.startswith(prefix):
+            return True
+    if name_lower in spec.get("name_exact", ()):  # exact-name match
+        return True
+    for suffix in spec.get("name_suffixes", ()):  # suffix match (e.g. *_google_live)
+        if name_lower.endswith(suffix):
+            return True
+    if spec.get("hosts"):  # host-based match across the family's URL fields
+        hosts = {_url_host(provider_cfg.get(f, "")) for f in spec["url_fields"]}
+        if hosts & spec["hosts"]:
+            return True
+    return False
+
+
+# Data-driven provider-type registry. Each family declares the env var that
+# supplies its inline secret(s) plus the matchers that identify its instances.
+# A single pass over ``providers_block`` (below) applies the same env-only
+# contract to EVERY matching instance — canonical, multi-instance, or custom
+# ``type:`` block — so newly-added types are covered by adding a row here, not
+# another bespoke loop.
+#
+# secret_fields: env var -> inline literal field popped/injected for this family.
+# url_fields:    URL keys inspected for host-based matching.
+# hosts:         host set that triggers a host-based match.
+# gated_types:   types that match ONLY when a URL field hits ``hosts`` (shared
+#                OpenAI-compatible "type: openai" must point at api.openai.com).
+PROVIDER_KEY_FAMILIES = [
+    {
+        "name": "openai",
+        "secret_fields": {"OPENAI_API_KEY": "api_key"},
+        "types": {"openai", "openai_realtime"},
+        "gated_types": {"openai"},
+        "name_prefixes": ("openai",),
+        "url_fields": ("chat_base_url", "tts_base_url", "realtime_base_url", "base_url", "ws_url"),
+        "hosts": {"api.openai.com"},
+    },
+    {
+        "name": "groq",
+        "secret_fields": {"GROQ_API_KEY": "api_key"},
+        "types": {"groq"},
+        "name_prefixes": ("groq",),
+        "url_fields": ("chat_base_url",),
+        "hosts": {"api.groq.com"},
+    },
+    {
+        "name": "minimax",
+        "secret_fields": {"MINIMAX_API_KEY": "api_key"},
+        "types": {"minimax"},
+        "name_prefixes": ("minimax",),
+        "url_fields": ("chat_base_url", "base_url"),
+        "hosts": {"api.minimax.io", "api.minimaxi.com"},
+    },
+    {
+        "name": "telnyx",
+        "secret_fields": {"TELNYX_API_KEY": "api_key"},
+        "types": {"telnyx"},
+        "name_prefixes": ("telnyx", "telenyx"),
+        "url_fields": ("chat_base_url", "base_url"),
+        "hosts": {"api.telnyx.com"},
+    },
+    {
+        "name": "azure",
+        "secret_fields": {"AZURE_SPEECH_KEY": "api_key"},
+        "types": {"azure"},
+        "name_prefixes": ("azure_stt",),
+        "name_exact": ("azure_tts",),
+        "url_fields": (),
+        "hosts": set(),
+    },
+    {
+        "name": "grok",
+        "secret_fields": {"XAI_API_KEY": "api_key"},
+        "types": {"grok", "xai"},
+        "name_prefixes": ("grok", "xai"),
+        "url_fields": (),
+        "hosts": set(),
+    },
+    {
+        "name": "elevenlabs",
+        # agent_id is treated like a secret here (env-only) per Finding 3.
+        "secret_fields": {"ELEVENLABS_API_KEY": "api_key", "ELEVENLABS_AGENT_ID": "agent_id"},
+        "types": {"elevenlabs", "elevenlabs_agent"},
+        "name_prefixes": ("elevenlabs",),
+        "url_fields": (),
+        "hosts": set(),
+    },
+    {
+        "name": "deepgram",
+        "secret_fields": {"DEEPGRAM_API_KEY": "api_key"},
+        "types": {"deepgram"},
+        "name_prefixes": ("deepgram",),
+        "url_fields": (),
+        "hosts": set(),
+    },
+    {
+        "name": "google_live",
+        "secret_fields": {"GOOGLE_API_KEY": "api_key"},
+        "types": {"google_live"},
+        "name_prefixes": ("google_live",),
+        "name_suffixes": ("_google_live",),
+        "url_fields": (),
+        "hosts": set(),
+    },
+]
+
+
 def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
     """
     Inject provider API keys from environment variables ONLY.
-    
+
     SECURITY: API keys must ONLY come from environment variables, never YAML.
     This function is specifically for pipeline adapters that need explicit API keys.
-    
+
     Environment variables:
     - OPENAI_API_KEY: OpenAI provider API key
     - GROQ_API_KEY: Groq provider API key (Groq Speech + Groq OpenAI-compatible LLM)
@@ -160,106 +297,73 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
     - GOOGLE_API_KEY: Google provider API key
     - TELNYX_API_KEY: Telnyx AI Inference API key (OpenAI-compatible LLM)
     - AZURE_SPEECH_KEY: Microsoft Azure Speech Service key (azure_stt, azure_tts)
-    
+    - XAI_API_KEY: Grok / xAI provider API key
+    - MINIMAX_API_KEY: MiniMax provider API key
+    - ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID: ElevenLabs key + agent id
+
+    Env-only contract (Finding 3): provider secrets come from the env var (or
+    the per-instance ``api_key_file`` / ``agent_id_file`` / ``*_env`` file-backed
+    fields, which this function NEVER touches), never from an inline YAML
+    literal. A single data-driven pass (see PROVIDER_KEY_FAMILIES) iterates
+    EVERY block in ``providers``, determines its family by ``type`` first then
+    name/host, and for each matching block INJECTS the inline literal when the
+    env var is SET and STRIPS it when UNSET. This covers canonical,
+    multi-instance, and custom ``type:`` blocks (e.g. openai_realtime,
+    google_live) uniformly.
+
     Args:
         config_data: Configuration dictionary to modify in-place
-        
+
     Complexity: 4
     """
     try:
         providers_block = config_data.get('providers', {}) or {}
-        
-        # Inject OPENAI_API_KEY for OpenAI provider blocks (openai_llm/openai_stt/openai_tts/openai_realtime, etc.)
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if openai_key:
+
+        # Single data-driven pass over every provider block.
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+
+            for spec in PROVIDER_KEY_FAMILIES:
+                if not _matches_provider_family(name_lower, cfg_type, provider_cfg, spec):
+                    continue
+                # Apply env-only contract for each inline secret field of the family.
+                for env_name, field in spec["secret_fields"].items():
+                    env_val = os.getenv(env_name)
+                    if env_val:
+                        provider_cfg[field] = env_val
+                    else:
+                        provider_cfg.pop(field, None)
+                providers_block[provider_name] = provider_cfg
+                # A block belongs to exactly one family; stop at the first match
+                # so we don't double-process (and so an openai-host block is not
+                # also matched by a later family).
+                break
+
+        # Inject Vertex AI project/location for google_live blocks (AAVA-191).
+        # Separate from the secret pass: these are non-secret env injections that
+        # only apply to google_live instances and use setdefault (never override
+        # an explicit YAML value).
+        gcp_project = os.getenv('GOOGLE_CLOUD_PROJECT')
+        gcp_location = os.getenv('GOOGLE_CLOUD_LOCATION')
+        if gcp_project or gcp_location:
             for provider_name, provider_cfg in list(providers_block.items()):
                 if not isinstance(provider_cfg, dict):
                     continue
                 name_lower = str(provider_name).lower()
                 cfg_type = str(provider_cfg.get("type", "")).lower()
-                if not (name_lower.startswith("openai") or cfg_type == "openai"):
+                if not (name_lower.startswith("google_live")
+                        or name_lower.endswith("_google_live")
+                        or cfg_type == "google_live"):
                     continue
+                if gcp_project:
+                    provider_cfg.setdefault('vertex_project', gcp_project)
+                if gcp_location:
+                    provider_cfg.setdefault('vertex_location', gcp_location)
+                providers_block[provider_name] = provider_cfg
 
-                url_fields = ("chat_base_url", "tts_base_url", "realtime_base_url", "base_url", "ws_url")
-                url_hosts = {_url_host(provider_cfg.get(field, "")) for field in url_fields}
-
-                # If the provider is explicitly named openai*, always inject. If it's only "type: openai",
-                # inject only when it's actually pointing at OpenAI endpoints to avoid stomping other
-                # OpenAI-compatible providers (e.g., Groq/OpenRouter/etc).
-                is_openai_host = any(host == "api.openai.com" for host in url_hosts)
-                if name_lower.startswith("openai") or is_openai_host:
-                    provider_cfg["api_key"] = openai_key
-                    providers_block[provider_name] = provider_cfg
-
-        # Inject GROQ_API_KEY for any groq* provider blocks (groq_llm, groq_stt, groq_tts, etc.)
-        groq_key = os.getenv('GROQ_API_KEY')
-        if groq_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                chat_host = _url_host(provider_cfg.get("chat_base_url", ""))
-                if name_lower.startswith("groq") or cfg_type == "groq" or chat_host == "api.groq.com":
-                    provider_cfg["api_key"] = groq_key
-                    providers_block[provider_name] = provider_cfg
-
-        # Inject MINIMAX_API_KEY for minimax* provider blocks (minimax_llm, etc.)
-        minimax_key = os.getenv("MINIMAX_API_KEY")
-        if minimax_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
-                if name_lower.startswith("minimax") or cfg_type == "minimax" or chat_host in ("api.minimax.io", "api.minimaxi.com"):
-                    provider_cfg["api_key"] = minimax_key
-                    providers_block[provider_name] = provider_cfg
-
-        # Inject TELNYX_API_KEY for any telnyx* provider blocks (telnyx_llm, etc.)
-        telnyx_key = os.getenv("TELNYX_API_KEY")
-        if telnyx_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
-                if name_lower.startswith(("telnyx", "telenyx")) or chat_host == "api.telnyx.com":
-                    provider_cfg["api_key"] = telnyx_key
-                    providers_block[provider_name] = provider_cfg
-        
-        # Inject AZURE_SPEECH_KEY for Azure provider blocks (name-based or type-based)
-        azure_speech_key = os.getenv("AZURE_SPEECH_KEY")
-        if azure_speech_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                if name_lower.startswith("azure_stt") or name_lower == "azure_tts" or cfg_type == "azure":
-                    provider_cfg["api_key"] = azure_speech_key
-                    providers_block[provider_name] = provider_cfg
-
-        # Inject DEEPGRAM_API_KEY
-        deepgram_block = providers_block.get('deepgram', {}) or {}
-        if isinstance(deepgram_block, dict):
-            deepgram_block['api_key'] = os.getenv('DEEPGRAM_API_KEY')
-            providers_block['deepgram'] = deepgram_block
-        
-        # Inject GOOGLE_API_KEY (for google_live provider)
-        google_live_block = providers_block.get('google_live', {}) or {}
-        if isinstance(google_live_block, dict):
-            google_live_block['api_key'] = os.getenv('GOOGLE_API_KEY')
-            # Inject Vertex AI project/location when set (AAVA-191)
-            gcp_project = os.getenv('GOOGLE_CLOUD_PROJECT')
-            gcp_location = os.getenv('GOOGLE_CLOUD_LOCATION')
-            if gcp_project:
-                google_live_block.setdefault('vertex_project', gcp_project)
-            if gcp_location:
-                google_live_block.setdefault('vertex_location', gcp_location)
-            providers_block['google_live'] = google_live_block
-        
         # Auto-set GOOGLE_APPLICATION_CREDENTIALS for Vertex AI ADC.
         # Case 1: env var not set at all → set it if the default file exists.
         # Case 2: env var set but points to a missing file → override with the

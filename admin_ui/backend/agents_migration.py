@@ -6,6 +6,7 @@ import glob
 import hashlib
 import json
 import os
+import sqlite3
 import uuid
 
 import yaml
@@ -82,6 +83,22 @@ def contexts_hash(merged: dict) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
+def disambiguate_slug(key: str, seen_slugs: set) -> str:
+    """CRIT-3: deterministically disambiguate a context's slug against slugs already
+    taken (``Sales-East`` and ``sales_east`` both slugify to ``sales_east`` — the
+    second becomes ``sales_east_2``). ``seen_slugs`` is mutated with the result so a
+    caller can map several colliding contexts to distinct slugs in one pass. This is
+    the single source of truth shared by run_migration() and reconcile (Finding 2)."""
+    base = slugify(key) or "agent"
+    slug = base
+    n = 2
+    while slug in seen_slugs:
+        slug = f"{base}_{n}"
+        n += 1
+    seen_slugs.add(slug)
+    return slug
+
+
 # ---------------------------------------------------------------------------
 # One-time migration
 # ---------------------------------------------------------------------------
@@ -89,7 +106,14 @@ def contexts_hash(merged: dict) -> str:
 MIGRATION_VERSION = 1
 
 # Fields stored in first-class columns; everything else goes into extra_json.
-_FIRST_CLASS = {"provider", "voice", "greeting", "prompt", "audio_profile", "profile", "tools"}
+# The per-context email keys are first-class so that an export_agents_yaml.py
+# dump (which emits email_recipient/email_from/email_enabled as TOP-LEVEL context
+# keys) round-trips back into the email columns on re-migrate rather than leaking
+# into extra_json (which EngineAgentStore does NOT read for email dispatch).
+_FIRST_CLASS = {
+    "provider", "voice", "greeting", "prompt", "audio_profile", "profile", "tools",
+    "email_recipient", "email_from", "email_enabled",
+}
 
 
 def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict:
@@ -117,10 +141,28 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
     merged = merged_effective_contexts(yaml_path, contexts_dir)
     h = contexts_hash(merged)
 
+    # H4: legacy per-context email overrides live in the GLOBAL tools config
+    # (ai-agent.yaml top-level `tools`), keyed by the ORIGINAL context name. Load
+    # the email tool block so we can (1) carry each context's override onto its
+    # agent row and (2) re-key the surviving map from original name -> slug.
+    email_tool_cfg = {}
+    if os.path.exists(yaml_path):
+        doc = yaml.safe_load(open(yaml_path)) or {}
+        tools_block = doc.get("tools") if isinstance(doc, dict) else None
+        if isinstance(tools_block, dict):
+            cfg = tools_block.get("send_email_summary")
+            if isinstance(cfg, dict):
+                email_tool_cfg = cfg
+    admin_email_by_ctx = email_tool_cfg.get("admin_email_by_context") or {}
+    from_email_by_ctx = email_tool_cfg.get("from_email_by_context") or {}
+    rekeyed_admin = {}
+    rekeyed_from = {}
+
     # Validate every context and separate valid rows from skips *before* we
     # open the transaction — skips are not errors and must not trigger rollback.
     rows = []
     skipped = []
+    seen_slugs = set()
     for key, ctx in merged.items():
         src = ctx.pop("_source_file", None)
         prompt = ctx.get("prompt")
@@ -130,9 +172,32 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         provider = ctx.get("provider") or ""
         extra = {k: v for k, v in ctx.items() if k not in _FIRST_CLASS}
         now = _now()
+        # CRIT-3: two context names can slugify to the same value
+        # (e.g. "Sales-East" and "sales_east" -> "sales_east"). The `slug` column
+        # is UNIQUE, so disambiguate deterministically; the original name is kept
+        # in `display_name` and the engine resolves on that first, so legacy
+        # dialplans using either original name still route correctly.
+        slug = disambiguate_slug(key, seen_slugs)
+        # H4: carry the legacy per-context email override (keyed by original name)
+        # onto the agent row, and re-key the surviving map entry to the slug so the
+        # global-tools resolution path resolves once context_name is the slug.
+        # bot re-review (Finding 1): an explicit TOP-LEVEL per-context email key
+        # (as emitted by export_agents_yaml.py) WINS over the legacy by_context map,
+        # so an export -> re-migrate cycle restores the first-class columns instead
+        # of dropping the values into extra_json. Fall back to the legacy map when
+        # the top-level key is absent. email_enabled is tri-state (None/True/False).
+        top_recipient = ctx.get("email_recipient")
+        top_from = ctx.get("email_from")
+        email_recipient = top_recipient if top_recipient is not None else admin_email_by_ctx.get(key)
+        email_from = top_from if top_from is not None else from_email_by_ctx.get(key)
+        email_enabled = ctx.get("email_enabled")
+        if email_recipient is not None:
+            rekeyed_admin[slug] = email_recipient
+        if email_from is not None:
+            rekeyed_from[slug] = email_from
         rows.append((
             uuid.uuid4().hex,
-            slugify(key),
+            slug,
             key,
             provider,
             ctx.get("voice"),
@@ -145,6 +210,9 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             src,
             now,
             now,
+            email_recipient,
+            email_from,
+            email_enabled,
         ))
 
     with store.conn:
@@ -152,8 +220,9 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             store.conn.execute(
                 """INSERT INTO agents (id, slug, display_name, provider, voice, greeting,
                    prompt, tools_json, audio_profile, extra_json, is_operator_managed,
-                   is_active, is_default, source_file, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?)""",
+                   is_active, is_default, source_file, created_at, updated_at,
+                   email_recipient, email_from, email_enabled)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?)""",
                 r,
             )
         store.conn.execute(
@@ -162,7 +231,83 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         )
 
     store._ensure_default_invariant()
-    return {"imported": len(rows), "skipped": skipped, "already_migrated": False}
+    # LOW-A6: surface which agent became the default. When no context is literally
+    # named "default", the invariant promotes the first-created active agent; making
+    # that visible lets the UI/log show the operator what was auto-selected.
+    default_row = store.get_default()
+    # H4: expose the re-keyed send_email_summary map (original-name keys swapped for
+    # slugs) preserving the global default. The migration has no YAML write-back
+    # path, so this is returned for any consumer that persists the global tools cfg.
+    email_rekey = {}
+    if rekeyed_admin or rekeyed_from:
+        cfg = dict(email_tool_cfg)
+        cfg["admin_email_by_context"] = rekeyed_admin
+        cfg["from_email_by_context"] = rekeyed_from
+        email_rekey["send_email_summary"] = cfg
+    return {
+        "imported": len(rows),
+        "skipped": skipped,
+        "already_migrated": False,
+        "default_slug": default_row["slug"] if default_row else None,
+        "email_by_context_rekey": email_rekey,
+    }
+
+
+def migrate_if_needed(op_dir: str, yaml_path: str, contexts_dir: str,
+                      db_filename: str = "agents.db") -> dict:
+    """Run the one-time migration atomically so a failed/empty import never leaves
+    an authoritative empty agents.db (CRIT-3).
+
+    - If ``<op_dir>/<db_filename>`` already exists, open it and run the (idempotent)
+      migration — a no-op if already migrated — so drift detection still works.
+    - Otherwise migrate into a temporary DB and only promote it to the final path
+      when at least one agent was imported. Nothing to migrate ⇒ no file is left,
+      so the engine stays in YAML mode instead of treating an empty DB as
+      authoritative.
+
+    ``db_filename`` lets the caller honor a relocated ``AGENTS_DB_PATH`` whose
+    basename differs from the default, so the seed path matches the stores' read
+    path (the temp file is derived from it: ``<db_filename>.migrating``).
+    """
+    os.makedirs(op_dir, exist_ok=True)
+    final = os.path.join(op_dir, db_filename)
+
+    if os.path.exists(final):
+        store = AgentsStore(db_path=final)
+        try:
+            return run_migration(store, yaml_path, contexts_dir)
+        finally:
+            store.close()
+
+    tmp = os.path.join(op_dir, db_filename + ".migrating")
+    for ext in ("", "-wal", "-shm"):
+        try:
+            os.remove(tmp + ext)
+        except OSError:
+            pass
+
+    store = AgentsStore(db_path=tmp)
+    try:
+        result = run_migration(store, yaml_path, contexts_dir)
+        try:
+            # Fold the WAL back into the main file so a single rename is complete.
+            store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+    finally:
+        store.close()
+
+    if result.get("imported", 0) > 0:
+        os.replace(tmp, final)
+    # Remove any temp leftovers (the unpromoted tmp file, or stray -wal/-shm).
+    for ext in ("", "-wal", "-shm"):
+        leftover = tmp + ext
+        if os.path.exists(leftover):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+    return result
 
 
 def current_drift(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict | None:

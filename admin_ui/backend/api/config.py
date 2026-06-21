@@ -454,6 +454,54 @@ def _collect_unknown_keys(data: Any, schema_root: Dict[str, Any], schema_node: D
     return warnings
 
 
+# MED-E1: email tool keys whose values must be valid addresses. Each has a
+# *_by_context companion map (per-context overrides) whose values are validated too.
+_EMAIL_TOOL_KEYS = ("admin_email", "from_email")
+
+
+def _assert_tool_emails_valid(content: str) -> None:
+    """Reject the tools-config save if any configured email address is malformed.
+
+    Empty/None means "unset/inherit" and is allowed. ${ENV:-...} placeholders are
+    resolved at load time, not literal addresses, so they are skipped. Raises
+    HTTPException(422) naming the bad field/value on the first invalid address.
+    """
+    try:
+        parsed = _safe_load_no_duplicates(content) or {}
+    except yaml.YAMLError:
+        return  # malformed YAML is caught by _validate_ai_agent_config (400)
+    tools = parsed.get("tools") if isinstance(parsed, dict) else None
+    if not isinstance(tools, dict):
+        return
+
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.utils.email_validator import EmailValidator
+
+    def _check(value: Any, field: str) -> None:
+        if value is None:
+            return
+        s = str(value).strip()
+        if not s or "${" in s:  # unset/inherit, or env placeholder
+            return
+        if not EmailValidator.validate_email(s):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid email address in tools.{field}: {value!r}",
+            )
+
+    for tool_name, tool_cfg in tools.items():
+        if not isinstance(tool_cfg, dict):
+            continue
+        for key in _EMAIL_TOOL_KEYS:
+            _check(tool_cfg.get(key), f"{tool_name}.{key}")
+            mapping = tool_cfg.get(f"{key}_by_context")
+            if isinstance(mapping, dict):
+                for ctx, v in mapping.items():
+                    _check(v, f"{tool_name}.{key}_by_context.{ctx}")
+
+
 def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     """
     Validate ai-agent.yaml content against the canonical AppConfig schema.
@@ -602,8 +650,18 @@ def persist_config_content(content: str) -> dict:
     # Check if change is limited to hot-reloadable sections
     try:
         if old_merged:
-            # Keys that can be hot-reloaded
-            hot_reload_keys = {'contexts', 'profiles', 'mcp'}
+            # Keys that can be hot-reloaded.
+            # barge_in is read live from self.config per-call (every barge-in path
+            # does getattr(self.config, "barge_in", None)), so YAML tuning of it
+            # applies to new calls without dropping active ones (MED-R1).
+            # vad is NOT hot-reloadable: EnhancedVADManager, webrtcvad.Vad,
+            # self._vad_mode and AudioGatingManager are built once from config.vad
+            # in Engine.__init__, and _reload_handler does not rebuild them — so a
+            # vad-only save must use the restart path to actually apply.
+            # streaming is NOT hot-reloadable for the same reason
+            # (StreamingPlaybackManager reads its params once at construction).
+            # Both kept on the restart path (bot re-review, Finding 2).
+            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in'}
 
             # Check if only hot-reloadable keys changed
             all_keys = set(old_merged.keys()) | set(new_parsed.keys())
@@ -634,6 +692,9 @@ def persist_config_content(content: str) -> dict:
 @router.post("/yaml")
 async def update_yaml_config(update: ConfigUpdate):
     try:
+        # MED-E1: reject malformed email addresses (422) before the schema check.
+        _assert_tool_emails_valid(update.content)
+        # Persist via the shared helper (also used by the structured tools CRUD API).
         return persist_config_content(update.content)
     except HTTPException:
         raise

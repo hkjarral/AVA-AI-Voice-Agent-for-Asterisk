@@ -118,7 +118,7 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
 from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models, agents, support  # noqa: E402
 import auth  # noqa: E402
 from agents_store import AgentsStore  # noqa: E402
-from agents_migration import run_migration, current_drift  # noqa: E402
+from agents_migration import migrate_if_needed, current_drift  # noqa: E402
 
 # Allow disabling API docs in production for security hardening
 _enable_api_docs = os.getenv("ENABLE_API_DOCS", "true").lower() in ("1", "true", "yes")
@@ -154,7 +154,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 |---------|-----------|
 | **AI Engine Health Server** (port 15000) | `/health`, `/metrics`, `/live`, `/ready`, `/reload` |
 """,
-    version="7.0.0",
+    version="7.0.1",
     docs_url="/docs" if _enable_api_docs else None,
     redoc_url="/redoc" if _enable_api_docs else None,
     openapi_url="/openapi.json" if _enable_api_docs else None,
@@ -179,11 +179,17 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 # Initialize users — generate a random one-time password on first run.
 _first_run_pw = auth.ensure_default_user()
 if _first_run_pw:
-    logging.getLogger(__name__).warning("=" * 60)
-    logging.getLogger(__name__).warning(
-        "FIRST-RUN ADMIN PASSWORD (change at first login): %s", _first_run_pw
+    _log = logging.getLogger(__name__)
+    _log.warning("=" * 60)
+    _log.warning("ONE-TIME ADMIN PASSWORD (username: admin) — change at first login")
+    _log.warning("Password: %s", _first_run_pw)
+    _log.warning(
+        "Also saved to root-only file: %s", auth.FIRST_RUN_PASSWORD_PATH
     )
-    logging.getLogger(__name__).warning("=" * 60)
+    _log.warning(
+        "If these logs are rotated/forwarded away, read the file above (host: ./config/.first-run-password)."
+    )
+    _log.warning("=" * 60)
 
 # Warn if JWT_SECRET isn't set (localhost-only is okay for dev)
 if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
@@ -196,31 +202,45 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
 # must keep working on YAML — this block must never crash admin_ui startup).
 app.state.agents_migration_result = None
 try:
-    _op_dir = "/app/data/operator"
+    # Honor AGENTS_DB_PATH (MED-C2) so the migration seeds the SAME path the agent
+    # stores read; otherwise a relocated DB is seeded at the default while the engine
+    # reads the env path and falls back to YAML (half-wired knob = footgun).
+    # abspath() so a bare filename (e.g. AGENTS_DB_PATH=agents.db) resolves to a
+    # real directory instead of "" — makedirs("") would raise.
+    _agents_db = os.path.abspath(os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db"))
+    _op_dir = os.path.dirname(_agents_db)
+    _db_filename = os.path.basename(_agents_db)
     os.makedirs(_op_dir, exist_ok=True)
     with open(os.path.join(_op_dir, ".migration.lock"), "w") as _lk:
         fcntl.flock(_lk, fcntl.LOCK_EX)
         _yaml_path = settings.CONFIG_PATH
         _contexts_dir = os.path.join(os.path.dirname(settings.CONFIG_PATH), "contexts")
-        _store = AgentsStore()
-        _result = run_migration(_store, _yaml_path, _contexts_dir)
+        # Atomic: migrate into a temp DB and only promote on success, so a
+        # collision/empty import never leaves an authoritative empty DB (CRIT-3).
+        _result = migrate_if_needed(_op_dir, _yaml_path, _contexts_dir, _db_filename)
         app.state.agents_migration_result = _result
         if _result.get("imported"):
             logging.getLogger(__name__).info(
-                "agents migration: imported %d (skipped: %s)",
-                _result["imported"], _result["skipped"],
+                "agents migration: imported %d (skipped: %s); default agent = %s",
+                _result["imported"], _result["skipped"], _result.get("default_slug"),
             )
-        _drift = current_drift(_store, _yaml_path, _contexts_dir)
-        if _drift:
-            logging.getLogger(__name__).warning(
-                "YAML contexts changed since agents.db migration "
-                "(stored=%s current=%s). Edits do NOT apply at runtime — "
-                "use the Agents tab or Migration Status page.",
-                _drift["stored_hash"][:12], _drift["current_hash"][:12],
-            )
+        _final_db = _agents_db
+        if os.path.exists(_final_db):
+            _store = AgentsStore(db_path=_final_db)
+            try:
+                _drift = current_drift(_store, _yaml_path, _contexts_dir)
+            finally:
+                _store.close()
+            if _drift:
+                logging.getLogger(__name__).warning(
+                    "YAML contexts changed since agents.db migration "
+                    "(stored=%s current=%s). Edits do NOT apply at runtime — "
+                    "use the Agents tab or Migration Status page.",
+                    _drift["stored_hash"][:12], _drift["current_hash"][:12],
+                )
 except Exception as _e:
     logging.getLogger(__name__).warning(
-        "agents migration skipped (DB unavailable / headless mode): %s", _e,
+        "agents migration FAILED (%s) — keeping YAML routing", _e,
     )
 
 # Configure CORS

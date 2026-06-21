@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -23,8 +24,10 @@ type Config struct {
 	AnthropicKey     string
 
 	// YAML values
-	ActivePipeline  string
-	DefaultProvider string
+	ActivePipeline     string
+	DefaultProvider    string
+	AvailablePipelines []string
+	AvailableProviders []string
 
 	// File paths
 	EnvPath  string
@@ -69,8 +72,59 @@ func LoadConfig() (*Config, error) {
 		// YAML might not exist yet, that's okay
 		PrintWarning(fmt.Sprintf("Could not load %s: %v", cfg.YAMLPath, err))
 	}
+	cfg.loadAvailableTargets()
 
 	return cfg, nil
+}
+
+// loadAvailableTargets discovers selectable runtime targets from the shipped
+// base config plus operator overrides. This keeps the CLI wizard synchronized
+// with newly added providers/pipelines without hard-coding a stale menu.
+func (c *Config) loadAvailableTargets() {
+	pipelines := map[string]bool{}
+	providers := map[string]bool{}
+	paths := []string{"config/ai-agent.yaml", "config/ai-agent.local.yaml"}
+	if strings.HasPrefix(c.YAMLPath, "../") {
+		paths = []string{"../config/ai-agent.yaml", "../config/ai-agent.local.yaml"}
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var root map[string]interface{}
+		if yaml.Unmarshal(data, &root) != nil {
+			continue
+		}
+		if block, ok := root["pipelines"].(map[string]interface{}); ok {
+			for name := range block {
+				pipelines[name] = true
+			}
+		}
+		if block, ok := root["providers"].(map[string]interface{}); ok {
+			for name, raw := range block {
+				cfg, _ := raw.(map[string]interface{})
+				kind := strings.ToLower(fmt.Sprint(cfg["type"]))
+				caps, _ := cfg["capabilities"].([]interface{})
+				capSet := map[string]bool{}
+				for _, cap := range caps {
+					capSet[strings.ToLower(fmt.Sprint(cap))] = true
+				}
+				knownFull := name == "openai_realtime" || name == "deepgram" || name == "google_live" || name == "elevenlabs_agent" || name == "local" || strings.HasPrefix(name, "grok")
+				if knownFull || kind == "full" || (capSet["stt"] && capSet["llm"] && capSet["tts"]) {
+					providers[name] = true
+				}
+			}
+		}
+	}
+	for name := range pipelines {
+		c.AvailablePipelines = append(c.AvailablePipelines, name)
+	}
+	for name := range providers {
+		c.AvailableProviders = append(c.AvailableProviders, name)
+	}
+	sort.Strings(c.AvailablePipelines)
+	sort.Strings(c.AvailableProviders)
 }
 
 // loadEnv reads .env file
@@ -141,7 +195,7 @@ func (c *Config) createEnvFromExample() error {
 		return err
 	}
 
-	err = os.WriteFile(c.EnvPath, input, 0644)
+	err = os.WriteFile(c.EnvPath, input, 0600)
 	if err != nil {
 		return err
 	}
@@ -152,26 +206,32 @@ func (c *Config) createEnvFromExample() error {
 
 // loadYAML reads config/ai-agent.yaml
 func (c *Config) loadYAML() error {
-	data, err := os.ReadFile(c.YAMLPath)
-	if err != nil {
-		return err
+	base := "config/ai-agent.yaml"
+	local := "config/ai-agent.local.yaml"
+	if strings.HasPrefix(c.YAMLPath, "../") {
+		base, local = "../config/ai-agent.yaml", "../config/ai-agent.local.yaml"
 	}
-
-	var yamlData map[string]interface{}
-	if err := yaml.Unmarshal(data, &yamlData); err != nil {
-		return err
+	loaded := false
+	for _, path := range []string{base, local} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var yamlData map[string]interface{}
+		if err := yaml.Unmarshal(data, &yamlData); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		loaded = true
+		if val, exists := yamlData["active_pipeline"]; exists {
+			c.ActivePipeline, _ = val.(string) // explicit null clears the base
+		}
+		if val, ok := yamlData["default_provider"].(string); ok {
+			c.DefaultProvider = val
+		}
 	}
-
-	// Extract active_pipeline
-	if val, ok := yamlData["active_pipeline"].(string); ok {
-		c.ActivePipeline = val
+	if !loaded {
+		return fmt.Errorf("no ai-agent YAML configuration found")
 	}
-
-	// Extract default_provider
-	if val, ok := yamlData["default_provider"].(string); ok {
-		c.DefaultProvider = val
-	}
-
 	return nil
 }
 
@@ -226,7 +286,10 @@ func (c *Config) SaveEnv() error {
 
 	// Write back
 	content := strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(c.EnvPath, []byte(content), 0644)
+	if err := os.WriteFile(c.EnvPath, []byte(content), 0600); err != nil {
+		return err
+	}
+	return os.Chmod(c.EnvPath, 0600)
 }
 
 // SaveYAML updates config/ai-agent.local.yaml (operator override file)
@@ -247,9 +310,13 @@ func (c *Config) SaveYAML(template string) error {
 		}
 	}
 
-	// Update active_pipeline/default_provider overrides.
+	// Always write active_pipeline, including null when switching from a
+	// pipeline to a full-agent provider. Leaving the previous override behind
+	// silently routed calls through the wrong engine path.
 	if c.ActivePipeline != "" {
 		yamlData["active_pipeline"] = c.ActivePipeline
+	} else {
+		yamlData["active_pipeline"] = nil
 	}
 	if c.DefaultProvider != "" {
 		yamlData["default_provider"] = c.DefaultProvider

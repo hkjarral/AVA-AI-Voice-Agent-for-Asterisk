@@ -298,9 +298,12 @@ class PlaybackManager:
             filename = f"audio-{playback_id.replace(':', '-')}.ulaw"
             file_path = os.path.join(self.media_dir, filename)
             
-            # Write audio data
-            with open(file_path, 'wb') as f:
-                f.write(audio_bytes)
+            # Write audio data off the event loop to avoid blocking the call path
+            def _write() -> None:
+                with open(file_path, 'wb') as f:
+                    f.write(audio_bytes)
+
+            await asyncio.to_thread(_write)
             
             # Set file permissions for Asterisk readability via group
             # Files inherit group ownership from setgid directory (set up by preflight.sh)

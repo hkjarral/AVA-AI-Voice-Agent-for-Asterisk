@@ -212,3 +212,11 @@ async def test_pipeline_orchestrator_registers_deepgram_adapters():
     assert isinstance(resolution.stt_adapter, DeepgramSTTAdapter)
     assert isinstance(resolution.tts_adapter, DeepgramTTSAdapter)
     assert resolution.stt_options["language"] == "en-US"
+
+
+def test_deepgram_config_has_eot_timeout_ms_default():
+    """LOW-P6: eot_timeout_ms must be a field on the config model (not inline-only)."""
+    cfg = DeepgramProviderConfig()
+    assert cfg.eot_timeout_ms == 5000
+    # Honors an explicit value too.
+    assert DeepgramProviderConfig(eot_timeout_ms=3000).eot_timeout_ms == 3000

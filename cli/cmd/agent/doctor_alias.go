@@ -1,9 +1,6 @@
 package main
 
 import (
-	"os"
-
-	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/check"
 	"github.com/spf13/cobra"
 )
 
@@ -17,22 +14,8 @@ var doctorCmd = &cobra.Command{
 	Hidden: true,
 	Long:   "Alias of `agent check` retained for backwards compatibility.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		runner := check.NewRunner(verbose, version, buildTime)
-		report, err := runner.Run()
-
-		if doctorJSON {
-			_ = report.OutputJSON(os.Stdout)
-		} else {
-			report.OutputText(os.Stdout)
-		}
-
-		if report.FailCount > 0 {
-			os.Exit(2)
-		}
-		if report.WarnCount > 0 {
-			os.Exit(1)
-		}
-		return err
+		checkJSON = doctorJSON
+		return checkCmd.RunE(cmd, args)
 	},
 }
 

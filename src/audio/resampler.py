@@ -47,10 +47,14 @@ def resample_audio(
     channels: int = 1,
     state: Optional[tuple] = None,
 ) -> Tuple[bytes, Optional[tuple]]:
-    # NOTE: sample_width and channels are kept for API compatibility
-    # but are not used by the NumPy interpolation implementation.
     """
     Resample PCM audio between sample rates.
+
+    Mono-only / PCM16-only: the NumPy interpolation implementation assumes
+    single-channel 16-bit little-endian samples. The ``sample_width`` and
+    ``channels`` parameters exist only to document and enforce that
+    assumption — passing anything else raises ``ValueError`` rather than
+    silently producing wrong audio (e.g. interleaved-stereo corruption).
 
     Uses numpy linear interpolation with exact ``arange * step`` positioning
     and 1-sample state carry for seamless chunk-by-chunk streaming.
@@ -65,6 +69,17 @@ def resample_audio(
 
     Returns a tuple of (converted_bytes, new_state).
     """
+    if channels != 1:
+        raise ValueError(
+            f"resample_audio is mono-only (channels=1); got channels={channels}. "
+            "The NumPy interpolation does not de-interleave; resample each "
+            "channel separately or downmix to mono first."
+        )
+    if sample_width != _PCM_SAMPLE_WIDTH:
+        raise ValueError(
+            f"resample_audio is PCM16-only (sample_width={_PCM_SAMPLE_WIDTH}); "
+            f"got sample_width={sample_width}."
+        )
     if not pcm_bytes or source_rate == target_rate:
         return pcm_bytes, state
 

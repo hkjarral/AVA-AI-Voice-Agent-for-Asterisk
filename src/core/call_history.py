@@ -277,7 +277,9 @@ class CallHistoryStore:
                         record.start_time.isoformat() if record.start_time else None,
                         record.end_time.isoformat() if record.end_time else None,
                         record.duration_seconds,
-                        record.provider_name,
+                        # LOW-CH3: normalize provider casing at write so stored values
+                        # match the case-insensitive filter / provider-health buckets.
+                        (record.provider_name or "unknown").lower(),
                         record.pipeline_name,
                         json.dumps(record.pipeline_components),
                         record.context_name,
@@ -568,8 +570,10 @@ class CallHistoryStore:
                         conditions.append("caller_name LIKE ?")
                         params.append(f"%{caller_name}%")
                     if provider_name:
-                        conditions.append("provider_name = ?")
-                        params.append(provider_name)
+                        # LOW-CH3: case-insensitive match so mixed-case legacy rows
+                        # bucket together with normalized writes.
+                        conditions.append("LOWER(provider_name) = ?")
+                        params.append(provider_name.lower())
                     if pipeline_name:
                         conditions.append("pipeline_name = ?")
                         params.append(pipeline_name)
@@ -691,8 +695,10 @@ class CallHistoryStore:
                         conditions.append("caller_name LIKE ?")
                         params.append(f"%{caller_name}%")
                     if provider_name:
-                        conditions.append("provider_name = ?")
-                        params.append(provider_name)
+                        # LOW-CH3: case-insensitive match so mixed-case legacy rows
+                        # bucket together with normalized writes.
+                        conditions.append("LOWER(provider_name) = ?")
+                        params.append(provider_name.lower())
                     if pipeline_name:
                         conditions.append("pipeline_name = ?")
                         params.append(pipeline_name)
@@ -926,7 +932,9 @@ class CallHistoryStore:
         if not self._enabled or self._retention_days <= 0:
             return 0
         
-        cutoff = datetime.now() - timedelta(days=self._retention_days)
+        # UTC-aware to match stored start_time (ISO with +00:00); a naive local
+        # cutoff would string-compare incorrectly against the stored values (LOW-CH4).
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._retention_days)
         deleted = await self.delete_before(cutoff)
         if deleted > 0:
             logger.info(f"Cleaned up {deleted} old call history records (retention: {self._retention_days} days)")

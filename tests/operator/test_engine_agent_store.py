@@ -1,5 +1,5 @@
 import json, sqlite3, pytest
-from src.core.agent_store import EngineAgentStore
+from src.core.agent_store import EngineAgentStore, AgentStoreReadError
 
 SCHEMA_MIN = """CREATE TABLE agents (id TEXT PRIMARY KEY, slug TEXT UNIQUE, display_name TEXT,
 extension TEXT, role_label TEXT, provider TEXT, voice TEXT, greeting TEXT, prompt TEXT,
@@ -39,16 +39,34 @@ def test_db_absent_means_unavailable(tmp_path):
     s = EngineAgentStore(db_path=str(tmp_path / "missing.db"))
     assert not s.available()
 
-def test_corrupt_json_returns_none_not_crash(db):
-    # Corrupt extra_json (manual edit / bad backup) must not crash the call:
-    # resolve() returns None so the caller can fall back to YAML.
+def test_corrupt_json_raises_read_error(db):
+    # HIGH-9: corrupt extra_json (manual edit / bad backup) is a DB read error, not a
+    # clean not-found. resolve() raises AgentStoreReadError so the orchestrator falls
+    # back to YAML — without resurrecting deleted agents. The call is not crashed:
+    # the exception is controlled and handled one level up.
     c = sqlite3.connect(db)
     c.execute("UPDATE agents SET extra_json='{not valid json' WHERE slug='sales'")
     c.commit(); c.close()
-    assert EngineAgentStore(db_path=db).resolve("sales") is None
+    with pytest.raises(AgentStoreReadError):
+        EngineAgentStore(db_path=db).resolve("sales")
 
-def test_corrupt_tools_json_returns_none_not_crash(db):
+def test_corrupt_tools_json_raises_read_error(db):
     c = sqlite3.connect(db)
     c.execute("UPDATE agents SET tools_json='[oops' WHERE slug='sales'")
     c.commit(); c.close()
-    assert EngineAgentStore(db_path=db).resolve("sales") is None
+    with pytest.raises(AgentStoreReadError):
+        EngineAgentStore(db_path=db).resolve("sales")
+
+def test_no_arg_honors_agents_db_path_env(db, monkeypatch):
+    # MED-C2: EngineAgentStore() (constructed with no arg by the orchestrator)
+    # must pick up AGENTS_DB_PATH so a relocated DB is read at runtime.
+    monkeypatch.setenv("AGENTS_DB_PATH", db)
+    s = EngineAgentStore()
+    assert s.db_path == db
+    assert s.resolve("sales").provider == "openai_realtime"
+
+def test_no_arg_default_unchanged_when_env_unset(monkeypatch):
+    # MED-C2: with the env unset, the historical default is preserved exactly
+    # (no behavior change for existing installs).
+    monkeypatch.delenv("AGENTS_DB_PATH", raising=False)
+    assert EngineAgentStore().db_path == "/app/data/operator/agents.db"

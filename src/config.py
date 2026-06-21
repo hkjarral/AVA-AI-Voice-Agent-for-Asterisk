@@ -43,7 +43,7 @@ class AsteriskConfig(BaseModel):
     ssl_verify: bool = Field(default=True)  # Set to False to skip SSL certificate verification
     username: str
     password: str
-    app_name: str = Field(default="ai-voice-agent")
+    app_name: str = Field(default="asterisk-ai-voice-agent")
 
 class ExternalMediaConfig(BaseModel):
     # Network configuration
@@ -88,6 +88,12 @@ class LocalProviderConfig(BaseModel):
     auth_token: Optional[str] = None
     connect_timeout_sec: float = Field(default=5.0)
     response_timeout_sec: float = Field(default=5.0)
+    # MED-R3: max total wall-time the mid-call background reconnect will keep
+    # retrying after the Local AI Server WebSocket drops mid-call. While retrying,
+    # inbound caller audio is dropped (the caller hears silence), so this bounds
+    # that mute window. On exceed, the provider stops retrying and signals the
+    # engine (ProviderDisconnected) to play an apology and hang up.
+    mid_call_reconnect_timeout_sec: int = Field(default=20)
     # Farewell mode: how to play goodbye message when call ends
     # "tts" - Use local TTS (best for fast hardware with <5s LLM response)
     # "asterisk" - Use Asterisk's built-in goodbye sound (reliable for slow hardware)
@@ -175,6 +181,11 @@ class DeepgramProviderConfig(BaseModel):
     # detection becomes a no-op or misbehaves.
     eot_threshold: Optional[float] = Field(default=0.7, ge=0.5, le=0.9)
     eager_eot_threshold: Optional[float] = Field(default=None, ge=0.3, le=0.9)
+    # Flux end-of-turn timeout in milliseconds: how long Flux waits after the
+    # last speech before forcing an end-of-turn. Read by the Flux adapter
+    # (src/pipelines/deepgram_flux.py); the default mirrors the adapter's
+    # historical hardcoded fallback of 5000ms (audit LOW-P6).
+    eot_timeout_ms: int = Field(default=5000)
     keyterms: Optional[List[str]] = Field(default=None)
     greeting: Optional[str] = None
     instructions: Optional[str] = None
@@ -323,6 +334,7 @@ class GoogleProviderConfig(BaseModel):
     type: Optional[str] = None
     display_name: Optional[str] = None
     customer: Optional[str] = None
+    # NOTE: not read by any adapter (audit LOW-P9)
     project_id: Optional[str] = None
     stt_base_url: str = Field(default="https://speech.googleapis.com/v1")
     tts_base_url: str = Field(default="https://texttospeech.googleapis.com/v1")
@@ -341,7 +353,15 @@ class GoogleProviderConfig(BaseModel):
     llm_max_output_tokens: int = Field(default=8192, ge=1, le=8192)  # Max output tokens (Gemini supports up to 8192)
     llm_top_p: float = Field(default=0.95, ge=0.0, le=1.0)  # Nucleus sampling parameter
     llm_top_k: int = Field(default=40, ge=1, le=100)  # Top-k sampling parameter
-    
+
+    # Google Live VAD / turn-taking tuning (MED-P3). Previously read via getattr with
+    # these same defaults but absent from the model, so they were untunable; declare
+    # them so YAML/UI values are honored.
+    vad_end_of_speech_sensitivity: str = Field(default="END_SENSITIVITY_HIGH")
+    vad_start_of_speech_sensitivity: str = Field(default="START_SENSITIVITY_HIGH")
+    vad_prefix_padding_ms: int = Field(default=20, ge=0)
+    vad_silence_duration_ms: int = Field(default=500, ge=0)
+
     # Google Live response configuration
     response_modalities: str = Field(default="audio")  # "audio", "text", or "audio_text"
     
@@ -563,6 +583,8 @@ class AzureTTSProviderConfig(BaseModel):
     # "file"   → force file-based playback, regardless of global mode
     # Useful when you want Azure TTS streaming (chunked HTTP) but file-based Asterisk playback,
     # or when you want streaming Asterisk playback even if downstream_mode=file globally.
+    # NOTE: not read by any adapter (audit LOW-P9) — the Azure TTS adapter computes
+    # its own downstream_mode_override from streaming settings (src/pipelines/azure.py).
     downstream_mode_override: str = Field(default="auto")
     # Azure output audio format header value (X-Microsoft-OutputFormat).
     # PCM-based formats (riff-*) are decoded natively; raw-8khz-mulaw is used directly.
@@ -985,6 +1007,17 @@ class AppConfig(BaseModel):
     # Ensures farewell message fully plays through RTP pipeline before disconnecting
     # Increase if farewell gets cut off (typical farewells need 2-4 seconds)
     farewell_hangup_delay_sec: float = Field(default=5.0)
+
+    # HIGH-3: behavior when the AI provider fails to start a session on an
+    # already-answered channel. "announce_hangup" (default) plays a short error
+    # prompt then hangs up so the caller is not left in silent dead air;
+    # "leave_open" preserves the legacy behavior (log + cleanup only, line stays
+    # open until the caller hangs up).
+    on_provider_failure: str = Field(default="announce_hangup")
+    # Asterisk sound file played to the caller before hangup when a provider fails
+    # to start. May be a bare sound name ("custom/foo") or a "sound:"/"recording:"
+    # URI. Best-effort: if missing/unplayable the channel is still hung up.
+    provider_failure_prompt: str = Field(default="sorry-youre-having-problems")
 
     # Ensure tests that construct AppConfig(**dict) directly still get normalized pipelines
     # similar to load_config(), which calls _normalize_pipelines().

@@ -229,7 +229,9 @@ class OutboundStore:
     ]
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = db_path or os.getenv("CALL_HISTORY_DB_PATH", "data/call_history.db")
+        # Absolute default so the outbound tables land in the same file as call history
+        # regardless of CWD (matches CallHistoryStore's default) — see MED-C1.
+        self._db_path = db_path or os.getenv("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
         self._enabled = str(os.getenv("CALL_HISTORY_ENABLED", "true")).strip().lower() not in ("0", "false", "no")
         self._lock = threading.Lock()
         self._initialized = False

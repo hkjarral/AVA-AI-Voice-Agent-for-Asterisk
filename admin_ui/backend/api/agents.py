@@ -1,13 +1,30 @@
 """Agents CRUD + stats + dialplan generator (A2) + templates (A3) + migration status."""
-import json, os, sqlite3
+import json, os, sqlite3, sys
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from agents_store import AgentsStore, slugify
 from agents_migration import current_drift, acknowledge_drift, run_migration, \
-    merged_effective_contexts
+    merged_effective_contexts, disambiguate_slug
 import settings  # for YAML paths
 
 router = APIRouter()
+
+# MED-E1: reuse the engine's canonical email validator so the admin UI rejects the
+# same addresses the call path would. Empty/None means "unset/inherit" and is allowed;
+# only non-empty values are validated. A pydantic field_validator raises ValueError,
+# which FastAPI surfaces as HTTP 422.
+if settings.PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, settings.PROJECT_ROOT)
+from src.utils.email_validator import EmailValidator
+
+
+def _validate_optional_email(v):
+    if v is None or str(v).strip() == "":
+        return None
+    v = str(v).strip()
+    if not EmailValidator.validate_email(v):
+        raise ValueError(f"invalid email address: {v!r}")
+    return v
 CALL_HISTORY_DB = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
 TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "agent_templates.json")
 # CORRECTION vs plan: the real default Stasis app is "asterisk-ai-voice-agent"
@@ -34,9 +51,16 @@ class AgentIn(BaseModel):
     greeting: str | None = None
     audio_profile: str | None = None
     tools_json: str | None = None
+    # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
     notes: str | None = None
+    email_recipient: str | None = None
+    email_from: str | None = None
+    email_enabled: bool | None = None
+
+    _check_emails = field_validator("email_recipient", "email_from")(
+        _validate_optional_email)
 
 class AgentPatch(BaseModel):
     display_name: str | None = None
@@ -48,10 +72,17 @@ class AgentPatch(BaseModel):
     greeting: str | None = None
     audio_profile: str | None = None
     tools_json: str | None = None
+    # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
     notes: str | None = None
+    email_recipient: str | None = None
+    email_from: str | None = None
+    email_enabled: bool | None = None
     is_active: bool | None = None
+
+    _check_emails = field_validator("email_recipient", "email_from")(
+        _validate_optional_email)
 
 class AgentOut(BaseModel):
     """Full agent row as stored in agents.db. Declares every column so attaching this
@@ -68,6 +99,7 @@ class AgentOut(BaseModel):
     greeting: str | None = None
     prompt: str
     tools_json: str | None = None
+    # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     audio_profile: str | None = None
     extra_json: str | None = None
@@ -78,6 +110,9 @@ class AgentOut(BaseModel):
     created_at: str
     updated_at: str
     notes: str | None = None
+    email_recipient: str | None = None
+    email_from: str | None = None
+    email_enabled: bool | None = None
 
 class AgentSummaryResponse(BaseModel):
     active_agents: int
@@ -181,8 +216,26 @@ def stats_batch():
                     "AVG(duration_seconds) d, MAX(start_time) m "
                     "FROM call_records GROUP BY context_name"
                 ).fetchall()
+            # MED-A3: call_records.context_name holds the raw dialplan name (e.g.
+            # "Tool_Example"), while agents are keyed by slug ("tool_example"). Fold
+            # the per-context aggregates into slug buckets so per-agent stats match
+            # the agent rows instead of silently under-counting legacy/non-slug-safe
+            # names. Multiple raw names that map to one slug are merged (duration is a
+            # call-weighted mean).
+            acc: dict = {}  # slug -> [calls, transfers, dur_sum, dur_cnt, last]
             for ctx, cnt, transfers, avg_dur, last in rows:
-                call_data[ctx] = (cnt, transfers or 0, avg_dur, last)
+                key = slugify(ctx) if ctx else ctx
+                a = acc.setdefault(key, [0, 0, 0.0, 0, None])
+                a[0] += cnt
+                a[1] += (transfers or 0)
+                if avg_dur is not None:
+                    a[2] += avg_dur * cnt
+                    a[3] += cnt
+                if last and (a[4] is None or last > a[4]):
+                    a[4] = last
+            for key, (calls, transfers, dur_sum, dur_cnt, last) in acc.items():
+                avg = (dur_sum / dur_cnt) if dur_cnt else None
+                call_data[key] = (calls, transfers, avg, last)
         except sqlite3.OperationalError:
             pass
 
@@ -331,15 +384,33 @@ def get_agent(slug: str):
 
 @router.get("/agents/{slug}/stats", response_model=AgentStatsResponse)
 def stats(slug: str):
-    if not _store().get_by_slug(slug):
+    row = _store().get_by_slug(slug)
+    if not row:
         raise HTTPException(404)
     if not os.path.exists(CALL_HISTORY_DB):
         return {"calls_30d": 0, "last_call": None}
-    with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
-        calls = c.execute("SELECT COUNT(*) FROM call_records WHERE context_name=? "
-                          "AND start_time >= datetime('now','-30 days')", (slug,)).fetchone()[0]
-        last = c.execute("SELECT MAX(start_time) FROM call_records WHERE context_name=?",
-                         (slug,)).fetchone()[0]
+    # Match the slug, the original name, AND any raw context_name that slugifies to
+    # this slug (call_records store the raw context_name, e.g. "Tool_Example" /
+    # "TOOL-EXAMPLE"). Fold via a SQLite custom function so we mirror stats-batch's
+    # slug bucketing instead of under-counting legacy/non-slug-safe names (CodeRabbit
+    # Major; cf. MED-A3). Parameterized only — no value interpolation into SQL.
+    names = tuple({slug, row.get("display_name")} - {None})
+    placeholders = ",".join("?" * len(names))
+    # LOW-CH2: guard like the sibling endpoints so a missing call_records table
+    # (file exists but engine never ran) degrades to zeros instead of a 500.
+    try:
+        with sqlite3.connect(f"file:{CALL_HISTORY_DB}?mode=ro", uri=True) as c:
+            c.create_function("agent_slug", 1, lambda v: slugify(v) if v else None)
+            calls = c.execute(
+                f"SELECT COUNT(*) FROM call_records "
+                f"WHERE (context_name IN ({placeholders}) OR agent_slug(context_name)=?) "
+                "AND start_time >= datetime('now','-30 days')", (*names, slug)).fetchone()[0]
+            last = c.execute(
+                f"SELECT MAX(start_time) FROM call_records "
+                f"WHERE context_name IN ({placeholders}) OR agent_slug(context_name)=?",
+                (*names, slug)).fetchone()[0]
+    except sqlite3.OperationalError:
+        return {"calls_30d": 0, "last_call": None}
     return {"calls_30d": calls, "last_call": last}
 
 @router.get("/agents/{slug}/dialplan", response_model=DialplanResponse)
@@ -374,23 +445,89 @@ def migration_ack():
     acknowledge_drift(_store(), _yaml_path(), _contexts_dir())
     return {"ok": True}
 
+# First-class store columns a context maps onto directly. Everything else in the
+# context (e.g. pipeline, background_music, disable flags) goes into extra_json — the
+# same split run_migration() uses, kept symmetric with export_agents_yaml.export_yaml.
+_RECONCILE_FIRST_CLASS = {
+    "provider", "prompt", "voice", "greeting", "extension", "role_label", "notes",
+    "email_recipient", "email_from", "email_enabled", "tools", "audio_profile",
+    "profile",
+}
+
+
+def _context_to_agent_fields(ctx: dict) -> dict:
+    """Map a merged YAML context dict to AgentsStore create/update kwargs, mirroring
+    run_migration()'s field handling (tools->tools_json, profile/audio_profile,
+    leftover keys->extra_json) plus the per-context operator/email fields that
+    export_agents_yaml emits. Inverse of export_yaml so a round-trip is lossless."""
+    extra = {k: v for k, v in ctx.items() if k not in _RECONCILE_FIRST_CLASS}
+    fields = {
+        "provider": ctx.get("provider") or "",
+        "prompt": ctx.get("prompt"),
+        "voice": ctx.get("voice"),
+        "greeting": ctx.get("greeting"),
+        "extension": ctx.get("extension"),
+        "role_label": ctx.get("role_label"),
+        "notes": ctx.get("notes"),
+        "email_recipient": ctx.get("email_recipient"),
+        "email_from": ctx.get("email_from"),
+        "email_enabled": ctx.get("email_enabled"),
+        "tools_json": json.dumps(ctx["tools"]) if ctx.get("tools") else None,
+        "audio_profile": ctx.get("profile") or ctx.get("audio_profile"),
+        "extra_json": json.dumps(extra) if extra else None,
+    }
+    return fields
+
+
 @router.post("/agents-migration/reconcile")
 def migration_reconcile():
-    """Re-import YAML contexts: upsert by slug (spec §11 'Import YAML changes')."""
+    """Re-import YAML contexts: upsert by slug (spec §11 'Import YAML changes').
+
+    MED-A2: runs the same _engine_ok validation create/patch use (an unroutable
+    context — neither provider nor pipeline — is skipped, not silently created) and
+    imports the full field set, not just prompt. Upsert keeps the slug stable, so an
+    update is never a destructive recreate."""
     store = _store()
     merged = merged_effective_contexts(_yaml_path(), _contexts_dir())
     changed = []
+    skipped = []
+    # Finding 2: reconcile must be collision-safe like the one-time migration.
+    # Two contexts can slugify to the same value (e.g. "Sales-East" and "sales_east"
+    # -> "sales_east"); matching only on slugify(key) would make the second context
+    # overwrite the first agent and orphan the migration-created "sales_east_2" row.
+    # Map each context to ITS OWN agent by original name (display_name == key, what the
+    # migration stored), and mint new slugs with the SAME disambiguation helper the
+    # migration uses (DRY), seeded with the slugs already in the DB.
+    existing_by_name = {a["display_name"]: a for a in store.list_all()}
+    seen_slugs = {a["slug"] for a in store.list_all()}
     for key, ctx in merged.items():
         src = ctx.pop("_source_file", None)
-        slug_key = slugify(key)
-        existing = store.get_by_slug(slug_key)
-        if existing is None and ctx.get("prompt"):
-            store.create(display_name=key, provider=ctx.get("provider", ""),
-                         prompt=ctx["prompt"], slug=slug_key,
-                         is_operator_managed=0, source_file=src)
-            changed.append(("added", slug_key))
-        elif existing and ctx.get("prompt") and ctx["prompt"] != existing["prompt"]:
-            store.update(slug_key, prompt=ctx["prompt"])
+        fields = _context_to_agent_fields(ctx)
+        existing = existing_by_name.get(key)
+        slug_key = existing["slug"] if existing else slugify(key)
+        if not fields["prompt"]:
+            skipped.append((slug_key, "missing prompt"))
+            continue
+        if not _engine_ok(fields["provider"], fields["extra_json"]):
+            skipped.append((slug_key, "no provider or pipeline"))
+            continue
+        # CodeRabbit Minor: reconcile bypasses the AgentIn/AgentPatch pydantic email
+        # validation, so validate email_recipient/email_from here with the same
+        # EmailValidator (MED-E1/H3) before persisting; skip invalid rather than
+        # writing a bad address the call path would later reject.
+        try:
+            fields["email_recipient"] = _validate_optional_email(fields["email_recipient"])
+            fields["email_from"] = _validate_optional_email(fields["email_from"])
+        except ValueError:
+            skipped.append((slug_key, "invalid email"))
+            continue
+        if existing is None:
+            new_slug = disambiguate_slug(key, seen_slugs)
+            store.create(display_name=key, slug=new_slug,
+                         is_operator_managed=0, source_file=src, **fields)
+            changed.append(("added", new_slug))
+        elif any(existing.get(k) != v for k, v in fields.items()):
+            store.update(slug_key, **fields)
             changed.append(("updated", slug_key))
     acknowledge_drift(store, _yaml_path(), _contexts_dir())
-    return {"changed": changed}
+    return {"changed": changed, "skipped": skipped}

@@ -40,7 +40,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'chat_base_url', label: 'Chat API Base URL', type: 'text', required: true, placeholder: 'http://10.44.0.5:8080/v1', default: 'https://api.openai.com/v1' },
       { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'mlx-community/Qwen3-8B-4bit', suggestions: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
-      { key: 'api_key', label: 'API Key', type: 'text', required: false, placeholder: 'not-needed (for self-hosted)', default: 'not-needed', tooltip: 'Use "not-needed" for self-hosted endpoints or ${ENV_VAR} for env references' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: false, placeholder: 'not-needed (for self-hosted)', default: 'not-needed', tooltip: 'Use "not-needed" for self-hosted endpoints or ${ENV_VAR} for env references' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 15, tooltip: 'Max wait time for LLM response. Increase for complex prompts or slow endpoints.' },
@@ -68,7 +68,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'chat_base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.telnyx.com/v2/ai', placeholder: 'https://api.telnyx.com/v2/ai' },
       { key: 'chat_model', label: 'Model', type: 'combobox', required: true, placeholder: 'Qwen/Qwen3-235B-A22B', suggestions: ['Qwen/Qwen3-235B-A22B', 'meta-llama/Meta-Llama-3.1-70B-Instruct', 'meta-llama/Meta-Llama-3.1-8B-Instruct'] },
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${TELNYX_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${TELNYX_API_KEY}' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 200 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30 },
@@ -82,7 +82,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'chat_base_url', label: 'API Base URL', type: 'text', required: true, default: 'https://api.minimax.io/v1', placeholder: 'https://api.minimax.io/v1' },
       { key: 'chat_model', label: 'Model', type: 'combobox', required: true, suggestions: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${MINIMAX_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${MINIMAX_API_KEY}' },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.7 },
       { key: 'response_timeout_sec', label: 'Response Timeout (sec)', type: 'number', required: false, default: 30 },
     ],
@@ -94,7 +94,7 @@ const LLM_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'local',
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
-      { key: 'auth_token', label: 'Auth Token', type: 'text', required: false, placeholder: 'Optional WebSocket auth token' },
+      { key: 'auth_token', label: 'Auth Token', type: 'password', required: false, placeholder: 'Optional WebSocket auth token' },
       { key: 'max_tokens', label: 'Max Tokens', type: 'number', required: false, default: 64 },
       { key: 'temperature', label: 'Temperature', type: 'number', required: false, default: 0.4 },
     ],
@@ -113,7 +113,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     fields: [
       { key: 'stt_base_url', label: 'STT API Base URL', type: 'text', required: false, default: 'https://api.openai.com/v1/audio/transcriptions' },
       { key: 'stt_model', label: 'Model', type: 'combobox', required: false, default: 'whisper-1', suggestions: ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'] },
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${OPENAI_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${OPENAI_API_KEY}' },
       { key: 'chunk_size_ms', label: 'Chunk Size (ms)', type: 'number', required: false, default: 100 },
     ],
   },
@@ -123,7 +123,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     description: 'Groq-hosted Whisper transcription (fast inference)',
     yamlType: 'groq',
     fields: [
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${GROQ_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GROQ_API_KEY}' },
       { key: 'stt_model', label: 'Model', type: 'combobox', required: false, default: 'whisper-large-v3-turbo', suggestions: ['whisper-large-v3-turbo', 'whisper-large-v3'] },
     ],
   },
@@ -133,7 +133,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     description: 'Microsoft Azure Cognitive Services speech recognition',
     yamlType: 'azure',
     fields: [
-      { key: 'api_key', label: 'Azure Speech Key', type: 'text', required: true, placeholder: '${AZURE_SPEECH_KEY}' },
+      { key: 'api_key', label: 'Azure Speech Key', type: 'password', required: true, placeholder: '${AZURE_SPEECH_KEY}' },
       { key: 'region', label: 'Region', type: 'combobox', required: true, default: 'eastus', suggestions: ['eastus', 'westus2', 'westeurope', 'southeastasia'] },
       { key: 'language', label: 'Language', type: 'combobox', required: false, default: 'en-US', suggestions: ['en-US', 'en-GB', 'es-ES', 'fr-FR', 'de-DE'] },
       { key: 'variant', label: 'Variant', type: 'combobox', required: false, default: 'realtime', suggestions: ['realtime', 'fast'] },
@@ -146,7 +146,7 @@ const STT_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'local',
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
-      { key: 'auth_token', label: 'Auth Token', type: 'text', required: false },
+      { key: 'auth_token', label: 'Auth Token', type: 'password', required: false },
       { key: 'stt_backend', label: 'STT Backend', type: 'combobox', required: false, default: 'vosk', suggestions: ['vosk', 'sherpa', 'kroko', 'faster_whisper', 'whisper_cpp'] },
       { key: 'chunk_ms', label: 'Chunk Size (ms)', type: 'number', required: false, default: 320 },
     ],
@@ -166,7 +166,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
       { key: 'tts_base_url', label: 'TTS API Base URL', type: 'text', required: false, default: 'https://api.openai.com/v1/audio/speech' },
       { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: 'tts-1', suggestions: ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts'] },
       { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'alloy', suggestions: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'] },
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${OPENAI_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${OPENAI_API_KEY}' },
     ],
   },
   {
@@ -175,7 +175,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     description: 'Groq-hosted text-to-speech (Orpheus voices)',
     yamlType: 'groq',
     fields: [
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${GROQ_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GROQ_API_KEY}' },
       { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: 'canopylabs/orpheus-v1-english', suggestions: ['canopylabs/orpheus-v1-english', 'canopylabs/orpheus-arabic-saudi'] },
       { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'hannah', suggestions: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy'] },
     ],
@@ -186,7 +186,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     description: 'ElevenLabs premium text-to-speech',
     yamlType: 'elevenlabs',
     fields: [
-      { key: 'api_key', label: 'API Key', type: 'text', required: true, placeholder: '${ELEVENLABS_API_KEY}' },
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${ELEVENLABS_API_KEY}' },
       { key: 'voice_id', label: 'Voice ID', type: 'text', required: false, default: '21m00Tcm4TlvDq8ikWAM', placeholder: 'Rachel voice ID' },
       { key: 'model_id', label: 'Model', type: 'combobox', required: false, default: 'eleven_turbo_v2_5', suggestions: ['eleven_turbo_v2_5', 'eleven_multilingual_v2', 'eleven_monolingual_v1'] },
       { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'ulaw_8000', suggestions: ['ulaw_8000', 'pcm_16000', 'pcm_24000', 'mp3_44100'] },
@@ -198,7 +198,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     description: 'Microsoft Azure Cognitive Services speech synthesis',
     yamlType: 'azure',
     fields: [
-      { key: 'api_key', label: 'Azure Speech Key', type: 'text', required: true, placeholder: '${AZURE_SPEECH_KEY}' },
+      { key: 'api_key', label: 'Azure Speech Key', type: 'password', required: true, placeholder: '${AZURE_SPEECH_KEY}' },
       { key: 'region', label: 'Region', type: 'combobox', required: true, default: 'eastus', suggestions: ['eastus', 'westus2', 'westeurope', 'southeastasia'] },
       { key: 'voice_name', label: 'Voice', type: 'combobox', required: false, default: 'en-US-JennyNeural', suggestions: ['en-US-JennyNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural'] },
       { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'raw-8khz-16bit-mono-pcm', suggestions: ['raw-8khz-16bit-mono-pcm', 'raw-16khz-16bit-mono-pcm'] },
@@ -211,7 +211,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
     yamlType: 'local',
     fields: [
       { key: 'ws_url', label: 'WebSocket URL', type: 'text', required: true, default: 'ws://127.0.0.1:8765', placeholder: 'ws://127.0.0.1:8765' },
-      { key: 'auth_token', label: 'Auth Token', type: 'text', required: false },
+      { key: 'auth_token', label: 'Auth Token', type: 'password', required: false },
       { key: 'tts_backend', label: 'TTS Backend', type: 'combobox', required: false, default: 'piper', suggestions: ['piper', 'kokoro', 'silero', 'melotts'] },
     ],
   },

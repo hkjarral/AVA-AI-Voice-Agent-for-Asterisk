@@ -330,7 +330,7 @@ curl http://localhost:15000/health
 
 ### Post-Migration
 
-- Access Admin UI at `http://localhost:3003` (login: admin/admin, change immediately)
+- Access Admin UI at `http://localhost:3003` (first-run password is printed to the admin_ui logs: `docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`; you'll be required to change it at first login)
 - Review your provider configuration in the Admin UI Setup Wizard
 - Check Call History for your first test call to verify everything works
 
