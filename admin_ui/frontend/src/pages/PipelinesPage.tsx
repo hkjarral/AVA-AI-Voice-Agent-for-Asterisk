@@ -104,9 +104,10 @@ const PipelinesPage = () => {
     };
 
     useEffect(() => {
-        // Seed from cache (no "Loading…" flash on revisit); revalidate in the
-        // background so out-of-band edits from other pages still surface.
-        fetchConfig(getCachedConfig() != null);
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
+        fetchConfig();
     }, []);
 
     const fetchConfig = async (force = false) => {

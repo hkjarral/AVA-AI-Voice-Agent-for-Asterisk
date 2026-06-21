@@ -52,9 +52,10 @@ const ProvidersPage: React.FC = () => {
     const [providerHealthUnavailable, setProviderHealthUnavailable] = useState(false);
 
     useEffect(() => {
-        // Seed from cache (no "Loading…" flash on revisit); revalidate in the
-        // background so out-of-band edits from other pages still surface.
-        fetchConfig(getCachedConfig() != null);
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
+        fetchConfig();
         fetchProviderHealth();
         const healthInterval = setInterval(fetchProviderHealth, 30000);
         // Fetch local AI status for live model info on cards

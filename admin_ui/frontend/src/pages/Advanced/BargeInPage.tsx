@@ -20,7 +20,10 @@ const BargeInPage = () => {
     const [applyMethod, setApplyMethod] = useState<string>('restart');
 
     useEffect(() => {
-        fetchConfig(getCachedConfig() != null);
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
+        fetchConfig();
     }, []);
 
     const fetchConfig = async (force = false) => {
