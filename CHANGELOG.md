@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Config pages no longer flash "Loading configuration…" on every navigation (UX-01 — pilot)** (`admin_ui/frontend/src/utils/configCache.ts`, `admin_ui/frontend/src/pages/ProvidersPage.tsx`, `admin_ui/frontend/src/pages/PipelinesPage.tsx`): the shared `/api/config/yaml` document each config page reads is now cached behind a small module with stale-while-revalidate semantics — pages seed their initial render from the cache (so revisiting a config page is instant, with no loading spinner), revalidate in the background to catch out-of-band edits, and invalidate the cache on save. The Providers and Pipelines pages are migrated as the first pilot; the remaining config pages follow in subsequent changes. Cache behavior (cache hit, forced refetch, invalidation, in-flight dedup, `yaml_error` passthrough) is unit-tested in `admin_ui/frontend/src/utils/configCache.test.ts`.
+- **Config-cache rollout — batch 2 (UX-01)** (`admin_ui/frontend/src/pages/Advanced/VADPage.tsx`, `BargeInPage.tsx`, `StreamingPage.tsx`, `TransportPage.tsx`): the four Advanced config pages now seed from the shared `/api/config/yaml` cache and revalidate in the background, so navigating to them no longer flashes "Loading configuration…". Cache invalidation on save is handled by the shared write interceptor, so no per-page save changes were needed.
 
 ### Fixed
 
