@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml, invalidateConfigYaml } from '../utils/configCache';
 import { Plus, Settings, Trash2, Server, AlertCircle, CheckCircle2, Loader2, RefreshCw, Wand2, Star } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
@@ -33,8 +34,8 @@ const providerLabel = (name: string, provider: any): string => provider?.display
 
 const ProvidersPage: React.FC = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
     const [editingProvider, setEditingProvider] = useState<string | null>(null);
@@ -51,7 +52,9 @@ const ProvidersPage: React.FC = () => {
     const [providerHealthUnavailable, setProviderHealthUnavailable] = useState(false);
 
     useEffect(() => {
-        fetchConfig();
+        // Seed from cache (no "Loading…" flash on revisit); revalidate in the
+        // background so out-of-band edits from other pages still surface.
+        fetchConfig(getCachedConfig() != null);
         fetchProviderHealth();
         const healthInterval = setInterval(fetchProviderHealth, 30000);
         // Fetch local AI status for live model info on cards
@@ -68,19 +71,12 @@ const ProvidersPage: React.FC = () => {
         return () => { clearInterval(interval); clearInterval(healthInterval); };
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-                setError(null);
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setError(null);
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError as any);
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -149,6 +145,7 @@ const ProvidersPage: React.FC = () => {
             const normalized = normalizeProviderCapabilities(newConfig);
             const sanitized = sanitizeConfigForSave(normalized);
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
+            invalidateConfigYaml();
             setConfig(sanitized);
             setPendingChanges('restart');
         } catch (err) {
