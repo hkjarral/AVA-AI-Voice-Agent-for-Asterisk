@@ -36,4 +36,10 @@ describe('getEffectiveFullAgentKind', () => {
     it('returns null for a modular single-capability provider (type:local is not a full agent)', () => {
         expect(getEffectiveFullAgentKind({ type: 'local', capabilities: ['stt'] }, 'local_stt')).toBeNull();
     });
+
+    it('resolves type:local WITH all three capabilities to local (monolithic Local full agent)', () => {
+        // The Provider Type dropdown's "Local" option saves type:'local' with full
+        // capabilities; this must remain a savable full agent (regression: #440 review).
+        expect(getEffectiveFullAgentKind({ type: 'local', capabilities: ['stt', 'llm', 'tts'] }, 'local')).toBe('local');
+    });
 });

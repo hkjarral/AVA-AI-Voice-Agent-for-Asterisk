@@ -111,6 +111,8 @@ const UNAMBIGUOUS_FULL_AGENT_KINDS = [
  * full agent or its kind cannot be determined without name-guessing.
  *
  * - explicit unambiguous full-agent `type` (e.g. google_live) → that type
+ * - `type: local` carrying all three capabilities (the monolithic Local AI
+ *   selection) → 'local'; single-capability local stays modular → null
  * - `type: full` (or no `type`) on a canonical key (e.g. google_live, local) → the key
  * - neutral custom keys are NOT guessed → null
  *
@@ -122,6 +124,13 @@ const UNAMBIGUOUS_FULL_AGENT_KINDS = [
 export const getEffectiveFullAgentKind = (provider: any, key?: string): string | null => {
     const type = (provider?.type || '').toLowerCase();
     if (UNAMBIGUOUS_FULL_AGENT_KINDS.includes(type)) return type;
+    // `type: local` is the monolithic Local AI full agent only when it carries all
+    // three capabilities (the "Local" Provider Type option); single-capability local
+    // is modular (local_stt / local_llm / local_tts).
+    const caps = provider?.capabilities || [];
+    if (type === 'local' && caps.includes('stt') && caps.includes('llm') && caps.includes('tts')) {
+        return 'local';
+    }
     if ((type === 'full' || type === '') && key && CANONICAL_FULL_AGENT_KEYS.has(key)) {
         return key;
     }
