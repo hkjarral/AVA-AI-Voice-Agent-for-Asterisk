@@ -21,6 +21,16 @@ let inflight: Promise<ConfigYaml> | null = null;
 // save happened can be recognised as stale and discarded instead of caching it.
 let generation = 0;
 
+function clone<T>(v: T): T {
+    return typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v));
+}
+
+// Hand out an independent copy of the mutable `config` so a consumer that edits
+// it (and a save that later fails) can't corrupt the shared cache.
+function snapshot(): ConfigYaml | null {
+    return cache ? { content: cache.content, config: clone(cache.config), yamlError: cache.yamlError } : null;
+}
+
 async function fetchFromApi(): Promise<ConfigYaml> {
     const res = await axios.get('/api/config/yaml');
     if (res.data?.yaml_error) {
@@ -30,14 +40,14 @@ async function fetchFromApi(): Promise<ConfigYaml> {
     return { content: res.data.content, config: parsed, yamlError: null };
 }
 
-/** The cached config, or null if nothing has been loaded yet. */
+/** A deep-cloned copy of the cached config, or null if nothing is loaded yet. */
 export function getCachedConfig(): ConfigYaml | null {
-    return cache;
+    return snapshot();
 }
 
 /** Resolve the config: cached unless `force`, with concurrent calls deduped. */
 export function loadConfigYaml(force = false): Promise<ConfigYaml> {
-    if (!force && cache) return Promise.resolve(cache);
+    if (!force && cache) return Promise.resolve(snapshot()!);
     if (inflight) return inflight;
     const gen = generation;
     const p: Promise<ConfigYaml> = fetchFromApi().then(
@@ -47,7 +57,7 @@ export function loadConfigYaml(force = false): Promise<ConfigYaml> {
             // stale; discard it and refetch the current config instead.
             if (gen !== generation) return loadConfigYaml(true);
             cache = r;
-            return r;
+            return snapshot()!;
         },
         (e) => {
             if (inflight === p) inflight = null;

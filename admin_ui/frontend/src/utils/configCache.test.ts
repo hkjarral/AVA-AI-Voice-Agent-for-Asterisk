@@ -64,10 +64,20 @@ describe('configCache', () => {
         expect(getCachedConfig()?.config).toEqual({ k: 2 });
     });
 
-    it('surfaces a server-side yaml_error without throwing', async () => {
-        vi.mocked(axios.get).mockResolvedValue({ data: { content: '', yaml_error: 'bad indent' } });
+    it('surfaces the structured server-side yaml_error without throwing', async () => {
+        // The backend returns yaml_error as a structured object (config.py), not a string.
+        const yamlError = { type: 'yaml_error', message: 'Invalid YAML', line: 3, column: 1, context: null, snippet: null };
+        vi.mocked(axios.get).mockResolvedValue({ data: { content: 'bad: [', yaml_error: yamlError } });
         const r = await loadConfigYaml();
-        expect(r.yamlError).toBe('bad indent');
+        expect(r.yamlError).toEqual(yamlError);
         expect(r.config).toEqual({});
+    });
+
+    it('returns an independent copy so mutating it does not corrupt the cache', async () => {
+        vi.mocked(axios.get).mockResolvedValue({ data: { content: 'providers:\n  a:\n    enabled: true' } });
+        const r1 = await loadConfigYaml();
+        r1.config.providers.a.enabled = false; // mutate the returned config
+        const r2 = await loadConfigYaml(); // cache hit
+        expect(r2.config.providers.a.enabled).toBe(true); // cache unaffected by the mutation
     });
 });
