@@ -265,7 +265,7 @@ In the experimental ARI-originated path, when AAVA's outbound scheduler fires a 
 ```text
 1. ai_engine reads campaign + lead from DB
 2. Constructs endpoint: Local/<prefix><phone>@<context>
-   Example: Local/91313164619284@default
+   Example: Local/915551234567@default
 3. ARI POST /channels (originate) with channel variables:
    - AAVA_OUTBOUND=1
    - AAVA_CAMPAIGN_ID, AAVA_LEAD_ID, AAVA_ATTEMPT_ID
@@ -396,8 +396,8 @@ asterisk -rvvv
 A successful outbound call log should show:
 
 ```text
-Outbound originate → endpoint=Local/91313164619284@default
-Called 91313164619284@default
+Outbound originate → endpoint=Local/915551234567@default
+Called 915551234567@default
 SIP/carrier answered
 HYBRID ARI - StasisStart event received → args=['outbound_amd', ...]
 Outbound AMD result → amd_status=HUMAN
