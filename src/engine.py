@@ -274,6 +274,12 @@ class Engine:
         self.outbound_store = get_outbound_store()
         self._outbound_scheduler_task: Optional[asyncio.Task] = None
         self._retention_cleanup_task: Optional[asyncio.Task] = None
+        # Warm/probe task for a local default provider (breaks the readiness
+        # deadlock: LocalProvider opens its WS lazily on the first call, so
+        # without this /ready -> is_connected() would never flip True until a
+        # call arrived — but a /ready-gating load balancer never routes the
+        # first call. The task connects proactively and re-arms on drop.)
+        self._local_warm_task: Optional[asyncio.Task] = None
         self._outbound_last_dial_ts: Dict[str, float] = {}
         self._outbound_attempt_meta_by_attempt_id: Dict[str, Dict[str, Any]] = {}
         self._outbound_attempt_meta_by_channel_id: Dict[str, Dict[str, Any]] = {}
@@ -940,6 +946,13 @@ class Engine:
                 self._retention_cleanup_task = asyncio.create_task(self._retention_cleanup_loop())
         except Exception:
             logger.debug("Failed to start retention cleanup task", exc_info=True)
+        # Local default-provider warm/probe: connect proactively so /ready can
+        # become true without a prior call (no-op for non-local defaults).
+        try:
+            if not self._local_warm_task:
+                self._local_warm_task = asyncio.create_task(self._local_warm_loop())
+        except Exception:
+            logger.debug("Failed to start local warm task", exc_info=True)
         logger.info("Engine started and listening for calls.")
 
     def _on_ari_listener_task_done(self, task: "asyncio.Task") -> None:
@@ -1313,6 +1326,52 @@ class Engine:
             raise
         except Exception:
             logger.debug("Retention cleanup loop exited", exc_info=True)
+
+    async def _local_warm_probe_once(self) -> None:
+        """Establish the local default provider's WS once, if not already up.
+
+        Idempotent and non-blocking on the readiness signal: LocalProvider's
+        ``initialize()`` is a no-op when the WS is already OPEN and uses its own
+        TCP-port-check + bounded backoff when it is not. Calling it here means
+        ``is_connected()`` (the HIGH-2 readiness signal) can flip True without a
+        prior call — and stays False while the server is genuinely down/loading
+        (HIGH-2 intent preserved). No-op for non-local default providers.
+        """
+        default_target = getattr(self.config, "default_provider", None) if self.config else None
+        if not default_target or self._get_provider_kind(default_target) != "local":
+            return
+        prov = (self.providers or {}).get(default_target)
+        if prov is None or not hasattr(prov, "initialize"):
+            return
+        try:
+            if hasattr(prov, "is_connected") and prov.is_connected():
+                return
+        except Exception:
+            pass
+        await prov.initialize()
+
+    async def _local_warm_loop(self, interval_sec: float = 15.0) -> None:
+        """Keep a local default provider connected so /ready reflects the server.
+
+        Connects proactively at startup (warming the first call too) and re-arms
+        if the WS later drops while idle (e.g. local_ai_server restart with no
+        active call to trigger the per-call reconnect path). Exits immediately
+        for non-local defaults so it costs nothing on other installs.
+        """
+        default_target = getattr(self.config, "default_provider", None) if self.config else None
+        if not default_target or self._get_provider_kind(default_target) != "local":
+            return
+        try:
+            while True:
+                try:
+                    await self._local_warm_probe_once()
+                except Exception:
+                    logger.debug("Local warm probe pass failed", exc_info=True)
+                await asyncio.sleep(max(1.0, float(interval_sec)))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Local warm loop exited", exc_info=True)
 
     async def _outbound_scheduler_loop(self) -> None:
         """Background control-plane: lease leads and originate outbound calls."""
@@ -2139,6 +2198,16 @@ class Engine:
                 task.cancel()
         except Exception:
             pass
+
+        # Stop background loop tasks (warm/probe, retention) so they don't run
+        # after shutdown begins.
+        for attr in ("_local_warm_task", "_retention_cleanup_task"):
+            try:
+                t = getattr(self, attr, None)
+                if t and not t.done():
+                    t.cancel()
+            except Exception:
+                pass
         
         if active_count > 0 and graceful_timeout > 0:
             logger.info(

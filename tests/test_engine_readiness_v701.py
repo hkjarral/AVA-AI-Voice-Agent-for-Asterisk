@@ -12,8 +12,9 @@ default providers keep the existing URL-present behavior (admin_ui also consumes
 /ready, so non-local readiness must not get stricter).
 """
 
+import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -101,3 +102,132 @@ async def test_cloud_default_ready_regardless_of_connection():
     status, body = await _call_ready(engine)
     assert status == 200
     assert body["ready"] is True
+
+
+# ---------------------------------------------------------------------------
+# Readiness-deadlock fix: a startup warm probe must connect the local provider
+# WITHOUT requiring a prior call. HIGH-2 made /ready depend on is_connected(),
+# but LocalProvider only opens its WS lazily in start_session() on the first
+# admitted call. On a local-default install that produced a deadlock: /ready
+# stayed 503 forever (no call -> no WS -> not connected), so a load balancer
+# gating on /ready never routed the first call that would have opened the WS.
+# ---------------------------------------------------------------------------
+
+
+class _WarmLocalProviderStub:
+    """Local provider whose WS opens only when initialize() is awaited.
+
+    Mirrors LocalProvider: initialize() is idempotent and, on success, leaves
+    the WS open so is_connected() flips True without a call.
+    """
+
+    def __init__(self, *, connect_succeeds=True):
+        self._connected = False
+        self._connect_succeeds = connect_succeeds
+        self.initialize_calls = 0
+
+    async def initialize(self):
+        self.initialize_calls += 1
+        if self._connect_succeeds:
+            self._connected = True
+
+    def is_ready(self):
+        return True
+
+    def is_connected(self):
+        return self._connected
+
+
+def _make_warm_engine(*, default_provider, providers, provider_kinds):
+    engine = _make_engine(
+        default_provider=default_provider,
+        providers=providers,
+        provider_kinds=provider_kinds,
+    )
+    engine._local_warm_task = None
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_local_warm_probe_connects_without_a_call():
+    """Deadlock fix: warm loop opens the WS so /ready -> 200 with no call."""
+    prov = _WarmLocalProviderStub(connect_succeeds=True)
+    engine = _make_warm_engine(
+        default_provider="local",
+        providers={"local": prov},
+        provider_kinds={"local": "local"},
+    )
+
+    # Before warm: not connected -> not ready (this is the deadlock state).
+    status, _ = await _call_ready(engine)
+    assert status == 503
+
+    # Run one warm pass (no call has occurred).
+    await engine._local_warm_probe_once()
+    assert prov.initialize_calls == 1
+    assert prov.is_connected() is True
+
+    # After warm: ready WITHOUT a call ever arriving.
+    status, body = await _call_ready(engine)
+    assert status == 200
+    assert body["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_local_warm_probe_server_down_stays_not_ready():
+    """HIGH-2 preserved: server down/loading -> warm fails -> still not ready."""
+    prov = _WarmLocalProviderStub(connect_succeeds=False)
+    engine = _make_warm_engine(
+        default_provider="local",
+        providers={"local": prov},
+        provider_kinds={"local": "local"},
+    )
+    await engine._local_warm_probe_once()
+    assert prov.initialize_calls == 1
+    assert prov.is_connected() is False
+
+    status, body = await _call_ready(engine)
+    assert status == 503
+    assert body["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_local_warm_probe_noop_for_non_local_default():
+    """Non-local default: warm probe must not touch the provider."""
+    prov = _WarmLocalProviderStub(connect_succeeds=True)
+    engine = _make_warm_engine(
+        default_provider="openai_realtime",
+        providers={"openai_realtime": prov},
+        provider_kinds={"openai_realtime": "openai_realtime"},
+    )
+    await engine._local_warm_probe_once()
+    assert prov.initialize_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_local_warm_loop_stops_once_connected():
+    """The warm loop should connect, then idle (not re-initialize each tick)."""
+    prov = _WarmLocalProviderStub(connect_succeeds=True)
+    engine = _make_warm_engine(
+        default_provider="local",
+        providers={"local": prov},
+        provider_kinds={"local": "local"},
+    )
+    # Tiny interval so the loop ticks fast under the test timeout.
+    task = asyncio.create_task(engine._local_warm_loop(interval_sec=0.01))
+    try:
+        for _ in range(100):
+            if prov.is_connected():
+                break
+            await asyncio.sleep(0.01)
+        assert prov.is_connected() is True
+        first = prov.initialize_calls
+        await asyncio.sleep(0.05)
+        # Already connected -> loop must not keep calling initialize().
+        assert prov.initialize_calls == first
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
