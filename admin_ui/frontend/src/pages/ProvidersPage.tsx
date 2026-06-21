@@ -75,7 +75,7 @@ const ProvidersPage: React.FC = () => {
         try {
             const r = await loadConfigYaml(force);
             setConfig(r.config);
-            setYamlError(r.yamlError as any);
+            setYamlError(r.yamlError);
             setError(null);
         } catch (err) {
             console.error('Failed to load config', err);

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 
 /**
  * Shared cache for the single `/api/config/yaml` document that every config
@@ -11,11 +12,14 @@ import yaml from 'js-yaml';
 export interface ConfigYaml {
     content: string;
     config: any;
-    yamlError: string | null;
+    yamlError: YamlErrorInfo | null;
 }
 
 let cache: ConfigYaml | null = null;
 let inflight: Promise<ConfigYaml> | null = null;
+// Bumped on every invalidation so a response that was already in flight when a
+// save happened can be recognised as stale and discarded instead of caching it.
+let generation = 0;
 
 async function fetchFromApi(): Promise<ConfigYaml> {
     const res = await axios.get('/api/config/yaml');
@@ -35,20 +39,28 @@ export function getCachedConfig(): ConfigYaml | null {
 export function loadConfigYaml(force = false): Promise<ConfigYaml> {
     if (!force && cache) return Promise.resolve(cache);
     if (inflight) return inflight;
-    inflight = fetchFromApi()
-        .then((r) => {
+    const gen = generation;
+    const p: Promise<ConfigYaml> = fetchFromApi().then(
+        (r) => {
+            if (inflight === p) inflight = null;
+            // Invalidated while this request was in flight → the response is
+            // stale; discard it and refetch the current config instead.
+            if (gen !== generation) return loadConfigYaml(true);
             cache = r;
-            inflight = null;
             return r;
-        })
-        .catch((e) => {
-            inflight = null;
+        },
+        (e) => {
+            if (inflight === p) inflight = null;
             throw e;
-        });
-    return inflight;
+        },
+    );
+    inflight = p;
+    return p;
 }
 
 /** Drop the cache so the next `loadConfigYaml` refetches (call after a save). */
 export function invalidateConfigYaml(): void {
     cache = null;
+    generation++;
+    inflight = null;
 }
