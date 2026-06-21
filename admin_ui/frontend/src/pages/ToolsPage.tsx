@@ -37,7 +37,7 @@ const ToolsPage = () => {
     const { confirm } = useConfirmDialog();
     const { token } = useAuth();
     const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
-    const configRef = useRef<any>({});
+    const configRef = useRef<any>(getCachedConfig()?.config ?? {});
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
