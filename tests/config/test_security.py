@@ -437,3 +437,111 @@ class TestEnvOnlyKeyStrippingAllProviders:
         cfg = {'providers': {'elevenlabs_agent': {}}}
         inject_provider_api_keys(cfg)
         assert cfg['providers']['elevenlabs_agent']['agent_id'] == "agent-from-env"
+
+
+class TestCustomTypedInstancesDataDriven:
+    """The env-only contract is data-driven by ``type``: a custom-named instance
+    identified ONLY by its ``type`` field (e.g. ``globex_openai_realtime``) must be
+    injected/stripped exactly like the canonical block, with file-backed credential
+    fields preserved. This ends the per-provider whack-a-mole (Codex re-review)."""
+
+    # custom instance key, type, env var name. Each block is named so it does NOT
+    # match by name prefix — only ``type`` can identify it, exercising the loop.
+    # NOTE: bare ``type: openai`` is intentionally host-gated (must point at
+    # api.openai.com) to avoid stomping OpenAI-compatible providers, so it is
+    # covered separately below rather than in this name-free list.
+    _TYPE_CASES = [
+        ("globex_openai_realtime", "openai_realtime", "OPENAI_API_KEY"),
+        ("acme_groq", "groq", "GROQ_API_KEY"),
+        ("acme_minimax", "minimax", "MINIMAX_API_KEY"),
+        ("acme_telnyx", "telnyx", "TELNYX_API_KEY"),
+        ("acme_azure", "azure", "AZURE_SPEECH_KEY"),
+        ("acme_grok", "grok", "XAI_API_KEY"),
+        ("acme_xai", "xai", "XAI_API_KEY"),
+        ("acme_eleven", "elevenlabs", "ELEVENLABS_API_KEY"),
+        ("acme_eleven_agent", "elevenlabs_agent", "ELEVENLABS_API_KEY"),
+        ("acme_deepgram", "deepgram", "DEEPGRAM_API_KEY"),
+        ("acme_google", "google_live", "GOOGLE_API_KEY"),
+    ]
+
+    _ALL_ENVS = sorted({e for _, _, e in _TYPE_CASES})
+
+    def _clear(self, monkeypatch):
+        for e in self._ALL_ENVS:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.delenv("ELEVENLABS_AGENT_ID", raising=False)
+
+    @pytest.mark.parametrize("pkey,ptype,env_name", _TYPE_CASES)
+    def test_custom_type_block_env_unset_strips_inline_key(self, monkeypatch, pkey, ptype, env_name):
+        self._clear(monkeypatch)
+        cfg = {'providers': {pkey: {'type': ptype, 'api_key': 'yaml-literal'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers'][pkey]
+
+    @pytest.mark.parametrize("pkey,ptype,env_name", _TYPE_CASES)
+    def test_custom_type_block_env_set_injects_inline_key(self, monkeypatch, pkey, ptype, env_name):
+        self._clear(monkeypatch)
+        monkeypatch.setenv(env_name, "from-env")
+        cfg = {'providers': {pkey: {'type': ptype}}}
+        inject_provider_api_keys(cfg)
+        assert cfg['providers'][pkey].get('api_key') == "from-env"
+
+    @pytest.mark.parametrize("pkey,ptype,env_name", _TYPE_CASES)
+    def test_custom_type_block_api_key_file_preserved(self, monkeypatch, pkey, ptype, env_name):
+        self._clear(monkeypatch)
+        cfg = {'providers': {pkey: {'type': ptype, 'api_key': 'yaml-literal',
+                                    'api_key_file': '/run/secrets/key',
+                                    'api_key_env': 'CUSTOM_ENV'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers'][pkey]
+        assert cfg['providers'][pkey]['api_key_file'] == '/run/secrets/key'
+        assert cfg['providers'][pkey]['api_key_env'] == 'CUSTOM_ENV'
+
+    def test_globex_openai_realtime_by_type_roundtrip(self, monkeypatch):
+        # The exact Codex finding: a block named globex_openai_realtime (no openai
+        # name prefix until the underscore form, but identified by type) follows the
+        # env-only contract. api_key_file is never touched.
+        self._clear(monkeypatch)
+        cfg = {'providers': {'globex_openai_realtime': {
+            'type': 'openai_realtime', 'api_key': 'yaml-literal',
+            'api_key_file': '/run/secrets/openai'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers']['globex_openai_realtime']
+        assert cfg['providers']['globex_openai_realtime']['api_key_file'] == '/run/secrets/openai'
+
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        cfg2 = {'providers': {'globex_openai_realtime': {
+            'type': 'openai_realtime', 'api_key_file': '/run/secrets/openai'}}}
+        inject_provider_api_keys(cfg2)
+        assert cfg2['providers']['globex_openai_realtime']['api_key'] == "k"
+        assert cfg2['providers']['globex_openai_realtime']['api_key_file'] == '/run/secrets/openai'
+
+    def test_custom_type_openai_compatible_host_not_stomped(self, monkeypatch):
+        # A custom block declared type: openai but pointing at a non-OpenAI host
+        # (e.g. an OpenAI-compatible gateway) is NOT touched by the openai family
+        # when OPENAI_API_KEY is unset — its inline literal survives, matching the
+        # pre-refactor host-gating behavior.
+        self._clear(monkeypatch)
+        cfg = {'providers': {'gateway': {
+            'type': 'openai', 'chat_base_url': 'https://openrouter.ai/api/v1',
+            'api_key': 'inline-literal'}}}
+        inject_provider_api_keys(cfg)
+        assert cfg['providers']['gateway']['api_key'] == 'inline-literal'
+
+    def test_custom_type_openai_with_openai_host_follows_contract(self, monkeypatch):
+        # A custom block declared type: openai pointing at api.openai.com IS in the
+        # openai family (host-gated match): inline literal stripped when env unset,
+        # injected when set; api_key_file preserved.
+        self._clear(monkeypatch)
+        cfg = {'providers': {'gw': {
+            'type': 'openai', 'base_url': 'https://api.openai.com/v1',
+            'api_key': 'lit', 'api_key_file': '/run/secrets/openai'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers']['gw']
+        assert cfg['providers']['gw']['api_key_file'] == '/run/secrets/openai'
+
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        cfg2 = {'providers': {'gw': {
+            'type': 'openai', 'base_url': 'https://api.openai.com/v1'}}}
+        inject_provider_api_keys(cfg2)
+        assert cfg2['providers']['gw']['api_key'] == "k"
