@@ -11,6 +11,7 @@ import ToolForm from '../components/config/ToolForm';
 import HTTPToolForm from '../components/config/HTTPToolForm';
 import { useAuth } from '../auth/AuthContext';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { usePendingChanges } from '../hooks/usePendingChanges';
 
 type ToolPhase = 'in_call' | 'pre_call' | 'post_call' | 'catalog';
@@ -35,10 +36,10 @@ type ToolDef = {
 const ToolsPage = () => {
     const { confirm } = useConfirmDialog();
     const { token } = useAuth();
-    const [config, setConfig] = useState<any>({});
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
     const configRef = useRef<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const { pendingRestart, setPendingChanges, clearPendingChanges } = usePendingChanges();
     const [restartingEngine, setRestartingEngine] = useState(false);
@@ -95,17 +96,11 @@ const ToolsPage = () => {
         configRef.current = config;
     }, [config]);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);

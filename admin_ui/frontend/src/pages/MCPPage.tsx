@@ -10,6 +10,7 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormLabel } from '../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 
 type MCPStatus = {
     enabled: boolean;
@@ -55,9 +56,9 @@ const _parseArgLine = (raw: string): string[] => {
 
 const MCPPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
     const [status, setStatus] = useState<MCPStatus | null>(null);
@@ -71,18 +72,11 @@ const MCPPage = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const fetchAll = async () => {
-        setLoading(true);
+    const fetchAll = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
