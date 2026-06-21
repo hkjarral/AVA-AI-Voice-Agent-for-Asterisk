@@ -316,3 +316,91 @@ class TestInjectProviderApiKeys:
         inject_provider_api_keys(config_data)
 
         assert 'api_key' not in config_data['providers']['google_live']
+
+
+class TestEnvOnlyKeyStrippingAllProviders:
+    """Finding 3: EVERY provider this function handles strips an inline api_key when
+    its env var is unset (env-only contract), injects it when set, and NEVER touches
+    the file-backed api_key_file / agent_id_file credential fields."""
+
+    # provider key, instance config, env var name
+    _CASES = [
+        ("openai", {}, "OPENAI_API_KEY"),
+        ("openai_realtime", {}, "OPENAI_API_KEY"),
+        ("groq_llm", {}, "GROQ_API_KEY"),
+        ("minimax_llm", {}, "MINIMAX_API_KEY"),
+        ("telnyx_llm", {}, "TELNYX_API_KEY"),
+        ("azure_stt", {}, "AZURE_SPEECH_KEY"),
+        ("grok", {}, "XAI_API_KEY"),
+        ("elevenlabs_agent", {}, "ELEVENLABS_API_KEY"),
+    ]
+
+    @pytest.mark.parametrize("pkey,extra,env_name", _CASES)
+    def test_env_set_injects_inline_key(self, monkeypatch, pkey, extra, env_name):
+        # Other provider env vars must not leak into this instance.
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.setenv(env_name, "from-env")
+        cfg = {'providers': {pkey: dict(extra)}}
+        inject_provider_api_keys(cfg)
+        assert cfg['providers'][pkey].get('api_key') == "from-env"
+
+    @pytest.mark.parametrize("pkey,extra,env_name", _CASES)
+    def test_env_unset_strips_inline_key(self, monkeypatch, pkey, extra, env_name):
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        cfg = {'providers': {pkey: {**extra, 'api_key': 'yaml-literal'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers'][pkey]
+
+    @pytest.mark.parametrize("pkey,extra,env_name", _CASES)
+    def test_api_key_file_preserved_when_env_unset(self, monkeypatch, pkey, extra, env_name):
+        # SAFETY: only the inline literal is popped; the file-backed credential field
+        # survives so resolve_secret_value can read it in the builder chain.
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        cfg = {'providers': {pkey: {**extra, 'api_key': 'yaml-literal',
+                                    'api_key_file': '/run/secrets/key',
+                                    'api_key_env': 'CUSTOM_KEY_ENV'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers'][pkey]
+        assert cfg['providers'][pkey]['api_key_file'] == '/run/secrets/key'
+        assert cfg['providers'][pkey]['api_key_env'] == 'CUSTOM_KEY_ENV'
+
+    def test_multi_instance_blocks_all_handled(self, monkeypatch):
+        # Multi-instance / custom_<provider> blocks of the same kind are ALL handled,
+        # not just the canonical key.
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        cfg = {'providers': {
+            'openai_llm': {},
+            'custom_openai': {'type': 'openai', 'base_url': 'https://api.openai.com/v1'},
+            'openai_realtime': {'api_key': 'should-be-replaced'},
+        }}
+        inject_provider_api_keys(cfg)
+        assert cfg['providers']['openai_llm']['api_key'] == "k"
+        assert cfg['providers']['custom_openai']['api_key'] == "k"
+        assert cfg['providers']['openai_realtime']['api_key'] == "k"
+
+    def test_elevenlabs_agent_id_env_only(self, monkeypatch):
+        # Finding 3: inline agent_id follows the same env-only contract as api_key,
+        # but agent_id_file is preserved.
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.delenv("ELEVENLABS_AGENT_ID", raising=False)
+        cfg = {'providers': {'elevenlabs_agent': {
+            'api_key': 'yaml-key', 'agent_id': 'yaml-agent',
+            'agent_id_file': '/run/secrets/agent'}}}
+        inject_provider_api_keys(cfg)
+        assert 'api_key' not in cfg['providers']['elevenlabs_agent']
+        assert 'agent_id' not in cfg['providers']['elevenlabs_agent']
+        assert cfg['providers']['elevenlabs_agent']['agent_id_file'] == '/run/secrets/agent'
+
+    def test_elevenlabs_agent_id_injected_when_env_set(self, monkeypatch):
+        for _, _, e in self._CASES:
+            monkeypatch.delenv(e, raising=False)
+        monkeypatch.setenv("ELEVENLABS_AGENT_ID", "agent-from-env")
+        cfg = {'providers': {'elevenlabs_agent': {}}}
+        inject_provider_api_keys(cfg)
+        assert cfg['providers']['elevenlabs_agent']['agent_id'] == "agent-from-env"

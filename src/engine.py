@@ -12165,7 +12165,8 @@ class Engine:
         if not provider_name:
             # Check if context specifies provider
             if resolved_context:
-                context_config = self.transport_orchestrator.get_context_config(resolved_context)
+                context_config = self.transport_orchestrator.get_context_config(
+                    resolved_context, session.routing_method)
                 if context_config and context_config.provider:
                     provider_name = str(context_config.provider).strip()
         
@@ -12238,6 +12239,9 @@ class Engine:
                 # AI_AGENT / DB-default calls expose no AI_CONTEXT channel var; pass the
                 # already-resolved context so the agent's audio_profile + greeting/prompt apply.
                 resolved_context=resolved_context,
+                # Carry the routing INTENT so a colliding AI_CONTEXT slug resolves to the
+                # same agent for audio-profile lookup as for prompt/tools (Finding 1).
+                routing_method=session.routing_method,
             )
             
             # Store transport in session (keep as object, not dict, for legacy code compatibility)
@@ -12287,7 +12291,8 @@ class Engine:
                 transport_context=transport.context if hasattr(transport, "context") else None,
             )
             if transport.context:
-                context_config = self.transport_orchestrator.get_context_config(transport.context)
+                context_config = self.transport_orchestrator.get_context_config(
+                    transport.context, getattr(session, "routing_method", None))
                 logger.debug(
                     "Context config loaded",
                     call_id=session.call_id,
@@ -13362,7 +13367,8 @@ class Engine:
                     # earlier during audio profile resolution, before pre-call tools run.
                     try:
                         if session and getattr(session, "context_name", None):
-                            ctx_cfg = self.transport_orchestrator.get_context_config(session.context_name)
+                            ctx_cfg = self.transport_orchestrator.get_context_config(
+                                session.context_name, getattr(session, "routing_method", None))
                             if ctx_cfg:
                                 session.provider_overrides = dict(getattr(session, "provider_overrides", {}) or {})
                                 greeting_tpl = getattr(ctx_cfg, "greeting", None)
@@ -13512,7 +13518,8 @@ class Engine:
             provider_context = {}
             try:
                 if session.context_name:
-                    context_config = self.transport_orchestrator.get_context_config(session.context_name)
+                    context_config = self.transport_orchestrator.get_context_config(
+                        session.context_name, getattr(session, "routing_method", None))
                     logger.debug(
                         "Building provider context",
                         call_id=call_id,
@@ -14016,7 +14023,8 @@ class Engine:
             if not allowed_tools:
                 try:
                     if getattr(session, "context_name", None):
-                        ctx_cfg = self.transport_orchestrator.get_context_config(session.context_name)
+                        ctx_cfg = self.transport_orchestrator.get_context_config(
+                            session.context_name, getattr(session, "routing_method", None))
                         if ctx_cfg:
                             allowed = list(getattr(ctx_cfg, "tools", None) or [])
                             in_call_http_tools_cfg = getattr(ctx_cfg, "in_call_http_tools", None)
@@ -14215,8 +14223,9 @@ class Engine:
             # Get context config for this call
             ctx_config = None
             if session.context_name:
-                ctx_config = self.transport_orchestrator.get_context_config(session.context_name)
-            
+                ctx_config = self.transport_orchestrator.get_context_config(
+                    session.context_name, getattr(session, "routing_method", None))
+
             if not ctx_config:
                 logger.debug("No context config for pre-call tools", call_id=call_id)
                 return results
@@ -14429,8 +14438,9 @@ class Engine:
             # Get context config for this call
             ctx_config = None
             if session.context_name:
-                ctx_config = self.transport_orchestrator.get_context_config(session.context_name)
-            
+                ctx_config = self.transport_orchestrator.get_context_config(
+                    session.context_name, getattr(session, "routing_method", None))
+
             # Get post-call tools for this context (context-specific + global minus opt-outs)
             post_call_tool_names = list(getattr(ctx_config, 'post_call_tools', None) or []) if ctx_config else []
             disabled_global = list(getattr(ctx_config, 'disable_global_post_call_tools', None) or []) if ctx_config else []

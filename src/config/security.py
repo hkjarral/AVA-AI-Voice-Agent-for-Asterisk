@@ -169,77 +169,137 @@ def inject_provider_api_keys(config_data: Dict[str, Any]) -> None:
     try:
         providers_block = config_data.get('providers', {}) or {}
         
-        # Inject OPENAI_API_KEY for OpenAI provider blocks (openai_llm/openai_stt/openai_tts/openai_realtime, etc.)
+        # Finding 3: every provider this function handles follows the SAME env-only
+        # contract as deepgram/google_live below — provider secrets come from the env
+        # var (or the per-instance ``api_key_file``, a SEPARATE file-backed field this
+        # function never touches), NEVER from an inline YAML ``api_key``. So for each
+        # matching instance we INJECT the inline api_key when the env var is SET, and
+        # STRIP it when the env var is UNSET so a YAML-embedded literal can never become
+        # an active credential. This covers multi-instance / custom_<provider> blocks
+        # because the match below iterates every instance of each kind, not just the
+        # canonical key. ``api_key_file`` is left untouched in both branches.
+
+        # OPENAI_API_KEY for OpenAI provider blocks (openai_llm/openai_stt/openai_tts/openai_realtime, etc.)
         openai_key = os.getenv("OPENAI_API_KEY")
-        if openai_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                if not (name_lower.startswith("openai") or cfg_type == "openai"):
-                    continue
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            if not (name_lower.startswith("openai") or cfg_type == "openai"):
+                continue
 
-                url_fields = ("chat_base_url", "tts_base_url", "realtime_base_url", "base_url", "ws_url")
-                url_hosts = {_url_host(provider_cfg.get(field, "")) for field in url_fields}
+            url_fields = ("chat_base_url", "tts_base_url", "realtime_base_url", "base_url", "ws_url")
+            url_hosts = {_url_host(provider_cfg.get(field, "")) for field in url_fields}
 
-                # If the provider is explicitly named openai*, always inject. If it's only "type: openai",
-                # inject only when it's actually pointing at OpenAI endpoints to avoid stomping other
-                # OpenAI-compatible providers (e.g., Groq/OpenRouter/etc).
-                is_openai_host = any(host == "api.openai.com" for host in url_hosts)
-                if name_lower.startswith("openai") or is_openai_host:
+            # If the provider is explicitly named openai*, always handle. If it's only "type: openai",
+            # handle only when it's actually pointing at OpenAI endpoints to avoid stomping other
+            # OpenAI-compatible providers (e.g., Groq/OpenRouter/etc).
+            is_openai_host = any(host == "api.openai.com" for host in url_hosts)
+            if name_lower.startswith("openai") or is_openai_host:
+                if openai_key:
                     provider_cfg["api_key"] = openai_key
-                    providers_block[provider_name] = provider_cfg
+                else:
+                    provider_cfg.pop("api_key", None)
+                providers_block[provider_name] = provider_cfg
 
-        # Inject GROQ_API_KEY for any groq* provider blocks (groq_llm, groq_stt, groq_tts, etc.)
+        # GROQ_API_KEY for any groq* provider blocks (groq_llm, groq_stt, groq_tts, etc.)
         groq_key = os.getenv('GROQ_API_KEY')
-        if groq_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                chat_host = _url_host(provider_cfg.get("chat_base_url", ""))
-                if name_lower.startswith("groq") or cfg_type == "groq" or chat_host == "api.groq.com":
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            chat_host = _url_host(provider_cfg.get("chat_base_url", ""))
+            if name_lower.startswith("groq") or cfg_type == "groq" or chat_host == "api.groq.com":
+                if groq_key:
                     provider_cfg["api_key"] = groq_key
-                    providers_block[provider_name] = provider_cfg
+                else:
+                    provider_cfg.pop("api_key", None)
+                providers_block[provider_name] = provider_cfg
 
-        # Inject MINIMAX_API_KEY for minimax* provider blocks (minimax_llm, etc.)
+        # MINIMAX_API_KEY for minimax* provider blocks (minimax_llm, etc.)
         minimax_key = os.getenv("MINIMAX_API_KEY")
-        if minimax_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
-                if name_lower.startswith("minimax") or cfg_type == "minimax" or chat_host in ("api.minimax.io", "api.minimaxi.com"):
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
+            if name_lower.startswith("minimax") or cfg_type == "minimax" or chat_host in ("api.minimax.io", "api.minimaxi.com"):
+                if minimax_key:
                     provider_cfg["api_key"] = minimax_key
-                    providers_block[provider_name] = provider_cfg
+                else:
+                    provider_cfg.pop("api_key", None)
+                providers_block[provider_name] = provider_cfg
 
-        # Inject TELNYX_API_KEY for any telnyx* provider blocks (telnyx_llm, etc.)
+        # TELNYX_API_KEY for any telnyx* provider blocks (telnyx_llm, etc.)
         telnyx_key = os.getenv("TELNYX_API_KEY")
-        if telnyx_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
-                if name_lower.startswith(("telnyx", "telenyx")) or chat_host == "api.telnyx.com":
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            chat_host = _url_host(provider_cfg.get("chat_base_url", "") or provider_cfg.get("base_url", ""))
+            if name_lower.startswith(("telnyx", "telenyx")) or chat_host == "api.telnyx.com":
+                if telnyx_key:
                     provider_cfg["api_key"] = telnyx_key
-                    providers_block[provider_name] = provider_cfg
-        
-        # Inject AZURE_SPEECH_KEY for Azure provider blocks (name-based or type-based)
+                else:
+                    provider_cfg.pop("api_key", None)
+                providers_block[provider_name] = provider_cfg
+
+        # AZURE_SPEECH_KEY for Azure provider blocks (name-based or type-based)
         azure_speech_key = os.getenv("AZURE_SPEECH_KEY")
-        if azure_speech_key:
-            for provider_name, provider_cfg in list(providers_block.items()):
-                if not isinstance(provider_cfg, dict):
-                    continue
-                name_lower = str(provider_name).lower()
-                cfg_type = str(provider_cfg.get("type", "")).lower()
-                if name_lower.startswith("azure_stt") or name_lower == "azure_tts" or cfg_type == "azure":
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            if name_lower.startswith("azure_stt") or name_lower == "azure_tts" or cfg_type == "azure":
+                if azure_speech_key:
                     provider_cfg["api_key"] = azure_speech_key
-                    providers_block[provider_name] = provider_cfg
+                else:
+                    provider_cfg.pop("api_key", None)
+                providers_block[provider_name] = provider_cfg
+
+        # XAI_API_KEY for grok* provider blocks (grok, custom_grok, etc.). The grok
+        # builder resolves the key via resolve_secret_value (api_key_file -> api_key_env
+        # -> inline -> legacy XAI_API_KEY), so we only ever touch the INLINE api_key
+        # here: inject the env value when set, strip the inline literal when unset. The
+        # file/env-name fields are left intact and still win in the builder chain.
+        xai_key = os.getenv("XAI_API_KEY")
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            if name_lower.startswith("grok") or name_lower.startswith("xai") or cfg_type in ("grok", "xai"):
+                if xai_key:
+                    provider_cfg["api_key"] = xai_key
+                else:
+                    provider_cfg.pop("api_key", None)
+                providers_block[provider_name] = provider_cfg
+
+        # ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID for elevenlabs* provider blocks. Same
+        # env-only contract; the builder resolves both via resolve_secret_value, so we
+        # only touch the INLINE api_key / agent_id literals (never api_key_file or
+        # agent_id_file). agent_id is treated like a secret here per Finding 3.
+        eleven_key = os.getenv("ELEVENLABS_API_KEY")
+        eleven_agent_id = os.getenv("ELEVENLABS_AGENT_ID")
+        for provider_name, provider_cfg in list(providers_block.items()):
+            if not isinstance(provider_cfg, dict):
+                continue
+            name_lower = str(provider_name).lower()
+            cfg_type = str(provider_cfg.get("type", "")).lower()
+            if name_lower.startswith("elevenlabs") or cfg_type in ("elevenlabs", "elevenlabs_agent"):
+                if eleven_key:
+                    provider_cfg["api_key"] = eleven_key
+                else:
+                    provider_cfg.pop("api_key", None)
+                if eleven_agent_id:
+                    provider_cfg["agent_id"] = eleven_agent_id
+                else:
+                    provider_cfg.pop("agent_id", None)
+                providers_block[provider_name] = provider_cfg
 
         # Inject DEEPGRAM_API_KEY. Provider keys come ONLY from env (or the
         # per-instance secret file via api_key_file — a separate field). When the

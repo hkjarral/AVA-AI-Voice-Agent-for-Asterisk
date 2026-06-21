@@ -83,6 +83,22 @@ def contexts_hash(merged: dict) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
+def disambiguate_slug(key: str, seen_slugs: set) -> str:
+    """CRIT-3: deterministically disambiguate a context's slug against slugs already
+    taken (``Sales-East`` and ``sales_east`` both slugify to ``sales_east`` — the
+    second becomes ``sales_east_2``). ``seen_slugs`` is mutated with the result so a
+    caller can map several colliding contexts to distinct slugs in one pass. This is
+    the single source of truth shared by run_migration() and reconcile (Finding 2)."""
+    base = slugify(key) or "agent"
+    slug = base
+    n = 2
+    while slug in seen_slugs:
+        slug = f"{base}_{n}"
+        n += 1
+    seen_slugs.add(slug)
+    return slug
+
+
 # ---------------------------------------------------------------------------
 # One-time migration
 # ---------------------------------------------------------------------------
@@ -154,13 +170,7 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         # is UNIQUE, so disambiguate deterministically; the original name is kept
         # in `display_name` and the engine resolves on that first, so legacy
         # dialplans using either original name still route correctly.
-        base = slugify(key) or "agent"
-        slug = base
-        n = 2
-        while slug in seen_slugs:
-            slug = f"{base}_{n}"
-            n += 1
-        seen_slugs.add(slug)
+        slug = disambiguate_slug(key, seen_slugs)
         # H4: carry the legacy per-context email override (keyed by original name)
         # onto the agent row, and re-key the surviving map entry to the slug so the
         # global-tools resolution path resolves once context_name is the slug.

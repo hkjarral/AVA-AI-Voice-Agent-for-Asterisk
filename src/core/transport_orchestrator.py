@@ -236,6 +236,7 @@ class TransportOrchestrator:
         channel_vars: Optional[Dict[str, str]] = None,
         provider_config: Optional[Any] = None,
         resolved_context: Optional[str] = None,
+        routing_method: Optional[str] = None,
     ) -> TransportProfile:
         """
         Resolve transport profile for a call.
@@ -250,6 +251,9 @@ class TransportOrchestrator:
                 is authoritative for context + audio-profile resolution so that
                 AI_AGENT / DB-default calls apply the agent's audio_profile even
                 though only AI_CONTEXT is present in channel_vars.
+            routing_method: Dialplan channel-variable INTENT (Finding 1) used to
+                disambiguate colliding context slugs during audio-profile lookup
+                (``'ai_context'`` resolves display_name-first; otherwise slug-first).
 
         Returns:
             TransportProfile with resolved settings
@@ -258,7 +262,8 @@ class TransportOrchestrator:
             ValueError: If profile not found or negotiation fails
         """
         # Step 1: Resolve profile name with precedence
-        profile_name, context_name = self._resolve_profile_name(channel_vars, resolved_context)
+        profile_name, context_name = self._resolve_profile_name(
+            channel_vars, resolved_context, routing_method)
         profile = self.profiles.get(profile_name)
         
         if not profile:
@@ -292,6 +297,7 @@ class TransportOrchestrator:
         self,
         channel_vars: Dict[str, str],
         resolved_context: Optional[str] = None,
+        routing_method: Optional[str] = None,
     ) -> tuple[str, Optional[str]]:
         """
         Resolve profile name from channel vars with precedence.
@@ -324,7 +330,7 @@ class TransportOrchestrator:
 
         # Precedence 2: context maps to a context config (DB-aware) with a profile
         if context_name:
-            context = self.get_context_config(context_name)
+            context = self.get_context_config(context_name, routing_method)
             if context and context.profile:
                 logger.debug(
                     "Profile from context mapping",

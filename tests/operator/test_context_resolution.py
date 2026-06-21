@@ -91,3 +91,42 @@ def test_resolved_context_applies_agent_audio_profile():
         )
     assert transport.profile_name == "agent_profile"
     assert transport.context == "sales-agent"
+
+
+def test_resolve_transport_audio_profile_honors_ai_context_intent():
+    # Finding 1: the audio-profile lookup (resolve_transport -> _resolve_profile_name
+    # -> get_context_config) previously omitted routing_method, so for a disambiguated
+    # AI_CONTEXT collision it would slug-first resolve to the WRONG agent's profile
+    # while prompt/tools used the right one. resolve_transport must thread the routing
+    # INTENT so the profile path resolves the SAME agent (prefer=display_name).
+    orch = TransportOrchestrator({
+        "profiles": {
+            "east_profile": {"internal_rate_hz": 16000, "transport_out": {}, "provider_pref": {}},
+            "plain_profile": {"internal_rate_hz": 8000, "transport_out": {}, "provider_pref": {}},
+        },
+    })
+
+    # Two agents whose collision was disambiguated by migration: slug "sales_east"
+    # (display_name "Sales-East", east_profile) and slug "sales_east_2" (display_name
+    # "sales_east", plain_profile). An AI_CONTEXT=sales_east call must reach the agent
+    # whose ORIGINAL name was "sales_east" (plain_profile), matching prompt/tools.
+    def fake_resolve(name, prefer="slug"):
+        if prefer == "display_name" and name == "sales_east":
+            return ContextConfig(prompt="plain", provider="prov", profile="plain_profile")
+        return ContextConfig(prompt="east", provider="prov", profile="east_profile")
+
+    with patch.object(orch.agent_store, "available", return_value=True), \
+         patch.object(orch.agent_store, "resolve", side_effect=fake_resolve):
+        # ai_context intent -> display_name-first -> plain_profile (the right agent)
+        t_ctx = orch.resolve_transport(
+            provider_name="prov", provider_caps=None, channel_vars={},
+            resolved_context="sales_east", routing_method="ai_context",
+        )
+        assert t_ctx.profile_name == "plain_profile"
+
+        # ai_agent intent -> slug-first -> east_profile (canonical, anti-shadow)
+        t_agent = orch.resolve_transport(
+            provider_name="prov", provider_caps=None, channel_vars={},
+            resolved_context="sales_east", routing_method="ai_agent",
+        )
+        assert t_agent.profile_name == "east_profile"

@@ -187,3 +187,40 @@ def test_reconcile_updates_existing_full_fields(env):
     assert got["prompt"] == "v2"
     assert got["voice"] == "shimmer"
     assert got["greeting"] == "new greeting"
+
+
+def test_reconcile_colliding_contexts_update_both_agents(env):
+    # Finding 2: two context names that slugify to the same value ("Sales-East" and
+    # "sales_east" -> "sales_east") must map to TWO distinct agents, exactly like the
+    # one-time migration's CRIT-3 disambiguation. Reconcile must NOT overwrite one with
+    # the other, and must not orphan the disambiguated "sales_east_2" row.
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "Sales-East": {"provider": "openai", "prompt": "east one", "voice": "nova"},
+        "sales_east": {"provider": "openai", "prompt": "east two", "voice": "shimmer"},
+    })
+
+    r = client.post("/api/agents-migration/reconcile")
+    assert r.status_code == 200, r.text
+
+    agents = {a["display_name"]: a for a in client.get("/api/agents").json()}
+    # both contexts produced their own agent (distinct slugs), neither overwritten
+    assert "Sales-East" in agents and "sales_east" in agents
+    assert agents["Sales-East"]["slug"] != agents["sales_east"]["slug"]
+    assert {agents["Sales-East"]["slug"], agents["sales_east"]["slug"]} == \
+        {"sales_east", "sales_east_2"}
+    # each agent kept its OWN context's fields (no cross-contamination)
+    assert agents["Sales-East"]["prompt"] == "east one"
+    assert agents["Sales-East"]["voice"] == "nova"
+    assert agents["sales_east"]["prompt"] == "east two"
+    assert agents["sales_east"]["voice"] == "shimmer"
+
+    # idempotent re-run: same two rows updated in place, no third row, no overwrite
+    first_ids = {agents["Sales-East"]["id"], agents["sales_east"]["id"]}
+    r2 = client.post("/api/agents-migration/reconcile")
+    assert r2.status_code == 200, r2.text
+    after = {a["display_name"]: a for a in client.get("/api/agents").json()}
+    assert len(after) == 2
+    assert {after["Sales-East"]["id"], after["sales_east"]["id"]} == first_ids
+    assert after["Sales-East"]["prompt"] == "east one"
+    assert after["sales_east"]["prompt"] == "east two"

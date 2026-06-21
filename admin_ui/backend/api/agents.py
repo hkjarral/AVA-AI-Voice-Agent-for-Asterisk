@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from agents_store import AgentsStore, slugify
 from agents_migration import current_drift, acknowledge_drift, run_migration, \
-    merged_effective_contexts
+    merged_effective_contexts, disambiguate_slug
 import settings  # for YAML paths
 
 router = APIRouter()
@@ -491,10 +491,20 @@ def migration_reconcile():
     merged = merged_effective_contexts(_yaml_path(), _contexts_dir())
     changed = []
     skipped = []
+    # Finding 2: reconcile must be collision-safe like the one-time migration.
+    # Two contexts can slugify to the same value (e.g. "Sales-East" and "sales_east"
+    # -> "sales_east"); matching only on slugify(key) would make the second context
+    # overwrite the first agent and orphan the migration-created "sales_east_2" row.
+    # Map each context to ITS OWN agent by original name (display_name == key, what the
+    # migration stored), and mint new slugs with the SAME disambiguation helper the
+    # migration uses (DRY), seeded with the slugs already in the DB.
+    existing_by_name = {a["display_name"]: a for a in store.list_all()}
+    seen_slugs = {a["slug"] for a in store.list_all()}
     for key, ctx in merged.items():
         src = ctx.pop("_source_file", None)
-        slug_key = slugify(key)
         fields = _context_to_agent_fields(ctx)
+        existing = existing_by_name.get(key)
+        slug_key = existing["slug"] if existing else slugify(key)
         if not fields["prompt"]:
             skipped.append((slug_key, "missing prompt"))
             continue
@@ -511,11 +521,11 @@ def migration_reconcile():
         except ValueError:
             skipped.append((slug_key, "invalid email"))
             continue
-        existing = store.get_by_slug(slug_key)
         if existing is None:
-            store.create(display_name=key, slug=slug_key,
+            new_slug = disambiguate_slug(key, seen_slugs)
+            store.create(display_name=key, slug=new_slug,
                          is_operator_managed=0, source_file=src, **fields)
-            changed.append(("added", slug_key))
+            changed.append(("added", new_slug))
         elif any(existing.get(k) != v for k, v in fields.items()):
             store.update(slug_key, **fields)
             changed.append(("updated", slug_key))
