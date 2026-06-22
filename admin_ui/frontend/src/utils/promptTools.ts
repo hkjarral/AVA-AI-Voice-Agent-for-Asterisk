@@ -46,14 +46,16 @@ export function parseToolReferences(text: string, knownNames: string[]): ToolRef
     for (const name of knownNames) {
         if (!name) continue;
         const esc = escapeRegExp(name);
-        // name immediately followed by the keyword (keyword not consumed)
-        const after = new RegExp(`\\b${esc}\\b(?=\\s+${KEYWORD}\\b)`, 'gi');
+        // name immediately followed by the keyword (keyword not consumed); an
+        // optional closing quote/backtick may sit between them ("`name` tool").
+        const after = new RegExp(`\\b${esc}\\b(?=[\`'"]?\\s+${KEYWORD}\\b)`, 'gi');
         let m: RegExpExecArray | null;
         while ((m = after.exec(text)) !== null) {
             refs.push({ name, start: m.index, end: m.index + name.length });
         }
-        // keyword immediately followed by the name (keyword captured as prefix)
-        const before = new RegExp(`\\b${KEYWORD}\\b\\s+(${esc})\\b`, 'gi');
+        // keyword immediately followed by the name (an optional opening
+        // quote/backtick may sit between them: "tool `name`").
+        const before = new RegExp(`\\b${KEYWORD}\\b\\s+[\`'"]?(${esc})\\b`, 'gi');
         while ((m = before.exec(text)) !== null) {
             const start = m.index + (m[0].length - m[1].length);
             refs.push({ name, start, end: start + m[1].length });

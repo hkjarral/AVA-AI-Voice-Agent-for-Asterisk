@@ -136,7 +136,10 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
     const toolStatusMap = useMemo(() => {
         const asNames = (v: any): string[] =>
             Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.keys(v) : []);
-        const inCall = new Set<string>([...asNames(config.tools), ...asNames(config.in_call_http_tools)]);
+        // Canonicalize the legacy 'transfer' alias to the catalog name so a
+        // context that still stores 'transfer' doesn't false-red a blind_transfer reference.
+        const canon = (n: string) => (n === 'transfer' ? 'blind_transfer' : n);
+        const inCall = new Set<string>([...asNames(config.tools), ...asNames(config.in_call_http_tools)].map(canon));
         const disabledGlobal = new Set<string>(config.disable_global_in_call_tools || []);
         return buildInCallStatusMap(Object.values(toolCatalogByName || {}), {
             explicitlyAdded: (n) => inCall.has(n),

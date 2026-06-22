@@ -43,6 +43,15 @@ describe('parseToolReferences', () => {
         expect(parseToolReferences('the get_weather Tool', known).map((r) => r.name)).toEqual(['get_weather']);
     });
 
+    it('detects a backticked or quoted tool name next to the keyword', () => {
+        expect(parseToolReferences('use the `book_appointment` tool', known).map((r) => r.name)).toEqual(['book_appointment']);
+        expect(parseToolReferences('call the "get_weather" function', known).map((r) => r.name)).toEqual(['get_weather']);
+        expect(parseToolReferences("the tool 'lookup'", known).map((r) => r.name)).toEqual(['lookup']);
+        // the colored span is the bare name, not the quotes
+        const r = parseToolReferences('use the `book_appointment` tool', known)[0];
+        expect('use the `book_appointment` tool'.slice(r.start, r.end)).toBe('book_appointment');
+    });
+
     it('finds multiple references in order', () => {
         const refs = parseToolReferences('use book_appointment tool and the lookup function', known);
         expect(refs.map((r) => r.name)).toEqual(['book_appointment', 'lookup']);
