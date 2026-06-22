@@ -33,4 +33,13 @@ describe('buildAgentDialplan', () => {
         expect(snippet).toContain('Stasis(asterisk-ai-voice-agent)');
         expect(snippet).toContain('Hangup()');
     });
+
+    it('uses a custom Stasis app name when provided', () => {
+        expect(buildAgentDialplan('grok', 'my-custom-app')).toContain('Stasis(my-custom-app)');
+    });
+
+    it('falls back to the default Stasis app name when omitted or blank', () => {
+        expect(buildAgentDialplan('grok')).toContain('Stasis(asterisk-ai-voice-agent)');
+        expect(buildAgentDialplan('grok', '   ')).toContain('Stasis(asterisk-ai-voice-agent)');
+    });
 });

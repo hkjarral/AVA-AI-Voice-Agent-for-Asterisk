@@ -18,13 +18,16 @@ export function getDialplanProviderOverride(provider: string): string {
     return SUPPORTED_PROVIDERS.has(provider) ? provider : 'openai_realtime';
 }
 
-export function buildAgentDialplan(provider: string): string {
+export function buildAgentDialplan(provider: string, appName = 'asterisk-ai-voice-agent'): string {
     const providerOverride = getDialplanProviderOverride(provider);
+    // The wizard lets operators change the Stasis app name (config.asterisk_app); the
+    // generated Stasis() call must match it or call routing breaks.
+    const app = appName.trim() || 'asterisk-ai-voice-agent';
     return `; extensions_custom.conf
 [from-ai-agent]
 exten => s,1,NoOp(AI Agent Call)
  same => n,Set(AI_AGENT=default)
  same => n,Set(AI_PROVIDER=${providerOverride})   ; optional per-call provider override
- same => n,Stasis(asterisk-ai-voice-agent)
+ same => n,Stasis(${app})
  same => n,Hangup()`;
 }

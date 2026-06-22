@@ -126,7 +126,7 @@ const Wizard = () => {
     // Check if hostname is being used (requires server IP for RTP security)
     const isUsingHostname = !isIPAddress(config.asterisk_host) && config.asterisk_host !== 'localhost';
 
-    const nonLocalDialplanSnippet = buildAgentDialplan(config.provider);
+    const nonLocalDialplanSnippet = buildAgentDialplan(config.provider, config.asterisk_app);
 
     const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
         if (type === 'success') toast.success(message);
@@ -3407,7 +3407,7 @@ const Wizard = () => {
 exten => s,1,NoOp(AI Agent - Local Full)
  same => n,Set(AI_AGENT=default)
  same => n,Set(AI_PROVIDER=local)
- same => n,Stasis(asterisk-ai-voice-agent)
+ same => n,Stasis(${config.asterisk_app || 'asterisk-ai-voice-agent'})
  same => n,Hangup()`}
                                         </pre>
                                     </div>
