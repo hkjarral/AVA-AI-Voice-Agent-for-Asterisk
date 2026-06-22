@@ -2917,15 +2917,16 @@ def _compute_platform() -> dict:
     }
 
 
-# I7: /platform is the heaviest dashboard endpoint (subprocesses + Docker SDK)
-# and the dashboard re-polls it every ~5s. A short single-slot TTL cache collapses
-# bursts of polls into one recomputation without masking real config drift for long.
-# Single global slot keyed by nothing; guarded by a monotonic timestamp. A lock makes
-# the refresh single-flight: when _compute_platform is slower than the poll interval,
-# concurrent callers await one in-progress computation instead of each launching their
-# own Docker/subprocess probes (cache stampede) under exactly the slow conditions the
-# cache exists to protect.
-_PLATFORM_CACHE_TTL_SECONDS = 2.5
+# I7: /platform is the heaviest dashboard endpoint (subprocesses + Docker SDK) and the
+# dashboard re-polls it every ~5s. The TTL must exceed that poll interval, otherwise a
+# single steady poller misses the cache on every request and recomputes anyway. At 10s a
+# consecutive 5s poll is served from cache (≈halving the compute rate) while still surfacing
+# real config drift within ~10s; /preflight forces a fresh recompute when immediacy matters.
+# Single global slot keyed by nothing; guarded by a monotonic timestamp. A lock makes the
+# refresh single-flight: when _compute_platform is slower than the poll interval, concurrent
+# callers await one in-progress computation instead of each launching their own
+# Docker/subprocess probes (cache stampede) under exactly the slow conditions it protects.
+_PLATFORM_CACHE_TTL_SECONDS = 10.0
 _platform_cache: Optional[dict] = None
 _platform_cache_ts: float = 0.0
 _platform_cache_lock = asyncio.Lock()

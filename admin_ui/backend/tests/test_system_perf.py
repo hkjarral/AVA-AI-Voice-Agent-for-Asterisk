@@ -182,3 +182,10 @@ def test_platform_refresh_is_single_flight(monkeypatch):
     results = asyncio.run(_hammer())
     assert counter["calls"] == 1  # one compute despite 5 concurrent callers
     assert all(r is results[0] for r in results)  # all share the cached object
+
+
+def test_platform_ttl_covers_dashboard_poll_interval():
+    # The dashboard polls /platform every 5s; if the TTL is shorter, a single steady poller
+    # misses the cache on every request and the cache does nothing. Keep TTL > poll interval.
+    DASHBOARD_POLL_SECONDS = 5.0
+    assert system._PLATFORM_CACHE_TTL_SECONDS > DASHBOARD_POLL_SECONDS
