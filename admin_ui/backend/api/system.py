@@ -997,7 +997,8 @@ async def reload_ai_engine():
         raise HTTPException(status_code=500, detail=str(e))
 
 def _collect_system_metrics() -> dict:
-    """Synchronous psutil sampling (disk_usage stat-walks the fs). Blocking."""
+    """Non-blocking psutil sampling. Called inline on the event-loop thread so that
+    cpu_percent(interval=None) keeps a stable per-thread sampling baseline (see /metrics)."""
     # interval=None is non-blocking, returns usage since last call
     cpu_percent = psutil.cpu_percent(interval=None)
     memory = psutil.virtual_memory()
@@ -1025,8 +1026,11 @@ def _collect_system_metrics() -> dict:
 @router.get("/metrics")
 async def get_system_metrics():
     try:
-        # I7: keep psutil sampling off the event loop.
-        return await asyncio.to_thread(_collect_system_metrics)
+        # Deliberately NOT offloaded to asyncio.to_thread: psutil.cpu_percent(interval=None)
+        # keeps its sampling baseline per-thread, so running it on the shared executor would
+        # let different worker threads report 0.0 / averages over inconsistent intervals.
+        # The sampling is non-blocking (sub-ms), so the event-loop thread is its stable home.
+        return _collect_system_metrics()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

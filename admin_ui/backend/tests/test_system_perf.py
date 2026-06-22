@@ -123,12 +123,15 @@ def test_platform_offloads_via_to_thread(monkeypatch):
     assert used["to_thread"] is True
 
 
-def test_metrics_offloads_and_keeps_shape(monkeypatch):
+def test_metrics_runs_inline_not_offloaded(monkeypatch):
+    # /metrics must NOT use the shared to_thread executor: psutil.cpu_percent(interval=None)
+    # keeps a per-thread sampling baseline, so a different worker thread would report 0.0 /
+    # inconsistent intervals. It runs inline on the event-loop thread instead.
     used = {"to_thread": False}
     _spy_to_thread(monkeypatch, used)
     result = asyncio.run(system.get_system_metrics())
 
-    assert used["to_thread"] is True
+    assert used["to_thread"] is False
     assert set(result.keys()) == {"cpu", "memory", "disk"}
     assert "percent" in result["cpu"]
     assert "percent" in result["memory"]
