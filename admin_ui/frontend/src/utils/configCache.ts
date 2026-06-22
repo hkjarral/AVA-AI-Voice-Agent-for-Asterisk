@@ -75,19 +75,26 @@ export function invalidateConfigYaml(): void {
     inflight = null;
 }
 
+// Backend endpoints that rewrite the merged config file (ai-agent.local.yaml):
+// the normal save, the config import, and the Setup Wizard's save. A write to any
+// of them must drop the cache, or a cached page could reopen with stale config and
+// overwrite those changes on its next save.
+const CONFIG_WRITE_PATHS = ['/api/config/yaml', '/api/config/import', '/api/wizard/save'];
+
 /** Invalidate when a response is a successful write to the shared config document. */
 export function handleConfigWrite(response: { config?: { method?: string; url?: string } }): void {
     const cfg = response?.config;
     const method = cfg?.method?.toLowerCase();
-    if (cfg?.url === '/api/config/yaml' && (method === 'post' || method === 'put')) {
+    const path = cfg?.url?.split('?')[0];
+    if (path && (method === 'post' || method === 'put') && CONFIG_WRITE_PATHS.includes(path)) {
         invalidateConfigYaml();
     }
 }
 
-// Any successful save to /api/config/yaml — including from config pages not yet
-// migrated to this cache — drops the cache, so migrated pages never seed stale
-// config after an edit made elsewhere. (Optional-chained so unit-test axios mocks
-// without an interceptor registry are a no-op.)
+// Any successful write to a config-file endpoint — including from pages/flows not
+// migrated to this cache (e.g. the Setup Wizard) — drops the cache, so migrated
+// pages never seed stale config after an edit made elsewhere. (Optional-chained so
+// unit-test axios mocks without an interceptor registry are a no-op.)
 axios.interceptors?.response?.use?.((response) => {
     handleConfigWrite(response);
     return response;

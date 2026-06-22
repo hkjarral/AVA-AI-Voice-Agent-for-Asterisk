@@ -35,13 +35,16 @@ describe('configCache', () => {
         expect(axios.get).toHaveBeenCalledTimes(2);
     });
 
-    it('invalidates the cache when a config save (POST /api/config/yaml) succeeds', async () => {
-        vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
-        await loadConfigYaml();
-        expect(getCachedConfig()).not.toBeNull();
-        handleConfigWrite({ config: { method: 'post', url: '/api/config/yaml' } });
-        expect(getCachedConfig()).toBeNull(); // a save anywhere drops the shared cache
-    });
+    it.each(['/api/config/yaml', '/api/wizard/save', '/api/config/import'])(
+        'invalidates the cache when a config write to %s succeeds',
+        async (url) => {
+            vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
+            await loadConfigYaml();
+            expect(getCachedConfig()).not.toBeNull();
+            handleConfigWrite({ config: { method: 'post', url } });
+            expect(getCachedConfig()).toBeNull(); // any config writer drops the shared cache
+        }
+    );
 
     it('ignores writes to other endpoints', async () => {
         vi.mocked(axios.get).mockResolvedValue({ data: { content: 'k: 1' } });
