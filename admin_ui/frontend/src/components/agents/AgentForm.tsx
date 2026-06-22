@@ -79,6 +79,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     // Tool catalog (for the picker) + engine option sources.
     const [catalog, setCatalog] = useState<ToolDef[]>([]);
     const [catalogError, setCatalogError] = useState(false);
+    const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
     // Tool-reference highlighting for the prompt: detect every catalog tool name,
     // colour-code by in-call status for this agent.
     const knownToolNames = useMemo(() => catalog.map((t) => t.name), [catalog]);
@@ -90,12 +91,14 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             const checked = isToolChecked(toolState, t) || inCallCanon.has(t.name);
             map[t.name] = phaseOf(t) !== 'in_call'
                 ? 'unavailable'
-                : !checked
+                : disabledTools.has(t.name)
                     ? 'unavailable'
-                    : t.is_global ? 'global' : 'context';
+                    : !checked
+                        ? 'unavailable'
+                        : t.is_global ? 'global' : 'context';
         }
         return map;
-    }, [catalog, toolState]);
+    }, [catalog, toolState, disabledTools]);
     const [providersRaw, setProvidersRaw] = useState<Record<string, unknown>>({});
     const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, unknown>>({});
     const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
@@ -170,6 +173,22 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 .map(([k]) => k)
                 .sort();
             setAvailableProfiles(profileNames);
+
+            // Tools disabled in YAML (e.g. tools.google_calendar.enabled: false) are
+            // rejected at runtime even if an agent lists them — mark them unavailable.
+            const disabled = new Set<string>();
+            const collectDisabled = (block: unknown) => {
+                if (block && typeof block === 'object') {
+                    for (const [name, cfg] of Object.entries(block as Record<string, unknown>)) {
+                        if (cfg && typeof cfg === 'object' && (cfg as { enabled?: unknown }).enabled === false) {
+                            disabled.add(canonicalToolName(name));
+                        }
+                    }
+                }
+            };
+            collectDisabled(parsed.tools);
+            collectDisabled((parsed as Record<string, unknown>).in_call_tools);
+            setDisabledTools(disabled);
         } catch {
             // Non-blocking: dropdowns degrade gracefully to free-text
         }
