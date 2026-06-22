@@ -226,7 +226,10 @@ export const SystemTopology = () => {
             providerReady: nextProviderReady,
           };
         });
-        return true;
+        // Back off when the backend is up (200) but reports the engine unreachable
+        // (`ai_engine.status: 'error'`): that outage is exactly when the expensive
+        // per-poll dependency probes keep running, and there's no fresh status to fetch.
+        return res.data?.ai_engine?.status !== 'error';
       } catch {
         if (!mounted) return false;
         // Full request failure (network, 401, etc.) counts as a miss for all
@@ -405,7 +408,10 @@ export const SystemTopology = () => {
         }
 
         setState(prev => ({ ...prev, activeCalls: calls }));
-        return true;
+        // The sessions proxy returns 200 with `reachable: false` and an empty list when
+        // the engine is unreachable; treat that as a failed poll so the 2s loop backs off
+        // instead of hammering /sessions/stats + the Docker fallback every 2s.
+        return res.data?.reachable !== false;
       } catch (err) {
         console.error('Failed to fetch active sessions', err);
         return false;
