@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseToolReferences, buildInCallStatusMap, type InCallEnablement } from './promptTools';
+import { parseToolReferences, buildInCallStatusMap, canonicalToolName, type InCallEnablement } from './promptTools';
 
 const known = ['book_appointment', 'get_weather', 'transfer', 'lookup'];
 
@@ -55,6 +55,15 @@ describe('parseToolReferences', () => {
     it('finds multiple references in order', () => {
         const refs = parseToolReferences('use book_appointment tool and the lookup function', known);
         expect(refs.map((r) => r.name)).toEqual(['book_appointment', 'lookup']);
+    });
+});
+
+describe('canonicalToolName', () => {
+    it('maps the legacy transfer alias to blind_transfer', () => {
+        expect(canonicalToolName('transfer')).toBe('blind_transfer');
+    });
+    it('is identity for non-aliased names', () => {
+        expect(canonicalToolName('book_appointment')).toBe('book_appointment');
     });
 });
 

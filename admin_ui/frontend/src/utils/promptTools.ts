@@ -34,6 +34,15 @@ export interface InCallEnablement {
     globallyDisabled: (name: string) => boolean;
 }
 
+// Legacy tool-name aliases → their canonical catalog name, so an entity that
+// stored the old name still resolves against the catalog's canonical entry.
+const TOOL_ALIASES: Record<string, string> = { transfer: 'blind_transfer' };
+
+/** Map a stored tool name to its canonical catalog name (identity if none). */
+export function canonicalToolName(name: string): string {
+    return TOOL_ALIASES[name] || name;
+}
+
 const KEYWORD = '(?:tool|tools|function|functions)';
 
 function escapeRegExp(s: string): string {

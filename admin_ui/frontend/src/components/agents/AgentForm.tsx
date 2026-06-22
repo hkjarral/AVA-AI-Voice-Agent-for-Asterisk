@@ -11,7 +11,7 @@ import {
     ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig, phaseOf, isToolChecked,
 } from './agentToolConfig';
 import { PromptToolHighlight } from '../ui/PromptToolHighlight';
-import type { ToolStatus } from '../../utils/promptTools';
+import { canonicalToolName, type ToolStatus } from '../../utils/promptTools';
 
 export interface Agent {
     slug: string;
@@ -83,11 +83,14 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     // colour-code by in-call status for this agent.
     const knownToolNames = useMemo(() => catalog.map((t) => t.name), [catalog]);
     const toolStatusMap = useMemo(() => {
+        // Accept legacy aliases (e.g. a stored 'transfer' → catalog 'blind_transfer').
+        const inCallCanon = new Set([...toolState.inCallTools, ...toolState.inCallHttpTools].map(canonicalToolName));
         const map: Record<string, ToolStatus> = {};
         for (const t of catalog) {
+            const checked = isToolChecked(toolState, t) || inCallCanon.has(t.name);
             map[t.name] = phaseOf(t) !== 'in_call'
                 ? 'unavailable'
-                : !isToolChecked(toolState, t)
+                : !checked
                     ? 'unavailable'
                     : t.is_global ? 'global' : 'context';
         }
