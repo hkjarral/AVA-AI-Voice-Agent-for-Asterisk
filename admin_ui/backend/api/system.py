@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+import asyncio
 import docker
 from typing import List, Optional
 from pydantic import BaseModel
@@ -8,6 +9,7 @@ import shutil
 import logging
 import re
 import subprocess
+import time
 import uuid
 import yaml
 from services.fs import upsert_env_vars
@@ -215,85 +217,91 @@ def _safe_container_image_name(container) -> str:
     return "unknown (image unavailable)"
 
 
+def _collect_containers() -> List[dict]:
+    """Synchronous Docker SDK calls. Blocking — must run off the event loop."""
+    from datetime import datetime, timezone
+
+    client = docker.from_env()
+    containers = client.containers.list(all=True)
+    result = []
+    for c in containers:
+        # Get image name
+        image_name = _safe_container_image_name(c)
+
+        # Calculate uptime from StartedAt
+        uptime = None
+        started_at = None
+        if c.status == "running":
+            try:
+                started_str = c.attrs['State'].get('StartedAt', '')
+                if started_str and started_str != '0001-01-01T00:00:00Z':
+                    # Docker uses nanoseconds (9 digits), Python only handles microseconds (6)
+                    # Truncate nanoseconds to microseconds and normalize timezone
+                    import re
+                    # Match: 2025-12-03T06:23:45.362413338+00:00 or 2025-12-03T06:23:45.362413338Z
+                    match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(Z|[+-]\d{2}:\d{2})?', started_str)
+                    if match:
+                        base = match.group(1)
+                        frac = match.group(2)[:6].ljust(6, '0')  # Truncate to 6 digits
+                        tz = match.group(3) or '+00:00'
+                        if tz == 'Z':
+                            tz = '+00:00'
+                        normalized = f"{base}.{frac}{tz}"
+                        started_dt = datetime.fromisoformat(normalized)
+                    else:
+                        # Fallback for simple format
+                        started_dt = datetime.fromisoformat(started_str.replace('Z', '+00:00'))
+
+                    started_at = started_str
+                    now = datetime.now(timezone.utc)
+                    delta = now - started_dt
+
+                    # Format uptime nicely
+                    days = delta.days
+                    hours, remainder = divmod(delta.seconds, 3600)
+                    minutes, _ = divmod(remainder, 60)
+
+                    if days > 0:
+                        uptime = f"{days}d {hours}h {minutes}m"
+                    elif hours > 0:
+                        uptime = f"{hours}h {minutes}m"
+                    else:
+                        uptime = f"{minutes}m"
+            except Exception as e:
+                logger.debug("Error calculating uptime for %s: %s", c.name, e)
+
+        # Get exposed ports
+        ports = []
+        try:
+            port_bindings = c.attrs.get('NetworkSettings', {}).get('Ports', {})
+            for container_port, host_bindings in (port_bindings or {}).items():
+                if host_bindings:
+                    for binding in host_bindings:
+                        host_port = binding.get('HostPort', '')
+                        if host_port:
+                            ports.append(f"{host_port}:{container_port}")
+        except Exception:
+            pass
+
+        result.append({
+            "id": c.id,
+            "name": c.name,
+            "image": image_name,
+            "status": c.status,
+            "state": c.attrs.get("State", {}).get("Status", c.status),
+            "uptime": uptime,
+            "started_at": started_at,
+            "ports": ports,
+            "mounts": _extract_mounts(c),
+        })
+    return result
+
+
 @router.get("/containers")
 async def get_containers():
     try:
-        from datetime import datetime, timezone
-        
-        client = docker.from_env()
-        containers = client.containers.list(all=True)
-        result = []
-        for c in containers:
-            # Get image name
-            image_name = _safe_container_image_name(c)
-            
-            # Calculate uptime from StartedAt
-            uptime = None
-            started_at = None
-            if c.status == "running":
-                try:
-                    started_str = c.attrs['State'].get('StartedAt', '')
-                    if started_str and started_str != '0001-01-01T00:00:00Z':
-                        # Docker uses nanoseconds (9 digits), Python only handles microseconds (6)
-                        # Truncate nanoseconds to microseconds and normalize timezone
-                        import re
-                        # Match: 2025-12-03T06:23:45.362413338+00:00 or 2025-12-03T06:23:45.362413338Z
-                        match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(Z|[+-]\d{2}:\d{2})?', started_str)
-                        if match:
-                            base = match.group(1)
-                            frac = match.group(2)[:6].ljust(6, '0')  # Truncate to 6 digits
-                            tz = match.group(3) or '+00:00'
-                            if tz == 'Z':
-                                tz = '+00:00'
-                            normalized = f"{base}.{frac}{tz}"
-                            started_dt = datetime.fromisoformat(normalized)
-                        else:
-                            # Fallback for simple format
-                            started_dt = datetime.fromisoformat(started_str.replace('Z', '+00:00'))
-                        
-                        started_at = started_str
-                        now = datetime.now(timezone.utc)
-                        delta = now - started_dt
-                        
-                        # Format uptime nicely
-                        days = delta.days
-                        hours, remainder = divmod(delta.seconds, 3600)
-                        minutes, _ = divmod(remainder, 60)
-                        
-                        if days > 0:
-                            uptime = f"{days}d {hours}h {minutes}m"
-                        elif hours > 0:
-                            uptime = f"{hours}h {minutes}m"
-                        else:
-                            uptime = f"{minutes}m"
-                except Exception as e:
-                    logger.debug("Error calculating uptime for %s: %s", c.name, e)
-            
-            # Get exposed ports
-            ports = []
-            try:
-                port_bindings = c.attrs.get('NetworkSettings', {}).get('Ports', {})
-                for container_port, host_bindings in (port_bindings or {}).items():
-                    if host_bindings:
-                        for binding in host_bindings:
-                            host_port = binding.get('HostPort', '')
-                            if host_port:
-                                ports.append(f"{host_port}:{container_port}")
-            except Exception:
-                pass
-            
-            result.append({
-                "id": c.id,
-                "name": c.name,
-                "image": image_name,
-                "status": c.status,
-                "state": c.attrs.get("State", {}).get("Status", c.status),
-                "uptime": uptime,
-                "started_at": started_at,
-                "ports": ports,
-                "mounts": _extract_mounts(c),
-            })
-        return result
+        # I7: Docker SDK socket calls block the event loop — run them in a thread.
+        return await asyncio.to_thread(_collect_containers)
     except Exception as e:
         logger.error("Error listing containers: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -988,31 +996,37 @@ async def reload_ai_engine():
         logger.error(f"Error reloading AI Engine: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def _collect_system_metrics() -> dict:
+    """Synchronous psutil sampling (disk_usage stat-walks the fs). Blocking."""
+    # interval=None is non-blocking, returns usage since last call
+    cpu_percent = psutil.cpu_percent(interval=None)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+
+    return {
+        "cpu": {
+            "percent": cpu_percent,
+            "count": psutil.cpu_count()
+        },
+        "memory": {
+            "total": memory.total,
+            "available": memory.available,
+            "percent": memory.percent,
+            "used": memory.used
+        },
+        "disk": {
+            "total": disk.total,
+            "free": disk.free,
+            "percent": disk.percent
+        }
+    }
+
+
 @router.get("/metrics")
 async def get_system_metrics():
     try:
-        # interval=None is non-blocking, returns usage since last call
-        cpu_percent = psutil.cpu_percent(interval=None)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        return {
-            "cpu": {
-                "percent": cpu_percent,
-                "count": psutil.cpu_count()
-            },
-            "memory": {
-                "total": memory.total,
-                "available": memory.available,
-                "percent": memory.percent,
-                "used": memory.used
-            },
-            "disk": {
-                "total": disk.total,
-                "free": disk.free,
-                "percent": disk.percent
-            }
-        }
+        # I7: keep psutil sampling off the event loop.
+        return await asyncio.to_thread(_collect_system_metrics)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1536,9 +1550,11 @@ async def get_active_sessions():
     return {"active_calls": 0, "sessions": [], "reachable": False}
 
 
-@router.get("/directories")
-async def get_directory_health():
+def _collect_directory_health() -> dict:
     """
+    Synchronous directory/symlink checks plus a filesystem write-probe. Blocking —
+    must run off the event loop (I7).
+
     Check health of directories required for audio playback.
     Returns status of media directory, symlink, and permissions.
     """
@@ -1705,6 +1721,12 @@ async def get_directory_health():
         "overall": overall,
         "checks": checks
     }
+
+
+@router.get("/directories")
+async def get_directory_health():
+    """Offload the blocking directory checks/write-probe off the event loop (I7)."""
+    return await asyncio.to_thread(_collect_directory_health)
 
 
 @router.post("/directories/fix")
@@ -2839,11 +2861,11 @@ def _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, as
     return checks
 
 
-@router.get("/platform")
-async def get_platform():
+def _compute_platform() -> dict:
     """
-    Get platform detection and check results.
-    AAVA-126: Cross-Platform Support
+    Synchronous platform detection. Blocking — runs several subprocesses
+    (`asterisk -V`, `fwconsole -V`, `getenforce`, …) each with timeout=5 plus
+    Docker SDK socket calls, so it must be invoked off the event loop (I7).
     """
     os_info = _detect_os()
     docker_info = _detect_docker()
@@ -2861,13 +2883,13 @@ async def get_platform():
         platform_cfg["_key"] = platform_key
 
     checks = _build_checks(os_info, docker_info, compose_info, selinux_info, dir_info, asterisk_info, platform_cfg)
-    
+
     # Build summary
     passed = sum(1 for c in checks if c["status"] == "ok")
     warnings = sum(1 for c in checks if c["status"] == "warning")
     errors = sum(1 for c in checks if c["status"] == "error")
     blocking = sum(1 for c in checks if c.get("blocking", False))
-    
+
     return {
         "platform": {
             "os": os_info,
@@ -2891,14 +2913,56 @@ async def get_platform():
     }
 
 
+# I7: /platform is the heaviest dashboard endpoint (subprocesses + Docker SDK)
+# and the dashboard re-polls it every ~5s. A short single-slot TTL cache collapses
+# bursts of polls into one recomputation without masking real config drift for long.
+# Single global slot keyed by nothing; guarded by a monotonic timestamp. Reads are
+# under the asyncio event loop (single-threaded), so no lock is required.
+_PLATFORM_CACHE_TTL_SECONDS = 2.5
+_platform_cache: Optional[dict] = None
+_platform_cache_ts: float = 0.0
+
+
+def _reset_platform_cache() -> None:
+    """Invalidate the /platform TTL cache (used by tests)."""
+    global _platform_cache, _platform_cache_ts
+    _platform_cache = None
+    _platform_cache_ts = 0.0
+
+
+@router.get("/platform")
+async def get_platform(force: bool = False):
+    """
+    Get platform detection and check results.
+    AAVA-126: Cross-Platform Support
+
+    I7: detection blocks the event loop, so it runs in a thread and is served from
+    a short TTL cache. `force=True` bypasses the cache (used by /preflight).
+    """
+    global _platform_cache, _platform_cache_ts
+    now = time.monotonic()
+    if (
+        not force
+        and _platform_cache is not None
+        and (now - _platform_cache_ts) < _PLATFORM_CACHE_TTL_SECONDS
+    ):
+        return _platform_cache
+
+    result = await asyncio.to_thread(_compute_platform)
+    _platform_cache = result
+    _platform_cache_ts = time.monotonic()
+    return result
+
+
 @router.post("/preflight")
 async def run_preflight():
     """
     Re-run preflight checks and return fresh results.
     AAVA-126: Cross-Platform Support
     """
-    # Same as GET /platform but explicitly named for clarity
-    return await get_platform()
+    # Same as GET /platform but explicitly named for clarity — always fresh,
+    # never served from the TTL cache.
+    return await get_platform(force=True)
 
 
 class ContainerAction(BaseModel):
