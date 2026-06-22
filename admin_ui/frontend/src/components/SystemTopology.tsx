@@ -90,6 +90,13 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   'elevenlabs_agent': 'ElevenLabs',
 };
 
+// I6 — exponential polling backoff. A down backend used to be hammered at the
+// fixed cadence (sessions 2s / health 5s / config 10s). On error each loop
+// doubles its delay up to a cap; the next success resets to the base interval.
+const POLL_BACKOFF_CAP_MS = 30000;
+const nextPollDelay = (base: number, ok: boolean, current: number): number =>
+  ok ? base : Math.min(current * 2, POLL_BACKOFF_CAP_MS);
+
 export const SystemTopology = () => {
   const [state, setState] = useState<TopologyState>({
     aiEngineStatus: 'unknown',
@@ -161,10 +168,10 @@ export const SystemTopology = () => {
       return prev === true ? true : null;
     };
 
-    const fetchHealth = async () => {
+    const fetchHealth = async (): Promise<boolean> => {
       try {
         const res = await axios.get('/api/system/health');
-        if (!mounted) return;
+        if (!mounted) return true;
         const aiEngineDetails = res.data.ai_engine?.details || {};
         const ariReported: boolean = Boolean(
           aiEngineDetails.ari_connected ?? aiEngineDetails.asterisk?.connected ?? false,
@@ -219,8 +226,12 @@ export const SystemTopology = () => {
             providerReady: nextProviderReady,
           };
         });
+        // Back off when the backend is up (200) but reports the engine unreachable
+        // (`ai_engine.status: 'error'`): that outage is exactly when the expensive
+        // per-poll dependency probes keep running, and there's no fresh status to fetch.
+        return res.data?.ai_engine?.status !== 'error';
       } catch {
-        if (!mounted) return;
+        if (!mounted) return false;
         // Full request failure (network, 401, etc.) counts as a miss for all
         // four debounced indicators (ARI, AI Engine, Local AI, every known
         // provider). Two consecutive total failures flip each indicator red.
@@ -248,19 +259,37 @@ export const SystemTopology = () => {
             providerReady: nextProviderReady,
           };
         });
+        return false;
       }
     };
-    fetchHealth();
-    const interval = setInterval(fetchHealth, 5000);
+    // Self-scheduling poll with error backoff (I6): base 5s, doubling on
+    // request failure up to the cap, resetting to 5s on the next success.
+    const BASE_MS = 5000;
+    let timer: ReturnType<typeof setTimeout>;
+    let delay = BASE_MS;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        const ok = await fetchHealth();
+        if (!mounted) return;
+        delay = nextPollDelay(BASE_MS, ok, delay);
+        schedule();
+      }, delay);
+    };
+    fetchHealth().then(ok => {
+      if (!mounted) return;
+      delay = nextPollDelay(BASE_MS, ok, delay);
+      schedule();
+    });
     return () => {
       mounted = false;
-      clearInterval(interval);
+      clearTimeout(timer);
     };
   }, []);
 
   // Fetch config (providers, pipelines)
   useEffect(() => {
-    const fetchConfig = async () => {
+    let mounted = true;
+    const fetchConfig = async (): Promise<boolean> => {
       try {
         const res = await axios.get('/api/config/yaml');
         const parsed = yaml.load(res.data.content) as any;
@@ -326,18 +355,40 @@ export const SystemTopology = () => {
           };
         });
         setLoading(false);
+        return true;
       } catch {
         setLoading(false);
+        return false;
       }
     };
-    fetchConfig();
-    const interval = setInterval(fetchConfig, 10000);
-    return () => clearInterval(interval);
+    // Self-scheduling poll with error backoff (I6): base 10s, doubling on
+    // failure up to the cap, resetting on the next success.
+    const BASE_MS = 10000;
+    let timer: ReturnType<typeof setTimeout>;
+    let delay = BASE_MS;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        const ok = await fetchConfig();
+        if (!mounted) return;
+        delay = nextPollDelay(BASE_MS, ok, delay);
+        schedule();
+      }, delay);
+    };
+    fetchConfig().then(ok => {
+      if (!mounted) return;
+      delay = nextPollDelay(BASE_MS, ok, delay);
+      schedule();
+    });
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   // Poll for active calls from sessions API (more reliable than log parsing)
   useEffect(() => {
-    const fetchActiveSessions = async () => {
+    let mounted = true;
+    const fetchActiveSessions = async (): Promise<boolean> => {
       try {
         const res = await axios.get('/api/system/sessions');
         const sessions = res.data.sessions || [];
@@ -346,6 +397,9 @@ export const SystemTopology = () => {
         for (const session of sessions) {
           calls.set(session.call_id, {
             call_id: session.call_id,
+            // NOTE: latent — `started_at` is reset to now() on every 2s poll, so
+            // it can't drive a real per-call duration yet. Harmless today (no
+            // consumer reads it); kept here so the field exists when wired up.
             started_at: new Date(),
             provider: session.provider,
             pipeline: session.pipeline,
@@ -354,14 +408,38 @@ export const SystemTopology = () => {
         }
 
         setState(prev => ({ ...prev, activeCalls: calls }));
+        // The sessions proxy returns 200 with `reachable: false` and an empty list when
+        // the engine is unreachable; treat that as a failed poll so the 2s loop backs off
+        // instead of hammering /sessions/stats + the Docker fallback every 2s.
+        return res.data?.reachable !== false;
       } catch (err) {
         console.error('Failed to fetch active sessions', err);
+        return false;
       }
     };
 
-    fetchActiveSessions();
-    const interval = setInterval(fetchActiveSessions, 2000);
-    return () => clearInterval(interval);
+    // Self-scheduling poll with error backoff (I6): base 2s, doubling on
+    // failure up to the cap, resetting on the next success.
+    const BASE_MS = 2000;
+    let timer: ReturnType<typeof setTimeout>;
+    let delay = BASE_MS;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        const ok = await fetchActiveSessions();
+        if (!mounted) return;
+        delay = nextPollDelay(BASE_MS, ok, delay);
+        schedule();
+      }, delay);
+    };
+    fetchActiveSessions().then(ok => {
+      if (!mounted) return;
+      delay = nextPollDelay(BASE_MS, ok, delay);
+      schedule();
+    });
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   // Derive active providers/pipelines from calls
@@ -511,12 +589,17 @@ export const SystemTopology = () => {
             || enabledProviders.every(p => (state.providerReady[p.name] ?? 'unknown') !== 'unknown');
           const providersAnyError =
             enabledProviders.some(p => state.providerReady[p.name] === 'not_ready');
-          const totalModels = 3; // STT + LLM + TTS
-          const loadedModels = [
-            state.localAIModels?.stt?.loaded,
-            state.localAIModels?.llm?.loaded,
-            state.localAIModels?.tts?.loaded,
-          ].filter(Boolean).length;
+          // I9 — derive the denominator from the local components actually
+          // present in the health response rather than hardcoding 3. An
+          // STT+TTS-only box (no local LLM) reports two components and reads
+          // "N/2", instead of a permanent "N/3" that looks like a fault.
+          const localComponents = [
+            state.localAIModels?.stt,
+            state.localAIModels?.llm,
+            state.localAIModels?.tts,
+          ].filter((m): m is NonNullable<typeof m> => m != null);
+          const totalModels = localComponents.length;
+          const loadedModels = localComponents.filter(m => m.loaded).length;
           const allKnown =
             state.aiEngineStatus !== 'unknown'
             && state.localAIStatus !== 'unknown'
@@ -638,7 +721,13 @@ export const SystemTopology = () => {
 
           {/* Arrow */}
           <div className="flex items-center justify-center self-center w-full">
-            <svg className="w-full h-4 overflow-visible" viewBox="0 0 48 16" preserveAspectRatio="none">
+            <svg
+              role="img"
+              aria-label={`Asterisk to AI Engine flow: ${hasActiveCalls ? 'active' : 'idle'}`}
+              className="w-full h-4 overflow-visible"
+              viewBox="0 0 48 16"
+              preserveAspectRatio="none"
+            >
               <path
                 d="M 0 8 L 40 8"
                 stroke={hasActiveCalls ? '#22c55e' : '#e5e7eb'}
@@ -695,7 +784,13 @@ export const SystemTopology = () => {
 
           {/* Arrow */}
           <div className="flex items-center justify-center self-center w-full">
-            <svg className="w-full h-4 overflow-visible" viewBox="0 0 48 16" preserveAspectRatio="none">
+            <svg
+              role="img"
+              aria-label={`AI Engine to Providers flow: ${hasActiveCalls ? 'active' : 'idle'}`}
+              className="w-full h-4 overflow-visible"
+              viewBox="0 0 48 16"
+              preserveAspectRatio="none"
+            >
               <path
                 d="M 0 8 L 40 8"
                 stroke={hasActiveCalls ? '#22c55e' : '#e5e7eb'}
@@ -779,6 +874,11 @@ export const SystemTopology = () => {
                               : readyState === 'not_ready'
                                 ? 'Not ready'
                                 : 'Checking…';
+                          // I8 — non-color text cue so the dot's state is legible
+                          // without relying on hue (WCAG 1.4.1). "Ready" is the
+                          // expected resting state so we omit its label to avoid
+                          // noise; every other state shows a short word.
+                          const dotCue = readyState === 'ready' ? '' : dotTitle;
                           // Sub-row: instance name + customer/subtitle. For singleton groups
                           // the displayName already matches the kindLabel header, but the
                           // sub-row still earns its keep by showing the YAML key, status
@@ -800,6 +900,8 @@ export const SystemTopology = () => {
                                 <div className="absolute inset-0 rounded-lg border border-green-500 animate-ping opacity-20 pointer-events-none" />
                               )}
                               <div
+                                role="status"
+                                aria-label={`${provider.name}: ${dotTitle}`}
                                 className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${dotAnim}`}
                                 title={dotTitle}
                               />
@@ -813,8 +915,15 @@ export const SystemTopology = () => {
                                   </div>
                                 )}
                               </div>
+                              {dotCue && (
+                                <span className="text-[10px] uppercase tracking-wide text-muted-foreground flex-shrink-0">
+                                  {dotCue}
+                                </span>
+                              )}
                               {isDefault && (
                                 <div
+                                  role="img"
+                                  aria-label="Default provider"
                                   className="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0"
                                   title="Default Provider"
                                 />
@@ -845,6 +954,8 @@ export const SystemTopology = () => {
               regardless of how wide col 5 grows. */}
           <div className="col-span-4 h-14 relative">
             <svg
+              role="img"
+              aria-label={`AI Engine to Local AI flow: ${isLocalAIActive ? 'active' : 'idle'}; AI Engine to Pipelines flow: ${activePipelines.size > 0 ? 'active' : 'idle'}`}
               className="absolute inset-0 w-full h-full"
               viewBox="0 0 416 56"
               preserveAspectRatio="xMidYMid meet"
@@ -929,7 +1040,7 @@ export const SystemTopology = () => {
                         <span className={`text-xs font-medium truncate ${isActive ? 'text-green-500' : 'text-foreground'}`}>
                           {pipeline.name.replace(/_/g, ' ')}
                         </span>
-                        {isDefault && <div className="w-2.5 h-2.5 rounded-full bg-yellow-500 ml-auto flex-shrink-0" title="Default Pipeline" />}
+                        {isDefault && <div role="img" aria-label="Default pipeline" className="w-2.5 h-2.5 rounded-full bg-yellow-500 ml-auto flex-shrink-0" title="Default Pipeline" />}
                       </div>
                       {/* Pipeline components (STT/LLM/TTS) */}
                       <div className={`flex flex-col gap-0.5 p-1.5 rounded-b-xl border backdrop-blur-sm transition-all ${isActive ? 'border-green-500/50 bg-green-500/5 ring-1 ring-green-500/30 ring-t-0 shadow-[0_4px_15px_rgb(34,197,94,0.05)]' : 'border-border/60 bg-muted/20'
@@ -962,7 +1073,13 @@ export const SystemTopology = () => {
 
           {/* Arrow: Pipelines ← Local AI */}
           <div className="flex items-center justify-center self-center w-full">
-            <svg className="w-full h-4 overflow-visible" viewBox="0 0 48 16" preserveAspectRatio="none">
+            <svg
+              role="img"
+              aria-label={`Local AI to Pipelines flow: ${isLocalAIUsedByPipelines ? 'active' : 'idle'}`}
+              className="w-full h-4 overflow-visible"
+              viewBox="0 0 48 16"
+              preserveAspectRatio="none"
+            >
               <path
                 d="M 48 8 L 8 8"
                 stroke={isLocalAIUsedByPipelines ? '#22c55e' : '#e5e7eb'}
@@ -1022,7 +1139,13 @@ export const SystemTopology = () => {
 
           {/* Arrow: Local AI → Models */}
           <div className="flex items-center justify-center self-center w-full">
-            <svg className="w-full h-4 overflow-visible" viewBox="0 0 48 16" preserveAspectRatio="none">
+            <svg
+              role="img"
+              aria-label={`Local AI to Models flow: ${isLocalAIActive ? 'active' : 'idle'}`}
+              className="w-full h-4 overflow-visible"
+              viewBox="0 0 48 16"
+              preserveAspectRatio="none"
+            >
               <path
                 d="M 0 8 L 40 8"
                 stroke={isLocalAIActive ? '#22c55e' : '#e5e7eb'}

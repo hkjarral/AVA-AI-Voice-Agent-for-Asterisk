@@ -4702,6 +4702,138 @@ def _resolve_app_name() -> str:
     )
 
 
+async def _engine_health_ari_connected() -> Optional[bool]:
+    """
+    Read the AI engine's authoritative, reconnect-supervised ARI connection state
+    from its `/health` endpoint (top-level `ari_connected`).
+
+    This is the same sticky flag the engine derives from its ARI reconnect supervisor
+    (`src/ari_client.py`), so it does not flap on a single transient REST hiccup the way
+    a fresh per-poll probe to Asterisk's ARI port does.
+
+    Returns:
+      - True/False: the engine's reported ARI state
+      - None: the engine health was unavailable (caller should fall back to a direct probe)
+    """
+    import httpx
+
+    env_url = (_dotenv_value("HEALTH_CHECK_AI_ENGINE_URL") or "").strip()
+    if not env_url:
+        env_url = (os.getenv("HEALTH_CHECK_AI_ENGINE_URL") or "").strip()
+    candidates: List[str] = []
+    for url in (
+        env_url,
+        "http://127.0.0.1:15000/health",
+        "http://ai_engine:15000/health",
+        "http://ai-engine:15000/health",
+        "http://host.docker.internal:15000/health",
+    ):
+        if url and url not in candidates:
+            candidates.append(url)
+
+    # Split connect/read timeout + transport-level retries so a single RST/jitter on a
+    # localhost connect (the engine loop can briefly stall under call load) does not make
+    # the whole probe fail and the card flap.
+    timeout = httpx.Timeout(3.0, connect=2.0)
+    transport = httpx.AsyncHTTPTransport(retries=2)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+            for url in candidates:
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        val = data.get("ari_connected")
+                        if isinstance(val, bool):
+                            return val
+                        # 200 but the field is missing/invalid (schema drift): don't
+                        # assert "disconnected" — signal unknown so the caller falls
+                        # back to the direct probe instead of mis-reporting.
+                        return None
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.debug("Engine health ARI state unavailable: %s", e)
+    return None
+
+
+async def _probe_asterisk_ari(settings: dict, live: dict) -> None:
+    """
+    Direct ARI probe to Asterisk (fallback when the engine's ARI state is unavailable).
+
+    Mutates `live` in place: sets `ari_reachable`, `asterisk_version`, `uptime`,
+    `last_reload`, `modules`, and `app_registered`.
+
+    Hardened vs. a single throwaway request: a retrying transport plus a split
+    connect/read timeout so a single connect RST/jitter (e.g. FreePBX "Apply Config"
+    briefly dropping the ARI HTTP listener) doesn't yield a spurious `False`.
+    """
+    import httpx
+
+    host = settings["host"]
+    base_url = f"{settings['scheme']}://{host}:{settings['port']}"
+    verify = settings["ssl_verify"] if settings["scheme"] == "https" else True
+    auth = (settings["username"], settings["password"])
+
+    timeout = httpx.Timeout(5.0, connect=3.0)
+    transport = httpx.AsyncHTTPTransport(retries=2, verify=verify)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+            # 1. Asterisk info
+            try:
+                resp = await client.get(f"{base_url}/ari/asterisk/info", auth=auth)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    live["ari_reachable"] = True
+                    live["asterisk_version"] = (data.get("system") or {}).get("version")
+                    live["uptime"] = (data.get("status") or {}).get("startup_time")
+                    live["last_reload"] = (data.get("status") or {}).get("last_reload_time")
+            except Exception:
+                pass
+
+            if not live["ari_reachable"]:
+                return
+
+            # 2. Modules check
+            try:
+                resp = await client.get(f"{base_url}/ari/asterisk/modules", auth=auth)
+                if resp.status_code == 200:
+                    all_modules = resp.json()
+                    for req_mod in _REQUIRED_MODULES:
+                        matched = None
+                        for m in all_modules:
+                            name = m.get("name", "")
+                            if req_mod in name:
+                                matched = m
+                                break
+                        if matched:
+                            live["modules"][req_mod] = matched.get("status", "Unknown")
+                        else:
+                            live["modules"][req_mod] = "Not Found"
+            except Exception:
+                pass
+
+            # 3. App registration check
+            try:
+                resp = await client.get(f"{base_url}/ari/applications", auth=auth)
+                if resp.status_code == 200:
+                    apps = resp.json()
+                    app_name = live["app_name"]
+                    # The app list was authoritatively determined — record that so callers
+                    # don't override a genuine "not registered" result with an assumption.
+                    live["_app_registration_checked"] = True
+                    for app in apps:
+                        if app.get("name") == app_name:
+                            live["app_registered"] = True
+                            break
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.debug("Live ARI checks failed: %s", e)
+
+
 @router.get("/asterisk-status")
 async def asterisk_status():
     """
@@ -4711,11 +4843,18 @@ async def asterisk_status():
       - mode: "local" or "remote" based on ASTERISK_HOST
       - manifest: contents of data/asterisk_status.json (from preflight.sh) or null
       - live: real-time ARI checks (info, modules, app registration)
+
+    `live.ari_reachable` prefers the engine's sticky, reconnect-supervised ARI state
+    (engine `/health` → `ari_connected`) so it does not flap on a single transient
+    probe failure. It falls back to a hardened direct ARI probe only when the engine
+    health is unavailable.
     """
-    import httpx
+    import asyncio
     import json as _json
 
-    settings = _ari_env_settings()
+    # `.env` reads inside _ari_env_settings() (_dotenv_value ×6) are synchronous disk
+    # I/O — keep them off the event loop per the "never block the event loop" rule.
+    settings = await asyncio.to_thread(_ari_env_settings)
     host = settings["host"]
 
     # Determine mode
@@ -4743,63 +4882,40 @@ async def asterisk_status():
         "modules": {},
     }
 
-    if not settings.get("username") or not settings.get("password"):
+    has_probe_creds = bool(settings.get("username") and settings.get("password"))
+
+    # I3: prefer the engine's authoritative, reconnect-supervised ARI state. The engine
+    # already exposes it on /health, so the top-bar pill and the topology row read one
+    # truth instead of re-deriving connectivity from a flappy throwaway REST call. This
+    # is consulted BEFORE the direct-probe credential gate: the engine's own ARI
+    # connection is the source of truth even when THIS service has no ARI probe creds.
+    engine_ari = await _engine_health_ari_connected()
+    if engine_ari is not None:
+        live["ari_reachable"] = engine_ari
+        if engine_ari:
+            # Enrich the card with version/module/app detail via the direct probe when we
+            # have credentials (best-effort; a probe failure must not flip the sticky
+            # reachability the engine just confirmed).
+            if has_probe_creds:
+                try:
+                    await _probe_asterisk_ari(settings, live)
+                except Exception as e:
+                    logger.debug("ARI enrichment probe failed (engine reports connected): %s", e)
+            # An engine-confirmed ARI WebSocket means its Stasis app is registered, so a
+            # missing/failed enrichment probe must not render a false "Not Registered".
+            # But if the probe *did* authoritatively check /ari/applications, preserve its
+            # result — it may legitimately disprove registration (e.g. the configured app
+            # name changed without an engine restart, so the engine is connected under the
+            # old app). Only assume registered when the probe didn't determine the list.
+            if not live.pop("_app_registration_checked", False) and not live["app_registered"]:
+                live["app_registered"] = True
+            live["ari_reachable"] = True
         return {"mode": mode, "manifest": manifest, "live": live}
 
-    base_url = f"{settings['scheme']}://{host}:{settings['port']}"
-    verify = settings["ssl_verify"] if settings["scheme"] == "https" else True
-    auth = (settings["username"], settings["password"])
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0, verify=verify) as client:
-            # 1. Asterisk info
-            try:
-                resp = await client.get(f"{base_url}/ari/asterisk/info", auth=auth)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    live["ari_reachable"] = True
-                    live["asterisk_version"] = (data.get("system") or {}).get("version")
-                    live["uptime"] = (data.get("status") or {}).get("startup_time")
-                    live["last_reload"] = (data.get("status") or {}).get("last_reload_time")
-            except Exception:
-                pass
-
-            if not live["ari_reachable"]:
-                return {"mode": mode, "manifest": manifest, "live": live}
-
-            # 2. Modules check
-            try:
-                resp = await client.get(f"{base_url}/ari/asterisk/modules", auth=auth)
-                if resp.status_code == 200:
-                    all_modules = resp.json()
-                    for req_mod in _REQUIRED_MODULES:
-                        matched = None
-                        for m in all_modules:
-                            name = m.get("name", "")
-                            if req_mod in name:
-                                matched = m
-                                break
-                        if matched:
-                            live["modules"][req_mod] = matched.get("status", "Unknown")
-                        else:
-                            live["modules"][req_mod] = "Not Found"
-            except Exception:
-                pass
-
-            # 3. App registration check
-            try:
-                resp = await client.get(f"{base_url}/ari/applications", auth=auth)
-                if resp.status_code == 200:
-                    apps = resp.json()
-                    app_name = live["app_name"]
-                    for app in apps:
-                        if app.get("name") == app_name:
-                            live["app_registered"] = True
-                            break
-            except Exception:
-                pass
-
-    except Exception as e:
-        logger.debug("Live ARI checks failed: %s", e)
-
+    # Fallback: engine health unavailable. Use the hardened direct probe when we have
+    # credentials; otherwise reachability is undeterminable and stays False.
+    if not has_probe_creds:
+        return {"mode": mode, "manifest": manifest, "live": live}
+    await _probe_asterisk_ari(settings, live)
+    live.pop("_app_registration_checked", None)  # internal signal — keep out of the response
     return {"mode": mode, "manifest": manifest, "live": live}
