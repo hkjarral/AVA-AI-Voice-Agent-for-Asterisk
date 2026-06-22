@@ -2916,11 +2916,15 @@ def _compute_platform() -> dict:
 # I7: /platform is the heaviest dashboard endpoint (subprocesses + Docker SDK)
 # and the dashboard re-polls it every ~5s. A short single-slot TTL cache collapses
 # bursts of polls into one recomputation without masking real config drift for long.
-# Single global slot keyed by nothing; guarded by a monotonic timestamp. Reads are
-# under the asyncio event loop (single-threaded), so no lock is required.
+# Single global slot keyed by nothing; guarded by a monotonic timestamp. A lock makes
+# the refresh single-flight: when _compute_platform is slower than the poll interval,
+# concurrent callers await one in-progress computation instead of each launching their
+# own Docker/subprocess probes (cache stampede) under exactly the slow conditions the
+# cache exists to protect.
 _PLATFORM_CACHE_TTL_SECONDS = 2.5
 _platform_cache: Optional[dict] = None
 _platform_cache_ts: float = 0.0
+_platform_cache_lock = asyncio.Lock()
 
 
 def _reset_platform_cache() -> None:
@@ -2940,18 +2944,26 @@ async def get_platform(force: bool = False):
     a short TTL cache. `force=True` bypasses the cache (used by /preflight).
     """
     global _platform_cache, _platform_cache_ts
-    now = time.monotonic()
-    if (
-        not force
-        and _platform_cache is not None
-        and (now - _platform_cache_ts) < _PLATFORM_CACHE_TTL_SECONDS
-    ):
+
+    def _fresh() -> bool:
+        return (
+            not force
+            and _platform_cache is not None
+            and (time.monotonic() - _platform_cache_ts) < _PLATFORM_CACHE_TTL_SECONDS
+        )
+
+    if _fresh():
         return _platform_cache
 
-    result = await asyncio.to_thread(_compute_platform)
-    _platform_cache = result
-    _platform_cache_ts = time.monotonic()
-    return result
+    # Single-flight: only one coroutine recomputes; others wait and then read the slot.
+    async with _platform_cache_lock:
+        # Re-check after acquiring — a concurrent caller may have just refreshed it.
+        if _fresh():
+            return _platform_cache
+        result = await asyncio.to_thread(_compute_platform)
+        _platform_cache = result
+        _platform_cache_ts = time.monotonic()
+        return result
 
 
 @router.post("/preflight")

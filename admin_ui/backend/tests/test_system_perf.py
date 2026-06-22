@@ -165,3 +165,17 @@ def test_containers_offloads_via_to_thread(monkeypatch):
     result = asyncio.run(system.get_containers())
     assert used["to_thread"] is True
     assert result == []
+
+
+def test_platform_refresh_is_single_flight(monkeypatch):
+    """Concurrent /platform requests on a cold cache must share ONE recompute — no
+    stampede of Docker/subprocess probes under the slow conditions the cache protects."""
+    counter = {"calls": 0}
+    _stub_platform_helpers(monkeypatch, counter)
+
+    async def _hammer():
+        return await asyncio.gather(*[system.get_platform() for _ in range(5)])
+
+    results = asyncio.run(_hammer())
+    assert counter["calls"] == 1  # one compute despite 5 concurrent callers
+    assert all(r is results[0] for r in results)  # all share the cached object
