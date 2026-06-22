@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import yaml from 'js-yaml';
@@ -8,8 +8,10 @@ import HelpTooltip from '../ui/HelpTooltip';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import AgentToolPicker from './AgentToolPicker';
 import {
-    ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig,
+    ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig, phaseOf, isToolChecked,
 } from './agentToolConfig';
+import { PromptToolHighlight } from '../ui/PromptToolHighlight';
+import type { ToolStatus } from '../../utils/promptTools';
 
 export interface Agent {
     slug: string;
@@ -77,6 +79,20 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     // Tool catalog (for the picker) + engine option sources.
     const [catalog, setCatalog] = useState<ToolDef[]>([]);
     const [catalogError, setCatalogError] = useState(false);
+    // Tool-reference highlighting for the prompt: detect every catalog tool name,
+    // colour-code by in-call status for this agent.
+    const knownToolNames = useMemo(() => catalog.map((t) => t.name), [catalog]);
+    const toolStatusMap = useMemo(() => {
+        const map: Record<string, ToolStatus> = {};
+        for (const t of catalog) {
+            map[t.name] = phaseOf(t) !== 'in_call'
+                ? 'unavailable'
+                : !isToolChecked(toolState, t)
+                    ? 'unavailable'
+                    : t.is_global ? 'global' : 'context';
+        }
+        return map;
+    }, [catalog, toolState]);
     const [providersRaw, setProvidersRaw] = useState<Record<string, unknown>>({});
     const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, unknown>>({});
     const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
@@ -414,13 +430,14 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     <FormLabel htmlFor="agent-prompt" tooltip="System prompt passed to the LLM. Use {company} as a placeholder for the business name.">
                         Prompt
                     </FormLabel>
-                    <textarea
+                    <PromptToolHighlight
                         id="agent-prompt"
                         value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
+                        onChange={setPrompt}
+                        knownNames={knownToolNames}
+                        statusMap={toolStatusMap}
                         rows={6}
                         placeholder="You are a helpful voice assistant…"
-                        className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
                     />
                 </div>
 
