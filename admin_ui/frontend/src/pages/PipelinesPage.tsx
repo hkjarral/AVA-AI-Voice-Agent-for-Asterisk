@@ -12,6 +12,7 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import PipelineForm from '../components/config/PipelineForm';
 import { ensureModularKey, isFullAgentProvider } from '../utils/providerNaming';
+import { normalizeSttOptions } from '../utils/sttAudioContract';
 import { usePendingChanges } from '../hooks/usePendingChanges';
 
 const PipelinesPage = () => {
@@ -78,29 +79,6 @@ const PipelinesPage = () => {
             pipeline?.options?.llm?.model ||
             '';
         return compactModelLabel(llmLabel) || 'default model';
-    };
-
-    const normalizeSttOptions = (sttKey: string, sttOptions: any) => {
-        const opts = (sttOptions && typeof sttOptions === 'object') ? sttOptions : {};
-
-        if (sttKey === 'local_stt') {
-            return {
-                streaming: true,
-                chunk_ms: 160,
-                stream_format: 'pcm16_16k',
-                mode: 'stt',
-            };
-        }
-
-        const normalized: any = {};
-        normalized.chunk_ms = typeof opts.chunk_ms === 'number' ? opts.chunk_ms : 4000;
-        if (typeof opts.response_format === 'string') normalized.response_format = opts.response_format;
-        if (typeof opts.temperature === 'number') normalized.temperature = opts.temperature;
-        if (typeof opts.language === 'string') normalized.language = opts.language;
-        if (typeof opts.prompt === 'string') normalized.prompt = opts.prompt;
-        if (opts.request_timeout_sec != null) normalized.request_timeout_sec = opts.request_timeout_sec;
-        if (opts.timeout_sec != null) normalized.timeout_sec = opts.timeout_sec;
-        return normalized;
     };
 
     useEffect(() => {
@@ -360,7 +338,10 @@ const PipelinesPage = () => {
         if (!isNewPipeline && existingData?.stt && mergedPipeline.stt && existingData.stt !== mergedPipeline.stt) {
             const existingSttOpts = (existingData.options || {}).stt || {};
             const nextSttOpts = (mergedPipeline.options || {}).stt || existingSttOpts;
-            mergedPipeline.options = { ...(mergedPipeline.options || {}), stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts) };
+            mergedPipeline.options = {
+                ...(mergedPipeline.options || {}),
+                stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts, providers),
+            };
         }
 
         // Keep only portable LLM options when LLM provider changes (avoid carrying provider-specific base_url/model).
@@ -383,7 +364,11 @@ const PipelinesPage = () => {
         // Always normalize STT options for the selected STT provider. This prevents stale cloud STT keys
         // (e.g., response_format/temperature/chunk_ms=4000) from breaking local_stt when users swap providers.
         mergedPipeline.options = { ...(mergedPipeline.options || {}) };
-        mergedPipeline.options.stt = normalizeSttOptions(mergedPipeline.stt, (mergedPipeline.options || {}).stt);
+        mergedPipeline.options.stt = normalizeSttOptions(
+            mergedPipeline.stt,
+            (mergedPipeline.options || {}).stt,
+            providers,
+        );
 
         newConfig.pipelines[pipelineName] = mergedPipeline;
 

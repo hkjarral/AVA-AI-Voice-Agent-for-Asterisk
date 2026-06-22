@@ -37,6 +37,12 @@ Some pipeline LLMs can be overly eager to emit `hangup_call`. A per-pipeline gua
 - `pipelines.<name>.options.llm.hangup_call_guardrail_mode`: `relaxed`/`normal`/`strict` (unset = use global hangup policy mode)
 - `pipelines.<name>.options.llm.hangup_call_guardrail_markers.end_call`: list of caller phrases that count as end-of-call intent (unset/empty = use global hangup policy defaults)
 
+Streaming modular STT uses an engine-managed raw PCM16-LE mono 16 kHz bus.
+`stream_format`, `encoding`, `sample_rate`, and `channels` are written by the
+Admin UI for clarity but are not independently negotiable. Conflicting legacy
+values are normalized at runtime and logged. Audio Profiles continue to control
+wire/full-agent negotiation and do not change the modular STT bus format.
+
 ### Golden Baselines
 See the validated configurations in `config/`:
 - `ai-agent.golden-openai.yaml` - OpenAI Realtime (monolithic, fastest)

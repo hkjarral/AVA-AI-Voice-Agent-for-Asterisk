@@ -551,6 +551,8 @@ class AzureSTTRealtimeAdapter(STTComponent):
     Uses the official Azure Speech SDK for robust streaming and low latency.
     """
 
+    supports_streaming = True
+
     def __init__(
         self,
         component_key: str,
@@ -611,8 +613,9 @@ class AzureSTTRealtimeAdapter(STTComponent):
         self,
         call_id: str,
         options: Dict[str, Any],
-        sample_rate_hz: int = 8000,
-        fmt: str = "pcm16",
+        *,
+        sample_rate_hz: int,
+        fmt: str,
     ) -> None:
         """Initialize the Azure Speech Recognizer stream for this call."""
         if not speechsdk:
@@ -645,18 +648,13 @@ class AzureSTTRealtimeAdapter(STTComponent):
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, initial_timeout_ms)
 
         # 2. Setup Push Stream
-        # SDK expects 1 channel, 16-bit, native sample rate.
-        # The engine normalises pipeline audio to 16 kHz PCM upstream, so we
-        # expect sample_rate_hz to already be 16000.  Log a warning if that
-        # assumption is violated instead of silently mutating the value.
-        st_fmt = options.get("stream_format", "pcm16_16k")
-        if st_fmt == "pcm16_16k" and sample_rate_hz != 16000:
-            logger.warning(
-                "Azure STT Realtime: stream_format is pcm16_16k but received sample_rate_hz=%d; "
-                "audio quality may be degraded if bytes are not actually 16 kHz",
-                sample_rate_hz,
-                call_id=call_id,
-            )
+        # Azure PushAudioInputStream consumes raw PCM and cannot infer its
+        # format. The engine supplies the authoritative modular STT bus format.
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+            raise ValueError(f"Unsupported Azure streaming STT format: {fmt!r}")
+        if int(sample_rate_hz) <= 0:
+            raise ValueError("Azure streaming STT sample_rate_hz must be positive")
 
         stream_format = speechsdk.audio.AudioStreamFormat(samples_per_second=sample_rate_hz, bits_per_sample=16, channels=1)
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
@@ -707,7 +705,13 @@ class AzureSTTRealtimeAdapter(STTComponent):
             "sample_rate": sample_rate_hz
         }
         
-        logger.info("Azure STT SDK Stream started", call_id=call_id)
+        logger.info(
+            "Azure STT SDK Stream started",
+            call_id=call_id,
+            stream_format=normalized_fmt,
+            sample_rate_hz=sample_rate_hz,
+            channels=1,
+        )
 
     async def send_audio(self, call_id: str, audio_bytes: bytes, fmt: str = "pcm16") -> None:
         """Push a chunk of PCM audio to the Azure SDK stream."""

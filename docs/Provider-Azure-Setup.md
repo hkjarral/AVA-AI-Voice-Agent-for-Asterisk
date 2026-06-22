@@ -96,6 +96,12 @@ pipelines:
 active_pipeline: azure_hybrid
 ```
 
+Streaming modular STT audio is normalized by the engine to headerless PCM16-LE,
+mono, at 16 kHz. The Admin UI manages this format automatically. Legacy
+`stream_format` or `sample_rate` values that conflict with the engine bus are
+ignored at runtime with a warning so Azure always receives metadata matching
+the submitted audio bytes.
+
 ### 5. Configure Asterisk Dialplan
 
 Add to `/etc/asterisk/extensions_custom.conf`:

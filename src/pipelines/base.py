@@ -270,6 +270,11 @@ class Component(ABC):
 class STTComponent(Component):
     """Speech-to-text component."""
 
+    # Streaming adapters opt in explicitly. The engine must not infer support
+    # from incidental method names because buffered-only adapters share this
+    # base class.
+    supports_streaming: bool = False
+
     @abstractmethod
     async def transcribe(
         self,

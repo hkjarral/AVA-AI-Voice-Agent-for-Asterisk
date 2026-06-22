@@ -5,6 +5,7 @@ import pytest
 
 from src.audio.resampler import convert_pcm16le_to_target_format
 from src.config import AppConfig, DeepgramProviderConfig
+from src.pipelines import deepgram as deepgram_module
 from src.pipelines.deepgram import DeepgramSTTAdapter, DeepgramTTSAdapter
 from src.pipelines.orchestrator import PipelineOrchestrator
 
@@ -60,6 +61,15 @@ class _MockWebSocket:
     async def close(self):
         self.closed = True
 
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = await self._queue.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
 
 class _FakeJsonResponse:
     def __init__(self, payload: dict, status: int = 200):
@@ -92,6 +102,38 @@ class _FakeHttpSession:
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_streaming_url_uses_authoritative_engine_audio_format(monkeypatch):
+    config = _build_app_config()
+    provider_config = DeepgramProviderConfig(**config.providers["deepgram"])
+    adapter = DeepgramSTTAdapter(
+        "deepgram_stt",
+        config,
+        provider_config,
+        {"sample_rate": 8000, "encoding": "mulaw"},
+        session_factory=lambda: _FakeHttpSession({}),
+    )
+    await adapter.open_call("call-stream", {"sample_rate": 16000, "encoding": "linear16"})
+
+    captured = {}
+
+    async def fake_connect(url, **kwargs):
+        captured["url"] = url
+        return _MockWebSocket()
+
+    monkeypatch.setattr(deepgram_module.websockets, "connect", fake_connect)
+    await adapter.start_stream(
+        "call-stream",
+        {"sample_rate": 8000, "encoding": "mulaw"},
+        sample_rate_hz=16000,
+        fmt="pcm16_16k",
+    )
+
+    assert "encoding=linear16" in captured["url"]
+    assert "sample_rate=16000" in captured["url"]
+    await adapter.close_call("call-stream")
 
 
 class _FakeResponse:

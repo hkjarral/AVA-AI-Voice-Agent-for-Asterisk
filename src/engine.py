@@ -81,6 +81,14 @@ from src.tools.telephony.hangup_policy import (
 
 logger = get_logger(__name__)
 
+# Modular STT uses one canonical, headerless audio bus. Transport-specific
+# audio is converted to this format before it enters the pipeline queue.
+PIPELINE_STT_SAMPLE_RATE_HZ = 16000
+PIPELINE_STT_STREAM_FORMAT = "pcm16_16k"
+PIPELINE_STT_ENCODING = "linear16"
+PIPELINE_STT_CHANNELS = 1
+PIPELINE_STT_BYTES_PER_SAMPLE = 2
+
 # -----------------------------------------------------------------------------
 # Environment variable resolution helper
 # -----------------------------------------------------------------------------
@@ -7031,10 +7039,15 @@ class Engine:
                 if q:
                     try:
                         pcm16 = pcm_bytes
-                        if pcm16 and pcm_rate != 16000:
+                        if pcm16 and pcm_rate != PIPELINE_STT_SAMPLE_RATE_HZ:
                             try:
                                 state = self._resample_state_pipeline16k.get(caller_channel_id)
-                                pcm16, state = resample_audio(pcm16, pcm_rate, 16000, state=state)
+                                pcm16, state = resample_audio(
+                                    pcm16,
+                                    pcm_rate,
+                                    PIPELINE_STT_SAMPLE_RATE_HZ,
+                                    state=state,
+                                )
                                 self._resample_state_pipeline16k[caller_channel_id] = state
                             except (TypeError, ValueError, IndexError):
                                 pcm16 = pcm_bytes
@@ -7632,10 +7645,15 @@ class Engine:
                 if q:
                     try:
                         pcm16 = pcm_bytes
-                        if pcm16 and pcm_rate != 16000:
+                        if pcm16 and pcm_rate != PIPELINE_STT_SAMPLE_RATE_HZ:
                             try:
                                 state = self._resample_state_pipeline16k.get(caller_channel_id)
-                                pcm16, state = resample_audio(pcm16, pcm_rate, 16000, state=state)
+                                pcm16, state = resample_audio(
+                                    pcm16,
+                                    pcm_rate,
+                                    PIPELINE_STT_SAMPLE_RATE_HZ,
+                                    state=state,
+                                )
                                 self._resample_state_pipeline16k[caller_channel_id] = state
                             except (TypeError, ValueError, IndexError):
                                 pcm16 = pcm_bytes
@@ -8550,7 +8568,7 @@ class Engine:
                 q = self._pipeline_queues.get(caller_channel_id)
                 if q:
                     try:
-                        q.put_nowait(pcm_16k)  # Pipeline expects PCM16@16kHz
+                        q.put_nowait(pcm_16k)  # Canonical modular STT bus.
                         logger.debug("RTP audio routed to pipeline queue", call_id=caller_channel_id, bytes=len(pcm_16k))
                     except Exception as exc:
                         logger.warning("Pipeline queue full or unavailable (RTP)", call_id=caller_channel_id, error=str(exc))
@@ -10590,10 +10608,83 @@ class Engine:
                         )
             except Exception:
                 logger.debug("Outbound custom_vars injection failed (pipeline)", call_id=call_id, exc_info=True)
+
+            # Resolve the STT runtime contract before open_call(). This is
+            # required for adapters such as Deepgram Flux that create their
+            # streaming connection during open_call rather than start_stream.
+            raw_stt_options = pipeline.stt_options or {}
+            stt_options: Dict[str, Any] = dict(raw_stt_options)
+            streaming_explicit = "streaming" in raw_stt_options
+            chunk_ms_explicit = "chunk_ms" in raw_stt_options
+            streaming_methods_available = all(
+                callable(getattr(pipeline.stt_adapter, attr, None))
+                for attr in ("start_stream", "send_audio", "iter_results", "stop_stream")
+            )
+            streaming_supported = bool(
+                getattr(pipeline.stt_adapter, "supports_streaming", False)
+                and streaming_methods_available
+            )
+
+            if getattr(pipeline, "stt_key", "") == "local_stt":
+                stt_options.setdefault("streaming", True)
+                stt_options.setdefault("mode", stt_options.get("mode") or "stt")
+                if not chunk_ms_explicit or stt_options.get("chunk_ms") in (None, "", 0):
+                    stt_options["chunk_ms"] = 160
+                if not streaming_explicit:
+                    try:
+                        if int(stt_options.get("chunk_ms", 160)) > 1000:
+                            stt_options["chunk_ms"] = 160
+                    except Exception:
+                        stt_options["chunk_ms"] = 160
+
+            requested_streaming = bool(stt_options.get("streaming", True))
+            if requested_streaming and streaming_supported:
+                configured_format = stt_options.get("stream_format")
+                configured_rate = stt_options.get("sample_rate")
+                configured_encoding = stt_options.get("encoding")
+                accepted_formats = {None, "", "pcm16", "pcm16_16k", "pcm16-16k", "linear16"}
+                accepted_encodings = {None, "", "pcm16", "pcm16le", "linear16"}
+                configured_rate_invalid = False
+                try:
+                    configured_rate_int = int(configured_rate) if configured_rate not in (None, "") else None
+                except (TypeError, ValueError):
+                    configured_rate_int = None
+                    configured_rate_invalid = True
+
+                if (
+                    str(configured_format).strip().lower() not in accepted_formats
+                    if configured_format is not None
+                    else False
+                ) or configured_rate_invalid or configured_rate_int not in (None, PIPELINE_STT_SAMPLE_RATE_HZ) or (
+                    str(configured_encoding).strip().lower() not in accepted_encodings
+                    if configured_encoding is not None
+                    else False
+                ):
+                    logger.warning(
+                        "Streaming STT configuration conflicts with canonical pipeline audio; using engine format",
+                        call_id=call_id,
+                        component=getattr(pipeline.stt_adapter, "component_key", "unknown"),
+                        configured_stream_format=configured_format,
+                        configured_sample_rate_hz=configured_rate,
+                        configured_encoding=configured_encoding,
+                        effective_stream_format=PIPELINE_STT_STREAM_FORMAT,
+                        effective_sample_rate_hz=PIPELINE_STT_SAMPLE_RATE_HZ,
+                        effective_encoding=PIPELINE_STT_ENCODING,
+                    )
+
+                # Use a per-call copy so stored pipeline configuration remains
+                # unchanged while every streaming lifecycle method sees the
+                # actual bytes carried by the engine queue.
+                stt_options.update({
+                    "stream_format": PIPELINE_STT_STREAM_FORMAT,
+                    "sample_rate": PIPELINE_STT_SAMPLE_RATE_HZ,
+                    "encoding": PIPELINE_STT_ENCODING,
+                    "channels": PIPELINE_STT_CHANNELS,
+                })
             
             # Open per-call state for adapters (best-effort)
             try:
-                await pipeline.stt_adapter.open_call(call_id, pipeline.stt_options)
+                await pipeline.stt_adapter.open_call(call_id, stt_options)
             except Exception:
                 logger.debug("STT open_call failed", call_id=call_id, exc_info=True)
             else:
@@ -10783,31 +10874,11 @@ class Engine:
                         )
                         break
 
-            # Accumulate into ~160ms chunks for STT while keeping ingestion responsive
-            bytes_per_ms = 32  # 16k Hz * 2 bytes / 1000 ms
+            # Accumulate into provider-sized chunks while keeping ingestion responsive.
+            bytes_per_ms = (
+                PIPELINE_STT_SAMPLE_RATE_HZ * PIPELINE_STT_BYTES_PER_SAMPLE // 1000
+            )
             base_commit_ms = 160
-            # NOTE: In pipeline mode, users frequently swap STT providers in the UI. Local STT is designed
-            # for low-latency streaming, but buffered cloud STT settings (e.g., chunk_ms=4000) can linger
-            # and cause queue overflows and "no transcript" behavior. Keep explicit config behavior when
-            # present, but make local_stt robust when omitted/misaligned.
-            raw_stt_options = pipeline.stt_options or {}
-            stt_options: Dict[str, Any] = dict(raw_stt_options)
-            streaming_explicit = "streaming" in raw_stt_options
-            chunk_ms_explicit = "chunk_ms" in raw_stt_options
-
-            if getattr(pipeline, "stt_key", "") == "local_stt":
-                stt_options.setdefault("streaming", True)
-                stt_options.setdefault("stream_format", stt_options.get("stream_format") or "pcm16_16k")
-                stt_options.setdefault("mode", stt_options.get("mode") or "stt")
-                if not chunk_ms_explicit or stt_options.get("chunk_ms") in (None, "", 0):
-                    stt_options["chunk_ms"] = 160
-                if not streaming_explicit:
-                    try:
-                        if int(stt_options.get("chunk_ms", 160)) > 1000:
-                            stt_options["chunk_ms"] = 160
-                    except Exception:
-                        stt_options["chunk_ms"] = 160
-
             stt_chunk_ms = int(stt_options.get("chunk_ms", base_commit_ms)) if stt_options else base_commit_ms
             commit_ms = max(stt_chunk_ms, 80)
             commit_bytes = bytes_per_ms * commit_ms
@@ -10823,10 +10894,6 @@ class Engine:
 
             use_streaming = bool(stt_options.get("streaming", True))
             if use_streaming:
-                streaming_supported = all(
-                    hasattr(pipeline.stt_adapter, attr)
-                    for attr in ("start_stream", "send_audio", "iter_results", "stop_stream")
-                )
                 if not streaming_supported:
                     logger.warning(
                         "Streaming STT requested but adapter does not support streaming APIs; falling back to chunked mode",
@@ -10834,7 +10901,7 @@ class Engine:
                         component=getattr(pipeline.stt_adapter, "component_key", "unknown"),
                     )
                     use_streaming = False
-            stream_format = stt_options.get("stream_format", "pcm16_16k")
+            stream_format = stt_options.get("stream_format", PIPELINE_STT_STREAM_FORMAT)
             if use_streaming:
                 try:
                     logger.info(
@@ -10882,7 +10949,7 @@ class Engine:
                         transcript = await pipeline.stt_adapter.transcribe(
                             call_id,
                             audio_chunk,
-                            16000,
+                            PIPELINE_STT_SAMPLE_RATE_HZ,
                             stt_options,
                         )
                     except Exception:
@@ -11939,7 +12006,12 @@ class Engine:
                 stop_called = False
 
                 try:
-                    await pipeline.stt_adapter.start_stream(call_id, stt_options)
+                    await pipeline.stt_adapter.start_stream(
+                        call_id,
+                        stt_options,
+                        sample_rate_hz=PIPELINE_STT_SAMPLE_RATE_HZ,
+                        fmt=PIPELINE_STT_STREAM_FORMAT,
+                    )
                     stt_send_task = asyncio.create_task(stt_sender())
                     stt_recv_task = asyncio.create_task(stt_receiver())
                     dialog_task = asyncio.create_task(dialog_worker())

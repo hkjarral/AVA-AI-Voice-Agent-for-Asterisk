@@ -520,6 +520,8 @@ class _LocalAdapterBase:
 class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
     """# Milestone7: STT adapter backed by the local AI server."""
 
+    supports_streaming = True
+
     def __init__(
         self,
         component_key: str,
@@ -540,7 +542,18 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         self,
         call_id: str,
         options: Optional[Dict[str, Any]] = None,
+        *,
+        sample_rate_hz: int,
+        fmt: str,
     ) -> None:
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+            raise ValueError(f"Unsupported Local streaming STT format: {fmt!r}")
+        if int(sample_rate_hz) != 16000:
+            raise ValueError(
+                "Local streaming STT requires the canonical 16000 Hz pipeline bus "
+                f"(received {sample_rate_hz})"
+            )
         runtime_options = options or {}
         session = await self._ensure_session(call_id, runtime_options)
         if session.send_lock is None:
@@ -557,6 +570,8 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
             "Local STT streaming started",
             component=self.component_key,
             call_id=call_id,
+            stream_format=normalized_fmt,
+            sample_rate_hz=sample_rate_hz,
         )
 
     async def send_audio(

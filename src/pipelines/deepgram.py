@@ -105,6 +105,8 @@ class DeepgramSTTAdapter(STTComponent):
     Note: This is separate from src/providers/deepgram.py (monolithic full agent).
     """
 
+    supports_streaming = True
+
     def __init__(
         self,
         component_key: str,
@@ -362,7 +364,14 @@ class DeepgramSTTAdapter(STTComponent):
 
     # Streaming Methods (for streaming: true mode) --------------------------------
 
-    async def start_stream(self, call_id: str, options: Dict[str, Any]) -> None:
+    async def start_stream(
+        self,
+        call_id: str,
+        options: Dict[str, Any],
+        *,
+        sample_rate_hz: int,
+        fmt: str,
+    ) -> None:
         """Open WebSocket streaming connection to Deepgram."""
         session = self._sessions.get(call_id)
         if not session:
@@ -392,12 +401,19 @@ class DeepgramSTTAdapter(STTComponent):
         else:
             path = parsed.path.rstrip("/") + "/v1/listen"
 
-        # Build query parameters
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+            raise ValueError(f"Unsupported Deepgram streaming STT format: {fmt!r}")
+        if int(sample_rate_hz) <= 0:
+            raise ValueError("Deepgram streaming STT sample_rate_hz must be positive")
+
+        # Raw audio requires encoding and sample_rate query parameters that
+        # describe the bytes actually sent by the engine.
         query_params = {
             "model": merged.get("model", "nova-2"),
             "language": merged.get("language", "en-US"),
-            "encoding": merged.get("encoding", "linear16"),
-            "sample_rate": str(merged.get("sample_rate", 16000)),
+            "encoding": "linear16",
+            "sample_rate": str(sample_rate_hz),
             "channels": "1",
         }
         existing = dict(parse_qsl(parsed.query))
@@ -447,6 +463,8 @@ class DeepgramSTTAdapter(STTComponent):
             "Deepgram STT streaming session opened",
             call_id=call_id,
             model=merged.get("model"),
+            encoding="linear16",
+            sample_rate_hz=sample_rate_hz,
         )
 
     async def send_audio(

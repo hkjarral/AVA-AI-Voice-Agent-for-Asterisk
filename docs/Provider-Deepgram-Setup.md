@@ -86,7 +86,7 @@ providers:
 >
 > **Valid ranges (Pydantic-enforced at config load):** `eot_threshold` 0.5–0.9, `eager_eot_threshold` 0.3–0.9, with `eager_eot_threshold` strictly less than `eot_threshold` when both are set. Out-of-range or inverted values fail fast at startup rather than becoming opaque provider-side failures.
 >
-> **Standalone Flux pipeline path (advanced)** — the standalone Flux pipeline adapter at `src/pipelines/deepgram_flux.py` (registered as `deepgram_flux_stt`) supports the same tuning knobs for hybrid pipelines (Flux STT + non-Deepgram LLM/TTS). Use this only when you need Flux STT decoupled from Deepgram's Voice Agent.
+> **Standalone Flux pipeline path (advanced)** — the standalone Flux pipeline adapter at `src/pipelines/deepgram_flux.py` (registered as `deepgram_flux_stt`) supports the same tuning knobs for hybrid pipelines (Flux STT + non-Deepgram LLM/TTS). Use this only when you need Flux STT decoupled from Deepgram's Voice Agent. The engine supplies raw `linear16`, mono, 16 kHz audio and the Admin UI defaults new Flux pipelines to Deepgram's recommended 80 ms chunk size.
 
 ### 4. Configure Asterisk Dialplan
 

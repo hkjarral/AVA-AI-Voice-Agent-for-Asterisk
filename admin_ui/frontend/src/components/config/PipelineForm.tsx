@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FormInput, FormLabel, FormSwitch, FormSelect } from '../ui/FormComponents';
 import { ensureModularKey, isFullAgentProvider, isRegisteredProvider, capabilityFromKey } from '../../utils/providerNaming';
+import { getSttStreamingMode } from '../../utils/sttAudioContract';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 interface LocalAIStatus {
@@ -226,6 +227,9 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const isOllamaLlm = llmKey.includes('ollama');
     const isAzureStt = sttKey.includes('azure');
     const isAzureTts = ttsKey.includes('azure');
+    const sttStreamingMode = getSttStreamingMode(sttKey, providers || {});
+    const sttStreamingEnabled = sttStreamingMode === 'required'
+        || (sttStreamingMode === 'optional' && (localConfig.options?.stt?.streaming ?? true));
 
     const timestampGranularities = Array.isArray(localConfig.options?.stt?.timestamp_granularities)
         ? localConfig.options?.stt?.timestamp_granularities
@@ -301,14 +305,26 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                 </div>
 
                 <div className="space-y-3">
-                    <FormSwitch
-                        id="pipeline-stt-streaming"
-                        label="Streaming STT"
-                        checked={localConfig.options?.stt?.streaming ?? true}
-                        onChange={(e) => updateSTTOptions({ streaming: e.target.checked })}
-                        description="Recommended. Enables low-latency, two-way conversation."
-                        tooltip="When enabled, supported STT adapters stream audio continuously. When disabled, STT runs in buffered chunk mode."
-                    />
+                    {sttStreamingMode === 'buffered' ? (
+                        <div className="rounded-lg border border-border bg-card/50 p-3 text-sm">
+                            <div className="font-medium">Buffered STT</div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                This adapter receives complete PCM16 audio buffers with the sample rate supplied by the engine.
+                            </p>
+                        </div>
+                    ) : (
+                        <FormSwitch
+                            id="pipeline-stt-streaming"
+                            label="Streaming STT"
+                            checked={sttStreamingEnabled}
+                            disabled={sttStreamingMode === 'required'}
+                            onChange={(e) => updateSTTOptions({ streaming: e.target.checked })}
+                            description={sttStreamingMode === 'required'
+                                ? 'Required by this STT adapter.'
+                                : 'Recommended. Enables low-latency, two-way conversation.'}
+                            tooltip="Streaming adapters receive the engine-managed PCM16 mono 16 kHz audio bus."
+                        />
+                    )}
 
                     <div className="flex items-center justify-between">
                         <button
@@ -319,7 +335,9 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                             {showAdvancedSTT ? 'Hide Advanced' : 'Show Advanced'}
                         </button>
                         <div className="text-xs text-muted-foreground">
-                            Defaults: chunk_ms=160, stream_format=pcm16_16k
+                            {sttStreamingEnabled
+                                ? 'Engine input: PCM16-LE · mono · 16 kHz'
+                                : 'Buffered input: engine-described PCM16'}
                         </div>
                     </div>
 
@@ -330,14 +348,21 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                 type="number"
                                 value={localConfig.options?.stt?.chunk_ms ?? 160}
                                 onChange={(e) => updateSTTOptions({ chunk_ms: parseInt(e.target.value || '160', 10) })}
-                                tooltip="How often we flush accumulated audio frames to the STT streaming sender. 160ms is a good default."
+                                tooltip={sttStreamingEnabled
+                                    ? 'How often accumulated frames are sent to streaming STT. Flux recommends 80ms; other adapters default to 160ms.'
+                                    : 'How much audio is buffered before a transcription request.'}
                             />
-                            <FormInput
-                                label="stream_format"
-                                value={localConfig.options?.stt?.stream_format ?? 'pcm16_16k'}
-                                onChange={(e) => updateSTTOptions({ stream_format: e.target.value })}
-                                tooltip="Input audio format for streaming STT. For Local STT this should usually be pcm16_16k."
-                            />
+                            {sttStreamingEnabled && (
+                                <div className="space-y-2">
+                                    <FormLabel>Streaming audio format</FormLabel>
+                                    <div className="rounded-md border border-input bg-muted/40 px-3 py-2 text-sm font-mono">
+                                        pcm16_16k · linear16 · mono
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        Managed by the engine so provider metadata always matches the audio bytes.
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

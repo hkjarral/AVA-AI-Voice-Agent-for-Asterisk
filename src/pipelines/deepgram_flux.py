@@ -85,6 +85,8 @@ class DeepgramFluxSTTAdapter(STTComponent):
     - Turn detection via EndOfTurn events
     - Optional EagerEndOfTurn for early LLM triggering
     """
+
+    supports_streaming = True
     
     def __init__(
         self,
@@ -258,20 +260,41 @@ class DeepgramFluxSTTAdapter(STTComponent):
             session_id=session.session_id,
         )
     
-    async def start_stream(self, call_id: str, options: Dict[str, Any]) -> None:
+    async def start_stream(
+        self,
+        call_id: str,
+        options: Dict[str, Any],
+        *,
+        sample_rate_hz: int,
+        fmt: str,
+    ) -> None:
         """
         Start streaming session (already opened in open_call).
         
         This method is called by the pipeline runner when using streaming mode.
         For Flux, the stream is already active after open_call, so this is a no-op.
         """
+        normalized_fmt = str(fmt or "").strip().lower()
+        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+            raise ValueError(f"Unsupported Deepgram Flux streaming STT format: {fmt!r}")
         session = self._sessions.get(call_id)
-        if session:
-            logger.debug(
-                "Deepgram Flux stream already active",
-                call_id=call_id,
-                session_id=session.session_id,
+        if not session:
+            raise RuntimeError(f"Deepgram Flux STT session not found for call {call_id}")
+        declared_rate = int(session.options.get("sample_rate", 0) or 0)
+        declared_encoding = str(session.options.get("encoding", "")).strip().lower()
+        if declared_rate != int(sample_rate_hz) or declared_encoding != "linear16":
+            raise RuntimeError(
+                "Deepgram Flux session audio format does not match the engine pipeline bus "
+                f"(declared={declared_encoding}@{declared_rate}, "
+                f"engine=linear16@{sample_rate_hz})"
             )
+        logger.debug(
+            "Deepgram Flux stream already active",
+            call_id=call_id,
+            session_id=session.session_id,
+            encoding=declared_encoding,
+            sample_rate_hz=declared_rate,
+        )
     
     async def send_audio(
         self,
