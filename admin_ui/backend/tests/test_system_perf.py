@@ -189,3 +189,32 @@ def test_platform_ttl_covers_dashboard_poll_interval():
     # misses the cache on every request and the cache does nothing. Keep TTL > poll interval.
     DASHBOARD_POLL_SECONDS = 5.0
     assert system._PLATFORM_CACHE_TTL_SECONDS > DASHBOARD_POLL_SECONDS
+
+
+def test_directory_write_probe_is_unique_per_call(monkeypatch, tmp_path):
+    """The offloaded /directories write-probe must use a unique filename per call, so two
+    concurrent requests can't remove each other's probe and falsely report 'not writable'."""
+    from pathlib import Path as _P
+
+    media = tmp_path / "asterisk_media" / "ai-generated"
+    media.mkdir(parents=True)
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.delenv("DOCKER_CONTAINER", raising=False)
+
+    # Force the non-docker branch so path_to_check is our writable tmp host_media_dir.
+    real_exists = system.os.path.exists
+    monkeypatch.setattr(
+        system.os.path, "exists",
+        lambda p: False if p == "/.dockerenv" else real_exists(p),
+    )
+
+    removed = []
+    real_remove = system.os.remove
+    monkeypatch.setattr(system.os, "remove", lambda p: (removed.append(p), real_remove(p))[1])
+
+    system._collect_directory_health()
+    system._collect_directory_health()
+
+    probes = [p for p in removed if _P(p).name.startswith(".write_test")]
+    assert len(probes) == 2
+    assert probes[0] != probes[1]

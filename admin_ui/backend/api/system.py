@@ -1649,8 +1649,10 @@ def _collect_directory_health() -> dict:
         path_to_check = container_media_dir if in_docker else host_media_dir
         if not broken_media_root and os.path.exists(path_to_check):
             checks["host_directory"]["exists"] = True
-            # Test write permission
-            test_file = os.path.join(path_to_check, ".write_test")
+            # Test write permission. /directories runs offloaded (concurrent), so the probe
+            # filename must be unique per request — a shared name lets one request remove the
+            # file another just wrote, falsely reporting the directory as not writable.
+            test_file = os.path.join(path_to_check, f".write_test.{os.getpid()}.{uuid.uuid4().hex}")
             try:
                 with open(test_file, "w") as f:
                     f.write("test")
