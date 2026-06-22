@@ -5,6 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import HelpTooltip from '../components/ui/HelpTooltip';
+import { buildAgentDialplan } from '../utils/dialplan';
 
 interface SetupConfig {
     provider: string;
@@ -125,27 +126,7 @@ const Wizard = () => {
     // Check if hostname is being used (requires server IP for RTP security)
     const isUsingHostname = !isIPAddress(config.asterisk_host) && config.asterisk_host !== 'localhost';
 
-    const getDialplanProviderOverride = (provider: string): string => {
-        const supported = new Set([
-            'google_live',
-            'openai_realtime',
-            'deepgram',
-            'local_hybrid',
-            'local',
-            'elevenlabs_agent',
-            'grok',
-        ]);
-        return supported.has(provider) ? provider : 'openai_realtime';
-    };
-    const dialplanContextOverride = 'default';
-    const dialplanProviderOverride = getDialplanProviderOverride(config.provider);
-    const nonLocalDialplanSnippet = `; extensions_custom.conf
-[from-ai-agent]
-exten => s,1,NoOp(AI Agent Call)
- same => n,Set(AI_CONTEXT=${dialplanContextOverride})
- same => n,Set(AI_PROVIDER=${dialplanProviderOverride})
- same => n,Stasis(asterisk-ai-voice-agent)
- same => n,Hangup()`;
+    const nonLocalDialplanSnippet = buildAgentDialplan(config.provider);
 
     const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
         if (type === 'success') toast.success(message);
@@ -3022,7 +3003,7 @@ exten => s,1,NoOp(AI Agent Call)
                                 <div className="group relative">
                                     <Info className="w-4 h-4 text-muted-foreground cursor-help" />
                                     <div className="absolute left-0 bottom-full mb-2 w-72 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg border border-border opacity-0 group-hover:opacity-100 transition-opacity z-50 pointer-events-none">
-                                        These settings become the default when no <code className="bg-muted px-1 rounded">AI_CONTEXT</code> variable is passed from the Asterisk dialplan. You can create additional contexts with different personas in the Contexts page.
+                                        These settings become the default when no <code className="bg-muted px-1 rounded">AI_AGENT</code> variable is passed from the Asterisk dialplan (the legacy <code className="bg-muted px-1 rounded">AI_CONTEXT</code> variable is still accepted). You can create additional contexts with different personas in the Contexts page.
                                     </div>
                                 </div>
                             </div>
@@ -3424,7 +3405,7 @@ exten => s,1,NoOp(AI Agent Call)
                                         <pre className="bg-black text-green-400 p-3 rounded-md overflow-x-auto text-xs font-mono">
                                             {`[from-ai-agent-local]
 exten => s,1,NoOp(AI Agent - Local Full)
- same => n,Set(AI_CONTEXT=default)
+ same => n,Set(AI_AGENT=default)
  same => n,Set(AI_PROVIDER=local)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()`}
