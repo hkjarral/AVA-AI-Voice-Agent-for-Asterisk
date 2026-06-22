@@ -122,7 +122,7 @@ Azure STT supports two variants controlled by the `variant` field:
 
 | Variant | Method | Best For |
 |---------|--------|----------|
-| `realtime` (default) | REST POST with binary WAV | General telephony STT, low-latency single utterances |
+| `realtime` (default) | Continuous Speech SDK push stream | Live, low-latency conversations |
 | `fast` | Fast Transcription API (multipart POST) | Batch-style transcription, longer audio segments |
 
 Switch variants in YAML:

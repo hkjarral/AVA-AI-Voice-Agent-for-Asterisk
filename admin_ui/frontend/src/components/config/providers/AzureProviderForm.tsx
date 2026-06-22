@@ -161,7 +161,7 @@ const AzureProviderForm: React.FC<AzureProviderFormProps> = ({ config, onChange 
                                     />
                                     <div>
                                         <span className="block font-medium text-sm">Real-Time</span>
-                                        <span className="block text-xs text-muted-foreground">Low-latency, one-shot REST API</span>
+                                        <span className="block text-xs text-muted-foreground">Low-latency continuous Speech SDK stream</span>
                                     </div>
                                 </label>
                                 <label className="flex items-center gap-2 border p-3 rounded-lg cursor-pointer hover:bg-accent has-[:checked]:bg-accent has-[:checked]:border-primary flex-1">
