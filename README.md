@@ -222,7 +222,7 @@ If you have an `ai-agent.local.yaml` that explicitly pins `api_version: beta`, r
 
 </details>
 
-<details open>
+<details>
 <summary><b>v6.5.2 (2026-05-24) — xAI Grok + multi-instance full-agent providers</b></summary>
 
 ### 🆕 xAI Grok Voice Agent realtime provider (NEW, v6.5.2)
