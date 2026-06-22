@@ -3,12 +3,13 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
+import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
 import { Save, AlertCircle, Download, Upload } from 'lucide-react';
 
 const RawYamlPage = () => {
     const { confirm } = useConfirmDialog();
-    const [yamlContent, setYamlContent] = useState('');
-    const [loading, setLoading] = useState(true);
+    const [yamlContent, setYamlContent] = useState(() => getCachedConfig()?.content ?? '');
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<{
@@ -18,7 +19,7 @@ const RawYamlPage = () => {
         column?: number;
         problem?: string;
         snippet?: string;
-    } | null>(null);
+    } | null>(() => getCachedConfig()?.yamlError ?? null);
     const [dirty, setDirty] = useState(false);
     const [exportIncludeSecrets, setExportIncludeSecrets] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -27,19 +28,15 @@ const RawYamlPage = () => {
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            setYamlContent(res.data.content);
+            const r = await loadConfigYaml(force);
+            setYamlContent(r.content);
             setDirty(false);
-            // Check if there's a YAML parsing error (content still loaded for editing)
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setError(null);
-            } else {
-                setYamlError(null);
-                setError(null);
-            }
+            // yamlError is non-null when the document has a parse error (content
+            // still loaded for editing).
+            setYamlError(r.yamlError);
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
             setError('Failed to load configuration');

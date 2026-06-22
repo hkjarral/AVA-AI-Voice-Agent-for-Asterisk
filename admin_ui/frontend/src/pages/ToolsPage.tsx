@@ -11,6 +11,7 @@ import ToolForm from '../components/config/ToolForm';
 import HTTPToolForm from '../components/config/HTTPToolForm';
 import { useAuth } from '../auth/AuthContext';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { usePendingChanges } from '../hooks/usePendingChanges';
 
 type ToolPhase = 'in_call' | 'pre_call' | 'post_call' | 'catalog';
@@ -35,10 +36,10 @@ type ToolDef = {
 const ToolsPage = () => {
     const { confirm } = useConfirmDialog();
     const { token } = useAuth();
-    const [config, setConfig] = useState<any>({});
-    const configRef = useRef<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const configRef = useRef<any>(getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const { pendingRestart, setPendingChanges, clearPendingChanges } = usePendingChanges();
     const [restartingEngine, setRestartingEngine] = useState(false);
@@ -95,17 +96,11 @@ const ToolsPage = () => {
         configRef.current = config;
     }, [config]);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -263,7 +258,7 @@ const ToolsPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     Tool configuration changes require an AI Engine restart to take effect.

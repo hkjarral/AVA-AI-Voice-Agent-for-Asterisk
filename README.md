@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.0.1-blue.svg)
+![Version](https://img.shields.io/badge/version-7.1.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,21 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.1.1 — Dashboard reliability & Admin UI polish 🛠️</b></summary>
+
+A focused quality release across the Admin UI — no call-path changes.
+
+- **Dashboard reliability** — the Asterisk status pill no longer flaps on a transient ARI blip: it reads the engine's authoritative, reconnect-supervised ARI state and applies hysteresis. The system endpoints the Dashboard polls every 5s no longer block the admin event loop, the heaviest is TTL-cached, polling backs off on errors, failed polls surface in the error banner, and a single bad poll no longer flashes cards to "Loading…".
+- **No more "Loading configuration…" flash** — ~11 config pages now seed from a shared stale-while-revalidate cache of the config document, so revisiting a settings page is instant.
+- **Accessibility (WCAG AA)** — form labels programmatically associated with inputs, a focus-trapping modal, a navigation landmark + "skip to content" link, accessible names on icon-only buttons, non-colour status cues on the topology, a visible dark-mode toggle on-state, and light-mode contrast fixes. Debug `console.log`s (including one that leaked the auth token to the browser console) were removed.
+- **Prompt editor** — configured tool names are colour-coded by their in-call status (enabled / global / not-enabled) as you type.
+- **Fix (#436)** — a canonical `google_live: { type: full }` provider can be edited and saved again.
+
+Full notes in [CHANGELOG.md](CHANGELOG.md).
+
+</details>
+
+<details open>
 <summary><b>v7.0.0 — the Agents release 🎯</b></summary>
 
 The biggest release yet: **manage your AI agents from the Admin UI, not a config file.**
@@ -207,7 +222,7 @@ If you have an `ai-agent.local.yaml` that explicitly pins `api_version: beta`, r
 
 </details>
 
-<details open>
+<details>
 <summary><b>v6.5.2 (2026-05-24) — xAI Grok + multi-instance full-agent providers</b></summary>
 
 ### 🆕 xAI Grok Voice Agent realtime provider (NEW, v6.5.2)
@@ -343,7 +358,7 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
 
 ## ✨ Features
 
-### 6 Golden Baseline Configurations
+### 7 Golden Baseline Configurations
 
 1. **OpenAI Realtime** (Recommended for Quick Start)
    - Modern cloud AI with natural conversations (<2s response).
@@ -375,6 +390,11 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
    - OpenAI-compatible API with competitive pricing.
    - Config: `config/ai-agent.golden-telnyx.yaml`
    - *Best for: Model flexibility, cost optimization, multi-provider access.*
+
+7. **xAI Grok Voice Agent** (Realtime, μ-law Native)
+   - xAI realtime voice with five named voices (`eve`/`ara`/`rex`/`sal`/`leo`) or a custom cloned voice; μ-law @ 8 kHz both directions, no resampling (<2s response).
+   - Config: `config/ai-agent.golden-grok.yaml`
+   - *Best for: xAI ecosystem, telephony-native low-latency audio.*
 
 ### Additional LLM Providers
 

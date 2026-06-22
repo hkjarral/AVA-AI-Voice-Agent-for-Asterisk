@@ -6,7 +6,7 @@ The operator-facing reference is [`docs/CLI_TOOLS_GUIDE.md`](../docs/CLI_TOOLS_G
 
 ## Commands
 
-Visible commands in v7.0.1:
+Visible commands in v7.1.1:
 
 - `agent setup` — interactive configuration and dynamic provider/pipeline discovery
 - `agent check` — standard health report and Local AI Server round-trip tests

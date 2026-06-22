@@ -1,6 +1,6 @@
 # Agent CLI Tools Guide
 
-Operator reference for the `agent` command shipped with Asterisk AI Voice Agent v7.0.1.
+Operator reference for the `agent` command shipped with Asterisk AI Voice Agent v7.1.1.
 
 Run commands from the repository root on the Docker Compose host. Global flags are `--verbose` and `--no-color`.
 
@@ -151,7 +151,7 @@ Apply an update:
 
 ```bash
 agent update
-agent update --ref v7.0.1
+agent update --ref v7.1.1
 agent update --checkout --ref main
 agent update --rebuild auto
 agent update --rebuild none

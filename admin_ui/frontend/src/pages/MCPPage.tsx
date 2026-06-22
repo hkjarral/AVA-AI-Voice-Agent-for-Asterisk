@@ -10,6 +10,7 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormLabel } from '../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 
 type MCPStatus = {
     enabled: boolean;
@@ -55,9 +56,9 @@ const _parseArgLine = (raw: string): string[] => {
 
 const MCPPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [reloadingEngine, setReloadingEngine] = useState(false);
     const [status, setStatus] = useState<MCPStatus | null>(null);
@@ -71,18 +72,11 @@ const MCPPage = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const fetchAll = async () => {
-        setLoading(true);
+    const fetchAll = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -345,7 +339,7 @@ const MCPPage = () => {
                 </div>
             </div>
 
-            <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+            <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     AI Engine reload applies MCP config changes when there are no active calls. “Test” runs in the AI Engine container context.
@@ -366,7 +360,7 @@ const MCPPage = () => {
                                 checked={!!mcpConfig.enabled}
                                 onChange={(e) => updateMcp({ enabled: e.target.checked })}
                             />
-                            <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                            <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                         </label>
                     </div>
                 </ConfigCard>
@@ -486,7 +480,7 @@ const MCPPage = () => {
                                     checked={!!serverForm.enabled}
                                     onChange={(e) => setServerForm({ ...serverForm, enabled: e.target.checked })}
                                 />
-                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                             </label>
                         </div>
 

@@ -3,6 +3,8 @@ import { isFullAgentProvider } from '../../utils/providerNaming';
 import { ChevronDown, ChevronRight, Search, Phone, Webhook, Lock } from 'lucide-react';
 import { useState, useMemo } from 'react';
 import HelpTooltip from '../ui/HelpTooltip';
+import { PromptToolHighlight } from '../ui/PromptToolHighlight';
+import { buildInCallStatusMap, canonicalToolName } from '../../utils/promptTools';
 
 interface ContextFormProps {
     config: any;
@@ -127,6 +129,25 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         if (!toolEnabledMap) return false;
         return toolEnabledMap[tool] === false;
     };
+
+    // Tool-reference highlighting for the prompt: detect every catalog tool name,
+    // colour-code by in-call status for this context.
+    const knownToolNames = useMemo(() => Object.keys(toolCatalogByName || {}), [toolCatalogByName]);
+    const toolStatusMap = useMemo(() => {
+        const asNames = (v: any): string[] =>
+            Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.keys(v) : []);
+        // Canonicalize the legacy 'transfer' alias so a context that still stores
+        // it doesn't false-red a blind_transfer reference.
+        const inCall = new Set<string>([...asNames(config.tools), ...asNames(config.in_call_http_tools)].map(canonicalToolName));
+        const disabledGlobal = new Set<string>(config.disable_global_in_call_tools || []);
+        return buildInCallStatusMap(Object.values(toolCatalogByName || {}), {
+            explicitlyAdded: (n) => inCall.has(n),
+            globalDisabledHere: (n) => disabledGlobal.has(n),
+            // toolEnabledMap covers built-ins/MCP; httpTools carries the per-tool
+            // enabled flag for HTTP tools (which the catalog doesn't expose).
+            globallyDisabled: (n) => toolEnabledMap?.[n] === false || httpTools?.[n]?.enabled === false,
+        });
+    }, [toolCatalogByName, config.tools, config.in_call_http_tools, config.disable_global_in_call_tools, toolEnabledMap, httpTools]);
 
     const estimatedTokens = useMemo(() => {
         const text = config.prompt || '';
@@ -270,10 +291,12 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
 
             <div className="space-y-2">
                 <FormLabel tooltip="The main instruction prompt for the AI agent">System Prompt</FormLabel>
-                <textarea
-                    className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[200px] focus:outline-none focus:ring-1 focus:ring-ring"
+                <PromptToolHighlight
                     value={config.prompt || ''}
-                    onChange={(e) => updateConfig('prompt', e.target.value)}
+                    onChange={(v) => updateConfig('prompt', v)}
+                    knownNames={knownToolNames}
+                    statusMap={toolStatusMap}
+                    rows={10}
                     placeholder="You are a helpful voice assistant..."
                 />
                 <div className="flex justify-end mt-1">
@@ -643,7 +666,7 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
                                 }
                             }}
                         />
-                        <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                        <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                     </label>
                 </div>
 

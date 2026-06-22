@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { Plus, Settings, Trash2, Copy, MessageSquare, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
@@ -17,8 +18,8 @@ const READ_ONLY = true;
 
 const ContextsPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<{
         type?: string;
@@ -27,7 +28,7 @@ const ContextsPage = () => {
         column?: number;
         problem?: string;
         snippet?: string;
-    } | null>(null);
+    } | null>(() => getCachedConfig()?.yamlError ?? null);
     const [availableTools, setAvailableTools] = useState<string[]>([]);
     const [toolEnabledMap, setToolEnabledMap] = useState<Record<string, boolean>>({});
     const [toolCatalogByName, setToolCatalogByName] = useState<Record<string, any>>({});
@@ -41,21 +42,15 @@ const ContextsPage = () => {
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            // Check if there's a YAML error in the response (content still provided for Raw YAML editing)
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-                setError(null);
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                await fetchMcpTools(parsed || {});
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
+            setError(null);
+            if (!r.yamlError) {
+                await fetchMcpTools(r.config);
                 await fetchToolCatalog();
-                setError(null);
-                setYamlError(null);
             }
         } catch (err) {
             console.error('Failed to load config', err);
@@ -212,7 +207,7 @@ const ContextsPage = () => {
             if (status === 'degraded') {
                 clearPendingChanges();
                 toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
-                fetchConfig();
+                fetchConfig(true);
                 return;
             }
 
@@ -230,7 +225,7 @@ const ContextsPage = () => {
                     ? 'AI Engine hot reloaded! Changes apply to new calls.'
                     : 'AI Engine restarted! Changes are now active.');
                 // Refresh config/tool availability after apply (best-effort)
-                fetchConfig();
+                fetchConfig(true);
                 return;
             }
 
@@ -239,7 +234,7 @@ const ContextsPage = () => {
             if (response.status === 200) {
                 clearPendingChanges();
                 toast.success('AI Engine updated. Please verify with a test call and logs.');
-                fetchConfig();
+                fetchConfig(true);
                 return;
             }
         } catch (error: any) {

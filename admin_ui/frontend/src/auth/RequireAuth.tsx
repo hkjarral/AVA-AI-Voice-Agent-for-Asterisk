@@ -1,5 +1,6 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import ChangePasswordModal from '../components/auth/ChangePasswordModal';
 
@@ -7,24 +8,29 @@ export const RequireAuth: React.FC<{ children: JSX.Element }> = ({ children }) =
     const { isAuthenticated, loading, mustChangePassword } = useAuth();
     const location = useLocation();
 
-    console.log("RequireAuth: loading =", loading, "isAuthenticated =", isAuthenticated, "mustChangePassword =", mustChangePassword);
-
     if (loading) {
-        return <div className="flex items-center justify-center h-screen">Loading...</div>;
+        return (
+            <div
+                className="flex flex-col items-center justify-center h-screen gap-3 bg-background text-muted-foreground"
+                role="status"
+                aria-live="polite"
+            >
+                <Loader2 className="w-8 h-8 animate-spin text-primary" aria-hidden="true" />
+                <span className="text-sm">Loading…</span>
+            </div>
+        );
     }
 
     if (!isAuthenticated) {
-        console.log("RequireAuth: redirecting to login");
         return <Navigate to="/login" state={{ from: location }} replace />;
     }
 
     // Show mandatory password change modal if required
     if (mustChangePassword) {
-        console.log("RequireAuth: showing mandatory password change");
         return (
             <div className="min-h-screen bg-background">
-                <ChangePasswordModal 
-                    isOpen={true} 
+                <ChangePasswordModal
+                    isOpen={true}
                     onClose={() => {}} // No-op - user must change password
                     mandatory={true}
                 />
@@ -32,6 +38,5 @@ export const RequireAuth: React.FC<{ children: JSX.Element }> = ({ children }) =
         );
     }
 
-    console.log("RequireAuth: rendering children");
     return children;
 };

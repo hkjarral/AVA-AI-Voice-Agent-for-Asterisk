@@ -1558,7 +1558,7 @@ const ModelsPage = () => {
 
                     {serverStatus === 'error' && (
                         <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                            <p className="text-sm text-yellow-600 dark:text-yellow-400 mb-3">
+                            <p className="text-sm text-yellow-800 dark:text-yellow-400 mb-3">
                                 Local AI Server is not reachable. The container may still be running.
                             </p>
                             <button

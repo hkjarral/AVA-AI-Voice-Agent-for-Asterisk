@@ -59,6 +59,7 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen, onClo
                 {!mandatory && (
                     <button
                         onClick={onClose}
+                        aria-label="Close"
                         className="absolute top-4 right-4 text-muted-foreground hover:text-foreground"
                     >
                         <X className="w-5 h-5" />

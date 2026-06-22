@@ -6,6 +6,8 @@ We actively support the following versions with security updates:
 
 | Version | Supported          | End of Support |
 | ------- | ------------------ | -------------- |
+| 7.1.x   | :white_check_mark: | TBD            |
+| 7.0.x   | :white_check_mark: | TBD            |
 | 6.5.x   | :white_check_mark: | TBD            |
 | 6.4.x   | :white_check_mark: | TBD            |
 | 6.3.x   | :white_check_mark: | TBD            |
@@ -15,7 +17,7 @@ We actively support the following versions with security updates:
 | 5.x     | :x:                | Ended          |
 | < 5.0   | :x:                | Ended          |
 
-**Recommendation**: Always use the latest v6.x release for the most recent security patches and features.
+**Recommendation**: Always use the latest v7.x release for the most recent security patches and features.
 
 ---
 

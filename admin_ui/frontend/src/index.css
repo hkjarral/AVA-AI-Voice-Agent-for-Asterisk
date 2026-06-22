@@ -18,7 +18,9 @@
     --muted-foreground: 240 3.8% 46.1%;
     --accent: 240 4.8% 95.9%;
     --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
+    /* red-700 (was red-500 60.2%): red-500 on white is only 3.76:1; this darkens
+       destructive text/links (e.g. Logout/Password) to pass WCAG AA 4.5:1. */
+    --destructive: 0 74% 42%;
     --destructive-foreground: 0 0% 98%;
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;

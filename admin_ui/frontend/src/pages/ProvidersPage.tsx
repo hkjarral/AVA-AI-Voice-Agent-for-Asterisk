@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { Plus, Settings, Trash2, Server, AlertCircle, CheckCircle2, Loader2, RefreshCw, Wand2, Star } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
@@ -24,7 +25,7 @@ import OpenAIProviderForm from '../components/config/providers/OpenAIProviderFor
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
 import TelnyxProviderForm from '../components/config/providers/TelnyxProviderForm';
 import AzureProviderForm from '../components/config/providers/AzureProviderForm';
-import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider } from '../utils/providerNaming';
+import { Capability, capabilityFromKey, ensureModularKey, isFullAgentProvider, getEffectiveFullAgentKind } from '../utils/providerNaming';
 import { GOOGLE_LIVE_DEFAULT_MODEL } from '../utils/googleLiveModels';
 
 const stripModularSuffix = (name: string): string => (name || '').replace(/_(stt|llm|tts)$/i, '');
@@ -33,10 +34,10 @@ const providerLabel = (name: string, provider: any): string => provider?.display
 
 const ProvidersPage: React.FC = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [editingProvider, setEditingProvider] = useState<string | null>(null);
     const [providerForm, setProviderForm] = useState<any>({});
     const [isNewProvider, setIsNewProvider] = useState(false);
@@ -51,6 +52,9 @@ const ProvidersPage: React.FC = () => {
     const [providerHealthUnavailable, setProviderHealthUnavailable] = useState(false);
 
     useEffect(() => {
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
         fetchProviderHealth();
         const healthInterval = setInterval(fetchProviderHealth, 30000);
@@ -68,19 +72,12 @@ const ProvidersPage: React.FC = () => {
         return () => { clearInterval(interval); clearInterval(healthInterval); };
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-                setError(null);
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setError(null);
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -551,7 +548,12 @@ const ProvidersPage: React.FC = () => {
             finalName = ensureModularKey(stripModularSuffix(finalName), cap);
             capabilities = [cap];
         } else {
-            if (!FULL_AGENT_TYPES.includes(String(providerForm.type || '').toLowerCase())) {
+            // Resolve the concrete full-agent kind the way the engine does, so a
+            // canonical legacy entry (e.g. google_live: { type: full }) validates
+            // and saves without forcing a type change. #436
+            const fullAgentKey = isNewProvider ? finalName : (editingProvider || '');
+            const effectiveKind = getEffectiveFullAgentKind(providerForm, fullAgentKey);
+            if (!effectiveKind || !FULL_AGENT_TYPES.includes(effectiveKind)) {
                 toast.error('Select a full-agent provider type.');
                 return;
             }
@@ -796,7 +798,7 @@ const ProvidersPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     Provider configuration changes require an AI Engine restart to take effect.
@@ -966,7 +968,7 @@ const ProvidersPage: React.FC = () => {
                                             checked={providerData.enabled ?? true}
                                             onChange={(e) => handleToggleProvider(name, providerData, e.target.checked)}
                                         />
-                                        <div className="w-9 h-5 bg-input peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                                        <div className="w-9 h-5 bg-input peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
                                     </label>
                                     <span className="text-xs text-muted-foreground">{providerData.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                                 </div>
@@ -1066,7 +1068,7 @@ const ProvidersPage: React.FC = () => {
                                             checked={providerData.enabled ?? true}
                                             onChange={(e) => handleToggleProvider(name, providerData, e.target.checked)}
                                         />
-                                        <div className="w-9 h-5 bg-input peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                                        <div className="w-9 h-5 bg-input peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
                                     </label>
                                     <span className="text-xs text-muted-foreground">{providerData.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                                 </div>
@@ -1217,7 +1219,10 @@ const ProvidersPage: React.FC = () => {
                                     </div>
                                     <select
                                         className="w-full p-2 rounded border border-input bg-background"
-                                        value={providerForm.type || 'openai_realtime'}
+                                        // Show the resolved concrete kind so a canonical legacy
+                                        // entry (e.g. google_live: { type: full }) displays correctly
+                                        // instead of falling back to the first option. #436
+                                        value={getEffectiveFullAgentKind(providerForm, editingProvider || undefined) || providerForm.type || 'openai_realtime'}
                                         disabled={!isNewProvider}
                                         onChange={(e) => setProviderForm({ ...providerForm, type: e.target.value, capabilities: ['stt', 'llm', 'tts'] })}
                                     >

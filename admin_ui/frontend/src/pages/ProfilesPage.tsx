@@ -10,13 +10,14 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormComponents';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
-	const [config, setConfig] = useState<any>({});
-	const [loading, setLoading] = useState(true);
+	const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+	const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
 	const [editingProfile, setEditingProfile] = useState<string | null>(null);
 	const [profileForm, setProfileForm] = useState<any>({});
 	const [isNewProfile, setIsNewProfile] = useState(false);
@@ -29,16 +30,15 @@ const ProfilesPage = () => {
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
+            const r = await loadConfigYaml(force);
+            if (r.yamlError) {
+                setYamlError(r.yamlError);
                 setConfig({});
                 setError(null);
             } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
+                setConfig(r.config || {});
                 setError(null);
                 setYamlError(null);
             }
@@ -85,7 +85,7 @@ const ProfilesPage = () => {
 	                if (status === 'success' || response.status === 200) {
 	                    setPendingApply(false);
 	                    toast.success('AI Engine hot reloaded! Changes are now active.');
-	                    fetchConfig();
+	                    fetchConfig(true);
 	                    return;
 	                }
 	            }
@@ -99,13 +99,13 @@ const ProfilesPage = () => {
 	            if (status === 'degraded') {
 	                setPendingApply(false);
 	                toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
-	                fetchConfig();
+	                fetchConfig(true);
 	                return;
 	            }
 	            if (status === 'success' || response.status === 200) {
 	                setPendingApply(false);
 	                toast.success('AI Engine restarted! Changes are now active.');
-	                fetchConfig();
+	                fetchConfig(true);
 	                return;
 	            }
 	        } catch (err: any) {

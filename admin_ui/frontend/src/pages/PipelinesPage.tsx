@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
 import yaml from 'js-yaml';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 import { Plus, Settings, Trash2, Copy, ArrowRight, Workflow, AlertTriangle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react';
 import { YamlErrorBanner, YamlErrorInfo } from '../components/ui/YamlErrorBanner';
 import { ConfigSection } from '../components/ui/ConfigSection';
@@ -15,10 +16,10 @@ import { usePendingChanges } from '../hooks/usePendingChanges';
 
 const PipelinesPage = () => {
     const { confirm } = useConfirmDialog();
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [editingPipeline, setEditingPipeline] = useState<string | null>(null);
     const [pipelineForm, setPipelineForm] = useState<any>({});
     const [isNewPipeline, setIsNewPipeline] = useState(false);
@@ -103,22 +104,18 @@ const PipelinesPage = () => {
     };
 
     useEffect(() => {
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-                setError(null);
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setError(null);
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
+            setError(null);
         } catch (err) {
             console.error('Failed to load config', err);
             const status = (err as any)?.response?.status;
@@ -417,7 +414,7 @@ const PipelinesPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     Changes to pipeline configurations require an AI Engine restart to take effect.
@@ -568,7 +565,7 @@ const PipelinesPage = () => {
                             </div>
 
                             {name === 'local_only' && (
-                                <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
+                                <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-800 dark:text-yellow-400 flex items-start gap-2">
                                     <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                                     <div>
                                         <strong>Hardware Warning:</strong> This pipeline runs entirely on your local machine.

@@ -8,31 +8,29 @@ import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
 
 const StreamingPage = () => {
-    const [config, setConfig] = useState<any>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [applyMethod, setApplyMethod] = useState<string>('restart');
 
     useEffect(() => {
+        // Cache-first: seed from the shared cache (no flash on revisit). The write
+        // interceptor invalidates the cache on every save, so a background
+        // revalidate is unnecessary and could clobber in-progress form edits.
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
-            const res = await axios.get('/api/config/yaml');
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
-                setConfig({});
-            } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
-                setYamlError(null);
-            }
+            const r = await loadConfigYaml(force);
+            setConfig(r.config);
+            setYamlError(r.yamlError);
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
@@ -167,7 +165,7 @@ const StreamingPage = () => {
 
     const getLatencyColor = (seconds: number) => {
         if (seconds < 2) return 'text-green-600 dark:text-green-400';
-        if (seconds <= 3) return 'text-yellow-600 dark:text-yellow-400';
+        if (seconds <= 3) return 'text-yellow-800 dark:text-yellow-400';
         return 'text-red-600 dark:text-red-400';
     };
 
@@ -199,7 +197,7 @@ const StreamingPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     {bannerMessage}
