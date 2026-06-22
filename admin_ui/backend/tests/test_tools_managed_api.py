@@ -1,8 +1,10 @@
 import copy
 import pytest
+import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from api import tools as tools_api
+from api import config as config_api
 
 
 @pytest.fixture
@@ -321,6 +323,23 @@ def test_settings_rejects_builtin_tool_key(client):
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize("body, why", [
+    ({"ai_identity": {"name": "x"}}, "RESERVED_TOOL_NAMES"),
+    ({"mcp_example": {"enabled": True}}, "mcp_* prefix"),
+    ({"transfer_call": {"enabled": True}}, "registry-reserved engine tool name"),
+    ({"new_tool": {"kind": "generic_http_lookup", "url": "https://x.example"}}, "managed-tool-shaped doc (has 'kind')"),
+    ({"check_extension_status": {"enabled": True}}, "engine built-in (now in BUILTIN_TOOL_NAMES)"),
+])
+def test_settings_rejects_reserved_or_tool_shaped(client, body, why):
+    # /settings must not be a back door for creating/modifying tools, which have
+    # their own validated endpoints (/builtin, /managed). All of these must 422.
+    before = copy.deepcopy(client.cfg_state["cfg"])
+    r = client.patch("/api/tools/settings", json=body)
+    assert r.status_code == 422, f"{why}: {r.text}"
+    # Rejected before persistence -> config is untouched.
+    assert client.cfg_state["cfg"] == before, f"{why}: config was mutated"
+
+
 def test_settings_excludes_tools_and_identity(client):
     # ai_identity and managed http tools must not leak into settings
     client.post("/api/tools/managed", json={
@@ -349,3 +368,70 @@ def test_openapi_surfaces_managed_tool_schema():
     assert "/api/tools/settings" in spec["paths"]
     assert "BuiltinToolOut" in spec["components"]["schemas"]
     assert "ToolsSettingsOut" in spec["components"]["schemas"]
+
+
+# ---------------------------------------------------------------------------
+# MED-E1: email validation must run on EVERY persistence path, including the
+# structured Tools API (regression: _persist_cfg -> persist_config_content used
+# to bypass _assert_tool_emails_valid, which only the raw /yaml editor called).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def email_client(monkeypatch):
+    """Client whose writes go through the REAL config_api.persist_config_content,
+    so the centralized email validation is exercised end-to-end via the built-in
+    Tools API. Schema validation + filesystem are stubbed so the test is hermetic;
+    only the email check runs for real, and persisted writes are captured."""
+    state = {
+        "cfg": {
+            "tools": {"ai_identity": {"name": "AI Agent", "number": "6789"}},
+            "in_call_tools": {},
+        },
+        "writes": [],
+    }
+
+    monkeypatch.setattr(tools_api, "_load_cfg", lambda: copy.deepcopy(state["cfg"]))
+
+    # Hermetic persist path: only _assert_tool_emails_valid (kept real) decides
+    # whether the write happens. _persist_cfg itself is NOT stubbed.
+    monkeypatch.setattr(config_api, "_validate_ai_agent_config", lambda content: {"warnings": []})
+    monkeypatch.setattr(config_api, "_migrate_inline_provider_secrets", lambda parsed: False)
+    monkeypatch.setattr(config_api, "_read_merged_config_dict", lambda: {})
+    monkeypatch.setattr(config_api, "_read_base_config_dict", lambda: {})
+    monkeypatch.setattr(config_api, "_compute_local_override", lambda base, parsed: parsed)
+
+    def _record_write(content):
+        state["writes"].append(content)
+        state["cfg"] = yaml.safe_load(content) or {}
+
+    monkeypatch.setattr(config_api, "_write_local_config", _record_write)
+
+    app = FastAPI()
+    app.include_router(tools_api.router, prefix="/api/tools")
+    client = TestClient(app)
+    client.state = state
+    return client
+
+
+def test_builtin_patch_rejects_invalid_email_and_does_not_persist(email_client):
+    r = email_client.patch("/api/tools/builtin/send_email_summary",
+                           json={"admin_email": "not-an-email"})
+    assert r.status_code == 422, r.text
+    assert email_client.state["writes"] == []  # invalid data must not be persisted
+    assert "admin_email" not in email_client.state["cfg"]["tools"].get("send_email_summary", {})
+
+
+def test_builtin_put_rejects_invalid_by_context_email(email_client):
+    r = email_client.put("/api/tools/builtin/send_email_summary",
+                         json={"admin_email_by_context": {"sales": "ok@example.com", "support": "nope@@bad"}})
+    assert r.status_code == 422, r.text
+    assert email_client.state["writes"] == []
+
+
+def test_builtin_patch_accepts_valid_email_and_persists(email_client):
+    r = email_client.patch("/api/tools/builtin/send_email_summary",
+                           json={"admin_email": "ops@example.com"})
+    assert r.status_code == 200, r.text
+    assert len(email_client.state["writes"]) == 1  # valid data persisted once
+    persisted = yaml.safe_load(email_client.state["writes"][0])
+    assert persisted["tools"]["send_email_summary"]["admin_email"] == "ops@example.com"

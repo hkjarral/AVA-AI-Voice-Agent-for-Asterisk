@@ -615,6 +615,13 @@ def persist_config_content(content: str) -> dict:
 
     Raises ``HTTPException`` on validation failure (propagated to the caller).
     """
+    # MED-E1: reject malformed tool email addresses (422) on EVERY persistence
+    # path. Both the Raw YAML editor (POST /yaml) and the structured tools CRUD
+    # API (api/tools.py -> _persist_cfg) funnel through here, so centralizing the
+    # check guarantees no endpoint can persist an invalid address. Runs before the
+    # schema validation, matching the order the YAML editor used previously.
+    _assert_tool_emails_valid(content)
+
     # Validate YAML + schema before saving.
     validation = _validate_ai_agent_config(content)
     warnings = validation.get("warnings") or []
@@ -692,9 +699,9 @@ def persist_config_content(content: str) -> dict:
 @router.post("/yaml")
 async def update_yaml_config(update: ConfigUpdate):
     try:
-        # MED-E1: reject malformed email addresses (422) before the schema check.
-        _assert_tool_emails_valid(update.content)
-        # Persist via the shared helper (also used by the structured tools CRUD API).
+        # Persist via the shared helper (also used by the structured tools CRUD
+        # API). MED-E1 email validation now lives inside persist_config_content
+        # so every persistence path enforces it (not just this endpoint).
         return persist_config_content(update.content)
     except HTTPException:
         raise

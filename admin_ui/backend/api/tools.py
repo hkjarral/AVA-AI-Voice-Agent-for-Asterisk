@@ -1325,6 +1325,10 @@ BUILTIN_TOOL_NAMES = (
     "cancel_transfer",
     "hangup_call",
     "leave_voicemail",
+    # Engine-registered built-in (src/tools/telephony/check_extension_status.py);
+    # reads its config from tools.check_extension_status, so it is a first-class
+    # built-in managed via /api/tools/builtin/{name}, not a generic tools setting.
+    "check_extension_status",
     "send_email_summary",
     "request_transcript",
     "google_calendar",
@@ -1458,7 +1462,7 @@ async def get_tools_settings():
 
     Includes the root-level ``farewell_hangup_delay_sec`` and any tools-block
     keys that are neither built-in nor managed HTTP tools (e.g. ``extensions``,
-    ``default_action_timeout``, ``check_extension_status``).
+    ``default_action_timeout``).
     """
     cfg = _load_cfg()
     delay = cfg.get(_FAREWELL_DELAY_KEY)
@@ -1495,13 +1499,27 @@ async def patch_tools_settings(body: Dict[str, Any]):
         tools = cfg.setdefault("tools", {})
         if not isinstance(tools, dict):
             raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
-        # Guard: settings must not collide with built-in or managed tool names.
+        # Guard: this resource edits tools-block *settings* (e.g. extensions,
+        # default_action_timeout) only. It must never create or modify a tool —
+        # tools go through the dedicated /builtin and /managed endpoints, which
+        # validate names (_validate_tool_name) and shapes (_resolve_kind). Reject
+        # any key that is, or masquerades as, a tool so the settings surface can't
+        # be used as a back door around those validations.
         managed = {n for _, n, _ in _iter_managed_tools(cfg)}
-        for k in patch:
+        reserved_builtin = _reserved_builtin_names()
+        for k, v in patch.items():
             if k in _BUILTIN_TOOL_SET:
                 raise HTTPException(status_code=422, detail=f"'{k}' is a built-in tool; use PATCH /builtin/{k}")
             if k in managed:
                 raise HTTPException(status_code=422, detail=f"'{k}' is a managed HTTP tool; use PATCH /managed/{k}")
+            if k in RESERVED_TOOL_NAMES:
+                raise HTTPException(status_code=422, detail=f"'{k}' is a reserved name and cannot be set via /settings")
+            if isinstance(k, str) and k.startswith("mcp_"):
+                raise HTTPException(status_code=422, detail="Keys starting with 'mcp_' are reserved for MCP tools")
+            if k in reserved_builtin:
+                raise HTTPException(status_code=422, detail=f"'{k}' is a reserved built-in/engine tool name; use the Tools API, not /settings")
+            if isinstance(v, dict) and "kind" in v:
+                raise HTTPException(status_code=422, detail=f"'{k}' looks like a managed tool (has 'kind'); use POST/PUT /api/tools/managed/{k}")
         cfg["tools"] = _deep_merge(tools, patch)
 
     _persist_cfg(cfg)
