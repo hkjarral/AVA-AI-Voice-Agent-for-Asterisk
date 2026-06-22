@@ -339,7 +339,7 @@ const MCPPage = () => {
                 </div>
             </div>
 
-            <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+            <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     AI Engine reload applies MCP config changes when there are no active calls. “Test” runs in the AI Engine container context.

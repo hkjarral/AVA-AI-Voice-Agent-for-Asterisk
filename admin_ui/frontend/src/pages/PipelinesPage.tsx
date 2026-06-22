@@ -414,7 +414,7 @@ const PipelinesPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     Changes to pipeline configurations require an AI Engine restart to take effect.
@@ -565,7 +565,7 @@ const PipelinesPage = () => {
                             </div>
 
                             {name === 'local_only' && (
-                                <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-600 dark:text-yellow-400 flex items-start gap-2">
+                                <div className="mt-3 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-800 dark:text-yellow-400 flex items-start gap-2">
                                     <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                                     <div>
                                         <strong>Hardware Warning:</strong> This pipeline runs entirely on your local machine.

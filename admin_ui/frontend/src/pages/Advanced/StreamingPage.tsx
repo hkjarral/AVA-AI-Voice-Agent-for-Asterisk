@@ -165,7 +165,7 @@ const StreamingPage = () => {
 
     const getLatencyColor = (seconds: number) => {
         if (seconds < 2) return 'text-green-600 dark:text-green-400';
-        if (seconds <= 3) return 'text-yellow-600 dark:text-yellow-400';
+        if (seconds <= 3) return 'text-yellow-800 dark:text-yellow-400';
         return 'text-red-600 dark:text-red-400';
     };
 
@@ -197,7 +197,7 @@ const StreamingPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-600 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
+            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
                 <div className="flex items-center">
                     <AlertCircle className="w-5 h-5 mr-2" />
                     {bannerMessage}
