@@ -9,6 +9,7 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput } from '../../components/ui/FormComponents';
 import HelpTooltip from '../../components/ui/HelpTooltip';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
+import { getCachedConfig, loadConfigYaml } from '../../utils/configCache';
 
 const CHAT_FORMAT_OPTIONS = [
     { value: '', label: '(Legacy Phi-style — no chat template)' },
@@ -20,10 +21,10 @@ const CHAT_FORMAT_OPTIONS = [
 ];
 
 const LLMPage = () => {
-    const [config, setConfig] = useState<any>({});
+    const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
     const [env, setEnv] = useState<Record<string, string>>({});
-    const [loading, setLoading] = useState(true);
-    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
+    const [loading, setLoading] = useState(() => getCachedConfig() == null);
+    const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
     const [pendingRestart, setPendingRestart] = useState(false);
     const [restartingEngine, setRestartingEngine] = useState(false);
@@ -34,10 +35,10 @@ const LLMPage = () => {
         fetchConfig();
     }, []);
 
-    const fetchConfig = async () => {
+    const fetchConfig = async (force = false) => {
         try {
             const [yamlRes, healthRes, envRes] = await Promise.allSettled([
-                axios.get('/api/config/yaml'),
+                loadConfigYaml(force),
                 axios.get('/api/system/health'),
                 axios.get('/api/config/env'),
             ]);
@@ -47,12 +48,11 @@ const LLMPage = () => {
             }
 
             const res = yamlRes.value;
-            if (res.data.yaml_error) {
-                setYamlError(res.data.yaml_error);
+            if (res.yamlError) {
+                setYamlError(res.yamlError);
                 setConfig({});
             } else {
-                const parsed = yaml.load(res.data.content) as any;
-                setConfig(parsed || {});
+                setConfig(res.config || {});
                 setYamlError(null);
             }
 
