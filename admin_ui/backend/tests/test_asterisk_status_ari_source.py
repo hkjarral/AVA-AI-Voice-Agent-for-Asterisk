@@ -317,3 +317,38 @@ async def test_app_registered_true_when_engine_confirmed_and_probe_fails(monkeyp
     result = await system.asterisk_status()
     assert result["live"]["app_registered"] is True
     assert result["live"]["ari_reachable"] is True
+
+
+@pytest.mark.asyncio
+async def test_app_registration_disproval_preserved(monkeypatch):
+    """If the enrichment probe authoritatively checks /ari/applications and the configured
+    app is NOT registered (e.g. app renamed without an engine restart), preserve that
+    disproval rather than assuming registered — and don't leak the internal sentinel."""
+    monkeypatch.setattr(
+        system,
+        "_ari_env_settings",
+        lambda: {
+            "host": "127.0.0.1",
+            "scheme": "http",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "ssl_verify": True,
+        },
+    )
+
+    async def engine_connected():
+        return True
+
+    monkeypatch.setattr(system, "_engine_health_ari_connected", engine_connected)
+
+    async def probe_disproves(settings, live):
+        live["_app_registration_checked"] = True  # the app list was queried...
+        live["app_registered"] = False            # ...and the configured app wasn't there
+
+    monkeypatch.setattr(system, "_probe_asterisk_ari", probe_disproves)
+
+    result = await system.asterisk_status()
+    assert result["live"]["app_registered"] is False
+    assert "_app_registration_checked" not in result["live"]
+    assert result["live"]["ari_reachable"] is True

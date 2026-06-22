@@ -4737,6 +4737,9 @@ async def _probe_asterisk_ari(settings: dict, live: dict) -> None:
                 if resp.status_code == 200:
                     apps = resp.json()
                     app_name = live["app_name"]
+                    # The app list was authoritatively determined — record that so callers
+                    # don't override a genuine "not registered" result with an assumption.
+                    live["_app_registration_checked"] = True
                     for app in apps:
                         if app.get("name") == app_name:
                             live["app_registered"] = True
@@ -4815,9 +4818,14 @@ async def asterisk_status():
                     await _probe_asterisk_ari(settings, live)
                 except Exception as e:
                     logger.debug("ARI enrichment probe failed (engine reports connected): %s", e)
-            # An engine-confirmed ARI WebSocket means its Stasis app is registered; don't
-            # let a missing/failed enrichment probe render a false "Not Registered".
-            live["app_registered"] = True
+            # An engine-confirmed ARI WebSocket means its Stasis app is registered, so a
+            # missing/failed enrichment probe must not render a false "Not Registered".
+            # But if the probe *did* authoritatively check /ari/applications, preserve its
+            # result — it may legitimately disprove registration (e.g. the configured app
+            # name changed without an engine restart, so the engine is connected under the
+            # old app). Only assume registered when the probe didn't determine the list.
+            if not live.pop("_app_registration_checked", False) and not live["app_registered"]:
+                live["app_registered"] = True
             live["ari_reachable"] = True
         return {"mode": mode, "manifest": manifest, "live": live}
 
@@ -4826,4 +4834,5 @@ async def asterisk_status():
     if not has_probe_creds:
         return {"mode": mode, "manifest": manifest, "live": live}
     await _probe_asterisk_ari(settings, live)
+    live.pop("_app_registration_checked", None)  # internal signal — keep out of the response
     return {"mode": mode, "manifest": manifest, "live": live}
