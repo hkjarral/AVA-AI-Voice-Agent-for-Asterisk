@@ -143,9 +143,11 @@ const ContextForm = ({ config, providers, pipelines, availableTools, toolEnabled
         return buildInCallStatusMap(Object.values(toolCatalogByName || {}), {
             explicitlyAdded: (n) => inCall.has(n),
             globalDisabledHere: (n) => disabledGlobal.has(n),
-            globallyDisabled: (n) => toolEnabledMap?.[n] === false,
+            // toolEnabledMap covers built-ins/MCP; httpTools carries the per-tool
+            // enabled flag for HTTP tools (which the catalog doesn't expose).
+            globallyDisabled: (n) => toolEnabledMap?.[n] === false || httpTools?.[n]?.enabled === false,
         });
-    }, [toolCatalogByName, config.tools, config.in_call_http_tools, config.disable_global_in_call_tools, toolEnabledMap]);
+    }, [toolCatalogByName, config.tools, config.in_call_http_tools, config.disable_global_in_call_tools, toolEnabledMap, httpTools]);
 
     const estimatedTokens = useMemo(() => {
         const text = config.prompt || '';
