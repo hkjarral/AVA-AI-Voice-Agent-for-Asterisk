@@ -1,6 +1,6 @@
-# Asterisk AI Voice Agent - Installation Guide (v7.0.0)
+# Asterisk AI Voice Agent - Installation Guide (v7.1.1)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v7.0.0 on your server.
+This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v7.1.1 on your server.
 
 ## Three Setup Paths
 
