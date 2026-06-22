@@ -214,6 +214,96 @@ def test_create_invalid_name_rejected(client):
         assert r.status_code == 422, bad
 
 
+@pytest.mark.parametrize("payload", [
+    {"name": "empty_url", "phase": "pre_call", "url": ""},
+    {"name": "relative_url", "phase": "pre_call", "url": "/lookup"},
+    {"name": "bad_scheme", "phase": "pre_call", "url": "ftp://example.com/x"},
+    {
+        "name": "bad_timeout_zero", "phase": "pre_call",
+        "url": "https://example.com", "timeout_ms": 0,
+    },
+    {
+        "name": "bad_timeout_negative", "phase": "pre_call",
+        "url": "https://example.com", "timeout_ms": -1,
+    },
+    {
+        "name": "bad_timeout_large", "phase": "pre_call",
+        "url": "https://example.com", "timeout_ms": 300_001,
+    },
+    {
+        "name": "bad_method", "phase": "pre_call",
+        "url": "https://example.com", "method": "TRACE",
+    },
+])
+def test_create_rejects_invalid_http_configuration(client, payload):
+    before = copy.deepcopy(client.cfg_state["cfg"])
+    r = client.post("/api/tools/managed", json=payload)
+    assert r.status_code == 422, r.text
+    assert client.cfg_state["cfg"] == before
+
+
+def test_create_accepts_env_backed_url(client):
+    r = client.post("/api/tools/managed", json={
+        "name": "env_url", "phase": "pre_call",
+        "url": "${CRM_BASE_URL}/contacts/{caller_number}",
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["config"]["method"] == "GET"
+
+
+def test_put_rejects_invalid_http_configuration_without_persisting(client):
+    client.post("/api/tools/managed", json={
+        "name": "replace_validation", "phase": "pre_call",
+        "url": "https://example.com",
+    })
+    before = copy.deepcopy(client.cfg_state["cfg"])
+    r = client.put("/api/tools/managed/replace_validation", json={
+        "phase": "post_call", "url": "", "method": "post",
+    })
+    assert r.status_code == 422, r.text
+    assert client.cfg_state["cfg"] == before
+
+
+def test_create_normalizes_http_method(client):
+    r = client.post("/api/tools/managed", json={
+        "name": "normalized_method", "phase": "post_call",
+        "url": "https://example.com", "method": "patch",
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["config"]["method"] == "PATCH"
+
+
+@pytest.mark.parametrize("patch", [
+    {"phase": None},
+    {"url": None},
+    {"enabled": None},
+    {"is_global": None},
+    {"url": ""},
+    {"timeout_ms": 0},
+    {"timeout_ms": -1},
+    {"timeout_ms": 300_001},
+    {"method": "TRACE"},
+])
+def test_patch_rejects_invalid_required_http_configuration(client, patch):
+    client.post("/api/tools/managed", json={
+        "name": "valid_tool", "phase": "pre_call", "url": "https://example.com",
+    })
+    before = copy.deepcopy(client.cfg_state["cfg"])
+    r = client.patch("/api/tools/managed/valid_tool", json=patch)
+    assert r.status_code == 422, r.text
+    assert client.cfg_state["cfg"] == before
+
+
+def test_patch_null_clears_optional_field_without_persisting_null(client):
+    client.post("/api/tools/managed", json={
+        "name": "clear_optional", "phase": "pre_call",
+        "url": "https://example.com", "description": "temporary",
+    })
+    r = client.patch("/api/tools/managed/clear_optional", json={"description": None})
+    assert r.status_code == 200, r.text
+    assert "description" not in client.cfg_state["cfg"]["tools"]["clear_optional"]
+
+
 def test_put_replaces_and_can_move_block(client):
     client.post("/api/tools/managed", json={
         "name": "mover", "phase": "pre_call", "url": "https://a.example.com"})
@@ -309,6 +399,21 @@ def test_settings_get_and_patch_farewell_delay(client):
     assert r.status_code == 200
     assert r.json()["farewell_hangup_delay_sec"] == 4.0
     assert client.cfg_state["cfg"]["farewell_hangup_delay_sec"] == 4.0
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", -1, 301])
+def test_settings_rejects_invalid_farewell_delay_without_persisting(client, value):
+    before = copy.deepcopy(client.cfg_state["cfg"])
+    r = client.patch("/api/tools/settings", json={"farewell_hangup_delay_sec": value})
+    assert r.status_code == 422, r.text
+    assert client.cfg_state["cfg"] == before
+
+
+@pytest.mark.parametrize("value", [0, 300])
+def test_settings_accepts_farewell_delay_boundaries(client, value):
+    r = client.patch("/api/tools/settings", json={"farewell_hangup_delay_sec": value})
+    assert r.status_code == 200, r.text
+    assert r.json()["farewell_hangup_delay_sec"] == float(value)
 
 
 def test_settings_patch_tools_block_key(client):

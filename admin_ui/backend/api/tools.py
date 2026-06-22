@@ -2,13 +2,14 @@
 Tools API endpoints for testing HTTP tools before saving.
 """
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Dict, Any, Optional, List, Literal
 import httpx
 import json
 import re
 import os
 import logging
+import math
 import time
 import ipaddress
 import socket
@@ -922,6 +923,12 @@ _PHASE_TO_KIND = {
 _TOOLS_BLOCK_KINDS = {"generic_http_lookup", "generic_webhook"}
 _IN_CALL_BLOCK_KINDS = {"in_call_http_lookup"}
 
+_SUPPORTED_HTTP_METHODS = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+)
+_MAX_MANAGED_TOOL_TIMEOUT_MS = 300_000
+_MAX_FAREWELL_DELAY_SEC = 300.0
+
 ToolPhase = Literal["pre_call", "in_call", "post_call"]
 
 # Optional fields carried through to the stored tool doc as-is when provided.
@@ -938,6 +945,46 @@ _PASSTHROUGH_FIELDS = (
     "return_raw_json",
     "error_message",
 )
+
+
+def _validate_managed_tool_url(value: str) -> str:
+    """Validate a managed HTTP tool URL while allowing an env-backed base URL."""
+    url = str(value or "").strip()
+    if not url:
+        raise ValueError("url must not be empty")
+
+    # A full base URL may be supplied from the environment, for example
+    # ${CRM_BASE_URL}/contacts/{caller_number}. Runtime substitution resolves it
+    # before the request is made.
+    if re.match(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}(?:/|$)", url):
+        return url
+
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an absolute http(s) URL or start with ${ENV_VAR}")
+    return url
+
+
+def _normalize_managed_tool_method(value: Optional[str]) -> Optional[str]:
+    """Normalize and validate an explicitly supplied HTTP method."""
+    if value is None:
+        return None
+    method = str(value).strip().upper()
+    if method not in _SUPPORTED_HTTP_METHODS:
+        allowed = ", ".join(sorted(_SUPPORTED_HTTP_METHODS))
+        raise ValueError(f"method must be one of: {allowed}")
+    return method
+
+
+def _validate_managed_tool_timeout(value: Optional[int]) -> Optional[int]:
+    """Validate a managed-tool timeout while preserving phase defaults."""
+    if value is None:
+        return None
+    if value <= 0 or value > _MAX_MANAGED_TOOL_TIMEOUT_MS:
+        raise ValueError(
+            f"timeout_ms must be between 1 and {_MAX_MANAGED_TOOL_TIMEOUT_MS}"
+        )
+    return value
 
 
 class ManagedToolParameter(BaseModel):
@@ -971,6 +1018,21 @@ class ManagedToolWrite(BaseModel):
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
 
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return _validate_managed_tool_url(value)
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_managed_tool_method(value)
+
+    @field_validator("timeout_ms")
+    @classmethod
+    def validate_timeout(cls, value: Optional[int]) -> Optional[int]:
+        return _validate_managed_tool_timeout(value)
+
 
 class ManagedToolPatch(BaseModel):
     """Body for partial update (PATCH). All fields optional."""
@@ -994,6 +1056,32 @@ class ManagedToolPatch(BaseModel):
     parameters: Optional[List[ManagedToolParameter]] = None
     return_raw_json: Optional[bool] = None
     error_message: Optional[str] = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validate_managed_tool_url(value)
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_managed_tool_method(value)
+
+    @field_validator("timeout_ms")
+    @classmethod
+    def validate_timeout(cls, value: Optional[int]) -> Optional[int]:
+        return _validate_managed_tool_timeout(value)
+
+    @model_validator(mode="after")
+    def reject_null_required_fields(self):
+        # Omitted fields mean "leave unchanged". Explicit null is not valid for
+        # fields required by a runnable managed-tool definition.
+        for field in ("phase", "url", "enabled", "is_global"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} must not be null")
+        return self
 
 
 class ManagedToolOut(BaseModel):
@@ -1273,7 +1361,14 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
     new_phase = patch.get("phase") or old_phase
 
     merged = dict(cur_doc)
-    merged.update(patch)
+    # JSON null clears optional configuration rather than persisting values that
+    # runtime factories expect to be mappings/lists/strings. Required fields are
+    # rejected by ManagedToolPatch above.
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
     merged["phase"] = new_phase
     # Always normalize kind to the canonical value for the (possibly new) phase,
     # rejecting any mismatched client-supplied kind.
@@ -1491,9 +1586,18 @@ async def patch_tools_settings(body: Dict[str, Any]):
             cfg.pop(_FAREWELL_DELAY_KEY, None)
         else:
             try:
-                cfg[_FAREWELL_DELAY_KEY] = float(delay)
+                parsed_delay = float(delay)
             except (TypeError, ValueError):
-                raise HTTPException(status_code=422, detail=f"{_FAREWELL_DELAY_KEY} must be a number")
+                raise HTTPException(status_code=422, detail=f"{_FAREWELL_DELAY_KEY} must be a number") from None
+            if not math.isfinite(parsed_delay) or not 0 <= parsed_delay <= _MAX_FAREWELL_DELAY_SEC:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{_FAREWELL_DELAY_KEY} must be a finite number between "
+                        f"0 and {_MAX_FAREWELL_DELAY_SEC:g} seconds"
+                    ),
+                )
+            cfg[_FAREWELL_DELAY_KEY] = parsed_delay
 
     if patch:
         tools = cfg.setdefault("tools", {})
