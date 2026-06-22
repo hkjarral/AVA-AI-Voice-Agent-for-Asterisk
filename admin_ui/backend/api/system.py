@@ -4660,7 +4660,13 @@ async def _engine_health_ari_connected() -> Optional[bool]:
                     resp = await client.get(url)
                     if resp.status_code == 200:
                         data = resp.json()
-                        return bool(data.get("ari_connected"))
+                        val = data.get("ari_connected")
+                        if isinstance(val, bool):
+                            return val
+                        # 200 but the field is missing/invalid (schema drift): don't
+                        # assert "disconnected" — signal unknown so the caller falls
+                        # back to the direct probe instead of mis-reporting.
+                        return None
                 except Exception:
                     continue
     except Exception as e:
@@ -4790,26 +4796,34 @@ async def asterisk_status():
         "modules": {},
     }
 
-    if not settings.get("username") or not settings.get("password"):
-        return {"mode": mode, "manifest": manifest, "live": live}
+    has_probe_creds = bool(settings.get("username") and settings.get("password"))
 
     # I3: prefer the engine's authoritative, reconnect-supervised ARI state. The engine
     # already exposes it on /health, so the top-bar pill and the topology row read one
-    # truth instead of re-deriving connectivity from a flappy throwaway REST call.
+    # truth instead of re-deriving connectivity from a flappy throwaway REST call. This
+    # is consulted BEFORE the direct-probe credential gate: the engine's own ARI
+    # connection is the source of truth even when THIS service has no ARI probe creds.
     engine_ari = await _engine_health_ari_connected()
     if engine_ari is not None:
         live["ari_reachable"] = engine_ari
-        # When the engine reports a live ARI connection, enrich the card with version/
-        # module/app detail via the direct probe (best-effort; failures don't flip the
-        # sticky reachability the engine just confirmed).
         if engine_ari:
-            try:
-                await _probe_asterisk_ari(settings, live)
-            except Exception as e:
-                logger.debug("ARI enrichment probe failed (engine reports connected): %s", e)
+            # Enrich the card with version/module/app detail via the direct probe when we
+            # have credentials (best-effort; a probe failure must not flip the sticky
+            # reachability the engine just confirmed).
+            if has_probe_creds:
+                try:
+                    await _probe_asterisk_ari(settings, live)
+                except Exception as e:
+                    logger.debug("ARI enrichment probe failed (engine reports connected): %s", e)
+            # An engine-confirmed ARI WebSocket means its Stasis app is registered; don't
+            # let a missing/failed enrichment probe render a false "Not Registered".
+            live["app_registered"] = True
             live["ari_reachable"] = True
         return {"mode": mode, "manifest": manifest, "live": live}
 
-    # Fallback: engine health unavailable — use the hardened direct probe as the source.
+    # Fallback: engine health unavailable. Use the hardened direct probe when we have
+    # credentials; otherwise reachability is undeterminable and stays False.
+    if not has_probe_creds:
+        return {"mode": mode, "manifest": manifest, "live": live}
     await _probe_asterisk_ari(settings, live)
     return {"mode": mode, "manifest": manifest, "live": live}

@@ -224,3 +224,96 @@ async def test_probe_uses_retrying_transport(monkeypatch):
     assert live["ari_reachable"] is True
     assert isinstance(captured["transport"], httpx.AsyncHTTPTransport)
     assert isinstance(captured["timeout"], httpx.Timeout)
+
+
+@pytest.mark.asyncio
+async def test_engine_health_returns_none_when_field_missing(monkeypatch):
+    """A 200 /health response that lacks `ari_connected` (schema drift) must yield None
+    (unknown → caller probes), NOT False (which would mis-report disconnected)."""
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"status": "healthy"}  # no ari_connected field
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    assert await system._engine_health_ari_connected() is None
+
+
+@pytest.mark.asyncio
+async def test_engine_state_used_without_direct_probe_credentials(monkeypatch):
+    """The engine's ARI state is authoritative even when THIS service has no direct-probe
+    credentials — reachability must reflect the engine, and the probe must not run."""
+    monkeypatch.setattr(
+        system,
+        "_ari_env_settings",
+        lambda: {
+            "host": "127.0.0.1",
+            "scheme": "http",
+            "port": 8088,
+            "username": "",
+            "password": "",
+            "ssl_verify": True,
+        },
+    )
+
+    async def engine_connected():
+        return True
+
+    monkeypatch.setattr(system, "_engine_health_ari_connected", engine_connected)
+
+    async def boom(*_a, **_k):
+        raise AssertionError("direct probe must not run without credentials")
+
+    monkeypatch.setattr(system, "_probe_asterisk_ari", boom)
+
+    result = await system.asterisk_status()
+    assert result["live"]["ari_reachable"] is True
+
+
+@pytest.mark.asyncio
+async def test_app_registered_true_when_engine_confirmed_and_probe_fails(monkeypatch):
+    """An engine-confirmed ARI connection implies the Stasis app is registered; a failed
+    enrichment probe must not leave a false "Not Registered" (app_registered=False)."""
+    monkeypatch.setattr(
+        system,
+        "_ari_env_settings",
+        lambda: {
+            "host": "127.0.0.1",
+            "scheme": "http",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "ssl_verify": True,
+        },
+    )
+
+    async def engine_connected():
+        return True
+
+    monkeypatch.setattr(system, "_engine_health_ari_connected", engine_connected)
+
+    async def failing_enrichment(settings, live):
+        raise RuntimeError("transient ARI hiccup")
+
+    monkeypatch.setattr(system, "_probe_asterisk_ari", failing_enrichment)
+
+    result = await system.asterisk_status()
+    assert result["live"]["app_registered"] is True
+    assert result["live"]["ari_reachable"] is True
