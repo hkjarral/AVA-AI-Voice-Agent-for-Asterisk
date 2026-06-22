@@ -1,0 +1,175 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Golden Baseline: xAI Grok Voice Agent - Cloud Monolithic Agent
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# REFERENCE CONFIGURATION — Grok is a fully-supported full-agent provider
+# (shipped v6.5.2, structurally parallel to OpenAI Realtime). This baseline
+# mirrors the validated golden-openai layout with the documented Grok provider
+# block. Record a row in docs/baselines/golden/ once a live Grok call is run.
+#
+# Requirements:
+#   - XAI_API_KEY in .env file
+#   - Asterisk 18+ with ARI and AudioSocket modules
+#
+# Notes:
+#   - Input: μ-law @ 8 kHz passthrough (xAI accepts audio/pcmu natively — no resample)
+#   - Output: PCM16 @ 24 kHz from xAI, downsampled to 8 kHz for AudioSocket egress
+#   - 30-minute hard session cap (xAI); a structured warning fires at 28 minutes
+#
+# Setup guide: docs/Provider-Grok-Setup.md
+# For detailed parameter explanations, see: docs/Configuration-Reference.md
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Active Configuration
+config_version: 6
+active_pipeline: local_hybrid  # Don't change - uses provider override via contexts
+default_provider: grok
+
+# Audio Transport - AudioSocket for Grok
+audio_transport: audiosocket
+audiosocket:
+  format: slin
+  host: 0.0.0.0
+  port: 8090
+
+# Playback Mode
+downstream_mode: stream
+
+# Contexts - Use demo_grok context to activate Grok
+contexts:
+  default:
+    greeting: Hello, I am a Voice Assistant. How can I help you today?
+    profile: grok_24k
+    prompt: You are a concise voice assistant. Respond clearly and keep answers under 20 words unless more detail is requested.
+    provider: grok
+  demo_grok:
+    greeting: "Hi! I'm Ava running on xAI Grok. I'm fast and natural-sounding. What would you like to know about this project?"
+    prompt: "You are Ava (Asterisk Voice Agent) demonstrating xAI Grok. Be helpful, conversational, and explain features clearly in 5-10 sentences."
+    profile: grok_24k
+    provider: grok
+
+# Barge-In - Enable for natural interruption
+barge_in:
+  enabled: true
+  energy_threshold: 700
+  initial_protection_ms: 100
+  min_ms: 150
+  post_tts_end_protection_ms: 100
+
+# VAD Configuration
+vad:
+  enhanced_enabled: true
+  fallback_buffer_size: 128000
+  fallback_enabled: true
+  fallback_interval_ms: 4000
+  max_utterance_duration_ms: 10000
+  min_utterance_duration_ms: 600
+  use_provider_vad: false
+  utterance_padding_ms: 200
+  webrtc_aggressiveness: 1
+  webrtc_end_silence_frames: 50
+  webrtc_start_frames: 3
+
+# Streaming Configuration
+streaming:
+  chunk_size_ms: 20
+  connection_timeout_ms: 120000
+  continuous_stream: true
+  empty_backoff_ticks_max: 5
+  fallback_timeout_ms: 8000
+  greeting_min_start_ms: 40
+  jitter_buffer_ms: 950
+  keepalive_interval_ms: 5000
+  low_watermark_ms: 80
+  min_start_ms: 120
+  normalizer:
+    enabled: true
+    max_gain_db: 18.0
+    target_rms: 1400
+  provider_grace_ms: 500
+  sample_rate: 8000
+
+# Audio Profiles - grok_24k for xAI's 24 kHz PCM16 output
+profiles:
+  default: telephony_responsive
+  grok_24k:
+    chunk_ms: 20
+    idle_cutoff_ms: 0
+    internal_rate_hz: 24000
+    provider_pref:
+      input_encoding: mulaw
+      input_sample_rate_hz: 8000
+      output_encoding: pcm16
+      output_sample_rate_hz: 24000
+    transport_out:
+      encoding: slin
+      sample_rate_hz: 8000
+  telephony_responsive:
+    chunk_ms: auto
+    idle_cutoff_ms: 600
+    internal_rate_hz: 8000
+    provider_pref:
+      input_encoding: mulaw
+      input_sample_rate_hz: 8000
+      output_encoding: mulaw
+      output_sample_rate_hz: 8000
+    transport_out:
+      encoding: slin
+      sample_rate_hz: 8000
+
+# Provider Configuration - xAI Grok
+providers:
+  grok:
+    enabled: true
+    api_key: "${XAI_API_KEY}"
+    base_url: "wss://api.x.ai/v1/realtime"
+    model: "grok-voice-latest"  # or grok-voice-think-fast-1.0 (flagship)
+    voice: "eve"  # named: eve|ara|rex|sal|leo, or a custom cloned voice ID
+    input_encoding: "ulaw"
+    input_sample_rate_hz: 8000
+    provider_input_encoding: "ulaw"
+    provider_input_sample_rate_hz: 8000
+    output_encoding: "linear16"
+    output_sample_rate_hz: 24000
+    target_encoding: "ulaw"
+    target_sample_rate_hz: 8000
+    session_warn_after_seconds: 1680  # 28 min — warn before 30-min hard cap
+
+# LLM Fallback Configuration
+llm:
+  initial_greeting: Hello, how can I help you today?
+  prompt: Voice assistant. Answer in 5-8 words. Be direct. Expand only if asked.
+
+# Pipelines - Required but not used by monolithic Grok provider
+pipelines:
+  local_hybrid:
+    llm: openai_llm
+    options:
+      llm:
+        base_url: https://api.openai.com/v1
+        max_tokens: 150
+        model: gpt-4o-mini
+        temperature: 0.7
+      stt:
+        chunk_ms: 160
+        mode: stt
+        stream_format: pcm16_16k
+        streaming: true
+      tts:
+        format:
+          encoding: mulaw
+          sample_rate: 8000
+    stt: local_stt
+    tts: local_tts
+
+# Asterisk Configuration
+asterisk:
+  app_name: asterisk-ai-voice-agent
+
+# ExternalMedia (not used by AudioSocket, but required by config schema)
+external_media:
+  codec: ulaw
+  direction: both
+  port_range: 18080:18099
+  rtp_host: 0.0.0.0
+  rtp_port: 18080

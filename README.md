@@ -358,7 +358,7 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
 
 ## ✨ Features
 
-### 6 Golden Baseline Configurations
+### 7 Golden Baseline Configurations
 
 1. **OpenAI Realtime** (Recommended for Quick Start)
    - Modern cloud AI with natural conversations (<2s response).
@@ -390,6 +390,11 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
    - OpenAI-compatible API with competitive pricing.
    - Config: `config/ai-agent.golden-telnyx.yaml`
    - *Best for: Model flexibility, cost optimization, multi-provider access.*
+
+7. **xAI Grok Voice Agent** (Realtime, μ-law Native)
+   - xAI realtime voice with five named voices (`eve`/`ara`/`rex`/`sal`/`leo`) or a custom cloned voice; μ-law @ 8 kHz both directions, no resampling (<2s response).
+   - Config: `config/ai-agent.golden-grok.yaml`
+   - *Best for: xAI ecosystem, telephony-native low-latency audio.*
 
 ### Additional LLM Providers
 
