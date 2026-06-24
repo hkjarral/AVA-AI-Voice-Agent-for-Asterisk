@@ -1,6 +1,9 @@
 export type SttStreamingMode = 'buffered' | 'optional' | 'required';
 type SttOptions = Record<string, unknown>;
 type ProviderConfigMap = Record<string, { variant?: unknown } | undefined>;
+type NormalizeSttOptionsConfig = {
+    preserveStreamingChoice?: boolean;
+};
 
 export const PIPELINE_STT_STREAM_FORMAT = 'pcm16_16k';
 export const PIPELINE_STT_SAMPLE_RATE_HZ = 16000;
@@ -57,11 +60,13 @@ function portableSttOptions(options: unknown): SttOptions {
 export function normalizeSttOptions(
     sttKey: string,
     options: unknown,
-    providers: ProviderConfigMap = {}
+    providers: ProviderConfigMap = {},
+    config: NormalizeSttOptionsConfig = {}
 ): SttOptions {
     const source = asSttOptions(options);
     const normalized = portableSttOptions(source);
     const mode = getSttStreamingMode(sttKey, providers);
+    const preserveStreamingChoice = config.preserveStreamingChoice !== false;
 
     if (mode === 'buffered') {
         normalized.streaming = false;
@@ -72,7 +77,7 @@ export function normalizeSttOptions(
         return normalized;
     }
 
-    const streaming = mode === 'required' ? true : source.streaming !== false;
+    const streaming = mode === 'required' ? true : !preserveStreamingChoice || source.streaming !== false;
     normalized.streaming = streaming;
     if (!streaming) {
         normalized.chunk_ms =

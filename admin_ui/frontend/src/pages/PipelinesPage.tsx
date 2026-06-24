@@ -340,7 +340,9 @@ const PipelinesPage = () => {
             const nextSttOpts = (mergedPipeline.options || {}).stt || existingSttOpts;
             mergedPipeline.options = {
                 ...(mergedPipeline.options || {}),
-                stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts, providers),
+                stt: normalizeSttOptions(mergedPipeline.stt, nextSttOpts, providers, {
+                    preserveStreamingChoice: false,
+                }),
             };
         }
 
