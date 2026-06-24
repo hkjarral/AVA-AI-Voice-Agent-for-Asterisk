@@ -119,6 +119,38 @@ async def test_local_stt_adapter_transcribes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_local_stt_stream_accepts_linear16_alias(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = LocalProviderConfig(**app_config.providers["local"])
+    adapter = LocalSTTAdapter("local_stt", app_config, provider_config, {"mode": "stt"})
+
+    mock_ws = _MockWebSocket()
+
+    async def fake_connect(*_args, **_kwargs):
+        return mock_ws
+
+    monkeypatch.setattr("src.pipelines.local.websockets.connect", fake_connect)
+
+    await adapter.start_stream(
+        "call-linear16",
+        {"mode": "stt"},
+        sample_rate_hz=16000,
+        fmt="linear16",
+    )
+    audio_buffer = b"\x01\x02" * 160
+    await adapter.send_audio("call-linear16", audio_buffer, fmt="linear16")
+
+    audio_message = json.loads(mock_ws.sent[-1])
+    assert audio_message["type"] == "audio"
+    assert audio_message["mode"] == "stt"
+    assert audio_message["rate"] == 16000
+    assert audio_message["format"] == "pcm16le"
+    assert base64.b64decode(audio_message["data"]) == audio_buffer
+
+    await adapter.close_call("call-linear16")
+
+
+@pytest.mark.asyncio
 async def test_local_llm_adapter_generate(monkeypatch):
     app_config = _build_app_config()
     provider_config = LocalProviderConfig(**app_config.providers["local"])

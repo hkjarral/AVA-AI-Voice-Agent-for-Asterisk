@@ -784,7 +784,7 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         if not audio:
             return audio
         fmt = fmt.lower()
-        if fmt in {"pcm16", "pcm16_16k", "pcm16-16k"}:
+        if fmt in STREAMING_STT_FORMAT_ALIASES:
             return audio
         if fmt in {"pcm16_8k", "pcm16-8k"}:
             state = self._resample_states.get(call_id)
