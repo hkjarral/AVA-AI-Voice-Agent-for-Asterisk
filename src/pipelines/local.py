@@ -27,7 +27,13 @@ from ..config import AppConfig, LocalProviderConfig
 _MAX_RECONNECT_ATTEMPTS = 3
 _RECONNECT_DELAY_BASE_SEC = 0.5
 from ..logging_config import get_logger
-from .base import LLMComponent, LLMResponse, STTComponent, TTSComponent
+from .base import (
+    LLMComponent,
+    LLMResponse,
+    STREAMING_STT_FORMAT_ALIASES,
+    STTComponent,
+    TTSComponent,
+)
 
 logger = get_logger(__name__)
 
@@ -547,7 +553,7 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         fmt: str,
     ) -> None:
         normalized_fmt = str(fmt or "").strip().lower()
-        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+        if normalized_fmt not in STREAMING_STT_FORMAT_ALIASES:
             raise ValueError(f"Unsupported Local streaming STT format: {fmt!r}")
         if int(sample_rate_hz) != 16000:
             raise ValueError(

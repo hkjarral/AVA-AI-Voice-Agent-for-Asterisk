@@ -30,7 +30,7 @@ import websockets
 
 from ..config import AppConfig, DeepgramProviderConfig
 from ..logging_config import get_logger
-from .base import STTComponent
+from .base import STREAMING_STT_FORMAT_ALIASES, STTComponent
 
 logger = get_logger(__name__)
 
@@ -275,7 +275,7 @@ class DeepgramFluxSTTAdapter(STTComponent):
         For Flux, the stream is already active after open_call, so this is a no-op.
         """
         normalized_fmt = str(fmt or "").strip().lower()
-        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+        if normalized_fmt not in STREAMING_STT_FORMAT_ALIASES:
             raise ValueError(f"Unsupported Deepgram Flux streaming STT format: {fmt!r}")
         session = self._sessions.get(call_id)
         if not session:

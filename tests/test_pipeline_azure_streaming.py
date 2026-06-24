@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -30,7 +31,7 @@ class _SpeechConfig:
 
 
 class _AudioStreamFormat:
-    created = []
+    created: ClassVar[list] = []
 
     def __init__(self, *, samples_per_second, bits_per_sample, channels):
         self.samples_per_second = samples_per_second

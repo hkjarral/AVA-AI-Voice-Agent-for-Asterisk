@@ -23,7 +23,7 @@ import websockets
 from ..audio import convert_pcm16le_to_target_format, mulaw_to_pcm16le, resample_audio
 from ..config import AppConfig, DeepgramProviderConfig
 from ..logging_config import get_logger
-from .base import STTComponent, TTSComponent
+from .base import STREAMING_STT_FORMAT_ALIASES, STTComponent, TTSComponent
 
 logger = get_logger(__name__)
 
@@ -402,7 +402,7 @@ class DeepgramSTTAdapter(STTComponent):
             path = parsed.path.rstrip("/") + "/v1/listen"
 
         normalized_fmt = str(fmt or "").strip().lower()
-        if normalized_fmt not in {"pcm16", "pcm16_16k", "pcm16-16k", "linear16"}:
+        if normalized_fmt not in STREAMING_STT_FORMAT_ALIASES:
             raise ValueError(f"Unsupported Deepgram streaming STT format: {fmt!r}")
         if int(sample_rate_hz) <= 0:
             raise ValueError("Deepgram streaming STT sample_rate_hz must be positive")

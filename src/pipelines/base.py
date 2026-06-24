@@ -27,6 +27,14 @@ except ImportError:
     websockets = None
 
 
+STREAMING_STT_FORMAT_ALIASES: frozenset[str] = frozenset({
+    "pcm16",
+    "pcm16_16k",
+    "pcm16-16k",
+    "linear16",
+})
+
+
 @dataclass
 class LLMResponse:
     """Standard response from an LLM, containing text and/or tool calls."""
