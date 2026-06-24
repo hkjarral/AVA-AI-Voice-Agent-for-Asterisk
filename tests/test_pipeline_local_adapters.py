@@ -137,17 +137,18 @@ async def test_local_stt_stream_accepts_linear16_alias(monkeypatch):
         sample_rate_hz=16000,
         fmt="linear16",
     )
-    audio_buffer = b"\x01\x02" * 160
-    await adapter.send_audio("call-linear16", audio_buffer, fmt="linear16")
+    try:
+        audio_buffer = b"\x01\x02" * 160
+        await adapter.send_audio("call-linear16", audio_buffer, fmt="linear16")
 
-    audio_message = json.loads(mock_ws.sent[-1])
-    assert audio_message["type"] == "audio"
-    assert audio_message["mode"] == "stt"
-    assert audio_message["rate"] == 16000
-    assert audio_message["format"] == "pcm16le"
-    assert base64.b64decode(audio_message["data"]) == audio_buffer
-
-    await adapter.close_call("call-linear16")
+        audio_message = json.loads(mock_ws.sent[-1])
+        assert audio_message["type"] == "audio"
+        assert audio_message["mode"] == "stt"
+        assert audio_message["rate"] == 16000
+        assert audio_message["format"] == "pcm16le"
+        assert base64.b64decode(audio_message["data"]) == audio_buffer
+    finally:
+        await adapter.close_call("call-linear16")
 
 
 @pytest.mark.asyncio
