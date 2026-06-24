@@ -17,12 +17,37 @@ import tempfile
 import pytest
 from fastapi import HTTPException
 
+from api import config as _config_module
 from api.config import (
     _validate_calendar_key_or_400,
     _load_sa_metadata,
     _calendar_filename_for_email,
     _resolve_calendar_secret_path,
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_tempdir_credentials(monkeypatch):
+    """Test-isolation only: permit the OS temp dir as a credentials location.
+
+    ``_load_sa_metadata`` constrains credential paths to a fixed allowlist of
+    production secrets mounts (``/app/project/secrets``, ``/secrets``, …) as
+    defense-in-depth. These unit tests write synthetic service-account JSON to
+    the OS temp dir, which is (correctly) NOT on that production allowlist, so we
+    extend the allowlist with ``tempfile.gettempdir()`` for the duration of each
+    test only.
+
+    This changes nothing about runtime/source behavior: the production
+    ``_ALLOWED_CREDENTIALS_DIRS`` tuple is unchanged on disk and the path check
+    itself is still exercised — we just add the test scratch directory so the
+    loader reaches the JSON-shape behavior under test instead of short-circuiting
+    on the path guard.
+    """
+    monkeypatch.setattr(
+        _config_module,
+        "_ALLOWED_CREDENTIALS_DIRS",
+        tuple(_config_module._ALLOWED_CREDENTIALS_DIRS) + (tempfile.gettempdir(),),
+    )
 
 
 # ─── Calendar key validation ─────────────────────────────────────────────────
@@ -136,8 +161,11 @@ class TestLoadSaMetadata:
         assert exc.value.detail["error_code"] == "missing_credentials_path"
 
     def test_nonexistent_path_raises_404(self):
+        # Point at a non-existent file *inside* the (test-)allowed temp dir so the
+        # path-allowlist guard passes and we actually reach the existence check.
+        missing = os.path.join(tempfile.gettempdir(), "synthetic_sa_does_not_exist.json")
         with pytest.raises(HTTPException) as exc:
-            _load_sa_metadata("/nonexistent/synthetic/path.json")
+            _load_sa_metadata(missing)
         assert exc.value.status_code == 404
         assert exc.value.detail["error_code"] == "credentials_file_not_found"
 

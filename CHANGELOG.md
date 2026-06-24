@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Modular streaming STT now declares the engine's actual 16 kHz audio contract (#458)** (`src/engine.py`, `src/pipelines/{azure,deepgram,deepgram_flux,local}.py`, Admin UI pipeline forms): the pipeline runner already normalized inbound STT audio to raw PCM16-LE mono 16 kHz, but streaming STT providers could still be opened with stale/default 8 kHz metadata. Azure Realtime now receives the explicit 16 kHz `AudioStreamFormat`, and Deepgram streaming, Deepgram Flux, and Local streaming STT validate the same canonical contract. The Admin UI now shows the modular STT stream format as managed (`PCM16-LE · mono · 16 kHz`) instead of exposing conflicting `stream_format` edits, and docs clarify that Audio Profiles handle wire/full-agent negotiation while modular streaming STT uses the engine-normalized bus. Regression coverage was added for Azure, Deepgram, Flux, Local alias handling, runner lifecycle propagation, and frontend STT option normalization.
+### Added
+
+- **Managed Tools REST API** (`/api/tools`): authenticated CRUD endpoints for
+  operator-managed pre-call HTTP lookups, in-call HTTP tools, post-call
+  webhooks, built-in tool configuration, and non-tool settings. Writes use the
+  same validated local-override persistence path as the raw YAML editor, reject
+  reserved names and invalid tool shapes, and are covered by the Admin backend
+  CI suite.
 
 ## [7.1.1] - 2026-06-21
 

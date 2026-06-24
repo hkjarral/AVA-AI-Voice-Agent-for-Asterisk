@@ -389,10 +389,12 @@ def _load_backend_main():
 
     main_path = Path(__file__).resolve().parents[1] / "main.py"
     spec = importlib.util.spec_from_file_location("admin_ui_backend_main", main_path)
+    if spec is None or spec.loader is None:
+        pytest.skip(f"could not build import spec for {main_path}")
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
-    except Exception as exc:  # missing optional backend deps in this environment
+    except ImportError as exc:  # only skip for missing optional backend deps
         pytest.skip(f"admin_ui backend main.py not importable: {exc}")
     return module
 

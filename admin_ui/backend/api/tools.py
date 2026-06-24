@@ -2,16 +2,18 @@
 Tools API endpoints for testing HTTP tools before saving.
 """
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
+from pydantic import BaseModel, field_validator, model_validator
+from typing import Dict, Any, Optional, List, Literal
 import httpx
 import json
 import re
 import os
 import logging
+import math
 import time
 import ipaddress
 import socket
+import yaml
 from urllib.parse import urlparse, urljoin
 from settings import get_setting
 from . import config as config_api
@@ -877,3 +879,756 @@ async def test_http_tool(request: TestHTTPRequest):
         logger.exception("HTTP tool test failed")
 
     return response_data
+
+
+# ============================================================================
+# Managed HTTP tools CRUD (Tools & Capabilities page, programmatic access)
+# ----------------------------------------------------------------------------
+# Built-in tools live in the Python registry and are not editable. The
+# operator-managed tools are the HTTP/webhook integrations stored in the
+# ai-agent config under the `tools:` (pre_call / post_call) and
+# `in_call_tools:` (in_call) blocks. These endpoints expose them as a proper
+# REST resource, persisting through the same validated config pipeline the Raw
+# YAML editor uses (see config.persist_config_content).
+# ============================================================================
+
+# Tool name: identifier-style, must start with a letter.
+_TOOL_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
+# Names that are not user-managed HTTP tools.
+RESERVED_TOOL_NAMES = {"ai_identity"}
+
+# Built-in tool names reserved against managed HTTP tools. A managed tool is
+# stored under `tools:<name>` and registered with the engine under that name,
+# so it must never collide with a built-in tool's config-block key or its
+# engine-registered (AI-facing) tool name. Mirrors the default tools in
+# src/tools/registry.py — keep in sync when built-in tools are added/removed.
+# (Augmented at runtime by _reserved_builtin_names() with whatever the live
+# tool catalog/registry reports, so newer engine tools are covered too.)
+BUILTIN_RESERVED_TOOL_NAMES = frozenset({
+    # Built-in tool config-block keys (Tools & Capabilities → Built-in Tools).
+    "transfer", "attended_transfer", "cancel_transfer", "hangup_call",
+    "leave_voicemail", "check_extension_status",
+    "send_email_summary", "request_transcript",
+    "google_calendar", "microsoft_calendar",
+    # Engine-registered tool names the AI calls (may differ from config keys).
+    "transfer_call", "transfer_to_queue", "live_agent_transfer",
+})
+
+_PHASE_TO_KIND = {
+    "pre_call": "generic_http_lookup",
+    "in_call": "in_call_http_lookup",
+    "post_call": "generic_webhook",
+}
+# Recognized `kind` values per config block.
+_TOOLS_BLOCK_KINDS = {"generic_http_lookup", "generic_webhook"}
+_IN_CALL_BLOCK_KINDS = {"in_call_http_lookup"}
+
+_SUPPORTED_HTTP_METHODS = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+)
+_MAX_MANAGED_TOOL_TIMEOUT_MS = 300_000
+_MAX_FAREWELL_DELAY_SEC = 300.0
+
+ToolPhase = Literal["pre_call", "in_call", "post_call"]
+
+# Optional fields carried through to the stored tool doc as-is when provided.
+_PASSTHROUGH_FIELDS = (
+    "query_params",
+    "body_template",
+    "payload_template",
+    "output_variables",
+    "hold_audio_file",
+    "hold_audio_threshold_ms",
+    "generate_summary",
+    "summary_max_words",
+    "description",
+    "return_raw_json",
+    "error_message",
+)
+
+
+def _validate_managed_tool_url(value: str) -> str:
+    """Validate a managed HTTP tool URL while allowing an env-backed base URL."""
+    url = str(value or "").strip()
+    if not url:
+        raise ValueError("url must not be empty")
+
+    # A full base URL may be supplied from the environment, for example
+    # ${CRM_BASE_URL}/contacts/{caller_number}. Runtime substitution resolves it
+    # before the request is made.
+    if re.match(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}(?:/|$)", url):
+        return url
+
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an absolute http(s) URL or start with ${ENV_VAR}")
+    return url
+
+
+def _normalize_managed_tool_method(value: Optional[str]) -> Optional[str]:
+    """Normalize and validate an explicitly supplied HTTP method."""
+    if value is None:
+        return None
+    method = str(value).strip().upper()
+    if method not in _SUPPORTED_HTTP_METHODS:
+        allowed = ", ".join(sorted(_SUPPORTED_HTTP_METHODS))
+        raise ValueError(f"method must be one of: {allowed}")
+    return method
+
+
+def _validate_managed_tool_timeout(value: Optional[int]) -> Optional[int]:
+    """Validate a managed-tool timeout while preserving phase defaults."""
+    if value is None:
+        return None
+    if value <= 0 or value > _MAX_MANAGED_TOOL_TIMEOUT_MS:
+        raise ValueError(
+            f"timeout_ms must be between 1 and {_MAX_MANAGED_TOOL_TIMEOUT_MS}"
+        )
+    return value
+
+
+class ManagedToolParameter(BaseModel):
+    name: str
+    type: str = "string"
+    description: str = ""
+    required: bool = False
+
+
+class ManagedToolWrite(BaseModel):
+    """Body for create (POST) and full replace (PUT)."""
+    name: Optional[str] = None  # required for POST; taken from path on PUT
+    phase: ToolPhase
+    url: str
+    enabled: bool = True
+    is_global: bool = False
+    kind: Optional[str] = None
+    method: Optional[str] = None
+    timeout_ms: Optional[int] = None
+    headers: Dict[str, str] = {}
+    query_params: Optional[Dict[str, str]] = None
+    body_template: Optional[str] = None
+    payload_template: Optional[str] = None
+    output_variables: Optional[Dict[str, str]] = None
+    hold_audio_file: Optional[str] = None
+    hold_audio_threshold_ms: Optional[int] = None
+    generate_summary: Optional[bool] = None
+    summary_max_words: Optional[int] = None
+    description: Optional[str] = None
+    parameters: Optional[List[ManagedToolParameter]] = None
+    return_raw_json: Optional[bool] = None
+    error_message: Optional[str] = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return _validate_managed_tool_url(value)
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_managed_tool_method(value)
+
+    @field_validator("timeout_ms")
+    @classmethod
+    def validate_timeout(cls, value: Optional[int]) -> Optional[int]:
+        return _validate_managed_tool_timeout(value)
+
+
+class ManagedToolPatch(BaseModel):
+    """Body for partial update (PATCH). All fields optional."""
+    phase: Optional[ToolPhase] = None
+    url: Optional[str] = None
+    enabled: Optional[bool] = None
+    is_global: Optional[bool] = None
+    kind: Optional[str] = None
+    method: Optional[str] = None
+    timeout_ms: Optional[int] = None
+    headers: Optional[Dict[str, str]] = None
+    query_params: Optional[Dict[str, str]] = None
+    body_template: Optional[str] = None
+    payload_template: Optional[str] = None
+    output_variables: Optional[Dict[str, str]] = None
+    hold_audio_file: Optional[str] = None
+    hold_audio_threshold_ms: Optional[int] = None
+    generate_summary: Optional[bool] = None
+    summary_max_words: Optional[int] = None
+    description: Optional[str] = None
+    parameters: Optional[List[ManagedToolParameter]] = None
+    return_raw_json: Optional[bool] = None
+    error_message: Optional[str] = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validate_managed_tool_url(value)
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_managed_tool_method(value)
+
+    @field_validator("timeout_ms")
+    @classmethod
+    def validate_timeout(cls, value: Optional[int]) -> Optional[int]:
+        return _validate_managed_tool_timeout(value)
+
+    @model_validator(mode="after")
+    def reject_null_required_fields(self):
+        # Omitted fields mean "leave unchanged". Explicit null is not valid for
+        # fields required by a runnable managed-tool definition.
+        for field in ("phase", "url", "enabled", "is_global"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} must not be null")
+        return self
+
+
+class ManagedToolOut(BaseModel):
+    name: str
+    phase: str
+    kind: str
+    block: str  # "tools" | "in_call_tools"
+    enabled: bool
+    is_global: bool
+    config: Dict[str, Any]
+
+
+def _kind_for_phase(phase: str) -> str:
+    return _PHASE_TO_KIND.get(phase, "generic_http_lookup")
+
+
+def _block_for_phase(phase: str) -> str:
+    return "in_call_tools" if phase == "in_call" else "tools"
+
+
+def _phase_for(block: str, doc: Dict[str, Any]) -> str:
+    if block == "in_call_tools":
+        return "in_call"
+    phase = str(doc.get("phase") or "").strip()
+    if phase:
+        return phase
+    if str(doc.get("kind") or "").strip() == "generic_webhook":
+        return "post_call"
+    return "pre_call"
+
+
+def _is_managed_tool(block: str, name: str, doc: Any) -> bool:
+    """True if a config entry is an operator-managed HTTP tool (not a builtin/identity)."""
+    if not isinstance(doc, dict) or name in RESERVED_TOOL_NAMES:
+        return False
+    if block == "in_call_tools":
+        kind = str(doc.get("kind") or "in_call_http_lookup").strip()
+        return kind in _IN_CALL_BLOCK_KINDS or str(doc.get("phase") or "").strip() == "in_call"
+    return str(doc.get("kind") or "").strip() in _TOOLS_BLOCK_KINDS
+
+
+def _iter_managed_tools(cfg: Dict[str, Any]):
+    for block in ("tools", "in_call_tools"):
+        section = cfg.get(block)
+        if not isinstance(section, dict):
+            continue
+        for name, doc in section.items():
+            if isinstance(name, str) and _is_managed_tool(block, name, doc):
+                yield block, name, doc
+
+
+def _find_managed_tool(cfg: Dict[str, Any], name: str):
+    for block, n, doc in _iter_managed_tools(cfg):
+        if n == name:
+            return block, doc
+    return None, None
+
+
+def _raw_name_exists(cfg: Dict[str, Any], name: str) -> bool:
+    """True if the name is present in either tools block (managed or not)."""
+    for block in ("tools", "in_call_tools"):
+        section = cfg.get(block)
+        if isinstance(section, dict) and name in section:
+            return True
+    return False
+
+
+def _remove_tool_everywhere(cfg: Dict[str, Any], name: str) -> None:
+    for block in ("tools", "in_call_tools"):
+        section = cfg.get(block)
+        if isinstance(section, dict) and name in section:
+            del section[name]
+
+
+_reserved_builtin_cache: Optional[frozenset] = None
+
+
+def _reserved_builtin_names() -> frozenset:
+    """Built-in tool names reserved against managed HTTP tools.
+
+    Returns the static ``BUILTIN_RESERVED_TOOL_NAMES`` set augmented, best-effort,
+    with whatever the local tool registry reports (so engine tools added after
+    this module was written are also covered). The registry probe runs at most
+    once per process and silently falls back to the static set on any failure.
+    """
+    global _reserved_builtin_cache
+    if _reserved_builtin_cache is not None:
+        return _reserved_builtin_cache
+
+    names = set(BUILTIN_RESERVED_TOOL_NAMES)
+    try:
+        project_root = os.environ.get("PROJECT_ROOT")
+        if not project_root:
+            here = os.path.abspath(os.path.dirname(__file__))
+            project_root = os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
+        import sys
+        if project_root and project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        from src.tools.registry import tool_registry  # type: ignore
+        tool_registry.clear()
+        tool_registry.initialize_default_tools()
+        for d in tool_registry.get_definitions():
+            n = str(getattr(d, "name", "") or "").strip()
+            if n and not n.startswith("mcp_"):
+                names.add(n)
+    except Exception:
+        logger.debug("Built-in tool name probe failed; using static reserved set")
+
+    _reserved_builtin_cache = frozenset(names)
+    return _reserved_builtin_cache
+
+
+def _validate_tool_name(name: str) -> None:
+    if not name or not _TOOL_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid tool name: use letters, digits and underscores, and start with a letter",
+        )
+    if name in RESERVED_TOOL_NAMES:
+        raise HTTPException(status_code=422, detail=f"'{name}' is a reserved tool name")
+    if name.startswith("mcp_"):
+        raise HTTPException(status_code=422, detail="Tool names starting with 'mcp_' are reserved for MCP tools")
+    if name in _reserved_builtin_names():
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{name}' is a built-in tool name and cannot be used for a managed HTTP tool",
+        )
+
+
+def _resolve_kind(phase: str, kind: Optional[str]) -> str:
+    """Return the canonical ``kind`` for ``phase``.
+
+    If the client supplied a ``kind``, it must match the phase's canonical kind;
+    a mismatched or unknown value is rejected with 422. An empty/missing value
+    is derived from the phase.
+    """
+    expected = _kind_for_phase(phase)
+    if kind is not None:
+        supplied = str(kind).strip()
+        if supplied and supplied != expected:
+            raise HTTPException(
+                status_code=422,
+                detail=f"kind '{kind}' is invalid for phase '{phase}'; expected '{expected}'",
+            )
+    return expected
+
+
+def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
+    """Build the stored tool config dict from validated input (None values dropped)."""
+    method = (data.get("method") or ("GET" if phase == "pre_call" else "POST"))
+    timeout = data.get("timeout_ms")
+    if timeout is None:
+        timeout = 2000 if phase == "pre_call" else 5000
+
+    doc: Dict[str, Any] = {
+        "kind": _resolve_kind(phase, data.get("kind")),
+        "phase": phase,
+        "enabled": bool(data.get("enabled", True)),
+        "is_global": bool(data.get("is_global", False)),
+        "timeout_ms": int(timeout),
+        "url": data["url"],
+        "method": str(method).upper(),
+        "headers": data.get("headers") or {},
+    }
+    for field in _PASSTHROUGH_FIELDS:
+        if data.get(field) is not None:
+            doc[field] = data[field]
+    params = data.get("parameters")
+    if params is not None:
+        doc["parameters"] = [
+            p if isinstance(p, dict) else p.model_dump() for p in params
+        ]
+    return doc
+
+
+def _load_cfg() -> Dict[str, Any]:
+    cfg = config_api._read_merged_config_dict() or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return cfg
+
+
+def _persist_cfg(cfg: Dict[str, Any]) -> dict:
+    content = yaml.dump(cfg, default_flow_style=False, sort_keys=False)
+    return config_api.persist_config_content(content)
+
+
+def _to_out(block: str, name: str, doc: Dict[str, Any]) -> ManagedToolOut:
+    phase = _phase_for(block, doc)
+    return ManagedToolOut(
+        name=name,
+        phase=phase,
+        kind=str(doc.get("kind") or _kind_for_phase(phase)),
+        block=block,
+        enabled=bool(doc.get("enabled", True)),
+        is_global=bool(doc.get("is_global", False)),
+        config=_safe_jsonable(doc),
+    )
+
+
+@router.get("/managed", response_model=List[ManagedToolOut])
+async def list_managed_tools():
+    """List operator-managed HTTP tools (pre_call lookups, in_call tools, post_call webhooks)."""
+    cfg = _load_cfg()
+    return [_to_out(block, name, doc) for block, name, doc in _iter_managed_tools(cfg)]
+
+
+@router.post("/managed", status_code=201, response_model=ManagedToolOut)
+async def create_managed_tool(body: ManagedToolWrite):
+    """Create a new managed HTTP tool and persist it to the config."""
+    name = (body.name or "").strip()
+    _validate_tool_name(name)
+
+    cfg = _load_cfg()
+    if _raw_name_exists(cfg, name):
+        raise HTTPException(status_code=409, detail=f"A tool named '{name}' already exists")
+
+    block = _block_for_phase(body.phase)
+    doc = _build_tool_doc(body.model_dump(exclude_none=True), body.phase)
+
+    section = cfg.setdefault(block, {})
+    if not isinstance(section, dict):
+        raise HTTPException(status_code=500, detail=f"Config '{block}' block is not a mapping")
+    section[name] = doc
+
+    _persist_cfg(cfg)
+    return _to_out(block, name, doc)
+
+
+@router.get("/managed/{name}", response_model=ManagedToolOut)
+async def get_managed_tool(name: str):
+    """Fetch a single managed HTTP tool by name."""
+    cfg = _load_cfg()
+    block, doc = _find_managed_tool(cfg, name)
+    if block is None:
+        raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
+    return _to_out(block, name, doc)
+
+
+@router.put("/managed/{name}", response_model=ManagedToolOut)
+async def replace_managed_tool(name: str, body: ManagedToolWrite):
+    """Replace a managed HTTP tool's full configuration (changing phase moves it between blocks)."""
+    _validate_tool_name(name)
+    cfg = _load_cfg()
+    cur_block, _ = _find_managed_tool(cfg, name)
+    if cur_block is None:
+        raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
+
+    target_block = _block_for_phase(body.phase)
+    doc = _build_tool_doc(body.model_dump(exclude_none=True), body.phase)
+
+    _remove_tool_everywhere(cfg, name)
+    section = cfg.setdefault(target_block, {})
+    if not isinstance(section, dict):
+        raise HTTPException(status_code=500, detail=f"Config '{target_block}' block is not a mapping")
+    section[name] = doc
+
+    _persist_cfg(cfg)
+    return _to_out(target_block, name, doc)
+
+
+@router.patch("/managed/{name}", response_model=ManagedToolOut)
+async def patch_managed_tool(name: str, body: ManagedToolPatch):
+    """Partially update a managed HTTP tool. Only provided fields change."""
+    cfg = _load_cfg()
+    cur_block, cur_doc = _find_managed_tool(cfg, name)
+    if cur_block is None:
+        raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
+
+    patch = body.model_dump(exclude_unset=True)
+    if "parameters" in patch and patch["parameters"] is not None:
+        patch["parameters"] = [
+            p if isinstance(p, dict) else p.model_dump() for p in patch["parameters"]
+        ]
+
+    old_phase = _phase_for(cur_block, cur_doc)
+    new_phase = patch.get("phase") or old_phase
+
+    merged = dict(cur_doc)
+    # JSON null clears optional configuration rather than persisting values that
+    # runtime factories expect to be mappings/lists/strings. Required fields are
+    # rejected by ManagedToolPatch above.
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    merged["phase"] = new_phase
+    # Always normalize kind to the canonical value for the (possibly new) phase,
+    # rejecting any mismatched client-supplied kind.
+    merged["kind"] = _resolve_kind(new_phase, patch.get("kind"))
+
+    target_block = _block_for_phase(new_phase)
+    _remove_tool_everywhere(cfg, name)
+    section = cfg.setdefault(target_block, {})
+    if not isinstance(section, dict):
+        raise HTTPException(status_code=500, detail=f"Config '{target_block}' block is not a mapping")
+    section[name] = merged
+
+    _persist_cfg(cfg)
+    return _to_out(target_block, name, merged)
+
+
+@router.delete("/managed/{name}", status_code=204)
+async def delete_managed_tool(name: str):
+    """Delete a managed HTTP tool from the config."""
+    cfg = _load_cfg()
+    block, _ = _find_managed_tool(cfg, name)
+    if block is None:
+        raise HTTPException(status_code=404, detail=f"Tool '{name}' not found")
+    _remove_tool_everywhere(cfg, name)
+    _persist_cfg(cfg)
+    return None
+
+
+# ============================================================================
+# Built-in tools (Tools & Capabilities → "Built-in Tools" section)
+# ----------------------------------------------------------------------------
+# Built-in tools are the engine-registered telephony/business tools (transfer,
+# hangup, voicemail, email, calendars, ...). They live under the config
+# `tools:` block alongside `ai_identity` and the managed HTTP tools, but each
+# has its own heterogeneous schema owned by the engine. Rather than re-declare
+# those schemas here (which would drift), these endpoints expose each built-in
+# tool's config as a free-form document. Validation happens at persist time
+# against the engine's AppConfig schema (see config.persist_config_content).
+#
+# The canonical name list mirrors the engine registry (src/tools/registry.py)
+# and the Admin UI's built-in tool set.
+# ============================================================================
+
+# Built-in tool config keys, in display order. Keep in sync with the engine
+# registry's default tools and the Admin UI built-in section.
+BUILTIN_TOOL_NAMES = (
+    "transfer",
+    "attended_transfer",
+    "cancel_transfer",
+    "hangup_call",
+    "leave_voicemail",
+    # Engine-registered built-in (src/tools/telephony/check_extension_status.py);
+    # reads its config from tools.check_extension_status, so it is a first-class
+    # built-in managed via /api/tools/builtin/{name}, not a generic tools setting.
+    "check_extension_status",
+    "send_email_summary",
+    "request_transcript",
+    "google_calendar",
+    "microsoft_calendar",
+)
+_BUILTIN_TOOL_SET = frozenset(BUILTIN_TOOL_NAMES)
+
+# Root-level config key the Admin UI exposes in the built-in tools section.
+_FAREWELL_DELAY_KEY = "farewell_hangup_delay_sec"
+
+
+class BuiltinToolOut(BaseModel):
+    name: str
+    enabled: bool
+    configured: bool  # whether the tool currently has a config entry
+    config: Dict[str, Any]
+
+
+class ToolsSettingsOut(BaseModel):
+    """Tools-block scalar/structural settings that are not individual tools."""
+    farewell_hangup_delay_sec: Optional[float] = None
+    settings: Dict[str, Any]  # remaining tools-block keys (extensions, default_action_timeout, ...)
+
+
+def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge ``patch`` into ``base`` (returns a new dict).
+
+    Nested mappings are merged key-by-key; any non-mapping value (including
+    lists) replaces wholesale. A value of ``None`` deletes the key.
+    """
+    out = dict(base)
+    for k, v in patch.items():
+        if v is None:
+            out.pop(k, None)
+        elif isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _validate_builtin_name(name: str) -> None:
+    if name not in _BUILTIN_TOOL_SET:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{name}' is not a built-in tool. Known: {', '.join(BUILTIN_TOOL_NAMES)}",
+        )
+
+
+def _builtin_to_out(name: str, cfg: Dict[str, Any]) -> BuiltinToolOut:
+    tools = cfg.get("tools")
+    doc = tools.get(name) if isinstance(tools, dict) else None
+    configured = isinstance(doc, dict)
+    doc = doc if configured else {}
+    return BuiltinToolOut(
+        name=name,
+        enabled=bool(doc.get("enabled", False)),
+        configured=configured,
+        config=_safe_jsonable(doc),
+    )
+
+
+def _non_tool_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Keys in the tools block that are neither built-in tools, managed HTTP
+    tools, nor the ai_identity entry (e.g. extensions, default_action_timeout)."""
+    tools = cfg.get("tools")
+    if not isinstance(tools, dict):
+        return {}
+    managed = {n for _, n, _ in _iter_managed_tools(cfg)}
+    out: Dict[str, Any] = {}
+    for k, v in tools.items():
+        if k in _BUILTIN_TOOL_SET or k in managed or k in RESERVED_TOOL_NAMES:
+            continue
+        out[k] = v
+    return out
+
+
+@router.get("/builtin", response_model=List[BuiltinToolOut])
+async def list_builtin_tools():
+    """List built-in tools with their current enabled state and config."""
+    cfg = _load_cfg()
+    return [_builtin_to_out(name, cfg) for name in BUILTIN_TOOL_NAMES]
+
+
+@router.get("/builtin/{name}", response_model=BuiltinToolOut)
+async def get_builtin_tool(name: str):
+    """Fetch a single built-in tool's config."""
+    _validate_builtin_name(name)
+    return _builtin_to_out(name, _load_cfg())
+
+
+@router.patch("/builtin/{name}", response_model=BuiltinToolOut)
+async def patch_builtin_tool(name: str, body: Dict[str, Any]):
+    """Partially update a built-in tool's config (deep merge).
+
+    The request body is the tool config fragment, e.g. ``{"enabled": true}`` or
+    ``{"farewell_message": "Goodbye"}``. Nested mappings merge recursively; a
+    field set to ``null`` removes it.
+    """
+    _validate_builtin_name(name)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    cfg = _load_cfg()
+    tools = cfg.setdefault("tools", {})
+    if not isinstance(tools, dict):
+        raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
+    current = tools.get(name)
+    tools[name] = _deep_merge(current if isinstance(current, dict) else {}, body)
+    _persist_cfg(cfg)
+    return _builtin_to_out(name, cfg)
+
+
+@router.put("/builtin/{name}", response_model=BuiltinToolOut)
+async def replace_builtin_tool(name: str, body: Dict[str, Any]):
+    """Replace a built-in tool's config entirely with the request body."""
+    _validate_builtin_name(name)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    cfg = _load_cfg()
+    tools = cfg.setdefault("tools", {})
+    if not isinstance(tools, dict):
+        raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
+    tools[name] = dict(body)
+    _persist_cfg(cfg)
+    return _builtin_to_out(name, cfg)
+
+
+@router.get("/settings", response_model=ToolsSettingsOut)
+async def get_tools_settings():
+    """Read tools-block settings that are not individual tools.
+
+    Includes the root-level ``farewell_hangup_delay_sec`` and any tools-block
+    keys that are neither built-in nor managed HTTP tools (e.g. ``extensions``,
+    ``default_action_timeout``).
+    """
+    cfg = _load_cfg()
+    delay = cfg.get(_FAREWELL_DELAY_KEY)
+    return ToolsSettingsOut(
+        farewell_hangup_delay_sec=delay if isinstance(delay, (int, float)) else None,
+        settings=_safe_jsonable(_non_tool_settings(cfg)),
+    )
+
+
+@router.patch("/settings", response_model=ToolsSettingsOut)
+async def patch_tools_settings(body: Dict[str, Any]):
+    """Update tools-block settings.
+
+    ``farewell_hangup_delay_sec`` (if present) is written at config root; all
+    other keys are deep-merged into the tools block. Set a key to ``null`` to
+    remove it.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+    cfg = _load_cfg()
+
+    patch = dict(body)
+    if _FAREWELL_DELAY_KEY in patch:
+        delay = patch.pop(_FAREWELL_DELAY_KEY)
+        if delay is None:
+            cfg.pop(_FAREWELL_DELAY_KEY, None)
+        else:
+            try:
+                parsed_delay = float(delay)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"{_FAREWELL_DELAY_KEY} must be a number") from None
+            if not math.isfinite(parsed_delay) or not 0 <= parsed_delay <= _MAX_FAREWELL_DELAY_SEC:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{_FAREWELL_DELAY_KEY} must be a finite number between "
+                        f"0 and {_MAX_FAREWELL_DELAY_SEC:g} seconds"
+                    ),
+                )
+            cfg[_FAREWELL_DELAY_KEY] = parsed_delay
+
+    if patch:
+        tools = cfg.setdefault("tools", {})
+        if not isinstance(tools, dict):
+            raise HTTPException(status_code=500, detail="Config 'tools' block is not a mapping")
+        # Guard: this resource edits tools-block *settings* (e.g. extensions,
+        # default_action_timeout) only. It must never create or modify a tool —
+        # tools go through the dedicated /builtin and /managed endpoints, which
+        # validate names (_validate_tool_name) and shapes (_resolve_kind). Reject
+        # any key that is, or masquerades as, a tool so the settings surface can't
+        # be used as a back door around those validations.
+        managed = {n for _, n, _ in _iter_managed_tools(cfg)}
+        reserved_builtin = _reserved_builtin_names()
+        for k, v in patch.items():
+            if k in _BUILTIN_TOOL_SET:
+                raise HTTPException(status_code=422, detail=f"'{k}' is a built-in tool; use PATCH /builtin/{k}")
+            if k in managed:
+                raise HTTPException(status_code=422, detail=f"'{k}' is a managed HTTP tool; use PATCH /managed/{k}")
+            if k in RESERVED_TOOL_NAMES:
+                raise HTTPException(status_code=422, detail=f"'{k}' is a reserved name and cannot be set via /settings")
+            if isinstance(k, str) and k.startswith("mcp_"):
+                raise HTTPException(status_code=422, detail="Keys starting with 'mcp_' are reserved for MCP tools")
+            if k in reserved_builtin:
+                raise HTTPException(status_code=422, detail=f"'{k}' is a reserved built-in/engine tool name; use the Tools API, not /settings")
+            if isinstance(v, dict) and "kind" in v:
+                raise HTTPException(status_code=422, detail=f"'{k}' looks like a managed tool (has 'kind'); use POST/PUT /api/tools/managed/{k}")
+        cfg["tools"] = _deep_merge(tools, patch)
+
+    _persist_cfg(cfg)
+    delay = cfg.get(_FAREWELL_DELAY_KEY)
+    return ToolsSettingsOut(
+        farewell_hangup_delay_sec=delay if isinstance(delay, (int, float)) else None,
+        settings=_safe_jsonable(_non_tool_settings(cfg)),
+    )

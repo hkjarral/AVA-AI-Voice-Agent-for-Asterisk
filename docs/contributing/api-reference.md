@@ -156,6 +156,54 @@ over HTTP here; see also [`docs/AGENTS.md`](../AGENTS.md).
 > API above and read the agent that handled a call from the call-record fields
 > (`context_name` / `agent_slug` / `agent_name` / `routing_method`).
 
+### Tools (`/api/tools`)
+The Tools system (v7) is the operator surface for managing the agent's tools &
+capabilities. **Managed HTTP tools** are the operator-built HTTP/webhook
+integrations (pre-call lookups, in-call tools, post-call webhooks). **Built-in
+tools** are the engine-registered telephony/business tools (transfer, hangup,
+voicemail, email, calendars). **Settings** covers tools-block options that are
+not individual tools.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/tools/catalog` | Read-only catalog of all available tools (built-in, HTTP, MCP) |
+| POST | `/api/tools/test-http` | Test an HTTP tool configuration without saving it |
+| GET | `/api/tools/test-values` | Get default values used by the HTTP-tool tester |
+| GET | `/api/tools/email-templates/defaults` | Get email-template defaults |
+| POST | `/api/tools/email-templates/preview` | Preview an email template |
+| GET | `/api/tools/managed` | List operator-managed HTTP tools |
+| POST | `/api/tools/managed` | Create a managed HTTP tool (`kind` derived from `phase`) |
+| GET | `/api/tools/managed/{name}` | Get a single managed HTTP tool |
+| PUT | `/api/tools/managed/{name}` | Replace a managed HTTP tool (may move it between phases) |
+| PATCH | `/api/tools/managed/{name}` | Partially update a managed HTTP tool |
+| DELETE | `/api/tools/managed/{name}` | Delete a managed HTTP tool |
+| GET | `/api/tools/builtin` | List built-in tools with enabled state and config |
+| GET | `/api/tools/builtin/{name}` | Get a single built-in tool's config |
+| PATCH | `/api/tools/builtin/{name}` | Partially update a built-in tool (deep merge; `null` removes a key) |
+| PUT | `/api/tools/builtin/{name}` | Replace a built-in tool's config |
+| GET | `/api/tools/settings` | Read tools-block settings (`farewell_hangup_delay_sec`, extensions, …) |
+| PATCH | `/api/tools/settings` | Update tools-block settings |
+
+> **`phase` → `kind` is enforced.** A managed tool's `kind` is derived from its
+> `phase` (`pre_call` → `generic_http_lookup`, `in_call` → `in_call_http_lookup`,
+> `post_call` → `generic_webhook`); a mismatched `kind` is rejected with `422`.
+> Managed tool names may not collide with built-in tool names.
+
+Managed tool URLs must be absolute HTTP(S) URLs or start with an environment
+placeholder such as `${CRM_BASE_URL}`. Timeouts must be between 1 and 300,000 ms,
+and methods are limited to standard HTTP methods. Explicit `null` is rejected for
+required PATCH fields; it removes supported optional fields.
+
+Built-ins include transfer, attended/cancel transfer, hangup, voicemail,
+`check_extension_status`, email/transcript, and Google/Microsoft calendar tools.
+The settings endpoint rejects built-in, managed, MCP, identity, and other
+registry-reserved tool names. `farewell_hangup_delay_sec` must be finite and
+between 0 and 300 seconds.
+
+Mutating endpoints persist the local configuration override but do not restart
+the AI Engine. Apply tool changes using the AI Engine restart endpoint after the
+write succeeds.
+
 ### Outbound (`/api/outbound`, `/api/campaigns`, `/api/leads`, `/api/recordings`)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -192,15 +240,6 @@ over HTTP here; see also [`docs/AGENTS.md`](../AGENTS.md).
 | POST | `/api/local-ai/rebuild` | Rebuild local AI container |
 | GET | `/api/local-ai/backends` | List available backends |
 | GET | `/api/local-ai/backends/{type}/{name}/schema` | Get backend config schema |
-
-### Tools (`/api/tools`)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/tools/catalog` | Get tool catalog |
-| POST | `/api/tools/test-http` | Test HTTP tool configuration |
-| GET | `/api/tools/test-values` | Get default test values |
-| GET | `/api/tools/email-templates/defaults` | Get email template defaults |
-| POST | `/api/tools/email-templates/preview` | Preview email template |
 
 ### MCP (`/api/mcp`)
 | Method | Endpoint | Description |

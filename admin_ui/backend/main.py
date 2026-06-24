@@ -167,7 +167,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
         {"name": "agents", "description": "Agents (v7) — CRUD, per-agent stats, dialplan snippets, templates, and YAML→DB migration status"},
         {"name": "calls", "description": "Call history and analytics"},
         {"name": "outbound", "description": "Outbound campaigns and lead management"},
-        {"name": "tools", "description": "Tool catalog and HTTP tool testing"},
+        {"name": "tools", "description": "Tool catalog, HTTP tool testing, and managed HTTP/webhook tool CRUD"},
         {"name": "logs", "description": "Container logs and events"},
         {"name": "mcp", "description": "MCP server status (proxied from AI Engine)"},
         {"name": "ollama", "description": "Ollama integration testing"},

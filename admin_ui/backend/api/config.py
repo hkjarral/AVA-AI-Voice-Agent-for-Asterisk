@@ -603,82 +603,106 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
     return {"warnings": warnings}
 
 
+def persist_config_content(content: str) -> dict:
+    """
+    Validate and persist a full merged ai-agent config (YAML string).
+
+    Shared by the Raw YAML editor (``POST /yaml``) and the structured tools
+    CRUD API (``api/tools.py``). Runs the same schema validation, inline-secret
+    migration, and minimal-local-override computation, then writes the operator
+    local override file. Returns the apply-plan payload describing whether a
+    hot reload or restart is needed.
+
+    Raises ``HTTPException`` on validation failure (propagated to the caller).
+    """
+    # MED-E1: reject malformed tool email addresses (422) on EVERY persistence
+    # path. Both the Raw YAML editor (POST /yaml) and the structured tools CRUD
+    # API (api/tools.py -> _persist_cfg) funnel through here, so centralizing the
+    # check guarantees no endpoint can persist an invalid address. Runs before the
+    # schema validation, matching the order the YAML editor used previously.
+    _assert_tool_emails_valid(content)
+
+    # Validate YAML + schema before saving.
+    validation = _validate_ai_agent_config(content)
+    warnings = validation.get("warnings") or []
+
+    # Parse desired merged config content from UI.
+    new_parsed = _safe_load_no_duplicates(content) or {}
+    if not isinstance(new_parsed, dict):
+        raise HTTPException(status_code=400, detail="Config YAML must be a mapping at the top level")
+
+    if _migrate_inline_provider_secrets(new_parsed):
+        content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
+        validation = _validate_ai_agent_config(content)
+        migrated_warnings = validation.get("warnings")
+        warnings = warnings if migrated_warnings is None else migrated_warnings
+
+    # Snapshot current merged config for hot-reload comparison
+    old_merged = _read_merged_config_dict()
+
+    # Convert desired merged config into a minimal local override (supports deletions).
+    base = _read_base_config_dict()
+    local_override = _compute_local_override(base, new_parsed)
+    local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
+
+    # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
+    _write_local_config(local_content)
+
+    # Determine recommended apply method based on what changed
+    # hot_reload: contexts, MCP servers, greetings/instructions only
+    # restart: most YAML changes (providers, pipelines, transport, VAD, etc.)
+    # recreate: .env changes (handled separately in /env endpoint)
+    recommended_method = "restart"  # Default for YAML changes
+
+    # Check if change is limited to hot-reloadable sections
+    try:
+        if old_merged:
+            # Keys that can be hot-reloaded.
+            # barge_in is read live from self.config per-call (every barge-in path
+            # does getattr(self.config, "barge_in", None)), so YAML tuning of it
+            # applies to new calls without dropping active ones (MED-R1).
+            # vad is NOT hot-reloadable: EnhancedVADManager, webrtcvad.Vad,
+            # self._vad_mode and AudioGatingManager are built once from config.vad
+            # in Engine.__init__, and _reload_handler does not rebuild them — so a
+            # vad-only save must use the restart path to actually apply.
+            # streaming is NOT hot-reloadable for the same reason
+            # (StreamingPlaybackManager reads its params once at construction).
+            # Both kept on the restart path (bot re-review, Finding 2).
+            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in'}
+
+            # Check if only hot-reloadable keys changed
+            all_keys = set(old_merged.keys()) | set(new_parsed.keys())
+            changed_keys = set()
+            for key in all_keys:
+                if old_merged.get(key) != new_parsed.get(key):
+                    changed_keys.add(key)
+
+            if changed_keys and changed_keys.issubset(hot_reload_keys):
+                recommended_method = "hot_reload"
+    except Exception:
+        pass  # Fall back to restart if comparison fails
+
+    apply_plan = ([{"service": "ai_engine", "method": "hot_reload", "endpoint": "/api/system/containers/ai_engine/reload"}]
+                 if recommended_method == "hot_reload"
+                 else [{"service": "ai_engine", "method": "restart", "endpoint": "/api/system/containers/ai_engine/restart"}])
+
+    return {
+        "status": "success",
+        "restart_required": recommended_method != "hot_reload",
+        "recommended_apply_method": recommended_method,
+        "apply_plan": apply_plan,
+        "message": f"Configuration saved. {'Hot reload' if recommended_method == 'hot_reload' else 'Restart'} AI Engine to apply changes.",
+        "warnings": warnings,
+    }
+
+
 @router.post("/yaml")
 async def update_yaml_config(update: ConfigUpdate):
     try:
-        # MED-E1: reject malformed email addresses (422) before the schema check.
-        _assert_tool_emails_valid(update.content)
-        # Validate YAML + schema before saving.
-        validation = _validate_ai_agent_config(update.content)
-        warnings = validation.get("warnings") or []
-
-        # Parse desired merged config content from UI.
-        new_parsed = _safe_load_no_duplicates(update.content) or {}
-        if not isinstance(new_parsed, dict):
-            raise HTTPException(status_code=400, detail="Config YAML must be a mapping at the top level")
-
-        if _migrate_inline_provider_secrets(new_parsed):
-            update.content = yaml.dump(new_parsed, default_flow_style=False, sort_keys=False)
-            validation = _validate_ai_agent_config(update.content)
-            warnings = validation.get("warnings") or warnings
-
-        # Snapshot current merged config for hot-reload comparison
-        old_merged = _read_merged_config_dict()
-
-        # Convert desired merged config into a minimal local override (supports deletions).
-        base = _read_base_config_dict()
-        local_override = _compute_local_override(base, new_parsed)
-        local_content = yaml.dump(local_override or {}, default_flow_style=False, sort_keys=False)
-
-        # Write to LOCAL override file (keeps base ai-agent.yaml clean for git)
-        _write_local_config(local_content)
-        
-        # Determine recommended apply method based on what changed
-        # hot_reload: contexts, MCP servers, greetings/instructions only
-        # restart: most YAML changes (providers, pipelines, transport, VAD, etc.)
-        # recreate: .env changes (handled separately in /env endpoint)
-        recommended_method = "restart"  # Default for YAML changes
-        
-        # Check if change is limited to hot-reloadable sections
-        try:
-            if old_merged:
-                # Keys that can be hot-reloaded.
-                # barge_in is read live from self.config per-call (every barge-in path
-                # does getattr(self.config, "barge_in", None)), so YAML tuning of it
-                # applies to new calls without dropping active ones (MED-R1).
-                # vad is NOT hot-reloadable: EnhancedVADManager, webrtcvad.Vad,
-                # self._vad_mode and AudioGatingManager are built once from config.vad
-                # in Engine.__init__, and _reload_handler does not rebuild them — so a
-                # vad-only save must use the restart path to actually apply.
-                # streaming is NOT hot-reloadable for the same reason
-                # (StreamingPlaybackManager reads its params once at construction).
-                # Both kept on the restart path (bot re-review, Finding 2).
-                hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in'}
-                
-                # Check if only hot-reloadable keys changed
-                all_keys = set(old_merged.keys()) | set(new_parsed.keys())
-                changed_keys = set()
-                for key in all_keys:
-                    if old_merged.get(key) != new_parsed.get(key):
-                        changed_keys.add(key)
-                
-                if changed_keys and changed_keys.issubset(hot_reload_keys):
-                    recommended_method = "hot_reload"
-        except Exception:
-            pass  # Fall back to restart if comparison fails
-        
-        apply_plan = ([{"service": "ai_engine", "method": "hot_reload", "endpoint": "/api/system/containers/ai_engine/reload"}]
-                     if recommended_method == "hot_reload"
-                     else [{"service": "ai_engine", "method": "restart", "endpoint": "/api/system/containers/ai_engine/restart"}])
-
-        return {
-            "status": "success",
-            "restart_required": recommended_method != "hot_reload",
-            "recommended_apply_method": recommended_method,
-            "apply_plan": apply_plan,
-            "message": f"Configuration saved. {'Hot reload' if recommended_method == 'hot_reload' else 'Restart'} AI Engine to apply changes.",
-            "warnings": warnings,
-        }
+        # Persist via the shared helper (also used by the structured tools CRUD
+        # API). MED-E1 email validation now lives inside persist_config_content
+        # so every persistence path enforces it (not just this endpoint).
+        return persist_config_content(update.content)
     except HTTPException:
         raise
     except Exception as e:

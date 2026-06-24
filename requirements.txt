@@ -5,7 +5,7 @@ aiohttp==3.13.5
 
 # Configuration and logging
 pydantic>=2.13.4
-pydantic_settings==2.14.1
+pydantic_settings==2.14.2
 structlog==26.1.0
 prometheus-client==0.24.1
 PyYAML==6.0.3
@@ -29,12 +29,12 @@ openai>=2.34.0
 
 # Google Auth for Vertex AI Live API OAuth2/ADC support (AAVA-191)
 # Only required when use_vertex_ai: true in provider config
-google-auth>=2.50.0
+google-auth>=2.55.0
 
 # Google Calendar API client for business calendar tool
-google-api-python-client>=2.195.0
+google-api-python-client>=2.197.0
 
 # Microsoft Calendar API client for business calendar tool
-msal>=1.28.0
+msal>=1.37.0
 portalocker>=3.2.0
 azure-cognitiveservices-speech>=1.41.0
