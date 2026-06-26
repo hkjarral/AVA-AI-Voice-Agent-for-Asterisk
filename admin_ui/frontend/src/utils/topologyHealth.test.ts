@@ -76,6 +76,25 @@ describe('deriveTopologyHealth', () => {
         expect(result.warnings).toEqual([]);
     });
 
+    it('does not require Local AI when a non-local default context pipeline precedes a local fallback provider', () => {
+        const result = derive({
+            configuredProviders: [{ name: 'local', kind: 'local', enabled: true }],
+            providerReady: { local: 'ready' },
+            configuredPipelines: [
+                { name: 'cambai_pipeline', stt: 'cambai_stt', llm: 'cambai_llm', tts: 'cambai_tts' },
+            ],
+            defaultProvider: 'local',
+            defaultPipeline: 'cambai_pipeline',
+            activePipeline: null,
+        });
+
+        expect(result.localAIRequired).toBe(false);
+        expect(result.localAIOptionalUnavailable).toBe(true);
+        expect(result.overallStatus).toBe('healthy');
+        expect(result.issues).toEqual([]);
+        expect(result.warnings.map(w => w.key)).toEqual(['local_ai_server_optional']);
+    });
+
     it('requires Local AI when a custom-key default provider has local kind', () => {
         const result = derive({
             configuredProviders: [{ name: 'office_local', kind: 'local', enabled: true }],

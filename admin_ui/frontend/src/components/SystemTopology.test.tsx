@@ -57,6 +57,24 @@ contexts:
     provider: office_local
 `;
 
+const localFallbackCloudPipelineConfigYaml = `
+default_provider: local
+providers:
+  local:
+    type: local
+    enabled: true
+    capabilities: [stt, llm, tts]
+pipelines:
+  cambai_pipeline:
+    stt: cambai_stt
+    llm: cambai_llm
+    tts: cambai_tts
+contexts:
+  default:
+    provider: local
+    pipeline: cambai_pipeline
+`;
+
 const mockTopologyApis = ({
     providerReady = true,
     configYaml = cloudConfigYaml,
@@ -195,6 +213,25 @@ describe('SystemTopology dashboard health', () => {
 
         expect(screen.getByText('Local AI Server is disconnected')).toBeInTheDocument();
         expect(screen.queryByText('Optional Local AI Server is unavailable')).not.toBeInTheDocument();
+    });
+
+    it('keeps Local AI optional when a non-local context pipeline precedes a local fallback provider', async () => {
+        vi.useFakeTimers();
+        mockTopologyApis({
+            configYaml: localFallbackCloudPipelineConfigYaml,
+            providerHealth: { local: { ready: true } },
+        });
+
+        renderTopology();
+        await flushAsyncEffects();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5000);
+        });
+
+        expect(screen.getByText('All systems healthy')).toBeInTheDocument();
+        expect(screen.getByText('Optional Local AI Server is unavailable')).toBeInTheDocument();
+        expect(screen.queryByText('Issue detected')).not.toBeInTheDocument();
     });
 
     it('opens warning details when optional Local AI is unavailable', async () => {

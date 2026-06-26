@@ -89,15 +89,22 @@ export const deriveLocalAIRequired = (input: Pick<
         return provider ? providerSummaryIsLocal(provider) : false;
     };
 
-    if (providerRouteIsLocal(input.defaultProvider)) return true;
-    if (input.activeProviderNames.some(providerRouteIsLocal)) return true;
-
     const configuredProviderNames = new Set(input.configuredProviders.map(provider => provider.name));
     const configuredPipelineNames = new Set(input.configuredPipelines.map(pipeline => pipeline.name));
     const defaultTargetIsProvider =
         typeof input.defaultProvider === 'string' && configuredProviderNames.has(input.defaultProvider);
     const defaultTargetIsPipeline =
         typeof input.defaultProvider === 'string' && configuredPipelineNames.has(input.defaultProvider);
+    const defaultPipeline = input.defaultPipeline;
+    const defaultPipelineTargetsConfiguredPipeline =
+        typeof defaultPipeline === 'string'
+        && input.configuredPipelines.some(pipeline => pipelineMatchesRoute(pipeline.name, defaultPipeline));
+
+    if (input.activeProviderNames.some(providerRouteIsLocal)) return true;
+    // contexts.default.pipeline is resolved before the provider route. If it
+    // points to a configured pipeline, default_provider is only a fallback and
+    // should not make Local AI required on its own.
+    if (!defaultPipelineTargetsConfiguredPipeline && providerRouteIsLocal(input.defaultProvider)) return true;
 
     const routeNames = unique([
         // Active calls always reflect the actual selected pipeline.
