@@ -69,8 +69,8 @@ const CANONICAL_FULL_AGENT_KEYS = new Set([
  * - OR (legacy single-instance form) the YAML key matches a canonical
  *   full-agent kind AND no `type` field is set that contradicts it
  *
- * Note: 'local' with type='full' is a full agent (Local AI Server monolithic mode)
- *       'local' with type='local' is modular (local_stt, local_llm, local_tts)
+ * Note: non-modular provider keys with type='local' are Local AI full agents;
+ *       modular local adapters are identified by _stt/_llm/_tts key suffixes.
  *
  * @param provider The provider config object
  * @param key Optional YAML key for the provider (e.g. 'grok', 'acme_grok').
@@ -80,10 +80,12 @@ const CANONICAL_FULL_AGENT_KEYS = new Set([
 export const isFullAgentProvider = (provider: any, key?: string): boolean => {
     const type = (provider?.type || '').toLowerCase();
     const caps = provider?.capabilities || [];
+    if (key && capabilityFromKey(key)) return false;
     const hasAllCaps = caps.includes('stt') && caps.includes('llm') && caps.includes('tts');
     // Full agent types - these are always full agents
-    const fullAgentTypes = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'full'];
+    const fullAgentTypes = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'local'];
     if (fullAgentTypes.includes(type)) return true;
+    if (type === 'full' && key && CANONICAL_FULL_AGENT_KEYS.has(key)) return true;
     // Any provider with all 3 capabilities is a full agent
     if (hasAllCaps) return true;
     // Legacy single-instance form: YAML key matches a canonical full-agent kind
@@ -94,8 +96,8 @@ export const isFullAgentProvider = (provider: any, key?: string): boolean => {
 
 /**
  * Concrete full-agent kinds that are unambiguous from the `type` field alone.
- * 'local' is intentionally excluded: `type: local` is modular (single-capability),
- * while the monolithic Local AI full agent uses `type: full` on the `local` key.
+ * 'local' is resolved separately because modular local adapters are identified
+ * by key suffix, while non-modular `type: local` entries are full agents.
  */
 const UNAMBIGUOUS_FULL_AGENT_KINDS = [
     'openai_realtime',
@@ -111,8 +113,8 @@ const UNAMBIGUOUS_FULL_AGENT_KINDS = [
  * full agent or its kind cannot be determined without name-guessing.
  *
  * - explicit unambiguous full-agent `type` (e.g. google_live) → that type
- * - `type: local` carrying all three capabilities (the monolithic Local AI
- *   selection) → 'local'; single-capability local stays modular → null
+ * - non-modular `type: local` (the monolithic Local AI selection) → 'local';
+ *   suffix-based local adapters stay modular → null
  * - `type: full` (or no `type`) on a canonical key (e.g. google_live, local) → the key
  * - neutral custom keys are NOT guessed → null
  *
@@ -123,14 +125,9 @@ const UNAMBIGUOUS_FULL_AGENT_KINDS = [
  */
 export const getEffectiveFullAgentKind = (provider: any, key?: string): string | null => {
     const type = (provider?.type || '').toLowerCase();
+    if (key && capabilityFromKey(key)) return null;
     if (UNAMBIGUOUS_FULL_AGENT_KINDS.includes(type)) return type;
-    // `type: local` is the monolithic Local AI full agent only when it carries all
-    // three capabilities (the "Local" Provider Type option); single-capability local
-    // is modular (local_stt / local_llm / local_tts).
-    const caps = provider?.capabilities || [];
-    if (type === 'local' && caps.includes('stt') && caps.includes('llm') && caps.includes('tts')) {
-        return 'local';
-    }
+    if (type === 'local') return 'local';
     if ((type === 'full' || type === '') && key && CANONICAL_FULL_AGENT_KEYS.has(key)) {
         return key;
     }

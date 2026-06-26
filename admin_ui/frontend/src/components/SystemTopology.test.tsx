@@ -50,7 +50,6 @@ providers:
   office_local:
     type: local
     enabled: true
-    capabilities: [stt, llm, tts]
 pipelines: {}
 contexts:
   default:
