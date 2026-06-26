@@ -570,7 +570,10 @@ export const SystemTopology = () => {
     activeProviders,
     activePipelines,
   ]);
-  const topologyDetailItems = [...topologyHealth.issues, ...topologyHealth.warnings];
+  const topologyDetailItems = [
+    ...topologyHealth.issues.map(issue => ({ ...issue, severity: 'issue' as const })),
+    ...topologyHealth.warnings.map(warning => ({ ...warning, severity: 'warning' as const })),
+  ];
 
   useEffect(() => {
     if (topologyHealth.overallStatus !== 'issue' && topologyHealth.warnings.length === 0) {
@@ -757,7 +760,7 @@ export const SystemTopology = () => {
           >
             <div className="space-y-2">
               {topologyDetailItems.map(issue => {
-                const isWarning = issue.key.endsWith('_optional');
+                const isWarning = issue.severity === 'warning';
                 return (
                 <div key={issue.key} className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-1 gap-2">
