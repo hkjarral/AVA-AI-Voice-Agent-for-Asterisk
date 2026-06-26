@@ -14,6 +14,7 @@ import { getEffectiveFullAgentKind, isFullAgentProvider } from './providerNaming
 describe('getEffectiveFullAgentKind', () => {
     it('resolves canonical google_live with legacy type:full to google_live (#436)', () => {
         expect(getEffectiveFullAgentKind({ type: 'full' }, 'google_live')).toBe('google_live');
+        expect(isFullAgentProvider({ type: 'full' })).toBe(true);
     });
 
     it('returns the concrete kind when an explicit full-agent type is set', () => {
@@ -31,6 +32,7 @@ describe('getEffectiveFullAgentKind', () => {
 
     it('does not name-guess a kind for a neutral custom key with type:full', () => {
         expect(getEffectiveFullAgentKind({ type: 'full' }, 'my_custom_agent')).toBeNull();
+        expect(isFullAgentProvider({ type: 'full' }, 'my_custom_agent')).toBe(false);
     });
 
     it('returns null for a modular single-capability provider (type:local is not a full agent)', () => {

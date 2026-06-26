@@ -85,7 +85,7 @@ export const isFullAgentProvider = (provider: any, key?: string): boolean => {
     // Full agent types - these are always full agents
     const fullAgentTypes = ['openai_realtime', 'deepgram', 'google_live', 'elevenlabs_agent', 'grok', 'local'];
     if (fullAgentTypes.includes(type)) return true;
-    if (type === 'full' && key && CANONICAL_FULL_AGENT_KEYS.has(key)) return true;
+    if (type === 'full') return !key || CANONICAL_FULL_AGENT_KEYS.has(key);
     // Any provider with all 3 capabilities is a full agent
     if (hasAllCaps) return true;
     // Legacy single-instance form: YAML key matches a canonical full-agent kind
