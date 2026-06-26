@@ -44,15 +44,34 @@ contexts:
     pipeline: local_hybrid
 `;
 
+const customLocalProviderConfigYaml = `
+default_provider: office_local
+providers:
+  office_local:
+    type: local
+    enabled: true
+    capabilities: [stt, llm, tts]
+pipelines: {}
+contexts:
+  default:
+    provider: office_local
+`;
+
 const mockTopologyApis = ({
     providerReady = true,
     configYaml = cloudConfigYaml,
     localAIModels,
+    providerHealth,
 }: {
     providerReady?: boolean;
     configYaml?: string;
     localAIModels?: unknown;
+    providerHealth?: Record<string, { ready: boolean }>;
 } = {}) => {
+    const providerHealthPayload = providerHealth || {
+        google_live: { ready: providerReady },
+    };
+
     vi.mocked(axios.get).mockImplementation((url) => {
         if (url === '/api/config/yaml') {
             return Promise.resolve({ data: { content: configYaml } });
@@ -67,9 +86,7 @@ const mockTopologyApis = ({
                         status: 'connected',
                         details: {
                             ari_connected: true,
-                            providers: {
-                                google_live: { ready: providerReady },
-                            },
+                            providers: providerHealthPayload,
                         },
                     },
                     local_ai_server: {
@@ -157,6 +174,26 @@ describe('SystemTopology dashboard health', () => {
 
         expect(screen.getByText('Local AI Server is disconnected')).toBeInTheDocument();
         expect(screen.getByText('The active or default route uses Local AI, but local_ai_server is not connected.')).toBeInTheDocument();
+        expect(screen.queryByText('Optional Local AI Server is unavailable')).not.toBeInTheDocument();
+    });
+
+    it('treats custom-key local providers as Local AI requirements', async () => {
+        vi.useFakeTimers();
+        mockTopologyApis({
+            configYaml: customLocalProviderConfigYaml,
+            providerHealth: { office_local: { ready: true } },
+        });
+
+        renderTopology();
+        await flushAsyncEffects();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5000);
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: /issue detected/i }));
+
+        expect(screen.getByText('Local AI Server is disconnected')).toBeInTheDocument();
         expect(screen.queryByText('Optional Local AI Server is unavailable')).not.toBeInTheDocument();
     });
 

@@ -5,6 +5,7 @@ export type OverallTopologyStatus = 'healthy' | 'issue' | 'checking';
 export interface TopologyProviderSummary {
     name: string;
     enabled: boolean;
+    kind?: string;
 }
 
 export interface TopologyPipelineSummary {
@@ -59,6 +60,9 @@ const pipelineUsesLocalAI = (pipeline: TopologyPipelineSummary): boolean =>
 const providerIsLocal = (name: string | null | undefined): boolean =>
     (name || '').toLowerCase() === 'local';
 
+const providerSummaryIsLocal = (provider: TopologyProviderSummary): boolean =>
+    providerIsLocal(provider.name) || providerIsLocal(provider.kind);
+
 const pipelineMatchesRoute = (pipelineName: string, routeName: string): boolean =>
     pipelineName === routeName || pipelineName.startsWith(`${routeName}_`);
 
@@ -77,8 +81,16 @@ export const deriveLocalAIRequired = (input: Pick<
     TopologyHealthInput,
     'configuredProviders' | 'configuredPipelines' | 'defaultProvider' | 'defaultPipeline' | 'activePipeline' | 'activeProviderNames' | 'activePipelineNames'
 >): boolean => {
-    if (providerIsLocal(input.defaultProvider)) return true;
-    if (input.activeProviderNames.some(providerIsLocal)) return true;
+    const providerSummariesByName = new Map(input.configuredProviders.map(provider => [provider.name, provider]));
+    const providerRouteIsLocal = (name: string | null | undefined): boolean => {
+        if (providerIsLocal(name)) return true;
+        if (!name) return false;
+        const provider = providerSummariesByName.get(name);
+        return provider ? providerSummaryIsLocal(provider) : false;
+    };
+
+    if (providerRouteIsLocal(input.defaultProvider)) return true;
+    if (input.activeProviderNames.some(providerRouteIsLocal)) return true;
 
     const configuredProviderNames = new Set(input.configuredProviders.map(provider => provider.name));
     const configuredPipelineNames = new Set(input.configuredPipelines.map(pipeline => pipeline.name));

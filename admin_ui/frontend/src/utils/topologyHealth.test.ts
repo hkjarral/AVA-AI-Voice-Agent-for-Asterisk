@@ -76,6 +76,31 @@ describe('deriveTopologyHealth', () => {
         expect(result.warnings).toEqual([]);
     });
 
+    it('requires Local AI when a custom-key default provider has local kind', () => {
+        const result = derive({
+            configuredProviders: [{ name: 'office_local', kind: 'local', enabled: true }],
+            providerReady: { office_local: 'ready' },
+            defaultProvider: 'office_local',
+        });
+
+        expect(result.localAIRequired).toBe(true);
+        expect(result.overallStatus).toBe('issue');
+        expect(result.issues.map(i => i.key)).toContain('local_ai_server');
+        expect(result.warnings).toEqual([]);
+    });
+
+    it('requires Local AI when an active call uses a custom-key local provider', () => {
+        const result = derive({
+            configuredProviders: [{ name: 'office_local', kind: 'local', enabled: true }],
+            providerReady: { office_local: 'ready' },
+            activeProviderNames: ['office_local'],
+        });
+
+        expect(result.localAIRequired).toBe(true);
+        expect(result.overallStatus).toBe('issue');
+        expect(result.issues.map(i => i.key)).toContain('local_ai_server');
+    });
+
     it('requires Local AI when the configured active pipeline is the default route', () => {
         const result = derive({
             activePipeline: 'local_hybrid',

@@ -548,6 +548,7 @@ export const SystemTopology = () => {
     configuredProviders: state.configuredProviders.map(provider => ({
       name: provider.name,
       enabled: provider.enabled,
+      kind: provider.kind,
     })),
     providerReady: state.providerReady,
     configuredPipelines: state.configuredPipelines,
