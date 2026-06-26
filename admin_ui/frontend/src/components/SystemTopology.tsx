@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Phone, Cpu, Server, Mic, MessageSquare, Volume2, Zap, Radio, CheckCircle2, XCircle, Layers, Loader2 } from 'lucide-react';
+import { Phone, Cpu, Server, Mic, MessageSquare, Volume2, Zap, Radio, CheckCircle2, XCircle, Layers, Loader2, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import yaml from 'js-yaml';
 import { FullscreenPanel } from './ui/FullscreenPanel';
 import { isFullAgentProvider } from '../utils/providerNaming';
+import { deriveTopologyHealth, type TopologyIssue, type TopologyWarning } from '../utils/topologyHealth';
 
 interface CallState {
   call_id: string;
@@ -113,6 +114,7 @@ export const SystemTopology = () => {
     activeCalls: new Map(),
   });
   const [loading, setLoading] = useState(true);
+  const [showIssueDetails, setShowIssueDetails] = useState(false);
   const navigate = useNavigate();
   // Per-provider failure streak (cross-render) for the 2-strike debounce.
   // Kept in a ref so updates don't trigger re-renders; the debounced
@@ -530,6 +532,72 @@ export const SystemTopology = () => {
 
   const isLocalAIActive = isLocalProviderActive || isLocalAIUsedByPipelines;
 
+  const topologyHealth = useMemo(() => deriveTopologyHealth({
+    aiEngineStatus: state.aiEngineStatus,
+    ariConnected: state.ariConnected,
+    localAIStatus: state.localAIStatus,
+    configuredProviders: state.configuredProviders.map(provider => ({
+      name: provider.name,
+      enabled: provider.enabled,
+    })),
+    providerReady: state.providerReady,
+    configuredPipelines: state.configuredPipelines,
+    defaultProvider: state.defaultProvider,
+    activePipeline: state.activePipeline,
+    activeProviderNames: Array.from(activeProviders.keys()),
+    activePipelineNames: Array.from(activePipelines.keys()),
+  }), [
+    state.aiEngineStatus,
+    state.ariConnected,
+    state.localAIStatus,
+    state.configuredProviders,
+    state.providerReady,
+    state.configuredPipelines,
+    state.defaultProvider,
+    state.activePipeline,
+    activeProviders,
+    activePipelines,
+  ]);
+  const topologyDetailItems = [...topologyHealth.issues, ...topologyHealth.warnings];
+
+  useEffect(() => {
+    if (topologyHealth.overallStatus !== 'issue' && topologyHealth.warnings.length === 0) {
+      setShowIssueDetails(false);
+    }
+  }, [topologyHealth.overallStatus, topologyHealth.warnings.length]);
+
+  const issueTargetLabel = (issue: TopologyIssue | TopologyWarning): string => {
+    switch (issue.target) {
+      case 'env':
+        return 'Environment';
+      case 'providers':
+        return 'Providers';
+      case 'models':
+        return 'Models';
+      default:
+        return 'Open';
+    }
+  };
+
+  const navigateIssueTarget = (issue: TopologyIssue | TopologyWarning) => {
+    switch (issue.target) {
+      case 'env':
+        navigate(issue.key === 'ai_engine' ? '/env#ai-engine' : '/env');
+        break;
+      case 'providers':
+        navigate('/providers');
+        break;
+      case 'models':
+        navigate('/models');
+        break;
+    }
+  };
+
+  const localAIHasRequiredError = topologyHealth.localAIRequired && state.localAIStatus === 'error';
+  const localAIHasOptionalWarning = topologyHealth.localAIOptionalUnavailable;
+  const localAIIsActiveConnected = isLocalAIActive && state.localAIStatus === 'connected';
+  const localAIIsOptionalInactive = !topologyHealth.localAIRequired && state.localAIStatus !== 'connected';
+
   // Get model display name
   const getModelDisplayName = (model: any, type: string): string => {
     if (!model) return type;
@@ -584,11 +652,6 @@ export const SystemTopology = () => {
           const readyProviders = enabledProviders.filter(
             p => state.providerReady[p.name] === 'ready'
           ).length;
-          const providersAllKnown =
-            enabledProviders.length === 0
-            || enabledProviders.every(p => (state.providerReady[p.name] ?? 'unknown') !== 'unknown');
-          const providersAnyError =
-            enabledProviders.some(p => state.providerReady[p.name] === 'not_ready');
           // I9 — derive the denominator from the local components actually
           // present in the health response rather than hardcoding 3. An
           // STT+TTS-only box (no local LLM) reports two components and reads
@@ -600,18 +663,7 @@ export const SystemTopology = () => {
           ].filter((m): m is NonNullable<typeof m> => m != null);
           const totalModels = localComponents.length;
           const loadedModels = localComponents.filter(m => m.loaded).length;
-          const allKnown =
-            state.aiEngineStatus !== 'unknown'
-            && state.localAIStatus !== 'unknown'
-            && state.ariConnected !== null
-            && providersAllKnown;
-          const anyError =
-            state.aiEngineStatus === 'error'
-            || state.localAIStatus === 'error'
-            || state.ariConnected === false
-            || providersAnyError;
-          const overallStatus: 'healthy' | 'issue' | 'checking' =
-            !allKnown ? 'checking' : anyError ? 'issue' : 'healthy';
+          const overallStatus = topologyHealth.overallStatus;
           const statusColor = overallStatus === 'healthy'
             ? 'text-green-500'
             : overallStatus === 'issue'
@@ -622,9 +674,17 @@ export const SystemTopology = () => {
             : overallStatus === 'issue'
               ? 'Issue detected'
               : 'Checking…';
+          const warnings = topologyHealth.warnings;
           return (
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 mb-3 rounded-lg bg-muted/30 border border-border/50 text-xs">
-              <div className={`flex items-center gap-1.5 font-medium ${statusColor}`}>
+              <button
+                type="button"
+                disabled={overallStatus !== 'issue'}
+                onClick={() => setShowIssueDetails(open => !open)}
+                className={`flex items-center gap-1.5 font-medium ${statusColor} ${overallStatus === 'issue' ? 'cursor-pointer hover:underline' : 'cursor-default'}`}
+                aria-expanded={overallStatus === 'issue' ? showIssueDetails : undefined}
+                aria-controls={overallStatus === 'issue' ? 'topology-issue-details' : undefined}
+              >
                 {overallStatus === 'healthy' ? (
                   <CheckCircle2 className="w-3.5 h-3.5" />
                 ) : overallStatus === 'issue' ? (
@@ -633,7 +693,19 @@ export const SystemTopology = () => {
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 )}
                 <span>{statusLabel}</span>
-              </div>
+              </button>
+              {warnings.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowIssueDetails(open => !open)}
+                  className="flex items-center gap-1.5 font-medium text-amber-500 cursor-pointer hover:underline"
+                  aria-expanded={showIssueDetails}
+                  aria-controls="topology-issue-details"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>{warnings.length === 1 ? warnings[0].label : `${warnings.length} optional warnings`}</span>
+                </button>
+              )}
               <div className="flex items-center gap-1.5 text-muted-foreground">
                 <Phone className={`w-3.5 h-3.5 ${hasActiveCalls ? 'text-green-500' : ''}`} />
                 <span>
@@ -650,16 +722,56 @@ export const SystemTopology = () => {
                   /{totalProviders} providers ready
                 </span>
               </div>
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Server className="w-3.5 h-3.5" />
-                <span>
-                  <span className="text-foreground font-medium">{loadedModels}</span>
-                  /{totalModels} local models loaded
-                </span>
-              </div>
+              {(topologyHealth.localAIRelevant || totalModels > 0) && (
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Server className="w-3.5 h-3.5" />
+                  <span>
+                    <span className="text-foreground font-medium">{loadedModels}</span>
+                    /{totalModels} local models loaded
+                  </span>
+                </div>
+              )}
             </div>
           );
         })()}
+
+        {showIssueDetails && (topologyHealth.issues.length > 0 || topologyHealth.warnings.length > 0) && (
+          <div
+            id="topology-issue-details"
+            className={`mb-3 rounded-lg border px-4 py-3 ${topologyHealth.issues.length > 0
+              ? 'border-red-500/30 bg-red-500/5'
+              : 'border-amber-500/30 bg-amber-500/5'
+              }`}
+          >
+            <div className="space-y-2">
+              {topologyDetailItems.map(issue => {
+                const isWarning = issue.key.endsWith('_optional');
+                return (
+                <div key={issue.key} className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex min-w-0 flex-1 gap-2">
+                    {isWarning ? (
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-amber-500" />
+                    ) : (
+                      <XCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-red-500" />
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-foreground">{issue.label}</div>
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">{issue.detail}</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigateIssueTarget(issue)}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
+                  >
+                    {issueTargetLabel(issue)}
+                  </button>
+                </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Grid Layout — col 5 (providers/models) now flex-grows so it can
             absorb the canvas width that used to be wasted to the left of
@@ -1098,26 +1210,34 @@ export const SystemTopology = () => {
               <div
                 onClick={() => navigate('/models')}
                 title="Go to Models →"
-                className={`flex flex-col justify-center relative w-full h-full p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${state.localAIStatus === 'error'
+                className={`flex flex-col justify-center relative w-full h-full p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${localAIHasRequiredError
                   ? 'border-red-500/50 bg-red-500/10 ring-1 ring-red-500/50'
-                  : isLocalAIActive && state.localAIStatus === 'connected'
+                  : localAIIsActiveConnected
                     ? 'border-green-500/50 bg-green-500/10 shadow-[0_8px_30px_rgb(34,197,94,0.15)] ring-1 ring-green-500/50'
                     : 'border-border/60 bg-card/60 hover:bg-card/80 hover:border-primary/40 shadow-sm'
                   }`}>
-                {isLocalAIActive && state.localAIStatus === 'connected' && (
+                {localAIIsActiveConnected && (
                   <div className="absolute inset-0 rounded-lg border-2 border-green-500 animate-ping opacity-20" />
                 )}
                 <div className="flex flex-col items-center gap-2">
-                  <Server className={`w-8 h-8 ${state.localAIStatus === 'error' ? 'text-red-500' : isLocalAIActive && state.localAIStatus === 'connected' ? 'text-green-500' : 'text-muted-foreground'
+                  <Server className={`w-8 h-8 ${localAIHasRequiredError ? 'text-red-500' : localAIHasOptionalWarning ? 'text-amber-500' : localAIIsActiveConnected ? 'text-green-500' : 'text-muted-foreground'
                     }`} />
                   <div className="text-center">
-                    <div className={`font-semibold ${state.localAIStatus === 'error' ? 'text-red-500' : isLocalAIActive && state.localAIStatus === 'connected' ? 'text-green-500' : 'text-foreground'
+                    <div className={`font-semibold ${localAIHasRequiredError ? 'text-red-500' : localAIHasOptionalWarning ? 'text-amber-500' : localAIIsActiveConnected ? 'text-green-500' : 'text-foreground'
                       }`}>Local AI</div>
                     <div className="text-xs text-muted-foreground">Server</div>
                   </div>
                   <div className="w-full pt-2 mt-2 border-t border-border/50">
                     <div className="flex items-center justify-center text-xs">
-                      {state.localAIStatus === 'unknown' ? (
+                      {localAIHasOptionalWarning ? (
+                        <span className="flex items-center gap-1 text-amber-500">
+                          <AlertTriangle className="w-3 h-3" /> Optional offline
+                        </span>
+                      ) : localAIIsOptionalInactive ? (
+                        <span className="flex items-center gap-1 text-muted-foreground">
+                          <Server className="w-3 h-3" /> Optional
+                        </span>
+                      ) : state.localAIStatus === 'unknown' ? (
                         <span className="flex items-center gap-1 text-muted-foreground">
                           <Loader2 className="w-3 h-3 animate-spin" /> Checking…
                         </span>
