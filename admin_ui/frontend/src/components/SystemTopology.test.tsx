@@ -27,10 +27,35 @@ contexts:
     provider: google_live
 `;
 
-const mockTopologyApis = ({ providerReady = true }: { providerReady?: boolean } = {}) => {
+const localPipelineContextConfigYaml = `
+default_provider: google_live
+providers:
+  google_live:
+    type: google_live
+    enabled: true
+pipelines:
+  local_hybrid:
+    stt: local_stt
+    llm: openai_llm
+    tts: local_tts
+contexts:
+  default:
+    provider: google_live
+    pipeline: local_hybrid
+`;
+
+const mockTopologyApis = ({
+    providerReady = true,
+    configYaml = cloudConfigYaml,
+    localAIModels,
+}: {
+    providerReady?: boolean;
+    configYaml?: string;
+    localAIModels?: unknown;
+} = {}) => {
     vi.mocked(axios.get).mockImplementation((url) => {
         if (url === '/api/config/yaml') {
-            return Promise.resolve({ data: { content: cloudConfigYaml } });
+            return Promise.resolve({ data: { content: configYaml } });
         }
         if (url === '/api/system/sessions') {
             return Promise.resolve({ data: { sessions: [] } });
@@ -49,7 +74,10 @@ const mockTopologyApis = ({ providerReady = true }: { providerReady?: boolean } 
                     },
                     local_ai_server: {
                         status: 'error',
-                        details: { error: 'Local AI server is not running' },
+                        details: {
+                            error: 'Local AI server is not running',
+                            ...(localAIModels === undefined ? {} : { models: localAIModels }),
+                        },
                     },
                 },
             });
@@ -91,6 +119,45 @@ describe('SystemTopology dashboard health', () => {
         expect(screen.queryByText('Issue detected')).not.toBeInTheDocument();
         expect(screen.getByText('Optional Local AI Server is unavailable')).toBeInTheDocument();
         expect(screen.getByText('Optional offline')).toBeInTheDocument();
+    });
+
+    it('hides stale local model counts when optional Local AI is unavailable', async () => {
+        vi.useFakeTimers();
+        mockTopologyApis({
+            localAIModels: {
+                stt: { backend: 'whisper', loaded: true },
+                llm: { loaded: true },
+                tts: { backend: 'piper', loaded: true },
+            },
+        });
+
+        renderTopology();
+        await flushAsyncEffects();
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5000);
+        });
+
+        expect(screen.getByText('Optional Local AI Server is unavailable')).toBeInTheDocument();
+        expect(screen.queryByText(/local models loaded/i)).not.toBeInTheDocument();
+    });
+
+    it('treats contexts.default.pipeline local routes as Local AI requirements', async () => {
+        vi.useFakeTimers();
+        mockTopologyApis({ configYaml: localPipelineContextConfigYaml });
+
+        renderTopology();
+        await flushAsyncEffects();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5000);
+        });
+
+        const issueButton = screen.getByRole('button', { name: /issue detected/i });
+        fireEvent.click(issueButton);
+
+        expect(screen.getByText('Local AI Server is disconnected')).toBeInTheDocument();
+        expect(screen.getByText('The active or default route uses Local AI, but local_ai_server is not connected.')).toBeInTheDocument();
+        expect(screen.queryByText('Optional Local AI Server is unavailable')).not.toBeInTheDocument();
     });
 
     it('opens warning details when optional Local AI is unavailable', async () => {

@@ -31,6 +31,7 @@ export interface TopologyHealthInput {
     providerReady: Record<string, ProviderReadyState>;
     configuredPipelines: TopologyPipelineSummary[];
     defaultProvider: string | null;
+    defaultPipeline: string | null;
     activePipeline: string | null;
     activeProviderNames: string[];
     activePipelineNames: string[];
@@ -58,6 +59,9 @@ const pipelineUsesLocalAI = (pipeline: TopologyPipelineSummary): boolean =>
 const providerIsLocal = (name: string | null | undefined): boolean =>
     (name || '').toLowerCase() === 'local';
 
+const pipelineMatchesRoute = (pipelineName: string, routeName: string): boolean =>
+    pipelineName === routeName || pipelineName.startsWith(`${routeName}_`);
+
 const unique = (values: Array<string | null | undefined>): string[] => {
     const seen = new Set<string>();
     const out: string[] = [];
@@ -71,7 +75,7 @@ const unique = (values: Array<string | null | undefined>): string[] => {
 
 export const deriveLocalAIRequired = (input: Pick<
     TopologyHealthInput,
-    'configuredProviders' | 'configuredPipelines' | 'defaultProvider' | 'activePipeline' | 'activeProviderNames' | 'activePipelineNames'
+    'configuredProviders' | 'configuredPipelines' | 'defaultProvider' | 'defaultPipeline' | 'activePipeline' | 'activeProviderNames' | 'activePipelineNames'
 >): boolean => {
     if (providerIsLocal(input.defaultProvider)) return true;
     if (input.activeProviderNames.some(providerIsLocal)) return true;
@@ -86,6 +90,8 @@ export const deriveLocalAIRequired = (input: Pick<
     const routeNames = unique([
         // Active calls always reflect the actual selected pipeline.
         ...input.activePipelineNames,
+        // contexts.default.pipeline is resolved before the provider route.
+        input.defaultPipeline,
         // default_provider may point at a pipeline in pipeline-first setups.
         defaultTargetIsPipeline ? input.defaultProvider : null,
         // Cloud full-agent presets can keep a legacy active_pipeline configured
@@ -95,7 +101,7 @@ export const deriveLocalAIRequired = (input: Pick<
     ]);
 
     return input.configuredPipelines.some(pipeline =>
-        routeNames.includes(pipeline.name) && pipelineUsesLocalAI(pipeline)
+        routeNames.some(routeName => pipelineMatchesRoute(pipeline.name, routeName)) && pipelineUsesLocalAI(pipeline)
     );
 };
 

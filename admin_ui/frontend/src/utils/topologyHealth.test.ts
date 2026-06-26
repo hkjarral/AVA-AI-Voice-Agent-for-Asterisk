@@ -11,6 +11,7 @@ const baseInput: TopologyHealthInput = {
         { name: 'local_hybrid', stt: 'local_stt', llm: 'openai_llm', tts: 'local_tts' },
     ],
     defaultProvider: 'google_live',
+    defaultPipeline: null,
     activePipeline: null,
     activeProviderNames: [],
     activePipelineNames: [],
@@ -79,6 +80,34 @@ describe('deriveTopologyHealth', () => {
         const result = derive({
             activePipeline: 'local_hybrid',
             defaultProvider: null,
+        });
+
+        expect(result.localAIRequired).toBe(true);
+        expect(result.overallStatus).toBe('issue');
+        expect(result.issues.map(i => i.key)).toContain('local_ai_server');
+    });
+
+    it('requires Local AI when the default context pipeline uses local components', () => {
+        const result = derive({
+            defaultProvider: 'google_live',
+            defaultPipeline: 'local_hybrid',
+            activePipeline: null,
+        });
+
+        expect(result.localAIRequired).toBe(true);
+        expect(result.overallStatus).toBe('issue');
+        expect(result.issues.map(i => i.key)).toContain('local_ai_server');
+        expect(result.warnings).toEqual([]);
+    });
+
+    it('matches base route names to suffixed local pipeline variants', () => {
+        const result = derive({
+            configuredPipelines: [
+                { name: 'local_hybrid_groq', stt: 'local_stt', llm: 'groq_llm', tts: 'local_tts' },
+            ],
+            defaultProvider: 'google_live',
+            defaultPipeline: 'local_hybrid',
+            activePipeline: null,
         });
 
         expect(result.localAIRequired).toBe(true);

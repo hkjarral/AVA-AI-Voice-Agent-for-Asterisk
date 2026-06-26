@@ -62,6 +62,7 @@ interface TopologyState {
   configuredProviders: ProviderConfig[];
   configuredPipelines: PipelineConfig[];
   defaultProvider: string | null;
+  defaultPipeline: string | null;
   activePipeline: string | null;
   activeCalls: Map<string, CallState>;
 }
@@ -110,6 +111,7 @@ export const SystemTopology = () => {
     configuredProviders: [],
     configuredPipelines: [],
     defaultProvider: null,
+    defaultPipeline: null,
     activePipeline: null,
     activeCalls: new Map(),
   });
@@ -345,15 +347,22 @@ export const SystemTopology = () => {
             typeof parsed?.contexts?.default?.provider === 'string'
               ? parsed.contexts.default.provider
               : null;
+          const contextDefaultPipeline =
+            typeof parsed?.contexts?.default?.pipeline === 'string'
+              ? parsed.contexts.default.pipeline
+              : null;
           const legacyDefaultProvider =
             typeof parsed?.default_provider === 'string' ? parsed.default_provider : null;
+          const legacyActivePipeline =
+            typeof parsed?.active_pipeline === 'string' ? parsed.active_pipeline : null;
           return {
             ...prev,
             configuredProviders: mergedProviders,
             configuredPipelines: pipelines,
             // Prefer contexts.default.provider (actual routing), fall back to legacy root default_provider.
             defaultProvider: contextDefaultProvider || legacyDefaultProvider,
-            activePipeline: parsed?.active_pipeline || null,
+            defaultPipeline: contextDefaultPipeline,
+            activePipeline: legacyActivePipeline,
           };
         });
         setLoading(false);
@@ -543,6 +552,7 @@ export const SystemTopology = () => {
     providerReady: state.providerReady,
     configuredPipelines: state.configuredPipelines,
     defaultProvider: state.defaultProvider,
+    defaultPipeline: state.defaultPipeline,
     activePipeline: state.activePipeline,
     activeProviderNames: Array.from(activeProviders.keys()),
     activePipelineNames: Array.from(activePipelines.keys()),
@@ -554,6 +564,7 @@ export const SystemTopology = () => {
     state.providerReady,
     state.configuredPipelines,
     state.defaultProvider,
+    state.defaultPipeline,
     state.activePipeline,
     activeProviders,
     activePipelines,
@@ -722,7 +733,7 @@ export const SystemTopology = () => {
                   /{totalProviders} providers ready
                 </span>
               </div>
-              {(topologyHealth.localAIRelevant || totalModels > 0) && (
+              {(topologyHealth.localAIRelevant || totalModels > 0) && !topologyHealth.localAIOptionalUnavailable && (
                 <div className="flex items-center gap-1.5 text-muted-foreground">
                   <Server className="w-3.5 h-3.5" />
                   <span>
@@ -1131,13 +1142,15 @@ export const SystemTopology = () => {
                 {state.configuredPipelines.map(pipeline => {
                   const activeCount = activePipelines.get(pipeline.name) || 0;
                   const isActive = activeCount > 0;
-                  // Check both activePipeline and defaultProvider since default_provider can be a pipeline name.
+                  // Check active/default pipeline routes and defaultProvider since default_provider can be a pipeline name.
                   // AAVA-185: Also match pipeline variants (e.g. pipeline card "local_hybrid_groq"
                   // matches defaultProvider "local_hybrid"). Only forward direction — avoid marking
                   // the base pipeline card as default when a variant is the actual default.
                   const isDefault = pipeline.name === state.activePipeline
+                    || pipeline.name === state.defaultPipeline
                     || pipeline.name === state.defaultProvider
                     || (state.activePipeline && pipeline.name.startsWith(state.activePipeline + '_'))
+                    || (state.defaultPipeline && pipeline.name.startsWith(state.defaultPipeline + '_'))
                     || (state.defaultProvider && pipeline.name.startsWith(state.defaultProvider + '_'));
                   return (
                     <div key={pipeline.name} onClick={() => navigate('/pipelines')} title={`Configure ${pipeline.name.replace(/_/g, ' ')} →`} className="flex flex-col cursor-pointer hover:opacity-80">
