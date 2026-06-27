@@ -15163,7 +15163,11 @@ class Engine:
 
     async def _config_state_handler(self, request):
         """Report whether the on-disk config differs from the running config."""
-        return web.json_response(self._compute_config_state())
+        # _compute_config_state() calls load_config() (file I/O + YAML parse +
+        # Pydantic validation); offload it so the health-server event loop is
+        # never blocked.
+        state = await asyncio.to_thread(self._compute_config_state)
+        return web.json_response(state)
 
     async def _metrics_handler(self, request):
         """Expose Prometheus metrics."""
