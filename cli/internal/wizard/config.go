@@ -126,6 +126,7 @@ func (c *Config) SetKey(envVar, value string) {
 func (c *Config) RequiredEnvKeys() []string {
 	seen := map[string]bool{}
 
+	// Collect keys from the pipeline's component adapters (if set).
 	if c.ActivePipeline != "" {
 		if comps, ok := c.Pipelines[c.ActivePipeline]; ok {
 			for _, adapter := range []string{comps.STT, comps.LLM, comps.TTS} {
@@ -134,7 +135,11 @@ func (c *Config) RequiredEnvKeys() []string {
 				}
 			}
 		}
-	} else if c.DefaultProvider != "" {
+	}
+	// Collect keys from the full-agent provider independently — configs such as
+	// ai-agent.golden-google-live.yaml set BOTH active_pipeline AND
+	// default_provider, so we must union both sources rather than else-if.
+	if c.DefaultProvider != "" {
 		if envVar, mapped := providerEnvKey[c.DefaultProvider]; mapped {
 			seen[envVar] = true
 		}
@@ -206,7 +211,7 @@ func (c *Config) loadAvailableTargets() {
 	if c.Pipelines == nil {
 		c.Pipelines = make(map[string]PipelineComponents)
 	}
-	for _, path := range paths {
+	for i, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -222,8 +227,26 @@ func (c *Config) loadAvailableTargets() {
 				stt, _ := entry["stt"].(string)
 				llm, _ := entry["llm"].(string)
 				tts, _ := entry["tts"].(string)
-				// Local overrides win: later paths overwrite earlier ones.
-				c.Pipelines[name] = PipelineComponents{STT: stt, LLM: llm, TTS: tts}
+				if i == 0 {
+					// Base file: whole-assignment is correct — nothing to preserve yet.
+					c.Pipelines[name] = PipelineComponents{STT: stt, LLM: llm, TTS: tts}
+				} else {
+					// Local override file: merge field-by-field so that a partial
+					// override (e.g. only tts) preserves the base values for the
+					// fields the local file omits. A pipeline that exists only in
+					// the local file is still added in full.
+					existing := c.Pipelines[name]
+					if stt != "" {
+						existing.STT = stt
+					}
+					if llm != "" {
+						existing.LLM = llm
+					}
+					if tts != "" {
+						existing.TTS = tts
+					}
+					c.Pipelines[name] = existing
+				}
 			}
 		}
 		if block, ok := root["providers"].(map[string]interface{}); ok {

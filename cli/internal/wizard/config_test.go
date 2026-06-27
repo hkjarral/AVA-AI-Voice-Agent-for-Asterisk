@@ -194,6 +194,71 @@ providers:
 	})
 }
 
+// TestPartialLocalOverrideMergesPipelineComponents verifies that a local YAML
+// that overrides only PART of a pipeline (e.g. only tts) preserves the base
+// config's other components (stt, llm) rather than clobbering them with "".
+// This is Bug 1 from issue #438.
+func TestPartialLocalOverrideMergesPipelineComponents(t *testing.T) {
+	base := `active_pipeline: p
+pipelines:
+  p: {stt: local_stt, llm: openai_llm, tts: local_tts}
+providers: {}
+`
+	// Local override changes only tts; stt and llm are absent from this block.
+	local := `pipelines:
+  p: {tts: elevenlabs_tts}
+`
+	withTempProject(t, base, local, func() {
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		comps, ok := cfg.Pipelines["p"]
+		if !ok {
+			t.Fatal("Pipelines[\"p\"] not populated")
+		}
+		// stt and llm must be preserved from the base; only tts should be updated.
+		if comps.STT != "local_stt" {
+			t.Errorf("STT = %q, want %q (base value must be preserved)", comps.STT, "local_stt")
+		}
+		if comps.LLM != "openai_llm" {
+			t.Errorf("LLM = %q, want %q (base value must be preserved)", comps.LLM, "openai_llm")
+		}
+		if comps.TTS != "elevenlabs_tts" {
+			t.Errorf("TTS = %q, want %q (local override must win)", comps.TTS, "elevenlabs_tts")
+		}
+		// RequiredEnvKeys must include OPENAI_API_KEY (from openai_llm, preserved)
+		// and ELEVENLABS_API_KEY (from the local tts override).
+		keys := cfg.RequiredEnvKeys()
+		wantKeys := []string{"ELEVENLABS_API_KEY", "OPENAI_API_KEY"}
+		if !reflect.DeepEqual(keys, wantKeys) {
+			t.Errorf("RequiredEnvKeys() = %v, want %v", keys, wantKeys)
+		}
+	})
+}
+
+// TestRequiredEnvKeysBothPipelineAndProvider verifies that when both
+// ActivePipeline and DefaultProvider are set (as in golden configs like
+// ai-agent.golden-google-live.yaml), RequiredEnvKeys returns keys from BOTH
+// sources (union, not else-if). This is Bug 2 from issue #438.
+func TestRequiredEnvKeysBothPipelineAndProvider(t *testing.T) {
+	cfg := &Config{
+		ActivePipeline:  "my_pipeline",
+		DefaultProvider: "google_live",
+		Pipelines: map[string]PipelineComponents{
+			"my_pipeline": {STT: "local_stt", LLM: "openai_llm", TTS: "local_tts"},
+		},
+		Keys: make(map[string]string),
+	}
+	got := cfg.RequiredEnvKeys()
+	// Must include OPENAI_API_KEY (from pipeline's openai_llm) AND
+	// GOOGLE_API_KEY (from the google_live full-agent provider).
+	wantKeys := []string{"GOOGLE_API_KEY", "OPENAI_API_KEY"}
+	if !reflect.DeepEqual(got, wantKeys) {
+		t.Errorf("RequiredEnvKeys() = %v, want %v (both pipeline and provider keys expected)", got, wantKeys)
+	}
+}
+
 func TestSaveYAMLClearsActivePipelineForFullAgent(t *testing.T) {
 	base := "active_pipeline: local_hybrid\ndefault_provider: local_hybrid\nproviders: {}\npipelines: {}\n"
 	local := "active_pipeline: local_hybrid\ndefault_provider: local_hybrid\n"
