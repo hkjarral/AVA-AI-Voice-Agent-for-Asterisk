@@ -48,6 +48,8 @@ describe('useDonationReminder', () => {
     act(() => result.current.onDonate());
     const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
     expect(snooze).toBeLessThan(Date.now() + 8 * DAY);
+    expect(snooze).toBeGreaterThan(Date.now() + 6 * DAY);
+    expect(result.current.show).toBe(false);
   });
 
   it('I already donated snoozes ~3 months', async () => {

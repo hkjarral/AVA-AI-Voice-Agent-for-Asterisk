@@ -16,12 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reserved names and invalid tool shapes, and are covered by the Admin backend
   CI suite.
 - **In-product donation support (Ko-fi / GitHub Sponsors)** (`admin_ui/frontend`): a
-  persistent "Support on Ko-fi" / "Sponsor" link in the sidebar Support group, plus an
-  earned, dismissible reminder banner on the Dashboard that appears on call-count
-  milestones (10/25/50/100/200/500/1000, then every +1000) or after 30 days, with
-  "Maybe later" (30-day snooze) / "Don't show again" (permanent). Local links only — no
+  persistent "Support on Ko-fi" / "Sponsor" link in the sidebar Support group, plus a
+  gentle, dismissible reminder banner on the Dashboard. The banner first appears once the
+  install has handled a call (or after 3 days), then on a weekly cadence; its buttons are
+  "Support on Ko-fi" / "Sponsor" (snooze 1 week), "I already donated" (snooze 3 months),
+  "Maybe later" (1 week), and "Don't show again" (permanent). Local links only — no
   embedded third-party script, no analytics, and no Ko-fi/GitHub network traffic unless
-  the operator clicks. Dismissal state is per-browser (localStorage/sessionStorage).
+  the operator clicks. Dismissal/snooze state is per-browser (localStorage/sessionStorage).
   Eligibility logic, the hook's storage effects, and the banner are unit-tested (Vitest).
 
 ### Fixed
