@@ -27,7 +27,7 @@ import time
 import struct
 import audioop
 import re
-from typing import Any, Dict, Optional, List, Tuple
+from typing import AbstractSet, Any, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
@@ -97,7 +97,7 @@ VALID_EOS_SENSITIVITY = {"END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW", "END_SEN
 VALID_SOS_SENSITIVITY = {"START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW", "START_SENSITIVITY_UNSPECIFIED"}
 
 
-def coerce_vad_sensitivity(value: str, valid: set, default: str) -> str:
+def coerce_vad_sensitivity(value: Optional[str], valid: AbstractSet[str], default: str) -> str:
     """Return value if it is an API-accepted sensitivity, else the safe default.
     Google Live rejects unknown values (e.g. *_MEDIUM) with WS close 1007."""
     return value if value in valid else default
