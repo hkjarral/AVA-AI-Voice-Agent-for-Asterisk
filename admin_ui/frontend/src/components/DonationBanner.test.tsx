@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
-import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom/vitest';
 import DonationBanner from './DonationBanner';
 import { KOFI_URL, SPONSORS_URL } from '../config/donation';
 
-const handlers = () => ({ onLater: vi.fn(), onDismiss: vi.fn(), onDonate: vi.fn(), onAlreadyDonated: vi.fn() });
+const handlers = () => ({
+  onLater: vi.fn(),
+  onDismiss: vi.fn(),
+  onDonate: vi.fn(),
+  onAlreadyDonated: vi.fn(),
+  onKeepReminders: vi.fn(),
+});
 
 describe('DonationBanner', () => {
   it('renders the call count when provided', () => {
@@ -35,25 +41,51 @@ describe('DonationBanner', () => {
     );
   });
 
-  it('fires the callbacks', async () => {
+  it('both donate links call onDonate', async () => {
     const h = handlers();
     render(<DonationBanner callCount={10} {...h} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Maybe later' }));
-    expect(h.onLater).toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: "Don't show again" }));
-    expect(h.onDismiss).toHaveBeenCalled();
     await user.click(screen.getByRole('link', { name: 'Support AVA on Ko-fi' }));
-    expect(h.onDonate).toHaveBeenCalled();
     await user.click(screen.getByRole('link', { name: 'Sponsor AVA on GitHub' }));
     expect(h.onDonate).toHaveBeenCalledTimes(2);
   });
 
-  it('fires onAlreadyDonated', async () => {
+  it('fires onAlreadyDonated and onLater', async () => {
     const h = handlers();
     render(<DonationBanner callCount={10} {...h} />);
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'I already donated' }));
     expect(h.onAlreadyDonated).toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Maybe later' }));
+    expect(h.onLater).toHaveBeenCalled();
+  });
+
+  it("Don't show again opens a confirm instead of dismissing immediately", async () => {
+    const h = handlers();
+    render(<DonationBanner callCount={10} {...h} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: "Don't show again" }));
+    expect(h.onDismiss).not.toHaveBeenCalled();
+    expect(screen.getByText(/Really\?/)).toBeInTheDocument();
+  });
+
+  it('confirm Yes, hide for good calls onDismiss', async () => {
+    const h = handlers();
+    render(<DonationBanner callCount={10} {...h} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: "Don't show again" }));
+    await user.click(screen.getByRole('button', { name: 'Yes, hide for good' }));
+    expect(h.onDismiss).toHaveBeenCalled();
+    expect(h.onKeepReminders).not.toHaveBeenCalled();
+  });
+
+  it('confirm Keep reminders calls onKeepReminders, not onDismiss', async () => {
+    const h = handlers();
+    render(<DonationBanner callCount={10} {...h} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: "Don't show again" }));
+    await user.click(screen.getByRole('button', { name: 'Keep reminders' }));
+    expect(h.onKeepReminders).toHaveBeenCalled();
+    expect(h.onDismiss).not.toHaveBeenCalled();
   });
 });

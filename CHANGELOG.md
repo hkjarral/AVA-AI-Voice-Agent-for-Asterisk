@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gentle, dismissible reminder banner on the Dashboard. The banner first appears once the
   install has handled a call (or after 3 days), then on a weekly cadence; its buttons are
   "Support on Ko-fi" / "Sponsor" (snooze 1 week), "I already donated" (snooze 3 months),
-  "Maybe later" (1 week), and "Don't show again" (permanent). Local links only — no
+  "Maybe later" (1 week), and "Don't show again" (a quick "really?" confirm → keep reminders for ~1 month, or hide permanently). Local links only — no
   embedded third-party script, no analytics, and no Ko-fi/GitHub network traffic unless
   the operator clicks. Dismissal/snooze state is per-browser (localStorage/sessionStorage).
   Eligibility logic, the hook's storage effects, and the banner are unit-tested (Vitest).

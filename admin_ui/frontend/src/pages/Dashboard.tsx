@@ -274,6 +274,7 @@ const Dashboard = () => {
                     onDismiss={donation.onDismiss}
                     onDonate={donation.onDonate}
                     onAlreadyDonated={donation.onAlreadyDonated}
+                    onKeepReminders={donation.onKeepReminders}
                 />
             )}
 

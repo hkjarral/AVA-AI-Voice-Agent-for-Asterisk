@@ -76,4 +76,14 @@ describe('useDonationReminder', () => {
     await waitFor(() => expect(result.current.show).toBe(true));
     expect(result.current.callCount).toBeUndefined();
   });
+
+  it('Keep reminders snoozes ~1 month', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 5 } });
+    const { result } = renderHook(() => useDonationReminder());
+    await waitFor(() => expect(result.current.show).toBe(true));
+    act(() => result.current.onKeepReminders());
+    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
+    expect(snooze).toBeGreaterThan(Date.now() + 25 * DAY);
+    expect(snooze).toBeLessThan(Date.now() + 35 * DAY);
+  });
 });

@@ -9,6 +9,8 @@ export const FIRST_SHOW_DELAY_MS = 3 * DAY_MS;
 export const SNOOZE_LATER_MS = 7 * DAY_MS;
 // "I already donated" — a generous 3-month break for someone who gave.
 export const SNOOZE_DONATED_MS = 90 * DAY_MS;
+// "Keep reminders" (the soft path on the dismiss confirm) — snooze ~1 month.
+export const SNOOZE_MONTH_MS = 30 * DAY_MS;
 
 export const STORAGE_KEYS = {
   firstSeenAt: 'aava.donation.firstSeenAt',

@@ -5,6 +5,7 @@ import {
   SESSION_KEY,
   SNOOZE_LATER_MS,
   SNOOZE_DONATED_MS,
+  SNOOZE_MONTH_MS,
 } from '../config/donation';
 import { ReminderState, isEligible } from '../utils/donationReminder';
 
@@ -15,6 +16,7 @@ export interface UseDonationReminder {
   onDismiss: () => void;
   onDonate: () => void;
   onAlreadyDonated: () => void;
+  onKeepReminders: () => void;
 }
 
 /** Reads all state; returns null if storage is unavailable (fail closed). */
@@ -96,6 +98,7 @@ export function useDonationReminder(): UseDonationReminder {
     onLater: () => snooze(SNOOZE_LATER_MS),
     onDonate: () => snooze(SNOOZE_LATER_MS),
     onAlreadyDonated: () => snooze(SNOOZE_DONATED_MS),
+    onKeepReminders: () => snooze(SNOOZE_MONTH_MS),
     onDismiss: () => {
       try {
         localStorage.setItem(STORAGE_KEYS.dismissedForever, 'true');
