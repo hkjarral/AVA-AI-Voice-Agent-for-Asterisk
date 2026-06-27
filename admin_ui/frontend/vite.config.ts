@@ -11,6 +11,9 @@ export default defineConfig({
     // cleanup (so portal-rendered dialogs don't leak across component tests).
     test: {
         globals: true,
+        // Node 25+ stubs global.localStorage without .clear(); patch it with
+        // the real jsdom Storage in all jsdom-environment tests.
+        setupFiles: ['./src/setupTests.ts'],
     },
     css: {
         postcss: {
