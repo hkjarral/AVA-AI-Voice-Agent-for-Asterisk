@@ -259,7 +259,11 @@ const Dashboard = () => {
     }, [liveStatus.snapshot]);
 
     useEffect(() => {
-        if (liveStatus.snapshot) return;
+        const components = liveStatus.snapshot?.components || {};
+        const hasProbeHydration = ['metrics', 'directories', 'platform', 'asterisk'].every(
+            name => components[name]
+        );
+        if (hasProbeHydration) return;
         if (liveStatus.loading && !liveStatus.error) return;
 
         fetchData();
@@ -524,7 +528,10 @@ const Dashboard = () => {
             </div>
 
             {/* Live System Topology */}
-            <SystemTopology liveStatusEnabled liveStatusSnapshot={liveStatus.snapshot} />
+            <SystemTopology
+                liveStatusEnabled={Boolean(liveStatus.snapshot) && !liveStatus.error}
+                liveStatusSnapshot={liveStatus.snapshot}
+            />
         </div>
     );
 };

@@ -243,6 +243,9 @@ const ModelsPage = () => {
             hydrateLocalAIStatus(component.details || {}, component.state === 'ready' ? 'connected' : 'degraded');
             return true;
         }
+        if (component.state !== 'error' && component.state !== 'unreachable') {
+            return false;
+        }
         setServerStatus('error');
         setRuntimeGpu(null);
         setRuntimeMode(null);
@@ -334,8 +337,11 @@ const ModelsPage = () => {
 
     useEffect(() => {
         const localAI = liveStatus.snapshot?.components?.local_ai_server || liveStatus.snapshot?.local_ai_server;
-        applyLocalAILiveStatus(localAI);
+        if (!applyLocalAILiveStatus(localAI) && !liveStatus.loading) {
+            fetchActiveModels();
+        }
     }, [
+        liveStatus.loading,
         liveStatus.snapshot?.event_id,
         liveStatus.snapshot?.components?.local_ai_server?.updated_at,
         liveStatus.snapshot?.local_ai_server?.updated_at,

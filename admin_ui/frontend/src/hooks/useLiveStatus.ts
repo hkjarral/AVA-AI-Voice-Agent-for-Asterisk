@@ -120,18 +120,50 @@ export const useLiveStatus = (pollIntervalMs = 5000): LiveStatusState => {
             pollTimer = setTimeout(pollOnce, pollIntervalMs);
         };
 
+        const openStream = async () => {
+            const stream = await fetch(STREAM_URL, {
+                headers: authHeaders(token),
+                signal: controller.signal,
+            });
+            if (!stream.ok || !stream.body) {
+                throw new Error(`live-status stream failed: HTTP ${stream.status}`);
+            }
+
+            setMode('stream');
+            setConnected(true);
+            const reader = stream.body.getReader();
+            streamReader = reader;
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (!stopped) {
+                const { value, done } = await reader.read();
+                if (done) {
+                    throw new Error('live-status stream closed');
+                }
+                buffer += decoder.decode(value, { stream: true });
+                const parsed = parseSseMessages(buffer);
+                buffer = parsed.rest;
+                for (const message of parsed.messages) {
+                    if (message.event !== 'snapshot') continue;
+                    applySnapshot(JSON.parse(message.data));
+                }
+            }
+        };
+
         const pollOnce = async () => {
             if (stopped) return;
             setMode('poll');
             setConnected(false);
             try {
                 applySnapshot(await fetchSnapshot(controller.signal));
+                await openStream();
             } catch (err: any) {
+                if (controller.signal.aborted || stopped) return;
                 if (!controller.signal.aborted) {
                     setError(err?.message || 'live-status snapshot failed');
                     setLoading(false);
                 }
-            } finally {
                 schedulePoll();
             }
         };
@@ -139,34 +171,7 @@ export const useLiveStatus = (pollIntervalMs = 5000): LiveStatusState => {
         const start = async () => {
             try {
                 applySnapshot(await fetchSnapshot(controller.signal));
-                const stream = await fetch(STREAM_URL, {
-                    headers: authHeaders(token),
-                    signal: controller.signal,
-                });
-                if (!stream.ok || !stream.body) {
-                    throw new Error(`live-status stream failed: HTTP ${stream.status}`);
-                }
-
-                setMode('stream');
-                setConnected(true);
-                const reader = stream.body.getReader();
-                streamReader = reader;
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (!stopped) {
-                    const { value, done } = await reader.read();
-                    if (done) {
-                        throw new Error('live-status stream closed');
-                    }
-                    buffer += decoder.decode(value, { stream: true });
-                    const parsed = parseSseMessages(buffer);
-                    buffer = parsed.rest;
-                    for (const message of parsed.messages) {
-                        if (message.event !== 'snapshot') continue;
-                        applySnapshot(JSON.parse(message.data));
-                    }
-                }
+                await openStream();
             } catch (err: any) {
                 if (controller.signal.aborted || stopped) return;
                 setError(err?.message || 'live-status stream failed');

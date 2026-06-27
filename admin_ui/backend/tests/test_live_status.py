@@ -92,6 +92,23 @@ def test_normalize_probe_results_keeps_degraded_dimensions_separate():
     assert components["sessions"]["state"] == "ready"
 
 
+def test_local_ai_config_degraded_marks_component_degraded():
+    results = _sample_results()
+    local_config = results["health"]["local_ai_server"]["details"]["config"]
+    local_config["degraded"] = True
+    local_config["startup_errors"] = {}
+    results["health"]["local_ai_server"]["details"]["models"] = {
+        "stt": {"loaded": True},
+        "llm": {"loaded": True},
+        "tts": {"loaded": True},
+    }
+
+    components = live_status.normalize_probe_results(results)
+
+    assert components["local_ai_server"]["state"] == "degraded"
+    assert components["local_ai_server"]["details"]["degraded"] is True
+
+
 def test_platform_failed_checks_are_error_not_unreachable():
     results = _sample_results()
     results["platform"] = {
@@ -233,6 +250,7 @@ def test_live_status_endpoint_returns_snapshot(monkeypatch):
     hub = StatusHub()
     monkeypatch.setattr(live_status, "status_hub", hub)
     monkeypatch.setattr(live_status, "probe_live_status", fake_probe)
+    monkeypatch.setattr(live_status, "_ensure_probe_loop", lambda: None)
 
     app = FastAPI()
     app.include_router(live_status.router, prefix="/api/system")
@@ -246,16 +264,21 @@ def test_live_status_endpoint_returns_snapshot(monkeypatch):
     ]
 
 
-def test_live_status_endpoint_returns_existing_snapshot_without_probe(monkeypatch):
+def test_live_status_endpoint_returns_fully_hydrated_snapshot_without_probe(monkeypatch):
     async def forbidden_probe():
-        raise AssertionError("probe should not run when the hub already has data")
+        raise AssertionError("probe should not run when the hub already has probe-owned data")
 
     hub = StatusHub()
     asyncio.run(hub.upsert_components({
-        "ai_engine": component(state="ready", summary="AI Engine pushed", source="push")
+        "ai_engine": component(state="ready", summary="AI Engine pushed", source="push"),
+        "directories": component(state="ready", summary="directories ok", source="probe"),
+        "platform": component(state="ready", summary="platform ok", source="probe"),
+        "asterisk": component(state="ready", summary="asterisk ok", source="probe"),
+        "metrics": component(state="ready", summary="metrics ok", source="probe"),
     }))
     monkeypatch.setattr(live_status, "status_hub", hub)
     monkeypatch.setattr(live_status, "probe_live_status", forbidden_probe)
+    monkeypatch.setattr(live_status, "_ensure_probe_loop", lambda: None)
 
     app = FastAPI()
     app.include_router(live_status.router, prefix="/api/system")
@@ -267,9 +290,33 @@ def test_live_status_endpoint_returns_existing_snapshot_without_probe(monkeypatc
     assert body["components"]["ai_engine"]["source"] == "push"
 
 
+def test_live_status_endpoint_enriches_incomplete_push_snapshot(monkeypatch):
+    async def fake_probe():
+        return _sample_results()
+
+    hub = StatusHub()
+    asyncio.run(hub.upsert_components({
+        "ai_engine": component(state="ready", summary="AI Engine pushed", source="push")
+    }))
+    monkeypatch.setattr(live_status, "status_hub", hub)
+    monkeypatch.setattr(live_status, "probe_live_status", fake_probe)
+    monkeypatch.setattr(live_status, "_ensure_probe_loop", lambda: None)
+
+    app = FastAPI()
+    app.include_router(live_status.router, prefix="/api/system")
+    response = TestClient(app).get("/api/system/live-status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["components"]["ai_engine"]["summary"] == "AI Engine pushed"
+    assert body["components"]["directories"]["state"] == "error"
+    assert body["components"]["metrics"]["metrics"]["cpu"]["percent"] == 1.0
+
+
 def test_live_status_publish_requires_service_token(monkeypatch):
     monkeypatch.delenv("LIVE_STATUS_PUSH_TOKEN", raising=False)
     monkeypatch.delenv("HEALTH_API_TOKEN", raising=False)
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
 
     app = FastAPI()
     app.include_router(live_status.publish_router, prefix="/api/system")
@@ -280,6 +327,7 @@ def test_live_status_publish_requires_service_token(monkeypatch):
 
 def test_live_status_publish_upserts_pushed_components(monkeypatch):
     monkeypatch.setenv("LIVE_STATUS_PUSH_TOKEN", "push-secret")
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
     hub = StatusHub()
     monkeypatch.setattr(live_status, "status_hub", hub)
 
@@ -316,6 +364,7 @@ def test_live_status_publish_upserts_pushed_components(monkeypatch):
 
 def test_live_status_publish_rejects_unsupported_component(monkeypatch):
     monkeypatch.setenv("LIVE_STATUS_PUSH_TOKEN", "push-secret")
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
 
     app = FastAPI()
     app.include_router(live_status.publish_router, prefix="/api/system")
@@ -330,6 +379,25 @@ def test_live_status_publish_rejects_unsupported_component(monkeypatch):
     )
 
     assert response.status_code == 400
+
+
+def test_live_status_publish_token_prefers_dotenv_over_stale_process_env(monkeypatch):
+    monkeypatch.setenv("LIVE_STATUS_PUSH_TOKEN", "old-process-secret")
+    monkeypatch.setattr(
+        live_status.system_api,
+        "_dotenv_value",
+        lambda key: "new-dotenv-secret" if key == "LIVE_STATUS_PUSH_TOKEN" else None,
+    )
+
+    app = FastAPI()
+    app.include_router(live_status.publish_router, prefix="/api/system")
+    response = TestClient(app).post(
+        "/api/system/live-status/publish",
+        headers={"Authorization": "Bearer new-dotenv-secret"},
+        json={"components": {"ai_engine": {"state": "ready", "summary": "ok"}}},
+    )
+
+    assert response.status_code == 200
 
 
 def test_encode_sse_formats_snapshot_event():

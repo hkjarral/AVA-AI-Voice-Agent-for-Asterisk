@@ -1237,7 +1237,7 @@ class LocalAIServer:
                 self.live_status_publisher.publish_loop(self._build_live_status_components),
                 name="local-ai-live-status-publish-loop",
             )
-            self._live_status_task.add_done_callback(self._log_live_status_task_exception)
+            self._live_status_task.add_done_callback(self._on_live_status_task_done)
 
     def _publish_live_status_now(self) -> None:
         self.live_status_publisher.publish_now(
@@ -1245,11 +1245,16 @@ class LocalAIServer:
             name="local-ai-live-status-publish",
         )
 
-    @staticmethod
-    def _log_live_status_task_exception(task: asyncio.Task) -> None:
+    def _on_live_status_task_done(self, task: asyncio.Task) -> None:
+        if self._live_status_task is task:
+            self._live_status_task = None
         if task.cancelled():
             return
-        exc = task.exception()
+        try:
+            exc = task.exception()
+        except Exception:
+            logging.debug("Local AI live-status publisher failed while finishing", exc_info=True)
+            return
         if exc:
             logging.debug("Local AI live-status publisher failed: %s", exc, exc_info=True)
 

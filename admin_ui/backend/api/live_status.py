@@ -26,6 +26,7 @@ publish_router = APIRouter()
 status_hub = StatusHub()
 _probe_task: asyncio.Task | None = None
 _PUSH_COMPONENTS = {"ai_engine", "local_ai_server", "sessions"}
+_PROBE_COMPONENTS = {"directories", "platform", "asterisk", "metrics"}
 
 
 def _state_from_bool(ok: bool | None, *, degraded: bool = False) -> str:
@@ -45,7 +46,18 @@ def _exception_component(name: str, exc: BaseException) -> dict:
 
 
 def _push_token() -> str:
-    return (os.getenv("LIVE_STATUS_PUSH_TOKEN") or os.getenv("HEALTH_API_TOKEN") or "").strip()
+    return (
+        system_api._dotenv_value("LIVE_STATUS_PUSH_TOKEN")
+        or system_api._dotenv_value("HEALTH_API_TOKEN")
+        or os.getenv("LIVE_STATUS_PUSH_TOKEN")
+        or os.getenv("HEALTH_API_TOKEN")
+        or ""
+    ).strip()
+
+
+def _has_probe_components(snapshot: dict) -> bool:
+    components = snapshot.get("components") or {}
+    return _PROBE_COMPONENTS.issubset(components.keys())
 
 
 def _require_push_auth(authorization: str | None) -> None:
@@ -134,11 +146,16 @@ def normalize_probe_results(results: Dict[str, Any]) -> Dict[str, dict]:
         local = health.get("local_ai_server") or {}
         local_details = local.get("details") or {}
         local_connected = local.get("status") == "connected"
-        startup_errors = (local_details.get("config") or {}).get("startup_errors") or {}
+        local_config = local_details.get("config") or {}
+        startup_errors = local_config.get("startup_errors") or {}
         models = local_details.get("models") or {}
         model_count = sum(1 for value in models.values() if isinstance(value, dict))
         loaded_count = sum(1 for value in models.values() if isinstance(value, dict) and value.get("loaded") is True)
-        local_degraded = bool(startup_errors) or (model_count > 0 and loaded_count < model_count)
+        local_degraded = (
+            bool(local_config.get("degraded"))
+            or bool(startup_errors)
+            or (model_count > 0 and loaded_count < model_count)
+        )
         local_warnings = []
         if local.get("warning"):
             local_warnings.append(local["warning"])
@@ -152,8 +169,8 @@ def normalize_probe_results(results: Dict[str, Any]) -> Dict[str, dict]:
             ),
             details={
                 "models": models,
-                "runtime_mode": (local_details.get("config") or {}).get("runtime_mode"),
-                "degraded": (local_details.get("config") or {}).get("degraded"),
+                "runtime_mode": local_config.get("runtime_mode"),
+                "degraded": local_config.get("degraded"),
                 "gpu": local_details.get("gpu") or {},
                 "probe": local.get("probe") or {},
             },
@@ -327,8 +344,9 @@ def encode_sse(event: str, data: dict, event_id: int | None = None) -> str:
 
 @router.get("/live-status")
 async def get_live_status():
+    _ensure_probe_loop()
     snapshot = await status_hub.snapshot()
-    if snapshot.get("components"):
+    if snapshot.get("components") and _has_probe_components(snapshot):
         return snapshot
     try:
         return await asyncio.wait_for(refresh_live_status(), timeout=_initial_probe_timeout_seconds())

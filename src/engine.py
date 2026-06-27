@@ -738,9 +738,10 @@ class Engine:
         except Exception:
             logger.debug("Health server failed to start", exc_info=True)
 
-        if self.live_status_publisher.enabled and not self._live_status_task:
+        live_status_publisher = getattr(self, "live_status_publisher", None)
+        if live_status_publisher and live_status_publisher.enabled and not getattr(self, "_live_status_task", None):
             self._live_status_task = self._fire_and_forget(
-                self.live_status_publisher.publish_loop(self._build_live_status_components),
+                live_status_publisher.publish_loop(self._build_live_status_components),
                 name="live-status-publish-loop",
             )
 
@@ -2283,12 +2284,15 @@ class Engine:
         except Exception:
             logger.debug("Health server cleanup error", exc_info=True)
         try:
-            if self._live_status_task:
-                self._live_status_task.cancel()
+            live_status_task = getattr(self, "_live_status_task", None)
+            if live_status_task:
+                live_status_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await self._live_status_task
+                    await live_status_task
                 self._live_status_task = None
-            await self.live_status_publisher.close()
+            live_status_publisher = getattr(self, "live_status_publisher", None)
+            if live_status_publisher:
+                await live_status_publisher.close()
         except Exception:
             logger.debug("Live-status publisher cleanup error", exc_info=True)
         # Ensure orchestrator releases component assignments before shutdown.

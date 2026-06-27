@@ -48,6 +48,7 @@ describe('parseSseMessages', () => {
 
 describe('useLiveStatus', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -111,6 +112,50 @@ describe('useLiveStatus', () => {
 
     await waitFor(() => expect(result.current.snapshot?.event_id).toBe(2));
     expect(result.current.snapshot?.summary.state).toBe('degraded');
+    expect(result.current.connected).toBe(true);
+    expect(result.current.mode).toBe('stream');
+
+    unmount();
+  });
+
+  it('retries the SSE stream after falling back to polling', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          `id: 3\nevent: snapshot\ndata: ${JSON.stringify(snapshot(3, 'ready'))}\n\n`
+        ));
+      },
+      cancel() {},
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => snapshot(1),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => snapshot(2, 'degraded'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: stream,
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result, unmount } = renderHook(() => useLiveStatus(10));
+
+    await waitFor(() => expect(result.current.snapshot?.event_id).toBe(3));
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/system/live-status',
+      '/api/system/live-status/stream',
+      '/api/system/live-status',
+      '/api/system/live-status/stream',
+    ]);
     expect(result.current.connected).toBe(true);
     expect(result.current.mode).toBe('stream');
 

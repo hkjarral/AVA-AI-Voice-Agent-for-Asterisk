@@ -111,7 +111,7 @@ const mockModelsPageApis = () => {
             });
         }
         if (url === '/api/system/live-status') {
-            return Promise.resolve({ data: liveStatusSnapshot() });
+            return Promise.resolve({ data: liveStatusState.current.snapshot || liveStatusSnapshot() });
         }
         if (url === '/api/system/health') {
             return Promise.resolve({
@@ -142,6 +142,7 @@ const mockModelsPageApis = () => {
 describe('ModelsPage Local AI status', () => {
     afterEach(() => {
         liveStatusState.current.snapshot = null;
+        liveStatusState.current.loading = false;
         vi.clearAllMocks();
     });
 
@@ -162,5 +163,31 @@ describe('ModelsPage Local AI status', () => {
         expect(screen.queryByRole('button', { name: /Start Local AI Server/i })).not.toBeInTheDocument();
         expect(screen.getAllByText('vosk-model-en-us-0.22').length).toBeGreaterThan(0);
         expect(screen.getAllByText('en_US-lessac-medium.onnx').length).toBeGreaterThan(0);
+    });
+
+    it('falls back to legacy health status when pushed Local AI state is unknown', async () => {
+        liveStatusState.current.snapshot = {
+            ...liveStatusSnapshot(),
+            components: {
+                local_ai_server: {
+                    ...localAIComponent,
+                    state: 'unknown',
+                    summary: 'Local AI status pending',
+                },
+            },
+        };
+        mockModelsPageApis();
+
+        render(
+            <MemoryRouter>
+                <ModelsPage />
+            </MemoryRouter>
+        );
+
+        await waitFor(() => {
+            expect(vi.mocked(axios.get)).toHaveBeenCalledWith('/api/system/health');
+        });
+        await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument());
+        expect(screen.getByText(/Local AI Server is not reachable/i)).toBeInTheDocument();
     });
 });
