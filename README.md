@@ -194,7 +194,7 @@ Full notes in [CHANGELOG.md](CHANGELOG.md).
 
 </details>
 
-<details open>
+<details>
 <summary><b>v7.0.0 — the Agents release 🎯</b></summary>
 
 The biggest release yet: **manage your AI agents from the Admin UI, not a config file.**
