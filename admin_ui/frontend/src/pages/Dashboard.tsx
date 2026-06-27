@@ -5,6 +5,8 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { SystemTopology } from '../components/SystemTopology';
 import { ApiErrorInfo, buildDockerAccessHints, describeApiError } from '../utils/apiErrors';
+import DonationBanner from '../components/DonationBanner';
+import { useDonationReminder } from '../hooks/useDonationReminder';
 import {
     INITIAL_CONNECTION_STATE,
     reduceConnection,
@@ -97,6 +99,7 @@ const Dashboard = () => {
     const [platformLoadFailed, setPlatformLoadFailed] = useState(false);
     const [ariConnected, setAriConnected] = useState<boolean | null>(null);
     const navigate = useNavigate();
+    const donation = useDonationReminder();
 
     // Cross-poll hysteresis/debounce streaks. Kept in refs so updating them
     // doesn't trigger renders; the resulting display values land in reactive
@@ -263,6 +266,15 @@ const Dashboard = () => {
                     <RefreshCw className={`w-5 h-5 ${refreshing ? 'animate-spin' : ''}`} />
                 </button>
             </div>
+
+            {donation.show && (
+                <DonationBanner
+                    callCount={donation.callCount}
+                    onLater={donation.onLater}
+                    onDismiss={donation.onDismiss}
+                    onDonate={donation.onDonate}
+                />
+            )}
 
             {dataErrors.length > 0 && (
                 <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-4">
