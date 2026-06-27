@@ -36,7 +36,11 @@ def _coerce_optional_bool(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
-        return bool(value)
+        if value == 0:
+            return False
+        if value == 1:
+            return True
+        return None  # unexpected numeric (e.g. 2, 0.5) → inherit, never force-enable
     if isinstance(value, str):
         v = value.strip().lower()
         if v in ("1", "true", "yes", "on"):

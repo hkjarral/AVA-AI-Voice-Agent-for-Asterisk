@@ -304,3 +304,22 @@ def test_unrecognized_string_coerced_to_none():
         cc = orch.get_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is None
+
+
+def test_unexpected_int_coerced_to_none():
+    """email_enabled: 2 (typo / unexpected numeric) must resolve to None (inherit),
+    not True. Only 0/1 are recognized; never force-enable on a garbage numeric."""
+    orch = _orch_email_string(2)
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is None
+
+
+def test_unexpected_float_coerced_to_none():
+    """email_enabled: 0.5 (unexpected numeric) must resolve to None (inherit)."""
+    orch = _orch_email_string(0.5)
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is None
