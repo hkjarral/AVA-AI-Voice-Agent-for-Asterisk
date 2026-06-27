@@ -14,7 +14,7 @@ interface DonationBannerProps {
 const FOCUS =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring';
 const PRIMARY_BTN = `inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-primary-foreground ${FOCUS}`;
-const OUTLINE_BTN = `inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 ${FOCUS}`;
+const OUTLINE_BTN = `inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-foreground hover:bg-accent transition-colors ${FOCUS}`;
 const SECONDARY_BTN = `inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors ${FOCUS}`;
 const CONTAINER =
   'mb-4 flex flex-col gap-3 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between';
