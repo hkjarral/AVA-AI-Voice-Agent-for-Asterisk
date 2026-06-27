@@ -4919,3 +4919,46 @@ async def asterisk_status():
     await _probe_asterisk_ari(settings, live)
     live.pop("_app_registration_checked", None)  # internal signal — keep out of the response
     return {"mode": mode, "manifest": manifest, "live": live}
+
+
+_CONFIG_STATE_SAFE_FALLBACK = {
+    "running_config_hash": None,
+    "disk_config_hash": None,
+    "restart_required": False,
+    "disk_config_valid": True,
+    "engine_reachable": False,
+}
+
+
+@router.get("/config-state")
+async def get_config_state():
+    """
+    Proxy GET /config/state from the AI Engine health server.
+
+    Returns the engine's config reconciliation state so the Admin UI frontend
+    can show a "restart required" banner without reaching the engine directly.
+
+    On any failure (engine down, timeout, non-200, bad JSON) returns a safe
+    fallback with restart_required=false so the banner never false-alarms when
+    the engine is simply unreachable.
+    """
+    import httpx
+
+    engine_url = os.getenv("AI_ENGINE_HEALTH_URL", "http://localhost:15000")
+    url = engine_url.rstrip("/") + "/config/state"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            logger.warning(
+                "Engine /config/state returned HTTP %s; using safe fallback",
+                resp.status_code,
+            )
+            return _CONFIG_STATE_SAFE_FALLBACK
+        data = resp.json()
+        data["engine_reachable"] = True
+        return data
+    except Exception as exc:
+        logger.debug("Engine /config/state unreachable (%s: %s); using safe fallback", type(exc).__name__, exc)
+        return _CONFIG_STATE_SAFE_FALLBACK
