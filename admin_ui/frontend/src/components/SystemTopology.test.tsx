@@ -233,20 +233,17 @@ describe('SystemTopology dashboard health', () => {
         expect(screen.getByText('All systems healthy')).toBeInTheDocument();
     });
 
-    it('does not start legacy health/session polling while waiting for a live status snapshot', async () => {
+    it('uses legacy health/session polling while waiting for a live status snapshot', async () => {
         vi.useFakeTimers();
-        vi.mocked(axios.get).mockImplementation((url) => {
-            if (url === '/api/config/yaml') {
-                return Promise.resolve({ data: { content: cloudConfigYaml } });
-            }
-            return Promise.reject(new Error(`Unexpected URL: ${url}`));
-        });
+        mockTopologyApis();
 
         renderTopology({ liveStatusEnabled: true, liveStatusSnapshot: null });
         await flushAsyncEffects();
 
         const requestedUrls = vi.mocked(axios.get).mock.calls.map(([url]) => url);
-        expect(requestedUrls).toEqual(['/api/config/yaml']);
+        expect(requestedUrls).toContain('/api/config/yaml');
+        expect(requestedUrls).toContain('/api/system/health');
+        expect(requestedUrls).toContain('/api/system/sessions');
     });
 
     it('shows healthy for cloud Google Live when Local AI is optional and stopped', async () => {
