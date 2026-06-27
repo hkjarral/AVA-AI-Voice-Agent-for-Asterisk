@@ -138,18 +138,18 @@ const Sidebar = () => {
                         target="_blank"
                         rel="noopener noreferrer"
                         aria-label="Support AVA on Ko-fi"
-                        className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                        className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
                     >
-                        <Coffee className="h-4 w-4" aria-hidden="true" /> Support on Ko-fi
+                        <Coffee className="w-4 h-4" aria-hidden="true" /> Support on Ko-fi
                     </a>
                     <a
                         href={SPONSORS_URL}
                         target="_blank"
                         rel="noopener noreferrer"
                         aria-label="Sponsor AVA on GitHub"
-                        className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                        className="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
                     >
-                        <Heart className="h-4 w-4" aria-hidden="true" /> Sponsor
+                        <Heart className="w-4 h-4" aria-hidden="true" /> Sponsor
                     </a>
                 </SidebarGroup>
             </nav>
