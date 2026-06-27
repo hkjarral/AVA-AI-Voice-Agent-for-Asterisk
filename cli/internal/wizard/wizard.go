@@ -240,24 +240,26 @@ func (w *Wizard) stepPipelineSelection() error {
 	return nil
 }
 
-// keySpec describes how to display and optionally validate a specific API key.
+// keySpec describes how to display and optionally validate a credential.
+// Label is the full human label (e.g. "OpenAI API Key", "ElevenLabs Agent ID") —
+// not every required credential is an API key, so the label is spelled out in full.
 type keySpec struct {
-	DisplayName string
-	Validate    func(string) error // nil means store without network validation
+	Label    string
+	Validate func(string) error // nil means store without network validation
 }
 
 // keySpecs maps env-var names to their display/validation specs.
 var keySpecs = map[string]keySpec{
-	"OPENAI_API_KEY":      {DisplayName: "OpenAI", Validate: TestOpenAIKey},
-	"DEEPGRAM_API_KEY":    {DisplayName: "Deepgram", Validate: TestDeepgramKey},
-	"ANTHROPIC_API_KEY":   {DisplayName: "Anthropic", Validate: TestAnthropicKey},
-	"ELEVENLABS_API_KEY":  {DisplayName: "ElevenLabs", Validate: nil},
-	"ELEVENLABS_AGENT_ID": {DisplayName: "ElevenLabs Agent ID", Validate: nil},
-	"TELNYX_API_KEY":      {DisplayName: "Telnyx", Validate: nil},
-	"GROQ_API_KEY":        {DisplayName: "Groq", Validate: nil},
-	"GOOGLE_API_KEY":      {DisplayName: "Google", Validate: nil},
-	"XAI_API_KEY":         {DisplayName: "xAI (Grok)", Validate: nil},
-	"CAMB_API_KEY":        {DisplayName: "Camb.ai", Validate: nil},
+	"OPENAI_API_KEY":      {Label: "OpenAI API Key", Validate: TestOpenAIKey},
+	"DEEPGRAM_API_KEY":    {Label: "Deepgram API Key", Validate: TestDeepgramKey},
+	"ANTHROPIC_API_KEY":   {Label: "Anthropic API Key", Validate: TestAnthropicKey},
+	"ELEVENLABS_API_KEY":  {Label: "ElevenLabs API Key", Validate: nil},
+	"ELEVENLABS_AGENT_ID": {Label: "ElevenLabs Agent ID", Validate: nil},
+	"TELNYX_API_KEY":      {Label: "Telnyx API Key", Validate: nil},
+	"GROQ_API_KEY":        {Label: "Groq API Key", Validate: nil},
+	"GOOGLE_API_KEY":      {Label: "Google API Key", Validate: nil},
+	"XAI_API_KEY":         {Label: "xAI (Grok) API Key", Validate: nil},
+	"CAMB_API_KEY":        {Label: "Camb.ai API Key", Validate: nil},
 }
 
 // stepAPIKeys handles Step 5: API Keys & Validation
@@ -274,28 +276,28 @@ func (w *Wizard) stepAPIKeys() error {
 	for _, envVar := range required {
 		spec, known := keySpecs[envVar]
 		if !known {
-			spec = keySpec{DisplayName: envVar, Validate: nil}
+			spec = keySpec{Label: envVar, Validate: nil}
 		}
 
 		fmt.Println()
-		PrintInfo(fmt.Sprintf("%s API Key: %s", spec.DisplayName, GetMaskedKey(w.config.GetKey(envVar))))
-		newKey := PromptText(spec.DisplayName+" API Key (leave blank to keep)", "")
+		PrintInfo(fmt.Sprintf("%s: %s", spec.Label, GetMaskedKey(w.config.GetKey(envVar))))
+		newKey := PromptText(spec.Label+" (leave blank to keep)", "")
 		if newKey == "" {
 			continue
 		}
 
 		if spec.Validate != nil {
-			PrintInfo(fmt.Sprintf("Testing %s API key...", spec.DisplayName))
+			PrintInfo(fmt.Sprintf("Testing %s...", spec.Label))
 			if err := spec.Validate(newKey); err != nil {
-				PrintError(fmt.Sprintf("%s test failed: %v", spec.DisplayName, err))
+				PrintError(fmt.Sprintf("%s test failed: %v", spec.Label, err))
 				if PromptConfirm("Retry?", true) {
 					return w.stepAPIKeys()
 				}
-				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid %s key required", spec.DisplayName)
+				if !PromptConfirm("Continue with invalid value?", false) {
+					return fmt.Errorf("valid %s required", spec.Label)
 				}
 			} else {
-				PrintSuccess(fmt.Sprintf("%s API key valid", spec.DisplayName))
+				PrintSuccess(fmt.Sprintf("%s valid", spec.Label))
 			}
 		}
 
