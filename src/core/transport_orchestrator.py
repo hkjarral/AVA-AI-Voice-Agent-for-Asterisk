@@ -175,6 +175,11 @@ class TransportOrchestrator:
                         or context_dict.get('disable_global_in_call_http_tools')  # legacy Admin UI key
                     ),
                     disable_global_post_call_tools=context_dict.get('disable_global_post_call_tools'),
+                    # Per-agent post-call email overrides (#437). email_enabled is
+                    # tri-state: absent key stays None (inherit), never coerced.
+                    email_recipient=context_dict.get('email_recipient'),
+                    email_from=context_dict.get('email_from'),
+                    email_enabled=context_dict.get('email_enabled'),
                 )
                 logger.debug("Loaded context mapping", name=name, context=contexts[name])
             except Exception as exc:
