@@ -53,6 +53,9 @@ class ModelManager:
                     self._server._filler_cache.clear()
             logging.info("✅ Runtime-only configuration applied without model reload")
 
+        if not dry_run and not _requires_model_reload(changed) and hasattr(self._server, "_publish_live_status_now"):
+            self._server._publish_live_status_now()
+
         return {
             "type": "switch_response",
             "status": "success",

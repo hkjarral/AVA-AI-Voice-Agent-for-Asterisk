@@ -6,6 +6,7 @@ import yaml from 'js-yaml';
 import { FullscreenPanel } from './ui/FullscreenPanel';
 import { isFullAgentProvider } from '../utils/providerNaming';
 import { deriveTopologyHealth, type TopologyIssue, type TopologyWarning } from '../utils/topologyHealth';
+import type { LiveStatusSnapshot } from '../hooks/useLiveStatus';
 
 interface CallState {
   call_id: string;
@@ -47,6 +48,7 @@ interface LocalAIModels {
 
 interface TopologyState {
   aiEngineStatus: 'connected' | 'error' | 'unknown';
+  aiEngineDegraded: boolean;
   // `null` = haven't checked yet (initial render); `true`/`false` = the most
   // recent confirmed state from /api/system/health. Distinguishing "unknown"
   // from "false" prevents the dashboard from asserting "ARI Disconnected"
@@ -65,6 +67,11 @@ interface TopologyState {
   defaultPipeline: string | null;
   activePipeline: string | null;
   activeCalls: Map<string, CallState>;
+}
+
+interface SystemTopologyProps {
+  liveStatusEnabled?: boolean;
+  liveStatusSnapshot?: LiveStatusSnapshot | null;
 }
 
 /**
@@ -99,9 +106,10 @@ const POLL_BACKOFF_CAP_MS = 30000;
 const nextPollDelay = (base: number, ok: boolean, current: number): number =>
   ok ? base : Math.min(current * 2, POLL_BACKOFF_CAP_MS);
 
-export const SystemTopology = () => {
+export const SystemTopology = ({ liveStatusEnabled = false, liveStatusSnapshot = null }: SystemTopologyProps) => {
   const [state, setState] = useState<TopologyState>({
     aiEngineStatus: 'unknown',
+    aiEngineDegraded: false,
     ariConnected: null,
     asteriskChannels: 0,
     localAIStatus: 'unknown',
@@ -122,6 +130,74 @@ export const SystemTopology = () => {
   // Kept in a ref so updates don't trigger re-renders; the debounced
   // state lands in `state.providerReady` which IS reactive.
   const providerStreaks = useRef<Map<string, number>>(new Map());
+  const useLiveStatusSource = liveStatusEnabled || liveStatusSnapshot != null;
+
+  useEffect(() => {
+    if (!liveStatusSnapshot) return;
+
+    const aiEngine = liveStatusSnapshot.components.ai_engine;
+    const localAI = liveStatusSnapshot.components.local_ai_server;
+    const sessions = liveStatusSnapshot.components.sessions;
+    const asterisk = liveStatusSnapshot.components.asterisk;
+
+    const isConnectedComponent = (component: typeof aiEngine | undefined): boolean =>
+      component?.state === 'ready' || component?.state === 'degraded';
+
+    const toTriState = (success: boolean): 'connected' | 'error' =>
+      success ? 'connected' : 'error';
+
+    const providerHealthData = aiEngine?.details?.providers || {};
+    const sessionRows = Array.isArray(sessions?.details?.sessions)
+      ? sessions.details.sessions
+      : [];
+    const calls = new Map<string, CallState>();
+    for (const session of sessionRows) {
+      if (!session?.call_id) continue;
+      calls.set(session.call_id, {
+        call_id: session.call_id,
+        started_at: session.started_at ? new Date(session.started_at) : new Date(),
+        provider: session.provider,
+        pipeline: session.pipeline,
+        state: session.conversation_state === 'greeting' ? 'arriving' : 'connected',
+      });
+    }
+
+    setState(prev => {
+      const nextProviderReady: Record<string, ProviderReadyState> = { ...prev.providerReady };
+      for (const [name, info] of Object.entries(providerHealthData)) {
+        const isReady = Boolean((info as any)?.ready);
+        const streak = providerStreaks.current.get(name) || 0;
+        const newStreak = isReady ? 0 : streak + 1;
+        providerStreaks.current.set(name, newStreak);
+        nextProviderReady[name] = isReady
+          ? 'ready'
+          : newStreak >= 2
+            ? 'not_ready'
+            : prev.providerReady[name] === 'ready'
+              ? 'ready'
+              : 'unknown';
+      }
+
+      const ariConnected =
+        aiEngine?.details?.ari_connected ??
+        aiEngine?.details?.asterisk?.connected ??
+        asterisk?.details?.live?.ari_reachable ??
+        prev.ariConnected;
+
+      return {
+        ...prev,
+        aiEngineStatus: aiEngine ? toTriState(isConnectedComponent(aiEngine)) : prev.aiEngineStatus,
+        aiEngineDegraded: aiEngine ? aiEngine.state === 'degraded' : prev.aiEngineDegraded,
+        ariConnected: typeof ariConnected === 'boolean' ? ariConnected : prev.ariConnected,
+        asteriskChannels: aiEngine?.details?.asterisk_channels ?? prev.asteriskChannels,
+        localAIStatus: localAI ? toTriState(isConnectedComponent(localAI)) : prev.localAIStatus,
+        localAIModels: localAI?.details?.models ?? prev.localAIModels,
+        providerHealth: providerHealthData,
+        providerReady: nextProviderReady,
+        activeCalls: calls,
+      };
+    });
+  }, [liveStatusSnapshot]);
 
   // Fetch health status with three-state + two-strike debounce per indicator.
   //
@@ -141,6 +217,8 @@ export const SystemTopology = () => {
   //
   // Any positive read clears the streak counter and immediately shows green.
   useEffect(() => {
+    if (useLiveStatusSource) return;
+
     let ariFailStreak = 0;
     let aiEngineFailStreak = 0;
     let localAIFailStreak = 0;
@@ -288,7 +366,7 @@ export const SystemTopology = () => {
       mounted = false;
       clearTimeout(timer);
     };
-  }, []);
+  }, [useLiveStatusSource]);
 
   // Fetch config (providers, pipelines)
   useEffect(() => {
@@ -398,6 +476,8 @@ export const SystemTopology = () => {
 
   // Poll for active calls from sessions API (more reliable than log parsing)
   useEffect(() => {
+    if (useLiveStatusSource) return;
+
     let mounted = true;
     const fetchActiveSessions = async (): Promise<boolean> => {
       try {
@@ -451,7 +531,7 @@ export const SystemTopology = () => {
       mounted = false;
       clearTimeout(timer);
     };
-  }, []);
+  }, [useLiveStatusSource]);
 
   // Derive active providers/pipelines from calls
   const activeProviders = useMemo(() => {
@@ -874,6 +954,8 @@ export const SystemTopology = () => {
             title="Go to AI Engine Settings →"
             className={`self-stretch relative p-4 rounded-xl border backdrop-blur-sm transition-all duration-300 cursor-pointer hover:-translate-y-1 ${state.aiEngineStatus === 'error'
               ? 'border-red-500/50 bg-red-500/10 ring-1 ring-red-500/50'
+              : state.aiEngineDegraded
+                ? 'border-amber-500/50 bg-amber-500/10 ring-1 ring-amber-500/30'
               : hasActiveCalls && state.aiEngineStatus === 'connected'
                 ? 'border-green-500/50 bg-green-500/10 shadow-[0_8px_30px_rgb(34,197,94,0.15)] ring-1 ring-green-500/50'
                 : 'border-border/60 bg-card/60 hover:bg-card/80 hover:border-primary/40 shadow-sm'
@@ -882,10 +964,10 @@ export const SystemTopology = () => {
               <div className="absolute inset-0 rounded-lg border-2 border-green-500 animate-ping opacity-20" />
             )}
             <div className="flex flex-col items-center justify-center gap-2 h-full">
-              <Cpu className={`w-8 h-8 ${state.aiEngineStatus === 'error' ? 'text-red-500' : hasActiveCalls && state.aiEngineStatus === 'connected' ? 'text-green-500' : 'text-muted-foreground'
+              <Cpu className={`w-8 h-8 ${state.aiEngineStatus === 'error' ? 'text-red-500' : state.aiEngineDegraded ? 'text-amber-500' : hasActiveCalls && state.aiEngineStatus === 'connected' ? 'text-green-500' : 'text-muted-foreground'
                 }`} />
               <div className="text-center">
-                <div className={`font-semibold ${state.aiEngineStatus === 'error' ? 'text-red-500' : hasActiveCalls && state.aiEngineStatus === 'connected' ? 'text-green-500' : 'text-foreground'
+                <div className={`font-semibold ${state.aiEngineStatus === 'error' ? 'text-red-500' : state.aiEngineDegraded ? 'text-amber-500' : hasActiveCalls && state.aiEngineStatus === 'connected' ? 'text-green-500' : 'text-foreground'
                   }`}>AI Engine</div>
                 <div className="text-xs text-muted-foreground">Core</div>
               </div>
@@ -894,6 +976,10 @@ export const SystemTopology = () => {
                   {state.aiEngineStatus === 'unknown' ? (
                     <span className="flex items-center gap-1 text-muted-foreground">
                       <Loader2 className="w-3 h-3 animate-spin" /> Checking…
+                    </span>
+                  ) : state.aiEngineStatus === 'connected' && state.aiEngineDegraded ? (
+                    <span className="flex items-center gap-1 text-amber-500">
+                      <AlertTriangle className="w-3 h-3" /> Degraded
                     </span>
                   ) : state.aiEngineStatus === 'connected' ? (
                     <span className="flex items-center gap-1 text-green-500">

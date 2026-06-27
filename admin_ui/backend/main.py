@@ -115,7 +115,7 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
         _uvicorn_host,
     )
 
-from api import config, system, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models, agents, support  # noqa: E402
+from api import config, system, live_status, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models, agents, support  # noqa: E402
 import auth  # noqa: E402
 from agents_store import AgentsStore  # noqa: E402
 from agents_migration import migrate_if_needed, current_drift  # noqa: E402
@@ -273,6 +273,8 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 # Protected routes
 app.include_router(config.router, prefix="/api/config", tags=["config"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(system.router, prefix="/api/system", tags=["system"], dependencies=[Depends(auth.get_current_user)])
+app.include_router(live_status.publish_router, prefix="/api/system", tags=["system"])
+app.include_router(live_status.router, prefix="/api/system", tags=["system"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"], dependencies=[Depends(auth.get_current_user)])
 app.include_router(local_ai.router, prefix="/api/local-ai", tags=["local-ai"], dependencies=[Depends(auth.get_current_user)])

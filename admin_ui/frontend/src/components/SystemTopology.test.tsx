@@ -7,6 +7,7 @@ import '@testing-library/jest-dom/vitest';
 import { MemoryRouter } from 'react-router-dom';
 import axios from 'axios';
 import { SystemTopology } from './SystemTopology';
+import type { LiveStatusSnapshot } from '../hooks/useLiveStatus';
 
 vi.mock('axios');
 
@@ -120,9 +121,82 @@ const mockTopologyApis = ({
     });
 };
 
-const renderTopology = () => render(
+const liveStatusSnapshot = (overrides: Partial<LiveStatusSnapshot> = {}): LiveStatusSnapshot => ({
+    version: 1,
+    event_id: 1,
+    generated_at: '2026-06-26T12:00:00Z',
+    summary: { state: 'ready', component_count: 4 },
+    components: {
+        ai_engine: {
+            state: 'ready',
+            freshness: 'fresh',
+            summary: 'AI Engine connected',
+            source: 'probe',
+            updated_at: '2026-06-26T12:00:00Z',
+            details: {
+                ari_connected: true,
+                asterisk_channels: 1,
+                providers: { google_live: { ready: true } },
+            },
+            metrics: {},
+            warnings: [],
+            errors: [],
+        },
+        local_ai_server: {
+            state: 'unreachable',
+            freshness: 'fresh',
+            summary: 'Local AI unreachable',
+            source: 'probe',
+            updated_at: '2026-06-26T12:00:00Z',
+            details: {},
+            metrics: {},
+            warnings: [],
+            errors: ['Local AI status WebSocket unreachable'],
+        },
+        sessions: {
+            state: 'ready',
+            freshness: 'fresh',
+            summary: '1 active calls',
+            source: 'probe',
+            updated_at: '2026-06-26T12:00:00Z',
+            details: {
+                reachable: true,
+                active_calls: 1,
+                sessions: [
+                    {
+                        call_id: 'call-1',
+                        provider: 'google_live',
+                        pipeline: undefined,
+                        conversation_state: 'connected',
+                    },
+                ],
+            },
+            metrics: {},
+            warnings: [],
+            errors: [],
+        },
+        asterisk: {
+            state: 'ready',
+            freshness: 'fresh',
+            summary: 'Asterisk ARI reachable',
+            source: 'probe',
+            updated_at: '2026-06-26T12:00:00Z',
+            details: { live: { ari_reachable: true } },
+            metrics: {},
+            warnings: [],
+            errors: [],
+        },
+    },
+    ai_engine: undefined,
+    local_ai_server: undefined,
+    sessions: undefined,
+    asterisk: undefined,
+    ...overrides,
+});
+
+const renderTopology = (props?: React.ComponentProps<typeof SystemTopology>) => render(
     <MemoryRouter>
-        <SystemTopology />
+        <SystemTopology {...props} />
     </MemoryRouter>
 );
 
@@ -139,6 +213,42 @@ afterEach(() => {
 });
 
 describe('SystemTopology dashboard health', () => {
+    it('hydrates health and sessions from live status without legacy health/session polling', async () => {
+        vi.useFakeTimers();
+        vi.mocked(axios.get).mockImplementation((url) => {
+            if (url === '/api/config/yaml') {
+                return Promise.resolve({ data: { content: cloudConfigYaml } });
+            }
+            return Promise.reject(new Error(`Unexpected URL: ${url}`));
+        });
+
+        renderTopology({ liveStatusSnapshot: liveStatusSnapshot() });
+        await flushAsyncEffects();
+
+        const requestedUrls = vi.mocked(axios.get).mock.calls.map(([url]) => url);
+        expect(requestedUrls).toContain('/api/config/yaml');
+        expect(requestedUrls).not.toContain('/api/system/health');
+        expect(requestedUrls).not.toContain('/api/system/sessions');
+        expect(screen.getAllByText('1 call').length).toBeGreaterThan(0);
+        expect(screen.getByText('All systems healthy')).toBeInTheDocument();
+    });
+
+    it('does not start legacy health/session polling while waiting for a live status snapshot', async () => {
+        vi.useFakeTimers();
+        vi.mocked(axios.get).mockImplementation((url) => {
+            if (url === '/api/config/yaml') {
+                return Promise.resolve({ data: { content: cloudConfigYaml } });
+            }
+            return Promise.reject(new Error(`Unexpected URL: ${url}`));
+        });
+
+        renderTopology({ liveStatusEnabled: true, liveStatusSnapshot: null });
+        await flushAsyncEffects();
+
+        const requestedUrls = vi.mocked(axios.get).mock.calls.map(([url]) => url);
+        expect(requestedUrls).toEqual(['/api/config/yaml']);
+    });
+
     it('shows healthy for cloud Google Live when Local AI is optional and stopped', async () => {
         vi.useFakeTimers();
         mockTopologyApis();

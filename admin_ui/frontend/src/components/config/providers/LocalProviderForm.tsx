@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
+import { localAIStatusFromLiveSnapshot } from '../../../utils/liveStatus';
 
 interface LocalProviderFormProps {
     config: any;
@@ -55,9 +56,19 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
     const fetchCurrentStatus = useCallback(async () => {
         setStatusLoading(true);
         try {
-            const res = await axios.get('/api/system/health');
-            if (res.data?.local_ai_server?.status === 'connected') {
-                setCurrentStatus(res.data.local_ai_server.details);
+            const [liveStatusRes, healthRes] = await Promise.allSettled([
+                axios.get('/api/system/live-status'),
+                axios.get('/api/system/health'),
+            ]);
+            if (liveStatusRes.status === 'fulfilled') {
+                const liveLocalAI = localAIStatusFromLiveSnapshot(liveStatusRes.value.data);
+                if (liveLocalAI?.connected) {
+                    setCurrentStatus(liveLocalAI.details);
+                    return;
+                }
+            }
+            if (healthRes.status === 'fulfilled' && healthRes.value.data?.local_ai_server?.status === 'connected') {
+                setCurrentStatus(healthRes.value.data.local_ai_server.details);
             } else {
                 setCurrentStatus(null);
             }

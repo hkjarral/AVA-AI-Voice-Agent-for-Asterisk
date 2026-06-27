@@ -53,6 +53,7 @@ from .config.provider_instances import (
 )
 from .pipelines import PipelineOrchestrator, PipelineOrchestratorError, PipelineResolution
 from .logging_config import get_logger, configure_logging
+from .live_status_publisher import LiveStatusPublisher, live_status_component
 from .rtp_server import RTPServer
 from .audio.audiosocket_server import AudioSocketServer
 from .audio.resampler import resample_audio
@@ -583,6 +584,9 @@ class Engine:
         self.mcp_manager = None
         # Background ARI reconnect supervisor task
         self._ari_listener_task: Optional[asyncio.Task] = None
+        # Best-effort Admin UI status publisher. Disabled unless a push token is configured.
+        self.live_status_publisher = LiveStatusPublisher.from_env("ai_engine", logger=logger)
+        self._live_status_task: Optional[asyncio.Task] = None
 
         # Event handlers
         self.ari_client.on_event("StasisStart", self._handle_stasis_start)
@@ -733,6 +737,12 @@ class Engine:
             asyncio.create_task(self._start_health_server())
         except Exception:
             logger.debug("Health server failed to start", exc_info=True)
+
+        if self.live_status_publisher.enabled and not self._live_status_task:
+            self._live_status_task = self._fire_and_forget(
+                self.live_status_publisher.publish_loop(self._build_live_status_components),
+                name="live-status-publish-loop",
+            )
 
         # 3) Log transport and downstream modes
         logger.info("Runtime modes", audio_transport=self.config.audio_transport, downstream_mode=self.config.downstream_mode)
@@ -2272,6 +2282,15 @@ class Engine:
                 await self._health_runner.cleanup()
         except Exception:
             logger.debug("Health server cleanup error", exc_info=True)
+        try:
+            if self._live_status_task:
+                self._live_status_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._live_status_task
+                self._live_status_task = None
+            await self.live_status_publisher.close()
+        except Exception:
+            logger.debug("Live-status publisher cleanup error", exc_info=True)
         # Ensure orchestrator releases component assignments before shutdown.
         try:
             await self.pipeline_orchestrator.stop()
@@ -14819,6 +14838,129 @@ class Engine:
         except Exception:
             pass  # Don't fail health endpoint if warning computation fails
         return warnings
+
+    async def _build_live_status_components(self) -> Dict[str, Dict[str, Any]]:
+        """Build Admin UI live-status components from the engine's in-memory state."""
+        providers_info: Dict[str, Dict[str, Any]] = {}
+        provider_warnings: List[str] = []
+        for name, prov in (self.providers or {}).items():
+            ready = False
+            reason = None
+            try:
+                if hasattr(prov, "is_ready"):
+                    ready = bool(prov.is_ready())
+                    if not ready:
+                        reason = "missing_config"
+                else:
+                    reason = "no_is_ready_method"
+            except Exception as exc:
+                reason = f"error: {exc}"
+            providers_info[name] = {"ready": ready, "reason": reason} if reason else {"ready": ready}
+            if not ready:
+                provider_warnings.append(f"{name}: {reason or 'not ready'}")
+
+        default_ready = False
+        default_target = getattr(self.config, "default_provider", None) if self.config else None
+        if default_target in (self.providers or {}):
+            prov = self.providers[default_target]
+            try:
+                if self._get_provider_kind(default_target) == "local" and hasattr(prov, "is_connected"):
+                    default_ready = bool(prov.is_connected())
+                else:
+                    default_ready = bool(prov.is_ready()) if hasattr(prov, "is_ready") else False
+            except Exception:
+                default_ready = False
+        elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):
+            default_ready = bool(getattr(self, "pipeline_orchestrator", None) and self.pipeline_orchestrator.started)
+
+        ari_connected = bool(self.ari_client and self.ari_client.running)
+        if getattr(self.config, "audio_transport", None) == "audiosocket":
+            transport_ok = self.audio_socket_server is not None
+        elif getattr(self.config, "audio_transport", None) == "externalmedia":
+            transport_ok = self.rtp_server is not None
+        else:
+            transport_ok = True
+
+        active_sessions = await self.session_store.get_all_sessions()
+        session_stats = await self.session_store.get_session_stats()
+        pending_timers = self.conversation_coordinator.get_pending_timer_count()
+        try:
+            conversation_summary = await self.conversation_coordinator.get_summary()
+        except Exception:
+            conversation_summary = {}
+
+        is_ready = ari_connected and transport_ok and default_ready
+        config_warnings = self._compute_nat_warnings()
+        warnings = list(config_warnings)
+        provider_warning_severity = "info" if is_ready else "degraded"
+        if provider_warnings:
+            warnings.extend(provider_warnings)
+        uptime_seconds = int(time.time() - self._start_time)
+        state = "ready" if is_ready else "degraded"
+        if not ari_connected:
+            state = "unreachable"
+
+        ai_details = {
+            "ari_connected": ari_connected,
+            "audio_transport": getattr(self.config, "audio_transport", None),
+            "transport_ok": transport_ok,
+            "default_target": default_target,
+            "default_ready": default_ready,
+            "active_calls": len(active_sessions),
+            "active_sessions": len(active_sessions),
+            "asterisk_channels": len(self._pre_stasis_channels) + len(active_sessions),
+            "pending_timers": pending_timers,
+            "uptime_seconds": uptime_seconds,
+            "providers": providers_info,
+            "provider_warning_severity": provider_warning_severity,
+            "pipelines": {
+                name: {
+                    "stt": getattr(cfg, "stt", None),
+                    "llm": getattr(cfg, "llm", None),
+                    "tts": getattr(cfg, "tts", None),
+                    "tools": getattr(cfg, "tools", None),
+                }
+                for name, cfg in (getattr(self.config, "pipelines", {}) or {}).items()
+            },
+            "config_hash": getattr(self, "_config_hash", None),
+            "config_loaded_at": getattr(self, "_config_loaded_at", None),
+            "config_warnings": config_warnings,
+            "conversation": {
+                "gating_active": conversation_summary.get("gating_active", 0),
+                "capture_disabled": conversation_summary.get("capture_disabled", 0),
+                "barge_in_total": conversation_summary.get("barge_in_total", 0),
+                "pending_timers": pending_timers,
+            },
+        }
+
+        return {
+            "ai_engine": live_status_component(
+                state=state,
+                summary="AI Engine ready" if state == "ready" else "AI Engine degraded",
+                details=ai_details,
+                metrics={
+                    "active_calls": len(active_sessions),
+                    "active_sessions": len(active_sessions),
+                    "pending_timers": pending_timers,
+                    "uptime_seconds": uptime_seconds,
+                },
+                warnings=warnings,
+                errors=[] if ari_connected else ["ARI client is not connected"],
+            ),
+            "sessions": live_status_component(
+                state="ready",
+                summary=f"{session_stats.get('active_calls', 0)} active calls",
+                details={
+                    **session_stats,
+                    "reachable": True,
+                },
+                metrics={
+                    "active_calls": session_stats.get("active_calls", 0),
+                    "active_playbacks": session_stats.get("active_playbacks", 0),
+                    "provider_sessions": session_stats.get("provider_sessions", 0),
+                },
+            ),
+        }
 
     async def _health_handler(self, request):
         """Return JSON with engine/provider status."""

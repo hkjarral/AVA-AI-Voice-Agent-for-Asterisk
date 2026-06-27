@@ -12,6 +12,7 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import HelpTooltip from '../components/ui/HelpTooltip';
 import { usePendingChanges } from '../hooks/usePendingChanges';
+import { localAIStatusFromLiveSnapshot } from '../utils/liveStatus';
 
 // Provider Forms
 import GenericProviderForm from '../components/config/providers/GenericProviderForm';
@@ -61,9 +62,19 @@ const ProvidersPage: React.FC = () => {
         // Fetch local AI status for live model info on cards
         const fetchLocalStatus = async () => {
             try {
-                const res = await axios.get('/api/system/health');
-                if (res.data?.local_ai_server?.status === 'connected') {
-                    setLocalAIStatus(res.data.local_ai_server.details);
+                const [liveStatusRes, healthRes] = await Promise.allSettled([
+                    axios.get('/api/system/live-status'),
+                    axios.get('/api/system/health'),
+                ]);
+                if (liveStatusRes.status === 'fulfilled') {
+                    const liveLocalAI = localAIStatusFromLiveSnapshot(liveStatusRes.value.data);
+                    if (liveLocalAI?.connected) {
+                        setLocalAIStatus(liveLocalAI.details);
+                        return;
+                    }
+                }
+                if (healthRes.status === 'fulfilled' && healthRes.value.data?.local_ai_server?.status === 'connected') {
+                    setLocalAIStatus(healthRes.value.data.local_ai_server.details);
                 }
             } catch { /* ignore */ }
         };

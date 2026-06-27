@@ -7,6 +7,7 @@ import { SystemTopology } from '../components/SystemTopology';
 import { ApiErrorInfo, buildDockerAccessHints, describeApiError } from '../utils/apiErrors';
 import DonationBanner from '../components/DonationBanner';
 import { useDonationReminder } from '../hooks/useDonationReminder';
+import { useLiveStatus } from '../hooks/useLiveStatus';
 import {
     INITIAL_CONNECTION_STATE,
     reduceConnection,
@@ -100,6 +101,7 @@ const Dashboard = () => {
     const [ariConnected, setAriConnected] = useState<boolean | null>(null);
     const navigate = useNavigate();
     const donation = useDonationReminder();
+    const liveStatus = useLiveStatus();
 
     // Cross-poll hysteresis/debounce streaks. Kept in refs so updating them
     // doesn't trigger renders; the resulting display values land in reactive
@@ -222,10 +224,48 @@ const Dashboard = () => {
     };
 
     useEffect(() => {
+        const snapshot = liveStatus.snapshot;
+        if (!snapshot) return;
+
+        const metricsComponent = snapshot.components.metrics;
+        if (metricsComponent?.metrics) {
+            setMetrics(metricsComponent.metrics as unknown as SystemMetrics);
+            setMetricsError(null);
+        }
+
+        const directoriesComponent = snapshot.components.directories;
+        if (directoriesComponent?.details?.overall) {
+            dirFailStreak.current = 0;
+            setDirectoryHealth(directoriesComponent.details as DirectoryHealth);
+            setDirectoriesError(null);
+        }
+
+        const platformComponent = snapshot.components.platform;
+        if (platformComponent?.details?.platform && platformComponent?.details?.summary) {
+            platformFailStreak.current = 0;
+            setPlatformData(platformComponent.details as PlatformResponse);
+            setPlatformLoadFailed(false);
+            setPlatformError(null);
+        }
+
+        const reachable = snapshot.components.asterisk?.details?.live?.ari_reachable;
+        const asteriskSample: ConnectionSample = typeof reachable === 'boolean' ? reachable : 'unknown';
+        ariState.current = reduceConnection(ariState.current, asteriskSample);
+        setAriConnected(ariState.current.display);
+        setAsteriskError(null);
+
+        setLoading(false);
+        setRefreshing(false);
+    }, [liveStatus.snapshot]);
+
+    useEffect(() => {
+        if (liveStatus.snapshot) return;
+        if (liveStatus.loading && !liveStatus.error) return;
+
         fetchData();
-        const interval = setInterval(fetchData, 5000); // Refresh every 5s
+        const interval = setInterval(fetchData, 5000); // Fallback until live-status hydrates
         return () => clearInterval(interval);
-    }, []);
+    }, [liveStatus.error, liveStatus.loading, liveStatus.snapshot]);
 
     const formatBytes = (bytes: number) => {
         if (bytes === 0) return '0 B';
@@ -484,7 +524,7 @@ const Dashboard = () => {
             </div>
 
             {/* Live System Topology */}
-            <SystemTopology />
+            <SystemTopology liveStatusEnabled liveStatusSnapshot={liveStatus.snapshot} />
         </div>
     );
 };

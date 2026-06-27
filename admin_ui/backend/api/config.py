@@ -91,6 +91,7 @@ def _ai_engine_env_key(key: str) -> bool:
         or _is_prefix(key, ("SMTP_",))
         # Local provider runtime uses these env vars via ${LOCAL_WS_*} placeholders in ai-agent.yaml
         or _is_prefix(key, ("LOCAL_WS_",))
+        or _is_prefix(key, ("LIVE_STATUS_",))
     )
 
 
@@ -98,6 +99,7 @@ def _local_ai_env_key(key: str) -> bool:
     return (
         _is_prefix(key, ("LOCAL_", "KROKO_", "FASTER_WHISPER_", "WHISPER_CPP_", "MELOTTS_", "KOKORO_"))
         or key in ("SHERPA_MODEL_PATH",)
+        or _is_prefix(key, ("LIVE_STATUS_",))
     )
 
 
@@ -109,8 +111,9 @@ def _admin_ui_env_key(key: str) -> bool:
     # admin_ui-impacting keys, which is honest signaling: changes affect this
     # service's runtime behavior. Refs #370.
     return (
-        key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ")
+        key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ", "HEALTH_API_TOKEN", "LIVE_STATUS_PUSH_TOKEN")
         or _is_prefix(key, ("UVICORN_", "ADMIN_UI_", "AAVA_HTTP_TOOL_TEST_"))
+        or key == "LIVE_STATUS_POLL_INTERVAL_SECONDS"
     )
 
 
@@ -694,6 +697,12 @@ def persist_config_content(content: str) -> dict:
         "message": f"Configuration saved. {'Hot reload' if recommended_method == 'hot_reload' else 'Restart'} AI Engine to apply changes.",
         "warnings": warnings,
     }
+
+
+@router.get("")
+@router.get("/")
+async def get_config():
+    return _read_merged_config_dict()
 
 
 @router.post("/yaml")

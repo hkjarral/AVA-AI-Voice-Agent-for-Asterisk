@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import audioop
 import base64
+import contextlib
 import io
 import json
 import logging
@@ -58,7 +59,9 @@ from optional_imports import VoskModel, KaldiRecognizer, Llama, PiperVoice
 
 from session import SessionContext
 from config import LocalAIConfig
+from live_status_publisher import LiveStatusPublisher, live_status_component
 from model_manager import ModelManager
+from status_builder import build_status_response
 from ws_protocol import WebSocketProtocol
 
 
@@ -812,6 +815,8 @@ class LocalAIServer:
             "validated_at": int(time() * 1000),
             "model_fingerprint": "unknown",
         }
+        self.live_status_publisher = LiveStatusPublisher.from_env("local_ai_server", logger=logging.getLogger(__name__))
+        self._live_status_task: Optional[asyncio.Task] = None
 
     def _llm_auto_ctx_cache_path(self) -> str:
         """
@@ -1196,6 +1201,57 @@ class LocalAIServer:
             )
         else:
             logging.info("✅ All models loaded successfully for MVP pipeline")
+
+    def _build_live_status_components(self) -> Dict[str, Dict[str, Any]]:
+        """Build Admin UI live-status components from the canonical status response."""
+        status = build_status_response(self)
+        models = status.get("models") or {}
+        model_count = sum(1 for value in models.values() if isinstance(value, dict))
+        loaded_count = sum(
+            1 for value in models.values()
+            if isinstance(value, dict) and value.get("loaded") is True
+        )
+        startup_errors = (status.get("config") or {}).get("startup_errors") or {}
+        degraded = bool(startup_errors) or (model_count > 0 and loaded_count < model_count)
+        runtime_mode = (status.get("config") or {}).get("runtime_mode")
+        state = "degraded" if degraded else "ready"
+        warnings = [f"{key}: {value}" for key, value in startup_errors.items()]
+
+        return {
+            "local_ai_server": live_status_component(
+                state=state,
+                summary=f"Local AI {'degraded' if degraded else 'ready'}, {loaded_count}/{model_count} models loaded",
+                details=status,
+                metrics={
+                    "models_loaded": loaded_count,
+                    "models_total": model_count,
+                    "runtime_mode": runtime_mode,
+                },
+                warnings=warnings,
+            )
+        }
+
+    def _start_live_status_publisher(self) -> None:
+        if self.live_status_publisher.enabled and not self._live_status_task:
+            self._live_status_task = asyncio.create_task(
+                self.live_status_publisher.publish_loop(self._build_live_status_components),
+                name="local-ai-live-status-publish-loop",
+            )
+            self._live_status_task.add_done_callback(self._log_live_status_task_exception)
+
+    def _publish_live_status_now(self) -> None:
+        self.live_status_publisher.publish_now(
+            self._build_live_status_components(),
+            name="local-ai-live-status-publish",
+        )
+
+    @staticmethod
+    def _log_live_status_task_exception(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logging.debug("Local AI live-status publisher failed: %s", exc, exc_info=True)
 
     async def _load_stt_model(self):
         """Load STT model based on configured backend."""
@@ -2276,6 +2332,12 @@ class LocalAIServer:
     async def shutdown(self) -> None:
         """Best-effort cleanup on server shutdown."""
         logging.info("🛑 Shutting down Local AI Server...")
+        if self._live_status_task:
+            self._live_status_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._live_status_task
+            self._live_status_task = None
+        await self.live_status_publisher.close()
         await self._cleanup_kroko_backend()
         if self.sherpa_backend:
             try:
@@ -2324,6 +2386,7 @@ class LocalAIServer:
                 self._tts_cache.clear()
             await self._cleanup_kroko_backend()
             await self.initialize_models(startup=False)
+            self._publish_live_status_now()
             logging.info("✅ Models reloaded successfully")
         except Exception as exc:
             logging.error("❌ Model reload failed: %s", exc)
@@ -5875,6 +5938,7 @@ async def main():
     server = LocalAIServer()
     try:
         await server.initialize_models(startup=True)
+        server._start_live_status_publisher()
 
         # SECURITY: Default to localhost. Set LOCAL_WS_HOST=0.0.0.0 for remote access.
         # If binding non-localhost, LOCAL_WS_AUTH_TOKEN should be set (enforced in handler).

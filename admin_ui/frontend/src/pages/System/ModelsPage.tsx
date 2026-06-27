@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import HelpTooltip from '../../components/ui/HelpTooltip';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
+import { useLiveStatus, type LiveStatusComponent } from '../../hooks/useLiveStatus';
 import { RebuildBackendDialog } from '../../components/models/RebuildBackendDialog';
 import { CustomModelsPanel } from '../../components/models/CustomModelsPanel';
 import axios from 'axios';
@@ -138,8 +139,11 @@ interface ApplyProgressState {
     details: string[];
 }
 
+type ServerStatus = 'connected' | 'degraded' | 'error' | 'loading';
+
 const ModelsPage = () => {
     const { confirm } = useConfirmDialog();
+    const liveStatus = useLiveStatus();
     const [catalog, setCatalog] = useState<{ stt: ModelInfo[]; tts: ModelInfo[]; llm: ModelInfo[] }>({ stt: [], tts: [], llm: [] });
     const [installedModels, setInstalledModels] = useState<InstalledModel[]>([]);
     const [languageNames, setLanguageNames] = useState<Record<string, string>>({});
@@ -155,7 +159,7 @@ const ModelsPage = () => {
     // Active models state (from Local AI Server)
     const [activeModels, setActiveModels] = useState<ActiveModels | null>(null);
     const [availableModels, setAvailableModels] = useState<AvailableModels | null>(null);
-    const [serverStatus, setServerStatus] = useState<'connected' | 'error' | 'loading'>('loading');
+    const [serverStatus, setServerStatus] = useState<ServerStatus>('loading');
     const [restarting, setRestarting] = useState(false);
     const [pendingChanges, setPendingChanges] = useState<{ stt?: string; tts?: string; llm?: string }>({});
     const [pendingSttExtra, setPendingSttExtra] = useState<{ language?: string; device?: string; compute_type?: string; sherpa_model_type?: string; sherpa_vad_model_path?: string; tone_decoder_type?: string; tone_kenlm_path?: string }>({});
@@ -196,6 +200,53 @@ const ModelsPage = () => {
             fetchModels();
             fetchActiveModels();
         }
+    };
+
+    const hydrateLocalAIStatus = (details: any, status: ServerStatus) => {
+        setServerStatus(status);
+        setRuntimeGpu((details?.gpu || null) as RuntimeGpuStatus | null);
+        setRuntimeMode((details?.config?.runtime_mode || details?.runtime_mode || null) as string | null);
+        setActiveModels({
+            stt: {
+                backend: details?.models?.stt?.backend || 'unknown',
+                path: details?.models?.stt?.path || '',
+                loaded: details?.models?.stt?.loaded || false,
+                display: details?.models?.stt?.display || '',
+                language: details?.models?.stt?.language || null,
+                device: details?.models?.stt?.device || null,
+                compute_type: details?.models?.stt?.compute_type || null,
+                sherpa_model_type: details?.models?.stt?.sherpa_model_type || null,
+                tone_decoder_type: details?.models?.stt?.tone_decoder_type || null,
+            },
+            tts: {
+                backend: details?.models?.tts?.backend || 'unknown',
+                path: details?.models?.tts?.path || '',
+                loaded: details?.models?.tts?.loaded || false,
+                display: details?.models?.tts?.display || ''
+            },
+            llm: {
+                path: details?.models?.llm?.path || '',
+                loaded: details?.models?.llm?.loaded || false,
+                display: details?.models?.llm?.display || '',
+                config: details?.models?.llm?.config || {},
+                prompt_fit: details?.models?.llm?.prompt_fit || {},
+                auto_context: details?.models?.llm?.auto_context || {},
+                tool_capability: details?.models?.llm?.tool_capability || {}
+            }
+        });
+    };
+
+    const applyLocalAILiveStatus = (component?: LiveStatusComponent | null): boolean => {
+        if (!component) return false;
+        if (component.freshness === 'expired') return false;
+        if (component.state === 'ready' || component.state === 'degraded') {
+            hydrateLocalAIStatus(component.details || {}, component.state === 'ready' ? 'connected' : 'degraded');
+            return true;
+        }
+        setServerStatus('error');
+        setRuntimeGpu(null);
+        setRuntimeMode(null);
+        return true;
     };
 
     const showToast = (message: string, type: 'success' | 'error' | 'warning') => {
@@ -281,6 +332,15 @@ const ModelsPage = () => {
         fetchActiveModels();
     }, []);
 
+    useEffect(() => {
+        const localAI = liveStatus.snapshot?.components?.local_ai_server || liveStatus.snapshot?.local_ai_server;
+        applyLocalAILiveStatus(localAI);
+    }, [
+        liveStatus.snapshot?.event_id,
+        liveStatus.snapshot?.components?.local_ai_server?.updated_at,
+        liveStatus.snapshot?.local_ai_server?.updated_at,
+    ]);
+
     // Resume download on mount if active
     useEffect(() => {
         let mounted = true;
@@ -344,53 +404,30 @@ const ModelsPage = () => {
 
     // Fetch active models from Local AI Server health
     const fetchActiveModels = async () => {
-        const [healthRes, modelsRes, capabilitiesRes, envRes] = await Promise.allSettled([
+        const [liveStatusRes, healthRes, modelsRes, capabilitiesRes, envRes] = await Promise.allSettled([
+            axios.get('/api/system/live-status'),
             axios.get('/api/system/health'),
             axios.get('/api/local-ai/models'),
             axios.get('/api/local-ai/capabilities'),
             axios.get('/api/config/env')
         ]);
 
-        if (healthRes.status === 'fulfilled') {
+        let hydratedFromStatus = false;
+        if (liveStatusRes.status === 'fulfilled') {
+            const localAI = liveStatusRes.value.data?.components?.local_ai_server || liveStatusRes.value.data?.local_ai_server;
+            hydratedFromStatus = applyLocalAILiveStatus(localAI);
+        }
+
+        if (!hydratedFromStatus && healthRes.status === 'fulfilled') {
             const localAI = healthRes.value.data?.local_ai_server;
             if (localAI?.status === 'connected') {
-                setServerStatus('connected');
-                setRuntimeGpu((localAI.details?.gpu || null) as RuntimeGpuStatus | null);
-                setRuntimeMode((localAI.details?.config?.runtime_mode || null) as string | null);
-                setActiveModels({
-                    stt: {
-                        backend: localAI.details?.models?.stt?.backend || 'unknown',
-                        path: localAI.details?.models?.stt?.path || '',
-                        loaded: localAI.details?.models?.stt?.loaded || false,
-                        display: localAI.details?.models?.stt?.display || '',
-                        language: localAI.details?.models?.stt?.language || null,
-                        device: localAI.details?.models?.stt?.device || null,
-                        compute_type: localAI.details?.models?.stt?.compute_type || null,
-                        sherpa_model_type: localAI.details?.models?.stt?.sherpa_model_type || null,
-                        tone_decoder_type: localAI.details?.models?.stt?.tone_decoder_type || null,
-                    },
-                    tts: {
-                        backend: localAI.details?.models?.tts?.backend || 'unknown',
-                        path: localAI.details?.models?.tts?.path || '',
-                        loaded: localAI.details?.models?.tts?.loaded || false,
-                        display: localAI.details?.models?.tts?.display || ''
-                    },
-                    llm: {
-                        path: localAI.details?.models?.llm?.path || '',
-                        loaded: localAI.details?.models?.llm?.loaded || false,
-                        display: localAI.details?.models?.llm?.display || '',
-                        config: localAI.details?.models?.llm?.config || {},
-                        prompt_fit: localAI.details?.models?.llm?.prompt_fit || {},
-                        auto_context: localAI.details?.models?.llm?.auto_context || {},
-                        tool_capability: localAI.details?.models?.llm?.tool_capability || {}
-                    }
-                });
+                hydrateLocalAIStatus(localAI.details || {}, 'connected');
             } else {
                 setServerStatus('error');
                 setRuntimeGpu(null);
                 setRuntimeMode(null);
             }
-        } else {
+        } else if (!hydratedFromStatus) {
             setServerStatus('error');
             setRuntimeGpu(null);
             setRuntimeMode(null);
@@ -926,10 +963,13 @@ const ModelsPage = () => {
                             <Cpu className="w-5 h-5 text-blue-500" />
                             <h3 className="font-semibold">Local AI Server</h3>
                             <span className={`px-2 py-0.5 rounded-full text-xs font-medium flex items-center gap-1 ${serverStatus === 'connected' ? 'bg-green-500/10 text-green-500' :
+                                serverStatus === 'degraded' ? 'bg-yellow-500/10 text-yellow-500' :
                                 serverStatus === 'error' ? 'bg-red-500/10 text-red-500' : 'bg-yellow-500/10 text-yellow-500'
                                 }`}>
                                 {serverStatus === 'connected' ? (
                                     <><CheckCircle2 className="w-3 h-3" /> Connected</>
+                                ) : serverStatus === 'degraded' ? (
+                                    <><AlertTriangle className="w-3 h-3" /> Degraded</>
                                 ) : serverStatus === 'error' ? (
                                     <><XCircle className="w-3 h-3" /> Error</>
                                 ) : (
@@ -999,8 +1039,13 @@ const ModelsPage = () => {
                         </div>
                     </div>
 
-                    {serverStatus === 'connected' && activeModels && (
+                    {(serverStatus === 'connected' || serverStatus === 'degraded') && activeModels && (
                         <div className="p-4 space-y-4">
+                            {serverStatus === 'degraded' && (
+                                <div className="p-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 text-xs text-yellow-700 dark:text-yellow-300">
+                                    Local AI Server is reachable but degraded. Model controls remain available; check unloaded models and runtime warnings before using local STT, LLM, or TTS in calls.
+                                </div>
+                            )}
                             <div className="text-xs text-muted-foreground">
                                 {runtimeGpuKnown ? (
                                     <span>

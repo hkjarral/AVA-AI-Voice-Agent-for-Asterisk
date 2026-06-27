@@ -9,6 +9,7 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput } from '../../components/ui/FormComponents';
 import HelpTooltip from '../../components/ui/HelpTooltip';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
+import { localAIStatusFromLiveSnapshot } from '../../utils/liveStatus';
 
 const CHAT_FORMAT_OPTIONS = [
     { value: '', label: '(Legacy Phi-style — no chat template)' },
@@ -29,6 +30,7 @@ const LLMPage = () => {
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [localCapability, setLocalCapability] = useState<any>(null);
     const [localConnected, setLocalConnected] = useState(false);
+    const [localAIState, setLocalAIState] = useState('unknown');
 
     useEffect(() => {
         fetchConfig();
@@ -36,8 +38,9 @@ const LLMPage = () => {
 
     const fetchConfig = async () => {
         try {
-            const [yamlRes, healthRes, envRes] = await Promise.allSettled([
+            const [yamlRes, liveStatusRes, healthRes, envRes] = await Promise.allSettled([
                 axios.get('/api/config/yaml'),
+                axios.get('/api/system/live-status'),
                 axios.get('/api/system/health'),
                 axios.get('/api/config/env'),
             ]);
@@ -60,18 +63,28 @@ const LLMPage = () => {
                 setEnv(envRes.value.data || {});
             }
 
-            if (healthRes.status === 'fulfilled') {
+            const liveLocalAI = liveStatusRes.status === 'fulfilled'
+                ? localAIStatusFromLiveSnapshot(liveStatusRes.value.data)
+                : null;
+            if (liveLocalAI?.connected) {
+                setLocalConnected(true);
+                setLocalAIState(liveLocalAI.state);
+                setLocalCapability(liveLocalAI.details?.models?.llm?.tool_capability || null);
+            } else if (healthRes.status === 'fulfilled') {
                 const localDetails = healthRes.value.data?.local_ai_server?.details || {};
                 setLocalConnected(healthRes.value.data?.local_ai_server?.status === 'connected');
+                setLocalAIState(healthRes.value.data?.local_ai_server?.status || 'unknown');
                 setLocalCapability(localDetails?.models?.llm?.tool_capability || null);
             } else {
                 setLocalConnected(false);
+                setLocalAIState(liveLocalAI?.state || 'unknown');
                 setLocalCapability(null);
             }
         } catch (err) {
             console.error('Failed to load config', err);
             setYamlError(null);
             setLocalConnected(false);
+            setLocalAIState('unknown');
             setLocalCapability(null);
         } finally {
             setLoading(false);
@@ -418,8 +431,8 @@ const LLMPage = () => {
                         <div className="rounded-md border border-border bg-muted/20 p-3 text-xs space-y-1">
                             <div className="flex items-center justify-between gap-2">
                                 <span className="text-muted-foreground">Local AI Server</span>
-                                <span className={`font-mono ${localConnected ? 'text-green-600' : 'text-yellow-600'}`}>
-                                    {localConnected ? 'connected' : 'not-connected'}
+                                <span className={`font-mono ${localConnected && localAIState !== 'degraded' ? 'text-green-600' : 'text-yellow-600'}`}>
+                                    {localConnected ? (localAIState === 'degraded' ? 'degraded' : 'connected') : 'not-connected'}
                                 </span>
                             </div>
                             <div className="flex items-center justify-between gap-2">

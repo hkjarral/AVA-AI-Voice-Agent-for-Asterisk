@@ -17,6 +17,7 @@ const PROVIDER_CREDENTIAL_TYPES: Record<string, string[]> = {
     elevenlabs_agent: ['api-key', 'agent-id'],
     grok: ['api-key'],
 };
+const MODULAR_PROVIDER_KEY_RE = /_(stt|llm|tts|vad)$/;
 
 interface PerInstanceCredentialRow {
     providerKey: string;
@@ -186,7 +187,8 @@ const EnvPage = () => {
             // credentials valid for that kind. Use that response — don't gate
             // on a frontend whitelist of canonical keys, which would silently
             // omit custom-keyed full-agent providers.
-            const entries = Object.entries(providers) as Array<[string, any]>;
+            const entries = (Object.entries(providers) as Array<[string, any]>)
+                .filter(([key]) => !MODULAR_PROVIDER_KEY_RE.test(key));
             const tasks = entries.map(async ([key, cfg]) => {
                 let credStatus: any = {};
                 let kind: string | null = null;
