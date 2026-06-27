@@ -323,3 +323,14 @@ def test_unexpected_float_coerced_to_none():
         cc = orch.get_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is None
+
+
+def test_blank_string_coerced_to_none():
+    """email_enabled: '' (cleared field / blank override) must resolve to None
+    (inherit), not False — a blank value must not become an explicit disable."""
+    for blank in ("", "   "):
+        orch = _orch_email_string(blank)
+        with patch.object(orch.agent_store, "available", return_value=False):
+            cc = orch.get_context_config("ctx")
+        assert cc is not None
+        assert cc.email_enabled is None

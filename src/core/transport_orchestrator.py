@@ -45,9 +45,12 @@ def _coerce_optional_bool(value: Any) -> Optional[bool]:
         v = value.strip().lower()
         if v in ("1", "true", "yes", "on"):
             return True
-        if v in ("0", "false", "no", "off", ""):
+        if v in ("0", "false", "no", "off"):
             return False
-        return None  # unrecognized → inherit (safest: don't force-enable)
+        # Blank/whitespace ("") or any unrecognized string → inherit (None),
+        # matching absent/None and the agents.db NULL behavior — a cleared
+        # field must not become an explicit disable.
+        return None
     return None
 
 
