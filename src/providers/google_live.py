@@ -27,7 +27,7 @@ import time
 import struct
 import audioop
 import re
-from typing import Any, Dict, Optional, List, Tuple
+from typing import AbstractSet, Any, Dict, Optional, List, Tuple
 from collections import deque
 
 import websockets
@@ -90,6 +90,18 @@ _GEMINI_INPUT_RATE = 16000  # Gemini requires 16kHz input
 _GEMINI_OUTPUT_RATE = 24000  # Gemini outputs 24kHz audio
 _COMMIT_INTERVAL_SEC = 0.02  # 20ms chunks (320 bytes at 16kHz)
 _KEEPALIVE_INTERVAL_SEC = 15.0
+
+# VAD sensitivity values accepted by the Google Live API.
+# Any other value (e.g. *_MEDIUM) causes a WebSocket close 1007 at setup.
+VALID_EOS_SENSITIVITY = {"END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW", "END_SENSITIVITY_UNSPECIFIED"}
+VALID_SOS_SENSITIVITY = {"START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW", "START_SENSITIVITY_UNSPECIFIED"}
+
+
+def coerce_vad_sensitivity(value: Optional[str], valid: AbstractSet[str], default: str) -> str:
+    """Return value if it is an API-accepted sensitivity, else the safe default.
+    Google Live rejects unknown values (e.g. *_MEDIUM) with WS close 1007."""
+    return value if value in valid else default
+
 
 # Metrics
 _GOOGLE_LIVE_SESSIONS = Gauge(
@@ -1030,16 +1042,16 @@ class GoogleLiveProvider(AIProviderInterface):
         # Higher startOfSpeechSensitivity = catches shorter utterances
         # Lower silenceDurationMs = faster response after user stops talking
         # Configurable via YAML: providers.google_live.vad_*
-        _VALID_EOS = {"END_SENSITIVITY_HIGH", "END_SENSITIVITY_LOW", "END_SENSITIVITY_UNSPECIFIED"}
-        _VALID_SOS = {"START_SENSITIVITY_HIGH", "START_SENSITIVITY_LOW", "START_SENSITIVITY_UNSPECIFIED"}
-        vad_eos = getattr(self.config, "vad_end_of_speech_sensitivity", "END_SENSITIVITY_HIGH")
-        vad_sos = getattr(self.config, "vad_start_of_speech_sensitivity", "START_SENSITIVITY_HIGH")
+        raw_eos = getattr(self.config, "vad_end_of_speech_sensitivity", "END_SENSITIVITY_HIGH")
+        raw_sos = getattr(self.config, "vad_start_of_speech_sensitivity", "START_SENSITIVITY_HIGH")
+        vad_eos = coerce_vad_sensitivity(raw_eos, VALID_EOS_SENSITIVITY, "END_SENSITIVITY_HIGH")
+        vad_sos = coerce_vad_sensitivity(raw_sos, VALID_SOS_SENSITIVITY, "START_SENSITIVITY_HIGH")
         vad_prefix_ms = int(getattr(self.config, "vad_prefix_padding_ms", 20))
         vad_silence_ms = int(getattr(self.config, "vad_silence_duration_ms", 500))
-        if vad_eos not in _VALID_EOS:
-            logger.warning("Invalid vad_end_of_speech_sensitivity value, API may reject", call_id=self._call_id, value=vad_eos, valid=list(_VALID_EOS))
-        if vad_sos not in _VALID_SOS:
-            logger.warning("Invalid vad_start_of_speech_sensitivity value, API may reject", call_id=self._call_id, value=vad_sos, valid=list(_VALID_SOS))
+        if vad_eos != raw_eos:
+            logger.warning("Coerced invalid vad_end_of_speech_sensitivity to END_SENSITIVITY_HIGH", call_id=self._call_id, value=raw_eos, valid=list(VALID_EOS_SENSITIVITY))
+        if vad_sos != raw_sos:
+            logger.warning("Coerced invalid vad_start_of_speech_sensitivity to START_SENSITIVITY_HIGH", call_id=self._call_id, value=raw_sos, valid=list(VALID_SOS_SENSITIVITY))
         logger.info("Google Live VAD config", call_id=self._call_id, eos=vad_eos, sos=vad_sos, prefix_ms=vad_prefix_ms, silence_ms=vad_silence_ms)
         setup_msg["setup"]["realtimeInputConfig"] = {
             "automaticActivityDetection": {

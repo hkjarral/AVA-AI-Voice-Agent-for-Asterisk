@@ -357,8 +357,8 @@ class GoogleProviderConfig(BaseModel):
     # Google Live VAD / turn-taking tuning (MED-P3). Previously read via getattr with
     # these same defaults but absent from the model, so they were untunable; declare
     # them so YAML/UI values are honored.
-    vad_end_of_speech_sensitivity: str = Field(default="END_SENSITIVITY_HIGH")
-    vad_start_of_speech_sensitivity: str = Field(default="START_SENSITIVITY_HIGH")
+    vad_end_of_speech_sensitivity: Optional[str] = Field(default="END_SENSITIVITY_HIGH")
+    vad_start_of_speech_sensitivity: Optional[str] = Field(default="START_SENSITIVITY_HIGH")
     vad_prefix_padding_ms: int = Field(default=20, ge=0)
     vad_silence_duration_ms: int = Field(default=500, ge=0)
 
