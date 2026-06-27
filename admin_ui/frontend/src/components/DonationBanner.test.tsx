@@ -25,6 +25,11 @@ describe('DonationBanner', () => {
     expect(screen.getByText(/Thanks for running AVA/)).toBeInTheDocument();
   });
 
+  it('uses generic copy for a zero-call install', () => {
+    render(<DonationBanner callCount={0} {...handlers()} />);
+    expect(screen.getByText(/Thanks for running AVA/)).toBeInTheDocument();
+  });
+
   it('Ko-fi link has correct href, target and rel', () => {
     render(<DonationBanner callCount={10} {...handlers()} />);
     const link = screen.getByRole('link', { name: 'Support AVA on Ko-fi' });

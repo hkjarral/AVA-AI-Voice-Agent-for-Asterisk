@@ -19,15 +19,12 @@ export interface UseDonationReminder {
   onKeepReminders: () => void;
 }
 
-/** Reads all state; returns null if storage is unavailable (fail closed). */
+/** Reads all state; returns null if storage is unavailable (fail closed). Pure — no writes. */
 function readState(): ReminderState | null {
   try {
     const now = Date.now();
-    let firstSeenAt = Number(localStorage.getItem(STORAGE_KEYS.firstSeenAt));
-    if (!firstSeenAt || Number.isNaN(firstSeenAt)) {
-      firstSeenAt = now;
-      localStorage.setItem(STORAGE_KEYS.firstSeenAt, String(now));
-    }
+    const stored = Number(localStorage.getItem(STORAGE_KEYS.firstSeenAt));
+    const firstSeenAt = !stored || Number.isNaN(stored) ? now : stored;
     const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
     return {
       firstSeenAt,
@@ -48,6 +45,19 @@ export function useDonationReminder(): UseDonationReminder {
   if (stateRef.current === undefined) {
     stateRef.current = readState();
   }
+
+  // Persist firstSeenAt out of render (readState stays pure).
+  useEffect(() => {
+    const state = stateRef.current;
+    if (!state) return;
+    try {
+      if (!localStorage.getItem(STORAGE_KEYS.firstSeenAt)) {
+        localStorage.setItem(STORAGE_KEYS.firstSeenAt, String(state.firstSeenAt));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // One-shot call-count fetch (NOT the dashboard poll).
   useEffect(() => {

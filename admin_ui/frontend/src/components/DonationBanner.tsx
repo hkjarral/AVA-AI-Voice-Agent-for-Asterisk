@@ -59,7 +59,7 @@ export default function DonationBanner({
   }
 
   const lead =
-    callCount !== undefined
+    callCount !== undefined && callCount > 0
       ? `AVA has handled ${callCount.toLocaleString()} calls for you.`
       : 'Thanks for running AVA.';
 
