@@ -218,3 +218,89 @@ def test_load_contexts_int_0_coerced_to_false():
         cc = orch.get_context_config("support_exported")
     assert cc is not None
     assert cc.email_enabled is False  # strict identity, not == False
+
+
+# ---------------------------------------------------------------------------
+# String coercion: quoted YAML scalars (Codex P2, PR #473)
+# ---------------------------------------------------------------------------
+
+def _orch_email_string(value: str, context_name: str = "ctx"):
+    """Helper: build an orchestrator with email_enabled set to a string value."""
+    return TransportOrchestrator({
+        "contexts": {
+            context_name: {
+                "provider": "local",
+                "email_recipient": "test@x.test",
+                "email_enabled": value,
+            }
+        }
+    })
+
+
+def test_string_false_coerced_to_false():
+    """email_enabled: 'false' (quoted YAML scalar) must resolve to False, not True.
+
+    bool('false') == True in Python; _coerce_optional_bool must handle this.
+    """
+    orch = _orch_email_string("false")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is False
+
+
+def test_string_zero_coerced_to_false():
+    """email_enabled: '0' (quoted YAML scalar) must resolve to False, not True."""
+    orch = _orch_email_string("0")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is False
+
+
+def test_string_true_coerced_to_true():
+    """email_enabled: 'true' (quoted YAML scalar) must resolve to True."""
+    orch = _orch_email_string("true")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is True
+
+
+def test_string_one_coerced_to_true():
+    """email_enabled: '1' (quoted YAML scalar) must resolve to True."""
+    orch = _orch_email_string("1")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is True
+
+
+def test_string_yes_coerced_to_true():
+    """email_enabled: 'yes' must resolve to True."""
+    orch = _orch_email_string("yes")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is True
+
+
+def test_string_no_coerced_to_false():
+    """email_enabled: 'no' must resolve to False."""
+    orch = _orch_email_string("no")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is False
+
+
+def test_unrecognized_string_coerced_to_none():
+    """email_enabled: 'maybe' (unrecognized string) must resolve to None (inherit).
+
+    Safest default: don't force-enable email for unknown string values.
+    """
+    orch = _orch_email_string("maybe")
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("ctx")
+    assert cc is not None
+    assert cc.email_enabled is None

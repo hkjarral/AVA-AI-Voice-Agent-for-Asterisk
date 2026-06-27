@@ -26,6 +26,27 @@ from ..providers.base import ProviderCapabilities
 logger = get_logger(__name__)
 
 
+def _coerce_optional_bool(value: Any) -> Optional[bool]:
+    """Normalize a tri-state on/off value (bool, int 0/1, or YAML string such as
+    'true'/'false'/'0'/'1'/'yes'/'no') to Optional[bool]. None or an unrecognized
+    value means inherit. Avoids the bool('false') == True footgun from quoted YAML
+    scalars and matches the agents.db coercion."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off", ""):
+            return False
+        return None  # unrecognized → inherit (safest: don't force-enable)
+    return None
+
+
 @dataclass
 class AudioProfile:
     """User-defined audio profile from YAML configuration."""
@@ -182,11 +203,7 @@ class TransportOrchestrator:
                     # (EngineAgentStore.resolve() already does the same coercion).
                     email_recipient=context_dict.get('email_recipient'),
                     email_from=context_dict.get('email_from'),
-                    email_enabled=(
-                        None
-                        if context_dict.get('email_enabled') is None
-                        else bool(context_dict.get('email_enabled'))
-                    ),
+                    email_enabled=_coerce_optional_bool(context_dict.get('email_enabled')),
                 )
                 logger.debug("Loaded context mapping", name=name, context=contexts[name])
             except Exception as exc:
