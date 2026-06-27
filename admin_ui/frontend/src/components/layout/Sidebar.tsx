@@ -21,6 +21,8 @@ import {
     Code,
     HelpCircle,
     ExternalLink,
+    Coffee,
+    Heart,
     HardDrive,
     ArrowUpCircle,
     Phone,
@@ -29,6 +31,7 @@ import {
     Lock
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
+import { KOFI_URL, SPONSORS_URL } from '../../config/donation';
 import ChangePasswordModal from '../auth/ChangePasswordModal';
 import { useState } from 'react';
 
@@ -129,6 +132,24 @@ const Sidebar = () => {
                     >
                         <ExternalLink className="w-4 h-4" />
                         API Docs
+                    </a>
+                    <a
+                        href={KOFI_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Support AVA on Ko-fi"
+                        className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                    >
+                        <Coffee className="h-4 w-4" aria-hidden="true" /> Support on Ko-fi
+                    </a>
+                    <a
+                        href={SPONSORS_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Sponsor AVA on GitHub"
+                        className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                    >
+                        <Heart className="h-4 w-4" aria-hidden="true" /> Sponsor
                     </a>
                 </SidebarGroup>
             </nav>
