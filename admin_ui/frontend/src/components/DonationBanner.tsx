@@ -38,7 +38,7 @@ export default function DonationBanner({
           aria-label="Support AVA on Ko-fi"
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-primary-foreground"
         >
-          <Coffee className="h-4 w-4" /> Support on Ko-fi
+          <Coffee className="h-4 w-4" aria-hidden="true" /> Support on Ko-fi
         </a>
         <a
           href={SPONSORS_URL}
@@ -48,12 +48,12 @@ export default function DonationBanner({
           aria-label="Sponsor AVA on GitHub"
           className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5"
         >
-          <Heart className="h-4 w-4" /> Sponsor
+          <Heart className="h-4 w-4" aria-hidden="true" /> Sponsor
         </a>
         <button
           type="button"
           onClick={onLater}
-          className="rounded-md px-3 py-1.5 hover:text-foreground"
+          className="rounded-md px-3 py-1.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring"
         >
           Maybe later
         </button>
@@ -61,9 +61,9 @@ export default function DonationBanner({
           type="button"
           onClick={onDismiss}
           aria-label="Don't show again"
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 hover:text-foreground"
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring"
         >
-          <X className="h-3.5 w-3.5" /> Don&apos;t show again
+          <X className="h-3.5 w-3.5" aria-hidden="true" /> Don&apos;t show again
         </button>
       </div>
     </div>

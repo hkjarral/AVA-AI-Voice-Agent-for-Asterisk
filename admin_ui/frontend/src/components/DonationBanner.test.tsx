@@ -45,5 +45,7 @@ describe('DonationBanner', () => {
     expect(h.onDismiss).toHaveBeenCalled();
     await user.click(screen.getByRole('link', { name: 'Support AVA on Ko-fi' }));
     expect(h.onDonate).toHaveBeenCalled();
+    await user.click(screen.getByRole('link', { name: 'Sponsor AVA on GitHub' }));
+    expect(h.onDonate).toHaveBeenCalledTimes(2);
   });
 });
