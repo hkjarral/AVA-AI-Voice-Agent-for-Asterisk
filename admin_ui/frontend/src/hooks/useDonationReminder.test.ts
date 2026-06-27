@@ -55,4 +55,15 @@ describe('useDonationReminder', () => {
     await waitFor(() => expect(result.current.show).toBe(true));
     expect(result.current.callCount).toBeUndefined();
   });
+
+  it('Support/donate click snoozes ~180 days', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 50 } });
+    const { result } = renderHook(() => useDonationReminder());
+    await waitFor(() => expect(result.current.show).toBe(true));
+    act(() => result.current.onDonate());
+    expect(result.current.show).toBe(false);
+    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
+    // ~180 days out (allow generous slack); must be well beyond a 30-day "later" snooze
+    expect(snooze).toBeGreaterThan(Date.now() + 100 * 24 * 60 * 60 * 1000);
+  });
 });

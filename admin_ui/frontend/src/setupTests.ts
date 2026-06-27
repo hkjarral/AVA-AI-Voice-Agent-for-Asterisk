@@ -2,9 +2,6 @@
 // Node 25+ exposes a stub global.localStorage that lacks .clear() / .setItem() etc.
 // When the test environment is jsdom, override the stubs with jsdom's full
 // Storage implementations so that localStorage.clear() works as expected.
-// Node 25+ exposes a stub global.localStorage that lacks .clear() / .setItem() etc.
-// When the test environment is jsdom, override the stubs with jsdom's full
-// Storage implementations so that localStorage.clear() works as expected.
 // jsdom requires a URL to enable localStorage; vitest's default jsdom config
 // uses 'http://localhost' but Node 25's storage stub may take precedence.
 // We build a fresh jsdom Storage and inject it as the globalThis property.
