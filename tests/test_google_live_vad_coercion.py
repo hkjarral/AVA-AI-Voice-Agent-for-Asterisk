@@ -94,3 +94,16 @@ class TestCoerceSensitivityInvalid:
             "", VALID_EOS_SENSITIVITY, "END_SENSITIVITY_HIGH"
         )
         assert result == "END_SENSITIVITY_HIGH"
+
+    def test_eos_none_coerced_to_high(self):
+        # Pydantic can pass None for a YAML-null value; must coerce, not raise.
+        result = coerce_vad_sensitivity(
+            None, VALID_EOS_SENSITIVITY, "END_SENSITIVITY_HIGH"
+        )
+        assert result == "END_SENSITIVITY_HIGH"
+
+    def test_sos_none_coerced_to_high(self):
+        result = coerce_vad_sensitivity(
+            None, VALID_SOS_SENSITIVITY, "START_SENSITIVITY_HIGH"
+        )
+        assert result == "START_SENSITIVITY_HIGH"

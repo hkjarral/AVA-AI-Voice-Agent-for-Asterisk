@@ -1237,6 +1237,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             >
                                 <option value="START_SENSITIVITY_LOW">Low</option>
                                 <option value="START_SENSITIVITY_HIGH">High (Recommended)</option>
+                                <option value="START_SENSITIVITY_UNSPECIFIED">Unspecified (API default)</option>
                             </select>
                         </div>
                         <div className="space-y-2">
@@ -1251,6 +1252,7 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             >
                                 <option value="END_SENSITIVITY_LOW">Low</option>
                                 <option value="END_SENSITIVITY_HIGH">High (Recommended)</option>
+                                <option value="END_SENSITIVITY_UNSPECIFIED">Unspecified (API default)</option>
                             </select>
                         </div>
                         <div className="space-y-2">
