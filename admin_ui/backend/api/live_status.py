@@ -286,21 +286,17 @@ async def probe_live_status() -> Dict[str, Any]:
     return dict(zip(names, values))
 
 
-def _run_probe_live_status_sync() -> Dict[str, Any]:
-    return asyncio.run(probe_live_status())
-
-
 async def refresh_live_status() -> dict:
-    results = await asyncio.to_thread(_run_probe_live_status_sync)
+    results = await probe_live_status()
     return await status_hub.upsert_components(normalize_probe_results(results))
 
 
 def _poll_interval_seconds() -> float:
-    raw = (os.getenv("LIVE_STATUS_POLL_INTERVAL_SECONDS") or "60").strip()
+    raw = (os.getenv("LIVE_STATUS_POLL_INTERVAL_SECONDS") or "30").strip()
     try:
         return max(2.0, float(raw))
     except ValueError:
-        return 60.0
+        return 30.0
 
 
 def _initial_probe_timeout_seconds() -> float:

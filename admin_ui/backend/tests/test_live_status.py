@@ -222,25 +222,27 @@ async def test_refresh_live_status_uses_existing_probe_handlers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_live_status_offloads_probe_collection(monkeypatch):
+async def test_refresh_live_status_keeps_probe_collection_on_current_loop(monkeypatch):
+    running_loop = asyncio.get_running_loop()
+    observed = {"same_loop": False}
+
     async def fake_probe():
+        observed["same_loop"] = asyncio.get_running_loop() is running_loop
         return _sample_results()
-
-    used = {"to_thread": False}
-    real_to_thread = asyncio.to_thread
-
-    async def spy_to_thread(func, *args, **kwargs):
-        used["to_thread"] = True
-        return await real_to_thread(func, *args, **kwargs)
 
     hub = StatusHub()
     monkeypatch.setattr(live_status, "status_hub", hub)
     monkeypatch.setattr(live_status, "probe_live_status", fake_probe)
-    monkeypatch.setattr(live_status.asyncio, "to_thread", spy_to_thread)
 
     await live_status.refresh_live_status()
 
-    assert used["to_thread"] is True
+    assert observed["same_loop"] is True
+
+
+def test_default_poll_interval_refreshes_before_probe_components_expire(monkeypatch):
+    monkeypatch.delenv("LIVE_STATUS_POLL_INTERVAL_SECONDS", raising=False)
+
+    assert live_status._poll_interval_seconds() < live_status.status_hub.unreachable_after_seconds
 
 
 def test_live_status_endpoint_returns_snapshot(monkeypatch):
