@@ -248,15 +248,16 @@ type keySpec struct {
 
 // keySpecs maps env-var names to their display/validation specs.
 var keySpecs = map[string]keySpec{
-	"OPENAI_API_KEY":     {DisplayName: "OpenAI", Validate: TestOpenAIKey},
-	"DEEPGRAM_API_KEY":   {DisplayName: "Deepgram", Validate: TestDeepgramKey},
-	"ANTHROPIC_API_KEY":  {DisplayName: "Anthropic", Validate: TestAnthropicKey},
-	"ELEVENLABS_API_KEY": {DisplayName: "ElevenLabs", Validate: nil},
-	"TELNYX_API_KEY":     {DisplayName: "Telnyx", Validate: nil},
-	"GROQ_API_KEY":       {DisplayName: "Groq", Validate: nil},
-	"GOOGLE_API_KEY":     {DisplayName: "Google", Validate: nil},
-	"XAI_API_KEY":        {DisplayName: "xAI (Grok)", Validate: nil},
-	"CAMB_API_KEY":       {DisplayName: "Camb.ai", Validate: nil},
+	"OPENAI_API_KEY":      {DisplayName: "OpenAI", Validate: TestOpenAIKey},
+	"DEEPGRAM_API_KEY":    {DisplayName: "Deepgram", Validate: TestDeepgramKey},
+	"ANTHROPIC_API_KEY":   {DisplayName: "Anthropic", Validate: TestAnthropicKey},
+	"ELEVENLABS_API_KEY":  {DisplayName: "ElevenLabs", Validate: nil},
+	"ELEVENLABS_AGENT_ID": {DisplayName: "ElevenLabs Agent ID", Validate: nil},
+	"TELNYX_API_KEY":      {DisplayName: "Telnyx", Validate: nil},
+	"GROQ_API_KEY":        {DisplayName: "Groq", Validate: nil},
+	"GOOGLE_API_KEY":      {DisplayName: "Google", Validate: nil},
+	"XAI_API_KEY":         {DisplayName: "xAI (Grok)", Validate: nil},
+	"CAMB_API_KEY":        {DisplayName: "Camb.ai", Validate: nil},
 }
 
 // stepAPIKeys handles Step 5: API Keys & Validation

@@ -110,6 +110,12 @@ func TestRequiredEnvKeys(t *testing.T) {
 			want:     []string{"OPENAI_API_KEY"},
 		},
 		{
+			name:     "DefaultProvider elevenlabs_agent → ELEVENLABS_AGENT_ID + ELEVENLABS_API_KEY (sorted)",
+			pipeline: "",
+			provider: "elevenlabs_agent",
+			want:     []string{"ELEVENLABS_AGENT_ID", "ELEVENLABS_API_KEY"},
+		},
+		{
 			name:     "cloud_openai all openai adapters → single OPENAI_API_KEY (deduped)",
 			pipeline: "cloud_openai",
 			comps:    PipelineComponents{STT: "openai_stt", LLM: "openai_llm", TTS: "openai_tts"},

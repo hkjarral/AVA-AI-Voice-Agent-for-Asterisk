@@ -37,14 +37,15 @@ var adapterEnvKey = map[string]string{
 }
 
 // providerEnvKey maps full-agent DefaultProvider values to their env vars.
-var providerEnvKey = map[string]string{
-	"openai_realtime":   "OPENAI_API_KEY",
-	"deepgram":          "DEEPGRAM_API_KEY",
-	"google_live":       "GOOGLE_API_KEY",
-	"grok":              "XAI_API_KEY",
-	"elevenlabs_agent":  "ELEVENLABS_API_KEY",
-	// Custom grok* instances (e.g. acme_grok) are intentionally absent: per the
-	// YAML conventions they authenticate via api_key_file, not an env var.
+// elevenlabs_agent requires both the API key and the agent ID.
+// Custom grok* instances (e.g. acme_grok) are intentionally absent: per the
+// YAML conventions they authenticate via api_key_file, not an env var.
+var providerEnvKey = map[string][]string{
+	"openai_realtime":  {"OPENAI_API_KEY"},
+	"deepgram":         {"DEEPGRAM_API_KEY"},
+	"google_live":      {"GOOGLE_API_KEY"},
+	"grok":             {"XAI_API_KEY"},
+	"elevenlabs_agent": {"ELEVENLABS_API_KEY", "ELEVENLABS_AGENT_ID"},
 }
 
 // Config holds all configuration
@@ -79,6 +80,7 @@ type Config struct {
 // named fields (OPENAI_API_KEY, DEEPGRAM_API_KEY, ANTHROPIC_API_KEY).
 var extraEnvKeys = []string{
 	"ELEVENLABS_API_KEY",
+	"ELEVENLABS_AGENT_ID",
 	"TELNYX_API_KEY",
 	"GROQ_API_KEY",
 	"GOOGLE_API_KEY",
@@ -140,8 +142,10 @@ func (c *Config) RequiredEnvKeys() []string {
 	// ai-agent.golden-google-live.yaml set BOTH active_pipeline AND
 	// default_provider, so we must union both sources rather than else-if.
 	if c.DefaultProvider != "" {
-		if envVar, mapped := providerEnvKey[c.DefaultProvider]; mapped {
-			seen[envVar] = true
+		if envVars, mapped := providerEnvKey[c.DefaultProvider]; mapped {
+			for _, ev := range envVars {
+				seen[ev] = true
+			}
 		}
 	}
 
