@@ -1232,11 +1232,10 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             </label>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.vad_start_of_speech_sensitivity || 'START_SENSITIVITY_HIGH'}
+                                value={['START_SENSITIVITY_LOW', 'START_SENSITIVITY_HIGH', 'START_SENSITIVITY_UNSPECIFIED'].includes(config.vad_start_of_speech_sensitivity || '') ? config.vad_start_of_speech_sensitivity : 'START_SENSITIVITY_HIGH'}
                                 onChange={(e) => handleChange('vad_start_of_speech_sensitivity', e.target.value)}
                             >
                                 <option value="START_SENSITIVITY_LOW">Low</option>
-                                <option value="START_SENSITIVITY_MEDIUM">Medium</option>
                                 <option value="START_SENSITIVITY_HIGH">High (Recommended)</option>
                             </select>
                         </div>
@@ -1247,11 +1246,10 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                             </label>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.vad_end_of_speech_sensitivity || 'END_SENSITIVITY_HIGH'}
+                                value={['END_SENSITIVITY_LOW', 'END_SENSITIVITY_HIGH', 'END_SENSITIVITY_UNSPECIFIED'].includes(config.vad_end_of_speech_sensitivity || '') ? config.vad_end_of_speech_sensitivity : 'END_SENSITIVITY_HIGH'}
                                 onChange={(e) => handleChange('vad_end_of_speech_sensitivity', e.target.value)}
                             >
                                 <option value="END_SENSITIVITY_LOW">Low</option>
-                                <option value="END_SENSITIVITY_MEDIUM">Medium</option>
                                 <option value="END_SENSITIVITY_HIGH">High (Recommended)</option>
                             </select>
                         </div>
