@@ -240,63 +240,69 @@ func (w *Wizard) stepPipelineSelection() error {
 	return nil
 }
 
+// keySpec describes how to display and optionally validate a credential.
+// Label is the full human label (e.g. "OpenAI API Key", "ElevenLabs Agent ID") —
+// not every required credential is an API key, so the label is spelled out in full.
+type keySpec struct {
+	Label    string
+	Validate func(string) error // nil means store without network validation
+}
+
+// keySpecs maps env-var names to their display/validation specs.
+var keySpecs = map[string]keySpec{
+	"OPENAI_API_KEY":      {Label: "OpenAI API Key", Validate: TestOpenAIKey},
+	"DEEPGRAM_API_KEY":    {Label: "Deepgram API Key", Validate: TestDeepgramKey},
+	"ANTHROPIC_API_KEY":   {Label: "Anthropic API Key", Validate: TestAnthropicKey},
+	"ELEVENLABS_API_KEY":  {Label: "ElevenLabs API Key", Validate: nil},
+	"ELEVENLABS_AGENT_ID": {Label: "ElevenLabs Agent ID", Validate: nil},
+	"TELNYX_API_KEY":      {Label: "Telnyx API Key", Validate: nil},
+	"GROQ_API_KEY":        {Label: "Groq API Key", Validate: nil},
+	"GOOGLE_API_KEY":      {Label: "Google API Key", Validate: nil},
+	"XAI_API_KEY":         {Label: "xAI (Grok) API Key", Validate: nil},
+	"CAMB_API_KEY":        {Label: "Camb.ai API Key", Validate: nil},
+}
+
 // stepAPIKeys handles Step 5: API Keys & Validation
 func (w *Wizard) stepAPIKeys() error {
 	PrintStep(5, w.totalSteps, "API Keys & Validation")
 
-	// Determine which keys are needed based on pipeline/provider
-	needsOpenAI := w.config.ActivePipeline == "cloud_openai" ||
-		w.config.ActivePipeline == "hybrid_deepgram_openai" ||
-		w.config.DefaultProvider == "openai_realtime"
-
-	needsDeepgram := w.config.ActivePipeline == "cloud_openai" ||
-		w.config.ActivePipeline == "hybrid_deepgram_openai" ||
-		w.config.DefaultProvider == "deepgram"
-
-	// OpenAI
-	if needsOpenAI {
+	required := w.config.RequiredEnvKeys()
+	if len(required) == 0 {
 		fmt.Println()
-		PrintInfo(fmt.Sprintf("OpenAI API Key: %s", GetMaskedKey(w.config.OpenAIKey)))
-		newKey := PromptText("OpenAI API Key (leave blank to keep)", "")
-		if newKey != "" {
-			PrintInfo("Testing OpenAI API key...")
-			if err := TestOpenAIKey(newKey); err != nil {
-				PrintError(fmt.Sprintf("OpenAI test failed: %v", err))
-				if PromptConfirm("Retry?", true) {
-					return w.stepAPIKeys() // Retry this step
-				}
-				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid OpenAI key required")
-				}
-			} else {
-				PrintSuccess("OpenAI API key valid")
-				w.config.OpenAIKey = newKey
-				w.hasChanges = true
-			}
-		}
+		PrintInfo("No cloud API keys required for this pipeline.")
+		return nil
 	}
 
-	// Deepgram
-	if needsDeepgram {
+	for _, envVar := range required {
+		spec, known := keySpecs[envVar]
+		if !known {
+			spec = keySpec{Label: envVar, Validate: nil}
+		}
+
 		fmt.Println()
-		PrintInfo(fmt.Sprintf("Deepgram API Key: %s", GetMaskedKey(w.config.DeepgramKey)))
-		newKey := PromptText("Deepgram API Key (leave blank to keep)", "")
-		if newKey != "" {
-			PrintInfo("Testing Deepgram API key...")
-			if err := TestDeepgramKey(newKey); err != nil {
-				PrintError(fmt.Sprintf("Deepgram test failed: %v", err))
+		PrintInfo(fmt.Sprintf("%s: %s", spec.Label, GetMaskedKey(w.config.GetKey(envVar))))
+		newKey := PromptText(spec.Label+" (leave blank to keep)", "")
+		if newKey == "" {
+			continue
+		}
+
+		if spec.Validate != nil {
+			PrintInfo(fmt.Sprintf("Testing %s...", spec.Label))
+			if err := spec.Validate(newKey); err != nil {
+				PrintError(fmt.Sprintf("%s test failed: %v", spec.Label, err))
 				if PromptConfirm("Retry?", true) {
-					return w.stepAPIKeys() // Retry
+					return w.stepAPIKeys()
 				}
-				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid Deepgram key required")
+				if !PromptConfirm("Continue with invalid value?", false) {
+					return fmt.Errorf("valid %s required", spec.Label)
 				}
 			} else {
-				PrintSuccess("Deepgram API key valid")
-				w.config.DeepgramKey = newKey
-				w.hasChanges = true
+				PrintSuccess(fmt.Sprintf("%s valid", spec.Label))
 			}
 		}
+
+		w.config.SetKey(envVar, newKey)
+		w.hasChanges = true
 	}
 
 	return nil
