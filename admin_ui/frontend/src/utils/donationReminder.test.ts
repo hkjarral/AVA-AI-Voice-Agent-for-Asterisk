@@ -35,6 +35,8 @@ describe('highestLadderValue', () => {
     expect(highestLadderValue(1500)).toBe(1000);
     expect(highestLadderValue(2500)).toBe(2000);
   });
+  it('returns the last fixed milestone exactly at the boundary', () =>
+    expect(highestLadderValue(1000)).toBe(1000));
 });
 
 describe('isEligible', () => {

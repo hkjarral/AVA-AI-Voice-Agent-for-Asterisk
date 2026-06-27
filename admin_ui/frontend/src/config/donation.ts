@@ -1,8 +1,9 @@
-// admin_ui/frontend/src/config/donation.ts
 export const KOFI_URL = 'https://ko-fi.com/asteriskaivoiceagent';
 export const SPONSORS_URL = 'https://github.com/sponsors/hkjarral';
 
 // Reminder ladder: fixed milestones, then repeat every MILESTONE_STEP.
+// Invariant: the last fixed milestone must be a multiple of MILESTONE_STEP —
+// the ladder continues from it in MILESTONE_STEP increments (the tail guard relies on this).
 export const MILESTONES = [10, 25, 50, 100, 200, 500, 1000];
 export const MILESTONE_STEP = 1000;
 

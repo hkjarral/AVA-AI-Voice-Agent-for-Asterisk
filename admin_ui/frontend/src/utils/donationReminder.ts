@@ -23,7 +23,8 @@ export function highestLadderValue(count: number): number {
   for (const m of MILESTONES) {
     if (m <= count) highest = m;
   }
-  if (count >= MILESTONE_STEP) {
+  const lastFixed = MILESTONES[MILESTONES.length - 1];
+  if (count > lastFixed) {
     highest = Math.max(highest, Math.floor(count / MILESTONE_STEP) * MILESTONE_STEP);
   }
   return highest;
