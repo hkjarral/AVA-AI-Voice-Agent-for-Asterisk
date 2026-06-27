@@ -3,6 +3,7 @@ package wizard
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -57,6 +58,138 @@ providers:
 		}
 		if len(cfg.AvailableProviders) != 2 {
 			t.Fatalf("providers = %#v", cfg.AvailableProviders)
+		}
+	})
+}
+
+// TestRequiredEnvKeys verifies that RequiredEnvKeys derives the correct set of
+// cloud API key env vars from the selected pipeline's components, not from
+// hardcoded pipeline names. This is the core fix for #438.
+func TestRequiredEnvKeys(t *testing.T) {
+	cases := []struct {
+		name     string
+		pipeline string
+		comps    PipelineComponents
+		provider string
+		want     []string
+	}{
+		{
+			name:     "local_hybrid uses openai_llm → needs OPENAI_API_KEY",
+			pipeline: "local_hybrid",
+			comps:    PipelineComponents{STT: "local_stt", LLM: "openai_llm", TTS: "local_tts"},
+			want:     []string{"OPENAI_API_KEY"},
+		},
+		{
+			name:     "local_only all local → no cloud keys",
+			pipeline: "local_only",
+			comps:    PipelineComponents{STT: "local_stt", LLM: "local_llm", TTS: "local_tts"},
+			want:     []string{},
+		},
+		{
+			name:     "hybrid_elevenlabs → ELEVENLABS_API_KEY + OPENAI_API_KEY (sorted)",
+			pipeline: "hybrid_elevenlabs",
+			comps:    PipelineComponents{STT: "local_stt", LLM: "openai_llm", TTS: "elevenlabs_tts"},
+			want:     []string{"ELEVENLABS_API_KEY", "OPENAI_API_KEY"},
+		},
+		{
+			name:     "hybrid_deepgram_openai → DEEPGRAM_API_KEY + OPENAI_API_KEY (sorted)",
+			pipeline: "hybrid_deepgram_openai",
+			comps:    PipelineComponents{STT: "local_stt", LLM: "openai_llm", TTS: "deepgram_tts"},
+			want:     []string{"DEEPGRAM_API_KEY", "OPENAI_API_KEY"},
+		},
+		{
+			name:     "custom pipeline with openai_llm + deepgram_tts → both keys (not hardcoded)",
+			pipeline: "my_custom_pipeline",
+			comps:    PipelineComponents{STT: "local_stt", LLM: "openai_llm", TTS: "deepgram_tts"},
+			want:     []string{"DEEPGRAM_API_KEY", "OPENAI_API_KEY"},
+		},
+		{
+			name:     "DefaultProvider openai_realtime → OPENAI_API_KEY",
+			pipeline: "",
+			provider: "openai_realtime",
+			want:     []string{"OPENAI_API_KEY"},
+		},
+		{
+			name:     "cloud_openai all openai adapters → single OPENAI_API_KEY (deduped)",
+			pipeline: "cloud_openai",
+			comps:    PipelineComponents{STT: "openai_stt", LLM: "openai_llm", TTS: "openai_tts"},
+			want:     []string{"OPENAI_API_KEY"},
+		},
+		{
+			name:     "groq_pipeline → GROQ_API_KEY only",
+			pipeline: "groq_pipeline",
+			comps:    PipelineComponents{STT: "groq_stt", LLM: "groq_llm", TTS: "groq_tts"},
+			want:     []string{"GROQ_API_KEY"},
+		},
+		{
+			name:     "cambai_pipeline → CAMB_API_KEY + DEEPGRAM_API_KEY",
+			pipeline: "cambai_pipeline",
+			comps:    PipelineComponents{STT: "deepgram_stt", LLM: "openai_llm", TTS: "cambai_tts"},
+			want:     []string{"CAMB_API_KEY", "DEEPGRAM_API_KEY", "OPENAI_API_KEY"},
+		},
+		{
+			name:     "no pipeline no provider → empty",
+			pipeline: "",
+			provider: "",
+			want:     []string{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				ActivePipeline:  tc.pipeline,
+				DefaultProvider: tc.provider,
+				Pipelines:       make(map[string]PipelineComponents),
+				Keys:            make(map[string]string),
+			}
+			if tc.pipeline != "" {
+				cfg.Pipelines[tc.pipeline] = tc.comps
+			}
+			got := cfg.RequiredEnvKeys()
+			// Normalise nil vs empty slice for comparison.
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("RequiredEnvKeys() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadAvailableTargetsPopulatesPipelines verifies that loadAvailableTargets
+// reads the stt/llm/tts adapter names from the YAML and stores them in Pipelines.
+func TestLoadAvailableTargetsPopulatesPipelines(t *testing.T) {
+	base := `active_pipeline: local_hybrid
+default_provider: local_hybrid
+pipelines:
+  local_hybrid: {stt: local_stt, llm: openai_llm, tts: local_tts}
+providers:
+  openai_realtime: {type: full, capabilities: [stt, llm, tts]}
+`
+	withTempProject(t, base, "", func() {
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		comps, ok := cfg.Pipelines["local_hybrid"]
+		if !ok {
+			t.Fatal("Pipelines[\"local_hybrid\"] not populated")
+		}
+		if comps.LLM != "openai_llm" {
+			t.Errorf("LLM = %q, want %q", comps.LLM, "openai_llm")
+		}
+		if comps.STT != "local_stt" {
+			t.Errorf("STT = %q, want %q", comps.STT, "local_stt")
+		}
+		if comps.TTS != "local_tts" {
+			t.Errorf("TTS = %q, want %q", comps.TTS, "local_tts")
+		}
+		// RequiredEnvKeys should derive OPENAI_API_KEY from local_hybrid's openai_llm.
+		keys := cfg.RequiredEnvKeys()
+		if len(keys) != 1 || keys[0] != "OPENAI_API_KEY" {
+			t.Errorf("RequiredEnvKeys() = %v, want [OPENAI_API_KEY]", keys)
 		}
 	})
 }

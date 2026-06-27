@@ -240,63 +240,66 @@ func (w *Wizard) stepPipelineSelection() error {
 	return nil
 }
 
+// keySpec describes how to display and optionally validate a specific API key.
+type keySpec struct {
+	DisplayName string
+	Validate    func(string) error // nil means store without network validation
+}
+
+// keySpecs maps env-var names to their display/validation specs.
+var keySpecs = map[string]keySpec{
+	"OPENAI_API_KEY":     {DisplayName: "OpenAI", Validate: TestOpenAIKey},
+	"DEEPGRAM_API_KEY":   {DisplayName: "Deepgram", Validate: TestDeepgramKey},
+	"ANTHROPIC_API_KEY":  {DisplayName: "Anthropic", Validate: TestAnthropicKey},
+	"ELEVENLABS_API_KEY": {DisplayName: "ElevenLabs", Validate: nil},
+	"TELNYX_API_KEY":     {DisplayName: "Telnyx", Validate: nil},
+	"GROQ_API_KEY":       {DisplayName: "Groq", Validate: nil},
+	"GOOGLE_API_KEY":     {DisplayName: "Google", Validate: nil},
+	"XAI_API_KEY":        {DisplayName: "xAI (Grok)", Validate: nil},
+	"CAMB_API_KEY":       {DisplayName: "Camb.ai", Validate: nil},
+}
+
 // stepAPIKeys handles Step 5: API Keys & Validation
 func (w *Wizard) stepAPIKeys() error {
 	PrintStep(5, w.totalSteps, "API Keys & Validation")
 
-	// Determine which keys are needed based on pipeline/provider
-	needsOpenAI := w.config.ActivePipeline == "cloud_openai" ||
-		w.config.ActivePipeline == "hybrid_deepgram_openai" ||
-		w.config.DefaultProvider == "openai_realtime"
-
-	needsDeepgram := w.config.ActivePipeline == "cloud_openai" ||
-		w.config.ActivePipeline == "hybrid_deepgram_openai" ||
-		w.config.DefaultProvider == "deepgram"
-
-	// OpenAI
-	if needsOpenAI {
+	required := w.config.RequiredEnvKeys()
+	if len(required) == 0 {
 		fmt.Println()
-		PrintInfo(fmt.Sprintf("OpenAI API Key: %s", GetMaskedKey(w.config.OpenAIKey)))
-		newKey := PromptText("OpenAI API Key (leave blank to keep)", "")
-		if newKey != "" {
-			PrintInfo("Testing OpenAI API key...")
-			if err := TestOpenAIKey(newKey); err != nil {
-				PrintError(fmt.Sprintf("OpenAI test failed: %v", err))
-				if PromptConfirm("Retry?", true) {
-					return w.stepAPIKeys() // Retry this step
-				}
-				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid OpenAI key required")
-				}
-			} else {
-				PrintSuccess("OpenAI API key valid")
-				w.config.OpenAIKey = newKey
-				w.hasChanges = true
-			}
-		}
+		PrintInfo("No cloud API keys required for this pipeline.")
+		return nil
 	}
 
-	// Deepgram
-	if needsDeepgram {
+	for _, envVar := range required {
+		spec, known := keySpecs[envVar]
+		if !known {
+			spec = keySpec{DisplayName: envVar, Validate: nil}
+		}
+
 		fmt.Println()
-		PrintInfo(fmt.Sprintf("Deepgram API Key: %s", GetMaskedKey(w.config.DeepgramKey)))
-		newKey := PromptText("Deepgram API Key (leave blank to keep)", "")
-		if newKey != "" {
-			PrintInfo("Testing Deepgram API key...")
-			if err := TestDeepgramKey(newKey); err != nil {
-				PrintError(fmt.Sprintf("Deepgram test failed: %v", err))
+		PrintInfo(fmt.Sprintf("%s API Key: %s", spec.DisplayName, GetMaskedKey(w.config.GetKey(envVar))))
+		newKey := PromptText(spec.DisplayName+" API Key (leave blank to keep)", "")
+		if newKey == "" {
+			continue
+		}
+
+		if spec.Validate != nil {
+			PrintInfo(fmt.Sprintf("Testing %s API key...", spec.DisplayName))
+			if err := spec.Validate(newKey); err != nil {
+				PrintError(fmt.Sprintf("%s test failed: %v", spec.DisplayName, err))
 				if PromptConfirm("Retry?", true) {
-					return w.stepAPIKeys() // Retry
+					return w.stepAPIKeys()
 				}
 				if !PromptConfirm("Continue with invalid key?", false) {
-					return fmt.Errorf("valid Deepgram key required")
+					return fmt.Errorf("valid %s key required", spec.DisplayName)
 				}
 			} else {
-				PrintSuccess("Deepgram API key valid")
-				w.config.DeepgramKey = newKey
-				w.hasChanges = true
+				PrintSuccess(fmt.Sprintf("%s API key valid", spec.DisplayName))
 			}
 		}
+
+		w.config.SetKey(envVar, newKey)
+		w.hasChanges = true
 	}
 
 	return nil
