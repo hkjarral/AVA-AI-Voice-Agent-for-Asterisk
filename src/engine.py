@@ -12663,25 +12663,58 @@ class Engine:
         
         session.music_snoop_channel_id = None
     
-    def _compute_config_hash(self) -> str:
-        """Compute a hash of the current config for pending-changes detection."""
+    def _compute_config_hash(self, config=None) -> str:
+        """Compute a hash of a config for pending-changes detection.
+
+        Defaults to ``self.config`` when ``config`` is None so existing callers
+        keep working; pass a freshly loaded config to compare disk vs running.
+        """
         import hashlib
         import json
+        if config is None:
+            config = self.config
         try:
             # Convert config to dict and hash it
-            if hasattr(self.config, 'model_dump'):
-                config_dict = self.config.model_dump()
-            elif hasattr(self.config, 'dict'):
-                config_dict = self.config.dict()
+            if hasattr(config, 'model_dump'):
+                config_dict = config.model_dump()
+            elif hasattr(config, 'dict'):
+                config_dict = config.dict()
             else:
                 config_dict = {}
-            
+
             # Create a stable JSON representation (sorted keys)
             config_json = json.dumps(config_dict, sort_keys=True, default=str)
             return hashlib.sha256(config_json.encode()).hexdigest()[:16]
         except Exception as e:
             logger.debug(f"Failed to compute config hash: {e}")
             return "unknown"
+
+    def _compute_config_state(self) -> dict:
+        """Compare the running (loaded) config against what's on disk.
+
+        Lets the Admin UI drive a "restart required" banner from engine truth
+        instead of stale client-side state. Never raises: if the on-disk config
+        can't be parsed/validated we report it invalid rather than claiming a
+        restart is needed.
+        """
+        running_hash = self._config_hash
+        try:
+            disk_config = load_config()
+        except Exception as e:
+            logger.warning("Failed to load disk config for state check", error=str(e))
+            return {
+                "running_config_hash": running_hash,
+                "disk_config_hash": None,
+                "restart_required": False,
+                "disk_config_valid": False,
+            }
+        disk_hash = self._compute_config_hash(disk_config)
+        return {
+            "running_config_hash": running_hash,
+            "disk_config_hash": disk_hash,
+            "restart_required": running_hash != disk_hash,
+            "disk_config_valid": True,
+        }
     
     @staticmethod
     def _canonicalize_encoding(value: Optional[str]) -> str:
@@ -14007,6 +14040,7 @@ class Engine:
             # (similar to /mcp/status) and should not include secrets or PII.
             app.router.add_get('/tools/definitions', self._tools_definitions_handler)
             app.router.add_get('/sessions/stats', self._sessions_stats_handler)
+            app.router.add_get('/config/state', self._config_state_handler)
             runner = web.AppRunner(app)
             await runner.setup()
             # Host/port configurable via YAML health block with environment overrides (AAVA-30)
@@ -15126,6 +15160,10 @@ class Engine:
         except Exception as exc:
             logger.debug("Ready handler failed", error=str(exc), exc_info=True)
             return web.json_response({"ready": False, "error": "internal_error"}, status=500)
+
+    async def _config_state_handler(self, request):
+        """Report whether the on-disk config differs from the running config."""
+        return web.json_response(self._compute_config_state())
 
     async def _metrics_handler(self, request):
         """Expose Prometheus metrics."""
