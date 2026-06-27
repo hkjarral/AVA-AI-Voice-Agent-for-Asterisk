@@ -43,6 +43,8 @@ var providerEnvKey = map[string]string{
 	"google_live":       "GOOGLE_API_KEY",
 	"grok":              "XAI_API_KEY",
 	"elevenlabs_agent":  "ELEVENLABS_API_KEY",
+	// Custom grok* instances (e.g. acme_grok) are intentionally absent: per the
+	// YAML conventions they authenticate via api_key_file, not an env var.
 }
 
 // Config holds all configuration
