@@ -246,6 +246,19 @@ describe('SystemTopology dashboard health', () => {
         expect(requestedUrls).toContain('/api/system/sessions');
     });
 
+    it('uses legacy health/session polling when live status is disabled after a snapshot error', async () => {
+        vi.useFakeTimers();
+        mockTopologyApis();
+
+        renderTopology({ liveStatusEnabled: false, liveStatusSnapshot: liveStatusSnapshot() });
+        await flushAsyncEffects();
+
+        const requestedUrls = vi.mocked(axios.get).mock.calls.map(([url]) => url);
+        expect(requestedUrls).toContain('/api/config/yaml');
+        expect(requestedUrls).toContain('/api/system/health');
+        expect(requestedUrls).toContain('/api/system/sessions');
+    });
+
     it('shows healthy for cloud Google Live when Local AI is optional and stopped', async () => {
         vi.useFakeTimers();
         mockTopologyApis();

@@ -135,6 +135,21 @@ def test_platform_failed_checks_are_error_not_unreachable():
     assert components["platform"]["errors"] == ["Unsupported architecture"]
 
 
+def test_ai_engine_probe_preserves_degraded_health_without_provider_warnings():
+    results = _sample_results()
+    ai_details = results["health"]["ai_engine"]["details"]
+    ai_details["status"] = "degraded"
+    ai_details["ari_connected"] = False
+    ai_details["providers"] = {"openai_realtime": {"ready": True}}
+
+    components = live_status.normalize_probe_results(results)
+
+    assert components["ai_engine"]["state"] == "degraded"
+    assert components["ai_engine"]["summary"] == "AI Engine degraded"
+    assert "health status: degraded" in components["ai_engine"]["warnings"]
+    assert "ARI disconnected" in components["ai_engine"]["warnings"]
+
+
 @pytest.mark.asyncio
 async def test_status_hub_marks_stale_then_unreachable():
     now = {"mono": 100.0, "wall": "2026-06-26T00:00:00Z"}

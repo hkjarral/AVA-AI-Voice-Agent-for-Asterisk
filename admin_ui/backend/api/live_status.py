@@ -115,7 +115,7 @@ def normalize_probe_results(results: Dict[str, Any]) -> Dict[str, dict]:
         ai = health.get("ai_engine") or {}
         ai_details = ai.get("details") or {}
         ai_connected = ai.get("status") == "connected"
-        ai_healthy = ai_details.get("status") in {None, "healthy", "ok"} and ai_connected
+        ai_health_status = str(ai_details.get("status") or "healthy").lower()
         providers = ai_details.get("providers") or {}
         provider_warnings = [
             f"{name}: {info.get('reason') or 'not ready'}"
@@ -126,9 +126,22 @@ def normalize_probe_results(results: Dict[str, Any]) -> Dict[str, dict]:
         if ai.get("warning"):
             ai_warnings.append(ai["warning"])
         ai_warnings.extend(provider_warnings)
+        if ai_connected and ai_health_status not in {"healthy", "ok"}:
+            ai_warnings.append(f"health status: {ai_health_status}")
+        if ai_connected and ai_details.get("ari_connected") is False:
+            ai_warnings.append("ARI disconnected")
+        ai_degraded = ai_connected and (
+            bool(provider_warnings)
+            or ai_health_status not in {"healthy", "ok"}
+            or ai_details.get("ari_connected") is False
+        )
         components["ai_engine"] = component(
-            state=_state_from_bool(ai_connected, degraded=bool(provider_warnings) and ai_healthy),
-            summary="AI Engine connected" if ai_connected else "AI Engine unreachable",
+            state=_state_from_bool(ai_connected, degraded=ai_degraded),
+            summary=(
+                "AI Engine degraded"
+                if ai_degraded
+                else "AI Engine connected" if ai_connected else "AI Engine unreachable"
+            ),
             details={
                 "ari_connected": ai_details.get("ari_connected"),
                 "audio_transport": ai_details.get("audio_transport"),

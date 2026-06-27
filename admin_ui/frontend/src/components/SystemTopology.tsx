@@ -106,7 +106,7 @@ const POLL_BACKOFF_CAP_MS = 30000;
 const nextPollDelay = (base: number, ok: boolean, current: number): number =>
   ok ? base : Math.min(current * 2, POLL_BACKOFF_CAP_MS);
 
-export const SystemTopology = ({ liveStatusSnapshot = null }: SystemTopologyProps) => {
+export const SystemTopology = ({ liveStatusEnabled = true, liveStatusSnapshot = null }: SystemTopologyProps) => {
   const [state, setState] = useState<TopologyState>({
     aiEngineStatus: 'unknown',
     aiEngineDegraded: false,
@@ -130,7 +130,7 @@ export const SystemTopology = ({ liveStatusSnapshot = null }: SystemTopologyProp
   // Kept in a ref so updates don't trigger re-renders; the debounced
   // state lands in `state.providerReady` which IS reactive.
   const providerStreaks = useRef<Map<string, number>>(new Map());
-  const useLiveStatusSource = liveStatusSnapshot != null;
+  const useLiveStatusSource = liveStatusEnabled && liveStatusSnapshot != null;
 
   useEffect(() => {
     if (!liveStatusSnapshot) return;
