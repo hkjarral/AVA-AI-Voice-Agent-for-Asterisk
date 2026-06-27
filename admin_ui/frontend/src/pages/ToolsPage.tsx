@@ -12,7 +12,7 @@ import HTTPToolForm from '../components/config/HTTPToolForm';
 import { useAuth } from '../auth/AuthContext';
 import { sanitizeConfigForSave } from '../utils/configSanitizers';
 import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
-import { usePendingChanges } from '../hooks/usePendingChanges';
+import { useRestartRequired } from '../hooks/useRestartRequired';
 
 type ToolPhase = 'in_call' | 'pre_call' | 'post_call' | 'catalog';
 
@@ -41,7 +41,7 @@ const ToolsPage = () => {
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
-    const { pendingRestart, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
     const [toolCatalog, setToolCatalog] = useState<ToolDef[]>([]);
@@ -133,7 +133,7 @@ const ToolsPage = () => {
                 headers: { Authorization: `Bearer ${token}` },
                 timeout: 30000  // 30 second timeout
             });
-            setPendingChanges('restart');
+            await refetch();
             if (successToast) toast.success(successToast);
         } catch (err: any) {
             console.error('Failed to save config', err);
@@ -175,7 +175,7 @@ const ToolsPage = () => {
                 return;
             }
 
-            clearPendingChanges();
+            await refetch();
             toast.success('AI Engine restarted! Changes are now active.');
         } catch (error: any) {
             toast.error('Failed to restart AI Engine', { description: error.response?.data?.detail || error.message });
@@ -258,27 +258,26 @@ const ToolsPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Tool configuration changes require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        Tool configuration changes require an AI Engine restart to take effect.
+                    </div>
+                    <button
+                        onClick={() => handleRestartAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleRestartAIEngine(false)}
-                    disabled={restartingEngine || !pendingRestart}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${pendingRestart
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium'
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                        } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
-                </button>
-            </div>
+            )}
             <div className="flex justify-between items-center">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">Tools & Capabilities</h1>

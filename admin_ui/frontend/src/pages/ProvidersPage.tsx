@@ -11,7 +11,7 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import HelpTooltip from '../components/ui/HelpTooltip';
-import { usePendingChanges } from '../hooks/usePendingChanges';
+import { useRestartRequired } from '../hooks/useRestartRequired';
 import { localAIStatusFromLiveSnapshot } from '../utils/liveStatus';
 
 // Provider Forms
@@ -46,7 +46,7 @@ const ProvidersPage: React.FC = () => {
     const [testResults, setTestResults] = useState<{ [key: string]: { success: boolean; message: string } | undefined }>({});
     const [showAddProvidersModal, setShowAddProvidersModal] = useState(false);
     const [selectedTemplates, setSelectedTemplates] = useState<string[]>([]);
-    const { pendingRestart, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [localAIStatus, setLocalAIStatus] = useState<any>(null);
     const [providerHealth, setProviderHealth] = useState<Record<string, { status: string; total: number; failures: number; summary: string }>>({});
@@ -158,7 +158,7 @@ const ProvidersPage: React.FC = () => {
             const sanitized = sanitizeConfigForSave(normalized);
             await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
             setConfig(sanitized);
-            setPendingChanges('restart');
+            await refetch();
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -431,7 +431,7 @@ const ProvidersPage: React.FC = () => {
             }
 
             if (response.data.status === 'success') {
-                clearPendingChanges();
+                await refetch();
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
@@ -809,27 +809,26 @@ const ProvidersPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    Provider configuration changes require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        Provider configuration changes require an AI Engine restart to take effect.
+                    </div>
+                    <button
+                        onClick={() => handleReloadAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${pendingRestart
-                        ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium'
-                        : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                        } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
-                </button>
-            </div>
+            )}
 
             {error && (
                 <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">

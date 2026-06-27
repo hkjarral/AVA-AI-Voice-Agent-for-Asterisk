@@ -13,6 +13,7 @@ import { ConfigCard } from '../components/ui/ConfigCard';
 import { Modal } from '../components/ui/Modal';
 import ContextForm from '../components/config/ContextForm';
 import { usePendingChanges } from '../hooks/usePendingChanges';
+import { useRestartRequired } from '../hooks/useRestartRequired';
 
 const READ_ONLY = true;
 
@@ -35,7 +36,11 @@ const ContextsPage = () => {
     const [editingContext, setEditingContext] = useState<string | null>(null);
     const [contextForm, setContextForm] = useState<any>({});
     const [isNewContext, setIsNewContext] = useState(false);
-    const { pendingRestart: pendingApply, applyMethod, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    // applyMethod (hot_reload vs restart) still drives the Apply button label,
+    // confirm dialog, and apply endpoint selection. Banner VISIBILITY is now
+    // server-driven via useRestartRequired so it can't go stale.
+    const { applyMethod, setPendingChanges, clearPendingChanges } = usePendingChanges();
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
 
     useEffect(() => {
@@ -175,6 +180,7 @@ const ContextsPage = () => {
             setConfig(sanitized);
             const method = (res.data?.recommended_apply_method || 'restart') as 'hot_reload' | 'restart';
             setPendingChanges(method);
+            await refetch();
         } catch (err) {
             console.error('Failed to save config', err);
             toast.error('Failed to save configuration');
@@ -206,6 +212,7 @@ const ContextsPage = () => {
 
             if (status === 'degraded') {
                 clearPendingChanges();
+                await refetch();
                 toast.warning('AI Engine restarted but may not be fully healthy', { description: response.data.output || 'Please verify manually' });
                 fetchConfig(true);
                 return;
@@ -215,12 +222,14 @@ const ContextsPage = () => {
                 // Hot reload succeeded but indicated some changes require a restart (e.g. providers added/removed,
                 // MCP reload deferred due to active calls).
                 setPendingChanges('restart');
+                await refetch();
                 toast.warning(response.data.message || 'Hot reload applied partially; restart AI Engine to fully apply changes.');
                 return;
             }
 
             if (status === 'success') {
                 clearPendingChanges();
+                await refetch();
                 toast.success(applyMethod === 'hot_reload'
                     ? 'AI Engine hot reloaded! Changes apply to new calls.'
                     : 'AI Engine restarted! Changes are now active.');
@@ -233,6 +242,7 @@ const ContextsPage = () => {
             // completed so the UI doesn't get stuck showing "Apply Changes" forever.
             if (response.status === 200) {
                 clearPendingChanges();
+                await refetch();
                 toast.success('AI Engine updated. Please verify with a test call and logs.');
                 fetchConfig(true);
                 return;
@@ -397,7 +407,7 @@ const ContextsPage = () => {
                 </span>
             </div>
 
-            {pendingApply && (
+            {restartRequired && (
                 <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
                         <AlertCircle className="w-5 h-5 mr-2" />

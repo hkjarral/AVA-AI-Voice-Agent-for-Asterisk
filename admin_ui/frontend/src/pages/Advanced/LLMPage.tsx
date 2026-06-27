@@ -10,6 +10,7 @@ import { FormInput } from '../../components/ui/FormComponents';
 import HelpTooltip from '../../components/ui/HelpTooltip';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 import { localAIStatusFromLiveSnapshot } from '../../utils/liveStatus';
+import { useRestartRequired } from '../../hooks/useRestartRequired';
 
 const CHAT_FORMAT_OPTIONS = [
     { value: '', label: '(Legacy Phi-style — no chat template)' },
@@ -26,7 +27,7 @@ const LLMPage = () => {
     const [loading, setLoading] = useState(true);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
     const [saving, setSaving] = useState(false);
-    const [pendingRestart, setPendingRestart] = useState(false);
+    const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [localCapability, setLocalCapability] = useState<any>(null);
     const [localConnected, setLocalConnected] = useState(false);
@@ -107,7 +108,7 @@ const LLMPage = () => {
             const yamlOk = yamlSave.status === 'fulfilled';
             const envOk = envSave.status === 'fulfilled';
             if (yamlOk || envOk) {
-                setPendingRestart(true);
+                await refetch();
             }
             if (!yamlOk || !envOk) {
                 const yamlState = yamlOk ? 'ok' : 'failed';
@@ -152,7 +153,7 @@ const LLMPage = () => {
             }
 
             if (response.data.status === 'success') {
-                setPendingRestart(false);
+                await refetch();
                 toast.success('AI Engine restarted! Changes are now active.');
             }
         } catch (error: any) {
@@ -210,28 +211,26 @@ const LLMPage = () => {
 
     return (
         <div className="space-y-6">
-            <div className={`${pendingRestart ? 'bg-orange-500/15 border-orange-500/30' : 'bg-yellow-500/10 border-yellow-500/20'} border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between`}>
-                <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 mr-2" />
-                    LLM configuration changes require an AI Engine restart to take effect.
+            {restartRequired && (
+                <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
+                    <div className="flex items-center">
+                        <AlertCircle className="w-5 h-5 mr-2" />
+                        LLM configuration changes require an AI Engine restart to take effect.
+                    </div>
+                    <button
+                        onClick={() => handleReloadAIEngine(false)}
+                        disabled={restartingEngine}
+                        className="flex items-center text-xs px-3 py-1.5 rounded transition-colors bg-orange-500 text-white hover:bg-orange-600 font-medium disabled:opacity-50"
+                    >
+                        {restartingEngine ? (
+                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                        ) : (
+                            <RefreshCw className="w-3 h-3 mr-1.5" />
+                        )}
+                        {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
+                    </button>
                 </div>
-                <button
-                    onClick={() => handleReloadAIEngine(false)}
-                    disabled={restartingEngine}
-                    className={`flex items-center text-xs px-3 py-1.5 rounded transition-colors ${
-                        pendingRestart 
-                            ? 'bg-orange-500 text-white hover:bg-orange-600 font-medium' 
-                            : 'bg-yellow-500/20 hover:bg-yellow-500/30'
-                    } disabled:opacity-50`}
-                >
-                    {restartingEngine ? (
-                        <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
-                    ) : (
-                        <RefreshCw className="w-3 h-3 mr-1.5" />
-                    )}
-                    {restartingEngine ? 'Restarting...' : 'Restart AI Engine'}
-                </button>
-            </div>
+            )}
 
             <div className="flex justify-between items-center">
                 <div>
