@@ -6,6 +6,7 @@ We actively support the following versions with security updates:
 
 | Version | Supported          | End of Support |
 | ------- | ------------------ | -------------- |
+| 7.2.x   | :white_check_mark: | TBD            |
 | 7.1.x   | :white_check_mark: | TBD            |
 | 7.0.x   | :white_check_mark: | TBD            |
 | 6.5.x   | :white_check_mark: | TBD            |

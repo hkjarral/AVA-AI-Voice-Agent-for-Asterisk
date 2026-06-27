@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.2.0] - 2026-06-27
+
+### Added
+
+- **Push-based live-status hub for the dashboard and system pages (#476)** (`admin_ui/backend/api/live_status.py`, `admin_ui/backend/services/status_hub.py`, `admin_ui/frontend/src/hooks/useLiveStatus.ts`, `src/live_status_publisher.py`, `local_ai_server/live_status_publisher.py`): the Admin UI gains a live-status hub — an authenticated publish endpoint (`POST /api/live-status/publish`), a snapshot endpoint, and a Server-Sent Events stream — and `ai_engine` and `local_ai_server` now **push** their readiness to it. The Dashboard, System Topology, Models, Providers, LLM, and Environment views consume this pushed status as the primary source, with the existing `/api/system/*` probes kept as fallback and enrichment, so the UI converges faster after a (re)start and no longer reports "unreachable"/stale while services are actually starting or already healthy (e.g. the Models page no longer shows Local AI as unreachable when a pushed degraded status exists). Push auth uses `LIVE_STATUS_PUSH_TOKEN` (falling back to `HEALTH_API_TOKEN`); probe cadence and cold-start timeout are configurable via `LIVE_STATUS_POLL_INTERVAL_SECONDS` / `LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS`, read live from `.env` so Env-UI edits apply without a manual recreate. New keys are documented in `.env.example` and `docs/ENVIRONMENT_VARIABLES.md`. Covered by backend, engine, Local AI, hook, topology, and Models-page tests.
+
 ## [7.1.2] - 2026-06-27
 
 ### Added

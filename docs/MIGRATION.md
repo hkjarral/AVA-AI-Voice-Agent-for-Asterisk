@@ -2,6 +2,22 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.x to v7.2.0
+
+**Fully back-compatible.** v7.2.0 is additive — no config, schema, or behavioral changes for existing deployments.
+
+### What's new (opt-in)
+
+- **Live-status hub** — the Admin UI dashboard now aggregates system component status via `/api/live-status` and `/api/live-status/stream` (SSE). No operator action required; the background probe loop starts automatically. Optionally set `LIVE_STATUS_PUSH_TOKEN` in `.env` to enable push updates from `ai_engine` and `local_ai_server` (see [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md#live-status-dashboard)).
+
+### Upgrade
+
+```bash
+git fetch --tags
+git checkout v7.2.0
+docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
+```
+
 ## v6.4.2 to v6.5.x
 
 **Fully back-compatible.** v6.5.0, v6.5.1, v6.5.2, v6.5.3, and v6.5.4 are additive — no required config changes, no breaking schema changes, no behavioral changes for existing single-instance deployments. v6.5.2 does introduce one **breaking change for multi-instance deployments**: short provider aliases (`AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent`) are now rejected at config load — use exact provider instance keys instead. v6.5.3 is a **mandatory hotfix** for OpenAI Realtime users (OpenAI sunset the Beta API on 2026-05-12, so any deployment running v6.5.2 or earlier with OpenAI Realtime will fail until upgraded). v6.5.4 follows up by bringing all remaining code paths (Pydantic defaults, Admin UI templates, wizard backend, etc.) in line with the post-2026-05 GA reality — see "New in v6.5.4" below.
