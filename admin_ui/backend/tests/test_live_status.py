@@ -417,6 +417,56 @@ def test_live_status_publish_token_prefers_dotenv_over_stale_process_env(monkeyp
     assert response.status_code == 200
 
 
+def test_poll_interval_prefers_dotenv_over_process_env(monkeypatch):
+    monkeypatch.setenv("LIVE_STATUS_POLL_INTERVAL_SECONDS", "10")
+    monkeypatch.setattr(
+        live_status.system_api,
+        "_dotenv_value",
+        lambda key: "45" if key == "LIVE_STATUS_POLL_INTERVAL_SECONDS" else None,
+    )
+
+    assert live_status._poll_interval_seconds() == 45.0
+
+
+def test_poll_interval_falls_back_to_process_env_when_dotenv_absent(monkeypatch):
+    monkeypatch.setenv("LIVE_STATUS_POLL_INTERVAL_SECONDS", "60")
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
+
+    assert live_status._poll_interval_seconds() == 60.0
+
+
+def test_poll_interval_uses_default_when_both_absent(monkeypatch):
+    monkeypatch.delenv("LIVE_STATUS_POLL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
+
+    assert live_status._poll_interval_seconds() == 30.0
+
+
+def test_initial_probe_timeout_prefers_dotenv_over_process_env(monkeypatch):
+    monkeypatch.setenv("LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(
+        live_status.system_api,
+        "_dotenv_value",
+        lambda key: "5" if key == "LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS" else None,
+    )
+
+    assert live_status._initial_probe_timeout_seconds() == 5.0
+
+
+def test_initial_probe_timeout_falls_back_to_process_env_when_dotenv_absent(monkeypatch):
+    monkeypatch.setenv("LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS", "3")
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
+
+    assert live_status._initial_probe_timeout_seconds() == 3.0
+
+
+def test_initial_probe_timeout_uses_default_when_both_absent(monkeypatch):
+    monkeypatch.delenv("LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setattr(live_status.system_api, "_dotenv_value", lambda key: None)
+
+    assert live_status._initial_probe_timeout_seconds() == 2.0
+
+
 def test_encode_sse_formats_snapshot_event():
     encoded = live_status.encode_sse("snapshot", {"hello": "world"}, 42)
 

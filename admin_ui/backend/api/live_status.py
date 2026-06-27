@@ -305,7 +305,11 @@ async def refresh_live_status() -> dict:
 
 
 def _poll_interval_seconds() -> float:
-    raw = (os.getenv("LIVE_STATUS_POLL_INTERVAL_SECONDS") or "30").strip()
+    raw = (
+        system_api._dotenv_value("LIVE_STATUS_POLL_INTERVAL_SECONDS")
+        or os.getenv("LIVE_STATUS_POLL_INTERVAL_SECONDS")
+        or "30"
+    ).strip()
     try:
         return max(2.0, float(raw))
     except ValueError:
@@ -313,7 +317,11 @@ def _poll_interval_seconds() -> float:
 
 
 def _initial_probe_timeout_seconds() -> float:
-    raw = (os.getenv("LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS") or "2").strip()
+    raw = (
+        system_api._dotenv_value("LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS")
+        or os.getenv("LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS")
+        or "2"
+    ).strip()
     try:
         return max(0.1, float(raw))
     except ValueError:
@@ -328,7 +336,6 @@ def _ensure_probe_loop() -> None:
 
 
 async def _probe_loop() -> None:
-    interval = _poll_interval_seconds()
     while True:
         try:
             await refresh_live_status()
@@ -336,6 +343,7 @@ async def _probe_loop() -> None:
             raise
         except Exception as exc:
             logger.debug("live-status probe refresh failed: %s", exc)
+        interval = _poll_interval_seconds()
         await asyncio.sleep(interval)
 
 
