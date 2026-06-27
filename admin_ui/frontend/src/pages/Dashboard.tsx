@@ -273,6 +273,7 @@ const Dashboard = () => {
                     onLater={donation.onLater}
                     onDismiss={donation.onDismiss}
                     onDonate={donation.onDonate}
+                    onAlreadyDonated={donation.onAlreadyDonated}
                 />
             )}
 

@@ -6,6 +6,7 @@ interface DonationBannerProps {
   onLater: () => void;
   onDismiss: () => void;
   onDonate: () => void;
+  onAlreadyDonated: () => void;
 }
 
 export default function DonationBanner({
@@ -13,6 +14,7 @@ export default function DonationBanner({
   onLater,
   onDismiss,
   onDonate,
+  onAlreadyDonated,
 }: DonationBannerProps) {
   const lead =
     callCount !== undefined
@@ -50,6 +52,13 @@ export default function DonationBanner({
         >
           <Heart className="h-4 w-4" aria-hidden="true" /> Sponsor
         </a>
+        <button
+          type="button"
+          onClick={onAlreadyDonated}
+          className="rounded-md px-3 py-1.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring"
+        >
+          I already donated
+        </button>
         <button
           type="button"
           onClick={onLater}

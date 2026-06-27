@@ -4,9 +4,9 @@ import {
   STORAGE_KEYS,
   SESSION_KEY,
   SNOOZE_LATER_MS,
-  SNOOZE_DONATE_MS,
+  SNOOZE_DONATED_MS,
 } from '../config/donation';
-import { ReminderState, isEligible, highestLadderValue } from '../utils/donationReminder';
+import { ReminderState, isEligible } from '../utils/donationReminder';
 
 export interface UseDonationReminder {
   show: boolean;
@@ -14,6 +14,7 @@ export interface UseDonationReminder {
   onLater: () => void;
   onDismiss: () => void;
   onDonate: () => void;
+  onAlreadyDonated: () => void;
 }
 
 /** Reads all state; returns null if storage is unavailable (fail closed). */
@@ -25,16 +26,11 @@ function readState(): ReminderState | null {
       firstSeenAt = now;
       localStorage.setItem(STORAGE_KEYS.firstSeenAt, String(now));
     }
-    const num = (k: string) => {
-      const v = Number(localStorage.getItem(k));
-      return Number.isNaN(v) ? 0 : v;
-    };
+    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
     return {
       firstSeenAt,
-      snoozeUntil: num(STORAGE_KEYS.snoozeUntil),
+      snoozeUntil: Number.isNaN(snooze) ? 0 : snooze,
       dismissedForever: localStorage.getItem(STORAGE_KEYS.dismissedForever) === 'true',
-      lastMilestoneShown: num(STORAGE_KEYS.lastMilestoneShown),
-      timeFallbackUsed: localStorage.getItem(STORAGE_KEYS.timeFallbackUsed) === 'true',
       shownThisSession: sessionStorage.getItem(SESSION_KEY) === 'true',
     };
   } catch {
@@ -60,7 +56,7 @@ export function useDonationReminder(): UseDonationReminder {
         if (active) setCallCount(r.data?.total_calls);
       })
       .catch(() => {
-        /* leave undefined → time fallback still applies */
+        /* leave undefined → aged-in fallback still applies */
       })
       .finally(() => {
         if (active) setCountResolved(true);
@@ -85,14 +81,9 @@ export function useDonationReminder(): UseDonationReminder {
     }
   }, [countResolved, callCount]);
 
-  const advanceAndSnooze = (snoozeMs: number) => {
+  const snooze = (ms: number) => {
     try {
-      const now = Date.now();
-      const reached = highestLadderValue(callCount ?? 0);
-      const prev = Number(localStorage.getItem(STORAGE_KEYS.lastMilestoneShown)) || 0;
-      localStorage.setItem(STORAGE_KEYS.lastMilestoneShown, String(Math.max(prev, reached)));
-      localStorage.setItem(STORAGE_KEYS.snoozeUntil, String(now + snoozeMs));
-      localStorage.setItem(STORAGE_KEYS.timeFallbackUsed, 'true');
+      localStorage.setItem(STORAGE_KEYS.snoozeUntil, String(Date.now() + ms));
     } catch {
       /* ignore */
     }
@@ -102,8 +93,9 @@ export function useDonationReminder(): UseDonationReminder {
   return {
     show,
     callCount,
-    onLater: () => advanceAndSnooze(SNOOZE_LATER_MS),
-    onDonate: () => advanceAndSnooze(SNOOZE_DONATE_MS),
+    onLater: () => snooze(SNOOZE_LATER_MS),
+    onDonate: () => snooze(SNOOZE_LATER_MS),
+    onAlreadyDonated: () => snooze(SNOOZE_DONATED_MS),
     onDismiss: () => {
       try {
         localStorage.setItem(STORAGE_KEYS.dismissedForever, 'true');

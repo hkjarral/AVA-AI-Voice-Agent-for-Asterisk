@@ -7,6 +7,7 @@ import { STORAGE_KEYS, SESSION_KEY } from '../config/donation';
 
 vi.mock('axios');
 const mockGet = axios.get as unknown as ReturnType<typeof vi.fn>;
+const DAY = 24 * 60 * 60 * 1000;
 
 describe('useDonationReminder', () => {
   beforeEach(() => {
@@ -15,55 +16,62 @@ describe('useDonationReminder', () => {
     vi.clearAllMocks();
   });
 
-  it('shows on milestone hit and sets shownThisSession', async () => {
-    mockGet.mockResolvedValue({ data: { total_calls: 10 } });
+  it('shows once the install has handled a call and sets shownThisSession', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 5 } });
     const { result } = renderHook(() => useDonationReminder());
     await waitFor(() => expect(result.current.show).toBe(true));
     expect(sessionStorage.getItem(SESSION_KEY)).toBe('true');
   });
 
-  it('does not show below the first milestone', async () => {
-    mockGet.mockResolvedValue({ data: { total_calls: 9 } });
+  it('does not show a brand-new zero-call install', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 0 } });
     const { result } = renderHook(() => useDonationReminder());
-    await waitFor(() => expect(result.current.callCount).toBe(9));
+    await waitFor(() => expect(result.current.callCount).toBe(0));
     expect(result.current.show).toBe(false);
   });
 
-  it('Maybe later snoozes into the future and advances the milestone', async () => {
-    mockGet.mockResolvedValue({ data: { total_calls: 25 } });
+  it('Maybe later snoozes ~1 week', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 5 } });
     const { result } = renderHook(() => useDonationReminder());
     await waitFor(() => expect(result.current.show).toBe(true));
     act(() => result.current.onLater());
     expect(result.current.show).toBe(false);
-    expect(localStorage.getItem(STORAGE_KEYS.lastMilestoneShown)).toBe('25');
-    expect(Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil))).toBeGreaterThan(Date.now());
-    expect(localStorage.getItem(STORAGE_KEYS.timeFallbackUsed)).toBe('true');
+    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
+    expect(snooze).toBeGreaterThan(Date.now() + 6 * DAY);
+    expect(snooze).toBeLessThan(Date.now() + 8 * DAY);
+  });
+
+  it('donate-link click snoozes ~1 week (same as later)', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 5 } });
+    const { result } = renderHook(() => useDonationReminder());
+    await waitFor(() => expect(result.current.show).toBe(true));
+    act(() => result.current.onDonate());
+    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
+    expect(snooze).toBeLessThan(Date.now() + 8 * DAY);
+  });
+
+  it('I already donated snoozes ~3 months', async () => {
+    mockGet.mockResolvedValue({ data: { total_calls: 5 } });
+    const { result } = renderHook(() => useDonationReminder());
+    await waitFor(() => expect(result.current.show).toBe(true));
+    act(() => result.current.onAlreadyDonated());
+    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
+    expect(snooze).toBeGreaterThan(Date.now() + 80 * DAY);
   });
 
   it("Don't show again sets the permanent flag", async () => {
-    mockGet.mockResolvedValue({ data: { total_calls: 100 } });
+    mockGet.mockResolvedValue({ data: { total_calls: 5 } });
     const { result } = renderHook(() => useDonationReminder());
     await waitFor(() => expect(result.current.show).toBe(true));
     act(() => result.current.onDismiss());
     expect(localStorage.getItem(STORAGE_KEYS.dismissedForever)).toBe('true');
   });
 
-  it('stays eligible via time fallback when the stats fetch fails', async () => {
+  it('stays eligible (aged-in) when the stats fetch fails', async () => {
     mockGet.mockRejectedValue(new Error('network'));
-    localStorage.setItem(STORAGE_KEYS.firstSeenAt, String(Date.now() - 31 * 24 * 60 * 60 * 1000));
+    localStorage.setItem(STORAGE_KEYS.firstSeenAt, String(Date.now() - 4 * DAY));
     const { result } = renderHook(() => useDonationReminder());
     await waitFor(() => expect(result.current.show).toBe(true));
     expect(result.current.callCount).toBeUndefined();
-  });
-
-  it('Support/donate click snoozes ~180 days', async () => {
-    mockGet.mockResolvedValue({ data: { total_calls: 50 } });
-    const { result } = renderHook(() => useDonationReminder());
-    await waitFor(() => expect(result.current.show).toBe(true));
-    act(() => result.current.onDonate());
-    expect(result.current.show).toBe(false);
-    const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
-    // ~180 days out (allow generous slack); must be well beyond a 30-day "later" snooze
-    expect(snooze).toBeGreaterThan(Date.now() + 100 * 24 * 60 * 60 * 1000);
   });
 });

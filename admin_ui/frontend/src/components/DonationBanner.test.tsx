@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import DonationBanner from './DonationBanner';
 import { KOFI_URL, SPONSORS_URL } from '../config/donation';
 
-const handlers = () => ({ onLater: vi.fn(), onDismiss: vi.fn(), onDonate: vi.fn() });
+const handlers = () => ({ onLater: vi.fn(), onDismiss: vi.fn(), onDonate: vi.fn(), onAlreadyDonated: vi.fn() });
 
 describe('DonationBanner', () => {
   it('renders the call count when provided', () => {
@@ -47,5 +47,13 @@ describe('DonationBanner', () => {
     expect(h.onDonate).toHaveBeenCalled();
     await user.click(screen.getByRole('link', { name: 'Sponsor AVA on GitHub' }));
     expect(h.onDonate).toHaveBeenCalledTimes(2);
+  });
+
+  it('fires onAlreadyDonated', async () => {
+    const h = handlers();
+    render(<DonationBanner callCount={10} {...h} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'I already donated' }));
+    expect(h.onAlreadyDonated).toHaveBeenCalled();
   });
 });
