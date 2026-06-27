@@ -77,6 +77,15 @@ If you’re not sure, start without these; use `agent check` and `docs/Transport
 - `HEALTH_CHECK_AI_ENGINE_URL`: optional override used by Admin UI for Tier-3 / non-host-network deployments.
 - `HEALTH_CHECK_LOCAL_AI_URL`: optional override used by Admin UI for Local AI Server probes.
 
+### Live-status dashboard
+
+- `LIVE_STATUS_PUSH_TOKEN`: bearer token `ai_engine` / `local_ai_server` supply when pushing component updates to `POST /api/live-status/publish`. Falls back to `HEALTH_API_TOKEN` if unset; if neither is set the publish endpoint returns `503`.
+- `LIVE_STATUS_POLL_INTERVAL_SECONDS`: how often the Admin UI's background loop re-probes all components (default `30`, minimum `2`).
+- `LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS`: deadline for the eager cold-start probe on the first `/api/live-status` request before any data exists (default `2`).
+- `LIVE_STATUS_ADMIN_URL`: URL the push client on `ai_engine`/`local_ai_server` uses to reach the Admin UI API (default `http://127.0.0.1:3003`).
+- `LIVE_STATUS_PUSH_INTERVAL_SECONDS`: how often the push client fires (default `10`).
+- `LIVE_STATUS_PUSH_TIMEOUT_SECONDS`: HTTP timeout per push request (default `10`).
+
 ### Admin UI / Docker socket
 
 - `DOCKER_SOCK`: rootless docker socket path (if not `/var/run/docker.sock`).

@@ -1528,4 +1528,4 @@ See [docs/Transport-Mode-Compatibility.md](Transport-Mode-Compatibility.md) for 
 ---
 
 **Last Updated:** June 2026
-**Version:** v7.1.1
+**Version:** v7.2.0

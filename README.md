@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.1.1-blue.svg)
+![Version](https://img.shields.io/badge/version-7.2.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,19 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.2.0 — Live-status dashboard 📡</b></summary>
+
+Real-time system status for the Admin UI — pushed, not polled.
+
+- **Live-status hub** — a single `/api/live-status` snapshot endpoint plus an SSE stream (`/api/live-status/stream`) aggregates AI Engine health, Local AI connectivity, active sessions, audio directories, platform checks, and Asterisk ARI into one normalized status feed.
+- **Push-first** — `ai_engine` and `local_ai_server` push their own readiness to the Admin UI (`POST /api/live-status/publish`, authenticated with `LIVE_STATUS_PUSH_TOKEN`), so the dashboard converges in sub-second time after a restart instead of waiting on staggered polls. Legacy `/api/system/*` probes remain as fallback/enrichment.
+- **Configurable** — `LIVE_STATUS_POLL_INTERVAL_SECONDS` (default 30 s, min 2 s) and `LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS` (default 2 s), read live from `.env`.
+
+Full notes in [CHANGELOG.md](CHANGELOG.md).
+
+</details>
+
+<details>
 <summary><b>v7.1.1 — Dashboard reliability & Admin UI polish 🛠️</b></summary>
 
 A focused quality release across the Admin UI — no call-path changes.

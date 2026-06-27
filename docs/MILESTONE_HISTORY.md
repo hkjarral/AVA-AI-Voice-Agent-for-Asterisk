@@ -33,6 +33,7 @@ Archive of completed development milestones for the Asterisk AI Voice Agent. For
 | 23 | [NAT/Advertise Host](contributing/milestones/milestone-23-nat-advertise-host.md) | Feb 2026 | Separate bind vs advertise host for NAT/VPN/hybrid cloud deployments |
 | 24 | [Phase Tools & Tool Enhancements](contributing/milestones/milestone-24-tools-enhancements.md) | Feb 2026 | Pre-call HTTP lookups, in-call HTTP tools, post-call webhooks, extension status checking |
 | 25 | Multi-Instance Full-Agent Providers + xAI Grok | May 2026 | Multiple instances of the same full-agent provider type with isolated credentials (`acme_grok`, `globex_google_live`, etc.); per-instance secret files under `/app/project/secrets/providers/<key>/`. Fifth full-agent realtime provider: xAI Grok Voice Agent (μ-law @ 8 kHz, 5 voices, 30-min cap). Uniform credential UX, dashboard System Topology overhaul, ~260 admin UI tooltips, `.ulaw` recording playback. Breaking for multi-tenant: short provider aliases (`AI_PROVIDER=openai/google`, `provider: deepgram_agent`) removed. |
+| 26 | Live-status Dashboard Hub | Jun 2026 | Normalized `/api/live-status` snapshot + SSE stream aggregating AI Engine, Local AI, sessions, directories, platform, and Asterisk ARI; optional push via `LIVE_STATUS_PUSH_TOKEN`; configurable probe interval and cold-start timeout. |
 
 ---
 
@@ -40,6 +41,7 @@ Archive of completed development milestones for the Asterisk AI Voice Agent. For
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v7.2.0 | Jun 2026 | Live-status dashboard hub (SSE stream, push support, configurable probe interval). |
 | v6.5.4 | May 2026 | Follow-up to v6.5.3: bring every code path in line with the post-2026-05 GA reality. Pydantic defaults, Admin UI "Add Provider" template, model dropdown (removes 5 sunset preview options, adds `gpt-realtime-1.5` / `gpt-realtime-2` / `gpt-realtime-mini`), wizard backend, golden config, and example YAML all flipped to GA. Diagnostic legacy-value rendering (yellow banner + "Custom (legacy)" optgroup) for operators with pinned sunset values. One-shot beta-deprecation warning in the provider. Full rewrite of `docs/Provider-OpenAI-Setup.md` model section. |
 | v6.5.3 | May 2026 | Hotfix: flip shipped OpenAI Realtime config from `api_version: beta` + `gpt-4o-realtime-preview-2024-12-17` to `api_version: ga` + `gpt-realtime`. OpenAI sunset the Beta API on 2026-05-12 and removed the preview model on 2026-05-07. Two-line config change; provider's GA wire-protocol path has shipped since v6.0.0. |
 | v6.5.2 | May 2026 | xAI Grok Voice Agent realtime provider (5th full-agent), multi-instance full-agent providers (`acme_grok`, `globex_google_live`, …), uniform per-instance credentials UX, dashboard System Topology overhaul, ~260 admin UI tooltips, `.ulaw` call recording playback. Breaking for multi-tenant: short provider aliases removed. |
