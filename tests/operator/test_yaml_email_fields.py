@@ -159,3 +159,62 @@ def test_yaml_and_fallback_paths_return_identical_email_fields():
     assert cc_yaml.email_recipient == cc_fallback.email_recipient
     assert cc_yaml.email_from == cc_fallback.email_from
     assert cc_yaml.email_enabled == cc_fallback.email_enabled
+
+
+# ---------------------------------------------------------------------------
+# Integer coercion: exported 0/1 from disaster-recovery YAML export (#437 P2)
+# ---------------------------------------------------------------------------
+
+def _orch_email_int_enabled():
+    """Orchestrator with email_enabled set to integer 1 (as emitted by the YAML export)."""
+    return TransportOrchestrator({
+        "contexts": {
+            "sales_exported": {
+                "provider": "local",
+                "email_recipient": "sales@x.test",
+                "email_from": "from@x.test",
+                "email_enabled": 1,  # integer, as emitted by export_agents_yaml
+            }
+        }
+    })
+
+
+def _orch_email_int_disabled():
+    """Orchestrator with email_enabled set to integer 0 (as emitted by the YAML export)."""
+    return TransportOrchestrator({
+        "contexts": {
+            "support_exported": {
+                "provider": "local",
+                "email_recipient": "support@x.test",
+                "email_from": "support-from@x.test",
+                "email_enabled": 0,  # integer, as emitted by export_agents_yaml
+            }
+        }
+    })
+
+
+def test_load_contexts_int_1_coerced_to_true():
+    """YAML email_enabled: 1 (int from export) must resolve to True (not int 1).
+
+    The dispatch gate uses `is True` / `is False` strict identity; an uncoerced
+    int 1 satisfies `== True` but fails `is True`, silently disabling email.
+    """
+    orch = _orch_email_int_enabled()
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("sales_exported")
+    assert cc is not None
+    assert cc.email_enabled is True  # strict identity, not == True
+
+
+def test_load_contexts_int_0_coerced_to_false():
+    """YAML email_enabled: 0 (int from export) must resolve to False (not int 0).
+
+    The dispatch gate uses `is False` strict identity; an uncoerced int 0
+    satisfies `== False` but fails `is False`, silently enabling email when
+    it should be suppressed.
+    """
+    orch = _orch_email_int_disabled()
+    with patch.object(orch.agent_store, "available", return_value=False):
+        cc = orch.get_context_config("support_exported")
+    assert cc is not None
+    assert cc.email_enabled is False  # strict identity, not == False

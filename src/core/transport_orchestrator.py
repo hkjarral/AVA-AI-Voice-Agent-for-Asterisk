@@ -176,10 +176,17 @@ class TransportOrchestrator:
                     ),
                     disable_global_post_call_tools=context_dict.get('disable_global_post_call_tools'),
                     # Per-agent post-call email overrides (#437). email_enabled is
-                    # tri-state: absent key stays None (inherit), never coerced.
+                    # tri-state: absent key stays None (inherit). Coerce to bool so
+                    # an exported integer 0/1 works with the `is True`/`is False`
+                    # dispatch gate in email_summary.py, matching the agents.db path
+                    # (EngineAgentStore.resolve() already does the same coercion).
                     email_recipient=context_dict.get('email_recipient'),
                     email_from=context_dict.get('email_from'),
-                    email_enabled=context_dict.get('email_enabled'),
+                    email_enabled=(
+                        None
+                        if context_dict.get('email_enabled') is None
+                        else bool(context_dict.get('email_enabled'))
+                    ),
                 )
                 logger.debug("Loaded context mapping", name=name, context=contexts[name])
             except Exception as exc:
