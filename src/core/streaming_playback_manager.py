@@ -3215,27 +3215,40 @@ class StreamingPlaybackManager:
                 logger.warning("No active streaming to stop", call_id=call_id)
                 return False
             stream_id = stream_info.get('stream_id') or ''
-            # Cancel streaming task
-            try:
-                task = stream_info.get('streaming_task')
-                if task:
-                    task.cancel()
-            except Exception:
-                pass
-            # Cancel pacer task
-            try:
-                ptask = stream_info.get('pacer_task')
-                if ptask:
-                    ptask.cancel()
-            except Exception:
-                pass
-            # Cancel keepalive task
-            if call_id in self.keepalive_tasks:
+            cancelled_tasks = []
+            seen_tasks = set()
+
+            def _cancel_task(task: Any) -> None:
+                if not task or not hasattr(task, "cancel"):
+                    return
+                task_id = id(task)
+                if task_id in seen_tasks:
+                    return
+                seen_tasks.add(task_id)
                 try:
-                    self.keepalive_tasks[call_id].cancel()
+                    if not task.done():
+                        task.cancel()
+                        cancelled_tasks.append(task)
                 except Exception:
                     pass
-                self.keepalive_tasks.pop(call_id, None)
+
+            _cancel_task(stream_info.get('streaming_task'))
+            _cancel_task(stream_info.get('pacer_task'))
+            _cancel_task(stream_info.get('keepalive_task'))
+            _cancel_task(self.keepalive_tasks.pop(call_id, None))
+
+            if cancelled_tasks:
+                try:
+                    _, pending = await asyncio.wait(cancelled_tasks, timeout=2.0)
+                    if pending:
+                        logger.debug(
+                            "Streaming stop tasks did not settle before cleanup",
+                            call_id=call_id,
+                            stream_id=stream_id,
+                            pending_tasks=len(pending),
+                        )
+                except Exception:
+                    logger.debug("Failed while waiting for streaming stop tasks", call_id=call_id, exc_info=True)
             # Cleanup resources and emit summaries
             await self._cleanup_stream(call_id, stream_id)
             logger.info("🎵 STREAMING PLAYBACK - Stopped", call_id=call_id, stream_id=stream_id)
