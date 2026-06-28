@@ -25,6 +25,7 @@ class TestLiveAgentTransferTool:
     async def test_uses_explicit_live_agent_destination_key(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "tier2_live",
             "destinations": {
                 "sales_agent": {"type": "extension", "target": "2765", "description": "Sales"},
@@ -91,6 +92,7 @@ class TestLiveAgentTransferTool:
     async def test_destination_override_takes_precedence_over_explicit_target(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "tier2_live",
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
@@ -176,6 +178,7 @@ class TestLiveAgentTransferTool:
     async def test_falls_back_to_live_agent_key_when_config_not_set(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "live_agent": {"type": "extension", "target": "6001", "description": "Live Agent"},
             },
@@ -195,6 +198,7 @@ class TestLiveAgentTransferTool:
     async def test_fails_when_live_agent_destination_not_configured(self, tool, tool_context):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "sales_agent": {"type": "extension", "target": "2765", "description": "Sales"},
             },
@@ -215,6 +219,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "support_agent": {"type": "extension", "target": "6000", "description": "Support agent"},
                 "live_agent": {"type": "extension", "target": "6000", "description": "Live Agent"},
@@ -245,6 +250,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {},
         }
         tool_context.config["tools"]["extensions"] = {
@@ -272,6 +278,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             # Misconfigured: points at a normal destination (not marked live_agent).
             "live_agent_destination_key": "support_agent",
             "destinations": {
@@ -298,6 +305,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
             },
@@ -322,6 +330,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "live_agent_destination_key": "tier2_live",
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
@@ -347,6 +356,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             # Misconfigured: points to non-live destination.
             "live_agent_destination_key": "support_agent",
             "destinations": {
@@ -371,6 +381,7 @@ class TestLiveAgentTransferTool:
     ):
         tool_context.config["tools"]["transfer"] = {
             "enabled": True,
+            "defer_until_playback_complete": False,
             "destinations": {
                 "tier2_live": {"type": "extension", "target": "6000", "description": "Tier 2", "live_agent": True},
             },

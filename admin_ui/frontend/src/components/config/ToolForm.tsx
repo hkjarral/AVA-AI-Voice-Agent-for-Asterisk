@@ -1223,7 +1223,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
     const handleAddDestination = () => {
         setEditingDestination('new_destination');
-        setDestinationForm({ key: '', type: 'extension', target: '', description: '', attended_allowed: false, live_agent: false });
+        setDestinationForm({ key: '', type: 'extension', target: '', description: '', dialplan_context: '', attended_allowed: false, live_agent: false });
     };
 
     const handleSaveDestination = () => {
@@ -1295,14 +1295,44 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 
 	                    {config.transfer?.enabled !== false && (
 	                        <div className="mt-4 space-y-4">
-	                            <FormInput
-	                                label="Channel Technology"
-	                                value={config.transfer?.technology || 'SIP'}
-	                                onChange={(e) => updateNestedConfig('transfer', 'technology', e.target.value)}
-	                                tooltip="Channel technology for extension transfers (SIP, PJSIP, IAX2, etc.). Default: SIP"
-	                                placeholder="SIP"
-	                            />
-                                <FormSwitch
+		                            <FormInput
+		                                label="Channel Technology"
+		                                value={config.transfer?.technology || 'SIP'}
+		                                onChange={(e) => updateNestedConfig('transfer', 'technology', e.target.value)}
+		                                tooltip="Channel technology for extension transfers (SIP, PJSIP, IAX2, etc.). Default: SIP"
+		                                placeholder="SIP"
+		                            />
+                                    <FormSwitch
+                                        label="Defer Transfer Until Playback Completes"
+                                        description="Speak the handoff message before executing blind, live-agent, or attended transfer actions."
+                                        checked={config.transfer?.defer_until_playback_complete ?? true}
+                                        onChange={(e) => updateNestedConfig('transfer', 'defer_until_playback_complete', e.target.checked)}
+                                        className="mb-0 border border-border rounded-lg p-3 bg-background/50"
+                                    />
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <FormInput
+                                            label="Default Extension Context"
+                                            value={config.transfer?.extension_context || 'from-internal'}
+                                            onChange={(e) => updateNestedConfig('transfer', 'extension_context', e.target.value)}
+                                            tooltip="Default Asterisk dialplan context for extension destinations. Destination-level context overrides this."
+                                            placeholder="from-internal"
+                                        />
+                                        <FormInput
+                                            label="Default Queue Context"
+                                            value={config.transfer?.queue_context || 'ext-queues'}
+                                            onChange={(e) => updateNestedConfig('transfer', 'queue_context', e.target.value)}
+                                            tooltip="Default Asterisk dialplan context for queue destinations. Destination-level context overrides this."
+                                            placeholder="ext-queues"
+                                        />
+                                        <FormInput
+                                            label="Default Ring Group Context"
+                                            value={config.transfer?.ringgroup_context || 'ext-group'}
+                                            onChange={(e) => updateNestedConfig('transfer', 'ringgroup_context', e.target.value)}
+                                            tooltip="Default Asterisk dialplan context for ring group destinations. Destination-level context overrides this."
+                                            placeholder="ext-group"
+                                        />
+                                    </div>
+	                                <FormSwitch
                                     label="Advanced: Route Live Agent via Destination"
                                     description={
                                         hasLiveAgents
@@ -1350,16 +1380,23 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 	                                {Object.entries(config.transfer?.destinations || {}).map(([key, dest]: [string, any]) => {
 	                                    // AAVA-199: Guard against null/undefined destinations
 	                                    if (!dest || typeof dest !== 'object') return null;
-	                                    const destType = dest.type || 'extension';
-	                                    const destTarget = dest.target || '';
-	                                    const destDescription = dest.description || '';
-	                                    return (
+		                                    const destType = dest.type || 'extension';
+		                                    const destTarget = dest.target || '';
+		                                    const destDescription = dest.description || '';
+                                            const defaultContext = destType === 'queue'
+                                                ? (config.transfer?.queue_context || 'ext-queues')
+                                                : destType === 'ringgroup'
+                                                    ? (config.transfer?.ringgroup_context || 'ext-group')
+                                                    : (config.transfer?.extension_context || 'from-internal');
+                                            const destContext = dest.dialplan_context || defaultContext;
+		                                    return (
 	                                    <div key={key} className="flex items-center justify-between p-3 bg-accent/30 rounded border border-border/50">
 	                                        <div>
 	                                            <div className="font-medium text-sm">{key}</div>
 	                                            <div className="text-xs text-muted-foreground">
-	                                                {destType} • {destTarget} • {destDescription}
-	                                                {destType === 'extension' && dest.attended_allowed ? ' • attended' : ''}
+		                                                {destType} • {destTarget} • {destDescription}
+                                                        {destContext ? ` • ctx: ${destContext}` : ''}
+		                                                {destType === 'extension' && dest.attended_allowed ? ' • attended' : ''}
 	                                                {destType === 'extension' && showLiveAgentRoutingAdvanced && dest.live_agent ? ' • live-agent' : ''}
 	                                            </div>
 	                                        </div>
@@ -3321,15 +3358,28 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 	                            disabled={!showLiveAgentRoutingAdvanced}
 	                        />
 	                    )}
-                    <FormInput
-                        label="Target Number"
-                        value={destinationForm.target || ''}
-                        onChange={(e) => setDestinationForm({ ...destinationForm, target: e.target.value })}
-                        placeholder="e.g., 6000"
-                    />
-                    <FormInput
-                        label="Description"
-                        value={destinationForm.description || ''}
+	                    <FormInput
+	                        label="Target Number"
+	                        value={destinationForm.target || ''}
+	                        onChange={(e) => setDestinationForm({ ...destinationForm, target: e.target.value })}
+	                        placeholder="e.g., 6000"
+	                    />
+                        <FormInput
+                            label="Dialplan Context"
+                            value={destinationForm.dialplan_context || ''}
+                            onChange={(e) => setDestinationForm({ ...destinationForm, dialplan_context: e.target.value })}
+                            placeholder={
+                                destinationForm.type === 'queue'
+                                    ? 'ext-queues'
+                                    : destinationForm.type === 'ringgroup'
+                                        ? 'ext-group'
+                                        : 'from-internal'
+                            }
+                            tooltip="Optional per-destination Asterisk dialplan context. Leave blank to use the transfer tool default for this destination type."
+                        />
+	                    <FormInput
+	                        label="Description"
+	                        value={destinationForm.description || ''}
                         onChange={(e) => setDestinationForm({ ...destinationForm, description: e.target.value })}
                         placeholder="e.g., Sales Support"
                     />

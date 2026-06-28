@@ -297,7 +297,14 @@ class LiveAgentTransferTool(Tool):
                     extension=extension,
                     resolution_source=ext_source,
                 )
-                return await unified._transfer_to_extension(context, extension, description)
+                return await unified.prepare_or_execute_extension_transfer(
+                    context,
+                    extension,
+                    description,
+                    source_tool="live_agent_transfer",
+                    destination_key=target or extension,
+                    dest_config=ext_entry,
+                )
 
             if ext_source.endswith("_ambiguous"):
                 logger.warning(
@@ -353,7 +360,14 @@ class LiveAgentTransferTool(Tool):
                 extension=extension,
                 resolution_source=ext_source,
             )
-            return await unified._transfer_to_extension(context, extension, description)
+            return await unified.prepare_or_execute_extension_transfer(
+                context,
+                extension,
+                description,
+                source_tool="live_agent_transfer",
+                destination_key=extension,
+                dest_config=ext_entry,
+            )
 
         if ext_source.endswith("_ambiguous"):
             logger.warning(

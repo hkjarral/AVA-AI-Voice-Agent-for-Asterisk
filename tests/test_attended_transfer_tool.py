@@ -1,6 +1,7 @@
 import pytest
 
 from src.core.models import CallSession
+from src.tools.telephony.deferred_transfer import DEFERRED_TRANSFER_RESULT_KEY
 from src.tools.telephony.attended_transfer import AttendedTransferTool
 
 
@@ -125,6 +126,46 @@ def test_resolve_dial_endpoint_honors_dial_string_then_internal_mapping_then_tec
 
 
 @pytest.mark.asyncio
+async def test_execute_deferred_attended_transfer_arms_pending_action_without_originate():
+    tool = AttendedTransferTool()
+    call_id = "1760000000.0003"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    ari = _FakeAriClient(originate_response={"id": "agent-chan-3"})
+    context = _FakeContext(
+        config={
+            "asterisk": {"app_name": "asterisk-ai-voice-agent"},
+            "tools": {
+                "attended_transfer": {"enabled": True, "moh_class": "default", "dial_timeout_seconds": 30},
+                "transfer": {
+                    "defer_until_playback_complete": True,
+                    "technology": "SIP",
+                    "destinations": {
+                        "support_agent": {
+                            "type": "extension",
+                            "target": "6000",
+                            "description": "Support agent",
+                            "attended_allowed": True,
+                        }
+                    },
+                },
+            },
+        },
+        caller_channel_id=call_id,
+        ari_client=ari,
+        session=session,
+    )
+
+    result = await tool.execute({"destination": "support_agent"}, context)
+
+    assert result["status"] == "success"
+    assert result["defer_until_playback_complete"] is True
+    assert result[DEFERRED_TRANSFER_RESULT_KEY]["commit_tool"] == "attended_transfer"
+    assert session.pending_deferred_transfer["target"] == "6000"
+    assert session.current_action is None
+    assert ari.calls == []
+
+
+@pytest.mark.asyncio
 async def test_execute_success_sets_action_and_originates_agent_leg():
     tool = AttendedTransferTool()
     call_id = "1760000000.0000"
@@ -137,6 +178,7 @@ async def test_execute_success_sets_action_and_originates_agent_leg():
                 "ai_identity": {"name": "Ava", "number": "6789"},
                 "attended_transfer": {"enabled": True, "moh_class": "default", "dial_timeout_seconds": 30},
                 "transfer": {
+                    "defer_until_playback_complete": False,
                     "technology": "SIP",
                     "destinations": {
                         "support_agent": {
@@ -179,6 +221,7 @@ async def test_execute_originate_failure_stops_moh_and_clears_action():
             "tools": {
                 "attended_transfer": {"enabled": True, "moh_class": "default", "dial_timeout_seconds": 1},
                 "transfer": {
+                    "defer_until_playback_complete": False,
                     "technology": "SIP",
                     "destinations": {
                         "support_agent": {
@@ -224,6 +267,7 @@ async def test_execute_caller_recording_mode_stages_transfer_before_originate():
                     "caller_screening_silence_ms": 1200,
                 },
                 "transfer": {
+                    "defer_until_playback_complete": False,
                     "technology": "SIP",
                     "destinations": {
                         "support_agent": {

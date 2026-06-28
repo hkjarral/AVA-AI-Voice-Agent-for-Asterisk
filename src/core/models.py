@@ -158,6 +158,7 @@ class CallSession:
     pending_actions: list = field(default_factory=list)  # Queue of pending actions
     current_action: Optional[Dict[str, Any]] = None      # Currently executing action
     transfer_context: Optional[Dict[str, Any]] = None    # Context to pass to transfer target
+    pending_deferred_transfer: Optional[Dict[str, Any]] = None  # Transfer action waiting for TTS/audio completion
     
     # Call history tracking (Milestone 21)
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)  # [{name, params, result, timestamp, duration_ms}]

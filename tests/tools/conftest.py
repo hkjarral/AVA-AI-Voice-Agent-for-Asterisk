@@ -161,6 +161,9 @@ def tool_config():
                     }
                 }
             },
+            "transfer": {
+                "defer_until_playback_complete": False,
+            },
             "ai_identity": {
                 "name": "AI Agent",
                 "number": "6789"

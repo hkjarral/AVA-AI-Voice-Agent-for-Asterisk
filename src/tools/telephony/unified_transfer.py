@@ -10,6 +10,12 @@ import structlog
 
 from ..base import Tool, ToolDefinition, ToolParameter, ToolCategory
 from ..context import ToolExecutionContext
+from .deferred_transfer import (
+    build_deferred_transfer_action,
+    build_deferred_transfer_result,
+    store_pending_deferred_transfer,
+    transfer_deferral_enabled,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +62,86 @@ class UnifiedTransferTool(Tool):
     @staticmethod
     def _normalize_text(value: str) -> str:
         return " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+
+    @staticmethod
+    def _resolve_dialplan_context(
+        transfer_type: str,
+        dest_config: Dict[str, Any],
+        transfer_config: Dict[str, Any],
+    ) -> str:
+        configured = ""
+        if isinstance(dest_config, dict):
+            configured = str(dest_config.get("dialplan_context") or dest_config.get("context") or "").strip()
+        if configured:
+            return configured
+
+        if transfer_type == "extension":
+            return str((transfer_config or {}).get("extension_context") or "from-internal").strip() or "from-internal"
+        if transfer_type == "queue":
+            return str((transfer_config or {}).get("queue_context") or "ext-queues").strip() or "ext-queues"
+        if transfer_type == "ringgroup":
+            return str((transfer_config or {}).get("ringgroup_context") or "ext-group").strip() or "ext-group"
+        return "from-internal"
+
+    async def _defer_or_commit_transfer(
+        self,
+        *,
+        context: ToolExecutionContext,
+        source_tool: str,
+        transfer_type: str,
+        target: str,
+        description: str,
+        dialplan_context: str,
+        destination_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        action = build_deferred_transfer_action(
+            source_tool=source_tool,
+            commit_tool="blind_transfer",
+            transfer_type=transfer_type,
+            target=target,
+            description=description,
+            dialplan_context=dialplan_context,
+            destination_key=destination_key,
+        )
+
+        if transfer_deferral_enabled(context):
+            await store_pending_deferred_transfer(context, action)
+            return build_deferred_transfer_result(
+                action=action,
+                message=f"Transferring you to {description} now.",
+                extra={
+                    "destination": target,
+                    "type": transfer_type,
+                },
+            )
+
+        return await self.commit_deferred_action(action, context)
+
+    async def prepare_or_execute_extension_transfer(
+        self,
+        context: ToolExecutionContext,
+        extension: str,
+        description: str,
+        *,
+        source_tool: str = "blind_transfer",
+        destination_key: Optional[str] = None,
+        dest_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        transfer_config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = self._resolve_dialplan_context(
+            "extension",
+            dest_config or {},
+            transfer_config if isinstance(transfer_config, dict) else {},
+        )
+        return await self._defer_or_commit_transfer(
+            context=context,
+            source_tool=source_tool,
+            transfer_type="extension",
+            target=extension,
+            description=description,
+            dialplan_context=dialplan_context,
+            destination_key=destination_key,
+        )
 
     def _resolve_destination_key(self, destination: Any, destinations: Dict[str, Any]) -> Tuple[Optional[str], str]:
         raw = str(destination or "").strip()
@@ -231,25 +317,79 @@ class UnifiedTransferTool(Tool):
             target=target
         )
         
+        dialplan_context = self._resolve_dialplan_context(
+            str(transfer_type or ""),
+            dest_config if isinstance(dest_config, dict) else {},
+            config if isinstance(config, dict) else {},
+        )
+
         # Route based on transfer type
         if transfer_type == 'extension':
-            return await self._transfer_to_extension(context, target, description)
+            return await self._defer_or_commit_transfer(
+                context=context,
+                source_tool="blind_transfer",
+                transfer_type="extension",
+                target=target,
+                description=description,
+                dialplan_context=dialplan_context,
+                destination_key=str(destination),
+            )
         elif transfer_type == 'queue':
-            return await self._transfer_to_queue(context, target, description)
+            return await self._defer_or_commit_transfer(
+                context=context,
+                source_tool="blind_transfer",
+                transfer_type="queue",
+                target=target,
+                description=description,
+                dialplan_context=dialplan_context,
+                destination_key=str(destination),
+            )
         elif transfer_type == 'ringgroup':
-            return await self._transfer_to_ringgroup(context, target, description)
+            return await self._defer_or_commit_transfer(
+                context=context,
+                source_tool="blind_transfer",
+                transfer_type="ringgroup",
+                target=target,
+                description=description,
+                dialplan_context=dialplan_context,
+                destination_key=str(destination),
+            )
         else:
             logger.error("Invalid transfer type", type=transfer_type)
             return {
                 "status": "failed",
                 "message": f"Invalid transfer type: {transfer_type}"
             }
+
+    async def commit_deferred_action(
+        self,
+        action: Dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> Dict[str, Any]:
+        transfer_type = str(action.get("transfer_type") or "").strip()
+        target = str(action.get("target") or "").strip()
+        description = str(action.get("description") or target or "").strip()
+        dialplan_context = str(action.get("dialplan_context") or "").strip()
+
+        if transfer_type == "extension":
+            return await self._transfer_to_extension(context, target, description, dialplan_context=dialplan_context)
+        if transfer_type == "queue":
+            return await self._transfer_to_queue(context, target, description, dialplan_context=dialplan_context)
+        if transfer_type == "ringgroup":
+            return await self._transfer_to_ringgroup(context, target, description, dialplan_context=dialplan_context)
+
+        return {
+            "status": "failed",
+            "message": f"Invalid deferred transfer type: {transfer_type}",
+        }
     
     async def _transfer_to_extension(
         self,
         context: ToolExecutionContext,
         extension: str,
-        description: str
+        description: str,
+        *,
+        dialplan_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transfer to a direct extension using ARI redirect.
@@ -268,7 +408,10 @@ class UnifiedTransferTool(Tool):
         
         # Get dialplan context for extension transfers (default: from-internal for FreePBX)
         config = context.get_config_value("tools.transfer") or {}
-        dialplan_context = config.get("extension_context", "from-internal")
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("extension", {}, config if isinstance(config, dict) else {})
+        )
         
         # Set transfer_active flag BEFORE continue() - this prevents cleanup
         # from hanging up the caller when StasisEnd fires
@@ -303,7 +446,9 @@ class UnifiedTransferTool(Tool):
         self,
         context: ToolExecutionContext,
         queue: str,
-        description: str
+        description: str,
+        *,
+        dialplan_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transfer to a queue using ARI continue to FreePBX ext-queues context.
@@ -333,7 +478,7 @@ class UnifiedTransferTool(Tool):
             method="POST",
             resource=f"channels/{context.caller_channel_id}/continue",
             params={
-                "context": "ext-queues",
+                "context": dialplan_context,
                 "extension": queue,
                 "priority": 1
             }
@@ -353,7 +498,9 @@ class UnifiedTransferTool(Tool):
         self,
         context: ToolExecutionContext,
         ringgroup: str,
-        description: str
+        description: str,
+        *,
+        dialplan_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transfer to a ring group using ARI continue to FreePBX ext-group context.
@@ -383,7 +530,7 @@ class UnifiedTransferTool(Tool):
             method="POST",
             resource=f"channels/{context.caller_channel_id}/continue",
             params={
-                "context": "ext-group",
+                "context": dialplan_context,
                 "extension": ringgroup,
                 "priority": 1
             }
@@ -398,3 +545,14 @@ class UnifiedTransferTool(Tool):
             "destination": ringgroup,
             "type": "ringgroup"
         }
+        config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("queue", {}, config if isinstance(config, dict) else {})
+        )
+
+        config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("ringgroup", {}, config if isinstance(config, dict) else {})
+        )

@@ -4,6 +4,7 @@ Unit tests for UnifiedTransferTool destination resolution.
 
 import pytest
 
+from src.tools.telephony.deferred_transfer import DEFERRED_TRANSFER_RESULT_KEY
 from src.tools.telephony.unified_transfer import UnifiedTransferTool
 
 
@@ -21,6 +22,7 @@ class TestUnifiedTransferTool:
     @pytest.mark.asyncio
     async def test_resolves_destination_by_description_match(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
+            "defer_until_playback_complete": False,
             "destinations": {
                 "tier2_desk": {
                     "type": "extension",
@@ -43,6 +45,7 @@ class TestUnifiedTransferTool:
     @pytest.mark.asyncio
     async def test_human_intent_maps_to_single_extension_destination(self, tool, tool_context):
         tool_context.config["tools"]["transfer"] = {
+            "defer_until_playback_complete": False,
             "destinations": {
                 "frontdesk": {
                     "type": "extension",
@@ -66,6 +69,7 @@ class TestUnifiedTransferTool:
     @pytest.mark.asyncio
     async def test_resolves_destination_by_exact_target_number(self, tool, tool_context, mock_ari_client):
         tool_context.config["tools"]["transfer"] = {
+            "defer_until_playback_complete": False,
             "destinations": {
                 "support_agent": {
                     "type": "extension",
@@ -84,6 +88,44 @@ class TestUnifiedTransferTool:
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == f"channels/{tool_context.caller_channel_id}/continue"
         assert call_args["params"]["extension"] == "6000"
+
+    @pytest.mark.asyncio
+    async def test_default_defers_transfer_and_stores_destination_context(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["transfer"] = {
+            "extension_context": "from-internal",
+            "destinations": {
+                "support_agent": {
+                    "type": "extension",
+                    "target": "6000",
+                    "description": "Support Agent",
+                    "dialplan_context": "from-support",
+                }
+            },
+        }
+
+        result = await tool.execute({"destination": "support_agent"}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["defer_until_playback_complete"] is True
+        assert result[DEFERRED_TRANSFER_RESULT_KEY]["dialplan_context"] == "from-support"
+        assert tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer["target"] == "6000"
+        mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commit_deferred_queue_uses_destination_context(self, tool, tool_context, mock_ari_client):
+        action = {
+            "transfer_type": "queue",
+            "target": "301",
+            "description": "Support Queue",
+            "dialplan_context": "custom-queues",
+        }
+
+        result = await tool.commit_deferred_action(action, tool_context)
+
+        assert result["status"] == "success"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["params"]["context"] == "custom-queues"
+        assert call_args["params"]["extension"] == "301"
 
     @pytest.mark.asyncio
     async def test_human_intent_without_extension_destination_fails(self, tool, tool_context):

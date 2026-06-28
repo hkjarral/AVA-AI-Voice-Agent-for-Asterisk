@@ -15,6 +15,12 @@ import structlog
 
 from src.tools.base import Tool, ToolCategory, ToolDefinition, ToolParameter
 from src.tools.context import ToolExecutionContext
+from src.tools.telephony.deferred_transfer import (
+    build_deferred_transfer_action,
+    build_deferred_transfer_result,
+    store_pending_deferred_transfer,
+    transfer_deferral_enabled,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -125,15 +131,69 @@ class AttendedTransferTool(Tool):
         caller_screening_max_seconds = float(cfg.get("caller_screening_max_seconds", 6) or 6)
         caller_screening_silence_ms = int(cfg.get("caller_screening_silence_ms", 1200) or 1200)
 
+        message = (
+            caller_screening_prompt
+            if screening_mode == "caller_recording"
+            else f"Please hold while I connect you to {description}."
+        )
+        action = build_deferred_transfer_action(
+            source_tool="attended_transfer",
+            commit_tool="attended_transfer",
+            transfer_type="attended_transfer",
+            target=extension,
+            description=description,
+            destination_key=destination,
+            payload={
+                "dial_endpoint": dial_endpoint,
+                "dial_timeout_seconds": dial_timeout_sec,
+                "moh_class": moh_class,
+                "screening_mode": screening_mode,
+                "caller_screening_prompt": caller_screening_prompt,
+                "caller_screening_max_seconds": caller_screening_max_seconds,
+                "caller_screening_silence_ms": caller_screening_silence_ms,
+            },
+        )
+
+        if transfer_deferral_enabled(context):
+            await store_pending_deferred_transfer(context, action)
+            return build_deferred_transfer_result(
+                action=action,
+                message=message,
+                extra={
+                    "destination": destination,
+                    "type": "attended_transfer",
+                },
+            )
+
+        return await self.commit_deferred_action(action, context)
+
+    async def commit_deferred_action(
+        self,
+        action: Dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> Dict[str, Any]:
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        destination = str(action.get("destination_key") or "").strip()
+        extension = str(action.get("target") or "").strip()
+        description = str(action.get("description") or extension or "").strip()
+        dial_endpoint = str(payload.get("dial_endpoint") or "").strip()
+        dial_timeout_sec = int(payload.get("dial_timeout_seconds", 30) or 30)
+        moh_class = str(payload.get("moh_class", "default") or "default")
+        screening_mode = str(payload.get("screening_mode") or "basic_tts")
+        caller_screening_prompt = str(payload.get("caller_screening_prompt") or "").strip()
+        caller_screening_max_seconds = float(payload.get("caller_screening_max_seconds", 6) or 6)
+        caller_screening_silence_ms = int(payload.get("caller_screening_silence_ms", 1200) or 1200)
+
         session = await context.get_session()
         call_id = session.call_id
 
         logger.info(
-            "📞 Attended transfer requested",
+            "📞 Attended transfer commit requested",
             call_id=call_id,
             destination_key=destination,
             extension=extension,
             dial_endpoint=dial_endpoint,
+            deferred_action_id=action.get("id"),
         )
 
         session.current_action = {

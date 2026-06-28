@@ -10081,6 +10081,9 @@ class Engine:
                 if streaming_done:
                     try:
                         session = await self.session_store.get_by_call_id(call_id)
+                        if session and isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+                            await self._commit_pending_deferred_transfer_for_call(call_id, session)
+                            return
                         if session and getattr(session, 'cleanup_after_tts', False):
                             logger.info("🔚 Cleanup after TTS requested - hanging up call", call_id=call_id)
                             # Delay to ensure audio completes through RTP pipeline.
@@ -11779,6 +11782,45 @@ class Engine:
                                     except Exception:
                                         logger.debug("Failed to log pipeline tool call to session", call_id=call_id, exc_info=True)
 
+                                    try:
+                                        from src.tools.telephony.deferred_transfer import get_deferred_transfer_action
+                                        deferred_action = get_deferred_transfer_action(result)
+                                    except Exception:
+                                        deferred_action = None
+
+                                    if deferred_action:
+                                        transfer_message = str(result.get("message") or "").strip()
+                                        if transfer_message:
+                                            try:
+                                                conversation_history.append(_ts_msg("assistant", transfer_message))
+                                                session.conversation_history = list(conversation_history)
+                                                await self.session_store.upsert_call(session)
+                                            except Exception:
+                                                logger.debug("Failed to record deferred transfer message", call_id=call_id, exc_info=True)
+
+                                            try:
+                                                transfer_bytes = bytearray()
+                                                async for chunk in pipeline.tts_adapter.synthesize(call_id, transfer_message, pipeline.tts_options):
+                                                    if chunk:
+                                                        transfer_bytes.extend(chunk)
+                                                if transfer_bytes:
+                                                    transfer_pid = await self.playback_manager.play_audio(
+                                                        call_id,
+                                                        bytes(transfer_bytes),
+                                                        "pipeline-transfer",
+                                                    )
+                                                    if transfer_pid:
+                                                        await self.playback_manager.wait_for_playback_end(
+                                                            call_id,
+                                                            transfer_pid,
+                                                            timeout_sec=(len(transfer_bytes) / 8000.0 + 3.0),
+                                                        )
+                                            except Exception:
+                                                logger.error("Deferred transfer TTS failed; committing transfer anyway", call_id=call_id, exc_info=True)
+
+                                        await self._commit_pending_deferred_transfer_for_call(call_id, session)
+                                        return
+
                                     # Handle Hangup (AAVA-85 Fix)
                                     if result.get("will_hangup"):
                                         farewell = result.get("message")
@@ -11916,6 +11958,31 @@ class Engine:
                                                                     except Exception:
                                                                         logger.debug("Failed to speak slow-response message", call_id=call_id, exc_info=True)
                                                             next_result = await next_task
+                                                            try:
+                                                                from src.tools.telephony.deferred_transfer import get_deferred_transfer_action
+                                                                next_deferred_action = get_deferred_transfer_action(next_result)
+                                                            except Exception:
+                                                                next_deferred_action = None
+                                                            if next_deferred_action:
+                                                                transfer_message = str(next_result.get("message") or "").strip()
+                                                                if transfer_message:
+                                                                    conversation_history.append(_ts_msg("assistant", transfer_message))
+                                                                    session.conversation_history = list(conversation_history)
+                                                                    await self.session_store.upsert_call(session)
+                                                                    transfer_bytes = bytearray()
+                                                                    async for chunk in pipeline.tts_adapter.synthesize(call_id, transfer_message, pipeline.tts_options):
+                                                                        if chunk:
+                                                                            transfer_bytes.extend(chunk)
+                                                                    if transfer_bytes:
+                                                                        transfer_pid = await self.playback_manager.play_audio(call_id, bytes(transfer_bytes), "pipeline-transfer")
+                                                                        if transfer_pid:
+                                                                            await self.playback_manager.wait_for_playback_end(
+                                                                                call_id,
+                                                                                transfer_pid,
+                                                                                timeout_sec=(len(transfer_bytes) / 8000.0 + 3.0),
+                                                                            )
+                                                                await self._commit_pending_deferred_transfer_for_call(call_id, session)
+                                                                return
                                                             if next_result.get("will_hangup"):
                                                                 farewell = next_result.get("message", "Goodbye!")
                                                                 conversation_history.append(_ts_msg("assistant", farewell))
@@ -14396,6 +14463,42 @@ class Engine:
                     error=str(e),
                 )
         
+        return result
+
+    async def _commit_pending_deferred_transfer_for_call(
+        self,
+        call_id: str,
+        session: Optional["CallSession"] = None,
+    ) -> Optional[Dict[str, Any]]:
+        from src.tools.context import ToolExecutionContext
+        from src.tools.telephony.deferred_transfer import commit_pending_deferred_transfer
+
+        session = session or await self.session_store.get_by_call_id(call_id)
+        if not session or not isinstance(getattr(session, "pending_deferred_transfer", None), dict):
+            return None
+
+        provider_name = getattr(session, "provider_name", None) or getattr(self.config, "default_provider", None)
+        context = ToolExecutionContext(
+            call_id=call_id,
+            caller_channel_id=getattr(session, "caller_channel_id", None) or call_id,
+            bridge_id=getattr(session, "bridge_id", None),
+            caller_number=getattr(session, "caller_number", None),
+            called_number=getattr(session, "called_number", None),
+            caller_name=getattr(session, "caller_name", None),
+            context_name=getattr(session, "context_name", None),
+            session_store=self.session_store,
+            ari_client=self.ari_client,
+            config=self.config.dict() if hasattr(self.config, "dict") else {},
+            provider_name=provider_name,
+        )
+        result = await commit_pending_deferred_transfer(context)
+        if result:
+            logger.info(
+                "Deferred transfer commit result",
+                call_id=call_id,
+                status=result.get("status"),
+                message=result.get("message"),
+            )
         return result
 
     async def _execute_pre_call_tools(

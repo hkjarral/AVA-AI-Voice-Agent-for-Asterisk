@@ -2138,10 +2138,15 @@ tools:
     include_transcript: true
     provider: ${SEND_EMAIL_PROVIDER:-resend}
   transfer:
+    defer_until_playback_complete: true
+    extension_context: from-internal
+    queue_context: ext-queues
+    ringgroup_context: ext-group
     technology: PJSIP
     destinations:
       sales_agent:
         description: Sales agent
+        dialplan_context: from-internal
         target: '2765'
         type: extension
         live_agent: false
