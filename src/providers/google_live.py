@@ -2021,6 +2021,8 @@ class GoogleLiveProvider(AIProviderInterface):
                     call_id=self._call_id,
                     caller_channel_id=getattr(self, '_caller_channel_id', None),
                     bridge_id=getattr(self, '_bridge_id', None),
+                    caller_number=getattr(self, '_caller_number', None),
+                    caller_name=getattr(self, '_caller_name', None),
                     called_number=getattr(self, '_called_number', None),
                     context_name=getattr(self, '_context_name', None),
                     session_store=getattr(self, '_session_store', None),

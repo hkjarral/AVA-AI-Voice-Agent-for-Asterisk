@@ -14180,6 +14180,8 @@ class Engine:
                 try:
                     provider._caller_channel_id = session.caller_channel_id
                     provider._bridge_id = session.bridge_id
+                    provider._caller_number = getattr(session, 'caller_number', None)
+                    provider._caller_name = getattr(session, 'caller_name', None)
                     provider._called_number = getattr(session, 'called_number', None)
                     provider._context_name = getattr(session, 'context_name', None)
                     provider._session_store = self.session_store

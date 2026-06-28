@@ -135,6 +135,8 @@ class GrokToolAdapter:
             call_id=context['call_id'],
             caller_channel_id=context.get('caller_channel_id'),
             bridge_id=context.get('bridge_id'),
+            caller_number=context.get('caller_number'),
+            caller_name=context.get('caller_name'),
             called_number=context.get('called_number'),
             context_name=context.get('context_name'),
             session_store=context['session_store'],

@@ -69,6 +69,28 @@ def test_first_segment_requires_min_start_when_empty():
     assert mgr._startup_ready.get(call_id) is False
 
 
+def test_first_segment_releases_short_audio_after_producer_closes():
+    mgr = make_manager()
+    call_id = "test-call-short"
+    stream_id = "stream:resp:test-call-short:1"
+    mgr._startup_ready[call_id] = False
+    stream_info = {
+        'segments_played': 0,
+        'min_start_chunks': 7,
+        'producer_closed': True,
+        'target_format': 'ulaw',
+        'target_sample_rate': 8000,
+    }
+    jitter = asyncio.Queue()
+    jitter.put_nowait(b"\xff" * 160)
+
+    ready = mgr._ensure_startup_ready(call_id, stream_id, jitter, stream_info)
+
+    assert ready is True
+    assert mgr._startup_ready.get(call_id) is True
+    assert stream_info.get('startup_ready') is True
+
+
 @pytest.mark.asyncio
 async def test_mark_segment_boundary_increments_and_resets_attack():
     mgr = make_manager()

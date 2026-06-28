@@ -117,6 +117,8 @@ class TestUnifiedTransferTool:
         engine = Mock()
         engine.register_predial_transfer_channel = Mock()
         mock_ari_client.engine = engine
+        tool_context.caller_name = "WIRELESS CALLER"
+        tool_context.caller_number = "13164619284"
         tool_context.config["tools"]["transfer"] = {
             "deferred_strategy": "predial_then_bridge",
             "extension_context": "from-internal",
@@ -141,6 +143,7 @@ class TestUnifiedTransferTool:
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == "channels"
         assert call_args["data"]["endpoint"] == "Local/6000@from-support"
+        assert call_args["data"]["callerId"] == '"WIRELESS CALLER" <13164619284>'
         assert call_args["params"]["appArgs"].startswith("predial-transfer,test_call_123,support_agent")
         engine.register_predial_transfer_channel.assert_called_once_with("test_call_123", "SIP/6000-00000001")
 

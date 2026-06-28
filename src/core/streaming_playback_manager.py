@@ -1274,6 +1274,20 @@ class StreamingPlaybackManager:
         except Exception:
             min_need = self.min_start_chunks
         available_frames = self._estimate_available_frames(call_id, jitter_buffer, include_remainder=True)
+        if bool(stream_info.get('producer_closed')) and available_frames > 0:
+            self._startup_ready[call_id] = True
+            stream_info['startup_ready'] = True
+            try:
+                logger.info(
+                    "Streaming startup released short final segment",
+                    call_id=call_id,
+                    stream_id=stream_id,
+                    buffered_frames=available_frames,
+                    min_start_chunks=min_need,
+                )
+            except Exception:
+                pass
+            return True
         if available_frames < min_need:
             return False
         self._startup_ready[call_id] = True
