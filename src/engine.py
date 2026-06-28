@@ -14722,6 +14722,10 @@ class Engine:
         if not session or not isinstance(getattr(session, "pending_deferred_transfer", None), dict):
             return None
 
+        local_handoff_played = await self._play_deferred_transfer_local_handoff(call_id, session)
+        if not local_handoff_played:
+            logger.debug("Deferred transfer local handoff skipped", call_id=call_id)
+
         await self._wait_for_deferred_transfer_audio_drain(call_id)
 
         provider_name = getattr(session, "provider_name", None) or getattr(self.config, "default_provider", None)
@@ -14747,6 +14751,99 @@ class Engine:
                 message=result.get("message"),
             )
         return result
+
+    def _deferred_transfer_local_handoff_providers(self) -> set[str]:
+        tools_cfg = getattr(self.config, "tools", {}) or {}
+        transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
+        if not isinstance(transfer_cfg, dict):
+            transfer_cfg = {}
+
+        raw = transfer_cfg.get("local_handoff_audio_providers", ["deepgram"])
+        if raw is False or raw is None:
+            return set()
+        if raw is True:
+            raw = ["deepgram"]
+        if isinstance(raw, str):
+            raw = [item.strip() for item in raw.split(",")]
+        if not isinstance(raw, (list, tuple, set)):
+            raw = ["deepgram"]
+        return {str(item or "").strip().lower() for item in raw if str(item or "").strip()}
+
+    async def _play_deferred_transfer_local_handoff(self, call_id: str, session: "CallSession") -> bool:
+        provider_name = str(getattr(session, "provider_name", None) or getattr(self.config, "default_provider", "") or "").strip()
+        provider_key = (self._get_provider_kind(provider_name) or provider_name).strip().lower()
+        if provider_key not in self._deferred_transfer_local_handoff_providers():
+            return False
+
+        action = getattr(session, "pending_deferred_transfer", None)
+        if not isinstance(action, dict):
+            return False
+
+        description = str(action.get("description") or action.get("destination_key") or action.get("target") or "").strip()
+        if not description:
+            description = "your destination"
+
+        tools_cfg = getattr(self.config, "tools", {}) or {}
+        transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
+        if not isinstance(transfer_cfg, dict):
+            transfer_cfg = {}
+        template = str(transfer_cfg.get("local_handoff_audio_template") or "Transferring you to {destination} now.").strip()
+        try:
+            message = template.format(destination=description)
+        except Exception:
+            message = f"Transferring you to {description} now."
+
+        try:
+            timeout_sec = float(transfer_cfg.get("local_handoff_audio_tts_timeout_sec", 3.0) or 3.0)
+        except (TypeError, ValueError):
+            timeout_sec = 3.0
+        timeout_sec = max(0.5, min(timeout_sec, 10.0))
+
+        try:
+            stream_info = self.streaming_playback_manager.active_streams.get(call_id)
+            if stream_info is not None:
+                stream_info["end_reason"] = "deferred-transfer-local-handoff"
+                await self.streaming_playback_manager.stop_streaming_playback(call_id)
+            self._provider_stream_queues.pop(call_id, None)
+            self._provider_stream_formats.pop(call_id, None)
+            self._provider_coalesce_buf.pop(call_id, None)
+            self._segment_tts_active.discard(call_id)
+        except Exception:
+            logger.debug("Failed to stop provider stream before local transfer handoff", call_id=call_id, exc_info=True)
+
+        audio = await self._local_ai_server_tts(call_id=call_id, text=message, timeout_sec=timeout_sec)
+        if not audio:
+            logger.warning(
+                "Deferred transfer local handoff TTS unavailable",
+                call_id=call_id,
+                provider=provider_name,
+            )
+            return False
+
+        playback_id = await self.playback_manager.play_audio(call_id, audio, "transfer-handoff")
+        if not playback_id:
+            logger.warning(
+                "Deferred transfer local handoff playback failed",
+                call_id=call_id,
+                provider=provider_name,
+            )
+            return False
+
+        wait_timeout = min(10.0, max(1.0, (len(audio) / 8000.0) + 1.0))
+        played = await self.playback_manager.wait_for_playback_end(
+            call_id,
+            playback_id,
+            timeout_sec=wait_timeout,
+        )
+        logger.info(
+            "Deferred transfer local handoff playback completed",
+            call_id=call_id,
+            provider=provider_name,
+            playback_id=playback_id,
+            played=played,
+            audio_bytes=len(audio),
+        )
+        return bool(played)
 
     async def _wait_for_deferred_transfer_audio_drain(self, call_id: str) -> bool:
         """Wait briefly for caller-facing transfer audio to leave the streaming path."""

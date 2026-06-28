@@ -459,6 +459,68 @@ async def test_deferred_transfer_commit_waits_for_audio_drain(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_deferred_transfer_deepgram_plays_local_handoff_before_commit(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    engine.config.tools["transfer"]["local_handoff_audio_providers"] = ["deepgram"]
+    session = CallSession(
+        call_id="call-deepgram-handoff",
+        caller_channel_id="caller-deepgram-handoff",
+        context_name="support",
+        provider_name="deepgram",
+    )
+    session.pending_deferred_transfer = {
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "description": "Support agent",
+    }
+    await engine.session_store.upsert_call(session)
+
+    calls = []
+
+    async def fake_tts(*, call_id, text, timeout_sec):
+        calls.append(("tts", call_id, text))
+        return b"\xff" * 1600
+
+    async def fake_wait(call_id):
+        calls.append(("drain", call_id))
+        return True
+
+    async def fake_commit(context):
+        calls.append(("commit", context.call_id))
+        return {"status": "success", "message": "ok"}
+
+    class _Playback:
+        async def play_audio(self, call_id, audio, playback_type):
+            calls.append(("play", call_id, playback_type, len(audio)))
+            return "pb-handoff"
+
+        async def wait_for_playback_end(self, call_id, playback_id, *, timeout_sec):
+            calls.append(("wait-playback", call_id, playback_id))
+            return True
+
+    engine.playback_manager = _Playback()
+    monkeypatch.setattr(engine, "_local_ai_server_tts", fake_tts)
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", fake_wait)
+    monkeypatch.setattr(
+        "src.tools.telephony.deferred_transfer.commit_pending_deferred_transfer",
+        fake_commit,
+    )
+
+    result = await engine._commit_pending_deferred_transfer_for_call("call-deepgram-handoff", session)
+
+    assert result == {"status": "success", "message": "ok"}
+    assert calls == [
+        ("tts", "call-deepgram-handoff", "Transferring you to Support agent now."),
+        ("play", "call-deepgram-handoff", "transfer-handoff", 1600),
+        ("wait-playback", "call-deepgram-handoff", "pb-handoff"),
+        ("drain", "call-deepgram-handoff"),
+        ("commit", "call-deepgram-handoff"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_deferred_transfer_audio_drain_waits_for_streaming_buffer():
     engine = _build_engine({"enabled": True})
     engine.config.tools["transfer"]["deferred_audio_drain_timeout_sec"] = 1.0
