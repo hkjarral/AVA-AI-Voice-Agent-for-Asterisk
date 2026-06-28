@@ -4301,6 +4301,7 @@ class Engine:
         except Exception:
             logger.debug("Failed to remove AI media channels during predial transfer", call_id=call_id, exc_info=True)
 
+        provider = self._call_providers.pop(call_id, None)
         try:
             start_task = self._provider_start_tasks.pop(call_id, None)
             if start_task:
@@ -4313,12 +4314,6 @@ class Engine:
             self._pipeline_forced.pop(call_id, None)
         except Exception:
             pass
-        provider = self._call_providers.pop(call_id, None)
-        if provider and hasattr(provider, "stop_session"):
-            try:
-                await provider.stop_session()
-            except Exception:
-                logger.debug("Failed to stop provider during predial transfer", call_id=call_id, exc_info=True)
 
         if not await self.ari_client.add_channel_to_bridge(session.bridge_id, predial_channel_id):
             return False
@@ -4344,7 +4339,23 @@ class Engine:
             bridge_id=getattr(session, "bridge_id", None),
             destination=getattr(session, "transfer_destination", None),
         )
+        if provider and hasattr(provider, "stop_session"):
+            self._fire_and_forget(
+                self._stop_provider_after_predial_bridge(call_id, provider, getattr(session, "provider_name", None)),
+                name=f"predial-provider-stop-{call_id}",
+            )
         return True
+
+    async def _stop_provider_after_predial_bridge(self, call_id: str, provider: Any, provider_name: Optional[str]) -> None:
+        try:
+            await provider.stop_session()
+            logger.info(
+                "AI provider session stopped after predial bridge",
+                call_id=call_id,
+                provider=provider_name,
+            )
+        except Exception:
+            logger.debug("Failed to stop provider after predial bridge", call_id=call_id, exc_info=True)
 
     def register_attended_transfer_agent_channel(self, call_id: str, agent_channel_id: str) -> None:
         """Register an attended transfer agent channel to resolve DTMF events back to a call."""

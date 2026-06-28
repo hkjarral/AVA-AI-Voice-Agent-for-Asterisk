@@ -528,6 +528,72 @@ async def test_predial_transfer_finalize_removes_ai_media_and_bridges_destinatio
 
 
 @pytest.mark.asyncio
+async def test_predial_transfer_bridges_before_slow_provider_shutdown():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-fast",
+        caller_channel_id="caller-predial-fast",
+        bridge_id="bridge-predial-fast",
+        audiosocket_channel_id="audiosocket-predial-fast",
+        external_media_id="rtp-predial-fast",
+        provider_name="google_live",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000002",
+    }
+    await engine.session_store.upsert_call(session)
+
+    order = []
+    stop_started = asyncio.Event()
+    stop_release = asyncio.Event()
+    stop_done = asyncio.Event()
+
+    class SlowProvider:
+        async def stop_session(self):
+            order.append("provider-stop-start")
+            stop_started.set()
+            await stop_release.wait()
+            order.append("provider-stop-done")
+            stop_done.set()
+
+    engine._call_providers["call-predial-fast"] = SlowProvider()
+
+    async def fake_remove(self, bridge_id, channel_id):
+        order.append(f"remove:{channel_id}")
+        return True
+
+    async def fake_add(self, bridge_id, channel_id):
+        order.append(f"add:{channel_id}")
+        return True
+
+    engine.ari_client.remove_channel_from_bridge = types.MethodType(fake_remove, engine.ari_client)
+    engine.ari_client.add_channel_to_bridge = types.MethodType(fake_add, engine.ari_client)
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000002")
+
+    assert ok is True
+    assert order[:3] == [
+        "remove:rtp-predial-fast",
+        "remove:audiosocket-predial-fast",
+        "add:SIP/6000-00000002",
+    ]
+    assert "provider-stop-done" not in order
+
+    await asyncio.wait_for(stop_started.wait(), timeout=1)
+    stop_release.set()
+    await asyncio.wait_for(stop_done.wait(), timeout=1)
+    assert order[-1] == "provider-stop-done"
+
+
+@pytest.mark.asyncio
 async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_generation_unavailable(monkeypatch):
     engine = _build_engine(
         {
