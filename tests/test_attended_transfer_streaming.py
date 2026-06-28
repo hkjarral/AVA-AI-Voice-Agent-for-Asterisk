@@ -1,4 +1,6 @@
+import asyncio
 import sys
+import time
 import types
 
 import pytest
@@ -415,6 +417,73 @@ def test_attended_transfer_ai_briefing_rejects_local_ai_fallback_text():
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_commit_waits_for_audio_drain(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-deferred",
+        caller_channel_id="caller-deferred",
+        context_name="support",
+    )
+    session.pending_deferred_transfer = {
+        "kind": "transfer",
+        "commit_tool": "blind_transfer",
+        "transfer_type": "extension",
+        "target": "6000",
+        "description": "Support agent",
+    }
+    await engine.session_store.upsert_call(session)
+
+    calls = []
+
+    async def fake_wait(call_id):
+        calls.append(("drain", call_id))
+        return True
+
+    async def fake_commit(context):
+        calls.append(("commit", context.call_id))
+        return {"status": "success", "message": "ok"}
+
+    monkeypatch.setattr(engine, "_wait_for_deferred_transfer_audio_drain", fake_wait)
+    monkeypatch.setattr(
+        "src.tools.telephony.deferred_transfer.commit_pending_deferred_transfer",
+        fake_commit,
+    )
+
+    result = await engine._commit_pending_deferred_transfer_for_call("call-deferred", session)
+
+    assert result == {"status": "success", "message": "ok"}
+    assert calls == [("drain", "call-deferred"), ("commit", "call-deferred")]
+
+
+@pytest.mark.asyncio
+async def test_deferred_transfer_audio_drain_waits_for_streaming_buffer():
+    engine = _build_engine({"enabled": True})
+    engine.config.tools["transfer"]["deferred_audio_drain_timeout_sec"] = 1.0
+    engine.config.tools["transfer"]["deferred_audio_drain_quiet_ms"] = 60
+
+    call_id = "call-drain"
+    engine.streaming_playback_manager.active_streams[call_id] = {
+        "buffered_bytes": 160,
+        "jitter_depth": 0,
+        "last_real_emit_ts": time.time(),
+    }
+    engine.streaming_playback_manager.frame_remainders[call_id] = b""
+
+    async def clear_buffer():
+        await asyncio.sleep(0.05)
+        engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] = 0
+        engine.streaming_playback_manager.active_streams[call_id]["last_real_emit_ts"] = time.time()
+
+    started = time.time()
+    clear_task = asyncio.create_task(clear_buffer())
+    drained = await engine._wait_for_deferred_transfer_audio_drain(call_id)
+    await clear_task
+
+    assert drained is True
+    assert time.time() - started >= 0.1
 
 
 @pytest.mark.asyncio

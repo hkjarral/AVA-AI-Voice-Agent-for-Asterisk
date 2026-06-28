@@ -14477,6 +14477,8 @@ class Engine:
         if not session or not isinstance(getattr(session, "pending_deferred_transfer", None), dict):
             return None
 
+        await self._wait_for_deferred_transfer_audio_drain(call_id)
+
         provider_name = getattr(session, "provider_name", None) or getattr(self.config, "default_provider", None)
         context = ToolExecutionContext(
             call_id=call_id,
@@ -14500,6 +14502,116 @@ class Engine:
                 message=result.get("message"),
             )
         return result
+
+    async def _wait_for_deferred_transfer_audio_drain(self, call_id: str) -> bool:
+        """Wait briefly for caller-facing transfer audio to leave the streaming path."""
+        tools_cfg = getattr(self.config, "tools", {}) or {}
+        transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
+        if not isinstance(transfer_cfg, dict):
+            transfer_cfg = {}
+
+        try:
+            timeout_sec = float(transfer_cfg.get("deferred_audio_drain_timeout_sec", 5.0))
+        except (TypeError, ValueError):
+            timeout_sec = 5.0
+        try:
+            quiet_sec = float(transfer_cfg.get("deferred_audio_drain_quiet_ms", 500)) / 1000.0
+        except (TypeError, ValueError):
+            quiet_sec = 0.5
+        timeout_sec = max(0.0, min(timeout_sec, 30.0))
+        quiet_sec = max(0.0, min(quiet_sec, 5.0))
+
+        if timeout_sec <= 0:
+            return True
+
+        started_at = time.time()
+        quiet_started_at: Optional[float] = None
+        last_snapshot: Dict[str, Any] = {}
+
+        while (time.time() - started_at) < timeout_sec:
+            now = time.time()
+            pending_provider_chunks = 0
+            pending_stream_bytes = 0
+            pending_jitter_frames = 0
+            pending_remainder_bytes = 0
+            active_playbacks = 0
+            last_real_emit_ts: Optional[float] = None
+
+            try:
+                q = self._provider_stream_queues.get(call_id)
+                if q is not None:
+                    pending_provider_chunks = int(q.qsize())
+            except Exception:
+                pending_provider_chunks = 0
+
+            try:
+                spm = getattr(self, "streaming_playback_manager", None)
+                stream_info = (getattr(spm, "active_streams", {}) or {}).get(call_id) if spm else None
+                if stream_info:
+                    pending_stream_bytes = int(stream_info.get("buffered_bytes", 0) or 0)
+                    pending_jitter_frames = int(stream_info.get("jitter_depth", 0) or 0)
+                    emit_ts = stream_info.get("last_real_emit_ts")
+                    if emit_ts is not None:
+                        last_real_emit_ts = float(emit_ts)
+                remainders = getattr(spm, "frame_remainders", {}) if spm else {}
+                pending_remainder_bytes = len(remainders.get(call_id, b"") or b"")
+            except Exception:
+                pending_stream_bytes = 0
+                pending_jitter_frames = 0
+                pending_remainder_bytes = 0
+                last_real_emit_ts = None
+
+            try:
+                active_playbacks = len(await self.session_store.list_playbacks_for_call(call_id))
+            except Exception:
+                active_playbacks = 0
+
+            has_pending_audio = any(
+                (
+                    pending_provider_chunks > 0,
+                    pending_stream_bytes > 0,
+                    pending_jitter_frames > 0,
+                    pending_remainder_bytes > 0,
+                    active_playbacks > 0,
+                )
+            )
+
+            last_snapshot = {
+                "pending_provider_chunks": pending_provider_chunks,
+                "pending_stream_bytes": pending_stream_bytes,
+                "pending_jitter_frames": pending_jitter_frames,
+                "pending_remainder_bytes": pending_remainder_bytes,
+                "active_playbacks": active_playbacks,
+            }
+
+            if has_pending_audio:
+                quiet_started_at = None
+            else:
+                if quiet_started_at is None:
+                    quiet_started_at = now
+                quiet_elapsed = now - quiet_started_at
+                emit_elapsed = quiet_elapsed
+                if last_real_emit_ts is not None:
+                    emit_elapsed = now - last_real_emit_ts
+                if quiet_elapsed >= quiet_sec and emit_elapsed >= quiet_sec:
+                    logger.info(
+                        "Deferred transfer audio drain complete",
+                        call_id=call_id,
+                        wait_seconds=round(now - started_at, 3),
+                        quiet_ms=int(quiet_sec * 1000),
+                    )
+                    return True
+
+            await asyncio.sleep(0.02)
+
+        logger.warning(
+            "Deferred transfer audio drain timed out; committing transfer",
+            call_id=call_id,
+            timeout_sec=timeout_sec,
+            quiet_ms=int(quiet_sec * 1000),
+            **last_snapshot,
+        )
+        return False
 
     async def _execute_pre_call_tools(
         self,
