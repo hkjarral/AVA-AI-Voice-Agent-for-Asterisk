@@ -148,6 +148,38 @@ class TestUnifiedTransferTool:
         engine.register_predial_transfer_channel.assert_called_once_with("test_call_123", "SIP/6000-00000001")
 
     @pytest.mark.asyncio
+    async def test_duplicate_deferred_transfer_reuses_pending_action(self, tool, tool_context, mock_ari_client):
+        existing_action = {
+            "id": "existing-action",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support Agent",
+            "dialplan_context": "from-internal",
+        }
+        tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer = existing_action
+        tool_context.config["tools"]["transfer"] = {
+            "deferred_strategy": "predial_then_bridge",
+            "extension_context": "from-internal",
+            "destinations": {
+                "support_agent": {
+                    "type": "extension",
+                    "target": "6000",
+                    "description": "Support Agent",
+                }
+            },
+        }
+
+        result = await tool.execute({"destination": "support_agent"}, tool_context)
+
+        assert result["status"] == "success"
+        assert result["duplicate_suppressed"] is True
+        assert result[DEFERRED_TRANSFER_RESULT_KEY] == existing_action
+        mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_commit_predial_uses_engine_finalize(self, tool, tool_context, mock_ari_client):
         engine = Mock()
         engine.finalize_predial_transfer = AsyncMock(

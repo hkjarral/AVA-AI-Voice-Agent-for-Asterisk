@@ -94,6 +94,30 @@ class UnifiedTransferTool(Tool):
         dialplan_context: str,
         destination_key: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if transfer_deferral_enabled(context):
+            try:
+                session = await context.get_session()
+                pending = getattr(session, "pending_deferred_transfer", None)
+                if isinstance(pending, dict) and pending.get("kind") == "transfer":
+                    logger.info(
+                        "Suppressing duplicate deferred transfer request",
+                        call_id=context.call_id,
+                        existing_action_id=pending.get("id"),
+                        existing_target=pending.get("target"),
+                        requested_target=target,
+                    )
+                    return build_deferred_transfer_result(
+                        action=pending,
+                        message=f"Transferring you to {pending.get('description') or description} now.",
+                        extra={
+                            "destination": pending.get("target") or target,
+                            "type": pending.get("transfer_type") or transfer_type,
+                            "duplicate_suppressed": True,
+                        },
+                    )
+            except Exception:
+                logger.debug("Failed to check duplicate deferred transfer", call_id=context.call_id, exc_info=True)
+
         action = build_deferred_transfer_action(
             source_tool=source_tool,
             commit_tool="blind_transfer",
