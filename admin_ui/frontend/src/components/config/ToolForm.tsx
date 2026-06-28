@@ -1310,6 +1310,32 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         className="mb-0 border border-border rounded-lg p-3 bg-background/50"
                                     />
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <FormSelect
+                                            label="Deferred Transfer Strategy"
+                                            value={config.transfer?.deferred_strategy || 'drain_then_dial'}
+                                            onChange={(e) => updateNestedConfig('transfer', 'deferred_strategy', e.target.value)}
+                                            options={[
+                                                { value: 'drain_then_dial', label: 'Drain, then dial' },
+                                                { value: 'predial_then_bridge', label: 'Pre-dial, then bridge' },
+                                            ]}
+                                            tooltip="Drain, then dial keeps the existing behavior. Pre-dial starts the destination leg while the handoff message plays, then bridges after playback completes."
+                                        />
+                                        <FormInput
+                                            label="Predial Bridge Wait (seconds)"
+                                            type="number"
+                                            value={config.transfer?.predial_bridge_wait_timeout_sec ?? 10}
+                                            onChange={(e) => updateNestedConfig('transfer', 'predial_bridge_wait_timeout_sec', parseFloat(e.target.value) || 10)}
+                                            tooltip="How long to wait after the handoff message for a pre-dialed destination to answer before falling back to the regular dialplan transfer."
+                                        />
+                                        <FormInput
+                                            label="Predial Dial Timeout (seconds)"
+                                            type="number"
+                                            value={config.transfer?.predial_timeout_seconds ?? 30}
+                                            onChange={(e) => updateNestedConfig('transfer', 'predial_timeout_seconds', parseInt(e.target.value) || 30)}
+                                            tooltip="How long Asterisk should keep ringing the pre-dialed destination leg."
+                                        />
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <FormInput
                                             label="Default Extension Context"
                                             value={config.transfer?.extension_context || 'from-internal'}

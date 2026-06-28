@@ -2139,6 +2139,10 @@ tools:
     provider: ${SEND_EMAIL_PROVIDER:-resend}
   transfer:
     defer_until_playback_complete: true
+    deferred_strategy: drain_then_dial
+    predial_bridge_wait_timeout_sec: 10
+    predial_timeout_seconds: 30
+    predial_wait_moh_class: default
     extension_context: from-internal
     queue_context: ext-queues
     ringgroup_context: ext-group

@@ -270,6 +270,7 @@ class Engine:
         self._attended_transfer_dtmf_waiters: Dict[str, asyncio.Future] = {}
         self._attended_transfer_dtmf_digits: Dict[str, str] = {}
         self._attended_transfer_agent_channel_to_call_id: Dict[str, str] = {}
+        self._predial_transfer_channel_to_call_id: Dict[str, str] = {}
         self._attended_transfer_helper_state_by_agent_channel: Dict[str, Dict[str, Any]] = {}
         self._attended_transfer_helper_external_media_to_agent_channel: Dict[str, str] = {}
         self._attended_transfer_screening_state_by_call: Dict[str, Dict[str, Any]] = {}
@@ -4002,6 +4003,7 @@ class Engine:
         handlers = {
             'transfer': self._handle_transfer_answered,
             'warm-transfer': self._handle_transfer_answered,  # Warm transfer uses same handler
+            'predial-transfer': self._handle_predial_transfer_answered,
             'attended-transfer': self._handle_attended_transfer_answered,
             'transfer-failed': self._handle_transfer_failed,
             'voicemail-complete': self._handle_voicemail_complete,
@@ -4129,6 +4131,220 @@ class Engine:
             logger.error(f"🔀 TRANSFER - Failed to bridge: {e}",
                         channel_id=channel_id)
             await self.ari_client.hangup_channel(channel_id)
+
+    def register_predial_transfer_channel(self, call_id: str, channel_id: str) -> None:
+        """Register a predial destination leg so cleanup can resolve it back to the caller call."""
+        if channel_id:
+            self._predial_transfer_channel_to_call_id[channel_id] = call_id
+            self._seen_aux_channels.add(channel_id)
+
+    def _unregister_predial_transfer_channel(self, channel_id: str) -> None:
+        if channel_id:
+            self._predial_transfer_channel_to_call_id.pop(channel_id, None)
+
+    async def _handle_predial_transfer_answered(self, channel_id: str, args: list):
+        """
+        Handle a predial transfer destination leg entering Stasis on answer.
+        Args: ['predial-transfer', caller_id, destination_key]
+        """
+        caller_id = args[1] if len(args) > 1 else None
+        destination_key = args[2] if len(args) > 2 else ""
+        if not caller_id:
+            logger.error("Predial transfer answered without caller id", channel_id=channel_id, args=args)
+            await self.ari_client.hangup_channel(channel_id)
+            return
+
+        self.register_predial_transfer_channel(caller_id, channel_id)
+        session = await self.session_store.get_by_call_id(caller_id)
+        if not session:
+            logger.error("Predial transfer answered but session was not found", call_id=caller_id, channel_id=channel_id)
+            self._unregister_predial_transfer_channel(channel_id)
+            await self.ari_client.hangup_channel(channel_id)
+            return
+
+        action = dict(getattr(session, "current_action", None) or {})
+        if action.get("type") != "predial_transfer":
+            logger.info(
+                "Predial transfer answered but no matching action is active; hanging up destination leg",
+                call_id=caller_id,
+                channel_id=channel_id,
+                action_type=action.get("type"),
+            )
+            self._unregister_predial_transfer_channel(channel_id)
+            await self.ari_client.hangup_channel(channel_id)
+            return
+
+        action["answered"] = True
+        action["predial_channel_id"] = channel_id
+        if destination_key and not action.get("destination_key"):
+            action["destination_key"] = destination_key
+        session.current_action = action
+        await self._save_session(session)
+
+        logger.info(
+            "Predial transfer destination answered",
+            call_id=caller_id,
+            channel_id=channel_id,
+            destination_key=destination_key,
+            ready_to_bridge=bool(action.get("ready_to_bridge")),
+        )
+
+        if action.get("ready_to_bridge"):
+            await self._finalize_predial_transfer_bridge(session, channel_id)
+
+    async def finalize_predial_transfer(self, context: "ToolExecutionContext", action: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Called after caller-facing transfer audio drains; bridge an answered predial leg."""
+        call_id = context.call_id
+        transfer_cfg = {}
+        try:
+            tools_cfg = getattr(self.config, "tools", {}) or {}
+            transfer_cfg = tools_cfg.get("transfer") if isinstance(tools_cfg, dict) else {}
+            if not isinstance(transfer_cfg, dict):
+                transfer_cfg = {}
+        except Exception:
+            transfer_cfg = {}
+
+        try:
+            wait_timeout = float(transfer_cfg.get("predial_bridge_wait_timeout_sec", 10.0) or 10.0)
+        except (TypeError, ValueError):
+            wait_timeout = 10.0
+        wait_timeout = max(0.0, min(wait_timeout, 60.0))
+        moh_class = str(transfer_cfg.get("predial_wait_moh_class", "default") or "default")
+
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session:
+            return {"status": "failed", "message": "Call session is no longer available for predial transfer."}
+
+        current = dict(getattr(session, "current_action", None) or {})
+        if current.get("type") != "predial_transfer":
+            return {"status": "failed", "message": "Predial transfer state is no longer active."}
+
+        current["ready_to_bridge"] = True
+        session.current_action = current
+        await self._save_session(session)
+
+        started_at = time.time()
+        moh_started = False
+        while (time.time() - started_at) <= wait_timeout:
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session:
+                return {"status": "failed", "message": "Call session ended before predial transfer completed."}
+            current = dict(getattr(session, "current_action", None) or {})
+            predial_channel_id = str(
+                current.get("predial_channel_id")
+                or ((action.get("payload") or {}).get("predial") or {}).get("channel_id")
+                or ""
+            ).strip()
+            if current.get("bridged"):
+                return {
+                    "status": "success",
+                    "message": f"Transferring you to {current.get('target_name') or action.get('description') or 'the destination'} now.",
+                    "destination": current.get("target") or action.get("target"),
+                    "type": current.get("transfer_type") or action.get("transfer_type"),
+                    "strategy": "predial_then_bridge",
+                }
+            if predial_channel_id and current.get("answered"):
+                ok = await self._finalize_predial_transfer_bridge(session, predial_channel_id)
+                if ok:
+                    return {
+                        "status": "success",
+                        "message": f"Transferring you to {current.get('target_name') or action.get('description') or 'the destination'} now.",
+                        "destination": current.get("target") or action.get("target"),
+                        "type": current.get("transfer_type") or action.get("transfer_type"),
+                        "strategy": "predial_then_bridge",
+                    }
+                return {"status": "failed", "message": "Predial destination answered, but bridging failed."}
+
+            if not moh_started and moh_class:
+                try:
+                    await self.ari_client.send_command(
+                        method="POST",
+                        resource=f"channels/{session.caller_channel_id}/moh",
+                        params={"mohClass": moh_class},
+                    )
+                    moh_started = True
+                except Exception:
+                    logger.debug("Failed to start predial wait MOH", call_id=call_id, exc_info=True)
+
+            await asyncio.sleep(0.05)
+
+        session = await self.session_store.get_by_call_id(call_id)
+        current = dict(getattr(session, "current_action", None) or {}) if session else {}
+        predial_channel_id = str(current.get("predial_channel_id") or "").strip()
+        if predial_channel_id:
+            self._unregister_predial_transfer_channel(predial_channel_id)
+            with contextlib.suppress(Exception):
+                await self.ari_client.hangup_channel(predial_channel_id)
+        if session:
+            with contextlib.suppress(Exception):
+                await self.ari_client.send_command(method="DELETE", resource=f"channels/{session.caller_channel_id}/moh")
+            session.current_action = None
+            await self._save_session(session)
+        return {"status": "failed", "message": "Predial destination did not answer before the bridge timeout."}
+
+    async def _finalize_predial_transfer_bridge(self, session: "CallSession", predial_channel_id: str) -> bool:
+        call_id = session.call_id
+        action = dict(getattr(session, "current_action", None) or {})
+        if action.get("bridged"):
+            return True
+
+        try:
+            await self.ari_client.send_command(method="DELETE", resource=f"channels/{session.caller_channel_id}/moh")
+        except Exception:
+            pass
+
+        try:
+            if session.external_media_id:
+                await self.ari_client.remove_channel_from_bridge(session.bridge_id, session.external_media_id)
+            if session.audiosocket_channel_id:
+                await self.ari_client.remove_channel_from_bridge(session.bridge_id, session.audiosocket_channel_id)
+        except Exception:
+            logger.debug("Failed to remove AI media channels during predial transfer", call_id=call_id, exc_info=True)
+
+        try:
+            start_task = self._provider_start_tasks.pop(call_id, None)
+            if start_task:
+                start_task.cancel()
+            task = getattr(self, "_pipeline_tasks", {}).pop(call_id, None)
+            if task and not task.done():
+                task.cancel()
+            getattr(self, "_pipeline_queues", {}).pop(call_id, None)
+            getattr(self, "_pipeline_transcript_queues", {}).pop(call_id, None)
+            self._pipeline_forced.pop(call_id, None)
+        except Exception:
+            pass
+        provider = self._call_providers.pop(call_id, None)
+        if provider and hasattr(provider, "stop_session"):
+            try:
+                await provider.stop_session()
+            except Exception:
+                logger.debug("Failed to stop provider during predial transfer", call_id=call_id, exc_info=True)
+
+        if not await self.ari_client.add_channel_to_bridge(session.bridge_id, predial_channel_id):
+            return False
+
+        try:
+            session = await self.session_store.get_by_call_id(call_id) or session
+            action = dict(getattr(session, "current_action", None) or {})
+            action["answered"] = True
+            action["bridged"] = True
+            action["predial_channel_id"] = predial_channel_id
+            action["channel_id"] = predial_channel_id
+            session.current_action = action
+            session.transfer_state = "bridged"
+            session.transfer_destination = str(action.get("target_name") or action.get("target") or "")
+            await self._save_session(session)
+        except Exception:
+            logger.debug("Failed to persist predial transfer bridge state", call_id=call_id, exc_info=True)
+
+        logger.info(
+            "Predial transfer bridged",
+            call_id=call_id,
+            predial_channel_id=predial_channel_id,
+            bridge_id=getattr(session, "bridge_id", None),
+            destination=getattr(session, "transfer_destination", None),
+        )
+        return True
 
     def register_attended_transfer_agent_channel(self, call_id: str, agent_channel_id: str) -> None:
         """Register an attended transfer agent channel to resolve DTMF events back to a call."""
@@ -5867,6 +6083,10 @@ class Engine:
                 if mapped_call_id:
                     session = await self.session_store.get_by_call_id(mapped_call_id)
             if not session:
+                mapped_call_id = self._predial_transfer_channel_to_call_id.get(channel_or_call_id)
+                if mapped_call_id:
+                    session = await self.session_store.get_by_call_id(mapped_call_id)
+            if not session:
                 logger.debug("No session found during cleanup", identifier=channel_or_call_id)
                 # Codex P1: a single call has multiple channels (caller + aux media legs:
                 # Local/AudioSocket/ExternalMedia). Aux legs are destroyed AFTER the main
@@ -6037,6 +6257,9 @@ class Engine:
                     # Legacy warm transfer path used `channel_id`
                     if action.get("channel_id"):
                         action_channels.append(str(action.get("channel_id")))
+                    # Predial transfer destination leg.
+                    if action.get("predial_channel_id"):
+                        action_channels.append(str(action.get("predial_channel_id")))
             except Exception:
                 action_channels = []
 
@@ -6288,6 +6511,15 @@ class Engine:
                 ]
                 for ch in stale:
                     self._unregister_attended_transfer_agent_channel(ch)
+            except Exception:
+                pass
+            try:
+                stale_predial = [
+                    ch for ch, cid in self._predial_transfer_channel_to_call_id.items()
+                    if cid == call_id
+                ]
+                for ch in stale_predial:
+                    self._unregister_predial_transfer_channel(ch)
             except Exception:
                 pass
 

@@ -3,6 +3,7 @@ Unit tests for UnifiedTransferTool destination resolution.
 """
 
 import pytest
+from unittest.mock import AsyncMock, Mock
 
 from src.tools.telephony.deferred_transfer import DEFERRED_TRANSFER_RESULT_KEY
 from src.tools.telephony.unified_transfer import UnifiedTransferTool
@@ -110,6 +111,64 @@ class TestUnifiedTransferTool:
         assert result[DEFERRED_TRANSFER_RESULT_KEY]["dialplan_context"] == "from-support"
         assert tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer["target"] == "6000"
         mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_predial_strategy_originates_local_leg_during_deferral(self, tool, tool_context, mock_ari_client):
+        engine = Mock()
+        engine.register_predial_transfer_channel = Mock()
+        mock_ari_client.engine = engine
+        tool_context.config["tools"]["transfer"] = {
+            "deferred_strategy": "predial_then_bridge",
+            "extension_context": "from-internal",
+            "predial_timeout_seconds": 12,
+            "destinations": {
+                "support_agent": {
+                    "type": "extension",
+                    "target": "6000",
+                    "description": "Support Agent",
+                    "dialplan_context": "from-support",
+                }
+            },
+        }
+
+        result = await tool.execute({"destination": "support_agent"}, tool_context)
+
+        assert result["status"] == "success"
+        action = result[DEFERRED_TRANSFER_RESULT_KEY]
+        assert action["payload"]["predial"]["enabled"] is True
+        assert action["payload"]["predial"]["endpoint"] == "Local/6000@from-support"
+        assert tool_context.session_store.get_by_call_id.return_value.current_action["type"] == "predial_transfer"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["resource"] == "channels"
+        assert call_args["data"]["endpoint"] == "Local/6000@from-support"
+        assert call_args["params"]["appArgs"].startswith("predial-transfer,test_call_123,support_agent")
+        engine.register_predial_transfer_channel.assert_called_once_with("test_call_123", "SIP/6000-00000001")
+
+    @pytest.mark.asyncio
+    async def test_commit_predial_uses_engine_finalize(self, tool, tool_context, mock_ari_client):
+        engine = Mock()
+        engine.finalize_predial_transfer = AsyncMock(
+            return_value={"status": "success", "strategy": "predial_then_bridge"}
+        )
+        mock_ari_client.engine = engine
+        action = {
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support Agent",
+            "dialplan_context": "from-internal",
+            "payload": {
+                "predial": {
+                    "enabled": True,
+                    "endpoint": "Local/6000@from-internal",
+                    "channel_id": "SIP/6000-00000001",
+                }
+            },
+        }
+
+        result = await tool.commit_deferred_action(action, tool_context)
+
+        assert result == {"status": "success", "strategy": "predial_then_bridge"}
+        engine.finalize_predial_transfer.assert_awaited_once_with(tool_context, action)
 
     @pytest.mark.asyncio
     async def test_commit_deferred_queue_uses_destination_context(self, tool, tool_context, mock_ari_client):

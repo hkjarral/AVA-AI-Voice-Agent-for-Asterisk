@@ -487,6 +487,47 @@ async def test_deferred_transfer_audio_drain_waits_for_streaming_buffer():
 
 
 @pytest.mark.asyncio
+async def test_predial_transfer_finalize_removes_ai_media_and_bridges_destination():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial",
+        caller_channel_id="caller-predial",
+        bridge_id="bridge-predial",
+        audiosocket_channel_id="audiosocket-predial",
+        external_media_id="rtp-predial",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000001",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.ari_client.remove_channel_from_bridge = types.MethodType(
+        lambda self, bridge_id, channel_id: asyncio.sleep(0, result=True),
+        engine.ari_client,
+    )
+    engine.ari_client.add_channel_to_bridge = types.MethodType(
+        lambda self, bridge_id, channel_id: asyncio.sleep(0, result=True),
+        engine.ari_client,
+    )
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000001")
+
+    assert ok is True
+    updated = await engine.session_store.get_by_call_id("call-predial")
+    assert updated.current_action["bridged"] is True
+    assert updated.current_action["channel_id"] == "SIP/6000-00000001"
+    assert updated.transfer_state == "bridged"
+    assert updated.transfer_destination == "Support agent"
+
+
+@pytest.mark.asyncio
 async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_generation_unavailable(monkeypatch):
     engine = _build_engine(
         {

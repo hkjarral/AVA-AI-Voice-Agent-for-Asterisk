@@ -105,6 +105,7 @@ class UnifiedTransferTool(Tool):
         )
 
         if transfer_deferral_enabled(context):
+            await self._maybe_start_predial_transfer(context, action)
             await store_pending_deferred_transfer(context, action)
             return build_deferred_transfer_result(
                 action=action,
@@ -116,6 +117,124 @@ class UnifiedTransferTool(Tool):
             )
 
         return await self.commit_deferred_action(action, context)
+
+    def _deferred_strategy(self, context: ToolExecutionContext) -> str:
+        transfer_config = context.get_config_value("tools.transfer") or {}
+        if not isinstance(transfer_config, dict):
+            return "drain_then_dial"
+        strategy = str(transfer_config.get("deferred_strategy") or "drain_then_dial").strip().lower()
+        if strategy in {"predial", "pre_dial", "pre-dial", "predial_then_bridge"}:
+            return "predial_then_bridge"
+        return "drain_then_dial"
+
+    def _predial_endpoint_for_action(self, action: Dict[str, Any]) -> str:
+        target = str(action.get("target") or "").strip()
+        dialplan_context = str(action.get("dialplan_context") or "").strip()
+        if not target or not dialplan_context:
+            return ""
+        return f"Local/{target}@{dialplan_context}"
+
+    def _caller_id_for_predial(self, context: ToolExecutionContext) -> str:
+        number = str(context.caller_number or "").strip()
+        name = str(context.caller_name or "").strip()
+        if name and number:
+            safe_name = name.replace('"', "").replace("<", "").replace(">", "").strip()
+            return f'"{safe_name}" <{number}>'
+        return number or name or ""
+
+    async def _maybe_start_predial_transfer(
+        self,
+        context: ToolExecutionContext,
+        action: Dict[str, Any],
+    ) -> None:
+        if self._deferred_strategy(context) != "predial_then_bridge":
+            return
+
+        endpoint = self._predial_endpoint_for_action(action)
+        if not endpoint:
+            logger.warning("Predial transfer skipped - endpoint unavailable", call_id=context.call_id, action=action)
+            return
+
+        app = str(context.get_config_value("asterisk.app_name", "asterisk-ai-voice-agent") or "asterisk-ai-voice-agent")
+        transfer_config = context.get_config_value("tools.transfer") or {}
+        try:
+            dial_timeout_sec = int((transfer_config if isinstance(transfer_config, dict) else {}).get("predial_timeout_seconds", 30) or 30)
+        except (TypeError, ValueError):
+            dial_timeout_sec = 30
+
+        destination_key = str(action.get("destination_key") or action.get("target") or "").strip()
+        try:
+            session = await context.get_session()
+            session.current_action = {
+                "type": "predial_transfer",
+                "deferred_action_id": action.get("id"),
+                "destination_key": destination_key,
+                "target": action.get("target"),
+                "target_name": action.get("description"),
+                "transfer_type": action.get("transfer_type"),
+                "dialplan_context": action.get("dialplan_context"),
+                "endpoint": endpoint,
+                "answered": False,
+                "ready_to_bridge": False,
+                "bridged": False,
+            }
+            await context.session_store.upsert_call(session)
+        except Exception:
+            logger.debug("Failed to persist predial transfer action state", call_id=context.call_id, exc_info=True)
+
+        try:
+            result = await context.ari_client.send_command(
+                method="POST",
+                resource="channels",
+                data={
+                    "endpoint": endpoint,
+                    "callerId": self._caller_id_for_predial(context),
+                    "timeout": dial_timeout_sec,
+                    "variables": {
+                        "AGENT_ACTION": "predial_transfer",
+                        "AGENT_CALL_ID": context.call_id,
+                        "AGENT_TARGET": str(action.get("target") or ""),
+                        "AAVA_TRANSFER_DESTINATION_KEY": destination_key,
+                    },
+                },
+                params={"app": app, "appArgs": f"predial-transfer,{context.call_id},{destination_key}"},
+            )
+        except Exception:
+            logger.warning("Predial transfer originate failed", call_id=context.call_id, endpoint=endpoint, exc_info=True)
+            return
+
+        if not isinstance(result, dict) or not result.get("id"):
+            logger.warning("Predial transfer originate returned no channel", call_id=context.call_id, endpoint=endpoint, response=result)
+            return
+
+        predial_channel_id = str(result["id"])
+        action["payload"] = {
+            **(action.get("payload") if isinstance(action.get("payload"), dict) else {}),
+            "predial": {
+                "enabled": True,
+                "endpoint": endpoint,
+                "channel_id": predial_channel_id,
+                "destination_key": destination_key,
+            },
+        }
+        try:
+            session = await context.get_session()
+            if isinstance(session.current_action, dict) and session.current_action.get("type") == "predial_transfer":
+                session.current_action["predial_channel_id"] = predial_channel_id
+                await context.session_store.upsert_call(session)
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "register_predial_transfer_channel"):
+                engine.register_predial_transfer_channel(context.call_id, predial_channel_id)
+        except Exception:
+            logger.debug("Failed to register predial transfer channel", call_id=context.call_id, predial_channel_id=predial_channel_id, exc_info=True)
+
+        logger.info(
+            "Predial transfer leg originated",
+            call_id=context.call_id,
+            endpoint=endpoint,
+            predial_channel_id=predial_channel_id,
+            destination_key=destination_key,
+        )
 
     async def prepare_or_execute_extension_transfer(
         self,
@@ -370,6 +489,20 @@ class UnifiedTransferTool(Tool):
         target = str(action.get("target") or "").strip()
         description = str(action.get("description") or target or "").strip()
         dialplan_context = str(action.get("dialplan_context") or "").strip()
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        predial = payload.get("predial") if isinstance(payload.get("predial"), dict) else None
+
+        if predial and predial.get("enabled"):
+            engine = getattr(context.ari_client, "engine", None)
+            if engine and hasattr(engine, "finalize_predial_transfer"):
+                result = await engine.finalize_predial_transfer(context, action)
+                if result and result.get("status") == "success":
+                    return result
+                logger.warning(
+                    "Predial transfer finalize failed; falling back to dialplan transfer",
+                    call_id=context.call_id,
+                    result=result,
+                )
 
         if transfer_type == "extension":
             return await self._transfer_to_extension(context, target, description, dialplan_context=dialplan_context)
