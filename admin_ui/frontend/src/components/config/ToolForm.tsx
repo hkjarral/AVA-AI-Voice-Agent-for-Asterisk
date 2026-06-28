@@ -1381,17 +1381,23 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 	                                    label="Live Agent Destination Key (Advanced)"
 	                                    value={config.transfer?.live_agent_destination_key || ''}
 	                                    onChange={(e) => updateNestedConfig('transfer', 'live_agent_destination_key', e.target.value)}
-	                                    options={[
-	                                        { value: '', label: 'Not set (auto: destinations.live_agent or key live_agent)' },
-	                                        ...Object.entries(config.transfer?.destinations || {})
-	                                            .filter(([key, dest]: [string, any]) => key === 'live_agent' || Boolean(dest?.live_agent))
-	                                            .map(([key]) => key)
-	                                            .sort()
-	                                            .map((key) => ({ value: key, label: key })),
-	                                    ]}
+		                                    options={[
+		                                        { value: '', label: 'Not set (auto: destinations.live_agent or key live_agent)' },
+		                                        ...Object.entries(config.transfer?.destinations || {})
+		                                            .map(([key, dest]: [string, any]) => ({
+                                                        key,
+                                                        type: dest?.type || 'extension',
+                                                        target: dest?.target || '',
+                                                    }))
+		                                            .sort((a, b) => a.key.localeCompare(b.key))
+		                                            .map(({ key, type, target }) => ({
+                                                        value: key,
+                                                        label: target ? `${key} (${type}: ${target})` : `${key} (${type})`,
+                                                    })),
+		                                    ]}
 	                                    tooltip="Advanced/legacy override for live_agent_transfer. When set, live-agent requests route to this destination key instead of Live Agents."
 	                                />
-                                )}
+	                            )}
 	                            <div className="flex justify-between items-center">
 	                                <FormLabel>Destinations</FormLabel>
 	                                <button
@@ -1423,7 +1429,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
 		                                                {destType} • {destTarget} • {destDescription}
                                                         {destContext ? ` • ctx: ${destContext}` : ''}
 		                                                {destType === 'extension' && dest.attended_allowed ? ' • attended' : ''}
-	                                                {destType === 'extension' && showLiveAgentRoutingAdvanced && dest.live_agent ? ' • live-agent' : ''}
+		                                                {showLiveAgentRoutingAdvanced && dest.live_agent ? ' • live-agent' : ''}
 	                                            </div>
 	                                        </div>
 	                                        <div className="flex items-center gap-1">
@@ -3371,19 +3377,17 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             onChange={(e) => setDestinationForm({ ...destinationForm, attended_allowed: e.target.checked })}
                         />
                     )}
-	                    {destinationForm.type === 'extension' && (
-	                        <FormSwitch
-	                            label="Use As Live Agent Destination"
-	                            description={
-	                                showLiveAgentRoutingAdvanced
-	                                    ? "Marks this destination as the live-agent target fallback when no explicit live_agent_destination_key is set."
-	                                    : "Disabled. Enable 'Advanced: Route Live Agent via Destination' to use destination-based live-agent routing."
-	                            }
-	                            checked={destinationForm.live_agent ?? false}
-	                            onChange={(e) => setDestinationForm({ ...destinationForm, live_agent: e.target.checked })}
-	                            disabled={!showLiveAgentRoutingAdvanced}
-	                        />
-	                    )}
+		                    <FormSwitch
+		                        label="Use As Live Agent Destination"
+		                        description={
+		                            showLiveAgentRoutingAdvanced
+		                                ? "Marks this destination as the live-agent target fallback when no explicit live_agent_destination_key is set."
+		                                : "Disabled. Enable 'Advanced: Route Live Agent via Destination' to use destination-based live-agent routing."
+		                        }
+		                        checked={destinationForm.live_agent ?? false}
+		                        onChange={(e) => setDestinationForm({ ...destinationForm, live_agent: e.target.checked })}
+		                        disabled={!showLiveAgentRoutingAdvanced}
+		                    />
 	                    <FormInput
 	                        label="Target Number"
 	                        value={destinationForm.target || ''}

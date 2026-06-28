@@ -222,6 +222,32 @@ class TestUnifiedTransferTool:
         assert call_args["params"]["extension"] == "301"
 
     @pytest.mark.asyncio
+    async def test_direct_queue_transfer_without_context_uses_default_context(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["transfer"] = {
+            "queue_context": "custom-queues",
+        }
+
+        result = await tool._transfer_to_queue(tool_context, "301", "Support Queue")
+
+        assert result["status"] == "success"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["params"]["context"] == "custom-queues"
+        assert call_args["params"]["extension"] == "301"
+
+    @pytest.mark.asyncio
+    async def test_direct_ringgroup_transfer_without_context_uses_default_context(self, tool, tool_context, mock_ari_client):
+        tool_context.config["tools"]["transfer"] = {
+            "ringgroup_context": "custom-groups",
+        }
+
+        result = await tool._transfer_to_ringgroup(tool_context, "600", "Support Ring Group")
+
+        assert result["status"] == "success"
+        call_args = mock_ari_client.send_command.call_args.kwargs
+        assert call_args["params"]["context"] == "custom-groups"
+        assert call_args["params"]["extension"] == "600"
+
+    @pytest.mark.asyncio
     async def test_human_intent_without_extension_destination_fails(self, tool, tool_context):
         tool_context.config["tools"]["transfer"] = {
             "destinations": {

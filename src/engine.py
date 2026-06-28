@@ -12209,21 +12209,28 @@ class Engine:
                                                             if next_deferred_action:
                                                                 transfer_message = str(next_result.get("message") or "").strip()
                                                                 if transfer_message:
-                                                                    conversation_history.append(_ts_msg("assistant", transfer_message))
-                                                                    session.conversation_history = list(conversation_history)
-                                                                    await self.session_store.upsert_call(session)
-                                                                    transfer_bytes = bytearray()
-                                                                    async for chunk in pipeline.tts_adapter.synthesize(call_id, transfer_message, pipeline.tts_options):
-                                                                        if chunk:
-                                                                            transfer_bytes.extend(chunk)
-                                                                    if transfer_bytes:
-                                                                        transfer_pid = await self.playback_manager.play_audio(call_id, bytes(transfer_bytes), "pipeline-transfer")
-                                                                        if transfer_pid:
-                                                                            await self.playback_manager.wait_for_playback_end(
-                                                                                call_id,
-                                                                                transfer_pid,
-                                                                                timeout_sec=(len(transfer_bytes) / 8000.0 + 3.0),
-                                                                            )
+                                                                    try:
+                                                                        conversation_history.append(_ts_msg("assistant", transfer_message))
+                                                                        session.conversation_history = list(conversation_history)
+                                                                        await self.session_store.upsert_call(session)
+                                                                    except Exception:
+                                                                        logger.debug("Failed to record follow-up deferred transfer message", call_id=call_id, exc_info=True)
+
+                                                                    try:
+                                                                        transfer_bytes = bytearray()
+                                                                        async for chunk in pipeline.tts_adapter.synthesize(call_id, transfer_message, pipeline.tts_options):
+                                                                            if chunk:
+                                                                                transfer_bytes.extend(chunk)
+                                                                        if transfer_bytes:
+                                                                            transfer_pid = await self.playback_manager.play_audio(call_id, bytes(transfer_bytes), "pipeline-transfer")
+                                                                            if transfer_pid:
+                                                                                await self.playback_manager.wait_for_playback_end(
+                                                                                    call_id,
+                                                                                    transfer_pid,
+                                                                                    timeout_sec=(len(transfer_bytes) / 8000.0 + 3.0),
+                                                                                )
+                                                                    except Exception:
+                                                                        logger.error("Follow-up deferred transfer TTS failed; committing transfer anyway", call_id=call_id, exc_info=True)
                                                                 await self._commit_pending_deferred_transfer_for_call(call_id, session)
                                                                 return
                                                             if next_result.get("will_hangup"):

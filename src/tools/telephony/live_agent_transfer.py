@@ -62,9 +62,9 @@ class LiveAgentTransferTool(Tool):
         configured_key = str(transfer_cfg.get("live_agent_destination_key") or "").strip()
         if configured_key:
             cfg = destinations.get(configured_key)
-            # Prevent misrouting "live agent" to arbitrary destinations: only accept
-            # keys explicitly marked live_agent (or the conventional key name).
-            if isinstance(cfg, dict) and (bool(cfg.get("live_agent")) or configured_key == "live_agent"):
+            # An explicit override is operator intent; allow it to point at any
+            # configured transfer destination (extension, queue, or ring group).
+            if isinstance(cfg, dict):
                 return configured_key, "config.live_agent_destination_key"
             return None, "configured_key_missing"
 

@@ -621,6 +621,12 @@ class UnifiedTransferTool(Tool):
         """
         logger.info("Queue transfer", call_id=context.call_id,
                    queue=queue, description=description)
+
+        config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("queue", {}, config if isinstance(config, dict) else {})
+        )
         
         # Set transfer_active flag BEFORE continue() - this prevents cleanup
         # from hanging up the caller when StasisEnd fires
@@ -673,6 +679,12 @@ class UnifiedTransferTool(Tool):
         """
         logger.info("Ring group transfer", call_id=context.call_id,
                    ringgroup=ringgroup, description=description)
+
+        config = context.get_config_value("tools.transfer") or {}
+        dialplan_context = (
+            str(dialplan_context or "").strip()
+            or self._resolve_dialplan_context("ringgroup", {}, config if isinstance(config, dict) else {})
+        )
         
         # Set transfer_active flag BEFORE continue() - this prevents cleanup
         # from hanging up the caller when StasisEnd fires
@@ -702,14 +714,3 @@ class UnifiedTransferTool(Tool):
             "destination": ringgroup,
             "type": "ringgroup"
         }
-        config = context.get_config_value("tools.transfer") or {}
-        dialplan_context = (
-            str(dialplan_context or "").strip()
-            or self._resolve_dialplan_context("queue", {}, config if isinstance(config, dict) else {})
-        )
-
-        config = context.get_config_value("tools.transfer") or {}
-        dialplan_context = (
-            str(dialplan_context or "").strip()
-            or self._resolve_dialplan_context("ringgroup", {}, config if isinstance(config, dict) else {})
-        )
