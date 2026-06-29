@@ -161,7 +161,7 @@ async def test_outbound_amd_machine_path_does_not_mark_caller(monkeypatch):
             return None
 
         async def get_campaign(self, campaign_id):
-            return {"voicemail_drop_enabled": 0}
+            return {"voicemail_drop_enabled": 1}
 
         async def finish_attempt(self, attempt_id, **kwargs):
             finished.append((attempt_id, kwargs))
