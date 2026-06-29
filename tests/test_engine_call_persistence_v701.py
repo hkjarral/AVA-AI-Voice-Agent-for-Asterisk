@@ -79,6 +79,35 @@ async def test_cleanup_non_aava_channel_does_not_persist_abandoned_record(monkey
 
 
 @pytest.mark.asyncio
+async def test_outbound_amd_caller_stasis_is_marked_before_reserved_arg_dispatch(monkeypatch):
+    """Outbound human-call returns with Stasis args but still represents an AAVA caller channel."""
+    engine = Engine.__new__(Engine)
+    engine._pre_stasis_channels = set()
+    engine._seen_caller_stasis_channels = set()
+    channel_id = "PJSIP-outbound-human-001"
+    handled = []
+
+    monkeypatch.setattr(engine, "_is_caller_channel", lambda channel: True)
+    monkeypatch.setattr(engine, "_is_local_channel", lambda channel: False)
+
+    async def _fake_handle_outbound_stasis(observed_channel_id, channel, args):
+        handled.append((observed_channel_id, args))
+        assert observed_channel_id in engine._seen_caller_stasis_channels
+
+    monkeypatch.setattr(engine, "_handle_outbound_stasis", _fake_handle_outbound_stasis)
+
+    await engine._handle_stasis_start(
+        {
+            "channel": {"id": channel_id, "name": "PJSIP/outbound-human-00000001"},
+            "args": ["outbound_amd", "attempt-123", "HUMAN"],
+        }
+    )
+
+    assert handled == [(channel_id, ["outbound_amd", "attempt-123", "HUMAN"])]
+    assert channel_id in engine._seen_caller_stasis_channels
+
+
+@pytest.mark.asyncio
 async def test_cleanup_aux_channel_does_not_persist_abandoned_record(monkeypatch):
     """Codex P1: an auxiliary/media channel (Local/AudioSocket/ExternalMedia) destroyed
     after the main session is already cleaned up must NOT persist its own 'abandoned'

@@ -2711,6 +2711,9 @@ class Engine:
                    args=args,
                    is_caller=self._is_caller_channel(channel),
                    is_local=self._is_local_channel(channel))
+
+        if channel_id and self._is_caller_channel(channel):
+            self._seen_caller_stasis_channels.add(channel_id)
         
         # Reserved Stasis args for internal control-plane flows.
         if args and len(args) > 0:
@@ -2732,8 +2735,6 @@ class Engine:
         if self._is_caller_channel(channel):
             # This is the caller channel entering Stasis - MAIN FLOW
             logger.info("🎯 HYBRID ARI - Processing caller channel", channel_id=channel_id)
-            if channel_id:
-                self._seen_caller_stasis_channels.add(channel_id)
             await self._handle_caller_stasis_start_hybrid(channel_id, channel)
         elif self._is_local_channel(channel):
             # Local channels are helper legs (e.g., transfers) and should be mapped back
