@@ -243,35 +243,32 @@ func runUpdate() (retErr error) {
 	ctx.newSHA = targetSHA
 
 	currentBranch, _ := gitCurrentBranch()
+	branchMismatch := false
+	checkoutExistingBranch := false
+	branchHead := ctx.oldSHA
 	if isTag && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD") {
 		return fmt.Errorf("cannot update to tag %q from a detached HEAD; checkout a branch (e.g., `git checkout main`) and re-run", updateRef)
 	}
 	if !isTag {
-		branchMismatch := strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
+		branchMismatch = strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
 		if branchMismatch {
 			if !updateCheckout {
 				return fmt.Errorf("target ref %q differs from current branch %q; re-run with --checkout to allow switching branches", updateRef, currentBranch)
 			}
-			printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
 			exists, existsErr := gitLocalBranchExists(updateRef)
 			if existsErr != nil {
 				return existsErr
 			}
 			if exists {
-				if err := gitCheckout(updateRef); err != nil {
+				checkoutExistingBranch = true
+				branchHead, err = gitRevParse(updateRef)
+				if err != nil {
 					return err
 				}
 			} else {
-				if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
-					return err
-				}
+				branchHead = targetSHA
 			}
 		}
-	}
-
-	branchHead, err := gitRevParse("HEAD")
-	if err != nil {
-		return err
 	}
 
 	updateAvailable, relErr := gitIsAncestor(branchHead, targetSHA)
@@ -288,14 +285,6 @@ func runUpdate() (retErr error) {
 		printUpdateInfo("Already up to date on %s (%s)", updateRef, shortSHA(branchHead))
 		finalSHA = branchHead
 	} else if updateAvailable {
-		printUpdateStep("Fast-forwarding code")
-		mergeRef := targetRemoteRef
-		if isTag {
-			mergeRef = updateRef
-		}
-		if err := gitMergeFastForward(mergeRef); err != nil {
-			return err
-		}
 		finalSHA = targetSHA
 	} else if remoteIsAncestor {
 		printUpdateInfo("Local branch is ahead of %s; skipping fast-forward update", targetLabel)
@@ -304,6 +293,41 @@ func runUpdate() (retErr error) {
 		return fmt.Errorf("cannot fast-forward: local branch has diverged from %s (resolve manually and re-run)", targetLabel)
 	}
 	ctx.newSHA = finalSHA
+
+	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
+		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
+		if err != nil {
+			return err
+		}
+		decideDockerActions(ctx)
+		applyServiceFilters(ctx)
+		if err := preflightDockerChangeGuard(ctx); err != nil {
+			return err
+		}
+	}
+
+	if branchMismatch {
+		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
+		if checkoutExistingBranch {
+			if err := gitCheckout(updateRef); err != nil {
+				return err
+			}
+		} else {
+			if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
+				return err
+			}
+		}
+	}
+	if strings.TrimSpace(branchHead) != strings.TrimSpace(targetSHA) && updateAvailable {
+		printUpdateStep("Fast-forwarding code")
+		mergeRef := targetRemoteRef
+		if isTag {
+			mergeRef = updateRef
+		}
+		if err := gitMergeFastForward(mergeRef); err != nil {
+			return err
+		}
+	}
 
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
@@ -317,15 +341,6 @@ func runUpdate() (retErr error) {
 	// are inherited by default.
 	if err := migrateBaseConfigEditsToLocal(); err != nil {
 		return err
-	}
-
-	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
-		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
-		if err != nil {
-			return err
-		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
 	}
 
 	printUpdateStep("Applying Docker changes")
@@ -1506,6 +1521,35 @@ func decideDockerActions(ctx *updateContext) {
 	for svc := range ctx.servicesToRebuild {
 		delete(ctx.servicesToRestart, svc)
 	}
+}
+
+func updateMayTouchAIEngine(ctx *updateContext) bool {
+	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"]
+}
+
+func updateHasDockerChanges(ctx *updateContext) bool {
+	return len(ctx.servicesToRebuild) > 0 || len(ctx.servicesToRestart) > 0 || ctx.composeChanged
+}
+
+func preflightDockerChangeGuard(ctx *updateContext) error {
+	if !updateHasDockerChanges(ctx) {
+		return nil
+	}
+	if _, err := runCmd("docker", "compose", "version"); err != nil {
+		return fmt.Errorf("docker compose is required before updating checkout because Docker changes are planned: %w", err)
+	}
+	if !updateMayTouchAIEngine(ctx) || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		return nil
+	}
+
+	activeCalls, reachable, err := queryActiveCalls()
+	if err == nil && reachable && activeCalls > 0 {
+		return fmt.Errorf("refusing to update checkout while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+	}
+	if err != nil {
+		printUpdateInfo("WARN: unable to check active calls before updating checkout: %v", err)
+	}
+	return nil
 }
 
 func applyDockerActions(ctx *updateContext) error {

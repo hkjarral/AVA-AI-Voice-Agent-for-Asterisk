@@ -4991,6 +4991,10 @@ async def updates_run(body: UpdateRunRequest):
     except HTTPException as e:
         _mark_update_job_failed(job_id, str(e.detail))
         raise
+    except Exception as e:
+        logger.exception("Failed to prepare updater image: %s", e)
+        _mark_update_job_failed(job_id, "Failed to prepare updater image")
+        raise HTTPException(status_code=500, detail="Failed to prepare updater image") from e
 
     client = docker.from_env()
     name = f"aava-update-{job_id[:12]}"
@@ -5122,6 +5126,10 @@ async def updates_rollback(body: UpdateRollbackRequest):
     except HTTPException as e:
         _mark_update_job_failed(job_id, str(e.detail))
         raise
+    except Exception as e:
+        logger.exception("Failed to prepare updater image for rollback: %s", e)
+        _mark_update_job_failed(job_id, "Failed to prepare updater image")
+        raise HTTPException(status_code=500, detail="Failed to prepare updater image") from e
 
     client = docker.from_env()
     name = f"aava-rollback-{job_id[:12]}"
