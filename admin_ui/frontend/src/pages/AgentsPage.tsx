@@ -11,6 +11,7 @@ import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
 import AgentForm from '../components/agents/AgentForm';
 import type { Agent } from '../components/agents/AgentForm';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -208,10 +209,20 @@ const AgentsPage = () => {
     const handleCopyDialplan = async (slug: string) => {
         try {
             const res = await axios.get<{ dialplan: string }>(`/api/agents/${slug}/dialplan`);
-            await navigator.clipboard.writeText(res.data.dialplan);
-            toast.success('Dialplan snippet copied to clipboard');
+            const dialplan = res.data?.dialplan;
+            if (typeof dialplan !== 'string' || dialplan.length === 0) {
+                toast.error('Dialplan snippet was empty');
+                return;
+            }
+
+            const copied = await copyTextToClipboard(dialplan);
+            if (copied) {
+                toast.success('Dialplan snippet copied to clipboard');
+            } else {
+                toast.error('Clipboard unavailable. Select and copy the snippet manually.');
+            }
         } catch {
-            toast.error('Failed to copy dialplan');
+            toast.error('Failed to load dialplan snippet');
         }
     };
 
