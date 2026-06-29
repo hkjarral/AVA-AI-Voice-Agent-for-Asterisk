@@ -260,6 +260,33 @@ class TestUnifiedTransferTool:
         assert tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer is None
 
     @pytest.mark.asyncio
+    async def test_successful_pending_deferred_transfer_commit_does_not_resurrect_removed_session(self, tool_context, monkeypatch):
+        action = {
+            "id": "cleanup-action",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support Agent",
+            "dialplan_context": "from-internal",
+        }
+        session = tool_context.session_store.get_by_call_id.return_value
+        session.pending_deferred_transfer = dict(action)
+        tool_context.session_store.get_by_call_id.side_effect = [session, None]
+        tool_context.session_store.upsert_call.reset_mock()
+
+        async def fake_commit(action_arg, context_arg):
+            return {"status": "success", "message": "ok"}
+
+        monkeypatch.setattr(deferred_transfer_mod, "commit_deferred_transfer_action", fake_commit)
+
+        result = await deferred_transfer_mod.commit_pending_deferred_transfer(tool_context)
+
+        assert result == {"status": "success", "message": "ok"}
+        tool_context.session_store.upsert_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_commit_predial_uses_engine_finalize(self, tool, tool_context, mock_ari_client):
         engine = Mock()
         engine.finalize_predial_transfer = AsyncMock(
