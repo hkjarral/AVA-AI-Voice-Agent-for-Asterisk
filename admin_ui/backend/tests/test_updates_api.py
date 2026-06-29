@@ -43,11 +43,11 @@ def test_updater_pull_preference_only_for_release_targets(ref: str, expected: st
     "value",
     [
         "agent",
-        "/tmp/agent;rm",
-        "/tmp/agent $(touch x)",
-        "/tmp/../agent",
-        "/tmp/agent name",
-        "/tmp/agent\x00x",
+        "/opt/agent;rm",
+        "/opt/agent $(touch x)",
+        "/opt/../agent",
+        "/opt/agent name",
+        "/opt/agent\x00x",
     ],
 )
 def test_cli_install_path_validation_rejects_unsafe_paths(value: str) -> None:
@@ -80,16 +80,19 @@ def test_find_active_update_job_ignores_stale_jobs(monkeypatch, tmp_path) -> Non
     stale_id = uuid.uuid4().hex
     active_id = uuid.uuid4().hex
 
+    active_state = jobs / f"{active_id}.json"
+    active_state.write_text('{"job_id":"%s","status":"running"}' % active_id, encoding="utf-8")
+
     stale_state = jobs / f"{stale_id}.json"
     stale_state.write_text(
         '{"job_id":"%s","status":"running","started_at":"2020-01-01T00:00:00Z"}' % stale_id,
         encoding="utf-8",
     )
-    old = time.time() - system._UPDATE_STALE_AFTER_SEC - 60
-    os.utime(stale_state, (old, old))
 
-    active_state = jobs / f"{active_id}.json"
-    active_state.write_text('{"job_id":"%s","status":"running"}' % active_id, encoding="utf-8")
+    def fake_stale(job: dict, **_kwargs) -> bool:
+        return job.get("job_id") == stale_id
+
+    monkeypatch.setattr(system, "_is_update_job_stale", fake_stale)
 
     active = system._find_active_update_job()
 

@@ -51,7 +51,7 @@ acquire_update_lock() {
   exec 200>"${UPDATES_DIR}/update.lock"
   if ! flock -n 200; then
     echo "ERR: another agent update or rollback is already running" >&2
-    exit 2
+    return 2
   fi
   printf 'pid=%s started_at=%s\n' "$$" "$(now_iso)" >&200
 }
@@ -373,10 +373,16 @@ run_rollback() {
   JOB_STARTED_AT="$(now_iso)"
   export JOB_STARTED_AT
 
-  acquire_update_lock
-
   JOB_LOG_PATH="${JOBS_DIR}/${JOB_ID}.log"
   export JOB_LOG_PATH
+
+  if ! acquire_update_lock 2> >(tee -a "${JOB_LOG_PATH}" >&2); then
+    JOB_FINISHED_AT="$(now_iso)"
+    export JOB_FINISHED_AT
+    write_job_state "failed" "2"
+    prune_job_logs || true
+    exit 2
+  fi
 
   src_state="${JOBS_DIR}/${ROLLBACK_FROM_JOB}.json"
   if [ ! -f "${src_state}" ]; then

@@ -1536,6 +1536,43 @@ func applyDockerActions(ctx *updateContext) error {
 		}
 	}
 
+	rebuildServices := sortedKeys(ctx.servicesToRebuild)
+	restartServices := sortedKeys(ctx.servicesToRestart)
+
+	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
+	if !updateIncludeUI {
+		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
+		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
+		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
+	}
+
+	// Don't rebuild services that the operator never started — auto-detection of changed files in
+	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
+	// runningServices is non-empty whenever the query succeeded, so this guard is safe.
+	if len(runningServices) > 0 {
+		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
+	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
+	// attempt (restart would fail anyway).
+	if len(restartServices) > 0 {
+		restartServices = filterSlice(restartServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
+	if runningServices["ai_engine"] && (ctx.composeChanged || containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		activeCalls, reachable, err := queryActiveCalls()
+		if err == nil && reachable && activeCalls > 0 {
+			return fmt.Errorf("refusing to restart ai_engine while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+		}
+		if err != nil {
+			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
+		}
+	}
+
 	if ctx.composeChanged {
 		// Avoid implicit builds when Compose files change (some deployments use pull_policy: build).
 		// The rebuild/restart logic below will handle builds explicitly when needed.
@@ -1575,43 +1612,6 @@ func applyDockerActions(ctx *updateContext) error {
 			if _, err := runCmd("docker", args...); err != nil {
 				return fmt.Errorf("docker compose up (remove-orphans) failed: %w", err)
 			}
-		}
-	}
-
-	rebuildServices := sortedKeys(ctx.servicesToRebuild)
-	restartServices := sortedKeys(ctx.servicesToRestart)
-
-	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
-	if !updateIncludeUI {
-		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
-		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
-		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
-	}
-
-	// Don't rebuild services that the operator never started — auto-detection of changed files in
-	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
-	// runningServices is non-empty whenever the query succeeded, so this guard is safe.
-	if len(runningServices) > 0 {
-		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
-			return runningServices[svc]
-		})
-	}
-
-	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
-	// attempt (restart would fail anyway).
-	if len(restartServices) > 0 {
-		restartServices = filterSlice(restartServices, func(svc string) bool {
-			return runningServices[svc]
-		})
-	}
-
-	if (containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
-		activeCalls, reachable, err := queryActiveCalls()
-		if err == nil && reachable && activeCalls > 0 {
-			return fmt.Errorf("refusing to restart ai_engine while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
-		}
-		if err != nil {
-			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
 		}
 	}
 
@@ -1661,8 +1661,13 @@ try:
 except Exception as e:
     print(json.dumps({"_probe_error": str(e)}))
 `
-	cmd := exec.Command("docker", "exec", "ai_engine", "python3", "-c", script)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "exec", "ai_engine", "python3", "-c", script)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats timed out after 8s")
+	}
 	if err != nil {
 		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats failed: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

@@ -130,6 +130,8 @@ const UpdatesPage = () => {
   }, [targetMode]);
 
   const planHasActiveCalls = typeof plan?.active_calls === 'number' && plan.active_calls > 0;
+  const activeCallCheckUnavailable = plan?.active_calls_reachable === false;
+  const activeCallOverrideRequired = planHasActiveCalls || activeCallCheckUnavailable;
   const updaterImageVisible =
     !!updaterImageStatus &&
     updaterImageStatus.status !== 'idle' &&
@@ -223,23 +225,24 @@ const UpdatesPage = () => {
     const backupRel = job?.backup_dir_rel;
     if (!preBranch || !backupRel) return;
 
+    const shQuote = (value: unknown) => `'${String(value ?? '').replace(/'/g, "'\\''")}'`;
     const composeTargets = job?.include_ui ? 'ai_engine local_ai_server admin_ui' : 'ai_engine local_ai_server';
     const repoRoot = job?.repo_root || job?.plan?.repo_root || '/root/Asterisk-AI-Voice-Agent';
     const text = [
       '# Roll back to pre-update code + restore operator config',
       '# NOTE: this restores code + config only. It does NOT restore agents.db or call_history.db.',
       '# Restore DB snapshots manually only when you are sure newer call/agent data can be discarded.',
-      `REPO=${repoRoot}`,
+      `REPO=${shQuote(repoRoot)}`,
       'cd "$REPO"',
       'git config --global --add safe.directory "$REPO"',
       '',
-      `git checkout "${preBranch}"`,
+      `git checkout ${shQuote(preBranch)}`,
       '',
-      `cp "${backupRel}/.env" .env`,
-      `cp "${backupRel}/config/ai-agent.yaml" config/ai-agent.yaml`,
-      `cp "${backupRel}/config/ai-agent.local.yaml" config/ai-agent.local.yaml 2>/dev/null || true`,
-      `cp "${backupRel}/config/users.json" config/users.json`,
-      `rm -rf config/contexts && cp -r "${backupRel}/config/contexts" config/contexts`,
+      `cp -- ${shQuote(`${backupRel}/.env`)} .env`,
+      `cp -- ${shQuote(`${backupRel}/config/ai-agent.yaml`)} config/ai-agent.yaml`,
+      `cp -- ${shQuote(`${backupRel}/config/ai-agent.local.yaml`)} config/ai-agent.local.yaml 2>/dev/null || true`,
+      `cp -- ${shQuote(`${backupRel}/config/users.json`)} config/users.json`,
+      `rm -rf config/contexts && cp -r -- ${shQuote(`${backupRel}/config/contexts`)} config/contexts`,
       '',
       `docker compose up -d --build ${composeTargets}`,
     ].join('\n');
@@ -427,10 +430,10 @@ const UpdatesPage = () => {
   }, [statusLoading, planLoading, running]);
 
   useEffect(() => {
-    if (!planHasActiveCalls && forceActiveCalls) {
+    if (!activeCallOverrideRequired && forceActiveCalls) {
       setForceActiveCalls(false);
     }
-  }, [planHasActiveCalls, forceActiveCalls]);
+  }, [activeCallOverrideRequired, forceActiveCalls]);
 
   const renderUpdaterImageStatus = (section: 'status' | 'plan' | 'run') => {
     if (!updaterImageVisible) return null;
@@ -452,7 +455,13 @@ const UpdatesPage = () => {
       >
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 font-medium">
-            {isActive ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+            {isError ? (
+              <XCircle className="w-3.5 h-3.5 text-destructive" />
+            ) : isActive ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <CheckCircle2 className="w-3.5 h-3.5" />
+            )}
             <span className="capitalize">{phase.replace(/_/g, ' ')}</span>
           </div>
           {updaterImageStatus?.updated_at && <div className="text-muted-foreground">{updaterImageStatus.updated_at}</div>}
@@ -723,9 +732,16 @@ const UpdatesPage = () => {
                 </div>
               ) : null}
 
-              {planHasActiveCalls ? (
+              {activeCallOverrideRequired ? (
                 <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
-                  <div className="font-medium">Active calls detected: {plan.active_calls}</div>
+                  <div className="font-medium">
+                    {planHasActiveCalls ? `Active calls detected: ${plan.active_calls}` : 'Active-call status unavailable'}
+                  </div>
+                  {!planHasActiveCalls && (
+                    <div className="mt-1 text-muted-foreground">
+                      The updater could not verify whether calls are active. Explicitly allow the update to proceed.
+                    </div>
+                  )}
                   <label className="mt-2 flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -733,7 +749,7 @@ const UpdatesPage = () => {
                       onChange={(e) => setForceActiveCalls(e.target.checked)}
                       className="rounded border-border"
                     />
-                    Allow update to restart services while calls are active
+                    Allow update to restart services while call status is active or unknown
                   </label>
                 </div>
               ) : null}
@@ -772,7 +788,7 @@ const UpdatesPage = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={runUpdate}
-              disabled={running || !initialized || !plan || (planHasActiveCalls && !forceActiveCalls)}
+              disabled={running || !initialized || !plan || (activeCallOverrideRequired && !forceActiveCalls)}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               title="Proceed"
             >
