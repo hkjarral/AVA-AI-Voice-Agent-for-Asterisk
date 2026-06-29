@@ -718,6 +718,10 @@ class GoogleLiveProvider(AIProviderInterface):
         self._last_final_assistant_text = ""
         self._last_input_transcription_fragment = ""
         self._last_output_transcription_fragment = ""
+        # Reset resampler state for new session (prevents stale FIR/phase
+        # state from a previous call leaking into this one).
+        self._input_resample_state = None
+        self._output_resample_state = None
         # Per-call tool allowlist (contexts are the source of truth).
         # Missing/None is treated as [] for safety.
         if context and "tools" in context:
@@ -1254,10 +1258,11 @@ class GoogleLiveProvider(AIProviderInterface):
             # Resample to provider's input rate (16kHz for Gemini Live)
             provider_rate = self.config.provider_input_sample_rate_hz
             if src_rate != provider_rate:
-                pcm16_provider, _ = resample_audio(
+                pcm16_provider, self._input_resample_state = resample_audio(
                     pcm16_src,
                     source_rate=src_rate,
                     target_rate=provider_rate,
+                    state=getattr(self, "_input_resample_state", None),
                 )
             else:
                 pcm16_provider = pcm16_src
@@ -1858,10 +1863,11 @@ class GoogleLiveProvider(AIProviderInterface):
                 logger.debug("Failed to emit Google Live output PCM rate log", call_id=self._call_id, exc_info=True)
             
             if provider_output_rate != target_rate:
-                pcm16_target, _ = resample_audio(
+                pcm16_target, self._output_resample_state = resample_audio(
                     pcm16_provider,
                     source_rate=provider_output_rate,
                     target_rate=target_rate,
+                    state=getattr(self, "_output_resample_state", None),
                 )
             else:
                 pcm16_target = pcm16_provider
@@ -2435,6 +2441,10 @@ class GoogleLiveProvider(AIProviderInterface):
             self._model_text_buffer = ""
             self._input_transcription_buffer = ""
             self._output_transcription_buffer = ""
+            # Defensive: clear resampler state on teardown too, in case the
+            # provider instance is pooled/reused without a fresh start_session.
+            self._input_resample_state = None
+            self._output_resample_state = None
             self._closing = False
             self._closed = True
 
