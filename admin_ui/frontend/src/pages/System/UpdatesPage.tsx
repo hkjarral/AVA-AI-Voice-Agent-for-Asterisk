@@ -73,6 +73,11 @@ interface UpdaterImageStatus {
 
 const TERMINAL_UPDATE_STATUSES = new Set(['success', 'failed', 'validation_failed', 'stale']);
 const isTerminalUpdateStatus = (st?: string) => TERMINAL_UPDATE_STATUSES.has((st || '').toLowerCase());
+const ROLLBACK_ELIGIBLE_STATUSES = new Set(['failed', 'validation_failed', 'stale']);
+const canRollbackJob = (job: any, st?: string) =>
+  ROLLBACK_ELIGIBLE_STATUSES.has((st || String(job?.status || '')).toLowerCase()) &&
+  Boolean(job?.pre_update_branch) &&
+  Boolean(job?.backup_dir_rel);
 
 const UpdatesPage = () => {
   const { confirm } = useConfirmDialog();
@@ -913,7 +918,7 @@ const UpdatesPage = () => {
                       <td className="px-3 py-2 font-mono text-xs">{restart || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
                       <td className="px-3 py-2">
-                        {st === 'failed' && h.pre_update_branch && h.backup_dir_rel ? (
+                        {canRollbackJob(h, st) ? (
                           <div className="inline-flex items-center gap-2">
                             <button
                               onClick={() => rollbackFromJob(h)}
