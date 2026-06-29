@@ -175,10 +175,21 @@ def resample_audio(
     extended[1:] = working
     # extended index 0 = lookback (local position -1); index i (i>=1) =
     # working[i-1] (local position i-1). So local position p -> index p+1.
-    if n_work - 1 - prev_phase < 0:
+    # Largest n_out such that every output position
+    # prev_phase + k * step  (k = 0 .. n_out - 1)
+    # stays strictly before n_work (the position of the next sample we
+    # don't have yet). ceil() -- with a tiny epsilon to guard against
+    # float noise landing on either side of an exact integer -- gives the
+    # correct count for both downsampling (step >= 1) and upsampling
+    # (step < 1). The previous floor(...)+1 form was only correct for
+    # step >= 1; for step < 1 (upsampling) it silently dropped output
+    # samples (e.g. 8kHz->16kHz dropped exactly 1 sample per call; more
+    # extreme upsample ratios dropped proportionally more).
+    remaining = n_work - prev_phase
+    if remaining <= 0:
         n_out = 0
     else:
-        n_out = int(np.floor((n_work - 1 - prev_phase) / step)) + 1
+        n_out = int(np.ceil(remaining / step - 1e-9))
     n_out = max(n_out, 0)
     if n_out == 0:
         new_phase = prev_phase - n_work

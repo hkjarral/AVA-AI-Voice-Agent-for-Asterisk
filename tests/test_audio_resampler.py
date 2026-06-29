@@ -120,3 +120,77 @@ def test_single_sample_upsample():
     out, state = resample_audio(pcm, 8000, 16000)
     assert len(out) == 4  # 1 sample @ 8k → 2 samples @ 16k = 4 bytes
     assert state is not None
+
+
+# ── Regression coverage: maintainer-requested test cases ──────────────
+
+
+def test_consecutive_chunks_total_length_matches_one_shot():
+    """Resampling many irregularly-sized consecutive chunks (state carried
+    chunk-to-chunk) must, in total, produce the same number of output
+    samples as a single one-shot resample of the same concatenated signal.
+
+    This guards against the upsampling n_out off-by-N regression: the
+    previous floor(...)+1 formula silently dropped output samples on every
+    call when step < 1 (upsampling), and the loss compounded across many
+    chunks instead of just costing one sample at the very end.
+    """
+    import math
+    import random
+
+    random.seed(1234)
+    freq, sr = 440, 8000
+    total_samples = 4000
+
+    samples = [
+        int(8000 * math.sin(2 * math.pi * freq * i / sr))
+        for i in range(total_samples)
+    ]
+    full_pcm = struct.pack(f"<{total_samples}h", *samples)
+
+    # One-shot reference resample of the entire signal.
+    one_shot_out, _ = resample_audio(full_pcm, 8000, 24000)
+
+    # Chunked resample with state carried across irregular chunk sizes
+    # (not a clean multiple of the rate ratio) so the phase must be
+    # carried correctly to avoid drift/loss.
+    state = None
+    chunked_out = b""
+    offset = 0
+    while offset < len(full_pcm):
+        chunk_samples = random.choice([37, 53, 80, 113, 160])
+        chunk_bytes = chunk_samples * 2
+        chunk = full_pcm[offset:offset + chunk_bytes]
+        out, state = resample_audio(chunk, 8000, 24000, state=state)
+        chunked_out += out
+        offset += chunk_bytes
+
+    assert len(chunked_out) == len(one_shot_out)
+
+
+def test_fresh_session_state_is_independent_of_prior_calls():
+    """A fresh call with state=None must be fully reproducible and must
+    not be influenced by phase/state left over from a separate, unrelated
+    prior call -- guards against hidden module-level state leaking between
+    sessions/calls when the caller correctly starts a new session with
+    state=None (as Google Live's start_session now does).
+    """
+    chunk = b"\x10\x00" * 160  # 160 samples, 20 ms @ 24 kHz
+
+    # An unrelated "prior session": one downsample call leaves a
+    # non-trivial residual phase in its returned state (24kHz->16kHz has
+    # a non-integer 1.5x ratio, so a clean 160-sample chunk does not
+    # divide evenly -- the leftover phase is carried forward for the
+    # *next* chunk of that same session, not discarded).
+    _, prior_state = resample_audio(chunk, 24000, 16000)
+    assert prior_state is not None and prior_state[0] != 0
+
+    # A brand-new session (state=None) on the same input, called twice,
+    # must produce identical output both times -- regardless of the
+    # unrelated prior_state computed above still being in scope. If the
+    # resampler held any hidden module-level session state, the second
+    # "fresh" call could drift from the first.
+    out_fresh_a, _ = resample_audio(chunk, 24000, 16000)
+    out_fresh_b, _ = resample_audio(chunk, 24000, 16000)
+    assert out_fresh_a == out_fresh_b
+    assert len(out_fresh_a) > 0
