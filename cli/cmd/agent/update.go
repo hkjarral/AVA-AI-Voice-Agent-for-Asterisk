@@ -1700,15 +1700,92 @@ func envBool(name string) bool {
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
+func configuredHealthPort() int {
+	const defaultPort = 15000
+	if port, ok := parseHealthPort(os.Getenv("HEALTH_BIND_PORT")); ok {
+		return port
+	}
+	if raw, ok := dotenvValue(".env", "HEALTH_BIND_PORT"); ok {
+		if port, ok := parseHealthPort(raw); ok {
+			return port
+		}
+	}
+
+	cfg := map[string]any{}
+	if base, err := configmerge.ReadYAMLFile(filepath.Join("config", "ai-agent.yaml")); err == nil {
+		cfg = base
+	}
+	if local, err := configmerge.ReadYAMLFile(filepath.Join("config", "ai-agent.local.yaml")); err == nil {
+		cfg = configmerge.DeepMerge(cfg, local)
+	}
+	if health, ok := cfg["health"].(map[string]any); ok {
+		if port, ok := parseHealthPortValue(health["port"]); ok {
+			return port
+		}
+	}
+	return defaultPort
+}
+
+func parseHealthPortValue(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return parseHealthPort(strconv.Itoa(v))
+	case int64:
+		return parseHealthPort(strconv.FormatInt(v, 10))
+	case float64:
+		if v == float64(int(v)) {
+			return parseHealthPort(strconv.Itoa(int(v)))
+		}
+	case string:
+		return parseHealthPort(v)
+	}
+	return 0, false
+}
+
+func parseHealthPort(raw string) (int, bool) {
+	p, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || p < 1 || p > 65535 {
+		return 0, false
+	}
+	return p, true
+}
+
+func dotenvValue(path, key string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != key {
+			continue
+		}
+		value := strings.TrimSpace(parts[1])
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		return value, true
+	}
+	return "", false
+}
+
 func queryActiveCalls() (int, bool, error) {
-	const script = `
+	port := configuredHealthPort()
+	script := fmt.Sprintf(`
 import json, urllib.request
 try:
-    with urllib.request.urlopen("http://127.0.0.1:15000/sessions/stats", timeout=3) as resp:
+    with urllib.request.urlopen("http://127.0.0.1:%d/sessions/stats", timeout=3) as resp:
         print(resp.read().decode("utf-8"))
 except Exception as e:
     print(json.dumps({"_probe_error": str(e)}))
-`
+`, port)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "exec", "ai_engine", "python3", "-c", script)

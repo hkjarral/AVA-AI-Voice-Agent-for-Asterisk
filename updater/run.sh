@@ -9,6 +9,7 @@ REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
 REF="${AAVA_UPDATE_REF:-main}"
 CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
 ROLLBACK_FROM_JOB="${AAVA_UPDATE_ROLLBACK_FROM_JOB:-}"
+FORCE_ACTIVE_CALLS="${AAVA_UPDATE_FORCE_ACTIVE_CALLS:-false}" # true|false
 UPDATE_CLI_HOST="${AAVA_UPDATE_UPDATE_CLI_HOST:-true}" # true|false
 CLI_INSTALL_PATH="${AAVA_UPDATE_CLI_INSTALL_PATH:-}" # optional absolute host path
 BUILD_CLI_FROM_SOURCE="${AAVA_UPDATE_BUILD_CLI_FROM_SOURCE:-false}" # true|false
@@ -54,6 +55,90 @@ acquire_update_lock() {
     return 2
   fi
   printf 'pid=%s started_at=%s\n' "$$" "$(now_iso)" >&200
+}
+
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+query_ai_engine_active_calls() {
+  docker exec ai_engine python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+
+def add_port(candidates, raw):
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return
+    if 1 <= port <= 65535 and port not in candidates:
+        candidates.append(port)
+
+
+ports = []
+add_port(ports, os.getenv("HEALTH_BIND_PORT", ""))
+try:
+    import yaml
+    for path in ("/app/config/ai-agent.local.yaml", "/app/config/ai-agent.yaml"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            add_port(ports, (cfg.get("health") or {}).get("port"))
+        except Exception:
+            pass
+except Exception:
+    pass
+add_port(ports, 15000)
+
+last_error = ""
+for port in ports:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions/stats", timeout=3) as resp:
+            payload = json.load(resp)
+        print(int(payload.get("active_calls", payload.get("active_sessions", 0)) or 0))
+        sys.exit(0)
+    except Exception as exc:
+        last_error = str(exc)
+
+print(f"ERROR:{last_error}")
+sys.exit(2)
+PY
+}
+
+guard_rollback_active_calls() {
+  if is_truthy "${FORCE_ACTIVE_CALLS}"; then
+    echo "==> Active-call guard bypassed by override" >&2
+    return 0
+  fi
+
+  local output rc
+  set +e
+  output="$(query_ai_engine_active_calls 2>&1)"
+  rc=$?
+  set -e
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "WARN: unable to check active calls before rollback service changes: ${output}" >&2
+    return 0
+  fi
+
+  local active_calls
+  active_calls="$(printf '%s\n' "${output}" | tail -n 1 | tr -d '[:space:]')"
+  if ! [[ "${active_calls}" =~ ^[0-9]+$ ]]; then
+    echo "WARN: unable to parse active-call count before rollback service changes: ${output}" >&2
+    return 0
+  fi
+
+  if [ "${active_calls}" -gt 0 ]; then
+    echo "ERR: refusing to rollback while ${active_calls} active call(s) are in progress; retry after calls complete or enable the active-call override" >&2
+    return 1
+  fi
 }
 
 install_agent_if_needed() {
@@ -502,6 +587,20 @@ run_rollback() {
       if [ "${include_ui_effective}" = "true" ]; then
         rebuild_services+=("admin_ui")
       fi
+    fi
+
+    rollback_touches_ai_engine=false
+    if [ "${compose_changed}" = "true" ]; then
+      rollback_touches_ai_engine=true
+    fi
+    for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
+      if [ "${svc}" = "ai_engine" ]; then
+        rollback_touches_ai_engine=true
+        break
+      fi
+    done
+    if [ "${rollback_touches_ai_engine}" = "true" ]; then
+      guard_rollback_active_calls
     fi
 
     if [ "${compose_changed}" = "true" ]; then

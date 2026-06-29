@@ -39,6 +39,36 @@ def test_updater_pull_preference_only_for_release_targets(ref: str, expected: st
     assert system._updater_prefer_pull_ref_for_update_target(ref) == expected
 
 
+def test_ai_engine_sessions_stats_urls_use_configured_health_port(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("AI_ENGINE_HEALTH_URL", raising=False)
+    monkeypatch.delenv("HEALTH_BIND_PORT", raising=False)
+    monkeypatch.setattr(system, "_dotenv_value", lambda key: "18000" if key == "HEALTH_BIND_PORT" else None)
+
+    urls = system._ai_engine_sessions_stats_urls()
+
+    assert "http://127.0.0.1:18000/sessions/stats" in urls
+    assert "http://ai_engine:18000/sessions/stats" in urls
+    assert "http://ai-engine:18000/sessions/stats" in urls
+
+
+def test_configured_ai_engine_health_port_reads_yaml(monkeypatch, tmp_path) -> None:
+    import settings
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    base = config_dir / "ai-agent.yaml"
+    local = config_dir / "ai-agent.local.yaml"
+    base.write_text("health:\n  port: 16000\n", encoding="utf-8")
+    local.write_text("health:\n  port: 17000\n", encoding="utf-8")
+
+    monkeypatch.delenv("HEALTH_BIND_PORT", raising=False)
+    monkeypatch.setattr(system, "_dotenv_value", lambda _key: None)
+    monkeypatch.setattr(settings, "CONFIG_PATH", str(base))
+    monkeypatch.setattr(settings, "LOCAL_CONFIG_PATH", str(local))
+
+    assert system._configured_ai_engine_health_port() == 17000
+
+
 @pytest.mark.parametrize(
     "value",
     [

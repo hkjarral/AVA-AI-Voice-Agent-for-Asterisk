@@ -433,17 +433,50 @@ def _get_health_api_token() -> str:
     return (os.getenv("HEALTH_API_TOKEN") or _dotenv_value("HEALTH_API_TOKEN") or "").strip()
 
 
+def _parse_health_port(raw) -> Optional[int]:
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _configured_ai_engine_health_port() -> int:
+    for raw in (os.getenv("HEALTH_BIND_PORT"), _dotenv_value("HEALTH_BIND_PORT")):
+        port = _parse_health_port(raw)
+        if port:
+            return port
+
+    try:
+        from settings import CONFIG_PATH, LOCAL_CONFIG_PATH
+        for path in (LOCAL_CONFIG_PATH, CONFIG_PATH):
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            if isinstance(cfg, dict):
+                port = _parse_health_port((cfg.get("health") or {}).get("port"))
+                if port:
+                    return port
+    except Exception:
+        pass
+    return 15000
+
+
 def _ai_engine_sessions_stats_urls() -> List[str]:
     urls: List[str] = []
     env_url = (os.getenv("AI_ENGINE_HEALTH_URL") or _dotenv_value("AI_ENGINE_HEALTH_URL") or "").strip()
     if env_url:
         urls.append(env_url.rstrip("/") + "/sessions/stats")
+    port = _configured_ai_engine_health_port()
     # Candidates (some deployments run outside Docker, others inside Compose network).
     urls.extend(
         [
-            "http://127.0.0.1:15000/sessions/stats",
-            "http://ai_engine:15000/sessions/stats",
-            "http://ai-engine:15000/sessions/stats",
+            f"http://127.0.0.1:{port}/sessions/stats",
+            f"http://ai_engine:{port}/sessions/stats",
+            f"http://ai-engine:{port}/sessions/stats",
         ]
     )
     # Deduplicate while preserving order.
@@ -520,10 +553,48 @@ async def _fetch_ai_engine_sessions_stats() -> Optional[dict]:
             if not container:
                 return None
             # Use python3 + urllib to avoid requiring curl/wget.
-            cmd = (
-                "python3 -c 'import json,urllib.request; "
-                "print(json.dumps(json.load(urllib.request.urlopen(\"http://127.0.0.1:15000/sessions/stats\"))))'"
-            )
+            fallback_port = _configured_ai_engine_health_port()
+            cmd = f"""python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+
+def add_port(candidates, raw):
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return
+    if 1 <= port <= 65535 and port not in candidates:
+        candidates.append(port)
+
+
+ports = []
+add_port(ports, os.getenv("HEALTH_BIND_PORT", ""))
+try:
+    import yaml
+    for path in ("/app/config/ai-agent.local.yaml", "/app/config/ai-agent.yaml"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {{}}
+            add_port(ports, (cfg.get("health") or {{}}).get("port"))
+        except Exception:
+            pass
+except Exception:
+    pass
+add_port(ports, {fallback_port})
+add_port(ports, 15000)
+
+for port in ports:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{{port}}/sessions/stats", timeout=3) as resp:
+            print(json.dumps(json.load(resp)))
+        sys.exit(0)
+    except Exception:
+        pass
+sys.exit(2)
+PY"""
             code, out = container.exec_run(["sh", "-lc", cmd])
             if code != 0:
                 return None
