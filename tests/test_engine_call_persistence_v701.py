@@ -16,11 +16,13 @@ from src.engine import Engine
 
 
 @pytest.mark.asyncio
-async def test_cleanup_without_session_persists_minimal_abandoned_record(monkeypatch):
-    """No registered session -> exactly one persisted record, abandoned, call_id=channel."""
+async def test_cleanup_without_session_persists_stasis_caller_abandoned_record(monkeypatch):
+    """A caller channel that entered AAVA Stasis still leaves an abandoned record."""
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()  # empty: get_by_* returns None
     engine._attended_transfer_agent_channel_to_call_id = {}
+    channel_id = "channel-no-session-123"
+    engine._seen_caller_stasis_channels = {channel_id}
 
     saved_records = []
 
@@ -36,7 +38,6 @@ async def test_cleanup_without_session_persists_minimal_abandoned_record(monkeyp
         "src.core.call_history.get_call_history_store", lambda: fake_store
     )
 
-    channel_id = "channel-no-session-123"
     await engine._cleanup_call(channel_id)
 
     assert len(saved_records) == 1, "expected exactly one persisted record"
@@ -45,6 +46,36 @@ async def test_cleanup_without_session_persists_minimal_abandoned_record(monkeyp
     assert rec.outcome in ("abandoned", "error")
     assert rec.start_time is not None
     assert rec.end_time is not None
+    assert channel_id not in engine._seen_caller_stasis_channels
+
+
+@pytest.mark.asyncio
+async def test_cleanup_non_aava_channel_does_not_persist_abandoned_record(monkeypatch):
+    """PBX/FreePBX channels observed by ARI but never handled by AAVA must not pollute history."""
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()  # empty: get_by_* returns None
+    engine._attended_transfer_agent_channel_to_call_id = {}
+    engine._seen_aux_channels = set()
+    engine._seen_outbound_channels = set()
+    engine._seen_caller_stasis_channels = set()
+
+    saved_records = []
+
+    class _FakeStore:
+        _enabled = True
+
+        async def save(self, record):
+            saved_records.append(record)
+            return True
+
+    fake_store = _FakeStore()
+    monkeypatch.setattr(
+        "src.core.call_history.get_call_history_store", lambda: fake_store
+    )
+
+    await engine._cleanup_call("PJSIP/freepbx-extension-00000001")
+
+    assert saved_records == [], "non-AAVA channel must not persist an abandoned record"
 
 
 @pytest.mark.asyncio
@@ -60,6 +91,7 @@ async def test_cleanup_aux_channel_does_not_persist_abandoned_record(monkeypatch
     # Aux leg was recorded as such when it entered Stasis (Local/AudioSocket/UnicastRTP).
     aux_channel_id = "UnicastRTP-aux-leg-999"
     engine._seen_aux_channels = {aux_channel_id}
+    engine._seen_caller_stasis_channels = set()
 
     saved_records = []
 
@@ -80,6 +112,7 @@ async def test_cleanup_aux_channel_does_not_persist_abandoned_record(monkeypatch
     assert saved_records == [], "aux channel must not persist an abandoned record"
     # And a genuine pre-session caller channel (never recorded as aux) still persists.
     caller_channel_id = "PJSIP-caller-leg-001"
+    engine._seen_caller_stasis_channels.add(caller_channel_id)
     await engine._cleanup_call(caller_channel_id)
     assert len(saved_records) == 1, "genuine pre-session caller must still persist (HIGH-1a)"
     assert saved_records[0].call_id == caller_channel_id
@@ -101,6 +134,7 @@ async def test_cleanup_outbound_channel_does_not_persist_abandoned_record(monkey
     # Outbound channel already finalized by _handle_outbound_channel_destroyed.
     outbound_channel_id = "PJSIP-outbound-leg-777"
     engine._seen_outbound_channels = {outbound_channel_id}
+    engine._seen_caller_stasis_channels = set()
 
     saved_records = []
 
@@ -121,6 +155,7 @@ async def test_cleanup_outbound_channel_does_not_persist_abandoned_record(monkey
 
     # A genuine pre-session INBOUND caller channel (never recorded as outbound) still persists.
     inbound_channel_id = "PJSIP-inbound-caller-002"
+    engine._seen_caller_stasis_channels.add(inbound_channel_id)
     await engine._cleanup_call(inbound_channel_id)
     assert len(saved_records) == 1, "genuine pre-session inbound caller must still persist (HIGH-1a)"
     assert saved_records[0].call_id == inbound_channel_id

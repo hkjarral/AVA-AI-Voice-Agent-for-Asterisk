@@ -575,6 +575,11 @@ class Engine:
         # finds no session and must NOT persist a separate "abandoned" row for it.
         # The HIGH-1a abandoned path is scoped to caller channels by excluding these.
         self._seen_aux_channels: Set[str] = set()
+        # Caller channel ids that actually entered this ARI app's StasisStart path.
+        # ChannelDestroyed can arrive for ordinary FreePBX/PBX channels that the
+        # ARI connection observes but AAVA never handled. Only channels in this
+        # set are eligible for the no-session abandoned call-history fallback.
+        self._seen_caller_stasis_channels: Set[str] = set()
         # P2 (bot re-review): outbound dial channels finalized by
         # _handle_outbound_channel_destroyed BEFORE a CallSession exists (busy/no-answer/
         # originate timeout). _handle_channel_destroyed still falls through to _cleanup_call,
@@ -2727,6 +2732,8 @@ class Engine:
         if self._is_caller_channel(channel):
             # This is the caller channel entering Stasis - MAIN FLOW
             logger.info("🎯 HYBRID ARI - Processing caller channel", channel_id=channel_id)
+            if channel_id:
+                self._seen_caller_stasis_channels.add(channel_id)
             await self._handle_caller_stasis_start_hybrid(channel_id, channel)
         elif self._is_local_channel(channel):
             # Local channels are helper legs (e.g., transfers) and should be mapped back
@@ -6203,6 +6210,14 @@ class Engine:
                         identifier=channel_or_call_id,
                     )
                     return
+                seen_caller_stasis = getattr(self, "_seen_caller_stasis_channels", None)
+                if seen_caller_stasis is None or channel_or_call_id not in seen_caller_stasis:
+                    logger.debug(
+                        "Skipping abandoned record for non-AAVA channel",
+                        identifier=channel_or_call_id,
+                    )
+                    return
+                seen_caller_stasis.discard(channel_or_call_id)
                 # HIGH-1a: calls that end before session registration (StasisStart
                 # exception, codec abort, immediate hangup before setup) otherwise
                 # leave no row in call_records and are invisible in history. Persist a
@@ -6671,6 +6686,9 @@ class Engine:
             # Clean up in-memory guard
             if resolved_call_id:
                 _cleanup_in_progress.discard(resolved_call_id)
+                seen_caller_stasis = getattr(self, "_seen_caller_stasis_channels", None)
+                if seen_caller_stasis is not None:
+                    seen_caller_stasis.discard(resolved_call_id)
 
     async def _persist_abandoned_call_history(self, channel_id: str) -> None:
         """Persist a minimal 'abandoned' record for a call that ended before session registration (HIGH-1a).
