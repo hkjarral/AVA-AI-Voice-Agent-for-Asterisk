@@ -200,21 +200,6 @@ func runUpdate() (retErr error) {
 		return err
 	}
 
-	printUpdateStep("Checking working tree")
-	dirty, err := gitIsDirty(updateStashUntracked)
-	if err != nil {
-		return err
-	}
-	if dirty {
-		if updateNoStash {
-			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
-		}
-		printUpdateInfo("Working tree is dirty; stashing changes")
-		if err := gitStash(ctx, updateStashUntracked); err != nil {
-			return err
-		}
-	}
-
 	tagRef, isTag := normalizeSemverTagRef(updateRef)
 	if isTag {
 		updateRef = tagRef
@@ -302,6 +287,21 @@ func runUpdate() (retErr error) {
 		decideDockerActions(ctx)
 		applyServiceFilters(ctx)
 		if err := preflightDockerChangeGuard(ctx); err != nil {
+			return err
+		}
+	}
+
+	printUpdateStep("Checking working tree")
+	dirty, err := gitIsDirty(updateStashUntracked)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		if updateNoStash {
+			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
+		}
+		printUpdateInfo("Working tree is dirty; stashing changes")
+		if err := gitStash(ctx, updateStashUntracked); err != nil {
 			return err
 		}
 	}

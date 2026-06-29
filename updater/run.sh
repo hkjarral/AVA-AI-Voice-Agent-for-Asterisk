@@ -541,6 +541,36 @@ run_rollback() {
     echo "==> Restoring code to: ${pre_branch}" >&2
     echo "==> Restoring operator config from: ${backup_rel}" >&2
 
+    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
+
+    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
+      extra=""
+      if [ "${include_ui_effective}" = "true" ]; then
+        extra=" + admin_ui"
+      fi
+      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
+      rebuild_services=("ai_engine" "local_ai_server")
+      if [ "${include_ui_effective}" = "true" ]; then
+        rebuild_services+=("admin_ui")
+      fi
+    fi
+
+    rollback_touches_ai_engine=false
+    if [ "${compose_changed}" = "true" ]; then
+      rollback_touches_ai_engine=true
+    fi
+    for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
+      if [ "${svc}" = "ai_engine" ]; then
+        rollback_touches_ai_engine=true
+        break
+      fi
+    done
+    if [ "${rollback_touches_ai_engine}" = "true" ]; then
+      guard_rollback_active_calls
+    fi
+
     # Best-effort: preserve any current local changes before switching branches.
     if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)" ]; then
       echo "==> Working tree is dirty; stashing changes (best-effort)" >&2
@@ -571,36 +601,6 @@ run_rollback() {
       cp -r "${PROJECT_ROOT}/${backup_rel}/config/contexts" "${tmp_contexts}"
       rm -rf "${PROJECT_ROOT}/config/contexts"
       mv "${tmp_contexts}" "${PROJECT_ROOT}/config/contexts"
-    fi
-
-    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
-    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
-    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
-
-    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
-      extra=""
-      if [ "${include_ui_effective}" = "true" ]; then
-        extra=" + admin_ui"
-      fi
-      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
-      rebuild_services=("ai_engine" "local_ai_server")
-      if [ "${include_ui_effective}" = "true" ]; then
-        rebuild_services+=("admin_ui")
-      fi
-    fi
-
-    rollback_touches_ai_engine=false
-    if [ "${compose_changed}" = "true" ]; then
-      rollback_touches_ai_engine=true
-    fi
-    for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
-      if [ "${svc}" = "ai_engine" ]; then
-        rollback_touches_ai_engine=true
-        break
-      fi
-    done
-    if [ "${rollback_touches_ai_engine}" = "true" ]; then
-      guard_rollback_active_calls
     fi
 
     if [ "${compose_changed}" = "true" ]; then
