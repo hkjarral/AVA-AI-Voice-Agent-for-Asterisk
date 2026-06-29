@@ -229,18 +229,19 @@ class UnifiedTransferTool(Tool):
             result = await context.ari_client.send_command(
                 method="POST",
                 resource="channels",
-                data={
+                params={
                     "endpoint": endpoint,
+                    "app": app,
+                    "appArgs": f"predial-transfer,{context.call_id},{destination_key}",
                     "callerId": self._caller_id_for_predial(context),
                     "timeout": dial_timeout_sec,
-                    "variables": {
+                    "channelVars": {
                         "AGENT_ACTION": "predial_transfer",
                         "AGENT_CALL_ID": context.call_id,
                         "AGENT_TARGET": str(action.get("target") or ""),
                         "AAVA_TRANSFER_DESTINATION_KEY": destination_key,
                     },
                 },
-                params={"app": app, "appArgs": f"predial-transfer,{context.call_id},{destination_key}"},
             )
         except Exception:
             logger.warning("Predial transfer originate failed", call_id=context.call_id, endpoint=endpoint, exc_info=True)

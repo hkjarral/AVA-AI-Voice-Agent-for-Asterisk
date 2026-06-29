@@ -143,9 +143,12 @@ class TestUnifiedTransferTool:
         assert tool_context.session_store.get_by_call_id.return_value.current_action["type"] == "predial_transfer"
         call_args = mock_ari_client.send_command.call_args.kwargs
         assert call_args["resource"] == "channels"
-        assert call_args["data"]["endpoint"] == "Local/6000@from-support"
-        assert call_args["data"]["callerId"] == '"WIRELESS CALLER" <13164619284>'
+        assert "data" not in call_args or call_args["data"] is None
+        assert call_args["params"]["endpoint"] == "Local/6000@from-support"
+        assert call_args["params"]["callerId"] == '"WIRELESS CALLER" <13164619284>'
+        assert call_args["params"]["timeout"] == 12
         assert call_args["params"]["appArgs"].startswith("predial-transfer,test_call_123,support_agent")
+        assert call_args["params"]["channelVars"]["AGENT_ACTION"] == "predial_transfer"
         engine.register_predial_transfer_channel.assert_called_once_with("test_call_123", "SIP/6000-00000001")
 
     @pytest.mark.asyncio
