@@ -4047,10 +4047,41 @@ def _materialize_git_archive_context(build_root: str, ref: str, sha: str) -> str
         root_abs = os.path.abspath(context_dir)
         with tarfile.open(archive_path, "r") as tar:
             for member in tar.getmembers():
-                target = os.path.abspath(os.path.join(context_dir, member.name))
+                member_name = os.path.normpath(member.name)
+                if (
+                    member_name in ("", ".")
+                    or os.path.isabs(member.name)
+                    or member_name == ".."
+                    or member_name.startswith(f"..{os.sep}")
+                ):
+                    raise RuntimeError(f"unsafe path in git archive for {ref}")
+                target = os.path.abspath(os.path.join(context_dir, member_name))
                 if target != root_abs and not target.startswith(root_abs + os.sep):
                     raise RuntimeError(f"unsafe path in git archive for {ref}")
-            tar.extractall(context_dir)
+
+                if member.isdir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                if member.isfile():
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    src = tar.extractfile(member)
+                    if src is None:
+                        raise RuntimeError(f"invalid file in git archive for {ref}")
+                    with src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    os.chmod(target, member.mode & 0o777)
+                    continue
+                if member.issym():
+                    link_target = member.linkname or ""
+                    link_abs = os.path.abspath(os.path.join(os.path.dirname(target), link_target))
+                    if os.path.isabs(link_target) or (
+                        link_abs != root_abs and not link_abs.startswith(root_abs + os.sep)
+                    ):
+                        raise RuntimeError(f"unsafe symlink in git archive for {ref}")
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    os.symlink(link_target, target)
+                    continue
+                raise RuntimeError(f"unsupported entry in git archive for {ref}")
         os.remove(archive_path)
         return context_dir
     except Exception:
