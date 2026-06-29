@@ -19,7 +19,7 @@ import sqlite3
 from collections import deque
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Optional, List, Set, Tuple, Callable
+from typing import TYPE_CHECKING, Dict, Any, Optional, List, Set, Tuple, Callable
 
 # Simple audio capture system removed - not used in production
 
@@ -79,6 +79,9 @@ from src.tools.telephony.hangup_policy import (
     text_is_short_polite_closing,
     normalize_marker_list,
 )
+
+if TYPE_CHECKING:
+    from src.tools.context import ToolExecutionContext
 
 logger = get_logger(__name__)
 
@@ -4313,9 +4316,27 @@ class Engine:
             getattr(self, "_pipeline_transcript_queues", {}).pop(call_id, None)
             self._pipeline_forced.pop(call_id, None)
         except Exception:
-            pass
+            logger.debug("Failed to stop predial provider tasks", call_id=call_id, exc_info=True)
 
         if not await self.ari_client.add_channel_to_bridge(session.bridge_id, predial_channel_id):
+            self._unregister_predial_transfer_channel(predial_channel_id)
+            try:
+                await self.ari_client.hangup_channel(predial_channel_id)
+            except Exception:
+                logger.debug("Failed to hang up failed predial destination leg", call_id=call_id, predial_channel_id=predial_channel_id, exc_info=True)
+            try:
+                latest = await self.session_store.get_by_call_id(call_id) or session
+                latest_action = dict(getattr(latest, "current_action", None) or {})
+                if latest_action.get("type") == "predial_transfer":
+                    latest.current_action = None
+                    await self._save_session(latest)
+            except Exception:
+                logger.debug("Failed to clear predial action after bridge failure", call_id=call_id, exc_info=True)
+            if provider and hasattr(provider, "stop_session"):
+                self._fire_and_forget(
+                    self._stop_provider_after_predial_bridge(call_id, provider, getattr(session, "provider_name", None)),
+                    name=f"predial-provider-stop-failed-{call_id}",
+                )
             return False
 
         try:
@@ -6094,7 +6115,8 @@ class Engine:
                 if mapped_call_id:
                     session = await self.session_store.get_by_call_id(mapped_call_id)
             if not session:
-                mapped_call_id = self._predial_transfer_channel_to_call_id.get(channel_or_call_id)
+                predial_channel_map = getattr(self, "_predial_transfer_channel_to_call_id", {})
+                mapped_call_id = predial_channel_map.get(channel_or_call_id)
                 if mapped_call_id:
                     session = await self.session_store.get_by_call_id(mapped_call_id)
             if not session:
@@ -11415,7 +11437,7 @@ class Engine:
                                     )
                                     # Wait for filler playback to finish, then release the
                                     # streaming slot so the real LLM→TTS overlap can use it.
-                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id, drain=True)
                                     # Backdate tts_ended_ts so the post_tts_end_protection_ms
                                     # window has already expired. This avoids blocking barge-in
                                     # between filler and real response, while keeping the echo

@@ -774,20 +774,25 @@ tools:
   # ----------------------------------------------------------------------------
   # UNIFIED TRANSFER - Transfer to extensions, queues, or ring groups
   # ----------------------------------------------------------------------------
-	  transfer:
-	    enabled: true
-	    defer_until_playback_complete: true  # Speak handoff text before blind/live/attended transfer actions
-	    extension_context: "from-internal"   # Default for extension destinations
-	    queue_context: "ext-queues"          # Default for queue destinations
-	    ringgroup_context: "ext-group"       # Default for ring group destinations
-	    destinations:
-	      # Direct extension transfers
-	      sales_agent:
-	        type: extension
-	        target: "2765"
-	        description: "Sales agent"
-	        dialplan_context: "from-internal"  # Optional per-destination override
-	        attended_allowed: true         # Allows attended_transfer (warm transfer) to this destination
+  transfer:
+    enabled: true
+    technology: "PJSIP"                    # Channel technology for direct extension dialing
+    defer_until_playback_complete: true    # Speak handoff text before blind/live/attended transfer actions
+    deferred_strategy: "drain_then_dial"   # Or "predial_then_bridge" to dial while handoff audio plays
+    predial_bridge_wait_timeout_sec: 10    # Wait after handoff audio for a predialed destination answer
+    predial_timeout_seconds: 30            # Asterisk originate timeout for predialed destination leg
+    predial_wait_moh_class: "default"      # MOH class while waiting for predial destination answer
+    extension_context: "from-internal"     # Default for extension destinations
+    queue_context: "ext-queues"            # Default for queue destinations
+    ringgroup_context: "ext-group"         # Default for ring group destinations
+    destinations:
+      # Direct extension transfers
+      sales_agent:
+        type: extension
+        target: "2765"
+        description: "Sales agent"
+        dialplan_context: "from-internal"  # Optional per-destination override
+        attended_allowed: true             # Allows attended_transfer (warm transfer) to this destination
       
       support_agent:
         type: extension
@@ -796,11 +801,11 @@ tools:
         attended_allowed: true
       
       # Queue transfers (using continue to ext-queues)
-	      sales_queue:
-	        type: queue
-	        target: "300"
-	        description: "Sales team queue"
-	        dialplan_context: "ext-queues"  # Optional per-destination override
+      sales_queue:
+        type: queue
+        target: "300"
+        description: "Sales team queue"
+        dialplan_context: "ext-queues"  # Optional per-destination override
       
       support_queue:
         type: queue
@@ -813,11 +818,11 @@ tools:
         description: "Billing department queue"
       
       # Ring group transfers (using continue to ext-group)
-	      sales_team:
-	        type: ringgroup
-	        target: "600"
-	        description: "Sales team ring group"
-	        dialplan_context: "ext-group"  # Optional per-destination override
+      sales_team:
+        type: ringgroup
+        target: "600"
+        description: "Sales team ring group"
+        dialplan_context: "ext-group"  # Optional per-destination override
       
       support_team:
         type: ringgroup

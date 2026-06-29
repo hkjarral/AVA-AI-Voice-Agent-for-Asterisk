@@ -99,6 +99,25 @@ class UnifiedTransferTool(Tool):
                 session = await context.get_session()
                 pending = getattr(session, "pending_deferred_transfer", None)
                 if isinstance(pending, dict) and pending.get("kind") == "transfer":
+                    same_pending_transfer = (
+                        str(pending.get("transfer_type") or "").strip() == str(transfer_type or "").strip()
+                        and str(pending.get("target") or "").strip() == str(target or "").strip()
+                        and str(pending.get("dialplan_context") or "").strip() == str(dialplan_context or "").strip()
+                    )
+                    if not same_pending_transfer:
+                        logger.warning(
+                            "Conflicting deferred transfer request while another transfer is pending",
+                            call_id=context.call_id,
+                            existing_action_id=pending.get("id"),
+                            existing_target=pending.get("target"),
+                            existing_transfer_type=pending.get("transfer_type"),
+                            requested_target=target,
+                            requested_transfer_type=transfer_type,
+                        )
+                        return {
+                            "status": "failed",
+                            "message": "A transfer is already pending. Please wait for it to complete.",
+                        }
                     logger.info(
                         "Suppressing duplicate deferred transfer request",
                         call_id=context.call_id,

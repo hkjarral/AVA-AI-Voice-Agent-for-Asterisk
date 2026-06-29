@@ -533,19 +533,21 @@ async def test_deferred_transfer_audio_drain_waits_for_streaming_buffer():
         "last_real_emit_ts": time.time(),
     }
     engine.streaming_playback_manager.frame_remainders[call_id] = b""
+    observations = []
 
     async def clear_buffer():
         await asyncio.sleep(0.05)
+        observations.append(("before_clear", engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"]))
         engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] = 0
         engine.streaming_playback_manager.active_streams[call_id]["last_real_emit_ts"] = time.time()
 
-    started = time.time()
     clear_task = asyncio.create_task(clear_buffer())
     drained = await engine._wait_for_deferred_transfer_audio_drain(call_id)
     await clear_task
 
     assert drained is True
-    assert time.time() - started >= 0.1
+    assert observations == [("before_clear", 160)]
+    assert engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] == 0
 
 
 @pytest.mark.asyncio
@@ -653,6 +655,65 @@ async def test_predial_transfer_bridges_before_slow_provider_shutdown():
     stop_release.set()
     await asyncio.wait_for(stop_done.wait(), timeout=1)
     assert order[-1] == "provider-stop-done"
+
+
+@pytest.mark.asyncio
+async def test_predial_transfer_bridge_failure_cleans_destination_leg_and_provider():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-fail",
+        caller_channel_id="caller-predial-fail",
+        bridge_id="bridge-predial-fail",
+        provider_name="google_live",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000003",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel("call-predial-fail", "SIP/6000-00000003")
+
+    stopped = asyncio.Event()
+    hung_up = []
+    scheduled = []
+
+    class Provider:
+        async def stop_session(self):
+            stopped.set()
+
+    engine._call_providers["call-predial-fail"] = Provider()
+    engine.ari_client.add_channel_to_bridge = types.MethodType(
+        lambda self, bridge_id, channel_id: asyncio.sleep(0, result=False),
+        engine.ari_client,
+    )
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    async def fake_hangup(channel_id):
+        hung_up.append(channel_id)
+        return True
+
+    def fake_fire_and_forget(coro, *, name=None):
+        scheduled.append(name)
+        return asyncio.create_task(coro)
+
+    engine.ari_client.hangup_channel = fake_hangup
+    engine._fire_and_forget = fake_fire_and_forget
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000003")
+
+    assert ok is False
+    assert "SIP/6000-00000003" not in engine._predial_transfer_channel_to_call_id
+    assert hung_up == ["SIP/6000-00000003"]
+    assert scheduled == ["predial-provider-stop-failed-call-predial-fail"]
+    await asyncio.wait_for(stopped.wait(), timeout=1)
+    updated = await engine.session_store.get_by_call_id("call-predial-fail")
+    assert updated.current_action is None
 
 
 @pytest.mark.asyncio

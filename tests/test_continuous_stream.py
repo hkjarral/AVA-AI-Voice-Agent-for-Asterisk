@@ -82,7 +82,10 @@ def test_first_segment_releases_short_audio_after_producer_closes():
         'target_sample_rate': 8000,
     }
     jitter = asyncio.Queue()
-    jitter.put_nowait(b"\xff" * 160)
+    payload = b"\xff" * 80
+    stream_info["buffered_bytes"] = len(payload)
+    mgr.active_streams[call_id] = stream_info
+    jitter.put_nowait(payload)
 
     ready = mgr._ensure_startup_ready(call_id, stream_id, jitter, stream_info)
 

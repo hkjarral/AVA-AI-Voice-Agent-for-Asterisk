@@ -124,9 +124,6 @@ async def commit_pending_deferred_transfer(
     if not isinstance(action, dict):
         return None
 
-    session.pending_deferred_transfer = None
-    await context.session_store.upsert_call(session)
-
     try:
         logger.info(
             "Committing deferred transfer",
@@ -136,8 +133,25 @@ async def commit_pending_deferred_transfer(
             commit_tool=action.get("commit_tool"),
             transfer_type=action.get("transfer_type"),
         )
-        return await commit_deferred_transfer_action(action, context)
+        result = await commit_deferred_transfer_action(action, context)
+        if isinstance(result, dict) and result.get("status") == "success":
+            latest = await context.session_store.get_by_call_id(context.call_id) or session
+            pending = getattr(latest, "pending_deferred_transfer", None)
+            if isinstance(pending, dict) and pending.get("id") == action.get("id"):
+                latest.pending_deferred_transfer = None
+                await context.session_store.upsert_call(latest)
+        else:
+            logger.warning(
+                "Deferred transfer commit did not succeed; keeping pending action",
+                call_id=context.call_id,
+                action_id=action.get("id"),
+                result=result,
+            )
+        return result
     except Exception as exc:
+        latest = await context.session_store.get_by_call_id(context.call_id) or session
+        latest.pending_deferred_transfer = dict(action)
+        await context.session_store.upsert_call(latest)
         logger.error(
             "Deferred transfer commit failed",
             call_id=context.call_id,

@@ -5,6 +5,7 @@ Unit tests for UnifiedTransferTool destination resolution.
 import pytest
 from unittest.mock import AsyncMock, Mock
 
+from src.tools.telephony import deferred_transfer as deferred_transfer_mod
 from src.tools.telephony.deferred_transfer import DEFERRED_TRANSFER_RESULT_KEY
 from src.tools.telephony.unified_transfer import UnifiedTransferTool
 
@@ -178,6 +179,85 @@ class TestUnifiedTransferTool:
         assert result["duplicate_suppressed"] is True
         assert result[DEFERRED_TRANSFER_RESULT_KEY] == existing_action
         mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_conflicting_deferred_transfer_request_does_not_reuse_pending_action(self, tool, tool_context, mock_ari_client):
+        existing_action = {
+            "id": "existing-action",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support Agent",
+            "dialplan_context": "from-internal",
+        }
+        tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer = existing_action
+        tool_context.config["tools"]["transfer"] = {
+            "extension_context": "from-internal",
+            "destinations": {
+                "billing_agent": {
+                    "type": "extension",
+                    "target": "7000",
+                    "description": "Billing Agent",
+                }
+            },
+        }
+
+        result = await tool.execute({"destination": "billing_agent"}, tool_context)
+
+        assert result["status"] == "failed"
+        assert "already pending" in result["message"]
+        assert tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer == existing_action
+        mock_ari_client.send_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_pending_deferred_transfer_commit_keeps_action_for_retry(self, tool_context, monkeypatch):
+        action = {
+            "id": "retry-action",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support Agent",
+            "dialplan_context": "from-internal",
+        }
+        tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer = dict(action)
+
+        async def fake_commit(action_arg, context_arg):
+            return {"status": "error", "message": "temporary failure"}
+
+        monkeypatch.setattr(deferred_transfer_mod, "commit_deferred_transfer_action", fake_commit)
+
+        result = await deferred_transfer_mod.commit_pending_deferred_transfer(tool_context)
+
+        assert result == {"status": "error", "message": "temporary failure"}
+        assert tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer == action
+
+    @pytest.mark.asyncio
+    async def test_successful_pending_deferred_transfer_commit_clears_action(self, tool_context, monkeypatch):
+        action = {
+            "id": "success-action",
+            "kind": "transfer",
+            "source_tool": "blind_transfer",
+            "commit_tool": "blind_transfer",
+            "transfer_type": "extension",
+            "target": "6000",
+            "description": "Support Agent",
+            "dialplan_context": "from-internal",
+        }
+        tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer = dict(action)
+
+        async def fake_commit(action_arg, context_arg):
+            return {"status": "success", "message": "ok"}
+
+        monkeypatch.setattr(deferred_transfer_mod, "commit_deferred_transfer_action", fake_commit)
+
+        result = await deferred_transfer_mod.commit_pending_deferred_transfer(tool_context)
+
+        assert result == {"status": "success", "message": "ok"}
+        assert tool_context.session_store.get_by_call_id.return_value.pending_deferred_transfer is None
 
     @pytest.mark.asyncio
     async def test_commit_predial_uses_engine_finalize(self, tool, tool_context, mock_ari_client):

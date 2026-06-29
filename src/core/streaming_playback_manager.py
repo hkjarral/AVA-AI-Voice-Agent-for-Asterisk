@@ -1274,7 +1274,16 @@ class StreamingPlaybackManager:
         except Exception:
             min_need = self.min_start_chunks
         available_frames = self._estimate_available_frames(call_id, jitter_buffer, include_remainder=True)
-        if bool(stream_info.get('producer_closed')) and available_frames > 0:
+        buffered_bytes = 0
+        with suppress(TypeError, ValueError):
+            buffered_bytes = int(stream_info.get('buffered_bytes', 0) or 0)
+        has_closed_tail = (
+            available_frames > 0
+            or buffered_bytes > 0
+            or bool(self.frame_remainders.get(call_id))
+            or not jitter_buffer.empty()
+        )
+        if bool(stream_info.get('producer_closed')) and has_closed_tail:
             self._startup_ready[call_id] = True
             stream_info['startup_ready'] = True
             try:
@@ -3207,7 +3216,7 @@ class StreamingPlaybackManager:
                         error=str(e))
 
     
-    async def stop_streaming_playback(self, call_id: str) -> bool:
+    async def stop_streaming_playback(self, call_id: str, *, drain: bool = False, drain_timeout: float = 120.0) -> bool:
         """Stop streaming playback for a call."""
         try:
             stream_info = self.active_streams.get(call_id)
@@ -3215,6 +3224,21 @@ class StreamingPlaybackManager:
                 logger.warning("No active streaming to stop", call_id=call_id)
                 return False
             stream_id = stream_info.get('stream_id') or ''
+
+            if drain:
+                task = stream_info.get('streaming_task')
+                if task and not task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=max(0.5, float(drain_timeout)))
+                        logger.info("🎵 STREAMING PLAYBACK - Drained", call_id=call_id, stream_id=stream_id)
+                        return True
+                    except (asyncio.TimeoutError, TypeError, ValueError):
+                        logger.warning("Streaming drain timed out; aborting playback", call_id=call_id, stream_id=stream_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("Streaming drain failed; aborting playback", call_id=call_id, stream_id=stream_id, exc_info=True)
+
             cancelled_tasks = []
             seen_tasks = set()
 
