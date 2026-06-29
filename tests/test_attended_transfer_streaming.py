@@ -717,6 +717,88 @@ async def test_predial_transfer_bridge_failure_cleans_destination_leg_and_provid
 
 
 @pytest.mark.asyncio
+async def test_predial_transfer_finalize_is_serialized():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-race",
+        caller_channel_id="caller-predial-race",
+        bridge_id="bridge-predial-race",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "predial_channel_id": "SIP/6000-00000004",
+    }
+    await engine.session_store.upsert_call(session)
+
+    add_started = asyncio.Event()
+    release_add = asyncio.Event()
+    add_calls = []
+
+    async def fake_add(self, bridge_id, channel_id):
+        add_calls.append((bridge_id, channel_id))
+        add_started.set()
+        await release_add.wait()
+        return True
+
+    engine.ari_client.add_channel_to_bridge = types.MethodType(fake_add, engine.ari_client)
+    engine.ari_client.send_command = types.MethodType(
+        lambda self, **kwargs: asyncio.sleep(0, result={"status": 204}),
+        engine.ari_client,
+    )
+
+    first = asyncio.create_task(engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000004"))
+    await asyncio.wait_for(add_started.wait(), timeout=1)
+    second = asyncio.create_task(engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000004"))
+    await asyncio.sleep(0)
+    release_add.set()
+
+    assert await asyncio.wait_for(first, timeout=1) is True
+    assert await asyncio.wait_for(second, timeout=1) is True
+    assert add_calls == [("bridge-predial-race", "SIP/6000-00000004")]
+    assert "call-predial-race" not in engine._predial_bridge_in_progress
+
+
+@pytest.mark.asyncio
+async def test_unbridged_predial_leg_cleanup_does_not_cleanup_caller():
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-unbridged",
+        caller_channel_id="caller-predial-unbridged",
+        bridge_id="bridge-predial-unbridged",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "ready_to_bridge": False,
+        "bridged": False,
+        "predial_channel_id": "SIP/6000-00000005",
+    }
+    await engine.session_store.upsert_call(session)
+    engine.register_predial_transfer_channel("call-predial-unbridged", "SIP/6000-00000005")
+
+    destroyed_bridges = []
+
+    async def fake_destroy_bridge(bridge_id):
+        destroyed_bridges.append(bridge_id)
+        return True
+
+    engine.ari_client.destroy_bridge = fake_destroy_bridge
+
+    await engine._cleanup_call("SIP/6000-00000005")
+
+    assert destroyed_bridges == []
+    assert "SIP/6000-00000005" not in engine._predial_transfer_channel_to_call_id
+    updated = await engine.session_store.get_by_call_id("call-predial-unbridged")
+    assert updated is not None
+    assert updated.current_action is None
+
+
+@pytest.mark.asyncio
 async def test_attended_transfer_ai_briefing_falls_back_to_basic_tts_when_generation_unavailable(monkeypatch):
     engine = _build_engine(
         {
