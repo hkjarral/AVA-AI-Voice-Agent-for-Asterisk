@@ -26,6 +26,20 @@ def test_cli_install_path_validation_accepts_simple_absolute_path() -> None:
 
 
 @pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        ("v7.2.0", "v7.2.0"),
+        ("7.2.0", "7.2.0"),
+        ("main", None),
+        ("codex/UI-Update-Improvements", None),
+        ("feature/foo", None),
+    ],
+)
+def test_updater_pull_preference_only_for_release_targets(ref: str, expected: str | None) -> None:
+    assert system._updater_prefer_pull_ref_for_update_target(ref) == expected
+
+
+@pytest.mark.parametrize(
     "value",
     [
         "agent",

@@ -3536,6 +3536,19 @@ def _is_semver_tag(ref: str) -> bool:
     return bool(re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", r))
 
 
+def _updater_prefer_pull_ref_for_update_target(ref: str) -> Optional[str]:
+    """
+    Return a remote updater-image tag only when the update target is a published release.
+
+    Branch/main/custom update paths must build the updater from the checked-out source so
+    UI-driven tests exercise updater/CLI changes that are part of the branch under review.
+    """
+    r = (ref or "").strip()
+    if _is_semver_tag(r):
+        return r
+    return None
+
+
 def _updater_pull_tags_for_ref(ref: str) -> list[str]:
     """
     Return candidate remote tags for pulling a prebuilt updater image.
@@ -3741,7 +3754,7 @@ def _updater_image_tag_for_sha(sha: Optional[str]) -> str:
     return f"{_UPDATER_IMAGE_REPO}:sha-{sha[:12]}"
 
 
-def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
+def _ensure_updater_image_for_sha(host_project_root: str, tag: str, *, require_local_source: bool = False) -> None:
     lock = _updater_lock()
     with lock:
         try:
@@ -3755,8 +3768,10 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
 
             client = docker.from_env()
             try:
-                client.images.get(tag)
-                return
+                image = client.images.get(tag)
+                labels = getattr(image, "labels", None) or {}
+                if not require_local_source or labels.get("aava.updater.source") == "local":
+                    return
             except Exception:
                 pass
 
@@ -3770,7 +3785,17 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
             )
             safe_tag = _validate_docker_image_ref(tag)
             code, out = _run_docker(
-                ["build", "--network=host", "-f", "updater/Dockerfile", "-t", safe_tag, "."],
+                [
+                    "build",
+                    "--network=host",
+                    "--label",
+                    "aava.updater.source=local",
+                    "-f",
+                    "updater/Dockerfile",
+                    "-t",
+                    safe_tag,
+                    ".",
+                ],
                 cwd=build_root,
                 timeout_sec=1800,
             )
@@ -3815,6 +3840,16 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
     and retag it to the local tag used by updater jobs.
     """
     client = docker.from_env()
+    if not prefer_pull_ref:
+        if allow_build:
+            _ensure_updater_image_for_sha(host_project_root, local_tag, require_local_source=True)
+            return
+        try:
+            client.images.get(local_tag)
+            return
+        except Exception:
+            raise HTTPException(status_code=500, detail="Updater image missing and local build is disabled")
+
     try:
         client.images.get(local_tag)
         return
@@ -4398,7 +4433,7 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         env=env,
         timeout_sec=120,
         capture_stderr=False,
-        prefer_pull_ref="latest",
+        prefer_pull_ref=_updater_prefer_pull_ref_for_update_target(ref),
         allow_build=True,
     )
     if code != 0:
@@ -4446,9 +4481,9 @@ async def updates_run(body: UpdateRunRequest):
             status_code=409,
             detail=f"Another update job is already running: {active_job.get('job_id') or 'unknown'}",
         )
-    # Prefer pulling a published updater image. For stable version updates (vX.Y.Z),
-    # try to pull the matching updater tag; otherwise fall back to pulling :latest.
-    prefer_pull = ref if _is_semver_tag(ref) else "latest"
+    # Stable releases can use published updater images; branch/main/custom targets build
+    # the updater from local source so branch-specific updater changes are exercised.
+    prefer_pull = _updater_prefer_pull_ref_for_update_target(ref)
     _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref=prefer_pull, allow_build=True)
 
     job_id = uuid.uuid4().hex
@@ -4542,7 +4577,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     host_docker_sock = _docker_sock_host_path_from_admin_ui_container()
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
-    _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref="latest", allow_build=True)
+    _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref=None, allow_build=True)
     active_job = _find_active_update_job()
     if active_job:
         raise HTTPException(
