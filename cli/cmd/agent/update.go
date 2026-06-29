@@ -1610,7 +1610,7 @@ func applyDockerActions(ctx *updateContext) error {
 	if runningServices["ai_engine"] && (ctx.composeChanged || containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
 		activeCalls, reachable, err := queryActiveCalls()
 		if err == nil && reachable && activeCalls > 0 {
-			return fmt.Errorf("refusing to restart ai_engine while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+			printUpdateInfo("WARN: %d active call(s) started after update checkout; continuing to keep code and containers aligned", activeCalls)
 		}
 		if err != nil {
 			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
