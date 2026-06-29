@@ -11,7 +11,7 @@ prometheus-client==0.24.1
 PyYAML==6.0.3
 
 # Audio resampling (numpy linear interpolation for artifact-free streaming)
-numpy>=1.24.0
+numpy>=2.5.0
 
 # Utilities
 tenacity==8.2.3
