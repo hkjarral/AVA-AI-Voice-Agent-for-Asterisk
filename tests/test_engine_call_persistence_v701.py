@@ -79,32 +79,115 @@ async def test_cleanup_non_aava_channel_does_not_persist_abandoned_record(monkey
 
 
 @pytest.mark.asyncio
-async def test_outbound_amd_caller_stasis_is_marked_before_reserved_arg_dispatch(monkeypatch):
+async def test_outbound_amd_human_path_marks_caller_before_attach(monkeypatch):
     """Outbound human-call returns with Stasis args but still represents an AAVA caller channel."""
     engine = Engine.__new__(Engine)
-    engine._pre_stasis_channels = set()
-    engine._seen_caller_stasis_channels = set()
     channel_id = "PJSIP-outbound-human-001"
+    engine._outbound_awaiting_amd_channel_ids = {channel_id}
+    engine._outbound_attempt_meta_by_attempt_id = {
+        "attempt-123": {
+            "attempt_id": "attempt-123",
+            "lead_id": "lead-123",
+            "campaign_id": "campaign-123",
+            "phone_number": "15551234567",
+            "lead_name": "Test Lead",
+            "context": "sales",
+        }
+    }
+    engine._outbound_attempt_meta_by_channel_id = {}
+    engine._outbound_attempt_amd = {}
+    engine._seen_caller_stasis_channels = set()
     handled = []
 
-    monkeypatch.setattr(engine, "_is_caller_channel", lambda channel: True)
-    monkeypatch.setattr(engine, "_is_local_channel", lambda channel: False)
+    class _FakeOutboundStore:
+        async def set_attempt_gate_result(self, *args, **kwargs):
+            return None
 
-    async def _fake_handle_outbound_stasis(observed_channel_id, channel, args):
-        handled.append((observed_channel_id, args))
+        async def set_lead_state(self, *args, **kwargs):
+            return None
+
+    class _FakeAriClient:
+        async def set_channel_var(self, *args, **kwargs):
+            return None
+
+    engine.outbound_store = _FakeOutboundStore()
+    engine.ari_client = _FakeAriClient()
+
+    async def _fake_handle_caller_stasis_start_hybrid(observed_channel_id, channel):
+        handled.append((observed_channel_id, channel))
         assert observed_channel_id in engine._seen_caller_stasis_channels
 
-    monkeypatch.setattr(engine, "_handle_outbound_stasis", _fake_handle_outbound_stasis)
-
-    await engine._handle_stasis_start(
-        {
-            "channel": {"id": channel_id, "name": "PJSIP/outbound-human-00000001"},
-            "args": ["outbound_amd", "attempt-123", "HUMAN"],
-        }
+    monkeypatch.setattr(
+        engine,
+        "_handle_caller_stasis_start_hybrid",
+        _fake_handle_caller_stasis_start_hybrid,
     )
 
-    assert handled == [(channel_id, ["outbound_amd", "attempt-123", "HUMAN"])]
+    await engine._handle_outbound_amd_result(
+        channel_id,
+        {"id": channel_id, "name": "PJSIP/outbound-human-00000001"},
+        ["outbound_amd", "attempt-123", "HUMAN"],
+    )
+
+    assert handled[0][0] == channel_id
+    assert handled[0][1]["caller"] == {"name": "Test Lead", "number": "15551234567"}
     assert channel_id in engine._seen_caller_stasis_channels
+
+
+@pytest.mark.asyncio
+async def test_outbound_amd_machine_path_does_not_mark_caller(monkeypatch):
+    """Machine/voicemail outbound AMD results are finalized outside Call History."""
+    engine = Engine.__new__(Engine)
+    channel_id = "PJSIP-outbound-machine-001"
+    engine._outbound_awaiting_amd_channel_ids = {channel_id}
+    engine._outbound_attempt_meta_by_attempt_id = {
+        "attempt-456": {
+            "attempt_id": "attempt-456",
+            "lead_id": "lead-456",
+            "campaign_id": "campaign-456",
+            "context": "sales",
+        }
+    }
+    engine._outbound_attempt_meta_by_channel_id = {
+        channel_id: engine._outbound_attempt_meta_by_attempt_id["attempt-456"]
+    }
+    engine._outbound_attempt_amd = {}
+    engine._seen_caller_stasis_channels = set()
+    finished = []
+    hung_up = []
+
+    class _FakeOutboundStore:
+        async def set_attempt_gate_result(self, *args, **kwargs):
+            return None
+
+        async def get_campaign(self, campaign_id):
+            return {"voicemail_drop_enabled": 0}
+
+        async def finish_attempt(self, attempt_id, **kwargs):
+            finished.append((attempt_id, kwargs))
+
+        async def set_lead_state(self, *args, **kwargs):
+            return None
+
+    class _FakeAriClient:
+        async def play_media(self, *args, **kwargs):
+            return {}
+
+        async def hangup_channel(self, channel_id):
+            hung_up.append(channel_id)
+
+    engine.outbound_store = _FakeOutboundStore()
+    engine.ari_client = _FakeAriClient()
+
+    await engine._handle_outbound_amd_result(
+        channel_id,
+        {"id": channel_id, "name": "PJSIP/outbound-machine-00000001"},
+        ["outbound_amd", "attempt-456", "MACHINE"],
+    )
+
+    assert channel_id not in engine._seen_caller_stasis_channels
+    assert finished[0][1]["outcome"] == "voicemail_dropped"
+    assert hung_up == [channel_id]
 
 
 @pytest.mark.asyncio
@@ -163,7 +246,7 @@ async def test_cleanup_outbound_channel_does_not_persist_abandoned_record(monkey
     # Outbound channel already finalized by _handle_outbound_channel_destroyed.
     outbound_channel_id = "PJSIP-outbound-leg-777"
     engine._seen_outbound_channels = {outbound_channel_id}
-    engine._seen_caller_stasis_channels = set()
+    engine._seen_caller_stasis_channels = {outbound_channel_id}
 
     saved_records = []
 
@@ -181,6 +264,8 @@ async def test_cleanup_outbound_channel_does_not_persist_abandoned_record(monkey
 
     await engine._cleanup_call(outbound_channel_id)
     assert saved_records == [], "outbound channel must not persist a duplicate abandoned record"
+    assert outbound_channel_id not in engine._seen_outbound_channels
+    assert outbound_channel_id not in engine._seen_caller_stasis_channels
 
     # A genuine pre-session INBOUND caller channel (never recorded as outbound) still persists.
     inbound_channel_id = "PJSIP-inbound-caller-002"
