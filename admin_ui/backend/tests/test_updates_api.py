@@ -108,3 +108,24 @@ async def test_updates_job_log_returns_full_log(monkeypatch, tmp_path) -> None:
 
     assert response.job_id == job_id
     assert response.log == "line 1\nline 2\n"
+
+
+@pytest.mark.asyncio
+async def test_updater_image_status_reads_persisted_progress(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+
+    system._write_updater_image_status(
+        status="running",
+        phase="building",
+        image="aava-updater:test",
+        message="Building updater image from local source",
+        detail_tail=["#1 loading", "#2 building"],
+        started_at="2026-01-01T00:00:00Z",
+    )
+
+    response = await system.updates_updater_image_status()
+
+    assert response.status["status"] == "running"
+    assert response.status["phase"] == "building"
+    assert response.status["image"] == "aava-updater:test"
+    assert response.status["detail_tail"] == ["#1 loading", "#2 building"]

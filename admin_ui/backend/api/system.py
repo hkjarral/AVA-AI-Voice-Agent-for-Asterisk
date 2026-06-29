@@ -3407,6 +3407,86 @@ def _updates_jobs_dir() -> str:
     return os.path.join(project_root, ".agent", "updates", "jobs")
 
 
+def _updates_dir() -> str:
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    return os.path.join(project_root, ".agent", "updates")
+
+
+def _updater_image_status_path() -> str:
+    return os.path.join(_updates_dir(), "updater-image-status.json")
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_updater_image_status(
+    *,
+    status: str,
+    phase: str,
+    image: str,
+    message: str,
+    detail_tail: Optional[list[str]] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+) -> None:
+    try:
+        import json
+
+        path = _updater_image_status_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        existing: dict = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception:
+                existing = {}
+        payload = {
+            **existing,
+            "status": status,
+            "phase": phase,
+            "image": image,
+            "message": message,
+            "updated_at": _now_iso(),
+        }
+        if started_at is not None:
+            payload["started_at"] = started_at
+        elif not payload.get("started_at") or status == "running":
+            payload["started_at"] = existing.get("started_at") or _now_iso()
+        if finished_at is not None:
+            payload["finished_at"] = finished_at
+        elif status in {"success", "error"}:
+            payload["finished_at"] = _now_iso()
+        if detail_tail is not None:
+            payload["detail_tail"] = detail_tail[-40:]
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except Exception:
+        logger.debug("Failed to write updater image status", exc_info=True)
+
+
+def _read_updater_image_status() -> dict:
+    import json
+
+    path = _updater_image_status_path()
+    if not os.path.exists(path):
+        return {"status": "idle", "phase": "idle", "message": "Updater image has not been prepared yet"}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f) or {}
+    except Exception:
+        return {"status": "unknown", "phase": "unknown", "message": "Updater image status is unavailable"}
+    payload.setdefault("status", "unknown")
+    payload.setdefault("phase", "unknown")
+    payload.setdefault("message", "")
+    return payload
+
+
 def _parse_update_dt(s: Optional[str]):
     if not s:
         return None
@@ -3525,6 +3605,129 @@ def _run_docker(args: list[str], *, cwd: Optional[str] = None, timeout_sec: int 
         return 124, out or "timeout"
     except Exception as e:
         return 1, str(e)
+
+
+def _run_docker_with_updater_status(
+    args: list[str],
+    *,
+    cwd: Optional[str] = None,
+    timeout_sec: int = 60,
+    image: str,
+    phase: str,
+    message: str,
+) -> tuple[int, str]:
+    """
+    Run Docker CLI while persisting a small progress/tail file for the Updates UI.
+    """
+    if not args or any((not isinstance(a, str) or a == "" or "\x00" in a or any(c.isspace() for c in a)) for a in args):
+        raise ValueError("invalid docker args")
+
+    import selectors
+
+    started = _now_iso()
+    tail: list[str] = []
+    _write_updater_image_status(
+        status="running",
+        phase=phase,
+        image=image,
+        message=message,
+        detail_tail=tail,
+        started_at=started,
+    )
+    try:
+        proc = subprocess.Popen(
+            ["docker", *args],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=os.environ.copy(),
+        )
+    except Exception as e:
+        _write_updater_image_status(
+            status="error",
+            phase=phase,
+            image=image,
+            message=f"{message} failed to start",
+            detail_tail=[str(e)],
+            started_at=started,
+            finished_at=_now_iso(),
+        )
+        return 1, str(e)
+
+    sel = selectors.DefaultSelector()
+    if proc.stdout is not None:
+        sel.register(proc.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout_sec if timeout_sec else None
+
+    def _append(text: str) -> None:
+        for line in text.splitlines():
+            if line:
+                tail.append(line[-500:])
+        del tail[:-40]
+
+    try:
+        while True:
+            if deadline is not None and time.monotonic() > deadline:
+                proc.kill()
+                rest = ""
+                try:
+                    rest, _ = proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                _append(rest or "timeout")
+                out = "\n".join(tail)
+                _write_updater_image_status(
+                    status="error",
+                    phase=phase,
+                    image=image,
+                    message=f"{message} timed out",
+                    detail_tail=tail,
+                    started_at=started,
+                    finished_at=_now_iso(),
+                )
+                return 124, out or "timeout"
+
+            events = sel.select(timeout=0.5)
+            for key, _mask in events:
+                line = key.fileobj.readline()
+                if line:
+                    _append(line)
+                    _write_updater_image_status(
+                        status="running",
+                        phase=phase,
+                        image=image,
+                        message=message,
+                        detail_tail=tail,
+                        started_at=started,
+                    )
+
+            if proc.poll() is not None:
+                if proc.stdout is not None:
+                    try:
+                        _append(proc.stdout.read() or "")
+                    except Exception:
+                        pass
+                break
+    finally:
+        try:
+            sel.close()
+        except Exception:
+            pass
+
+    code = int(proc.returncode or 0)
+    out = "\n".join(tail)
+    _write_updater_image_status(
+        status="success" if code == 0 else "error",
+        phase=phase,
+        image=image,
+        message=f"{message} complete" if code == 0 else f"{message} failed",
+        detail_tail=tail,
+        started_at=started,
+        finished_at=_now_iso(),
+    )
+    return code, out
 
 
 def _is_semver_tag(ref: str) -> bool:
@@ -3771,6 +3974,14 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str, *, require_l
                 image = client.images.get(tag)
                 labels = getattr(image, "labels", None) or {}
                 if not require_local_source or labels.get("aava.updater.source") == "local":
+                    _write_updater_image_status(
+                        status="success",
+                        phase="cached",
+                        image=tag,
+                        message="Updater image is already available",
+                        detail_tail=[],
+                        finished_at=_now_iso(),
+                    )
                     return
             except Exception:
                 pass
@@ -3784,7 +3995,7 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str, *, require_l
                 _sanitize_for_log(build_root),
             )
             safe_tag = _validate_docker_image_ref(tag)
-            code, out = _run_docker(
+            code, out = _run_docker_with_updater_status(
                 [
                     "build",
                     "--network=host",
@@ -3798,6 +4009,9 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str, *, require_l
                 ],
                 cwd=build_root,
                 timeout_sec=1800,
+                image=safe_tag,
+                phase="building",
+                message="Building updater image from local source",
             )
             if code != 0:
                 tail = "\n".join((out or "").splitlines()[-40:]).strip()
@@ -3846,12 +4060,28 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
             return
         try:
             client.images.get(local_tag)
+            _write_updater_image_status(
+                status="success",
+                phase="cached",
+                image=local_tag,
+                message="Updater image is already available",
+                detail_tail=[],
+                finished_at=_now_iso(),
+            )
             return
         except Exception:
             raise HTTPException(status_code=500, detail="Updater image missing and local build is disabled")
 
     try:
         client.images.get(local_tag)
+        _write_updater_image_status(
+            status="success",
+            phase="cached",
+            image=local_tag,
+            message="Updater image is already available",
+            detail_tail=[],
+            finished_at=_now_iso(),
+        )
         return
     except Exception:
         pass
@@ -3861,9 +4091,30 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
         remote_repo = _updater_remote_image_repo()
         for t in _updater_pull_tags_for_ref(prefer_pull_ref):
             remote_ref = _validate_docker_image_ref(f"{remote_repo}:{t}")
-            code, out = _run_docker(["pull", remote_ref], timeout_sec=900)
+            code, out = _run_docker_with_updater_status(
+                ["pull", remote_ref],
+                timeout_sec=900,
+                image=remote_ref,
+                phase="pulling",
+                message=f"Downloading updater image {remote_ref}",
+            )
             if code == 0:
+                _write_updater_image_status(
+                    status="running",
+                    phase="tagging",
+                    image=local_tag,
+                    message=f"Tagging updater image {remote_ref}",
+                    detail_tail=[],
+                )
                 _run_docker(["tag", remote_ref, _validate_docker_image_ref(local_tag)], timeout_sec=60)
+                _write_updater_image_status(
+                    status="success",
+                    phase="ready",
+                    image=local_tag,
+                    message="Updater image is ready",
+                    detail_tail=[],
+                    finished_at=_now_iso(),
+                )
                 logger.info("Pulled updater image: %s -> %s", _sanitize_for_log(remote_ref), _sanitize_for_log(local_tag))
                 return
             logger.warning(
@@ -4693,6 +4944,10 @@ class UpdateJobLogResponse(BaseModel):
     log: str
 
 
+class UpdateImageStatusResponse(BaseModel):
+    status: dict
+
+
 def _tail_text_file(path: str, max_lines: int = 250, max_bytes: int = 512 * 1024) -> str:
     """
     Return the last `max_lines` lines of a text file without reading the entire file into memory.
@@ -4736,6 +4991,11 @@ class UpdateHistoryItem(BaseModel):
 
 class UpdateHistoryResponse(BaseModel):
     jobs: list[dict]
+
+
+@router.get("/updates/updater-image/status", response_model=UpdateImageStatusResponse)
+async def updates_updater_image_status():
+    return UpdateImageStatusResponse(status=_read_updater_image_status())
 
 
 @router.get("/updates/history", response_model=UpdateHistoryResponse)

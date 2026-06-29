@@ -60,6 +60,17 @@ interface UpdateHistoryResponse {
   jobs: any[];
 }
 
+interface UpdaterImageStatus {
+  status?: string;
+  phase?: string;
+  image?: string;
+  message?: string;
+  detail_tail?: string[];
+  started_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+}
+
 const TERMINAL_UPDATE_STATUSES = new Set(['success', 'failed', 'validation_failed', 'stale']);
 const isTerminalUpdateStatus = (st?: string) => TERMINAL_UPDATE_STATUSES.has((st || '').toLowerCase());
 
@@ -93,6 +104,7 @@ const UpdatesPage = () => {
   const [fullLogLoading, setFullLogLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [updaterImageStatus, setUpdaterImageStatus] = useState<UpdaterImageStatus | null>(null);
 
   const [history, setHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -118,6 +130,10 @@ const UpdatesPage = () => {
   }, [targetMode]);
 
   const planHasActiveCalls = typeof plan?.active_calls === 'number' && plan.active_calls > 0;
+  const updaterImageVisible =
+    !!updaterImageStatus &&
+    updaterImageStatus.status !== 'idle' &&
+    (statusLoading || planLoading || running || updaterImageStatus.status === 'error');
 
   const loadBranches = async (opts?: { force?: boolean; localBranch?: string }) => {
     setBranchesError(null);
@@ -190,6 +206,15 @@ const UpdatesPage = () => {
       setHistory([]);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  const fetchUpdaterImageStatus = async () => {
+    try {
+      const res = await axios.get<{ status: UpdaterImageStatus }>('/api/system/updates/updater-image/status');
+      setUpdaterImageStatus(res.data.status || null);
+    } catch (_err) {
+      // Best-effort progress signal only; the main update/status request owns user-facing errors.
     }
   };
 
@@ -395,10 +420,53 @@ const UpdatesPage = () => {
   }, [jobId]);
 
   useEffect(() => {
+    if (!(statusLoading || planLoading || running)) return;
+    fetchUpdaterImageStatus();
+    const interval = window.setInterval(fetchUpdaterImageStatus, 1500);
+    return () => window.clearInterval(interval);
+  }, [statusLoading, planLoading, running]);
+
+  useEffect(() => {
     if (!planHasActiveCalls && forceActiveCalls) {
       setForceActiveCalls(false);
     }
   }, [planHasActiveCalls, forceActiveCalls]);
+
+  const renderUpdaterImageStatus = (section: 'status' | 'plan' | 'run') => {
+    if (!updaterImageVisible) return null;
+    if (section === 'status' && !statusLoading && updaterImageStatus?.status !== 'error') return null;
+    if (section === 'plan' && (!planLoading || statusLoading)) return null;
+    if (section === 'run' && (!running || statusLoading || planLoading)) return null;
+    const st = updaterImageStatus?.status || 'unknown';
+    const phase = updaterImageStatus?.phase || 'updater image';
+    const tail = updaterImageStatus?.detail_tail || [];
+    const isActive = st === 'running';
+    const isError = st === 'error';
+    return (
+      <div
+        className={`rounded-md border p-3 text-xs ${
+          isError
+            ? 'border-destructive/30 bg-destructive/10'
+            : 'border-border bg-card/30'
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 font-medium">
+            {isActive ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+            <span className="capitalize">{phase.replace(/_/g, ' ')}</span>
+          </div>
+          {updaterImageStatus?.updated_at && <div className="text-muted-foreground">{updaterImageStatus.updated_at}</div>}
+        </div>
+        <div className="mt-1 text-muted-foreground">{updaterImageStatus?.message || 'Preparing updater image'}</div>
+        {updaterImageStatus?.image && <div className="mt-1 font-mono break-all">{updaterImageStatus.image}</div>}
+        {tail.length ? (
+          <pre className="mt-2 max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/70 p-2 font-mono">
+            {tail.join('\n')}
+          </pre>
+        ) : null}
+      </div>
+    );
+  };
 
   const previewLabel = useMemo(() => {
     if (!initialized) return 'Not checked';
@@ -458,6 +526,7 @@ const UpdatesPage = () => {
           {statusError && <div className="text-sm text-destructive">{statusError}</div>}
           {branchesError && <div className="text-sm text-muted-foreground">{branchesError}</div>}
           {status && status.error && <div className="text-sm text-muted-foreground">{status.error}</div>}
+          {renderUpdaterImageStatus('status')}
 
           <div className="flex items-center gap-2">
             {previewIcon}
@@ -616,6 +685,7 @@ const UpdatesPage = () => {
           )}
 
           {planError && <div className="text-sm text-destructive">{planError}</div>}
+          {renderUpdaterImageStatus('plan')}
 
           {plan && (
             <div className="space-y-2 text-sm">
@@ -698,6 +768,7 @@ const UpdatesPage = () => {
 
         <div className="space-y-3">
           {runError && <div className="text-sm text-destructive">{runError}</div>}
+          {renderUpdaterImageStatus('run')}
           <div className="flex items-center gap-2">
             <button
               onClick={runUpdate}
