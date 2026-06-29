@@ -9,6 +9,7 @@ import shutil
 import logging
 import re
 import subprocess
+import threading
 import time
 import uuid
 import yaml
@@ -3349,7 +3350,7 @@ async def ari_extension_status(key: str = "", device_state_tech: str = "auto", d
 
 _UPDATER_IMAGE_REPO = "asterisk-ai-voice-agent-updater"
 _UPDATER_IMAGE_LOCK = None
-_UPDATE_JOB_LOCK = None
+_UPDATE_JOB_LOCK = threading.Lock()
 _UPDATES_STATUS_CACHE: dict = {"checked_at": 0.0, "data": None, "checked_remote": False}
 _UPDATES_STATUS_CACHE_TTL_SEC = 600  # 10 minutes
 _UPDATES_STATUS_CACHE_LOCK = None
@@ -3379,10 +3380,6 @@ def _updater_lock():
 
 
 def _update_job_lock():
-    global _UPDATE_JOB_LOCK
-    if _UPDATE_JOB_LOCK is None:
-        import threading
-        _UPDATE_JOB_LOCK = threading.Lock()
     return _UPDATE_JOB_LOCK
 
 
@@ -3494,6 +3491,15 @@ def _read_updater_image_status() -> dict:
     payload.setdefault("status", "unknown")
     payload.setdefault("phase", "unknown")
     payload.setdefault("message", "")
+    if payload.get("status") == "running":
+        try:
+            if time.time() - os.path.getmtime(path) > _UPDATE_STALE_AFTER_SEC:
+                payload["status"] = "error"
+                payload["phase"] = "stale"
+                payload["message"] = "Updater image preparation appears stale"
+                payload.setdefault("finished_at", _now_iso())
+        except Exception:
+            pass
     return payload
 
 
@@ -5038,6 +5044,7 @@ async def updates_run(body: UpdateRunRequest):
 
 class UpdateRollbackRequest(BaseModel):
     from_job_id: str
+    force_active_calls: bool = False
 
 
 class UpdateRollbackResponse(BaseModel):
@@ -5085,6 +5092,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     backup_dir_rel = (src_job.get("backup_dir_rel") or "").strip() or None
     update_cli_host = bool(src_job.get("update_cli_host", True))
     cli_install_path = _validate_cli_install_path(src_job.get("cli_install_path"))
+    force_active_calls = bool(body.force_active_calls)
 
     job_id = uuid.uuid4().hex
 
@@ -5110,6 +5118,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
                 "exit_code": None,
                 "log_path": log_path,
                 "repo_root": host_root,
+                "force_active_calls": force_active_calls,
             }
             if pre_update_branch:
                 payload["ref"] = pre_update_branch
@@ -5147,6 +5156,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
         "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if update_cli_host else "false",
         "AAVA_UPDATE_BUILD_CLI_FROM_SOURCE": "true",
+        "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "true" if force_active_calls else "false",
     }
     if cli_install_path:
         env["AAVA_UPDATE_CLI_INSTALL_PATH"] = cli_install_path
@@ -5319,9 +5329,18 @@ async def updates_job_log(job_id: str):
     if not os.path.exists(log_path):
         raise HTTPException(status_code=404, detail="Update job log not found")
 
+    max_log_bytes = 5 * 1024 * 1024
     try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            return UpdateJobLogResponse(job_id=job_id, log=f.read())
+        if os.path.getsize(log_path) > max_log_bytes:
+            raise HTTPException(status_code=413, detail="Update job log is too large to return inline")
+
+        def _read_log() -> str:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+
+        return UpdateJobLogResponse(job_id=job_id, log=await asyncio.to_thread(_read_log))
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to read update job log")
 

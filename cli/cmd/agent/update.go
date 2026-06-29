@@ -332,7 +332,10 @@ func runUpdate() (retErr error) {
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
 		if err := gitStashPop(ctx); err != nil {
-			return fmt.Errorf("stash pop failed; local changes are preserved in git stash and require manual resolution: %w", err)
+			printUpdateInfo("WARN: stash pop failed; recovering operator config from update backup: %v", err)
+			if recoverErr := recoverFromStashConflict(ctx); recoverErr != nil {
+				return fmt.Errorf("stash pop failed and automatic recovery failed; local changes are preserved in git stash and require manual resolution: %w", recoverErr)
+			}
 		}
 	}
 
@@ -1566,12 +1569,14 @@ func applyDockerActions(ctx *updateContext) error {
 	// fail if their images aren't present. Instead, scope to services that are already running
 	// plus any services we explicitly intend to rebuild/restart.
 	runningServices := map[string]bool{}
+	runningServicesKnown := false
 	out, err := runCmd("docker", "compose", "ps", "--services", "--status", "running")
 	if err != nil {
 		// Fallback for older compose versions (or environments where --status isn't supported).
 		out, err = runCmd("docker", "compose", "ps", "--services")
 	}
 	if err == nil {
+		runningServicesKnown = true
 		for _, line := range strings.Split(out, "\n") {
 			svc := strings.TrimSpace(line)
 			if svc != "" {
@@ -1592,8 +1597,7 @@ func applyDockerActions(ctx *updateContext) error {
 
 	// Don't rebuild services that the operator never started — auto-detection of changed files in
 	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
-	// runningServices is non-empty whenever the query succeeded, so this guard is safe.
-	if len(runningServices) > 0 {
+	if runningServicesKnown {
 		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
 			return runningServices[svc]
 		})
@@ -1601,7 +1605,7 @@ func applyDockerActions(ctx *updateContext) error {
 
 	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
 	// attempt (restart would fail anyway).
-	if len(restartServices) > 0 {
+	if runningServicesKnown && len(restartServices) > 0 {
 		restartServices = filterSlice(restartServices, func(svc string) bool {
 			return runningServices[svc]
 		})

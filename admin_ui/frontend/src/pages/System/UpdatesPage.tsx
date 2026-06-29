@@ -277,7 +277,10 @@ const UpdatesPage = () => {
 
     setRunError(null);
     try {
-      const res = await axios.post('/api/system/updates/rollback', { from_job_id: fromJobId });
+      const res = await axios.post('/api/system/updates/rollback', {
+        from_job_id: fromJobId,
+        force_active_calls: forceActiveCalls,
+      });
       const id = res.data.job_id;
       setJobId(id);
       localStorage.setItem('aava_update_job_id', id);
