@@ -4392,7 +4392,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
 
     # Local info (via updater container; admin_ui may not include git)
     try:
-        code, out = _run_updater_ephemeral(
+        code, out = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4471,7 +4472,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
 
     # Remote v* tags
     try:
-        code2, out2 = _run_updater_ephemeral(
+        code2, out2 = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4541,7 +4543,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
     )
 
     try:
-        code3, out3 = _run_updater_ephemeral(
+        code3, out3 = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=rel_cmd,
@@ -4571,7 +4574,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
 
     changelog_latest = None
     try:
-        code4, out4 = _run_updater_ephemeral(
+        code4, out4 = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4625,7 +4629,8 @@ async def updates_branches(build_updater: bool = False):
     host_root = _project_host_root_from_admin_ui_container()
 
     try:
-        code, out = _run_updater_ephemeral(
+        code, out = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4679,7 +4684,8 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         "AAVA_UPDATE_CHECKOUT": "true" if checkout else "false",
     }
     # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
-    code, out = _run_updater_ephemeral(
+    code, out = await asyncio.to_thread(
+        _run_updater_ephemeral,
         host_root,
         env=env,
         timeout_sec=120,
@@ -4735,7 +4741,7 @@ async def updates_run(body: UpdateRunRequest):
     # Stable releases can use published updater images; branch/main/custom targets build
     # the updater from local source so branch-specific updater changes are exercised.
     prefer_pull = _updater_prefer_pull_ref_for_update_target(ref)
-    _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref=prefer_pull, allow_build=True)
+    await asyncio.to_thread(_ensure_updater_image_for_ref, host_root, tag, prefer_pull_ref=prefer_pull, allow_build=True)
 
     job_id = uuid.uuid4().hex
 
@@ -4828,7 +4834,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     host_docker_sock = _docker_sock_host_path_from_admin_ui_container()
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
-    _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref=None, allow_build=True)
+    await asyncio.to_thread(_ensure_updater_image_for_ref, host_root, tag, prefer_pull_ref=None, allow_build=True)
     active_job = _find_active_update_job()
     if active_job:
         raise HTTPException(
