@@ -762,6 +762,36 @@ async def test_predial_transfer_finalize_is_serialized():
 
 
 @pytest.mark.asyncio
+async def test_predial_transfer_finalize_in_progress_does_not_report_success(monkeypatch):
+    engine = _build_engine({"enabled": True})
+    session = CallSession(
+        call_id="call-predial-in-flight",
+        caller_channel_id="caller-predial-in-flight",
+        bridge_id="bridge-predial-in-flight",
+    )
+    session.current_action = {
+        "type": "predial_transfer",
+        "target": "6000",
+        "target_name": "Support agent",
+        "answered": True,
+        "bridged": False,
+        "predial_channel_id": "SIP/6000-00000006",
+    }
+    await engine.session_store.upsert_call(session)
+    engine._predial_bridge_in_progress.add("call-predial-in-flight")
+
+    ticks = iter([0.0, 10.0])
+    monkeypatch.setattr("src.engine.time.time", lambda: next(ticks, 10.0))
+
+    ok = await engine._finalize_predial_transfer_bridge(session, "SIP/6000-00000006")
+
+    assert ok is False
+    assert "call-predial-in-flight" in engine._predial_bridge_in_progress
+    updated = await engine.session_store.get_by_call_id("call-predial-in-flight")
+    assert updated.current_action["bridged"] is False
+
+
+@pytest.mark.asyncio
 async def test_unbridged_predial_leg_cleanup_does_not_cleanup_caller():
     engine = _build_engine({"enabled": True})
     session = CallSession(

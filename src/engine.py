@@ -4311,7 +4311,7 @@ class Engine:
                 logger.debug("Failed to inspect predial bridge state while finalize was in progress", call_id=call_id, exc_info=True)
             if call_id in bridge_guard:
                 logger.info("Predial bridge finalize already in progress", call_id=call_id, predial_channel_id=predial_channel_id)
-                return True
+                return False
             return False
 
         bridge_guard.add(call_id)
