@@ -275,11 +275,19 @@ const UpdatesPage = () => {
     });
     if (!ok) return;
 
+    const rollbackForceActiveCalls = await confirm({
+      title: 'Active-Call Safety',
+      description: 'Rollback will refuse to rebuild or restart ai_engine if active calls are detected.\n\nChoose Keep Guard for normal safe rollback behavior. Choose Enable Override only if you intentionally want rollback to proceed even when calls are active.',
+      confirmText: 'Enable Override',
+      cancelText: 'Keep Guard',
+      variant: 'destructive'
+    });
+
     setRunError(null);
     try {
       const res = await axios.post('/api/system/updates/rollback', {
         from_job_id: fromJobId,
-        force_active_calls: forceActiveCalls,
+        force_active_calls: rollbackForceActiveCalls,
       });
       const id = res.data.job_id;
       setJobId(id);

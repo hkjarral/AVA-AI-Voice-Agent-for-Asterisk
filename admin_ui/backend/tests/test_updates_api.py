@@ -69,6 +69,40 @@ def test_configured_ai_engine_health_port_reads_yaml(monkeypatch, tmp_path) -> N
     assert system._configured_ai_engine_health_port() == 17000
 
 
+def test_ensure_updater_image_for_ref_uses_cached_local_tag(monkeypatch, tmp_path) -> None:
+    local_tag = "aava-updater:sha-cached"
+
+    class FakeImages:
+        def get(self, tag: str):
+            assert tag == local_tag
+            return object()
+
+    class FakeDockerClient:
+        images = FakeImages()
+
+    monkeypatch.setattr(system.docker, "from_env", lambda: FakeDockerClient())
+    monkeypatch.setattr(
+        system,
+        "_run_docker_with_updater_status",
+        lambda *_args, **_kwargs: pytest.fail("cached updater image should not pull"),
+    )
+    monkeypatch.setattr(
+        system,
+        "_ensure_updater_image_for_sha",
+        lambda *_args, **_kwargs: pytest.fail("cached updater image should not build"),
+    )
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+
+    got = system._ensure_updater_image_for_ref(
+        str(tmp_path),
+        local_tag,
+        prefer_pull_ref="latest",
+        allow_build=False,
+    )
+
+    assert got == local_tag
+
+
 @pytest.mark.parametrize(
     "value",
     [

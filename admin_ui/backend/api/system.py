@@ -4320,6 +4320,20 @@ def _ensure_updater_image_for_ref(
 
     # Best-effort: pull a published updater image (preferred for most installs).
     if prefer_pull_ref:
+        try:
+            client.images.get(local_tag)
+            _write_updater_image_status(
+                status="success",
+                phase="cached",
+                image=local_tag,
+                message="Updater image is already available",
+                detail_tail=[],
+                finished_at=_now_iso(),
+            )
+            return local_tag
+        except Exception:
+            pass
+
         remote_repo = _updater_remote_image_repo()
         for t in _updater_pull_tags_for_ref(prefer_pull_ref):
             remote_ref = _validate_docker_image_ref(f"{remote_repo}:{t}")
