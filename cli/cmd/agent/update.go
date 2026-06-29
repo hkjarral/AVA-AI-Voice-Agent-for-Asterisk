@@ -189,6 +189,12 @@ func runUpdate() (retErr error) {
 		return runUpdatePlan(ctx)
 	}
 
+	releaseLock, err := acquireUpdateLock(ctx.repoRoot)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
 	printUpdateStep("Creating backups")
 	if err := createUpdateBackups(ctx); err != nil {
 		return err
@@ -302,11 +308,7 @@ func runUpdate() (retErr error) {
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
 		if err := gitStashPop(ctx); err != nil {
-			printUpdateInfo("⚠ Stash pop conflict detected; recovering from backup")
-			if recoverErr := recoverFromStashConflict(ctx); recoverErr != nil {
-				return fmt.Errorf("stash pop failed and recovery also failed: %w (original: %v)", recoverErr, err)
-			}
-			printUpdateInfo("Operator config restored from backup — update will continue")
+			return fmt.Errorf("stash pop failed; local changes are preserved in git stash and require manual resolution: %w", err)
 		}
 	}
 
@@ -338,7 +340,7 @@ func runUpdate() (retErr error) {
 	}
 
 	printUpdateStep("Running agent check")
-	report, status, warnCount, failCount, err := runPostUpdateCheck()
+	report, status, warnCount, failCount, err := runPostUpdateCheckWithRetry(60*time.Second, 5*time.Second)
 	printPostUpdateCheck(report, warnCount, failCount)
 	printUpdateSummary(ctx, status, warnCount, failCount)
 	if err != nil {
@@ -348,6 +350,29 @@ func runUpdate() (retErr error) {
 		return errors.New("post-update check reported failures")
 	}
 	return nil
+}
+
+func acquireUpdateLock(repoRoot string) (func(), error) {
+	lockDir := filepath.Join(repoRoot, ".agent", "updates")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create update lock directory: %w", err)
+	}
+	lockPath := filepath.Join(lockDir, "update.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open update lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, errors.New("another agent update or rollback is already running")
+	}
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
+	_, _ = f.WriteString(fmt.Sprintf("pid=%d started_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339)))
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func runUpdatePlan(ctx *updateContext) error {
@@ -1580,6 +1605,16 @@ func applyDockerActions(ctx *updateContext) error {
 		})
 	}
 
+	if (containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		activeCalls, reachable, err := queryActiveCalls()
+		if err == nil && reachable && activeCalls > 0 {
+			return fmt.Errorf("refusing to restart ai_engine while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+		}
+		if err != nil {
+			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
+		}
+	}
+
 	if len(rebuildServices) > 0 {
 		args := []string{"compose", "up", "-d", "--build"}
 		if updateForceRecreate {
@@ -1601,6 +1636,54 @@ func applyDockerActions(ctx *updateContext) error {
 	}
 
 	return nil
+}
+
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func envBool(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func queryActiveCalls() (int, bool, error) {
+	const script = `
+import json, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:15000/sessions/stats", timeout=3) as resp:
+        print(resp.read().decode("utf-8"))
+except Exception as e:
+    print(json.dumps({"_probe_error": str(e)}))
+`
+	cmd := exec.Command("docker", "exec", "ai_engine", "python3", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(out), &payload); err != nil {
+		return 0, true, err
+	}
+	if probeErr, ok := payload["_probe_error"].(string); ok && strings.TrimSpace(probeErr) != "" {
+		return 0, false, errors.New(probeErr)
+	}
+	for _, key := range []string{"active_calls", "active_sessions"} {
+		if raw, ok := payload[key]; ok {
+			switch v := raw.(type) {
+			case float64:
+				return int(v), true, nil
+			case int:
+				return v, true, nil
+			}
+		}
+	}
+	return 0, true, nil
 }
 
 func filterSlice(in []string, keep func(string) bool) []string {
@@ -1631,6 +1714,36 @@ func runPostUpdateCheck() (report *check.Report, status string, warnCount int, f
 		return report, "WARN", warnCount, 0, nil
 	}
 	return report, "PASS", 0, 0, nil
+}
+
+func runPostUpdateCheckWithRetry(timeout time.Duration, interval time.Duration) (report *check.Report, status string, warnCount int, failCount int, err error) {
+	deadline := time.Now().Add(timeout)
+	var lastReport *check.Report
+	var lastStatus string
+	var lastWarn int
+	var lastFail int
+	var lastErr error
+	attempt := 0
+
+	for {
+		attempt++
+		report, status, warnCount, failCount, err = runPostUpdateCheck()
+		if err == nil && failCount == 0 {
+			if attempt > 1 {
+				printUpdateInfo("agent check passed after retry %d", attempt-1)
+			}
+			return report, status, warnCount, failCount, err
+		}
+
+		lastReport, lastStatus, lastWarn, lastFail, lastErr = report, status, warnCount, failCount, err
+		if time.Now().Add(interval).After(deadline) {
+			return lastReport, lastStatus, lastWarn, lastFail, lastErr
+		}
+		if attempt == 1 {
+			printUpdateInfo("agent check failed; retrying for up to %s while services settle", timeout.String())
+		}
+		time.Sleep(interval)
+	}
 }
 
 func printUpdateFailureRecovery(ctx *updateContext, err error) {

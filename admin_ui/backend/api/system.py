@@ -3352,6 +3352,8 @@ _UPDATER_IMAGE_LOCK = None
 _UPDATES_STATUS_CACHE: dict = {"checked_at": 0.0, "data": None, "checked_remote": False}
 _UPDATES_STATUS_CACHE_TTL_SEC = 600  # 10 minutes
 _UPDATES_STATUS_CACHE_LOCK = None
+_UPDATE_RUNNING_STATUSES = {"starting", "running"}
+_UPDATE_STALE_AFTER_SEC = 60 * 60
 
 
 def _updater_remote_image_repo() -> str:
@@ -3381,6 +3383,106 @@ def _updates_status_cache_lock():
         import threading
         _UPDATES_STATUS_CACHE_LOCK = threading.Lock()
     return _UPDATES_STATUS_CACHE_LOCK
+
+
+_CLI_INSTALL_PATH_RE = re.compile(r"^/[A-Za-z0-9._+@=-]+(?:/[A-Za-z0-9._+@=-]+)*$")
+
+
+def _validate_cli_install_path(path: Optional[str]) -> Optional[str]:
+    p = (path or "").strip()
+    if not p:
+        return None
+    if "\x00" in p or not _CLI_INSTALL_PATH_RE.fullmatch(p):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid CLI install path. Use an absolute path with simple path characters only.",
+        )
+    if "/../" in p or p.endswith("/..") or "/./" in p or p.endswith("/."):
+        raise HTTPException(status_code=400, detail="Invalid CLI install path")
+    return p
+
+
+def _updates_jobs_dir() -> str:
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    return os.path.join(project_root, ".agent", "updates", "jobs")
+
+
+def _parse_update_dt(s: Optional[str]):
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _is_update_job_stale(job: dict, *, state_path: Optional[str] = None, log_path: Optional[str] = None) -> bool:
+    status = str((job or {}).get("status") or "").lower()
+    if status not in _UPDATE_RUNNING_STATUSES:
+        return False
+
+    candidates: list[float] = []
+    try:
+        st = _parse_update_dt(job.get("heartbeat_at") or job.get("started_at"))
+        if st is not None:
+            candidates.append(st.timestamp())
+    except Exception:
+        pass
+    for p in (log_path, state_path):
+        if p:
+            try:
+                if os.path.exists(p):
+                    candidates.append(os.path.getmtime(p))
+            except Exception:
+                pass
+    if not candidates:
+        return False
+    return (time.time() - max(candidates)) > _UPDATE_STALE_AFTER_SEC
+
+
+def _read_update_job(job_id: str) -> tuple[dict, str, str]:
+    jobs_dir = _updates_jobs_dir()
+    state_path = os.path.join(jobs_dir, f"{job_id}.json")
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+
+    import json
+
+    job: dict
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                job = json.load(f) or {}
+        except Exception:
+            job = {"job_id": job_id, "status": "unknown"}
+    else:
+        job = {"job_id": job_id, "status": "running"}
+    job.setdefault("job_id", job_id)
+
+    if _is_update_job_stale(job, state_path=state_path, log_path=log_path):
+        job = {
+            **job,
+            "status": "stale",
+            "stale": True,
+            "failure_reason": "job heartbeat/log output stopped before completion",
+        }
+    return job, state_path, log_path
+
+
+def _find_active_update_job() -> Optional[dict]:
+    import glob
+
+    jobs_dir = _updates_jobs_dir()
+    if not os.path.isdir(jobs_dir):
+        return None
+
+    for state_path in sorted(glob.glob(os.path.join(jobs_dir, "*.json")), key=os.path.getmtime, reverse=True):
+        job_id = os.path.splitext(os.path.basename(state_path))[0]
+        job, _state, log_path = _read_update_job(job_id)
+        if str(job.get("status") or "").lower() in _UPDATE_RUNNING_STATUSES and not job.get("stale"):
+            return job
+    return None
 
 
 # Allow an optional registry host with port prefix (e.g. "registry.example.com:5000/...").
@@ -4307,6 +4409,13 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         plan = json.loads(out)
     except Exception:
         raise HTTPException(status_code=500, detail="Updater returned invalid JSON")
+    try:
+        active = await _check_active_calls()
+        plan["active_calls"] = int(active.get("active_calls") or 0)
+        plan["active_calls_reachable"] = bool(active.get("reachable"))
+    except Exception:
+        plan["active_calls"] = None
+        plan["active_calls_reachable"] = False
     return UpdatePlanResponse(plan=plan)
 
 
@@ -4316,6 +4425,7 @@ class UpdateRunRequest(BaseModel):
     checkout: bool = True
     update_cli_host: bool = True
     cli_install_path: Optional[str] = None
+    force_active_calls: bool = False
 
 
 class UpdateRunResponse(BaseModel):
@@ -4329,6 +4439,13 @@ async def updates_run(body: UpdateRunRequest):
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
     ref = _validate_git_ref(body.ref or "main")
+    cli_path = _validate_cli_install_path(body.cli_install_path)
+    active_job = _find_active_update_job()
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Another update job is already running: {active_job.get('job_id') or 'unknown'}",
+        )
     # Prefer pulling a published updater image. For stable version updates (vX.Y.Z),
     # try to pull the matching updater tag; otherwise fall back to pulling :latest.
     prefer_pull = ref if _is_semver_tag(ref) else "latest"
@@ -4358,7 +4475,9 @@ async def updates_run(body: UpdateRunRequest):
             "ref": (body.ref or "main").strip(),
             "checkout": bool(body.checkout),
             "update_cli_host": bool(body.update_cli_host),
-            "cli_install_path": (body.cli_install_path or "").strip() or None,
+            "cli_install_path": cli_path,
+            "repo_root": host_root,
+            "force_active_calls": bool(body.force_active_calls),
         }
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
@@ -4383,8 +4502,8 @@ async def updates_run(body: UpdateRunRequest):
         "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if body.checkout else "false",
         "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if body.update_cli_host else "false",
+        "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "true" if body.force_active_calls else "false",
     }
-    cli_path = (body.cli_install_path or "").strip()
     if cli_path:
         env["AAVA_UPDATE_CLI_INSTALL_PATH"] = cli_path
 
@@ -4424,6 +4543,12 @@ async def updates_rollback(body: UpdateRollbackRequest):
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
     _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref="latest", allow_build=True)
+    active_job = _find_active_update_job()
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Another update job is already running: {active_job.get('job_id') or 'unknown'}",
+        )
 
     from_job_id_raw = (body.from_job_id or "").strip()
     if not from_job_id_raw:
@@ -4453,7 +4578,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
     pre_update_branch = (src_job.get("pre_update_branch") or "").strip() or None
     backup_dir_rel = (src_job.get("backup_dir_rel") or "").strip() or None
     update_cli_host = bool(src_job.get("update_cli_host", True))
-    cli_install_path = (src_job.get("cli_install_path") or "").strip() or None
+    cli_install_path = _validate_cli_install_path(src_job.get("cli_install_path"))
 
     import uuid
     job_id = uuid.uuid4().hex
@@ -4475,6 +4600,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
             "cli_install_path": cli_install_path,
             "exit_code": None,
             "log_path": log_path,
+            "repo_root": host_root,
         }
         if pre_update_branch:
             payload["ref"] = pre_update_branch
@@ -4525,6 +4651,11 @@ async def updates_rollback(body: UpdateRollbackRequest):
 class UpdateJobResponse(BaseModel):
     job: dict
     log_tail: Optional[str] = None
+
+
+class UpdateJobLogResponse(BaseModel):
+    job_id: str
+    log: str
 
 
 def _tail_text_file(path: str, max_lines: int = 250, max_bytes: int = 512 * 1024) -> str:
@@ -4604,9 +4735,9 @@ async def updates_history(limit: int = 10):
 
     items: list[tuple[float, dict]] = []
     for path in glob.glob(os.path.join(jobs_dir, "*.json")):
+        job_id = os.path.splitext(os.path.basename(path))[0]
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                job = json.load(f) or {}
+            job, _state_path, _log_path = _read_update_job(job_id)
         except Exception:
             continue
 
@@ -4628,31 +4759,42 @@ async def updates_job(job_id: str):
         job_id = uuid.UUID(job_id_raw).hex
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid job_id format")
-    project_root = os.getenv("PROJECT_ROOT", "/app/project")
-    jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
+    jobs_dir = _updates_jobs_dir()
     state_path = os.path.join(jobs_dir, f"{job_id}.json")
     log_path = os.path.join(jobs_dir, f"{job_id}.log")
-
-    import json
 
     if not os.path.exists(state_path) and not os.path.exists(log_path):
         raise HTTPException(status_code=404, detail="Update job not found")
 
-    job = {}
-    if os.path.exists(state_path):
-        try:
-            with open(state_path, "r", encoding="utf-8") as f:
-                job = json.load(f) or {}
-        except Exception:
-            job = {"job_id": job_id, "status": "unknown"}
-    else:
-        job = {"job_id": job_id, "status": "running"}
+    job, _state_path, log_path = _read_update_job(job_id)
 
     tail = None
     if os.path.exists(log_path):
         tail = _tail_text_file(log_path, max_lines=250)
 
     return UpdateJobResponse(job=job, log_tail=tail)
+
+
+@router.get("/updates/jobs/{job_id}/log", response_model=UpdateJobLogResponse)
+async def updates_job_log(job_id: str):
+    job_id_raw = (job_id or "").strip()
+    if not job_id_raw:
+        raise HTTPException(status_code=400, detail="Invalid job_id format")
+    try:
+        job_id = uuid.UUID(job_id_raw).hex
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid job_id format")
+
+    jobs_dir = _updates_jobs_dir()
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail="Update job log not found")
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            return UpdateJobLogResponse(job_id=job_id, log=f.read())
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read update job log")
 
 
 # ============================================================================
