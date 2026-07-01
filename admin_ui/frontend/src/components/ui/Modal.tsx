@@ -118,6 +118,7 @@ export const Modal = ({
                                 type="button"
                                 onClick={() => setIsFullscreen(value => !value)}
                                 aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                                aria-pressed={isFullscreen}
                                 title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                                 className="p-1 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-ring"
                             >
