@@ -25,6 +25,24 @@ function Harness({ initialOpen = false }: { initialOpen?: boolean }) {
     );
 }
 
+function FullscreenHarness({ initialOpen = false }: { initialOpen?: boolean }) {
+    const [open, setOpen] = useState(initialOpen);
+    return (
+        <>
+            <button onClick={() => setOpen(true)}>Open</button>
+            <Modal
+                isOpen={open}
+                onClose={() => setOpen(false)}
+                title="Edit Provider"
+                allowFullscreen
+            >
+                <input aria-label="Name" />
+                <button>Save</button>
+            </Modal>
+        </>
+    );
+}
+
 describe('Modal — dialog accessibility', () => {
     it('exposes the title as the dialog accessible name (aria-labelledby)', () => {
         render(<Harness initialOpen />);
@@ -80,5 +98,47 @@ describe('Modal — dialog accessibility', () => {
         await user.keyboard('{Escape}');
         expect(document.body.style.overflow).toBe('scroll'); // restored, not 'unset'
         document.body.style.overflow = '';
+    });
+
+    it('only shows the fullscreen toggle when enabled', () => {
+        render(<Harness initialOpen />);
+        expect(screen.queryByRole('button', { name: 'Enter fullscreen' })).not.toBeInTheDocument();
+    });
+
+    it('toggles fullscreen state through the user-facing button', async () => {
+        const user = userEvent.setup();
+        render(<FullscreenHarness initialOpen />);
+
+        const enterFullscreen = screen.getByRole('button', { name: 'Enter fullscreen' });
+        expect(enterFullscreen).toHaveAttribute('aria-pressed', 'false');
+
+        await user.click(enterFullscreen);
+        const exitFullscreen = screen.getByRole('button', { name: 'Exit fullscreen' });
+        expect(exitFullscreen).toHaveAttribute('aria-pressed', 'true');
+
+        await user.click(exitFullscreen);
+        expect(screen.getByRole('button', { name: 'Enter fullscreen' })).toHaveAttribute(
+            'aria-pressed',
+            'false'
+        );
+    });
+
+    it('resets fullscreen state after the modal closes', async () => {
+        const user = userEvent.setup();
+        render(<FullscreenHarness />);
+
+        await user.click(screen.getByRole('button', { name: 'Open' }));
+        await user.click(screen.getByRole('button', { name: 'Enter fullscreen' }));
+        expect(screen.getByRole('button', { name: 'Exit fullscreen' })).toHaveAttribute(
+            'aria-pressed',
+            'true'
+        );
+
+        await user.click(screen.getByRole('button', { name: 'Close' }));
+        await user.click(screen.getByRole('button', { name: 'Open' }));
+        expect(screen.getByRole('button', { name: 'Enter fullscreen' })).toHaveAttribute(
+            'aria-pressed',
+            'false'
+        );
     });
 });
