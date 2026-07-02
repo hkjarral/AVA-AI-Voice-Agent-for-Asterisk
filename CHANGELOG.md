@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows CLI build restored** (`cli/cmd/agent/update.go`, `cli/cmd/agent/update_platform_unix.go`, `cli/cmd/agent/update_platform_windows.go`): the v7.2.1 `agent update` lock and self-update re-exec used unix-only `syscall.Flock`/`syscall.Exec`, which broke the Windows AMD64 cross-compile in the CLI release workflow (first failing build since the updater landed). File locking and process replacement now live behind build-tagged platform files — `flock(2)`/`execve(2)` on unix, `LockFileEx` and spawn-then-exit on Windows — with unchanged behavior on Linux/macOS. CI gains a `cli-cross-compile` job that builds all five release targets on every PR, closing the gap where no Go build ran at PR time and platform-only breakage surfaced only when tagging a release.
+
 ## [7.2.1] - 2026-07-02
 
 ### Added

@@ -205,3 +205,29 @@ jobs:
           echo "## 📋 Outdated Dependencies" >> $GITHUB_STEP_SUMMARY
           pip install pip-outdated || true
           pip list --outdated --format=columns | head -20 >> $GITHUB_STEP_SUMMARY || echo "Unable to check" >> $GITHUB_STEP_SUMMARY
+
+  # CLI cross-compile check: the release workflow builds all five platforms,
+  # but PR CI previously built none, so platform-only breakage (e.g. unix-only
+  # syscalls on Windows) surfaced only at tag time. Build-only, no artifacts.
+  cli-cross-compile:
+    name: CLI cross-compile (all release targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: cli/go.sum
+
+      - name: Build all release platforms
+        working-directory: cli
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build ./...
+            echo "OK: $target"
+          done
+
+      - name: Run CLI tests
+        working-directory: cli
+        run: go test ./...
