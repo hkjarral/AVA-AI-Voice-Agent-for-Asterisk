@@ -69,14 +69,11 @@ _OPENAI_SESSION_AUDIO_INFO = Info(
     "OpenAI Realtime session audio format assumptions and provider acknowledgements",
 )
 
-# GA voice catalog (closed list). Mirrors the Admin UI dropdown; used to
-# soft-validate per-agent voice overrides — an unknown value falls back to the
-# provider's configured voice instead of reaching the OpenAI session, because
-# the agent voice field was free-text/display-only before v7.3.0.
-OPENAI_GA_VOICES = {
-    "alloy", "ash", "ballad", "cedar", "coral",
-    "echo", "marin", "sage", "shimmer", "verse",
-}
+# GA voice catalog (closed list) — single-sourced from the shared voice
+# catalog; used to soft-validate per-agent voice overrides. An unknown value
+# falls back to the provider's configured voice instead of reaching the OpenAI
+# session, because the agent voice field was free-text/display-only pre-7.3.0.
+from ..utils.voice_catalog import OPENAI_GA_VOICES  # noqa: E402  (re-exported)
 
 
 class OpenAIRealtimeProvider(AIProviderInterface):
