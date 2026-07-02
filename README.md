@@ -793,7 +793,7 @@ Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, 
 </tr>
 </table>
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/RECOGNITION.md) for how we recognize contributions.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list — contributions are recognized there, in release notes, and on Discord.
 
 ---
 
