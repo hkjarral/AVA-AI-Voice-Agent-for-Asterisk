@@ -78,7 +78,7 @@ Release candidates are staged on `staging` for golden baseline validation before
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 ```
 
 Then open the folder in your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …), load [AVA.mdc](AVA.mdc) as context, and tell it what you want to contribute — it knows the project map, guardrails, and PR workflow.
@@ -87,7 +87,7 @@ Then open the folder in your AI coding assistant (Claude, Cursor, Windsurf, Code
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 ./install.sh   # guided setup; or follow README for manual steps
 ```
 

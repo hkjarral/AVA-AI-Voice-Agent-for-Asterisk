@@ -55,8 +55,8 @@ For a complete **first successful call** walkthrough (dialplan + transport selec
 
 ```bash
 # Clone repository
-git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # Run preflight with auto-fix (creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
@@ -742,8 +742,8 @@ as valuable as code. If you do want to write code, see the Contributing Guide be
 ### 🚀 Get Started in 3 Steps
 
 ```bash
-git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 ```
 
 Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …) — it carries the project map, engineering guardrails, and contribution workflow — and tell it what you want to build or fix.
