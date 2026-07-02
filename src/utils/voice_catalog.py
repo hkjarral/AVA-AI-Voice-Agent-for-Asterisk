@@ -8,6 +8,11 @@ provider forms (OpenAIRealtimeProviderForm, GrokProviderForm,
 GoogleLiveProviderForm, DeepgramProviderForm). When a provider adds voices,
 update BOTH until the provider forms consume /api/config/providers/meta.
 
+Verified complete against official provider docs on 2026-07-02:
+developers.openai.com realtime guide (10/10), docs.x.ai voice-agent (5 named
++ custom clone IDs), ai.google.dev speech-generation (30/30),
+developers.deepgram.com tts-models (103/103 ID-level match).
+
 voice_mode semantics for the Agent form:
   static           closed list; engine soft-validates and falls back on unknowns
   freeform         curated suggestions, arbitrary values allowed (clone IDs, new names)

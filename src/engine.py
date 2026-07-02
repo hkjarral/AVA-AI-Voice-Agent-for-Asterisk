@@ -6773,6 +6773,8 @@ class Engine:
                 pipeline_components=session.pipeline_components or {},
                 context_name=session.context_name,
                 routing_method=getattr(session, 'routing_method', None),
+                voice=getattr(session, 'session_voice', None),
+                voice_source=getattr(session, 'voice_source', None),
                 conversation_history=session.conversation_history or [],
                 outcome=outcome,
                 transfer_destination=session.transfer_destination,
@@ -14277,7 +14279,12 @@ class Engine:
                             provider_context['greeting'] = self._apply_prompt_template_substitution(context_config.greeting, session)
 
                         # Per-agent/per-call voice override (7.3.0): override > agent > provider default.
-                        apply_context_voice(provider_context, overrides, context_config, call_id=call_id)
+                        voice_source = apply_context_voice(provider_context, overrides, context_config, call_id=call_id)
+                        # Recorded in Call History so operators can verify which voice was
+                        # requested and why (session.session_voice is None when the
+                        # provider's configured default decides).
+                        session.session_voice = provider_context.get("voice")
+                        session.voice_source = voice_source
             except Exception as e:
                 logger.warning(f"Failed to build provider context: {e}", call_id=call_id, exc_info=True)
             

@@ -40,6 +40,8 @@ class CallRecord:
     pipeline_components: Dict[str, str] = field(default_factory=dict)
     context_name: Optional[str] = None
     routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
+    voice: Optional[str] = None  # Resolved session voice (None = provider default decided)
+    voice_source: Optional[str] = None  # 'override' | 'agent' | 'provider-default' | None
 
     # Conversation
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -133,6 +135,8 @@ class CallHistoryStore:
         pipeline_components TEXT,
         context_name TEXT,
         routing_method TEXT,
+        voice TEXT,
+        voice_source TEXT,
         conversation_history TEXT,
         outcome TEXT,
         transfer_destination TEXT,
@@ -219,6 +223,10 @@ class CallHistoryStore:
                 cur.execute("ALTER TABLE call_records ADD COLUMN post_call_tool_calls TEXT")
             if "routing_method" not in existing:
                 cur.execute("ALTER TABLE call_records ADD COLUMN routing_method TEXT")
+            if "voice" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN voice TEXT")
+            if "voice_source" not in existing:
+                cur.execute("ALTER TABLE call_records ADD COLUMN voice_source TEXT")
         except Exception:
             logger.debug("call_records schema migration failed (non-fatal)", exc_info=True)
     
@@ -263,12 +271,12 @@ class CallHistoryStore:
                             id, call_id, caller_number, caller_name,
                             start_time, end_time, duration_seconds,
                             provider_name, pipeline_name, pipeline_components, context_name,
-                            routing_method,
+                            routing_method, voice, voice_source,
                             conversation_history, outcome, transfer_destination, error_message,
                             tool_calls, pre_call_tool_calls, post_call_tool_calls,
                             avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record.id,
                         record.call_id,
@@ -284,6 +292,8 @@ class CallHistoryStore:
                         json.dumps(record.pipeline_components),
                         record.context_name,
                         record.routing_method,
+                        record.voice,
+                        record.voice_source,
                         json.dumps(record.conversation_history),
                         record.outcome,
                         record.transfer_destination,
