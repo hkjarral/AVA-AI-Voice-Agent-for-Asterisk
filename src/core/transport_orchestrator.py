@@ -44,6 +44,7 @@ class ContextConfig:
     greeting: Optional[str] = None
     profile: Optional[str] = None
     provider: Optional[str] = None
+    voice: Optional[str] = None
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
     background_music: Optional[str] = None  # MOH class name for background music during calls

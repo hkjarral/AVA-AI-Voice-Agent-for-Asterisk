@@ -13801,6 +13801,13 @@ class Engine:
                             provider_context["greeting"] = self._apply_prompt_template_substitution(greeting_override, session)
                         elif hasattr(context_config, 'greeting') and context_config.greeting:
                             provider_context['greeting'] = self._apply_prompt_template_substitution(context_config.greeting, session)
+
+                        # Per-agent/per-context voice override for OpenAI Realtime.
+                        voice_override = overrides.get("voice")
+                        if isinstance(voice_override, str) and voice_override.strip():
+                            provider_context["voice"] = voice_override.strip()
+                        elif hasattr(context_config, "voice") and getattr(context_config, "voice"):
+                            provider_context["voice"] = str(getattr(context_config, "voice")).strip()
             except Exception as e:
                 logger.warning(f"Failed to build provider context: {e}", call_id=call_id, exc_info=True)
             

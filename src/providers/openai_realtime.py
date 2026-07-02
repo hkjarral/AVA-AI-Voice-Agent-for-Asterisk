@@ -105,6 +105,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._beta_warned: bool = False
 
         self._call_id: Optional[str] = None
+        self._session_voice: Optional[str] = None  # Per-call voice override from agent/context
         self._pending_response: bool = False
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
         self._greeting_response_id: Optional[str] = None  # Track greeting to protect from barge-in
@@ -392,6 +393,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._allowed_tools = list(context.get("tools") or [])
         else:
             self._allowed_tools = []
+
+        # Per-call voice override. Falls back to provider config voice.
+        self._session_voice = None
+        if context and isinstance(context.get("voice"), str) and context.get("voice").strip():
+            self._session_voice = context.get("voice").strip()
+            logger.info("Using per-call OpenAI voice override", call_id=call_id, voice=self._session_voice)
 
         self._reset_output_meter()
 
@@ -889,6 +896,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 logger.debug("Failed to release response.done sentinels on stop_session", exc_info=True)
             self.websocket = None
             self._call_id = None
+            self._session_voice = None
             self._closing = False
             self._closed = True
             self._pending_response = False
@@ -904,7 +912,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             "name": "OpenAIRealtimeProvider",
             "type": "cloud",
             "model": self.config.model,
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "supported_codecs": self.supported_codecs,
         }
 
@@ -978,6 +986,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         if not output_modalities:
             output_modalities = ["audio"]
 
+        effective_voice = self._session_voice or self.config.voice
+
         # CRITICAL FIX: Use output_encoding (what OpenAI sends), NOT target_encoding (downstream format)
         output_enc = (self.config.output_encoding or "linear16").lower()
         input_enc = (getattr(self.config, "provider_input_encoding", None) or "linear16").lower()
@@ -1036,7 +1046,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     "input": audio_input,
                     "output": {
                         "format": {"type": "audio/pcm", "rate": 24000},
-                        "voice": self.config.voice,
+                        "voice": effective_voice,
                     },
                 },
             }
@@ -1057,7 +1067,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 "modalities": output_modalities,
                 "input_audio_format": in_fmt,
                 "output_audio_format": out_fmt,
-                "voice": self.config.voice,
+                "voice": effective_voice,
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 },
@@ -1117,6 +1127,11 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     f"🛠️  OpenAI session configured with {len(tools)} tools",
                     call_id=self._call_id,
                 )
+                logger.info(
+                    "OpenAI session tool names",
+                    call_id=self._call_id,
+                    tools=[t.get("name") for t in tools],
+)
         except Exception as e:
             logger.warning(
                 f"Failed to add tools to OpenAI session: {e}",
