@@ -12,6 +12,7 @@ import {
 } from './agentToolConfig';
 import { PromptToolHighlight } from '../ui/PromptToolHighlight';
 import { canonicalToolName, type ToolStatus } from '../../utils/promptTools';
+import { voiceControlState, type ProviderVoiceMeta } from '../../utils/agentVoice';
 
 export interface Agent {
     slug: string;
@@ -102,6 +103,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [providersRaw, setProvidersRaw] = useState<Record<string, unknown>>({});
     const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, unknown>>({});
     const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
+    const [voiceMeta, setVoiceMeta] = useState<ProviderVoiceMeta[] | null>(null);
 
     // Templates (create only)
     const [templates, setTemplates] = useState<AgentTemplate[]>([]);
@@ -113,6 +115,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         if (!isOpen) return;
         loadConfig();
         loadCatalog();
+        loadVoiceMeta();
         if (isNew) loadTemplates();
     }, [isOpen, isNew]);
 
@@ -191,6 +194,16 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
             setDisabledTools(disabled);
         } catch {
             // Non-blocking: dropdowns degrade gracefully to free-text
+        }
+    };
+
+    const loadVoiceMeta = async () => {
+        try {
+            const res = await axios.get('/api/config/providers/meta');
+            const providers = Array.isArray(res.data?.providers) ? res.data.providers : null;
+            setVoiceMeta(providers);
+        } catch {
+            setVoiceMeta(null); // Voice control degrades to free text
         }
     };
 
@@ -391,21 +404,66 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     tooltip="Choose a monolithic provider or a modular pipeline. They are mutually exclusive — picking one clears the other."
                 />
 
-                <div className="mb-4">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                        <label htmlFor="agent-voice" className="block text-sm font-medium">
-                            Voice (display-only)
-                        </label>
-                        <HelpTooltip content="Voice is configured on the provider, not per agent — this field is informational and does not change the call voice." />
-                    </div>
-                    <input
-                        id="agent-voice"
-                        value={voice}
-                        onChange={(e) => setVoice(e.target.value)}
-                        placeholder="e.g. alloy, nova, en-US-JennyNeural"
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    />
-                </div>
+                {(() => {
+                    const vc = voiceControlState(voiceMeta, engineValue, voice);
+                    const inputClass = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+                    return (
+                        <div className="mb-4">
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                                <label htmlFor="agent-voice" className="block text-sm font-medium">
+                                    Voice
+                                </label>
+                                <HelpTooltip content="Overrides the provider's default voice for this agent. Leave empty to use the provider's configured voice. Multiple agents can share one provider, each with its own voice." />
+                            </div>
+                            {vc.control === 'select' && (
+                                <select
+                                    id="agent-voice"
+                                    value={voice}
+                                    onChange={(e) => setVoice(e.target.value)}
+                                    className={inputClass}
+                                >
+                                    {vc.options.map((o) => (
+                                        <option key={o.id || '__default'} value={o.id}>{o.label}</option>
+                                    ))}
+                                </select>
+                            )}
+                            {vc.control === 'combo' && (
+                                <>
+                                    <input
+                                        id="agent-voice"
+                                        value={voice}
+                                        onChange={(e) => setVoice(e.target.value)}
+                                        placeholder="— provider default —"
+                                        list="agent-voice-options"
+                                        className={inputClass}
+                                    />
+                                    <datalist id="agent-voice-options">
+                                        {vc.options.map((o) => (
+                                            <option key={o.id} value={o.id}>{o.label}</option>
+                                        ))}
+                                    </datalist>
+                                </>
+                            )}
+                            {vc.control === 'disabled' && (
+                                <input
+                                    id="agent-voice"
+                                    value=""
+                                    disabled
+                                    placeholder={vc.note}
+                                    className={`${inputClass} opacity-60 cursor-not-allowed`}
+                                />
+                            )}
+                            {vc.control !== 'disabled' && vc.note && (
+                                <p className="text-xs text-muted-foreground mt-1">{vc.note}</p>
+                            )}
+                            {vc.unrecognized && (
+                                <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                                    This voice is not in the provider's catalog — calls will fall back to the provider's default voice until you pick a valid one.
+                                </p>
+                            )}
+                        </div>
+                    );
+                })()}
 
                 <FormSelect
                     id="agent-audio-profile"

@@ -24,6 +24,8 @@ interface CallRecordSummary {
     pipeline_name: string | null;
     context_name: string | null;
     routing_method: string | null;  // 'ai_agent' | 'ai_context' | 'default' | null
+    voice?: string | null;          // Resolved session voice (v7.3.0; null = provider default)
+    voice_source?: string | null;   // 'override' | 'agent' | 'provider-default' | null
     outcome: string;
     error_message: string | null;
     avg_turn_latency_ms: number;
@@ -491,6 +493,8 @@ const CallHistoryPage = () => {
                     pipeline_name: detail.pipeline_name,
                     context_name: detail.context_name,
                     routing_method: detail.routing_method,
+                    voice: detail.voice,
+                    voice_source: detail.voice_source,
                     outcome: detail.outcome,
                     error_message: detail.error_message,
                     avg_turn_latency_ms: detail.avg_turn_latency_ms,
@@ -1190,6 +1194,17 @@ const CallHistoryPage = () => {
                                             <span className="ml-2"><RoutingBadge method={modalCall.routing_method} /></span>
                                         )}
                                     </div>
+                                    {(modalCall.voice || modalCall.voice_source) && (
+                                        <div>
+                                            <span className="text-muted-foreground">Voice:</span>{' '}
+                                            <span className="font-medium">{modalCall.voice || 'provider default'}</span>
+                                            {modalCall.voice_source && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    {' '}({modalCall.voice_source === 'provider-default' ? 'provider default' : `from ${modalCall.voice_source}`})
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
                                     <div>
                                         <span className="text-muted-foreground">Audio:</span>{' '}
                                         <span className="font-medium">{selectedCall?.caller_audio_format || '-'}</span>
