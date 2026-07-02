@@ -12,6 +12,7 @@
 - **[MCP Tool Integration](MCP_INTEGRATION.md)** - Experimental MCP tools (design + branch guide)
 - **[Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md)** - Common issues and solutions
 - **[Migration Guide](MIGRATION.md)** - Upgrading between major versions
+- **[Operator Migration Guide](OPERATOR_MIGRATION.md)** - Contexts → Agents migration for operators upgrading to v7.x
 
 ## Provider Setup Guides
 

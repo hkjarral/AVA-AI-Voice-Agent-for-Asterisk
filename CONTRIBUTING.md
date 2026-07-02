@@ -12,13 +12,13 @@ By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 **You don't need to know how to code.** Our AI assistant AVA writes the code for you.
 
 - **You know telephony better than most developers** — your Asterisk experience is rare and valuable
-- **AI does the coding** — Windsurf + AVA handle Python, React, Go — you just describe what you want
+- **AI does the coding** — any AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …) handles Python, React, Go — you just describe what you want
 - **Your server IS your test lab** — test features on your actual phone system with real calls
-- **One command to contribute** — run `scripts/setup-contributor.sh` once, then tell AVA to "submit a PR"
+- **One file to get your AI up to speed** — load [AVA.mdc](AVA.mdc) into your assistant; it carries the project map, guardrails, and workflow
 - **Get recognized** — your name in our Contributors list, release notes, and Discord
 - **Shape YOUR tool** — contribute features YOU actually need in your day-to-day operations
 
-**New to open source?** See the [Operator Contributor Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — a step-by-step walkthrough for people who have never used GitHub before.
+**New to open source?** Start with [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) and the [Quick Start Guide](docs/contributing/quickstart.md), and ask in [Discord](https://discord.gg/ysg8fphxUe) #contributing — we're happy to walk you through your first PR.
 
 ## What We're Looking For
 
@@ -64,7 +64,7 @@ Active branches:
 
 Recommended flow:
 
-1. Fork the repository and create a feature branch from `main`
+1. Fork the repository and create a feature branch from the latest `main` — **one branch per PR** (never stack multiple PRs on the same branch; each PR should contain only its own commits)
 2. Make your changes in small, focused commits
 3. Open a Pull Request (PR) against `main`
 4. Include a clear description and testing notes
@@ -79,10 +79,9 @@ Release candidates are staged on `staging` for golden baseline validation before
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
 cd Asterisk-AI-Voice-Agent
-./scripts/setup-contributor.sh
 ```
 
-Then open the folder in [Windsurf](https://codeium.com/windsurf) and type "I want to contribute" in the chat. See the [Operator Contributor Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) for details.
+Then open the folder in your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …), load [AVA.mdc](AVA.mdc) as context, and tell it what you want to contribute — it knows the project map, guardrails, and PR workflow.
 
 ### Option B: Traditional Setup (For Developers)
 

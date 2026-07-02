@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.2.1] - 2026-07-02
+
 ### Added
 
 - **Deferred transfer handoff routing for blind, live-agent, and attended transfers (#479/#480)** (`src/tools/telephony/deferred_transfer.py`, `src/tools/telephony/unified_transfer.py`, `src/tools/telephony/live_agent_transfer.py`, `src/tools/telephony/attended_transfer.py`, `src/engine.py`, `admin_ui/frontend/src/components/config/ToolForm.tsx`): transfer tools can now defer the actual bridge/continue until the agent's spoken handoff audio has drained, controlled by the new `tools.transfer.defer_until_playback_complete` setting exposed in the Admin UI. The default strategy is `predial_then_bridge`, which originates the destination leg while the caller hears the handoff, then bridges once playback completes and the destination answers, reducing the dead-air gap without cutting off the AI's final message. Operators can configure predial bridge wait/dial timeouts, default extension/queue/ring-group dialplan contexts, and per-destination `dialplan_context` for extensions, queues, and ring groups directly in the Tools UI. The implementation propagates deferred transfer context through Google Live, OpenAI Realtime, Deepgram, and Grok tool adapters, supports attended-transfer staging, and keeps `cancel_transfer` able to cancel armed deferred transfers before commit.
 - **First-class UI-driven updater workflow** (`admin_ui/frontend/src/pages/System/UpdatesPage.tsx`, `admin_ui/backend/api/system.py`, `updater/run.sh`, `updater/Dockerfile`, `admin_ui/Dockerfile`, `cli/cmd/agent/update.go`): the Admin UI now provides a dedicated Updates page that discovers available stable/main/custom-branch updates, previews changed files and service impact, prepares/pulls/builds the updater image with visible progress, starts update and rollback jobs, streams job tails, exposes recent run history, and offers rollback/copy-recovery actions for terminal failures including post-update validation failures. Branch/main/custom updates build the updater image from the target ref and install the CLI from the updated checkout so updater/CLI changes are exercised by the update itself. The flow now reserves jobs atomically, prevents duplicate starts, handles stale image/job state, records image-prep/tagging/start failures, bounds full-log reads, supports active-call override for update and rollback, and keeps code/container state aligned across active-call, stash-conflict, Docker Compose, and validation-failure edge cases.
+
+### Changed
+
+- **`AVA.mdc` rewritten as a self-contained AI-assistant context file** (`AVA.mdc`): repositioned from a project-manager persona to the first file any contributor loads into their AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …). Now documents the v7.x Agents architecture (agents.db, `ContextConfig`, agents.db-first resolution), the verified full-agent and pipeline provider roster, an inline Engineering Guardrails section (event-loop discipline, SessionStore rule, golden-baseline protection, tests + coverage floor, CHANGELOG-per-PR, UI sync rule, HelpTooltip pattern, no secrets/PII), and the contribution workflow (GitHub Issues/Discussions as task sources, one branch per PR, CI gates, PR evidence expectations). Removed stale v4.2-era task references, internal issue-tracker references, deferrals to non-committed IDE rule files, and a dead Discord invite. `AVA.mdc` freshness is now a `docs/RELEASE_CHECKLIST.md` item.
+- **Contributor funnel repaired in `README.md` and `CONTRIBUTING.md`**: removed instructions referencing the non-existent `scripts/setup-contributor.sh`, replaced seven dead `develop`-branch guide/template links with links to the committed guides (`docs/contributing/provider-development.md`, `pipeline-development.md`, `tool-development.md`, `quickstart.md`, `code-style.md`), switched the contributor clone instruction off the stale `develop` branch, and documented the one-branch-per-PR rule. AI-assisted setup now points at `AVA.mdc` and works with any AI coding assistant.
+- **`SECURITY.md` support policy is now explicit and honest**: replaced the nine-train "all supported, end-of-support TBD" table with a two-most-recent-minors policy (currently 7.2.x and 7.1.x); 7.0.x and 6.x marked end-of-support with dates, with links to the migration guides.
+- **README feature maturity labels**: new "Integrations & Early-Stage Features" documentation group labels Outbound Calling as `Alpha` and the FreeSWITCH (FS-PBX) and ViciDial guides as `Community`, with a short legend; these docs were previously not linked from the README at all.
+- **Docs index and status housekeeping** (`docs/README.md`, `docs/contributing/README.md`, `docs/INSTALLATION.md`, `docs/RELEASE_CHECKLIST.md`): Operator Migration Guide (contexts → agents) is now linked from the documentation index; contributing README project status corrected (active branch `main`, GitHub Issues + Discussions); installation guide version references bumped; release checklist gains the `AVA.mdc` drift-review item.
 
 ### Fixed
 
@@ -2089,7 +2099,13 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.5.4...HEAD
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.2.1...HEAD
+[7.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.2.0...v7.2.1
+[7.2.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.1.2...v7.2.0
+[7.1.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.1.1...v7.1.2
+[7.1.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.0.1...v7.1.1
+[7.0.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.0.0...v7.0.1
+[7.0.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.5.4...v7.0.0
 [6.5.4]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.5.3...v6.5.4
 [6.5.3]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.5.2...v6.5.3
 [6.5.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.5.1...v6.5.2

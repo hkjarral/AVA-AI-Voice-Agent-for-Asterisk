@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.2.0-blue.svg)
+![Version](https://img.shields.io/badge/version-7.2.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -714,6 +714,13 @@ The `preflight.sh` script handles initial setup:
 - **[Local Profiles](docs/LOCAL_PROFILES.md)**
 - **[Monitoring Guide](docs/MONITORING_GUIDE.md)**
 
+### Integrations & Early-Stage Features
+- **[Outbound Calling](docs/OUTBOUND_CALLING.md)** — `Alpha` — scheduled campaigns, voicemail drop, consent gate
+- **[FreeSWITCH (FS-PBX) Setup](docs/FS-PBX-Setup-Instructions.md)** — `Community` — community-maintained guide
+- **[ViciDial Setup](docs/Vicidial-Setup.md)** — `Community` — community-tested configuration notes
+
+`Alpha` = usable but still hardening. `Community` = contributed and community-validated, not maintainer-tested on every release. Features without a label are stable.
+
 ### Development & Community
 - **[Roadmap](docs/ROADMAP.md)** - What's next, planned milestones, and how to get involved
 - **[Developer Documentation](docs/contributing/README.md)**
@@ -735,31 +742,28 @@ as valuable as code. If you do want to write code, see the Contributing Guide be
 ### 🚀 Get Started in 3 Steps
 
 ```bash
-git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
+git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
 cd Asterisk-AI-Voice-Agent
-./scripts/setup-contributor.sh
 ```
 
-Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to contribute"**
+Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …) — it carries the project map, engineering guardrails, and contribution workflow — and tell it what you want to build or fix.
 
 ### 📖 Guides
 
 | Guide | For |
 |-------|-----|
-| **[Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
 | **[Contributing Guide](CONTRIBUTING.md)** | Full contribution guidelines and workflow |
-| **[Coding Guidelines](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
-| **[Roadmap](docs/ROADMAP.md)** | What to work on next (13+ beginner-friendly tasks) |
+| **[Developer Quickstart](docs/contributing/quickstart.md)** | Dev environment setup in ~15 minutes |
+| **[Code Style](docs/contributing/code-style.md)** | Code standards for all contributions |
+| **[Roadmap](docs/ROADMAP.md)** | What to work on next |
 
 ### 🔧 Build Something New
 
-| Area | Guide | Template |
+| Area | Guide | Reference |
 |------|-------|----------|
-| Full Agent Provider | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-full-agent-provider.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/providers/template_full_agent.py) |
-| Pipeline Adapter (STT/LLM/TTS) | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-pipeline-adapter.md) | [Templates](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/tree/develop/examples/pipelines/) |
-| Pre-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/pre-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_pre_call_hook.py) |
-| In-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/in-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_in_call_hook.py) |
-| Post-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/post-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_post_call_hook.py) |
+| Full-Agent Provider | [Provider Development](docs/contributing/provider-development.md) | [Implementation deep-dives](docs/contributing/references/) |
+| Pipeline Adapter (STT/LLM/TTS) | [Pipeline Development](docs/contributing/pipeline-development.md) | [Example pipelines](examples/pipelines/) |
+| Tools & Call Hooks (pre/in/post-call) | [Tool Development](docs/contributing/tool-development.md) | [Tool Calling Guide](docs/TOOL_CALLING_GUIDE.md) |
 
 ### 👩‍💻 For Developers
 - [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) - Project overview and first tasks

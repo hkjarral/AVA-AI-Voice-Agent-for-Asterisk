@@ -124,10 +124,10 @@ For end-user and operator documentation, see the parent [/docs](../) directory:
 
 ## 📅 Project Status
 
-- **Current Version:** 7.2.0
-- **Active Branch:** `develop`
+- **Current Version:** 7.2.1
+- **Active Branch:** `main` (feature branches → PR to `main`)
 - **Roadmap:** See [/docs/ROADMAP.md](../ROADMAP.md)
-- **Community Features:** GitHub Issues + Linear integration
+- **Community Features:** GitHub Issues + Discussions
 
 ---
 
