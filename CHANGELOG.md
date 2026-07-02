@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`SECURITY.md` support policy is now explicit and honest**: replaced the nine-train "all supported, end-of-support TBD" table with a two-most-recent-minors policy (currently 7.2.x and 7.1.x); 7.0.x and 6.x marked end-of-support with dates, with links to the migration guides.
 - **README feature maturity labels**: new "Integrations & Early-Stage Features" documentation group labels Outbound Calling as `Alpha` and the FreeSWITCH (FS-PBX) and ViciDial guides as `Community`, with a short legend; these docs were previously not linked from the README at all.
 - **Docs index and status housekeeping** (`docs/README.md`, `docs/contributing/README.md`, `docs/INSTALLATION.md`, `docs/RELEASE_CHECKLIST.md`): Operator Migration Guide (contexts → agents) is now linked from the documentation index; contributing README project status corrected (active branch `main`, GitHub Issues + Discussions); installation guide version references bumped; release checklist gains the `AVA.mdc` drift-review item.
+- **CI dev-artifact guard no longer blocks shipped files** (`.github/workflows/block-dev-artifacts.yml`): `AVA.mdc` and `examples/` are removed from the blocklist — both ship on `main` (the PR template references `AVA.mdc`; README and docs link into `examples/`), and the old develop-era patterns made them unupdatable via PRs to `main`. Local-only artifacts (`CLAUDE.md`, `.cursor/`, `.windsurf/`, `.agent/`) remain blocked.
 
 ### Fixed
 
