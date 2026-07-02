@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Windows CLI build restored** (`cli/cmd/agent/update.go`, `cli/cmd/agent/update_platform_unix.go`, `cli/cmd/agent/update_platform_windows.go`): the v7.2.1 `agent update` lock and self-update re-exec used unix-only `syscall.Flock`/`syscall.Exec`, which broke the Windows AMD64 cross-compile in the CLI release workflow (first failing build since the updater landed). File locking and process replacement now live behind build-tagged platform files — `flock(2)`/`execve(2)` on unix, `LockFileEx` and spawn-then-exit on Windows — with unchanged behavior on Linux/macOS. CI gains a `cli-cross-compile` job that builds all five release targets on every PR, closing the gap where no Go build ran at PR time and platform-only breakage surfaced only when tagging a release.
-
 ## [7.2.1] - 2026-07-02
 
 ### Added
@@ -30,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows CLI build restored (#501)** (`cli/cmd/agent/update.go`, `cli/cmd/agent/update_platform_unix.go`, `cli/cmd/agent/update_platform_windows.go`): the `agent update` lock and self-update re-exec used unix-only `syscall.Flock`/`syscall.Exec`, which broke the Windows AMD64 cross-compile in the CLI release workflow (first failing build since the updater landed). File locking and process replacement now live behind build-tagged platform files — `flock(2)`/`execve(2)` on unix, `LockFileEx` and spawn-then-exit on Windows — with unchanged behavior on Linux/macOS. CI gains a `cli-cross-compile` job that builds all five release targets on every PR, closing the gap where no Go build ran at PR time and platform-only breakage surfaced only when tagging a release.
 - **HTTP tool editor no longer hides add-row actions or silently drops draft fields (#494)** (`admin_ui/frontend/src/components/config/HTTPToolForm.tsx`, `admin_ui/frontend/src/components/ui/Modal.tsx`): the Pre-Call/In-Call/Post-Call HTTP tool modal now opens wider, supports a fullscreen toggle, and relies on one modal scroll area instead of nested scrolling. Header, query-parameter, and output-variable draft rows now use labeled actions such as `Add Query Param` instead of tiny icon-only buttons, and Test/Save automatically commit non-empty draft rows so typed values are not omitted if the operator does not click the add button first.
 - **Agent dialplan copy works when the modern Clipboard API is unavailable (#491)** (`admin_ui/frontend/src/pages/AgentsPage.tsx`, `admin_ui/frontend/src/utils/clipboard.ts`, `admin_ui/frontend/src/utils/clipboard.test.ts`): the Agents page Copy dialplan action now validates the backend response and uses a shared clipboard helper that falls back to a hidden textarea plus `execCommand("copy")` when `navigator.clipboard.writeText` is missing or blocked by the browser context. The same helper is used by Call Scheduling so Admin UI copy buttons behave consistently. Regression coverage pins both the modern Clipboard API path and the fallback path.
 - **Call History no longer records non-AAVA PBX channels as Unknown abandoned calls (#490)** (`src/engine.py`, `tests/test_engine_call_persistence_v701.py`): the pre-session abandoned-call fallback now only writes a Call History row for caller channels that actually entered the AAVA Stasis app. Ordinary FreePBX/PBX extension, voicemail, and no-answer channel teardowns observed by ARI are skipped instead of being saved as zero-duration abandoned records with empty caller metadata, while genuine AAVA setup failures still leave one abandoned record for debugging. Regression coverage pins both the non-AAVA skip path and the preserved AAVA pre-session failure path.
