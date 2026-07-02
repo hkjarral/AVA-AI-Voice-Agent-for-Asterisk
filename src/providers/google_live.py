@@ -103,6 +103,20 @@ def coerce_vad_sensitivity(value: Optional[str], valid: AbstractSet[str], defaul
     return value if value in valid else default
 
 
+def resolve_google_voice(session_voice: Optional[str], configured: Optional[str]) -> str:
+    """Resolve the prebuilt voice name for a session.
+
+    Per-agent voice override wins over the configured ``tts_voice_name``;
+    "Aoede" is the shipped fallback. Google's voice list is open-ended, so no
+    local validation — an invalid name surfaces as a Google-side setup error.
+    """
+    if isinstance(session_voice, str) and session_voice.strip():
+        return session_voice.strip()
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "Aoede"
+
+
 # Metrics
 _GOOGLE_LIVE_SESSIONS = Gauge(
     "ai_agent_google_live_active_sessions",
@@ -949,7 +963,9 @@ class GoogleLiveProvider(AIProviderInterface):
             "speechConfig": {
                 "voiceConfig": {
                     "prebuiltVoiceConfig": {
-                        "voiceName": self.config.tts_voice_name or "Aoede"
+                        "voiceName": resolve_google_voice(
+                            (context or {}).get("voice"), self.config.tts_voice_name
+                        )
                     }
                 }
             },

@@ -68,7 +68,7 @@ from .providers.elevenlabs_config import ElevenLabsAgentConfig
 from .core import SessionStore, PlaybackManager, ConversationCoordinator
 from .core.vad_manager import EnhancedVADManager, VADResult
 from .core.streaming_playback_manager import StreamingPlaybackManager
-from .core.transport_orchestrator import TransportOrchestrator, TransportProfile
+from .core.transport_orchestrator import TransportOrchestrator, TransportProfile, apply_context_voice
 from .core.models import CallSession
 from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
@@ -14275,6 +14275,9 @@ class Engine:
                             provider_context["greeting"] = self._apply_prompt_template_substitution(greeting_override, session)
                         elif hasattr(context_config, 'greeting') and context_config.greeting:
                             provider_context['greeting'] = self._apply_prompt_template_substitution(context_config.greeting, session)
+
+                        # Per-agent/per-call voice override (7.3.0): override > agent > provider default.
+                        apply_context_voice(provider_context, overrides, context_config, call_id=call_id)
             except Exception as e:
                 logger.warning(f"Failed to build provider context: {e}", call_id=call_id, exc_info=True)
             

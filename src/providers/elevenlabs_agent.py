@@ -29,6 +29,19 @@ from .elevenlabs_config import ElevenLabsAgentConfig
 logger = logging.getLogger(__name__)
 
 
+def ignored_platform_voice(context) -> Optional[str]:
+    """Return a per-agent voice override that will be ignored, if any.
+
+    ElevenLabs Agent voices are configured on the ElevenLabs platform (baked
+    into the agent), so a per-agent AVA voice override cannot apply — callers
+    log it so operators aren't left guessing why the voice didn't change.
+    """
+    raw = (context or {}).get("voice")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
 @dataclass
 class ElevenLabsSessionState:
     """Tracks the state of an ElevenLabs conversation session."""
@@ -132,7 +145,14 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         """
         self._call_id = call_id
         self._session_state = ElevenLabsSessionState()
-        
+        ignored_voice = ignored_platform_voice(context)
+        if ignored_voice:
+            logger.info(
+                "Agent voice override '%s' ignored (call_id=%s): ElevenLabs Agent voice "
+                "is managed on the ElevenLabs platform, not per AVA agent.",
+                ignored_voice, call_id,
+            )
+
         # Reset connection state for new session
         self._connected = False
         self._closing = False

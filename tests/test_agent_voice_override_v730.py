@@ -340,3 +340,71 @@ def test_deepgram_blank_session_voice_ignored():
 
 def test_deepgram_default_when_nothing_configured():
     assert resolve_speak_model(None, None) == "aura-asteria-en"
+
+
+# ---------------------------------------------------------------------------
+# Engine-side application: provider_context["voice"] + decision source
+# ---------------------------------------------------------------------------
+
+from src.core.transport_orchestrator import apply_context_voice
+
+
+def test_apply_context_voice_sets_key_and_returns_source():
+    ctx = {}
+    source = apply_context_voice(ctx, {}, ContextConfig(voice="marin"), call_id="c1")
+    assert ctx["voice"] == "marin"
+    assert source == "agent"
+
+
+def test_apply_context_voice_override_wins():
+    ctx = {}
+    source = apply_context_voice(ctx, {"voice": "cedar"}, ContextConfig(voice="marin"))
+    assert ctx["voice"] == "cedar"
+    assert source == "override"
+
+
+def test_apply_context_voice_leaves_key_absent_for_provider_default():
+    ctx = {}
+    source = apply_context_voice(ctx, {}, ContextConfig())
+    assert "voice" not in ctx
+    assert source == "provider-default"
+
+
+# ---------------------------------------------------------------------------
+# Google Live: prebuilt voice name resolution (free-form, no local validation)
+# ---------------------------------------------------------------------------
+
+from src.providers.google_live import resolve_google_voice
+
+
+def test_google_agent_voice_wins():
+    assert resolve_google_voice("Kore", "Aoede") == "Kore"
+
+
+def test_google_falls_back_to_configured_voice():
+    assert resolve_google_voice(None, "Charon") == "Charon"
+
+
+def test_google_blank_agent_voice_ignored():
+    assert resolve_google_voice("   ", "Charon") == "Charon"
+
+
+def test_google_default_aoede_when_nothing_set():
+    assert resolve_google_voice(None, None) == "Aoede"
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs Agent: voice is platform-managed — override is ignored (logged)
+# ---------------------------------------------------------------------------
+
+from src.providers.elevenlabs_agent import ignored_platform_voice
+
+
+def test_elevenlabs_reports_ignored_voice():
+    assert ignored_platform_voice({"voice": "Rachel"}) == "Rachel"
+
+
+def test_elevenlabs_no_voice_nothing_to_ignore():
+    assert ignored_platform_voice({}) is None
+    assert ignored_platform_voice(None) is None
+    assert ignored_platform_voice({"voice": "   "}) is None

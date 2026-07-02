@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-agent voice override** (`src/core/transport_orchestrator.py`, `src/core/agent_store.py`, `src/engine.py`, `src/providers/openai_realtime.py`, `src/providers/grok.py`, `src/providers/deepgram.py`, `src/providers/google_live.py`, `src/providers/elevenlabs_agent.py`, `tests/test_agent_voice_override_v730.py`): the agent `voice` field (collected by the Admin UI since v7.0.0 but previously informational) is now runtime-active. Voice precedence is per-call override > agent voice (agents.db, or a new optional `voice` key on YAML contexts) > provider config voice, resolved by `resolve_effective_voice()` and logged with its source (`override`/`agent`/`provider-default`) at session start. Supported full-agent providers: **OpenAI Realtime** (soft-validated against the 10-voice GA catalog — an unrecognized value, e.g. stale free text from the previously display-only field, logs a warning and falls back to the provider default; the call never fails), **xAI Grok** (pass-through, since custom cloned-voice IDs are valid), **Google Live** (pass-through prebuilt voice name), and **Deepgram Voice Agent** (`agent.speak.provider.model`, applied to both the primary Settings payload and the UNPARSABLE-retry payload). ElevenLabs Agent voices remain managed on the ElevenLabs platform; an agent voice override there is ignored with an explanatory log. Provider-level voice settings are unchanged and act as the default/fallback. Seeded by #497 (thanks @foytech).
+
 ## [7.2.1] - 2026-07-02
 
 ### Added

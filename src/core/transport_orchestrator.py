@@ -117,6 +117,29 @@ def resolve_effective_voice(
     return None, "provider-default"
 
 
+def apply_context_voice(
+    provider_context: Dict[str, Any],
+    overrides: Dict[str, Any],
+    context_config: Optional["ContextConfig"],
+    call_id: Optional[str] = None,
+) -> str:
+    """Apply the resolved session voice to a provider context and log the decision.
+
+    Leaves ``provider_context`` untouched when the provider's configured voice
+    should decide. Returns the decision source for callers that want it.
+    """
+    voice, source = resolve_effective_voice(overrides, context_config)
+    if voice:
+        provider_context["voice"] = voice
+    logger.info(
+        "Session voice resolved",
+        call_id=call_id,
+        voice=voice or "(provider default)",
+        source=source,
+    )
+    return source
+
+
 @dataclass
 class TransportProfile:
     """Resolved transport settings for a call (locked at call start)."""
