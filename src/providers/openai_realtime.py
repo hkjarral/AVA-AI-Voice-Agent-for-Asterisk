@@ -69,6 +69,15 @@ _OPENAI_SESSION_AUDIO_INFO = Info(
     "OpenAI Realtime session audio format assumptions and provider acknowledgements",
 )
 
+# GA voice catalog (closed list). Mirrors the Admin UI dropdown; used to
+# soft-validate per-agent voice overrides — an unknown value falls back to the
+# provider's configured voice instead of reaching the OpenAI session, because
+# the agent voice field was free-text/display-only before v7.3.0.
+OPENAI_GA_VOICES = {
+    "alloy", "ash", "ballad", "cedar", "coral",
+    "echo", "marin", "sage", "shimmer", "verse",
+}
+
 
 class OpenAIRealtimeProvider(AIProviderInterface):
     """
@@ -105,6 +114,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._beta_warned: bool = False
 
         self._call_id: Optional[str] = None
+        self._session_voice: Optional[str] = None  # Per-call voice override from agent/context
         self._pending_response: bool = False
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
         self._greeting_response_id: Optional[str] = None  # Track greeting to protect from barge-in
@@ -392,6 +402,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             self._allowed_tools = list(context.get("tools") or [])
         else:
             self._allowed_tools = []
+
+        self._set_session_voice_from_context(context)
 
         self._reset_output_meter()
 
@@ -891,6 +903,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 logger.debug("Failed to release response.done sentinels on stop_session", exc_info=True)
             self.websocket = None
             self._call_id = None
+            self._session_voice = None
             self._closing = False
             self._closed = True
             self._pending_response = False
@@ -906,9 +919,35 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             "name": "OpenAIRealtimeProvider",
             "type": "cloud",
             "model": self.config.model,
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "supported_codecs": self.supported_codecs,
         }
+
+    def _set_session_voice_from_context(self, context: Optional[Dict[str, Any]]) -> None:
+        """Apply a per-agent/per-call voice override with soft validation.
+
+        Unknown values (the field was display-only free text before v7.3.0)
+        fall back to the configured provider voice; the call never fails.
+        """
+        self._session_voice = None
+        raw = (context or {}).get("voice")
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        candidate = raw.strip().lower()
+        if candidate not in OPENAI_GA_VOICES:
+            logger.warning(
+                "Agent voice not in OpenAI GA catalog; falling back to provider default",
+                call_id=self._call_id,
+                requested_voice=raw.strip(),
+                fallback_voice=self.config.voice,
+            )
+            return
+        self._session_voice = candidate
+        logger.info(
+            "Using per-call OpenAI voice override",
+            call_id=self._call_id,
+            voice=candidate,
+        )
 
     def is_ready(self) -> bool:
         return bool(self.config.api_key)
@@ -1038,7 +1077,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     "input": audio_input,
                     "output": {
                         "format": {"type": "audio/pcm", "rate": 24000},
-                        "voice": self.config.voice,
+                        "voice": self._session_voice or self.config.voice,
                     },
                 },
             }
@@ -1059,7 +1098,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 "modalities": output_modalities,
                 "input_audio_format": in_fmt,
                 "output_audio_format": out_fmt,
-                "voice": self.config.voice,
+                "voice": self._session_voice or self.config.voice,
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 },

@@ -112,6 +112,7 @@ class GrokProvider(AIProviderInterface):
         self._send_lock = asyncio.Lock()
 
         self._call_id: Optional[str] = None
+        self._session_voice: Optional[str] = None  # Per-call voice override from agent/context
         self._pending_response: bool = False
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
         self._greeting_response_id: Optional[str] = None  # Track greeting to protect from barge-in
@@ -406,6 +407,8 @@ class GrokProvider(AIProviderInterface):
             self._allowed_tools = list(context.get("tools") or [])
         else:
             self._allowed_tools = []
+
+        self._set_session_voice_from_context(context)
 
         self._reset_output_meter()
 
@@ -914,6 +917,7 @@ class GrokProvider(AIProviderInterface):
                 logger.debug("Failed to release response.done sentinels on stop_session", exc_info=True)
             self.websocket = None
             self._call_id = None
+            self._session_voice = None
             self._closing = False
             self._closed = True
             self._pending_response = False
@@ -929,9 +933,25 @@ class GrokProvider(AIProviderInterface):
             "name": "GrokProvider",
             "type": "cloud",
             "model": self.config.model,
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "supported_codecs": self.supported_codecs,
         }
+
+    def _set_session_voice_from_context(self, context: Optional[Dict[str, Any]]) -> None:
+        """Apply a per-agent/per-call voice override.
+
+        No validation: xAI accepts custom cloned-voice IDs alongside the named
+        voices, so an unrecognized value may be a legitimate clone ID.
+        """
+        self._session_voice = None
+        raw = (context or {}).get("voice")
+        if isinstance(raw, str) and raw.strip():
+            self._session_voice = raw.strip()
+            logger.info(
+                "Using per-call Grok voice override",
+                call_id=self._call_id,
+                voice=self._session_voice,
+            )
 
     def is_ready(self) -> bool:
         return bool(self.config.api_key)
@@ -1002,7 +1022,7 @@ class GrokProvider(AIProviderInterface):
             out_rate = int(getattr(self.config, "output_sample_rate_hz", 8000) or 8000)
 
         session: Dict[str, Any] = {
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "audio": {
                 "input":  {"format": {"type": in_fmt_type,  "rate": in_rate}},
                 "output": {"format": {"type": out_fmt_type, "rate": out_rate}},

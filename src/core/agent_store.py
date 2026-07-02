@@ -125,6 +125,7 @@ class EngineAgentStore:
         return ContextConfig(
             prompt=r["prompt"], greeting=r["greeting"], profile=r["audio_profile"],
             provider=r["provider"],
+            voice=r["voice"] if "voice" in cols else None,
             tools=tools,
             email_recipient=email_recipient,
             email_from=email_from,

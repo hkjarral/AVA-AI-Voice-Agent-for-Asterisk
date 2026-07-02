@@ -72,6 +72,7 @@ class ContextConfig:
     greeting: Optional[str] = None
     profile: Optional[str] = None
     provider: Optional[str] = None
+    voice: Optional[str] = None  # Per-agent voice override; provider config voice is the fallback
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
     background_music: Optional[str] = None  # MOH class name for background music during calls
@@ -95,6 +96,25 @@ class ContextConfig:
     email_recipient: Optional[str] = None
     email_from: Optional[str] = None
     email_enabled: Optional[bool] = None
+
+
+def resolve_effective_voice(
+    overrides: Dict[str, Any],
+    context_config: Optional["ContextConfig"],
+) -> tuple:
+    """Resolve the session voice with its source for logging.
+
+    Precedence: per-call override > agent/context voice > provider default.
+    Returns (voice, source) where source is "override" | "agent" |
+    "provider-default"; voice is None when the provider config should decide.
+    """
+    override = (overrides or {}).get("voice")
+    if isinstance(override, str) and override.strip():
+        return override.strip(), "override"
+    ctx_voice = getattr(context_config, "voice", None)
+    if isinstance(ctx_voice, str) and ctx_voice.strip():
+        return ctx_voice.strip(), "agent"
+    return None, "provider-default"
 
 
 @dataclass
@@ -189,6 +209,7 @@ class TransportOrchestrator:
                     greeting=context_dict.get('greeting'),
                     profile=context_dict.get('profile'),
                     provider=context_dict.get('provider'),
+                    voice=context_dict.get('voice'),
                     pipeline=context_dict.get('pipeline'),  # Modular pipeline name (e.g., local_hybrid)
                     tools=context_dict.get('tools'),  # In-call tools for function calling
                     background_music=context_dict.get('background_music'),  # MOH class for background music
