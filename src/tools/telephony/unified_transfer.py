@@ -5,6 +5,7 @@ This tool implements the canonical `blind_transfer` tool and replaces the legacy
 `transfer_call` and `transfer_to_queue` tools with a single unified interface.
 """
 
+import asyncio
 from typing import Dict, Any, Optional, Tuple, List
 import structlog
 
@@ -245,6 +246,23 @@ class UnifiedTransferTool(Tool):
                 "message": f"Invalid transfer type: {transfer_type}"
             }
     
+    async def _wait_before_transfer(self, context, description: str) -> None:
+        """Allow the assistant's spoken transfer message to finish before moving the channel."""
+        config = context.get_config_value("tools.transfer") or {}
+        pre_transfer_delay_sec = float(config.get("pre_transfer_delay_sec", 8.0))
+
+        if pre_transfer_delay_sec <= 0:
+            return
+
+        logger.info(
+            "Waiting before transfer to allow spoken message to finish",
+            call_id=context.call_id,
+            delay_seconds=pre_transfer_delay_sec,
+            transfer_target=description,
+        )
+        await asyncio.sleep(pre_transfer_delay_sec)
+
+
     async def _transfer_to_extension(
         self,
         context: ToolExecutionContext,
@@ -280,6 +298,8 @@ class UnifiedTransferTool(Tool):
         
         # Use ARI continue to transfer via dialplan (like queue/ringgroup transfers)
         # This properly leaves Stasis and lets Asterisk dialplan handle the call
+        await self._wait_before_transfer(context, description)
+
         await context.ari_client.send_command(
             method="POST",
             resource=f"channels/{context.caller_channel_id}/continue",
@@ -329,6 +349,8 @@ class UnifiedTransferTool(Tool):
         )
         
         # Execute transfer to FreePBX ext-queues context
+        await self._wait_before_transfer(context, description)
+
         await context.ari_client.send_command(
             method="POST",
             resource=f"channels/{context.caller_channel_id}/continue",
@@ -379,6 +401,8 @@ class UnifiedTransferTool(Tool):
         )
         
         # Execute transfer to FreePBX ext-group context
+        await self._wait_before_transfer(context, description)
+
         await context.ari_client.send_command(
             method="POST",
             resource=f"channels/{context.caller_channel_id}/continue",
