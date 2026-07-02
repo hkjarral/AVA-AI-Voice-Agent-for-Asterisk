@@ -261,12 +261,27 @@ class OpenAIToolAdapter:
         try:
             # Step 1: Send function_call_output
             safe_result = sanitize_tool_result_for_json_string(result, max_bytes=12000)
+            output_payload = safe_result
+
+            if isinstance(safe_result, dict):
+                data = safe_result.get("data")
+
+                if isinstance(data, dict) and data.get("spoken_answer"):
+                    output_payload = data["spoken_answer"]
+                elif safe_result.get("spoken_answer"):
+                    output_payload = safe_result["spoken_answer"]
+                elif safe_result.get("message") and safe_result.get("message") not in (
+                    "Retrieved data successfully.",
+                    "Data retrieved successfully.",
+                ):
+                    output_payload = safe_result["message"]
+
             output_event = {
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": json.dumps(safe_result)  # Stringify the result JSON (size-capped)
+                    "output": json.dumps(output_payload)
                 }
             }
             await websocket.send(json.dumps(output_event))
