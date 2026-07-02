@@ -94,8 +94,11 @@ Use these terms consistently and tie every change back to them:
   per provider — see `docs/contributing/schema-reference.md` and
   `docs/contributing/COMMON_PITFALLS.md`. Tools run in three phases: pre-call, in-call,
   post-call, all dispatched by the engine.
-- **Per-call overrides**: channel variables `AI_PROVIDER`, `AI_AUDIO_PROFILE`, and
-  `AI_CONTEXT` override defaults per call (see `docs/Configuration-Reference.md`).
+- **Per-call overrides**: channel variables `AI_AGENT` (preferred — routes by agent slug,
+  slug-first lookup), `AI_PROVIDER`, and `AI_AUDIO_PROFILE` override defaults per call.
+  `AI_CONTEXT` is the legacy equivalent of `AI_AGENT` (display-name lookup) and keeps
+  working, but new dialplans should use `AI_AGENT`
+  (see `docs/Configuration-Reference.md`).
 - **Live status & call history**: push-based live-status hub feeds the Admin UI dashboard;
   call history persists to SQLite (`src/core/call_history.py`).
 
