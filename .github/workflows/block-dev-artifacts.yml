@@ -23,16 +23,18 @@ jobs:
           #
           # Directory patterns use trailing / (prefix match).
           # File patterns use $ (exact match) to avoid over-matching.
+          # NOTE: AVA.mdc and examples/ are intentionally NOT blocked — both
+          # ship on main. AVA.mdc is the public AI-assistant context file
+          # (reviewed each release per docs/RELEASE_CHECKLIST.md) and
+          # examples/ is linked from README and docs.
           DEV_PATTERNS=(
             "\.windsurf/"
             "\.cursor/"
             "\.agent/"
-            "AVA\.mdc$"
             "Agents\.md$"
             "CLAUDE\.md$"
             "CLAUDE\.local\.md$"
             "Gemini\.md$"
-            "examples/"
             "docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE\.md$"
             "docs/contributing/CODING_GUIDELINES\.md$"
             "docs/contributing/RECOGNITION\.md$"
