@@ -18,7 +18,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/check"
@@ -380,7 +379,7 @@ func acquireUpdateLock(repoRoot string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open update lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockUpdateFile(f); err != nil {
 		_ = f.Close()
 		return nil, errors.New("another agent update or rollback is already running")
 	}
@@ -388,7 +387,7 @@ func acquireUpdateLock(repoRoot string) (func(), error) {
 	_, _ = f.Seek(0, 0)
 	_, _ = f.WriteString(fmt.Sprintf("pid=%d started_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339)))
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		unlockUpdateFile(f)
 		_ = f.Close()
 	}, nil
 }
@@ -600,7 +599,7 @@ func maybeSelfUpdateAndReexec() {
 	// Re-exec into the updated binary so the rest of `agent update` runs the newest logic.
 	env := append(os.Environ(), "AAVA_AGENT_SKIP_SELF_UPDATE=1")
 	args := append([]string{exePath}, os.Args[1:]...)
-	_ = syscall.Exec(exePath, args, env)
+	execReplace(exePath, args, env)
 }
 
 func releaseBinaryName(goos string, goarch string) (string, bool) {
