@@ -197,8 +197,12 @@ _MODULAR_KEY_SUFFIXES = ("_stt", "_llm", "_tts")
 _VOICE_META = {
     "openai_realtime": {"voice_mode": "static", "voices": OPENAI_VOICES, "voice_field": "voice"},
     "grok": {"voice_mode": "freeform", "voices": GROK_NAMED_VOICES, "voice_field": "voice"},
-    "google_live": {"voice_mode": "freeform", "voices": GOOGLE_LIVE_VOICES, "voice_field": "tts_voice_name"},
-    "deepgram": {"voice_mode": "freeform", "voices": DEEPGRAM_AURA_VOICES, "voice_field": "tts_model"},
+    # google_live/deepgram are STATIC, matching the runtime: the engine
+    # validates overrides against these verified catalogs (known_voice_map),
+    # so the UI must not invite free-text values the runtime would drop.
+    # Grok stays freeform — custom cloned-voice IDs are pass-through.
+    "google_live": {"voice_mode": "static", "voices": GOOGLE_LIVE_VOICES, "voice_field": "tts_voice_name"},
+    "deepgram": {"voice_mode": "static", "voices": DEEPGRAM_AURA_VOICES, "voice_field": "tts_model"},
     "elevenlabs_agent": {"voice_mode": "platform_managed", "voices": [], "voice_field": None},
 }
 

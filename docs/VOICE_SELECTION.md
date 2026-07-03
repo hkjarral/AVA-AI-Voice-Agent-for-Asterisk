@@ -28,17 +28,18 @@ Agent voice changes apply **immediately** — agents.db is read at call time, no
 |---|---|---|---|
 | **OpenAI Realtime** | ✅ Dropdown | 10 GA voices (alloy, ash, ballad, cedar, coral, echo, marin, sage, shimmer, verse) | Closed list. An unrecognized value (e.g. stale text from the pre-7.3.0 display-only field) logs a warning and **falls back to the provider default — the call never fails** |
 | **xAI Grok** | ✅ Suggestions + free text | eve, ara, rex, sal, leo — or a custom cloned `voice_id` | Pass-through (clone IDs are valid, so no local validation) |
-| **Google Live** | ✅ Suggestions + free text | 30 prebuilt voices (Aoede, Kore, Charon, Puck, …) | Validated against the prebuilt catalog (case-insensitive) — unknown values warn and **fall back to the configured voice**, never failing the call |
-| **Deepgram Voice Agent** | ✅ Suggestions + free text | Aura models (`aura-2-thalia-en`, …, legacy `aura-*-en`) | Validated against the Aura catalog — unknown values warn and fall back; applies to both the primary session and Deepgram's retry path |
+| **Google Live** | ✅ Dropdown | 30 prebuilt voices (Aoede, Kore, Charon, Puck, …) | Validated against the prebuilt catalog (case-insensitive) — unknown values warn and **fall back to the configured voice**, never failing the call |
+| **Deepgram Voice Agent** | ✅ Dropdown | Aura models (`aura-2-thalia-en`, …, legacy `aura-*-en`) | Validated against the Aura catalog — unknown values warn and fall back; applies to both the primary session and Deepgram's retry path |
 | **ElevenLabs Agent** | ❌ Platform-managed | Voice is baked into the agent on the ElevenLabs platform | An agent voice set in AVA is ignored with an explanatory log |
 | **Local full-agent / pipelines** | ❌ (v7.3.0) | Voice comes from the provider / pipeline TTS configuration | Per-agent pipeline TTS voice is planned for a later release |
 
 ## Configuring
 
 - **Agents page → edit agent → Voice.** The control adapts to the selected AI Engine:
-  a dropdown for OpenAI, suggestions-plus-free-entry for Grok/Google/Deepgram, and a
-  disabled field with an explanation for ElevenLabs and pipelines. "— provider default —"
-  (or empty) means "use the provider's voice", exactly like before 7.3.0.
+  a dropdown for OpenAI/Google Live/Deepgram (validated catalogs), suggestions-plus-free-entry
+  for Grok (custom clone IDs allowed), and a disabled field with an explanation for
+  ElevenLabs and pipelines. "— provider default —" (or empty) means "use the provider's
+  voice", exactly like before 7.3.0.
 - **Provider pages** now label their voice fields **Default Voice** — that value is used by
   every agent that doesn't set its own.
 - **YAML contexts** (headless installs) accept an optional `voice:` key with the same

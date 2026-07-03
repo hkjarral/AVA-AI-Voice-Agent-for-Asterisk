@@ -41,18 +41,22 @@ def test_grok_meta_is_freeform_with_named_voices():
     assert meta["voice_field"] == "voice"
 
 
-def test_google_live_meta_is_freeform_with_prebuilt_names():
+def test_google_live_meta_is_static_with_prebuilt_names():
+    # Runtime validates against the verified prebuilt catalog (closed set),
+    # so the UI must offer a dropdown, not invite free-text values the engine
+    # would drop (Codex round-3 on #503).
     meta = provider_voice_meta("google_live")
-    assert meta["voice_mode"] == "freeform"
+    assert meta["voice_mode"] == "static"
     ids = _ids(meta)
     assert {"Aoede", "Kore", "Charon", "Puck", "Zephyr"}.issubset(set(ids))
     assert len(ids) == 30
     assert meta["voice_field"] == "tts_voice_name"
 
 
-def test_deepgram_meta_is_freeform_with_aura_models():
+def test_deepgram_meta_is_static_with_aura_models():
+    # Same as Google: the Aura catalog is validated at runtime — closed set.
     meta = provider_voice_meta("deepgram")
-    assert meta["voice_mode"] == "freeform"
+    assert meta["voice_mode"] == "static"
     ids = set(_ids(meta))
     assert "aura-2-thalia-en" in ids       # aura-2 generation
     assert "aura-asteria-en" in ids        # legacy aura, still supported
