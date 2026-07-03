@@ -14280,13 +14280,21 @@ class Engine:
 
                         # Per-agent/per-call voice override (7.3.0): override > agent > provider default.
                         # Reconcile with what THIS provider can use so Call History records
-                        # the voice the session uses, not the raw request (closed-list
-                        # fallback / platform-managed providers resolve to provider-default).
-                        from .utils.voice_catalog import OPENAI_GA_VOICES as _openai_voices
+                        # the voice the session uses, not the raw request: closed-catalog
+                        # kinds (OpenAI/Google/Deepgram) validate here, Grok passes through
+                        # (custom clone IDs), and providers that never consume a context
+                        # voice (ElevenLabs Agent, Local) resolve to provider-default.
+                        from .utils.voice_catalog import known_voice_map
+                        _voice_kind = (
+                            "openai_realtime" if isinstance(provider, OpenAIRealtimeProvider)
+                            else "google_live" if isinstance(provider, GoogleLiveProvider)
+                            else "deepgram" if isinstance(provider, DeepgramProvider)
+                            else None
+                        )
                         voice_source = apply_context_voice(
                             provider_context, overrides, context_config, call_id=call_id,
-                            allowed_voices=_openai_voices if isinstance(provider, OpenAIRealtimeProvider) else None,
-                            platform_managed=isinstance(provider, ElevenLabsAgentProvider),
+                            allowed_voices=known_voice_map(_voice_kind),
+                            voice_unsupported=isinstance(provider, (ElevenLabsAgentProvider, LocalProvider)),
                         )
                         session.session_voice = provider_context.get("voice")
                         session.voice_source = voice_source

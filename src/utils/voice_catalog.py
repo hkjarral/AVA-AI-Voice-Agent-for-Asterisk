@@ -210,6 +210,24 @@ def provider_voice_meta(kind: Optional[str]) -> Dict[str, Any]:
     return dict(_VOICE_META.get(kind or "", _UNSUPPORTED))
 
 
+def known_voice_map(kind: Optional[str]) -> Optional[Dict[str, str]]:
+    """lowercase id → canonical id for kinds with a closed, verified catalog.
+
+    Returns None for open kinds (Grok accepts arbitrary cloned-voice IDs) and
+    for kinds without per-agent voice. Used to soft-validate agent voice
+    overrides — an unknown value falls back to the provider default instead of
+    reaching the provider API, where OpenAI/Google/Deepgram all reject unknown
+    voice/model names at session setup.
+    """
+    if kind == "openai_realtime":
+        return {v: v for v in OPENAI_GA_VOICES}
+    if kind == "google_live":
+        return {v["id"].lower(): v["id"] for v in GOOGLE_LIVE_VOICES}
+    if kind == "deepgram":
+        return {v["id"].lower(): v["id"] for v in DEEPGRAM_AURA_VOICES}
+    return None
+
+
 def full_agent_kind(key: str, entry: Optional[Dict[str, Any]]) -> Optional[str]:
     """Return the full-agent kind for a YAML provider entry, or None.
 

@@ -88,9 +88,10 @@ Use these terms consistently and tie every change back to them:
   agent voice (agents.db / YAML context `voice:` key) > provider default. Resolution lives
   in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);
   per-provider catalogs and metadata in `src/utils/voice_catalog.py` (single source shared
-  by the engine's soft validation and `GET /api/config/providers/meta`). OpenAI Realtime
-  validates against the closed GA list and falls back on unknowns (never fails a call);
-  Grok/Google/Deepgram pass through; ElevenLabs Agent is platform-managed; pipeline TTS
+  by the engine's soft validation and `GET /api/config/providers/meta`). OpenAI Realtime,
+  Google Live, and Deepgram validate against their closed catalogs and fall back on
+  unknowns (never failing a call); Grok passes through (custom clone IDs); ElevenLabs
+  Agent and the Local full agent never consume a context voice; pipeline TTS
   voices are per-pipeline (per-agent pipeline voice is future work). The resolved
   (voice, source) is logged per session and recorded in Call History.
   See `docs/VOICE_SELECTION.md`.

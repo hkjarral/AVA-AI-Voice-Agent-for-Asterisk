@@ -152,8 +152,8 @@ Agent form's voice control).
 |---|---|---|---|---|
 | `openai_realtime` | `static` | `voice` | ✅ `session.update` at start | Closed GA list (`OPENAI_GA_VOICES`) — unknown → warn + fall back to provider default |
 | `grok` | `freeform` | `voice` | ✅ session config | None (custom clone IDs are valid) |
-| `google_live` | `freeform` | `tts_voice_name` | ✅ `prebuiltVoiceConfig` in setup | None (open-ended list; bad name errors Google-side) |
-| `deepgram` | `freeform` | `tts_model` | ✅ Settings message — **must cover BOTH the primary payload and `_last_settings_minimal` (retry)**; both consume the `speak_model` local via `resolve_speak_model()` | None |
+| `google_live` | `freeform` | `tts_voice_name` | ✅ `prebuiltVoiceConfig` in setup | Known prebuilt catalog (`known_voice_map`, case-insensitive canonicalization) — unknown → warn + fall back to configured voice |
+| `deepgram` | `freeform` | `tts_model` | ✅ Settings message — **must cover BOTH the primary payload and `_last_settings_minimal` (retry)**; both consume the `speak_model` local via `resolve_speak_model()` | Known Aura catalog — unknown → warn + fall back to configured model |
 | `elevenlabs_agent` | `platform_managed` | — | ❌ voice baked into the platform agent | Override ignored with explanatory log |
 | `local`, modular adapters | `unsupported` | pipeline TTS options | — | Per-agent voice N/A (future work) |
 

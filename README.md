@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.2.1-blue.svg)
+![Version](https://img.shields.io/badge/version-7.3.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,20 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.3.0 — Per-agent voices 🎙️</b></summary>
+
+**Voice now belongs to agents.** Configure one provider, create multiple agents that share it — each with its own voice.
+
+- **Provider-aware voice picker** in the Agent form: a dropdown of OpenAI's 10 GA voices, suggestions + custom clone IDs for Grok, Google Live's 30 prebuilt voices, Deepgram's Aura models — the control adapts to the agent's selected AI Engine.
+- **Safe by default** — the provider-level voice becomes the *default voice*; agents without one behave exactly as before. Unrecognized values (OpenAI/Google/Deepgram catalogs are validated) log a warning and fall back — a bad voice value never fails a call.
+- **Observable** — every call logs the resolved voice and its source, and Call History shows "Voice: marin (from agent)" per call.
+- Agent voice changes apply instantly — no engine restart.
+
+Thanks @foytech for seeding this feature (#497). Full guide: [docs/VOICE_SELECTION.md](docs/VOICE_SELECTION.md).
+
+</details>
+
+<details>
 <summary><b>v7.2.0 — Live-status dashboard 📡</b></summary>
 
 Real-time system status for the Admin UI — pushed, not polled.

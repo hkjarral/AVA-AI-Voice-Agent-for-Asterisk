@@ -12,6 +12,7 @@ from websockets.asyncio.client import ClientConnection
 
 from structlog import get_logger
 from prometheus_client import Gauge, Info
+from ..utils.voice_catalog import known_voice_map
 from ..audio.resampler import (
     mulaw_to_pcm16le,
     pcm16le_to_mulaw,
@@ -40,14 +41,24 @@ def resolve_speak_model(session_voice: Optional[str], configured: Optional[str])
     """Resolve the `agent.speak.provider.model` (aura voice) for a session.
 
     Per-agent voice override wins over the configured `tts_model`; the shipped
-    default is the final fallback. Module-level pure function so the behavior
-    is unit-testable without a full provider (same pattern as
+    default is the final fallback. Overrides are validated against the known
+    Aura catalog (Deepgram rejects unknown speak models at Settings time) —
+    an unrecognized value, e.g. stale free text from the pre-7.3.0
+    display-only agent field, falls back to the configured model instead of
+    failing the session. Module-level pure function so the behavior is
+    unit-testable without a full provider (same pattern as
     ``build_listen_provider_block``). Both the primary Settings payload and the
     UNPARSABLE-retry minimal payload consume this via the single `speak_model`
     local in ``_configure_agent``.
     """
     if isinstance(session_voice, str) and session_voice.strip():
-        return session_voice.strip()
+        canonical = known_voice_map("deepgram").get(session_voice.strip().lower())
+        if canonical:
+            return canonical
+        logger.warning(
+            "Agent voice is not a known Deepgram Aura model; using configured speak model",
+            requested_voice=session_voice.strip(),
+        )
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
     return "aura-asteria-en"

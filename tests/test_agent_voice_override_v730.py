@@ -342,6 +342,16 @@ def test_deepgram_default_when_nothing_configured():
     assert resolve_speak_model(None, None) == "aura-asteria-en"
 
 
+def test_deepgram_unknown_voice_falls_back_to_configured():
+    # Stale free-text from the pre-7.3.0 display-only field must not reach
+    # agent.speak.provider.model (CodeRabbit Major on #503).
+    assert resolve_speak_model("Jenny - British", "aura-orion-en") == "aura-orion-en"
+
+
+def test_deepgram_known_voice_is_case_insensitive():
+    assert resolve_speak_model("AURA-2-Thalia-EN", "aura-orion-en") == "aura-2-thalia-en"
+
+
 # ---------------------------------------------------------------------------
 # Engine-side application: provider_context["voice"] + decision source
 # ---------------------------------------------------------------------------
@@ -393,13 +403,26 @@ def test_apply_context_voice_normalizes_case_for_closed_list_provider():
     assert source == "agent"
 
 
-def test_apply_context_voice_platform_managed_records_provider_default():
+def test_apply_context_voice_unsupported_provider_records_provider_default():
+    # ElevenLabs (platform-managed) AND the Local full agent never consume a
+    # context voice — recording must say provider-default (Codex on #503).
     ctx = {}
     source = apply_context_voice(
-        ctx, {}, ContextConfig(voice="Rachel"), platform_managed=True,
+        ctx, {}, ContextConfig(voice="Rachel"), voice_unsupported=True,
     )
     assert "voice" not in ctx
     assert source == "provider-default"
+
+
+def test_apply_context_voice_canonicalizes_via_mapping():
+    # Google voices are TitleCase; a lowercase agent value must canonicalize.
+    ctx = {}
+    source = apply_context_voice(
+        ctx, {}, ContextConfig(voice="kore"),
+        allowed_voices={"kore": "Kore", "aoede": "Aoede"},
+    )
+    assert ctx["voice"] == "Kore"
+    assert source == "agent"
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +446,17 @@ def test_google_blank_agent_voice_ignored():
 
 def test_google_default_aoede_when_nothing_set():
     assert resolve_google_voice(None, None) == "Aoede"
+
+
+def test_google_unknown_voice_falls_back_to_configured():
+    # Google rejects unknown prebuilt names at session setup — a stale value
+    # must degrade to the configured voice, not fail the call (CodeRabbit
+    # Major on #503).
+    assert resolve_google_voice("en-US-JennyNeural", "Charon") == "Charon"
+
+
+def test_google_known_voice_canonicalizes_case():
+    assert resolve_google_voice("kore", "Aoede") == "Kore"
 
 
 # ---------------------------------------------------------------------------

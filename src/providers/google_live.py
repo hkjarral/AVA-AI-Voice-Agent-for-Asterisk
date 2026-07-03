@@ -45,6 +45,7 @@ from structlog import get_logger
 from prometheus_client import Gauge, Counter
 
 from .base import AIProviderInterface, ProviderCapabilities
+from ..utils.voice_catalog import known_voice_map
 from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
@@ -107,11 +108,20 @@ def resolve_google_voice(session_voice: Optional[str], configured: Optional[str]
     """Resolve the prebuilt voice name for a session.
 
     Per-agent voice override wins over the configured ``tts_voice_name``;
-    "Aoede" is the shipped fallback. Google's voice list is open-ended, so no
-    local validation — an invalid name surfaces as a Google-side setup error.
+    "Aoede" is the shipped fallback. Overrides are validated (case-insensitive,
+    canonicalized) against the known prebuilt-voice catalog — Google rejects
+    unknown names at session setup, so a stale free-text value from the
+    pre-7.3.0 display-only agent field falls back to the configured voice
+    instead of failing the call.
     """
     if isinstance(session_voice, str) and session_voice.strip():
-        return session_voice.strip()
+        canonical = known_voice_map("google_live").get(session_voice.strip().lower())
+        if canonical:
+            return canonical
+        logger.warning(
+            "Agent voice is not a known Google Live prebuilt voice; using configured voice",
+            requested_voice=session_voice.strip(),
+        )
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
     return "Aoede"
