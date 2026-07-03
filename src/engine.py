@@ -14279,10 +14279,15 @@ class Engine:
                             provider_context['greeting'] = self._apply_prompt_template_substitution(context_config.greeting, session)
 
                         # Per-agent/per-call voice override (7.3.0): override > agent > provider default.
-                        voice_source = apply_context_voice(provider_context, overrides, context_config, call_id=call_id)
-                        # Recorded in Call History so operators can verify which voice was
-                        # requested and why (session.session_voice is None when the
-                        # provider's configured default decides).
+                        # Reconcile with what THIS provider can use so Call History records
+                        # the voice the session uses, not the raw request (closed-list
+                        # fallback / platform-managed providers resolve to provider-default).
+                        from .utils.voice_catalog import OPENAI_GA_VOICES as _openai_voices
+                        voice_source = apply_context_voice(
+                            provider_context, overrides, context_config, call_id=call_id,
+                            allowed_voices=_openai_voices if isinstance(provider, OpenAIRealtimeProvider) else None,
+                            platform_managed=isinstance(provider, ElevenLabsAgentProvider),
+                        )
                         session.session_voice = provider_context.get("voice")
                         session.voice_source = voice_source
             except Exception as e:

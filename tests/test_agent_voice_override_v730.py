@@ -370,6 +370,38 @@ def test_apply_context_voice_leaves_key_absent_for_provider_default():
     assert source == "provider-default"
 
 
+def test_apply_context_voice_drops_unknown_voice_for_closed_list_provider():
+    # Call History must record what the session USES, not the raw request:
+    # a value outside a closed-list provider's catalog is dropped here so the
+    # record and the provider fallback agree (Codex review on #503).
+    ctx = {}
+    source = apply_context_voice(
+        ctx, {}, ContextConfig(voice="Jenny - British"),
+        allowed_voices={"alloy", "marin"},
+    )
+    assert "voice" not in ctx
+    assert source == "provider-default"
+
+
+def test_apply_context_voice_normalizes_case_for_closed_list_provider():
+    ctx = {}
+    source = apply_context_voice(
+        ctx, {}, ContextConfig(voice="  Marin "),
+        allowed_voices={"alloy", "marin"},
+    )
+    assert ctx["voice"] == "marin"
+    assert source == "agent"
+
+
+def test_apply_context_voice_platform_managed_records_provider_default():
+    ctx = {}
+    source = apply_context_voice(
+        ctx, {}, ContextConfig(voice="Rachel"), platform_managed=True,
+    )
+    assert "voice" not in ctx
+    assert source == "provider-default"
+
+
 # ---------------------------------------------------------------------------
 # Google Live: prebuilt voice name resolution (free-form, no local validation)
 # ---------------------------------------------------------------------------

@@ -260,12 +260,18 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         }
 
         const cfg = serializeAgentConfig(toolState);
+        // Don't persist a voice the selected engine can't use: if the voice
+        // control is disabled (pipeline / platform-managed / unsupported), a
+        // previously saved value would otherwise ride along invisibly and
+        // become active if the agent is later switched back (Codex on #503).
+        const voiceControl = voiceControlState(voiceMeta, engineValue, voice);
+        const effectiveVoice = voiceControl.control === 'disabled' ? null : (voice || null);
         setSaving(true);
         try {
             const baseBody: Record<string, unknown> = {
                 display_name: displayName.trim(),
                 provider: cfg.provider,
-                voice: voice || null,
+                voice: effectiveVoice,
                 audio_profile: audioProfile || null,
                 extension: extension || null,
                 role_label: roleLabel || null,

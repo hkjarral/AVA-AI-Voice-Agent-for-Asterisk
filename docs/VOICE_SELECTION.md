@@ -8,7 +8,7 @@ the **default/fallback** for agents that don't choose one.
 
 For every call, the engine resolves the session voice in this order:
 
-```
+```text
 1. Per-call override        (rare; set programmatically via provider overrides)
 2. Agent voice              (Agents page → Voice field; stored in agents.db)
    — or the optional `voice:` key on a YAML context (headless installs)

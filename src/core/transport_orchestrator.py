@@ -122,13 +122,37 @@ def apply_context_voice(
     overrides: Dict[str, Any],
     context_config: Optional["ContextConfig"],
     call_id: Optional[str] = None,
+    allowed_voices: Optional[set] = None,
+    platform_managed: bool = False,
 ) -> str:
     """Apply the resolved session voice to a provider context and log the decision.
 
     Leaves ``provider_context`` untouched when the provider's configured voice
     should decide. Returns the decision source for callers that want it.
+
+    ``allowed_voices``/``platform_managed`` let the caller reconcile the value
+    with what the target provider can actually use, so Call History records the
+    voice the session USES rather than the raw request: an unknown value on a
+    closed-list provider (or any value on a platform-managed provider) resolves
+    to provider-default here — matching the provider-side fallback.
     """
     voice, source = resolve_effective_voice(overrides, context_config)
+    if voice and platform_managed:
+        logger.info(
+            "Agent voice not applicable (platform-managed provider); using provider default",
+            call_id=call_id, requested_voice=voice,
+        )
+        voice, source = None, "provider-default"
+    elif voice and allowed_voices is not None:
+        normalized = voice.lower()
+        if normalized in allowed_voices:
+            voice = normalized
+        else:
+            logger.warning(
+                "Agent voice not in provider catalog; using provider default",
+                call_id=call_id, requested_voice=voice,
+            )
+            voice, source = None, "provider-default"
     if voice:
         provider_context["voice"] = voice
     logger.info(
