@@ -193,6 +193,17 @@ See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for 
   2) `llm.prompt` and `llm.initial_greeting` in YAML
   3) Env defaults `AI_ROLE`, `GREETING`
 
+## Voice (v7.3.0+)
+
+- Voice precedence per call: per-call override → agent voice (agents.db, or the optional
+  `voice:` key on a YAML context) → the provider's configured voice (default/fallback).
+- Supported for per-agent override: OpenAI Realtime (validated against the GA voice list —
+  unknown values fall back with a warning, never failing the call), Grok, Google Live, and
+  Deepgram Voice Agent. ElevenLabs Agent voices are platform-managed; pipeline TTS voices
+  come from the pipeline's TTS provider configuration.
+- The resolved voice and its source are logged (`Session voice resolved`) and recorded in
+  Call History per call. See [VOICE_SELECTION.md](VOICE_SELECTION.md).
+
 ## Transports
 
 - audio_transport: `audiosocket` | `externalmedia`

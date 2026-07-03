@@ -84,10 +84,16 @@ Use these terms consistently and tie every change back to them:
   - **Modular pipelines** — separate STT/LLM/TTS adapters resolved by
     `PipelineOrchestrator` (`src/pipelines/orchestrator.py`): OpenAI, Deepgram (+ Flux),
     Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI, Local.
-- **Voice selection (current model)**: voice is configured on the provider (or the
-  pipeline's TTS provider). The agent form's voice field is informational today;
-  per-agent voice override is on the roadmap — check `CHANGELOG.md` and
-  `docs/AGENTS.md` for current status before assuming either model.
+- **Voice selection (v7.3.0+)**: voice belongs to agents. Precedence: per-call override >
+  agent voice (agents.db / YAML context `voice:` key) > provider default. Resolution lives
+  in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);
+  per-provider catalogs and metadata in `src/utils/voice_catalog.py` (single source shared
+  by the engine's soft validation and `GET /api/config/providers/meta`). OpenAI Realtime
+  validates against the closed GA list and falls back on unknowns (never fails a call);
+  Grok/Google/Deepgram pass through; ElevenLabs Agent is platform-managed; pipeline TTS
+  voices are per-pipeline (per-agent pipeline voice is future work). The resolved
+  (voice, source) is logged per session and recorded in Call History.
+  See `docs/VOICE_SELECTION.md`.
 - **Tool calling**: tools register in `src/tools/registry.py` (categories: `telephony/`,
   `business/`, `http/`, MCP via `mcp_tool.py`) and are adapted per provider in
   `src/tools/adapters/` (OpenAI, Deepgram, Google, Grok, ElevenLabs). Schema formats vary
