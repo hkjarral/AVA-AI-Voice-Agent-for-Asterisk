@@ -1200,7 +1200,11 @@ class Engine:
         watchdog = getattr(self, "no_input_watchdog", None)
         if call_id not in active:
             if watchdog is not None:
-                await watchdog.note_agent_output_end(call_id, reset_timer=reset_timer)
+                await watchdog.note_agent_output_end(
+                    call_id,
+                    reset_timer=reset_timer,
+                    preserve_policy_state=preserve_policy_state,
+                )
             return
 
         drain_tasks = getattr(self, "_provider_output_drain_tasks", None)

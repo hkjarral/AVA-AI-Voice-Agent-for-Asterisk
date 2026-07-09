@@ -323,6 +323,13 @@ async def test_no_input_provider_output_drains_without_resetting_policy_state():
         preserve_policy_state=True,
     )
 
+    await engine._note_provider_output_end(session.call_id, session)
+    assert engine.no_input_watchdog.note_agent_output_end.await_count == 2
+    assert engine.no_input_watchdog.note_agent_output_end.await_args.kwargs == {
+        "reset_timer": True,
+        "preserve_policy_state": True,
+    }
+
 
 @pytest.mark.asyncio
 async def test_new_provider_audio_cancels_stale_drain_without_clearing_output_state():
@@ -422,6 +429,9 @@ async def test_transport_gating_can_end_without_ending_provider_output_timing():
 
     watchdog.note_agent_output_start.assert_awaited_once_with(session.call_id)
     watchdog.note_agent_output_end.assert_not_awaited()
+    after = await session_store.get_by_call_id(session.call_id)
+    assert after.tts_playing is False
+    assert after.audio_capture_enabled is True
 
 
 @pytest.mark.asyncio
