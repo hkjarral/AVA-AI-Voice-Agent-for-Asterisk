@@ -104,12 +104,9 @@ class ToolExecutionContext:
 
     async def get_tool_block_response(self, tool_name: Optional[str]) -> Optional[Dict[str, Any]]:
         """
-        Return a standardized error result when a pending attended transfer should
-        block tool execution for the active call.
+        Return a standardized error result when call lifecycle state should block
+        tool execution for the active call.
         """
-        if tool_name == "cancel_transfer":
-            return None
-
         try:
             session = await self.get_session()
         except Exception:
@@ -119,6 +116,26 @@ class ToolExecutionContext:
                 tool_name,
                 exc_info=True,
             )
+            return None
+
+        no_input_state = getattr(session, "no_input_state", None) or {}
+        if isinstance(no_input_state, dict) and bool(no_input_state.get("announcement_active", False)):
+            logger.warning(
+                "Blocking tool call during engine announcement for call_id=%s tool=%s provider=%s announcement_id=%s",
+                self.call_id,
+                tool_name,
+                self.provider_name,
+                no_input_state.get("announcement_id"),
+            )
+            return {
+                "status": "error",
+                "message": (
+                    "Tool calls are disabled during this engine announcement. "
+                    "Speak the requested announcement exactly and do not call tools."
+                ),
+            }
+
+        if tool_name == "cancel_transfer":
             return None
 
         if not self.is_pending_attended_transfer(session):

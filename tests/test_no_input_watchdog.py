@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -6,6 +7,7 @@ import pytest
 
 from src.core.models import CallSession
 from src.core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
+from src.core.conversation_coordinator import ConversationCoordinator
 from src.core.session_store import SessionStore
 from src.engine import Engine
 
@@ -180,3 +182,79 @@ async def test_engine_hangup_records_a_distinct_policy_outcome():
     assert updated.call_outcome == "no_input_timeout"
     assert updated.no_input_state["timed_out"] is True
     engine.ari_client.hangup_channel.assert_awaited_once_with("channel-silent")
+
+
+@pytest.mark.asyncio
+async def test_caller_audio_drain_waits_for_stream_buffers_and_quiet_tail():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine._provider_stream_queues = {}
+    engine._provider_coalesce_buf = {}
+
+    call_id = "buffered-announcement"
+    await engine.session_store.upsert_call(
+        CallSession(call_id=call_id, caller_channel_id="channel-buffered")
+    )
+
+    jitter_buffer = asyncio.Queue()
+    jitter_buffer.put_nowait(b"audio")
+    engine.streaming_playback_manager = SimpleNamespace(
+        active_streams={
+            call_id: {
+                "buffered_bytes": 160,
+                "last_real_emit_ts": None,
+            }
+        },
+        jitter_buffers={call_id: jitter_buffer},
+        frame_remainders={call_id: b"tail"},
+    )
+
+    drain_task = asyncio.create_task(
+        engine._wait_for_call_audio_drain(
+            call_id,
+            timeout_sec=1.0,
+            quiet_sec=0.03,
+            reason="test",
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert drain_task.done() is False
+
+    engine.streaming_playback_manager.active_streams[call_id]["buffered_bytes"] = 0
+    engine.streaming_playback_manager.active_streams[call_id]["last_real_emit_ts"] = time.time()
+    jitter_buffer.get_nowait()
+    engine.streaming_playback_manager.frame_remainders[call_id] = b""
+
+    assert await drain_task is True
+
+
+@pytest.mark.asyncio
+async def test_no_input_wait_keeps_gating_active_until_transport_drains(monkeypatch):
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine.conversation_coordinator = ConversationCoordinator(engine.session_store)
+
+    call_id = "gated-announcement"
+    session = CallSession(call_id=call_id, caller_channel_id="channel-gated")
+    session.tts_started_ts = 2.0
+    session.tts_playing = False
+    await engine.session_store.upsert_call(session)
+
+    async def fake_drain(_call_id, **_kwargs):
+        during = await engine.session_store.get_by_call_id(call_id)
+        assert "no_input_drain:no-input:final:test" in during.tts_tokens
+        assert during.tts_playing is True
+        return True
+
+    monkeypatch.setattr(engine, "_wait_for_call_audio_drain", fake_drain)
+
+    assert await engine._wait_for_no_input_announcement(
+        call_id,
+        announcement_id="no-input:final:test",
+        previous_tts_started_ts=1.0,
+        timeout_sec=0.2,
+    ) is True
+
+    after = await engine.session_store.get_by_call_id(call_id)
+    assert "no_input_drain:no-input:final:test" not in after.tts_tokens
+    assert after.tts_playing is False

@@ -10998,6 +10998,7 @@ class Engine:
         self,
         call_id: str,
         *,
+        announcement_id: str,
         previous_tts_started_ts: float,
         timeout_sec: float = 25.0,
     ) -> bool:
@@ -11012,9 +11013,175 @@ class Engine:
             if bool(getattr(session, "tts_playing", False)) or started_ts > previous_tts_started_ts:
                 started = True
             if started and not bool(getattr(session, "tts_playing", False)):
-                return True
+                # AgentAudioDone/turnComplete ends provider generation, but continuous
+                # playback may still have seconds queued. Keep a dedicated gating token
+                # through the transport drain so the remaining tail cannot echo back into
+                # the provider after the normal per-segment token is cleared.
+                drain_token = f"no_input_drain:{announcement_id}"
+                drain_gated = False
+                try:
+                    if self.conversation_coordinator:
+                        drain_gated = bool(
+                            await self.conversation_coordinator.on_tts_start(call_id, drain_token)
+                        )
+                    else:
+                        drain_gated = bool(await self.session_store.set_gating_token(call_id, drain_token))
+                    return await self._wait_for_call_audio_drain(
+                        call_id,
+                        timeout_sec=30.0,
+                        quiet_sec=0.35,
+                        reason="no_input_announcement",
+                    )
+                finally:
+                    if drain_gated:
+                        try:
+                            if self.conversation_coordinator:
+                                await self.conversation_coordinator.on_tts_end(
+                                    call_id,
+                                    drain_token,
+                                    reason="no-input-drain-complete",
+                                )
+                            else:
+                                await self.session_store.clear_gating_token(call_id, drain_token)
+                        except Exception:
+                            logger.debug(
+                                "Failed clearing no-input drain gating",
+                                call_id=call_id,
+                                announcement_id=announcement_id,
+                                exc_info=True,
+                            )
             await asyncio.sleep(0.05)
         logger.warning("No-input announcement completion timed out", call_id=call_id, started=started)
+        return False
+
+    async def _call_audio_drain_snapshot(self, call_id: str) -> Dict[str, Any]:
+        """Return pending caller-facing audio across provider, stream, and file paths."""
+        pending_provider_chunks = 0
+        pending_coalesce_bytes = 0
+        pending_stream_bytes = 0
+        pending_jitter_frames = 0
+        pending_remainder_bytes = 0
+        active_playbacks = 0
+        last_real_emit_ts: Optional[float] = None
+
+        try:
+            provider_queue = self._provider_stream_queues.get(call_id)
+            if provider_queue is not None:
+                pending_provider_chunks = int(provider_queue.qsize())
+        except Exception:
+            pass
+
+        try:
+            pending_coalesce_bytes = len(self._provider_coalesce_buf.get(call_id, b"") or b"")
+        except Exception:
+            pass
+
+        try:
+            spm = getattr(self, "streaming_playback_manager", None)
+            stream_info = (getattr(spm, "active_streams", {}) or {}).get(call_id) if spm else None
+            if stream_info:
+                pending_stream_bytes = int(stream_info.get("buffered_bytes", 0) or 0)
+                emit_ts = stream_info.get("last_real_emit_ts")
+                if emit_ts is not None:
+                    last_real_emit_ts = float(emit_ts)
+            jitter_buffers = getattr(spm, "jitter_buffers", {}) if spm else {}
+            jitter_buffer = jitter_buffers.get(call_id)
+            if jitter_buffer is not None:
+                pending_jitter_frames = int(jitter_buffer.qsize())
+            remainders = getattr(spm, "frame_remainders", {}) if spm else {}
+            pending_remainder_bytes = len(remainders.get(call_id, b"") or b"")
+        except Exception:
+            pass
+
+        try:
+            active_playbacks = len(await self.session_store.list_playbacks_for_call(call_id))
+        except Exception:
+            pass
+
+        return {
+            "pending_provider_chunks": pending_provider_chunks,
+            "pending_coalesce_bytes": pending_coalesce_bytes,
+            "pending_stream_bytes": pending_stream_bytes,
+            "pending_jitter_frames": pending_jitter_frames,
+            "pending_remainder_bytes": pending_remainder_bytes,
+            "active_playbacks": active_playbacks,
+            "last_real_emit_ts": last_real_emit_ts,
+        }
+
+    async def _wait_for_call_audio_drain(
+        self,
+        call_id: str,
+        *,
+        timeout_sec: float,
+        quiet_sec: float,
+        reason: str,
+    ) -> bool:
+        """Wait until generated audio is paced onto the call transport.
+
+        Provider completion only means audio generation ended. Continuous streams
+        may still hold seconds of audio in the provider queue, jitter buffer, or
+        frame remainder, so terminal actions must wait for those buffers and a
+        short post-emit quiet window.
+        """
+        timeout_sec = max(0.0, min(float(timeout_sec), 120.0))
+        quiet_sec = max(0.0, min(float(quiet_sec), 5.0))
+        if timeout_sec <= 0.0:
+            return True
+
+        started_at = time.monotonic()
+        quiet_started_at: Optional[float] = None
+        last_snapshot: Dict[str, Any] = {}
+        logged_wait = False
+
+        while (time.monotonic() - started_at) < timeout_sec:
+            session = await self.session_store.get_by_call_id(call_id)
+            if session and bool(getattr(session, "cleanup_in_progress", False)):
+                return False
+
+            now_wall = time.time()
+            snapshot = await self._call_audio_drain_snapshot(call_id)
+            last_real_emit_ts = snapshot.pop("last_real_emit_ts", None)
+            last_snapshot = dict(snapshot)
+            has_pending_audio = any(int(value or 0) > 0 for value in snapshot.values())
+
+            if has_pending_audio:
+                quiet_started_at = None
+                if not logged_wait:
+                    logger.info(
+                        "Waiting for caller-facing audio drain",
+                        call_id=call_id,
+                        reason=reason,
+                        **snapshot,
+                    )
+                    logged_wait = True
+            else:
+                now_mono = time.monotonic()
+                if quiet_started_at is None:
+                    quiet_started_at = now_mono
+                quiet_elapsed = now_mono - quiet_started_at
+                emit_elapsed = quiet_elapsed
+                if last_real_emit_ts is not None:
+                    emit_elapsed = max(0.0, now_wall - float(last_real_emit_ts))
+                if quiet_elapsed >= quiet_sec and emit_elapsed >= quiet_sec:
+                    logger.info(
+                        "Caller-facing audio drain complete",
+                        call_id=call_id,
+                        reason=reason,
+                        wait_seconds=round(time.monotonic() - started_at, 3),
+                        quiet_ms=int(quiet_sec * 1000),
+                    )
+                    return True
+
+            await asyncio.sleep(0.02)
+
+        logger.warning(
+            "Caller-facing audio drain timed out",
+            call_id=call_id,
+            reason=reason,
+            timeout_sec=timeout_sec,
+            quiet_ms=int(quiet_sec * 1000),
+            **last_snapshot,
+        )
         return False
 
     async def _speak_no_input_announcement(self, call_id: str, text: str, kind: str) -> bool:
@@ -11027,8 +11194,12 @@ class Engine:
             return False
 
         previous_started = float(getattr(session, "tts_started_ts", 0.0) or 0.0)
+        announcement_id = f"no-input:{kind}:{uuid.uuid4().hex}"
+        delivery_complete = False
         session.no_input_state.update(
             {
+                "announcement_active": True,
+                "announcement_id": announcement_id,
                 "announcement_kind": kind,
                 "announcement_text": message,
                 "announcement_requested_at": time.time(),
@@ -11066,10 +11237,15 @@ class Engine:
                         "event": f"no_input_{kind}",
                     })
                     await self._save_session(session)
-                return await self._wait_for_no_input_announcement(
+                playback_timeout = max(5.0, min(120.0, (len(audio) / 8000.0) + 5.0))
+                delivery_complete = await self.playback_manager.wait_for_playback_end(
                     call_id,
-                    previous_tts_started_ts=previous_started,
+                    playback_id,
+                    timeout_sec=playback_timeout,
                 )
+                if delivery_complete:
+                    await asyncio.sleep(0.25)
+                return delivery_complete
 
             provider = self._call_providers.get(call_id)
             if not provider or not hasattr(provider, "speak_text"):
@@ -11095,10 +11271,12 @@ class Engine:
                         "event": f"no_input_{kind}",
                     })
                     await self._save_session(current)
-            return await self._wait_for_no_input_announcement(
+            delivery_complete = await self._wait_for_no_input_announcement(
                 call_id,
+                announcement_id=announcement_id,
                 previous_tts_started_ts=previous_started,
             )
+            return delivery_complete
         except Exception:
             logger.error(
                 "Failed speaking no-input announcement",
@@ -11108,6 +11286,22 @@ class Engine:
                 exc_info=True,
             )
             return False
+        finally:
+            try:
+                current = await self.session_store.get_by_call_id(call_id)
+                current_state = getattr(current, "no_input_state", None) if current else None
+                if isinstance(current_state, dict) and current_state.get("announcement_id") == announcement_id:
+                    current_state["announcement_active"] = False
+                    current_state["announcement_delivery_complete"] = bool(delivery_complete)
+                    current_state["announcement_completed_at"] = time.time()
+                    await self._save_session(current)
+            except Exception:
+                logger.debug(
+                    "Failed clearing no-input announcement guard",
+                    call_id=call_id,
+                    announcement_id=announcement_id,
+                    exc_info=True,
+                )
 
     async def _hangup_for_no_input(self, call_id: str) -> None:
         """Record the terminal reason, then use normal ARI/Stasis cleanup."""
@@ -15093,7 +15287,10 @@ class Engine:
                 )
 
                 # Execute tool via registry (tool_registry is a module-level singleton)
-                tool = tool_registry.get(function_name) if tool_registry else None
+                blocked_result = await context.get_tool_block_response(function_name)
+                tool = None if blocked_result else (tool_registry.get(function_name) if tool_registry else None)
+                if blocked_result:
+                    result = blocked_result
                 if tool:
                     # Defense-in-depth: prevent pre-call/post-call tools from being executed during the call.
                     try:
@@ -15131,7 +15328,7 @@ class Engine:
                                     logger.debug(f"Delayed hangup failed (may already be hung up): {e}", call_id=call_id)
 
                             self._fire_and_forget_for_call(call_id, delayed_hangup(), name=f"delayed-hangup-{call_id}")
-                else:
+                elif not blocked_result:
                     logger.warning(
                         "Tool not found in registry",
                         call_id=call_id,
@@ -15370,100 +15567,12 @@ class Engine:
             quiet_sec = float(transfer_cfg.get("deferred_audio_drain_quiet_ms", 500)) / 1000.0
         except (TypeError, ValueError):
             quiet_sec = 0.5
-        timeout_sec = max(0.0, min(timeout_sec, 30.0))
-        quiet_sec = max(0.0, min(quiet_sec, 5.0))
-
-        if timeout_sec <= 0:
-            return True
-
-        started_at = time.time()
-        quiet_started_at: Optional[float] = None
-        last_snapshot: Dict[str, Any] = {}
-
-        while (time.time() - started_at) < timeout_sec:
-            now = time.time()
-            pending_provider_chunks = 0
-            pending_stream_bytes = 0
-            pending_jitter_frames = 0
-            pending_remainder_bytes = 0
-            active_playbacks = 0
-            last_real_emit_ts: Optional[float] = None
-
-            try:
-                q = self._provider_stream_queues.get(call_id)
-                if q is not None:
-                    pending_provider_chunks = int(q.qsize())
-            except Exception:
-                pending_provider_chunks = 0
-
-            try:
-                spm = getattr(self, "streaming_playback_manager", None)
-                stream_info = (getattr(spm, "active_streams", {}) or {}).get(call_id) if spm else None
-                if stream_info:
-                    pending_stream_bytes = int(stream_info.get("buffered_bytes", 0) or 0)
-                    pending_jitter_frames = int(stream_info.get("jitter_depth", 0) or 0)
-                    emit_ts = stream_info.get("last_real_emit_ts")
-                    if emit_ts is not None:
-                        last_real_emit_ts = float(emit_ts)
-                remainders = getattr(spm, "frame_remainders", {}) if spm else {}
-                pending_remainder_bytes = len(remainders.get(call_id, b"") or b"")
-            except Exception:
-                pending_stream_bytes = 0
-                pending_jitter_frames = 0
-                pending_remainder_bytes = 0
-                last_real_emit_ts = None
-
-            try:
-                active_playbacks = len(await self.session_store.list_playbacks_for_call(call_id))
-            except Exception:
-                active_playbacks = 0
-
-            has_pending_audio = any(
-                (
-                    pending_provider_chunks > 0,
-                    pending_stream_bytes > 0,
-                    pending_jitter_frames > 0,
-                    pending_remainder_bytes > 0,
-                    active_playbacks > 0,
-                )
-            )
-
-            last_snapshot = {
-                "pending_provider_chunks": pending_provider_chunks,
-                "pending_stream_bytes": pending_stream_bytes,
-                "pending_jitter_frames": pending_jitter_frames,
-                "pending_remainder_bytes": pending_remainder_bytes,
-                "active_playbacks": active_playbacks,
-            }
-
-            if has_pending_audio:
-                quiet_started_at = None
-            else:
-                if quiet_started_at is None:
-                    quiet_started_at = now
-                quiet_elapsed = now - quiet_started_at
-                emit_elapsed = quiet_elapsed
-                if last_real_emit_ts is not None:
-                    emit_elapsed = now - last_real_emit_ts
-                if quiet_elapsed >= quiet_sec and emit_elapsed >= quiet_sec:
-                    logger.info(
-                        "Deferred transfer audio drain complete",
-                        call_id=call_id,
-                        wait_seconds=round(now - started_at, 3),
-                        quiet_ms=int(quiet_sec * 1000),
-                    )
-                    return True
-
-            await asyncio.sleep(0.02)
-
-        logger.warning(
-            "Deferred transfer audio drain timed out; committing transfer",
-            call_id=call_id,
-            timeout_sec=timeout_sec,
-            quiet_ms=int(quiet_sec * 1000),
-            **last_snapshot,
+        return await self._wait_for_call_audio_drain(
+            call_id,
+            timeout_sec=max(0.0, min(timeout_sec, 30.0)),
+            quiet_sec=max(0.0, min(quiet_sec, 5.0)),
+            reason="deferred_transfer",
         )
-        return False
 
     async def _execute_pre_call_tools(
         self,
