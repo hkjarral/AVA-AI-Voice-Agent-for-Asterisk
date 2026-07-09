@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.3.0-blue.svg)
+![Version](https://img.shields.io/badge/version-7.3.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,21 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.3.1 — Silence watchdog & safe call endings ☎️</b></summary>
+
+**AVA now protects silent calls and finishes every terminal message before disconnecting.**
+
+- **30-second inbound inactivity protection by default** — AVA asks “Are you still there?”, waits 15 seconds for a reply, then speaks a configurable final warning and ends the call. Outbound agents remain opt-in.
+- **The agent keeps its configured voice** — check-ins and final warnings are synthesized by the active Google Live, OpenAI Realtime, Grok, Deepgram, ElevenLabs, local full-agent, or pipeline voice.
+- **Transport-safe hangup** — watchdog and `hangup_call` farewells drain AudioSocket or ExternalMedia/RTP streaming buffers and ARI file playback before ARI disconnects the caller. Fixed sleeps no longer clip long final sentences.
+- **Deepgram and ElevenLabs lifecycle fixes** — Deepgram control frames no longer split greetings, and ElevenLabs response-completion plus hosted-silence handling keeps AVA's watchdog authoritative.
+- **Global and per-agent controls** — configure defaults under **Advanced Settings → Voice Activity Detection → Caller Inactivity**, then optionally override them per agent. Call History labels watchdog endings as **No input timeout**.
+
+See [Caller inactivity configuration](docs/Configuration-Reference.md#caller-inactivity-no_input), [ElevenLabs setup](docs/Provider-ElevenLabs-Setup.md#ava-caller-inactivity-compatibility-v731), and the full [v7.3.1 changelog](CHANGELOG.md#731---2026-07-09).
+
+</details>
+
+<details>
 <summary><b>v7.3.0 — Per-agent voices 🎙️</b></summary>
 
 **Voice now belongs to agents.** Configure one provider, create multiple agents that share it — each with its own voice.

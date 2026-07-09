@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.3.1] - 2026-07-09
+
+### Added
+
+- **Provider-independent caller inactivity watchdog (#506)** (`src/core/no_input_watchdog.py`, `src/engine.py`, `src/config.py`, `src/core/transport_orchestrator.py`, `admin_ui/frontend/src/pages/Advanced/VADPage.tsx`, `admin_ui/frontend/src/components/agents/AgentForm.tsx`): inbound agents now protect answered calls from indefinite silence by default. After 30 idle seconds the active provider or pipeline asks “Are you still there?” in the agent's configured voice; after a 15-second reply window it speaks a configurable final warning and ends the call. Caller audio, transcripts, agent output, processing, greetings, and transfer state are coordinated so normal conversations do not time out. Outbound calls remain explicitly opt-in per agent. Global defaults live under **Advanced Settings → Voice Activity Detection → Caller Inactivity**, partial per-agent overrides live under **Agents → Edit Agent → Caller Inactivity Overrides**, and YAML operators can use the global/context `no_input` blocks. Call History records the terminal outcome as `no_input_timeout` rather than a provider error.
+
+### Fixed
+
+- **Terminal speech now drains before every watchdog/tool hangup on AudioSocket and ExternalMedia/RTP** (`src/engine.py`, `src/tools/telephony/hangup.py`): provider generation completion is separated from caller playback completion. Watchdog announcements, `cleanup_after_tts`, `HangupReady`, local/pipeline farewells, and generic full-agent tool calls converge on one idempotent engine owner that waits for provider queues, coalescing, jitter frames, frame remainder, active ARI playback, and a transport-specific post-roll before issuing ARI hangup. This replaces fixed 2.5/3-second sleeps, prevents clipped final words, blocks duplicate terminal events, and lets an active/pending transfer take precedence.
+- **Native-AEC providers no longer incur false 25-second watchdog waits** (`src/engine.py`): real `AgentAudio`/`AgentAudioDone` lifecycle is now tracked independently from microphone/echo gating. OpenAI Realtime, Grok, and Deepgram announcements therefore advance immediately from generation completion to downstream drain even though their native-AEC streams intentionally do not re-arm AVA's per-segment gating tokens.
+- **Deepgram greeting and terminal-tool lifecycle repaired** (`src/providers/deepgram.py`): `ConversationText` and other JSON control frames no longer create false audio boundaries; only Deepgram's explicit `AgentAudioDone` closes a response. Terminal tool calls are ordered against the receive loop, the canonical farewell field is preserved, and bounded no-audio/missing-completion fallbacks prevent calls from remaining open indefinitely.
+- **ElevenLabs silence and response completion integrated with AVA ownership** (`src/providers/elevenlabs_agent.py`, `src/core/no_input_watchdog.py`): the adapter consumes `agent_response_complete` and supplies a conservative audio-idle fallback when the dashboard event is unavailable. Hosted `"..."` silence pseudo-turns pause—but do not reset—AVA's caller inactivity deadline. Deployments should enable the `agent_response_complete` client event, set ElevenLabs' turn timeout to 30 seconds, and leave provider `silence_end_call_timeout` disabled (`-1`) so AVA remains the single hangup owner.
+
+### Documentation
+
+- Added v7.3.1 release highlights and operator guidance for global/per-agent inactivity settings, Call History outcomes, Deepgram lifecycle troubleshooting, and the required ElevenLabs client-event/silence configuration (`README.md`, `docs/ADMIN_UI_GUIDE.md`, `docs/Configuration-Reference.md`, `docs/TROUBLESHOOTING_GUIDE.md`, provider setup guides).
+
 ## [7.3.0] - 2026-07-02
 
 ### Added
@@ -2109,7 +2126,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.3.0...HEAD
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.3.1...HEAD
+[7.3.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.3.0...v7.3.1
 [7.3.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.2.1...v7.3.0
 [7.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.2.0...v7.2.1
 [7.2.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v7.1.2...v7.2.0

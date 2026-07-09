@@ -323,7 +323,11 @@ The engine-level watchdog prevents an answered call from remaining open indefini
 
 Caller media activity, provider speech-start events, and user transcripts reset the window. The timer pauses during greetings, agent TTS, LLM processing, sustained caller speech, and other output gating. A terminal watchdog hangup is stored in Call History as `no_input_timeout`, not as a provider error.
 
+Provider generation completion is not treated as caller playback completion. Before terminal hangup, the engine also drains provider/coalescing queues, jitter frames, frame remainder, active ARI playback, and a short transport-specific post-roll. This applies uniformly to AudioSocket and ExternalMedia/RTP; pipeline/file announcements use Asterisk `PlaybackFinished` as their authoritative boundary.
+
 Per-agent overrides are partial and inherit every omitted global field. In the Admin UI, configure global defaults under **Advanced Settings → Voice Activity Detection → Caller Inactivity** and agent-specific values under **Agents → Edit Agent → Caller Inactivity Overrides**.
+
+For ElevenLabs full-agent deployments, also follow the provider-side client-event and silence ownership settings in [Provider-ElevenLabs-Setup.md](Provider-ElevenLabs-Setup.md#ava-caller-inactivity-compatibility-v731).
 
 ## LLM block
 

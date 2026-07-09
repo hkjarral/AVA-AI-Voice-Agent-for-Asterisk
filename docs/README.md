@@ -8,6 +8,7 @@
 - **[FreePBX Integration Guide](FreePBX-Integration-Guide.md)** - Dialplan and queue configuration
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
 - **[Configuration Reference](Configuration-Reference.md)** - All settings explained
+- **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
 - **[Voice Selection](VOICE_SELECTION.md)** - Per-agent voices (v7.3.0+): precedence, per-provider behavior, troubleshooting
 - **[Tool Calling Guide](TOOL_CALLING_GUIDE.md)** - Using telephony and business tools
 - **[MCP Tool Integration](MCP_INTEGRATION.md)** - Experimental MCP tools (design + branch guide)

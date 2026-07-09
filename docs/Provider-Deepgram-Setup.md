@@ -129,6 +129,9 @@ Route a test call to the custom destination and verify:
 - ✅ AI responds to your questions naturally
 - ✅ Duplex communication (can interrupt AI)
 - ✅ Tools execute if configured (transfer, email, etc.)
+- ✅ Greeting and responses remain continuous when `ConversationText` events arrive
+- ✅ With no caller speech, the 30-second check-in and 15-second final warning play completely before hangup
+- ✅ A normal `hangup_call` farewell finishes before the caller channel disconnects
 
 ## Context Configuration
 
@@ -227,6 +230,12 @@ barge_in:
   energy_threshold: 800
   min_ms: 200
 ```
+
+### Issue: Greeting Splits or Farewell Never Hangs Up
+
+**Cause**: Releases before v7.3.1 treated any JSON control frame received during a Deepgram audio burst as the end of that response. A `ConversationText` frame could therefore split one greeting, and terminal tool intent could race the real `AgentAudioDone` boundary.
+
+**Fix**: Upgrade to v7.3.1 or newer. The adapter now closes audio only on Deepgram's explicit `AgentAudioDone`, orders terminal tool execution, and has bounded missing-audio/completion fallbacks. If the symptom persists, collect the call with `agent rca <call-id>` and confirm that `Deepgram lifecycle event` logs contain the provider's `AgentAudioDone`.
 
 ## Production Considerations
 

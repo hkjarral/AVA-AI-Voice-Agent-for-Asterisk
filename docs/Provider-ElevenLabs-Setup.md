@@ -39,6 +39,16 @@ For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`
 
 Without authentication, the agent cannot be accessed via API.
 
+### AVA Caller-Inactivity Compatibility (v7.3.1)
+
+AVA owns caller-silence check-ins and terminal hangup. Configure the hosted ElevenLabs agent so its own silence policy does not compete:
+
+1. In **Advanced → Conversation flow**, set **Turn timeout / Take turn after silence** to **30 seconds** (the provider maximum).
+2. Disable provider silence hangup (`silence_end_call_timeout: -1`) so AVA remains the single hangup owner.
+3. In **Advanced → Client events**, keep the existing audio/transcript events and enable **`agent_response_complete`**.
+
+`agent_response_complete` gives AVA the authoritative end of each hosted response so queued caller-facing audio can drain before watchdog or tool hangup. v7.3.1 includes a conservative audio-idle fallback for agents where the event is unavailable, but enabling the event is the recommended production setup. See ElevenLabs' [client events](https://elevenlabs.io/docs/eleven-agents/customization/events/client-events) and [conversation flow](https://elevenlabs.io/docs/eleven-agents/customization/conversation-flow) documentation.
+
 ### 3. Get Credentials
 
 1. Get your **API Key** from [API Keys](https://elevenlabs.io/app/settings/api-keys)
@@ -138,6 +148,8 @@ Route a test call to the custom destination and verify:
 - ✅ AI responds with high-quality voice
 - ✅ Duplex communication works (can interrupt AI)
 - ✅ Tools execute if configured (hangup, transfer, etc.)
+- ✅ With no caller speech, AVA—not ElevenLabs—performs the first check-in after approximately 30 seconds
+- ✅ The final inactivity warning and normal `hangup_call` farewell finish completely before disconnect
 
 ## Tool Configuration
 
@@ -483,12 +495,14 @@ When the caller indicates they're done (goodbye, thanks, that's all, etc.):
 
 ### Issue: "AI Doesn't Hang Up"
 
-**Cause**: `hangup_call` tool not configured in ElevenLabs dashboard
+**Cause**: `hangup_call` is missing, or the hosted response-completion/silence settings conflict with AVA.
 
 **Fix**:
 1. Add `hangup_call` tool schema to agent's Tools tab
 2. Update agent's system prompt to use the tool when user says goodbye
 3. Example prompt addition: "When the user says goodbye or indicates they want to end the call, use the hangup_call tool."
+4. Enable the `agent_response_complete` client event
+5. Set hosted turn timeout to 30 seconds and `silence_end_call_timeout` to `-1`
 
 ### Issue: "Second Call Fails"
 

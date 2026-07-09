@@ -6,8 +6,9 @@
 
 | Version | Supported          | End of Support                      |
 | ------- | ------------------ | ----------------------------------- |
-| 7.2.x   | :white_check_mark: | Current                             |
-| 7.1.x   | :white_check_mark: | When the second following minor ships |
+| 7.3.x   | :white_check_mark: | Current                             |
+| 7.2.x   | :white_check_mark: | When the second following minor ships |
+| 7.1.x   | :x:                | Ended 2026-07-02                    |
 | 7.0.x   | :x:                | Ended 2026-07-02                    |
 | 6.x     | :x:                | Ended 2026-07-02                    |
 | < 6.0   | :x:                | Ended                               |

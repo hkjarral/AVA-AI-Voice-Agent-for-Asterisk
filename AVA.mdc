@@ -15,7 +15,7 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.2.x** (2026-07). Freshness is checked as part of the release
+> Last verified against: **v7.3.x** (2026-07). Freshness is checked as part of the release
 > checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
@@ -73,6 +73,12 @@ Use these terms consistently and tie every change back to them:
   reference example of this pattern).
 - **Session state & call lifecycle**: `SessionStore` (`src/core/session_store.py`) is the
   authoritative state layer. Never introduce new ad-hoc dictionary call state.
+- **Caller inactivity (v7.3.1+)**: `NoInputWatchdog` (`src/core/no_input_watchdog.py`)
+  owns caller-silence check-ins and terminal timeout. Inbound calls inherit the enabled
+  30-second default; outbound calls require a per-agent opt-in. Its speech must use the
+  active provider/pipeline voice, and terminal hangup must go through the engine's shared
+  caller-audio drain path so both AudioSocket and ExternalMedia/RTP finish playback first.
+  Do not add provider-owned competing silence hangups.
 - **Playback & gating**: `PlaybackManager` / `StreamingPlaybackManager` produce downstream
   audio; `ConversationCoordinator` and `AudioGatingManager` control capture, gating, and
   barge-in.
