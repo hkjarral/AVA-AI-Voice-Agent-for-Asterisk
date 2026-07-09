@@ -308,6 +308,23 @@ Common pitfalls:
 - Too-short utterances (e.g., 20 ms) cause empty STT transcripts → raise `min_utterance_duration_ms` and ensure `webrtc_end_silence_frames` is not too low.
 - Overly aggressive VAD (aggressiveness=2/3) may clip 8 kHz speech; prefer 0–1 for telephony.
 
+## Caller inactivity (`no_input`)
+
+The engine-level watchdog prevents an answered call from remaining open indefinitely when the caller stops responding. It is independent of provider endpointing/VAD: timing runs only while the conversation is ready and the caller, agent, and model are all idle.
+
+- `no_input.enabled`: Enables the policy. Defaults to `true`.
+- `no_input.inbound_enabled`: Applies the policy to inbound calls. Defaults to `true`.
+- `no_input.outbound_enabled`: Compatibility/default field; outbound calls still require `contexts.<name>.no_input.outbound_enabled: true` or the equivalent per-agent Admin UI option.
+- `no_input.initial_timeout_sec`: Idle time before the first check-in. Defaults to 30 seconds.
+- `no_input.grace_timeout_sec`: Reply window after each check-in. Defaults to 15 seconds.
+- `no_input.max_check_ins`: Number of check-ins before the final message and hangup. Defaults to 1; `0` skips directly to the final message.
+- `no_input.check_in_message`: Check-in text, spoken by the active provider/pipeline in the agent's configured voice.
+- `no_input.final_message`: Text spoken before the ARI hangup. It may be empty.
+
+Caller media activity, provider speech-start events, and user transcripts reset the window. The timer pauses during greetings, agent TTS, LLM processing, sustained caller speech, and other output gating. A terminal watchdog hangup is stored in Call History as `no_input_timeout`, not as a provider error.
+
+Per-agent overrides are partial and inherit every omitted global field. In the Admin UI, configure global defaults under **Advanced Settings → Voice Activity Detection → Caller Inactivity** and agent-specific values under **Agents → Edit Agent → Caller Inactivity Overrides**.
+
 ## LLM block
 
 - llm.initial_greeting: First message spoken by the agent (if provider supports explicit greeting or engine plays via TTS).

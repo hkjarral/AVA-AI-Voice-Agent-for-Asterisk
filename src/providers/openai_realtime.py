@@ -600,6 +600,35 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         except Exception:
             logger.error("Failed to send audio to OpenAI Realtime", call_id=self._call_id, exc_info=True)
 
+    async def speak_text(self, text: str) -> bool:
+        """Create a tools-disabled response in the active configured voice."""
+        if not text or not self.websocket or self.websocket.state.name != "OPEN":
+            return False
+        response: Dict[str, Any] = {
+            "instructions": (
+                "Speak exactly the sentence between <message> tags. Do not add, remove, "
+                f"or paraphrase words. Do not call tools. <message>{text}</message>"
+            ),
+            "tools": [],
+        }
+        if not self._is_ga:
+            response["modalities"] = self._response_modalities
+            response["input"] = []
+        try:
+            await self._send_json(
+                {
+                    "type": "response.create",
+                    "event_id": f"resp-no-input-{uuid.uuid4()}",
+                    "response": response,
+                }
+            )
+            self._pending_response = True
+            logger.info("Sent no-input announcement to OpenAI", call_id=self._call_id, text_preview=text[:80])
+            return True
+        except Exception:
+            logger.warning("Failed to send no-input announcement to OpenAI", call_id=self._call_id, exc_info=True)
+            return False
+
     async def cancel_response(self):
         """Cancel any in-progress response generation (for barge-in)."""
         if not self.websocket or self.websocket.state.name != "OPEN":

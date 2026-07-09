@@ -679,7 +679,10 @@ def persist_config_content(content: str) -> dict:
             # streaming is NOT hot-reloadable for the same reason
             # (StreamingPlaybackManager reads its params once at construction).
             # Both kept on the restart path (bot re-review, Finding 2).
-            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in'}
+            # no_input is resolved into an immutable per-call policy when a new
+            # session starts, so it is safe to hot-reload without changing calls
+            # already in progress.
+            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in', 'no_input'}
 
             # Check if only hot-reloadable keys changed
             all_keys = set(old_merged.keys()) | set(new_parsed.keys())

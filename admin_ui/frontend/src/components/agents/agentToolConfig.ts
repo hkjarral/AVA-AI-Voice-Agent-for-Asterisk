@@ -18,6 +18,7 @@ export interface AgentToolState {
     disableGlobalInCall: string[];    // extra.disable_global_in_call_tools
     disableGlobalPostCall: string[];  // extra.disable_global_post_call_tools
     backgroundMusic: string;          // extra.background_music
+    noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
 }
@@ -26,12 +27,15 @@ const OWNED_EXTRA_KEYS = [
     'pipeline', 'background_music', 'pre_call_tools', 'post_call_tools',
     'in_call_http_tools', 'disable_global_pre_call_tools',
     'disable_global_in_call_tools', 'disable_global_post_call_tools',
+    'no_input',
 ];
 
 const asStrArray = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+const asObject = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
 
 function safeParseObject(raw?: string | null): Record<string, unknown> {
     if (!raw || !raw.trim()) return {};
@@ -80,6 +84,7 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         disableGlobalInCall: asStrArray(extra['disable_global_in_call_tools']),
         disableGlobalPostCall: asStrArray(extra['disable_global_post_call_tools']),
         backgroundMusic: asString(extra['background_music']),
+        noInput: asObject(extra['no_input']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
     };
@@ -106,6 +111,8 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     setArr('disable_global_pre_call_tools', state.disableGlobalPreCall);
     setArr('disable_global_in_call_tools', state.disableGlobalInCall);
     setArr('disable_global_post_call_tools', state.disableGlobalPostCall);
+    if (Object.keys(state.noInput).length) extra['no_input'] = state.noInput;
+    else delete extra['no_input'];
 
     return {
         provider: state.pipeline ? '' : state.provider,

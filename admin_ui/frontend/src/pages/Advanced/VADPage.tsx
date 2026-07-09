@@ -150,6 +150,16 @@ const VADPage = () => {
         });
     };
 
+    const updateNoInputConfig = (field: string, value: any) => {
+        setConfig({
+            ...config,
+            no_input: {
+                ...config.no_input,
+                [field]: value,
+            },
+        });
+    };
+
     useEffect(() => {
         const vad = config?.vad || {};
         const hasExpertOverrides = [
@@ -172,6 +182,7 @@ const VADPage = () => {
     );
 
     const vadConfig = config.vad || {};
+    const noInputConfig = config.no_input || {};
     const effectiveVadMode =
         vadConfig.vad_mode ?? (vadConfig.use_provider_vad ? 'provider' : 'auto');
 
@@ -294,6 +305,77 @@ const VADPage = () => {
                                 tooltip="How quickly the adaptive threshold reacts to background noise (0.0–1.0). Higher reacts faster but can over-adjust on short noise bursts."
                             />
                         </div>
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
+            <ConfigSection
+                title="Caller Inactivity"
+                description="Check that a silent inbound caller is still present, then end abandoned calls cleanly."
+            >
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <FormSwitch
+                            label="Enable No-Input Watchdog"
+                            description="Protect inbound calls by default after 30 seconds without caller activity."
+                            tooltip="The clock pauses while the agent is greeting, speaking, processing a turn, or transferring. Caller audio and provider speech events reset it. Outbound calls remain disabled unless the individual agent opts in."
+                            checked={noInputConfig.enabled ?? true}
+                            onChange={(e) => updateNoInputConfig('enabled', e.target.checked)}
+                        />
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <FormInput
+                                label="Initial Silence (seconds)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputConfig.initial_timeout_sec ?? 30}
+                                onChange={(e) => updateNoInputConfig('initial_timeout_sec', parseFloat(e.target.value))}
+                                tooltip="How long to wait after the agent becomes idle before asking whether the caller is still there."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                            <FormInput
+                                label="Reply Grace Period (seconds)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputConfig.grace_timeout_sec ?? 15}
+                                onChange={(e) => updateNoInputConfig('grace_timeout_sec', parseFloat(e.target.value))}
+                                tooltip="How long the caller has to respond after each check-in."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                            <FormInput
+                                label="Check-In Attempts"
+                                type="number"
+                                min="0"
+                                max="10"
+                                value={noInputConfig.max_check_ins ?? 1}
+                                onChange={(e) => updateNoInputConfig('max_check_ins', parseInt(e.target.value))}
+                                tooltip="Number of check-in prompts before the final message and hangup. Set to 0 to skip directly to the final message."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <FormInput
+                                label="Check-In Message"
+                                value={noInputConfig.check_in_message ?? 'Are you still there?'}
+                                onChange={(e) => updateNoInputConfig('check_in_message', e.target.value)}
+                                tooltip="Spoken by the active provider or pipeline using this agent's configured voice."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                            <FormInput
+                                label="Final Message"
+                                value={noInputConfig.final_message ?? "I still can't hear you, so I'll end the call now. Goodbye."}
+                                onChange={(e) => updateNoInputConfig('final_message', e.target.value)}
+                                tooltip="Spoken in the configured agent voice immediately before the engine hangs up. Leave empty for no final announcement."
+                                disabled={!(noInputConfig.enabled ?? true)}
+                            />
+                        </div>
+
+                        <p className="text-xs text-muted-foreground">
+                            Outbound calls do not inherit this behavior automatically. Enable it explicitly in the outbound agent's settings.
+                        </p>
                     </div>
                 </ConfigCard>
             </ConfigSection>

@@ -8,7 +8,7 @@ engine can make gating decisions with a single source of truth.
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, Optional, TYPE_CHECKING, Set
+from typing import Any, Dict, Optional, TYPE_CHECKING, Set
 
 import structlog
 from prometheus_client import Counter, Gauge
@@ -57,10 +57,18 @@ class ConversationCoordinator:
         self._gated_calls: Set[str] = set()
         self._capture_enabled_calls: Set[str] = set()
         self._state_by_call: Dict[str, str] = {}
+        self._no_input_watchdog: Optional[Any] = None
 
     def set_playback_manager(self, playback_manager: "PlaybackManager") -> None:
         """Attach the playback manager after initialisation."""
         self._playback_manager = playback_manager
+
+    def set_no_input_watchdog(self, watchdog: Any) -> None:
+        """Attach the optional caller-inactivity observer.
+
+        Kept duck-typed to avoid a core-module import cycle.
+        """
+        self._no_input_watchdog = watchdog
 
     async def register_call(self, session: CallSession) -> None:
         """Initialise metrics for a newly tracked call session."""
@@ -98,6 +106,8 @@ class ConversationCoordinator:
             self._set_tts_gated(call_id, True)
             self._set_capture_enabled(call_id, False)
             self._barge_in_seen[call_id] = False
+            if self._no_input_watchdog:
+                await self._no_input_watchdog.note_agent_output_start(call_id)
         return success
 
     async def on_tts_end(self, call_id: str, playback_id: str, reason: str = "playback-finished") -> bool:
@@ -119,6 +129,8 @@ class ConversationCoordinator:
             self._set_tts_gated(call_id, tts_gated)
             self._set_capture_enabled(call_id, bool(capture_enabled))
             self._barge_in_seen[call_id] = False
+            if self._no_input_watchdog and not tts_gated:
+                await self._no_input_watchdog.note_agent_output_end(call_id)
         return success
 
     async def cancel_tts(self, call_id: str, playback_id: str) -> None:

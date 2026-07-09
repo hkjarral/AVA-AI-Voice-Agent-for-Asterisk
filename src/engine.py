@@ -70,6 +70,7 @@ from .core.vad_manager import EnhancedVADManager, VADResult
 from .core.streaming_playback_manager import StreamingPlaybackManager
 from .core.transport_orchestrator import TransportOrchestrator, TransportProfile, apply_context_voice
 from .core.models import CallSession
+from .core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
 from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
 from src.pipelines.base import LLMResponse
@@ -267,6 +268,16 @@ class Engine:
             conversation_coordinator=self.conversation_coordinator,
         )
         self.conversation_coordinator.set_playback_manager(self.playback_manager)
+        self.no_input_watchdog = NoInputWatchdog(
+            self._speak_no_input_announcement,
+            self._hangup_for_no_input,
+            should_pause=self._no_input_should_pause,
+        )
+        self.conversation_coordinator.set_no_input_watchdog(self.no_input_watchdog)
+        try:
+            self._no_input_webrtc_vad = webrtcvad.Vad(2) if WEBRTC_VAD_AVAILABLE else None
+        except Exception:
+            self._no_input_webrtc_vad = None
         # Attended transfer (warm transfer w/ agent DTMF acceptance) runtime state.
         # These are intentionally in-memory only (per-engine-instance) to avoid schema churn.
         self._ari_playback_waiters: Dict[str, asyncio.Future] = {}
@@ -1043,6 +1054,162 @@ class Engine:
             or getattr(session, "transfer_state", None)
             or getattr(session, "transfer_destination", None)
         )
+
+    async def _configure_no_input_watchdog(self, session: CallSession, context_config: Any = None) -> None:
+        """Resolve global + per-agent inactivity policy and register it for the call."""
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if watchdog is None:
+            return
+        try:
+            global_cfg = getattr(self.config, "no_input", None)
+            if hasattr(global_cfg, "model_dump"):
+                merged = global_cfg.model_dump()
+            elif hasattr(global_cfg, "dict"):
+                merged = global_cfg.dict()
+            elif isinstance(global_cfg, dict):
+                merged = dict(global_cfg)
+            else:
+                merged = {}
+            override = getattr(context_config, "no_input", None) if context_config else None
+            if isinstance(override, dict):
+                merged.update({k: v for k, v in override.items() if v is not None})
+            # Outbound protection is intentionally per-agent/context opt-in.
+            # A global outbound_enabled value must never change active campaigns.
+            if bool(getattr(session, "is_outbound", False)):
+                merged["outbound_enabled"] = bool(
+                    isinstance(override, dict) and override.get("outbound_enabled") is True
+                )
+            policy = NoInputPolicy.from_mapping(merged)
+            session.no_input_policy = dict(policy.__dict__)
+            session.no_input_state = {
+                **dict(getattr(session, "no_input_state", {}) or {}),
+                "configured": True,
+                "is_outbound": bool(getattr(session, "is_outbound", False)),
+            }
+            await self._save_session(session)
+            await watchdog.register(
+                session.call_id,
+                policy,
+                is_outbound=bool(getattr(session, "is_outbound", False)),
+            )
+        except Exception:
+            logger.error(
+                "Failed to configure caller inactivity watchdog",
+                call_id=getattr(session, "call_id", None),
+                exc_info=True,
+            )
+
+    async def _no_input_note_activity(self, call_id: str, source: str) -> None:
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if watchdog is not None:
+            await watchdog.note_activity(call_id, source)
+
+    async def _no_input_note_processing(self, call_id: str, active: bool) -> None:
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if watchdog is not None:
+            await watchdog.note_processing(call_id, active)
+
+    async def _no_input_note_input_state(self, call_id: str, active: bool, source: str) -> None:
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if watchdog is not None:
+            await watchdog.note_input_state(call_id, active, source)
+
+    async def _no_input_mark_ready(self, call_id: str) -> None:
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if watchdog is not None:
+            await watchdog.mark_ready(call_id)
+
+    async def _no_input_should_pause(self, call_id: str) -> bool:
+        """Return true for lifecycle states where caller-idle policy must not run."""
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or bool(getattr(session, "cleanup_in_progress", False)):
+            return True
+        if self._session_was_transferred(session) or self._session_has_pending_attended_transfer(session):
+            return True
+        action = getattr(session, "current_action", None) or {}
+        action_type = str(action.get("type") or "").strip().lower() if isinstance(action, dict) else ""
+        return action_type in {
+            "attended_transfer",
+            "predial_transfer",
+            "blind_transfer",
+            "queue_transfer",
+            "ring_group_transfer",
+            "voicemail",
+        }
+
+    async def _observe_no_input_audio(
+        self,
+        session: CallSession,
+        pcm16: bytes,
+        sample_rate_hz: int,
+        *,
+        source: str,
+    ) -> None:
+        """Conservatively detect sustained caller speech without treating noise as activity."""
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if not pcm16 or watchdog is None or not watchdog.has_call(session.call_id):
+            return
+        # Raw detection is disabled during agent output to avoid echo resets. Barge-in,
+        # provider VAD, and TALK_DETECT remain authoritative during that window.
+        if bool(getattr(session, "tts_playing", False)):
+            return
+        try:
+            rate = int(sample_rate_hz or 16000)
+            energy = int(audioop.rms(pcm16, 2))
+            state = session.no_input_state.setdefault("activity_detector", {})
+            speaking = bool(state.get("speaking", False))
+            speech_ms = int(state.get("speech_ms", 0) or 0)
+            silence_ms = int(state.get("silence_ms", 0) or 0)
+            noise_ema = float(state.get("noise_ema", 0.0) or 0.0)
+            frame_ms = max(1, int((len(pcm16) / float(2 * max(1, rate))) * 1000))
+
+            if not speaking:
+                noise_ema = float(energy) if noise_ema <= 0 else (noise_ema * 0.96 + float(energy) * 0.04)
+            threshold = max(300.0, noise_ema * 2.5)
+
+            webrtc_positive: Optional[bool] = None
+            if self._no_input_webrtc_vad and rate in (8000, 16000, 32000, 48000) and frame_ms in (10, 20, 30):
+                try:
+                    webrtc_positive = bool(self._no_input_webrtc_vad.is_speech(pcm16, rate))
+                except Exception:
+                    webrtc_positive = None
+            raw_speech = energy >= threshold and (
+                webrtc_positive is True if webrtc_positive is not None else energy >= threshold * 1.35
+            )
+
+            if raw_speech:
+                speech_ms += frame_ms
+                silence_ms = 0
+                if not speaking and speech_ms >= 120:
+                    speaking = True
+                    await watchdog.note_input_state(
+                        session.call_id,
+                        True,
+                        f"audio_vad:{source}",
+                    )
+            else:
+                silence_ms += frame_ms
+                speech_ms = 0
+                if speaking and silence_ms >= 300:
+                    speaking = False
+                    await watchdog.note_input_state(
+                        session.call_id,
+                        False,
+                        f"audio_vad:{source}",
+                    )
+
+            state.update(
+                {
+                    "speaking": speaking,
+                    "speech_ms": speech_ms,
+                    "silence_ms": silence_ms,
+                    "noise_ema": noise_ema,
+                    "last_energy": energy,
+                    "last_threshold": int(threshold),
+                }
+            )
+        except Exception:
+            logger.debug("No-input audio activity detection failed", call_id=session.call_id, exc_info=True)
 
     def _attended_transfer_streaming_enabled(self, attended_cfg: Optional[Dict[str, Any]] = None) -> bool:
         cfg = attended_cfg if isinstance(attended_cfg, dict) else self._get_attended_transfer_config()
@@ -6054,8 +6221,10 @@ class Engine:
                 return
             call_id = session.call_id
 
-            # Only act when local playback/gating is active; otherwise this is just "caller is talking".
+            # While listening, TALK_DETECT is direct evidence that the caller is
+            # present even though there is no playback to interrupt.
             if bool(getattr(session, "audio_capture_enabled", True)) and not bool(getattr(session, "tts_playing", False)):
+                await self._no_input_note_input_state(call_id, True, "asterisk:talk_detect")
                 return
 
             cfg = getattr(self.config, "barge_in", None)
@@ -6092,6 +6261,8 @@ class Engine:
             if last_barge_in_ts and (now - last_barge_in_ts) * 1000 < cooldown_ms:
                 return
 
+            await self._no_input_note_activity(call_id, "asterisk:talk_detect_barge_in")
+
             # Treat talk detection as sufficient evidence of an active media path for platform flush.
             try:
                 if not bool(getattr(session, "media_rx_confirmed", False)):
@@ -6118,6 +6289,7 @@ class Engine:
                 return
             call_id = session.call_id
             logger.debug("TalkDetect finished", call_id=call_id, channel_id=channel_id)
+            await self._no_input_note_input_state(call_id, False, "asterisk:talk_detect")
             
             # Explicitly flush STT adapters that support early flushing via TalkDetect
             import asyncio
@@ -6288,11 +6460,11 @@ class Engine:
                 logger.debug("Failed to record call duration", call_id=call_id, error=str(e))
             
             # Determine call outcome based on session state
-            call_outcome = "caller_hangup"  # Default: caller hung up
+            call_outcome = str(getattr(session, "call_outcome", "") or "").strip() or "caller_hangup"
             try:
-                if self._session_was_transferred(session):
+                if call_outcome == "caller_hangup" and self._session_was_transferred(session):
                     call_outcome = "transferred"
-                elif getattr(session, 'cleanup_after_tts', False):
+                elif call_outcome == "caller_hangup" and getattr(session, 'cleanup_after_tts', False):
                     call_outcome = "agent_hangup"  # AI agent initiated hangup via hangup_call tool
             except Exception:
                 pass
@@ -6323,6 +6495,10 @@ class Engine:
                 logger.debug("Background music stop failed during cleanup", call_id=call_id, exc_info=True)
 
             # Cancel per-call background tasks (delayed hangups, transfer guards, etc.)
+            try:
+                await self.no_input_watchdog.stop(call_id)
+            except Exception:
+                logger.debug("No-input watchdog cleanup failed", call_id=call_id, exc_info=True)
             bg_tasks = self._call_bg_tasks.pop(call_id, set())
             for t in bg_tasks:
                 if not t.done():
@@ -6745,7 +6921,10 @@ class Engine:
             
             # Determine outcome
             outcome = "completed"
-            if session.error_message:
+            explicit_outcome = str(getattr(session, "call_outcome", "") or "").strip()
+            if explicit_outcome == "no_input_timeout":
+                outcome = "no_input_timeout"
+            elif session.error_message:
                 outcome = "error"
             elif self._session_was_transferred(session):
                 outcome = "transferred"
@@ -6820,6 +6999,8 @@ class Engine:
                                 final_outcome = "error"
                             elif self._session_was_transferred(session):
                                 final_outcome = "transferred"
+                            elif str(getattr(session, "call_outcome", "") or "") == "no_input_timeout":
+                                final_outcome = "no_input_timeout"
 
                             await self.outbound_store.finish_attempt(
                                 attempt_id,
@@ -7284,6 +7465,13 @@ class Engine:
                     self.audio_capture.append_pcm16(session.call_id, "caller_inbound", pcm_bytes, pcm_rate)
             except Exception:
                 logger.debug("Inbound diagnostics update failed", call_id=caller_channel_id, exc_info=True)
+
+            await self._observe_no_input_audio(
+                session,
+                pcm_bytes,
+                pcm_rate,
+                source="audiosocket",
+            )
 
             if self._consume_attended_transfer_screening_audio(session.call_id, pcm_bytes, pcm_rate):
                 return
@@ -8814,6 +9002,13 @@ class Engine:
             except Exception:
                 logger.debug("Failed to set media_rx_confirmed (ExternalMedia)", call_id=caller_channel_id, exc_info=True)
 
+            await self._observe_no_input_audio(
+                session,
+                pcm_16k,
+                int(getattr(self.rtp_server, 'sample_rate', 16000) if self.rtp_server else 16000),
+                source="externalmedia",
+            )
+
             # Check for pipeline mode FIRST (before continuous_input provider routing)
             # Pipeline adapters need audio in their queue, not sent to monolithic providers
             pipeline_forced = self._pipeline_forced.get(caller_channel_id)
@@ -9634,6 +9829,18 @@ class Engine:
             if not session:
                 logger.warning("Provider event for unknown call", event_type=etype, call_id=call_id)
                 return
+
+            # Normalize provider-native caller activity before any barge-in guards.
+            # A speech-start event is useful to the inactivity watchdog even when
+            # there is no active agent response to cancel.
+            if etype in ("ProviderBargeIn", "interruption", "UserStartedSpeaking", "CallerSpeechStarted"):
+                await self._no_input_note_activity(call_id, f"provider:{etype}")
+                if etype in ("UserStartedSpeaking", "CallerSpeechStarted"):
+                    return
+            if etype == "ConversationText" and str(event.get("role") or "").lower() == "user":
+                if str(event.get("text") or event.get("content") or "").strip():
+                    await self._no_input_note_activity(call_id, "provider:conversation_text")
+                    await self._no_input_note_processing(call_id, True)
 
             # Option 2: Provider-owned VAD/barge-in. Provider signals interruption; platform flushes local output only.
             # - OpenAI Realtime emits `ProviderBargeIn` on `input_audio_buffer.speech_started` cancellation.
@@ -10746,6 +10953,8 @@ class Engine:
                 # User speech transcript from provider (ElevenLabs, etc.)
                 text = event.get("text", "").strip()
                 if text and text != "...":
+                    await self._no_input_note_activity(call_id, "provider:transcript")
+                    await self._no_input_note_processing(call_id, True)
                     # Keep a quick-access copy for guardrails (e.g., hangup intent) and observability.
                     try:
                         session.last_transcript = text
@@ -10784,6 +10993,149 @@ class Engine:
 
         except Exception as exc:
             logger.error("Error handling provider event", error=str(exc), exc_info=True)
+
+    async def _wait_for_no_input_announcement(
+        self,
+        call_id: str,
+        *,
+        previous_tts_started_ts: float,
+        timeout_sec: float = 25.0,
+    ) -> bool:
+        """Wait until the dedicated provider/pipeline speech starts and drains."""
+        deadline = time.monotonic() + max(1.0, timeout_sec)
+        started = False
+        while time.monotonic() < deadline:
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session:
+                return False
+            started_ts = float(getattr(session, "tts_started_ts", 0.0) or 0.0)
+            if bool(getattr(session, "tts_playing", False)) or started_ts > previous_tts_started_ts:
+                started = True
+            if started and not bool(getattr(session, "tts_playing", False)):
+                return True
+            await asyncio.sleep(0.05)
+        logger.warning("No-input announcement completion timed out", call_id=call_id, started=started)
+        return False
+
+    async def _speak_no_input_announcement(self, call_id: str, text: str, kind: str) -> bool:
+        """Speak a watchdog message in the call's configured provider/pipeline voice."""
+        message = str(text or "").strip()
+        if not message:
+            return True
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or session.cleanup_in_progress or self._session_was_transferred(session):
+            return False
+
+        previous_started = float(getattr(session, "tts_started_ts", 0.0) or 0.0)
+        session.no_input_state.update(
+            {
+                "announcement_kind": kind,
+                "announcement_text": message,
+                "announcement_requested_at": time.time(),
+            }
+        )
+        await self._save_session(session)
+
+        try:
+            pipeline = None
+            if getattr(session, "pipeline_name", None) and getattr(self, "pipeline_orchestrator", None):
+                pipeline = self.pipeline_orchestrator.get_pipeline(call_id, session.pipeline_name)
+            if pipeline and getattr(pipeline, "tts_adapter", None):
+                audio = bytearray()
+                async for chunk in pipeline.tts_adapter.synthesize(
+                    call_id,
+                    message,
+                    pipeline.tts_options,
+                ):
+                    if chunk:
+                        audio.extend(chunk)
+                if not audio:
+                    logger.error("Pipeline produced no no-input announcement audio", call_id=call_id, kind=kind)
+                    return False
+                playback_id = await self.playback_manager.play_audio(
+                    call_id,
+                    bytes(audio),
+                    f"no-input-{kind}",
+                )
+                if not playback_id:
+                    return False
+                session = await self.session_store.get_by_call_id(call_id)
+                if session:
+                    session.conversation_history.append({
+                        **_ts_msg("assistant", message),
+                        "event": f"no_input_{kind}",
+                    })
+                    await self._save_session(session)
+                return await self._wait_for_no_input_announcement(
+                    call_id,
+                    previous_tts_started_ts=previous_started,
+                )
+
+            provider = self._call_providers.get(call_id)
+            if not provider or not hasattr(provider, "speak_text"):
+                logger.error(
+                    "Provider cannot speak no-input announcement",
+                    call_id=call_id,
+                    provider=getattr(session, "provider_name", None),
+                    kind=kind,
+                )
+                return False
+            accepted = await provider.speak_text(message)
+            if not accepted:
+                return False
+
+            # LocalProvider's direct TTS does not create an agent transcript, so
+            # persist the platform-authored message explicitly. Full-agent providers
+            # continue to persist their actual output transcript.
+            if isinstance(provider, LocalProvider):
+                current = await self.session_store.get_by_call_id(call_id)
+                if current:
+                    current.conversation_history.append({
+                        **_ts_msg("assistant", message),
+                        "event": f"no_input_{kind}",
+                    })
+                    await self._save_session(current)
+            return await self._wait_for_no_input_announcement(
+                call_id,
+                previous_tts_started_ts=previous_started,
+            )
+        except Exception:
+            logger.error(
+                "Failed speaking no-input announcement",
+                call_id=call_id,
+                kind=kind,
+                provider=getattr(session, "provider_name", None),
+                exc_info=True,
+            )
+            return False
+
+    async def _hangup_for_no_input(self, call_id: str) -> None:
+        """Record the terminal reason, then use normal ARI/Stasis cleanup."""
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session:
+            return
+        if self._session_was_transferred(session) or self._session_has_pending_attended_transfer(session):
+            logger.info("No-input hangup skipped during transfer", call_id=call_id)
+            return
+        session.call_outcome = "no_input_timeout"
+        session.no_input_state.update(
+            {
+                "timed_out": True,
+                "timed_out_at": time.time(),
+            }
+        )
+        await self._save_session(session)
+        logger.info(
+            "Hanging up inactive caller",
+            call_id=call_id,
+            channel_id=session.caller_channel_id,
+            provider=session.provider_name,
+            pipeline=session.pipeline_name,
+        )
+        try:
+            await self.ari_client.hangup_channel(session.caller_channel_id)
+        except Exception:
+            logger.debug("No-input ARI hangup failed (channel may already be gone)", call_id=call_id, exc_info=True)
 
     def _as_to_pcm16_16k(self, audio_bytes: bytes) -> bytes:
         """Convert AudioSocket inbound bytes to PCM16 @ 16 kHz for pipeline STT.
@@ -11245,6 +11597,11 @@ class Engine:
                             exc_info=True,
                         )
                         break
+
+            # The pipeline and its greeting path are now initialized. If greeting
+            # playback is still active, the coordinator keeps the timer paused and
+            # starts the 30-second window when playback actually finishes.
+            await self._no_input_mark_ready(call_id)
 
             # Accumulate into provider-sized chunks while keeping ingestion responsive.
             bytes_per_ms = (
@@ -12431,6 +12788,8 @@ class Engine:
                             if pending_segments and flush_task is None:
                                 await schedule_flush()
                             continue
+                        await self._no_input_note_activity(call_id, "pipeline:transcript")
+                        await self._no_input_note_processing(call_id, True)
                         pending_segments.append(normalized)
                         await maybe_respond(force=False)
                         if pending_segments:
@@ -12725,6 +13084,25 @@ class Engine:
             context_name=session.context_name,
             routing_method=session.routing_method,
         )
+
+        # Resolve the engine-owned inactivity policy before provider/pipeline
+        # selection can return early. This keeps agents.db and headless YAML calls
+        # behaviorally identical.
+        no_input_context = None
+        if resolved_context:
+            try:
+                no_input_context = self.transport_orchestrator.get_context_config(
+                    resolved_context, session.routing_method)
+            except Exception:
+                logger.debug(
+                    "Failed to resolve no-input context override",
+                    call_id=session.call_id,
+                    context_name=resolved_context,
+                    exc_info=True,
+                )
+        # Call through the class so lightweight compatibility stubs that invoke
+        # Engine._resolve_audio_profile directly do not need to grow this helper.
+        await Engine._configure_no_input_watchdog(self, session, no_input_context)
 
         # Thread per-agent post-call email overrides onto the session (H5) here,
         # before any provider early-return. The monolithic path below also resolves
@@ -14342,6 +14720,7 @@ class Engine:
             except Exception:
                 pass
             await self._save_session(session)
+            await self._no_input_mark_ready(call_id)
             # Sync gauges if coordinator is present
             if self.conversation_coordinator:
                 try:

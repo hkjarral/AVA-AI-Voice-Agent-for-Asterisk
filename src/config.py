@@ -855,6 +855,26 @@ class VADConfig(BaseModel):
     upstream_squelch_end_silence_frames: int = 15
 
 
+class NoInputConfig(BaseModel):
+    """Provider-independent caller inactivity policy.
+
+    Inbound calls are protected by default. Outbound calls must opt in at the
+    agent/context level so campaigns are not changed unexpectedly.
+    """
+
+    enabled: bool = Field(default=True)
+    inbound_enabled: bool = Field(default=True)
+    outbound_enabled: bool = Field(default=False)
+    initial_timeout_sec: float = Field(default=30.0, ge=1.0, le=3600.0)
+    grace_timeout_sec: float = Field(default=15.0, ge=1.0, le=3600.0)
+    max_check_ins: int = Field(default=1, ge=0, le=10)
+    check_in_message: str = Field(default="Are you still there?", min_length=1, max_length=500)
+    final_message: str = Field(
+        default="I still can't hear you, so I'll end the call now. Goodbye.",
+        max_length=500,
+    )
+
+
 class StreamingConfig(BaseModel):
     sample_rate: int = Field(default=8000)
     jitter_buffer_ms: int = Field(default=50)
@@ -987,6 +1007,7 @@ class AppConfig(BaseModel):
     external_media: Optional[ExternalMediaConfig] = Field(default_factory=ExternalMediaConfig)
     audiosocket: Optional[AudioSocketConfig] = Field(default_factory=AudioSocketConfig)
     vad: Optional[VADConfig] = Field(default_factory=VADConfig)
+    no_input: Optional[NoInputConfig] = Field(default_factory=NoInputConfig)
     streaming: Optional[StreamingConfig] = Field(default_factory=StreamingConfig)
     barge_in: Optional[BargeInConfig] = Field(default_factory=BargeInConfig)
     logging: Optional[LoggingConfig] = Field(default_factory=LoggingConfig)

@@ -277,6 +277,18 @@ providers:
     style: 0.0
     use_speaker_boost: true
 
+# Caller inactivity watchdog. Inbound calls are protected by default; outbound
+# calls require an explicit per-agent no_input.outbound_enabled override.
+no_input:
+  enabled: true
+  inbound_enabled: true
+  outbound_enabled: false
+  initial_timeout_sec: 30
+  grace_timeout_sec: 15
+  max_check_ins: 1
+  check_in_message: "Are you still there?"
+  final_message: "I still can't hear you, so I'll end the call now. Goodbye."
+
 # Canonical LLM defaults (used by providers/pipelines unless overridden)
 llm:
   initial_greeting: "Hello, how can I help you today?"

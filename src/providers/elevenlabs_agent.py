@@ -386,6 +386,29 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             logger.debug(f"[elevenlabs] [{self._call_id}] Sent interrupt")
         except Exception as e:
             logger.warning(f"[elevenlabs] [{self._call_id}] Failed to send interrupt: {e}")
+
+    async def speak_text(self, text: str) -> bool:
+        """Inject an engine announcement through the active ElevenLabs agent voice."""
+        if not text or not self._ws or not self._connected:
+            return False
+        message = {
+            "type": "user_message",
+            "text": (
+                "[SYSTEM EVENT] Speak exactly the sentence between <message> tags. "
+                "Do not add, remove, or paraphrase words. "
+                f"<message>{text}</message>"
+            ),
+        }
+        try:
+            await self._ws.send(json.dumps(message))
+            logger.info(
+                f"[elevenlabs] [{self._call_id}] Sent no-input announcement request",
+                text_preview=text[:80],
+            )
+            return True
+        except Exception as exc:
+            logger.warning(f"[elevenlabs] [{self._call_id}] Failed to send no-input announcement: {exc}")
+            return False
     
     async def stop_session(self) -> None:
         """Close the connection and clean up resources."""

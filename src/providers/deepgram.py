@@ -1715,14 +1715,20 @@ class DeepgramProvider(AIProviderInterface):
                     pass
             self._in_audio_burst = False
 
-    async def speak(self, text: str):
+    async def speak_text(self, text: str) -> bool:
         if not text or not self.websocket:
-            return
+            return False
         inject_message = {"type": "InjectAgentMessage", "content": text}
         try:
             await self.websocket.send(json.dumps(inject_message))
+            return True
         except websockets.exceptions.ConnectionClosed as e:
             logger.error("Failed to send inject agent message: Connection is closed.", exc_info=True, code=e.code, reason=e.reason)
+            return False
+
+    async def speak(self, text: str):
+        """Backward-compatible alias for the legacy provider API."""
+        await self.speak_text(text)
 
     async def _inject_message_dual(self, text: str):
         if not text or not self.websocket:

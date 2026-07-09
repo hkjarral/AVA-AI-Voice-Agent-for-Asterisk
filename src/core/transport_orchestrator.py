@@ -96,6 +96,9 @@ class ContextConfig:
     email_recipient: Optional[str] = None
     email_from: Optional[str] = None
     email_enabled: Optional[bool] = None
+    # Partial per-agent override of the global no_input policy. Missing fields
+    # inherit their global value.
+    no_input: Optional[Dict[str, Any]] = None
 
 
 def resolve_effective_voice(
@@ -286,6 +289,7 @@ class TransportOrchestrator:
                     email_recipient=context_dict.get('email_recipient'),
                     email_from=context_dict.get('email_from'),
                     email_enabled=_coerce_optional_bool(context_dict.get('email_enabled')),
+                    no_input=context_dict.get('no_input'),
                 )
                 logger.debug("Loaded context mapping", name=name, context=contexts[name])
             except Exception as exc:

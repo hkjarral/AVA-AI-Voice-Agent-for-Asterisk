@@ -139,9 +139,16 @@ const OutcomeIcon = ({ outcome }: { outcome: string }) => {
             return <AlertCircle className="w-4 h-4 text-red-500" />;
         case 'abandoned':
             return <PhoneOff className="w-4 h-4 text-yellow-500" />;
+        case 'no_input_timeout':
+            return <PhoneOff className="w-4 h-4 text-amber-500" />;
         default:
             return <Phone className="w-4 h-4 text-muted-foreground" />;
     }
+};
+
+const outcomeLabel = (outcome: string): string => {
+    if (outcome === 'no_input_timeout') return 'No input timeout';
+    return outcome.replace(/_/g, ' ');
 };
 
 // How a call was routed to its agent (engine writes call_records.routing_method).
@@ -868,7 +875,7 @@ const CallHistoryPage = () => {
                             >
                                 <option value="">All</option>
                                 {filterOptions?.outcomes.map(o => (
-                                    <option key={o} value={o}>{o}</option>
+                                    <option key={o} value={o}>{outcomeLabel(o)}</option>
                                 ))}
                             </select>
                         </div>
@@ -978,7 +985,7 @@ const CallHistoryPage = () => {
                                         <td className="px-4 py-3">
                                             <div className="flex items-center gap-2">
                                                 <OutcomeIcon outcome={call.outcome} />
-                                                <span className="text-sm capitalize">{call.outcome}</span>
+                                                <span className="text-sm capitalize">{outcomeLabel(call.outcome)}</span>
                                             </div>
                                         </td>
                                         <td className="px-4 py-3 text-sm">{call.total_turns}</td>
@@ -1145,7 +1152,7 @@ const CallHistoryPage = () => {
                                     <div className="text-sm text-muted-foreground">Outcome</div>
                                     <div className="flex items-center gap-2">
                                         <OutcomeIcon outcome={modalCall.outcome} />
-                                        <span className="font-medium capitalize">{modalCall.outcome}</span>
+                                        <span className="font-medium capitalize">{outcomeLabel(modalCall.outcome)}</span>
                                     </div>
                                 </div>
                                 <div>

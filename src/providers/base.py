@@ -41,6 +41,14 @@ class AIProviderInterface(ABC):
         """Closes the connection and cleans up resources for the call."""
         pass
 
+    async def speak_text(self, text: str) -> bool:
+        """Ask the provider to speak text with the active agent voice.
+
+        Providers that support engine-initiated announcements should override this
+        method and return ``True`` after accepting the request.
+        """
+        return False
+
     # Optional: providers can override to describe codec/sample alignment characteristics.
     def describe_alignment(
         self,

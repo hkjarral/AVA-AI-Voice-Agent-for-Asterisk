@@ -1254,6 +1254,41 @@ class GoogleLiveProvider(AIProviderInterface):
             call_id=self._call_id,
         )
 
+    async def speak_text(self, text: str) -> bool:
+        """Ask Gemini Live to speak an engine announcement in the session voice."""
+        if not text or not self._call_id:
+            return False
+        message = {
+            "clientContent": {
+                "turns": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": (
+                                    "System event: speak exactly the sentence between <message> tags. "
+                                    "Do not add, remove, or paraphrase words and do not call tools. "
+                                    f"<message>{text}</message>"
+                                )
+                            }
+                        ],
+                    }
+                ],
+                "turnComplete": True,
+            }
+        }
+        try:
+            await self._send_message(message)
+            logger.info(
+                "Sent no-input announcement request to Google Live",
+                call_id=self._call_id,
+                text_preview=text[:80],
+            )
+            return True
+        except Exception:
+            logger.warning("Failed to send no-input announcement to Google Live", call_id=self._call_id, exc_info=True)
+            return False
+
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 8000, encoding: str = "ulaw") -> None:
         """
         Send audio chunk to Gemini Live API.
@@ -1545,6 +1580,17 @@ class GoogleLiveProvider(AIProviderInterface):
         if input_transcription:
             text = input_transcription.get("text", "")
             if text:
+                try:
+                    if self.on_event:
+                        await self.on_event(
+                            {
+                                "type": "CallerSpeechStarted",
+                                "call_id": self._call_id,
+                                "provider": self.provider_event_name(),
+                            }
+                        )
+                except Exception:
+                    logger.debug("Failed to emit caller speech activity", call_id=self._call_id, exc_info=True)
                 # If we armed a heuristic cleanup_after_tts fallback (no toolCall), cancel it when the
                 # user continues speaking. This prevents premature hangups during transcript/email
                 # capture where the model may say "thank you for calling" before the user is done.

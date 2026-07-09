@@ -327,6 +327,21 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         else if (raw.startsWith('provider:')) setToolState((s) => ({ ...s, provider: raw.slice('provider:'.length), pipeline: '' }));
     };
 
+    const updateNoInputOverride = (key: string, value: unknown) => {
+        setToolState((state) => {
+            const next = { ...state.noInput };
+            if (value === '' || value === undefined) delete next[key];
+            else next[key] = value;
+            return { ...state, noInput: next };
+        });
+    };
+
+    const noInputNumber = (key: string): number | '' =>
+        typeof toolState.noInput[key] === 'number' ? (toolState.noInput[key] as number) : '';
+
+    const noInputString = (key: string): string =>
+        typeof toolState.noInput[key] === 'string' ? (toolState.noInput[key] as string) : '';
+
     const profileOptions = [
         { value: '', label: '— default —' },
         ...availableProfiles.map((p) => ({ value: p, label: p })),
@@ -558,6 +573,94 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                         </label>
                     </div>
                 )}
+
+                <details
+                    className="mb-4 border border-border rounded-lg bg-card/50"
+                >
+                    <summary className="cursor-pointer px-3 py-3 text-sm font-medium">
+                        Caller Inactivity Overrides
+                    </summary>
+                    <div className="px-3 pb-3 pt-1 space-y-4 border-t border-border">
+                        <p className="text-xs text-muted-foreground">
+                            Inbound calls inherit the global 30-second watchdog. Outbound calls stay disabled until this agent explicitly opts in.
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormSelect
+                                id="agent-no-input-enabled"
+                                label="Watchdog"
+                                options={[
+                                    { value: '', label: 'Inherit global setting' },
+                                    { value: 'enabled', label: 'Enabled for this agent' },
+                                    { value: 'disabled', label: 'Disabled for this agent' },
+                                ]}
+                                value={toolState.noInput.enabled === true ? 'enabled' : toolState.noInput.enabled === false ? 'disabled' : ''}
+                                onChange={(e) => updateNoInputOverride('enabled', e.target.value === '' ? '' : e.target.value === 'enabled')}
+                                tooltip="Overrides the global caller inactivity policy for this agent."
+                            />
+                            <FormSelect
+                                id="agent-no-input-outbound"
+                                label="Outbound Calls"
+                                options={[
+                                    { value: 'disabled', label: 'Disabled (default)' },
+                                    { value: 'enabled', label: 'Enable for this agent' },
+                                ]}
+                                value={toolState.noInput.outbound_enabled === true ? 'enabled' : 'disabled'}
+                                onChange={(e) => updateNoInputOverride('outbound_enabled', e.target.value === 'enabled' ? true : '')}
+                                tooltip="Outbound campaigns never inherit this globally. This agent must explicitly enable the watchdog."
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <FormInput
+                                id="agent-no-input-initial"
+                                label="Initial Silence (sec)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputNumber('initial_timeout_sec')}
+                                placeholder="Inherit: 30"
+                                onChange={(e) => updateNoInputOverride('initial_timeout_sec', e.target.value === '' ? '' : Number(e.target.value))}
+                            />
+                            <FormInput
+                                id="agent-no-input-grace"
+                                label="Reply Grace (sec)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputNumber('grace_timeout_sec')}
+                                placeholder="Inherit: 15"
+                                onChange={(e) => updateNoInputOverride('grace_timeout_sec', e.target.value === '' ? '' : Number(e.target.value))}
+                            />
+                            <FormInput
+                                id="agent-no-input-attempts"
+                                label="Check-In Attempts"
+                                type="number"
+                                min="0"
+                                max="10"
+                                value={noInputNumber('max_check_ins')}
+                                placeholder="Inherit: 1"
+                                onChange={(e) => updateNoInputOverride('max_check_ins', e.target.value === '' ? '' : Number(e.target.value))}
+                            />
+                        </div>
+
+                        <FormInput
+                            id="agent-no-input-check-in"
+                            label="Check-In Message"
+                            value={noInputString('check_in_message')}
+                            placeholder="Inherit: Are you still there?"
+                            onChange={(e) => updateNoInputOverride('check_in_message', e.target.value)}
+                            tooltip="Spoken through the selected provider or pipeline in this agent's configured voice."
+                        />
+                        <FormInput
+                            id="agent-no-input-final"
+                            label="Final Message"
+                            value={noInputString('final_message')}
+                            placeholder="Inherit global final message"
+                            onChange={(e) => updateNoInputOverride('final_message', e.target.value)}
+                            tooltip="Spoken immediately before the engine ends an inactive call."
+                        />
+                    </div>
+                </details>
 
                 <div className="mb-2">
                     <FormInput
