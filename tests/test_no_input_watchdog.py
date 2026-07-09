@@ -325,11 +325,18 @@ async def test_outbound_calls_require_context_level_opt_in_even_if_global_is_tru
 
     await engine._configure_no_input_watchdog(
         session,
-        SimpleNamespace(no_input={"outbound_enabled": True, "initial_timeout_sec": 45}),
+        SimpleNamespace(no_input={"outbound_enabled": "true", "initial_timeout_sec": 45}),
     )
     enabled_policy = engine.no_input_watchdog.register.await_args.args[1]
     assert enabled_policy.outbound_enabled is True
     assert enabled_policy.initial_timeout_sec == 45
+
+    await engine._configure_no_input_watchdog(
+        session,
+        SimpleNamespace(no_input={"outbound_enabled": "false"}),
+    )
+    disabled_string_policy = engine.no_input_watchdog.register.await_args.args[1]
+    assert disabled_string_policy.outbound_enabled is False
 
 
 @pytest.mark.asyncio

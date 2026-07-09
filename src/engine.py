@@ -1085,9 +1085,10 @@ class Engine:
             # Outbound protection is intentionally per-agent/context opt-in.
             # A global outbound_enabled value must never change active campaigns.
             if bool(getattr(session, "is_outbound", False)):
-                merged["outbound_enabled"] = bool(
-                    isinstance(override, dict) and override.get("outbound_enabled") is True
-                )
+                outbound_override = override.get("outbound_enabled") if isinstance(override, dict) else False
+                merged["outbound_enabled"] = NoInputPolicy.from_mapping(
+                    {"outbound_enabled": outbound_override}
+                ).outbound_enabled
             policy = NoInputPolicy.from_mapping(merged)
             session.no_input_policy = dict(policy.__dict__)
             session.no_input_state = {

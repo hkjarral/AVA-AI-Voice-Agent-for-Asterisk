@@ -44,9 +44,10 @@ const sanitizeNoInputOverrides = (raw: Record<string, unknown>): Record<string, 
         'initial_timeout_sec', 'grace_timeout_sec', 'max_check_ins',
         'check_in_message', 'final_message',
     ]);
+    const unsafePassthroughKeys = new Set(['__proto__', 'constructor', 'prototype']);
 
     for (const [key, value] of Object.entries(raw)) {
-        if (!knownKeys.has(key)) sanitized[key] = value;
+        if (!knownKeys.has(key) && !unsafePassthroughKeys.has(key)) sanitized[key] = value;
     }
     for (const key of ['enabled', 'inbound_enabled', 'outbound_enabled']) {
         if (typeof raw[key] === 'boolean') sanitized[key] = raw[key];

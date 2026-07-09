@@ -55,4 +55,16 @@ describe('per-agent no-input configuration', () => {
         const extra = JSON.parse(serialized.extra_json || '{}');
         expect(extra.no_input).toEqual({ future_option: 'preserved' });
     });
+
+    it('drops prototype-pollution keys from unknown no_input passthrough', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            extra_json: '{"no_input":{"__proto__":{"polluted":true},"constructor":{"polluted":true},"prototype":{"polluted":true},"future_option":"preserved"}}',
+        });
+
+        const serialized = serializeAgentConfig(state);
+        const extra = JSON.parse(serialized.extra_json || '{}');
+        expect(extra.no_input).toEqual({ future_option: 'preserved' });
+        expect((Object.prototype as { polluted?: boolean }).polluted).toBeUndefined();
+    });
 });
