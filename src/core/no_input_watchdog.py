@@ -8,6 +8,7 @@ Keeping those concerns separate makes the timer deterministic and easy to test.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional
@@ -31,6 +32,57 @@ AnnouncementCallback = Callable[[str, str, str], Awaitable[bool]]
 HangupCallback = Callable[[str], Awaitable[None]]
 PauseCallback = Callable[[str], Awaitable[bool]]
 
+_DEFAULT_CHECK_IN_MESSAGE = "Are you still there?"
+_DEFAULT_FINAL_MESSAGE = "I still can't hear you, so I'll end the call now. Goodbye."
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Coerce common YAML/JSON boolean forms without truthy-string surprises."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _coerce_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    """Return a finite in-range float or the policy default."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed) or parsed < minimum or parsed > maximum:
+        return default
+    return parsed
+
+
+def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    """Return an integral in-range value or the policy default."""
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed) or not parsed.is_integer():
+        return default
+    result = int(parsed)
+    return result if minimum <= result <= maximum else default
+
+
+def _coerce_message(value: Any, default: str) -> str:
+    """Return a non-empty bounded announcement or its safe default."""
+    if value is None:
+        return default
+    message = str(value).strip()
+    return message if 0 < len(message) <= 500 else default
+
 
 @dataclass(frozen=True)
 class NoInputPolicy:
@@ -40,30 +92,26 @@ class NoInputPolicy:
     initial_timeout_sec: float = 30.0
     grace_timeout_sec: float = 15.0
     max_check_ins: int = 1
-    check_in_message: str = "Are you still there?"
-    final_message: str = "I still can't hear you, so I'll end the call now. Goodbye."
+    check_in_message: str = _DEFAULT_CHECK_IN_MESSAGE
+    final_message: str = _DEFAULT_FINAL_MESSAGE
 
     @classmethod
     def from_mapping(cls, value: Optional[Mapping[str, Any]]) -> "NoInputPolicy":
+        """Build a safe policy from merged global and per-agent values."""
         raw = dict(value or {})
-        final_message = raw.get(
-            "final_message",
-            "I still can't hear you, so I'll end the call now. Goodbye.",
-        )
-        if final_message is None:
-            final_message = "I still can't hear you, so I'll end the call now. Goodbye."
         return cls(
-            enabled=bool(raw.get("enabled", True)),
-            inbound_enabled=bool(raw.get("inbound_enabled", True)),
-            outbound_enabled=bool(raw.get("outbound_enabled", False)),
-            initial_timeout_sec=max(1.0, float(raw.get("initial_timeout_sec", 30.0))),
-            grace_timeout_sec=max(1.0, float(raw.get("grace_timeout_sec", 15.0))),
-            max_check_ins=max(0, int(raw.get("max_check_ins", 1))),
-            check_in_message=str(raw.get("check_in_message") or "Are you still there?").strip(),
-            final_message=str(final_message).strip(),
+            enabled=_coerce_bool(raw.get("enabled", True), True),
+            inbound_enabled=_coerce_bool(raw.get("inbound_enabled", True), True),
+            outbound_enabled=_coerce_bool(raw.get("outbound_enabled", False), False),
+            initial_timeout_sec=_coerce_float(raw.get("initial_timeout_sec", 30.0), 30.0, 1.0, 3600.0),
+            grace_timeout_sec=_coerce_float(raw.get("grace_timeout_sec", 15.0), 15.0, 1.0, 3600.0),
+            max_check_ins=_coerce_int(raw.get("max_check_ins", 1), 1, 0, 10),
+            check_in_message=_coerce_message(raw.get("check_in_message"), _DEFAULT_CHECK_IN_MESSAGE),
+            final_message=_coerce_message(raw.get("final_message"), _DEFAULT_FINAL_MESSAGE),
         )
 
     def applies_to(self, *, is_outbound: bool) -> bool:
+        """Return whether this policy applies to the call direction."""
         if not self.enabled:
             return False
         return self.outbound_enabled if is_outbound else self.inbound_enabled
@@ -102,6 +150,7 @@ class NoInputWatchdog:
         should_pause: Optional[PauseCallback] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """Initialize the watchdog with engine-owned speech and hangup callbacks."""
         self._announce = announce
         self._hangup = hangup
         self._should_pause = should_pause
@@ -109,9 +158,11 @@ class NoInputWatchdog:
         self._states: Dict[str, _CallState] = {}
 
     def has_call(self, call_id: str) -> bool:
+        """Return whether a call currently has a registered watchdog."""
         return call_id in self._states
 
     def snapshot(self, call_id: str) -> Optional[Dict[str, Any]]:
+        """Return an observable copy of a call's watchdog state."""
         state = self._states.get(call_id)
         if not state:
             return None
@@ -135,6 +186,7 @@ class NoInputWatchdog:
         *,
         is_outbound: bool,
     ) -> bool:
+        """Replace any prior state and start a watchdog when policy applies."""
         await self.stop(call_id)
         if not policy.applies_to(is_outbound=is_outbound):
             logger.info(
@@ -158,6 +210,7 @@ class NoInputWatchdog:
         return True
 
     async def stop(self, call_id: str) -> None:
+        """Cancel and remove a call watchdog without leaking its gauge."""
         state = self._states.pop(call_id, None)
         if not state:
             return
@@ -171,6 +224,7 @@ class NoInputWatchdog:
         _NO_INPUT_ACTIVE.dec()
 
     async def mark_ready(self, call_id: str) -> None:
+        """Start inactivity timing after greeting/session setup completes."""
         state = self._states.get(call_id)
         if not state:
             return
@@ -180,6 +234,7 @@ class NoInputWatchdog:
         self._wake(state)
 
     async def note_activity(self, call_id: str, source: str) -> None:
+        """Reset inactivity state for authoritative caller activity."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
@@ -195,6 +250,7 @@ class NoInputWatchdog:
         self._wake(state)
 
     async def note_processing(self, call_id: str, active: bool) -> None:
+        """Pause timing while the agent processes a caller turn."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
@@ -223,6 +279,7 @@ class NoInputWatchdog:
         self._wake(state)
 
     async def note_agent_output_start(self, call_id: str) -> None:
+        """Pause and preserve the current deadline during agent output."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
@@ -238,6 +295,7 @@ class NoInputWatchdog:
         self._wake(state)
 
     async def note_agent_output_end(self, call_id: str, *, reset_timer: bool = True) -> None:
+        """Resume timing after agent output, optionally preserving remaining time."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
@@ -262,6 +320,7 @@ class NoInputWatchdog:
         self._wake(state)
 
     async def set_suspended(self, call_id: str, suspended: bool) -> None:
+        """Suspend timing for transfer, hold, or other protected lifecycle states."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
@@ -273,12 +332,15 @@ class NoInputWatchdog:
         self._wake(state)
 
     def _wake(self, state: _CallState) -> None:
+        """Wake the state machine after a state transition."""
         state.event.set()
 
     def _reset_initial_deadline(self, state: _CallState) -> None:
+        """Set a fresh initial idle deadline from the monotonic clock."""
         state.deadline = self._clock() + state.policy.initial_timeout_sec
 
     def _can_count(self, state: _CallState) -> bool:
+        """Return whether idle time may currently advance."""
         return bool(
             state.ready
             and not state.input_active
@@ -289,6 +351,7 @@ class NoInputWatchdog:
         )
 
     async def _wait_for_change(self, state: _CallState, timeout: Optional[float] = None) -> bool:
+        """Wait for a state change and report whether one beat the timeout."""
         state.event.clear()
         try:
             if timeout is None:
@@ -300,6 +363,7 @@ class NoInputWatchdog:
             return False
 
     async def _run(self, state: _CallState) -> None:
+        """Drive check-in and terminal transitions for one call."""
         try:
             while self._states.get(state.call_id) is state and not state.terminal:
                 if not self._can_count(state):
@@ -339,8 +403,12 @@ class NoInputWatchdog:
         except Exception:
             logger.error("Caller inactivity watchdog failed", call_id=state.call_id, exc_info=True)
             _NO_INPUT_EVENTS.labels("watchdog_error").inc()
+            if self._states.get(state.call_id) is state:
+                self._states.pop(state.call_id, None)
+                _NO_INPUT_ACTIVE.dec()
 
     async def _perform_check_in(self, state: _CallState) -> None:
+        """Speak one check-in and enter the configured reply grace window."""
         activity_before = state.last_activity_at
         state.check_ins += 1
         state.phase = "announcing"
@@ -361,6 +429,13 @@ class NoInputWatchdog:
             )
             if not spoken:
                 _NO_INPUT_EVENTS.labels("announcement_failed").inc()
+        except Exception:
+            logger.error(
+                "Caller inactivity check-in announcement failed",
+                call_id=state.call_id,
+                exc_info=True,
+            )
+            _NO_INPUT_EVENTS.labels("announcement_failed").inc()
         finally:
             state.self_announcement = False
 
@@ -376,6 +451,7 @@ class NoInputWatchdog:
         state.deadline = self._clock() + state.policy.grace_timeout_sec
 
     async def _finish_for_no_input(self, state: _CallState) -> None:
+        """Speak the terminal warning and attempt the engine-owned hangup."""
         activity_before = state.last_activity_at
         if state.policy.final_message:
             state.phase = "final_announcement"
@@ -389,6 +465,13 @@ class NoInputWatchdog:
                 )
                 if not spoken:
                     _NO_INPUT_EVENTS.labels("announcement_failed").inc()
+            except Exception:
+                logger.error(
+                    "Caller inactivity final announcement failed",
+                    call_id=state.call_id,
+                    exc_info=True,
+                )
+                _NO_INPUT_EVENTS.labels("announcement_failed").inc()
             finally:
                 state.self_announcement = False
 
@@ -405,4 +488,12 @@ class NoInputWatchdog:
         state.phase = "hangup"
         _NO_INPUT_EVENTS.labels("hangup").inc()
         logger.info("Caller inactivity timeout reached", call_id=state.call_id)
-        await self._hangup(state.call_id)
+        try:
+            await self._hangup(state.call_id)
+        except Exception:
+            logger.error(
+                "Caller inactivity hangup callback failed",
+                call_id=state.call_id,
+                exc_info=True,
+            )
+            _NO_INPUT_EVENTS.labels("watchdog_error").inc()

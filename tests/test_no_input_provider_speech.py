@@ -47,13 +47,26 @@ async def test_realtime_providers_create_tools_disabled_voice_response(provider_
 async def test_google_live_uses_active_session_for_announcement():
     provider = GoogleLiveProvider.__new__(GoogleLiveProvider)
     provider._call_id = "call-google"
-    provider._send_message = AsyncMock()
+    provider.websocket = _WebSocket()
+    provider._send_message = AsyncMock(return_value=True)
 
     assert await provider.speak_text("Are you still there?") is True
     payload = provider._send_message.await_args.args[0]
     text = payload["clientContent"]["turns"][0]["parts"][0]["text"]
     assert "Are you still there?" in text
     assert payload["clientContent"]["turnComplete"] is True
+
+
+@pytest.mark.asyncio
+async def test_google_live_rejects_announcement_when_websocket_is_closed():
+    provider = GoogleLiveProvider.__new__(GoogleLiveProvider)
+    provider._call_id = "call-google-closed"
+    provider.websocket = _WebSocket()
+    provider.websocket.state.name = "CLOSED"
+    provider._send_message = AsyncMock(return_value=True)
+
+    assert await provider.speak_text("Are you still there?") is False
+    provider._send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -140,7 +153,7 @@ class _MessageWebSocket:
         try:
             return next(self._iterator)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None
 
 
 @pytest.mark.asyncio
@@ -217,3 +230,6 @@ async def test_local_provider_requests_tts_for_active_call():
         "text": "Are you still there?",
         "call_id": "call-local",
     }
+
+    provider.speak_text = AsyncMock(return_value=True)
+    assert await provider.speak("Still there?") is True

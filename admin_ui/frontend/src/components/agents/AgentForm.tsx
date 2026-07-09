@@ -336,6 +336,24 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         });
     };
 
+    const updateNoInputNumberOverride = (
+        key: 'initial_timeout_sec' | 'grace_timeout_sec' | 'max_check_ins',
+        raw: string,
+        minimum: number,
+        maximum: number,
+        integerOnly = false,
+    ) => {
+        if (raw === '') {
+            updateNoInputOverride(key, '');
+            return;
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < minimum || value > maximum || (integerOnly && !Number.isInteger(value))) {
+            return;
+        }
+        updateNoInputOverride(key, value);
+    };
+
     const noInputNumber = (key: string): number | '' =>
         typeof toolState.noInput[key] === 'number' ? (toolState.noInput[key] as number) : '';
 
@@ -619,7 +637,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                                 max="3600"
                                 value={noInputNumber('initial_timeout_sec')}
                                 placeholder="Inherit: 30"
-                                onChange={(e) => updateNoInputOverride('initial_timeout_sec', e.target.value === '' ? '' : Number(e.target.value))}
+                                onChange={(e) => updateNoInputNumberOverride('initial_timeout_sec', e.target.value, 1, 3600)}
                             />
                             <FormInput
                                 id="agent-no-input-grace"
@@ -629,7 +647,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                                 max="3600"
                                 value={noInputNumber('grace_timeout_sec')}
                                 placeholder="Inherit: 15"
-                                onChange={(e) => updateNoInputOverride('grace_timeout_sec', e.target.value === '' ? '' : Number(e.target.value))}
+                                onChange={(e) => updateNoInputNumberOverride('grace_timeout_sec', e.target.value, 1, 3600)}
                             />
                             <FormInput
                                 id="agent-no-input-attempts"
@@ -637,9 +655,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                                 type="number"
                                 min="0"
                                 max="10"
+                                step="1"
                                 value={noInputNumber('max_check_ins')}
                                 placeholder="Inherit: 1"
-                                onChange={(e) => updateNoInputOverride('max_check_ins', e.target.value === '' ? '' : Number(e.target.value))}
+                                onChange={(e) => updateNoInputNumberOverride('max_check_ins', e.target.value, 0, 10, true)}
                             />
                         </div>
 

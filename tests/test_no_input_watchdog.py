@@ -9,6 +9,7 @@ from src.core.models import CallSession
 from src.core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
 from src.core.conversation_coordinator import ConversationCoordinator
 from src.core.session_store import SessionStore
+from src.config import NoInputConfig
 from src.engine import Engine
 
 
@@ -20,9 +21,35 @@ async def _wait_until(predicate, timeout=1.0):
         await asyncio.sleep(0.005)
 
 
-def test_policy_preserves_an_explicit_empty_final_message():
-    policy = NoInputPolicy.from_mapping({"final_message": ""})
-    assert policy.final_message == ""
+def test_policy_coerces_raw_overrides_without_truthy_string_or_numeric_surprises():
+    policy = NoInputPolicy.from_mapping(
+        {
+            "enabled": "false",
+            "inbound_enabled": "0",
+            "outbound_enabled": "yes",
+            "initial_timeout_sec": float("nan"),
+            "grace_timeout_sec": 5000,
+            "max_check_ins": 1.5,
+            "check_in_message": "   ",
+            "final_message": "",
+        }
+    )
+
+    assert policy.enabled is False
+    assert policy.inbound_enabled is False
+    assert policy.outbound_enabled is True
+    assert policy.initial_timeout_sec == 30.0
+    assert policy.grace_timeout_sec == 15.0
+    assert policy.max_check_ins == 1
+    assert policy.check_in_message == "Are you still there?"
+    assert policy.final_message == "I still can't hear you, so I'll end the call now. Goodbye."
+
+
+def test_global_config_rejects_blank_announcement_messages():
+    with pytest.raises(ValueError):
+        NoInputConfig(final_message="   ")
+    with pytest.raises(ValueError):
+        NoInputConfig(check_in_message="")
 
 
 @pytest.mark.asyncio
@@ -56,6 +83,69 @@ async def test_watchdog_checks_in_then_says_final_message_and_hangs_up():
         assert watchdog.snapshot("call-1")["phase"] == "hangup"
     finally:
         await watchdog.stop("call-1")
+
+
+@pytest.mark.asyncio
+async def test_final_announcement_exception_still_attempts_hangup():
+    hangup = AsyncMock()
+
+    async def announce(_call_id, _text, kind):
+        if kind == "final":
+            raise RuntimeError("provider unavailable")
+        return True
+
+    watchdog = NoInputWatchdog(announce, hangup)
+    policy = NoInputPolicy(
+        initial_timeout_sec=0.03,
+        grace_timeout_sec=0.02,
+        max_check_ins=0,
+    )
+    await watchdog.register("call-final-failure", policy, is_outbound=False)
+    try:
+        await watchdog.mark_ready("call-final-failure")
+        await _wait_until(lambda: hangup.await_count == 1)
+        assert watchdog.snapshot("call-final-failure")["phase"] == "hangup"
+    finally:
+        await watchdog.stop("call-final-failure")
+
+
+@pytest.mark.asyncio
+async def test_check_in_announcement_exception_keeps_watchdog_running():
+    kinds = []
+    hangup = AsyncMock()
+
+    async def announce(_call_id, _text, kind):
+        kinds.append(kind)
+        if kind == "check_in":
+            raise RuntimeError("provider unavailable")
+        return True
+
+    watchdog = NoInputWatchdog(announce, hangup)
+    policy = NoInputPolicy(
+        initial_timeout_sec=0.03,
+        grace_timeout_sec=0.02,
+        max_check_ins=1,
+    )
+    await watchdog.register("call-check-in-failure", policy, is_outbound=False)
+    try:
+        await watchdog.mark_ready("call-check-in-failure")
+        await _wait_until(lambda: hangup.await_count == 1)
+        assert kinds == ["check_in", "final"]
+    finally:
+        await watchdog.stop("call-check-in-failure")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_watchdog_failure_removes_active_state():
+    async def should_pause(_call_id):
+        raise RuntimeError("session store unavailable")
+
+    watchdog = NoInputWatchdog(AsyncMock(return_value=True), AsyncMock(), should_pause=should_pause)
+    policy = NoInputPolicy(initial_timeout_sec=0.02, grace_timeout_sec=0.02, max_check_ins=1)
+    await watchdog.register("call-run-failure", policy, is_outbound=False)
+    await watchdog.mark_ready("call-run-failure")
+
+    await _wait_until(lambda: not watchdog.has_call("call-run-failure"))
 
 
 @pytest.mark.asyncio
@@ -128,6 +218,57 @@ async def test_hosted_silence_output_pauses_without_resetting_deadline():
         await _wait_until(lambda: announcements == ["check_in"], timeout=0.07)
     finally:
         await watchdog.stop("call-hosted-silence")
+
+
+@pytest.mark.asyncio
+async def test_raw_audio_detector_ignores_audio_during_native_provider_output():
+    engine = Engine.__new__(Engine)
+    engine.no_input_watchdog = SimpleNamespace(
+        has_call=lambda _call_id: True,
+        note_input_state=AsyncMock(),
+    )
+    engine._agent_output_active_calls = {"call-native-output"}
+    session = CallSession(
+        call_id="call-native-output",
+        caller_channel_id="channel-native-output",
+    )
+    session.tts_playing = False
+
+    await engine._observe_no_input_audio(
+        session,
+        b"\xff\x7f" * 160,
+        16000,
+        source="audiosocket",
+    )
+
+    engine.no_input_watchdog.note_input_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_observer_failure_does_not_break_tts_gating():
+    session_store = SessionStore()
+    session = CallSession(
+        call_id="call-observer-failure",
+        caller_channel_id="channel-observer-failure",
+    )
+    await session_store.upsert_call(session)
+    coordinator = ConversationCoordinator(session_store)
+    coordinator.set_no_input_watchdog(
+        SimpleNamespace(
+            note_agent_output_start=AsyncMock(side_effect=RuntimeError("start failed")),
+            note_agent_output_end=AsyncMock(side_effect=RuntimeError("end failed")),
+        )
+    )
+
+    assert await coordinator.on_tts_start("call-observer-failure", "playback-1") is True
+    during = await session_store.get_by_call_id("call-observer-failure")
+    assert during.tts_playing is True
+    assert during.audio_capture_enabled is False
+
+    assert await coordinator.on_tts_end("call-observer-failure", "playback-1") is True
+    after = await session_store.get_by_call_id("call-observer-failure")
+    assert after.tts_playing is False
+    assert after.audio_capture_enabled is True
 
 
 @pytest.mark.asyncio

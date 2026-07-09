@@ -2096,9 +2096,9 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             logger.warning("Failed to send direct speech request to Local AI Server", exc_info=True)
             return False
 
-    async def speak(self, text: str):
+    async def speak(self, text: str) -> bool:
         """Backward-compatible alias for the legacy provider API."""
-        await self.speak_text(text)
+        return await self.speak_text(text)
     
     async def text_to_speech(self, text: str) -> Optional[bytes]:
         """Generate TTS audio for the given text."""

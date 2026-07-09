@@ -319,7 +319,7 @@ The engine-level watchdog prevents an answered call from remaining open indefini
 - `no_input.grace_timeout_sec`: Reply window after each check-in. Defaults to 15 seconds.
 - `no_input.max_check_ins`: Number of check-ins before the final message and hangup. Defaults to 1; `0` skips directly to the final message.
 - `no_input.check_in_message`: Check-in text, spoken by the active provider/pipeline in the agent's configured voice.
-- `no_input.final_message`: Text spoken before the ARI hangup. It may be empty.
+- `no_input.final_message`: Non-empty text spoken before the ARI hangup. Blank or whitespace-only per-agent values inherit the safe default.
 
 Caller media activity, provider speech-start events, and user transcripts reset the window. The timer pauses during greetings, agent TTS, LLM processing, sustained caller speech, and other output gating. A terminal watchdog hangup is stored in Call History as `no_input_timeout`, not as a provider error.
 

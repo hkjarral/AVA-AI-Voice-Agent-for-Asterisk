@@ -184,26 +184,26 @@ async def test_google_adapter_blocks_hangup_during_engine_announcement():
     from src.tools.context import ToolExecutionContext
 
     tool_registry.clear()
-    tool_registry.register_instance(
-        _BlockedIfExecutedTool(ToolDefinition(name="hangup_call", description="x", category=ToolCategory.TELEPHONY))
-    )
-
-    adapter = GoogleToolAdapter(tool_registry)
-    context = ToolExecutionContext(
-        call_id="c1",
-        session_store=_AnnouncementSessionStore(),
-        ari_client=object(),
-        config={"tools": {"enabled": True}},
-        provider_name="google_live",
-    )
-
-    result = await adapter.execute_tool("hangup_call", {"farewell_message": "Bye"}, context)
-
-    assert result["status"] == "error"
-    assert "engine announcement" in result["message"].lower()
-    assert result.get("will_hangup") is not True
-
-    tool_registry.clear()
+    try:
+        tool_registry.register_instance(
+            _BlockedIfExecutedTool(
+                ToolDefinition(name="hangup_call", description="x", category=ToolCategory.TELEPHONY)
+            )
+        )
+        adapter = GoogleToolAdapter(tool_registry)
+        context = ToolExecutionContext(
+            call_id="c1",
+            session_store=_AnnouncementSessionStore(),
+            ari_client=object(),
+            config={"tools": {"enabled": True}},
+            provider_name="google_live",
+        )
+        result = await adapter.execute_tool("hangup_call", {"farewell_message": "Bye"}, context)
+        assert result["status"] == "error"
+        assert "engine announcement" in result["message"].lower()
+        assert result.get("will_hangup") is not True
+    finally:
+        tool_registry.clear()
 
 
 @pytest.mark.unit

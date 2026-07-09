@@ -34,4 +34,25 @@ describe('per-agent no-input configuration', () => {
         const serialized = serializeAgentConfig(state);
         expect(serialized.extra_json).toBeNull();
     });
+
+    it('drops invalid known overrides before persistence', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            extra_json: JSON.stringify({
+                no_input: {
+                    enabled: 'false',
+                    initial_timeout_sec: null,
+                    grace_timeout_sec: 5000,
+                    max_check_ins: 1.5,
+                    final_message: '   ',
+                    future_option: 'preserved',
+                },
+            }),
+        });
+
+        state.noInput.initial_timeout_sec = Number.NaN;
+        const serialized = serializeAgentConfig(state);
+        const extra = JSON.parse(serialized.extra_json || '{}');
+        expect(extra.no_input).toEqual({ future_option: 'preserved' });
+    });
 });

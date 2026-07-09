@@ -37,6 +37,39 @@ const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
 const asObject = (v: unknown): Record<string, unknown> =>
     v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
 
+const sanitizeNoInputOverrides = (raw: Record<string, unknown>): Record<string, unknown> => {
+    const sanitized: Record<string, unknown> = {};
+    const knownKeys = new Set([
+        'enabled', 'inbound_enabled', 'outbound_enabled',
+        'initial_timeout_sec', 'grace_timeout_sec', 'max_check_ins',
+        'check_in_message', 'final_message',
+    ]);
+
+    for (const [key, value] of Object.entries(raw)) {
+        if (!knownKeys.has(key)) sanitized[key] = value;
+    }
+    for (const key of ['enabled', 'inbound_enabled', 'outbound_enabled']) {
+        if (typeof raw[key] === 'boolean') sanitized[key] = raw[key];
+    }
+    for (const key of ['initial_timeout_sec', 'grace_timeout_sec']) {
+        const value = raw[key];
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 3600) {
+            sanitized[key] = value;
+        }
+    }
+    const attempts = raw['max_check_ins'];
+    if (typeof attempts === 'number' && Number.isInteger(attempts) && attempts >= 0 && attempts <= 10) {
+        sanitized['max_check_ins'] = attempts;
+    }
+    for (const key of ['check_in_message', 'final_message']) {
+        const value = raw[key];
+        if (typeof value === 'string' && value.trim() && value.trim().length <= 500) {
+            sanitized[key] = value.trim();
+        }
+    }
+    return sanitized;
+};
+
 function safeParseObject(raw?: string | null): Record<string, unknown> {
     if (!raw || !raw.trim()) return {};
     try {
@@ -111,7 +144,8 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     setArr('disable_global_pre_call_tools', state.disableGlobalPreCall);
     setArr('disable_global_in_call_tools', state.disableGlobalInCall);
     setArr('disable_global_post_call_tools', state.disableGlobalPostCall);
-    if (Object.keys(state.noInput).length) extra['no_input'] = state.noInput;
+    const noInput = sanitizeNoInputOverrides(state.noInput);
+    if (Object.keys(noInput).length) extra['no_input'] = noInput;
     else delete extra['no_input'];
 
     return {

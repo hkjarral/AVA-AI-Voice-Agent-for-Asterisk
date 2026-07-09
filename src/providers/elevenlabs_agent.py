@@ -404,10 +404,7 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         }
         try:
             await self._ws.send(json.dumps(message))
-            logger.info(
-                f"[elevenlabs] [{self._call_id}] Sent no-input announcement request",
-                text_preview=text[:80],
-            )
+            logger.info(f"[elevenlabs] [{self._call_id}] Sent no-input announcement request")
             return True
         except Exception as exc:
             logger.warning(f"[elevenlabs] [{self._call_id}] Failed to send no-input announcement: {exc}")

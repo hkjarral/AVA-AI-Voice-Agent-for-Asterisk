@@ -53,6 +53,7 @@ MCPServerDefaultsConfig = _parent_config.MCPServerDefaultsConfig
 BargeInConfig = _parent_config.BargeInConfig
 LLMConfig = _parent_config.LLMConfig
 VADConfig = _parent_config.VADConfig
+NoInputConfig = _parent_config.NoInputConfig
 StreamingConfig = _parent_config.StreamingConfig
 LoggingConfig = _parent_config.LoggingConfig
 PipelineEntry = _parent_config.PipelineEntry
@@ -87,6 +88,7 @@ __all__ = [
     'BargeInConfig',
     'LLMConfig',
     'VADConfig',
+    'NoInputConfig',
     'StreamingConfig',
     'LoggingConfig',
     'PipelineEntry',

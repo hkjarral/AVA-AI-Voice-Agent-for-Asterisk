@@ -871,8 +871,18 @@ class NoInputConfig(BaseModel):
     check_in_message: str = Field(default="Are you still there?", min_length=1, max_length=500)
     final_message: str = Field(
         default="I still can't hear you, so I'll end the call now. Goodbye.",
+        min_length=1,
         max_length=500,
     )
+
+    @field_validator("check_in_message", "final_message")
+    @classmethod
+    def validate_announcement_message(cls, value: str) -> str:
+        """Reject blank announcements and store normalized message text."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("caller inactivity announcement messages must not be blank")
+        return normalized
 
 
 class StreamingConfig(BaseModel):

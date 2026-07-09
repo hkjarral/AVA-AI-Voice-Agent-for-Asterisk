@@ -1222,7 +1222,8 @@ class Engine:
             return
         # Raw detection is disabled during agent output to avoid echo resets. Barge-in,
         # provider VAD, and TALK_DETECT remain authoritative during that window.
-        if bool(getattr(session, "tts_playing", False)):
+        provider_output_active = session.call_id in getattr(self, "_agent_output_active_calls", set())
+        if bool(getattr(session, "tts_playing", False)) or provider_output_active:
             return
         try:
             rate = int(sample_rate_hz or 16000)
