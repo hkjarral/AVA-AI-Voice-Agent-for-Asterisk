@@ -485,6 +485,7 @@ class Engine:
         # real AgentAudio/AgentAudioDone events still define generation lifecycle.
         self._provider_output_operations: Dict[str, Dict[str, Any]] = {}
         self._agent_output_active_calls: Set[str] = set()
+        self._provider_output_drain_tasks: Dict[str, asyncio.Task] = {}
         # All terminal paths converge on one idempotent drain-and-hangup owner.
         self._terminal_hangup_locks: Dict[str, asyncio.Lock] = {}
         self._terminal_hangup_started: Set[str] = set()
@@ -1158,6 +1159,14 @@ class Engine:
         if operation:
             operation["audio_started"].set()
 
+        drain_tasks = getattr(self, "_provider_output_drain_tasks", None)
+        if drain_tasks is None:
+            drain_tasks = {}
+            self._provider_output_drain_tasks = drain_tasks
+        pending_drain = drain_tasks.pop(call_id, None)
+        if pending_drain and not pending_drain.done():
+            pending_drain.cancel()
+
         active = getattr(self, "_agent_output_active_calls", None)
         if active is None:
             active = set()
@@ -1169,14 +1178,11 @@ class Engine:
                 await watchdog.note_agent_output_start(call_id)
 
     async def _note_provider_output_end(self, call_id: str, session: Optional[CallSession]) -> None:
-        """Observe a true provider generation boundary and resume watchdog timing."""
+        """Observe generation completion and defer idle timing until transport drain."""
         operations = getattr(self, "_provider_output_operations", {})
         operation = operations.get(call_id)
         if operation and operation["audio_started"].is_set():
             operation["generation_done"].set()
-
-        active = getattr(self, "_agent_output_active_calls", set())
-        active.discard(call_id)
 
         reset_timer = True
         try:
@@ -1187,9 +1193,65 @@ class Engine:
         except Exception:
             logger.debug("Failed clearing provider silence-turn marker", call_id=call_id, exc_info=True)
 
+        active = getattr(self, "_agent_output_active_calls", set())
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if call_id not in active:
+            if watchdog is not None:
+                await watchdog.note_agent_output_end(call_id, reset_timer=reset_timer)
+            return
+
+        drain_tasks = getattr(self, "_provider_output_drain_tasks", None)
+        if drain_tasks is None:
+            drain_tasks = {}
+            self._provider_output_drain_tasks = drain_tasks
+        previous = drain_tasks.get(call_id)
+        if previous and not previous.done():
+            # Duplicate AgentAudioDone for the same response must not replace a
+            # pending drain or change its hosted-silence reset semantics. A real
+            # new response cancels and removes this task in output-start.
+            return
+        drain_tasks.pop(call_id, None)
+        task = self._fire_and_forget_for_call(
+            call_id,
+            self._finish_provider_output_after_drain(call_id, reset_timer=reset_timer),
+            name=f"provider-output-drain-{call_id}",
+        )
+        drain_tasks[call_id] = task
+
+    async def _finish_provider_output_after_drain(self, call_id: str, *, reset_timer: bool) -> None:
+        """Clear provider-output state only after queued caller audio is emitted."""
+        current_task = asyncio.current_task()
+        try:
+            drained = await self._wait_for_call_audio_drain(
+                call_id,
+                timeout_sec=30.0,
+                quiet_sec=self._terminal_transport_quiet_sec(),
+                reason="provider_output",
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            drained = False
+            logger.error("Provider output drain observer failed", call_id=call_id, exc_info=True)
+
+        drain_tasks = getattr(self, "_provider_output_drain_tasks", {})
+        if drain_tasks.get(call_id) is not current_task:
+            return
+        drain_tasks.pop(call_id, None)
+        getattr(self, "_agent_output_active_calls", set()).discard(call_id)
+
+        session = await self.session_store.get_by_call_id(call_id)
+        if not session or bool(getattr(session, "cleanup_in_progress", False)):
+            return
         watchdog = getattr(self, "no_input_watchdog", None)
         if watchdog is not None:
             await watchdog.note_agent_output_end(call_id, reset_timer=reset_timer)
+        logger.debug(
+            "Provider output lifecycle completed after transport drain",
+            call_id=call_id,
+            audio_drained=drained,
+            reset_timer=reset_timer,
+        )
 
     async def _no_input_should_pause(self, call_id: str) -> bool:
         """Return true for lifecycle states where caller-idle policy must not run."""
@@ -6574,6 +6636,9 @@ class Engine:
                 logger.debug("No-input watchdog cleanup failed", call_id=call_id, exc_info=True)
             try:
                 self._provider_output_operations.pop(call_id, None)
+                drain_task = self._provider_output_drain_tasks.pop(call_id, None)
+                if drain_task and not drain_task.done():
+                    drain_task.cancel()
                 self._agent_output_active_calls.discard(call_id)
                 fallback = self._terminal_fallback_tasks.pop(call_id, None)
                 if fallback and not fallback.done():
@@ -10538,7 +10603,6 @@ class Engine:
                 # Provider generation has ended. The downstream transport may
                 # still hold seconds of audio, so lifecycle completion and drain
                 # completion remain separate signals.
-                await self._note_provider_output_end(call_id, session)
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
                 # This prevents cutting into the next (new) response once the provider finishes the interrupted one.
                 try:
@@ -10565,14 +10629,22 @@ class Engine:
                     except Exception:
                         logger.debug("Failed to mark segment boundary", call_id=call_id, exc_info=True)
                     try:
-                        await self.streaming_playback_manager.end_segment_gating(call_id)
+                        await self.streaming_playback_manager.end_segment_gating(
+                            call_id,
+                            notify_no_input=False,
+                        )
                     except Exception:
                         logger.debug("Failed to end segment gating", call_id=call_id, exc_info=True)
                     # Also clear fallback gating token if direct gating was applied
                     try:
                         _fallback_token = f"tts_segment:{call_id}"
                         if self.conversation_coordinator:
-                            await self.conversation_coordinator.on_tts_end(call_id, _fallback_token, reason="segment-end-fallback")
+                            await self.conversation_coordinator.on_tts_end(
+                                call_id,
+                                _fallback_token,
+                                reason="segment-end-fallback",
+                                notify_no_input=False,
+                            )
                         else:
                             await self.session_store.clear_gating_token(call_id, _fallback_token)
                     except Exception:
@@ -10604,6 +10676,11 @@ class Engine:
                     else:
                         logger.debug("AgentAudioDone with no active stream queue", call_id=call_id)
                     self._provider_stream_formats.pop(call_id, None)
+
+                # Publish generation completion only after the stream boundary
+                # or sentinel is in place. The lifecycle observer then keeps raw
+                # VAD/watchdog output state active until those buffers drain.
+                await self._note_provider_output_end(call_id, session)
                 
                 # Signal farewell done event if we're waiting for hangup
                 farewell_key = f"farewell_done_{call_id}"
