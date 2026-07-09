@@ -52,7 +52,13 @@ class NoInputWatchdogObserver(Protocol):
         """Observe the start of caller-facing output."""
         ...
 
-    async def note_agent_output_end(self, call_id: str, *, reset_timer: bool = True) -> None:
+    async def note_agent_output_end(
+        self,
+        call_id: str,
+        *,
+        reset_timer: bool = True,
+        preserve_policy_state: bool = False,
+    ) -> None:
         """Observe the end of caller-facing output."""
         ...
 

@@ -294,13 +294,23 @@ class NoInputWatchdog:
         state.deadline = None
         self._wake(state)
 
-    async def note_agent_output_end(self, call_id: str, *, reset_timer: bool = True) -> None:
+    async def note_agent_output_end(
+        self,
+        call_id: str,
+        *,
+        reset_timer: bool = True,
+        preserve_policy_state: bool = False,
+    ) -> None:
         """Resume timing after agent output, optionally preserving remaining time."""
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
         state.output_active = False
         state.processing = False
+        if preserve_policy_state:
+            state.output_pause_remaining = None
+            self._wake(state)
+            return
         if not state.self_announcement and reset_timer:
             state.check_ins = 0
             state.phase = "waiting"

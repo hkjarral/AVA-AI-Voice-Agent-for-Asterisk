@@ -1183,6 +1183,9 @@ class Engine:
         operation = operations.get(call_id)
         if operation and operation["audio_started"].is_set():
             operation["generation_done"].set()
+        preserve_policy_state = bool(
+            operation and str(operation.get("purpose") or "").startswith("no_input_")
+        )
 
         reset_timer = True
         try:
@@ -1213,12 +1216,22 @@ class Engine:
         drain_tasks.pop(call_id, None)
         task = self._fire_and_forget_for_call(
             call_id,
-            self._finish_provider_output_after_drain(call_id, reset_timer=reset_timer),
+            self._finish_provider_output_after_drain(
+                call_id,
+                reset_timer=reset_timer,
+                preserve_policy_state=preserve_policy_state,
+            ),
             name=f"provider-output-drain-{call_id}",
         )
         drain_tasks[call_id] = task
 
-    async def _finish_provider_output_after_drain(self, call_id: str, *, reset_timer: bool) -> None:
+    async def _finish_provider_output_after_drain(
+        self,
+        call_id: str,
+        *,
+        reset_timer: bool,
+        preserve_policy_state: bool,
+    ) -> None:
         """Clear provider-output state only after queued caller audio is emitted."""
         current_task = asyncio.current_task()
         try:
@@ -1245,12 +1258,17 @@ class Engine:
             return
         watchdog = getattr(self, "no_input_watchdog", None)
         if watchdog is not None:
-            await watchdog.note_agent_output_end(call_id, reset_timer=reset_timer)
+            await watchdog.note_agent_output_end(
+                call_id,
+                reset_timer=reset_timer,
+                preserve_policy_state=preserve_policy_state,
+            )
         logger.debug(
             "Provider output lifecycle completed after transport drain",
             call_id=call_id,
             audio_drained=drained,
             reset_timer=reset_timer,
+            preserve_policy_state=preserve_policy_state,
         )
 
     async def _no_input_should_pause(self, call_id: str) -> bool:

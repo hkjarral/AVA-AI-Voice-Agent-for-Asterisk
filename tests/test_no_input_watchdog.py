@@ -221,6 +221,35 @@ async def test_hosted_silence_output_pauses_without_resetting_deadline():
 
 
 @pytest.mark.asyncio
+async def test_self_announcement_drain_completion_preserves_grace_state():
+    watchdog = NoInputWatchdog(AsyncMock(return_value=True), AsyncMock())
+    policy = NoInputPolicy(initial_timeout_sec=30.0, grace_timeout_sec=15.0, max_check_ins=1)
+    await watchdog.register("call-self-announcement", policy, is_outbound=False)
+    try:
+        await watchdog.mark_ready("call-self-announcement")
+        state = watchdog._states["call-self-announcement"]
+        state.output_active = True
+        state.self_announcement = False
+        state.phase = "grace"
+        state.check_ins = 1
+        state.deadline = 1234.5
+
+        await watchdog.note_agent_output_end(
+            "call-self-announcement",
+            reset_timer=True,
+            preserve_policy_state=True,
+        )
+
+        snapshot = watchdog.snapshot("call-self-announcement")
+        assert snapshot["output_active"] is False
+        assert snapshot["phase"] == "grace"
+        assert snapshot["check_ins"] == 1
+        assert snapshot["deadline"] == 1234.5
+    finally:
+        await watchdog.stop("call-self-announcement")
+
+
+@pytest.mark.asyncio
 async def test_raw_audio_detector_ignores_audio_during_native_provider_output():
     engine = Engine.__new__(Engine)
     engine.no_input_watchdog = SimpleNamespace(
@@ -245,7 +274,7 @@ async def test_raw_audio_detector_ignores_audio_during_native_provider_output():
 
 
 @pytest.mark.asyncio
-async def test_provider_output_remains_active_until_transport_drain_completes():
+async def test_no_input_provider_output_drains_without_resetting_policy_state():
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
     engine._call_bg_tasks = {}
@@ -272,6 +301,12 @@ async def test_provider_output_remains_active_until_transport_drain_completes():
         caller_channel_id="channel-provider-tail",
     )
     await engine.session_store.upsert_call(session)
+    engine._provider_output_operations[session.call_id] = {
+        "output_id": "no-input-check-in",
+        "purpose": "no_input_check_in",
+        "audio_started": asyncio.Event(),
+        "generation_done": asyncio.Event(),
+    }
 
     await engine._note_provider_output_start(session.call_id)
     await engine._note_provider_output_end(session.call_id, session)
@@ -285,6 +320,7 @@ async def test_provider_output_remains_active_until_transport_drain_completes():
     engine.no_input_watchdog.note_agent_output_end.assert_awaited_once_with(
         session.call_id,
         reset_timer=True,
+        preserve_policy_state=True,
     )
 
 
