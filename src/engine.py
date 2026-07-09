@@ -480,6 +480,15 @@ class Engine:
         # Streaming per-call persistent stream and gating state
         self._provider_stream_ids: Dict[str, str] = {}
         self._segment_tts_active: Set[str] = set()
+        # Output lifecycle is intentionally separate from TTS/microphone gating.
+        # Native-AEC providers do not re-arm gating on every response, but their
+        # real AgentAudio/AgentAudioDone events still define generation lifecycle.
+        self._provider_output_operations: Dict[str, Dict[str, Any]] = {}
+        self._agent_output_active_calls: Set[str] = set()
+        # All terminal paths converge on one idempotent drain-and-hangup owner.
+        self._terminal_hangup_locks: Dict[str, asyncio.Lock] = {}
+        self._terminal_hangup_started: Set[str] = set()
+        self._terminal_fallback_tasks: Dict[str, asyncio.Task] = {}
         
         self.vad_manager: Optional[EnhancedVADManager] = None
         self.webrtc_vad = None
@@ -1118,6 +1127,68 @@ class Engine:
         watchdog = getattr(self, "no_input_watchdog", None)
         if watchdog is not None:
             await watchdog.mark_ready(call_id)
+
+    def _begin_provider_output_operation(self, call_id: str, output_id: str, purpose: str) -> Dict[str, Any]:
+        """Create a correlation boundary for engine-requested provider speech."""
+        operations = getattr(self, "_provider_output_operations", None)
+        if operations is None:
+            operations = {}
+            self._provider_output_operations = operations
+        operation = {
+            "output_id": output_id,
+            "purpose": purpose,
+            "created_at": time.time(),
+            "audio_started": asyncio.Event(),
+            "generation_done": asyncio.Event(),
+        }
+        operations[call_id] = operation
+        return operation
+
+    def _end_provider_output_operation(self, call_id: str, output_id: str) -> None:
+        operations = getattr(self, "_provider_output_operations", {})
+        operation = operations.get(call_id)
+        if operation and operation.get("output_id") == output_id:
+            operations.pop(call_id, None)
+
+    async def _note_provider_output_start(self, call_id: str) -> None:
+        """Observe real caller-facing provider audio without changing AEC gating."""
+        operations = getattr(self, "_provider_output_operations", {})
+        operation = operations.get(call_id)
+        if operation:
+            operation["audio_started"].set()
+
+        active = getattr(self, "_agent_output_active_calls", None)
+        if active is None:
+            active = set()
+            self._agent_output_active_calls = active
+        if call_id not in active:
+            active.add(call_id)
+            watchdog = getattr(self, "no_input_watchdog", None)
+            if watchdog is not None:
+                await watchdog.note_agent_output_start(call_id)
+
+    async def _note_provider_output_end(self, call_id: str, session: Optional[CallSession]) -> None:
+        """Observe a true provider generation boundary and resume watchdog timing."""
+        operations = getattr(self, "_provider_output_operations", {})
+        operation = operations.get(call_id)
+        if operation and operation["audio_started"].is_set():
+            operation["generation_done"].set()
+
+        active = getattr(self, "_agent_output_active_calls", set())
+        active.discard(call_id)
+
+        reset_timer = True
+        try:
+            state = getattr(session, "no_input_state", None)
+            if isinstance(state, dict) and bool(state.pop("provider_silence_turn", False)):
+                reset_timer = False
+                await self._save_session(session)
+        except Exception:
+            logger.debug("Failed clearing provider silence-turn marker", call_id=call_id, exc_info=True)
+
+        watchdog = getattr(self, "no_input_watchdog", None)
+        if watchdog is not None:
+            await watchdog.note_agent_output_end(call_id, reset_timer=reset_timer)
 
     async def _no_input_should_pause(self, call_id: str) -> bool:
         """Return true for lifecycle states where caller-idle policy must not run."""
@@ -6499,6 +6570,16 @@ class Engine:
                 await self.no_input_watchdog.stop(call_id)
             except Exception:
                 logger.debug("No-input watchdog cleanup failed", call_id=call_id, exc_info=True)
+            try:
+                self._provider_output_operations.pop(call_id, None)
+                self._agent_output_active_calls.discard(call_id)
+                fallback = self._terminal_fallback_tasks.pop(call_id, None)
+                if fallback and not fallback.done():
+                    fallback.cancel()
+                self._terminal_hangup_locks.pop(call_id, None)
+                self._terminal_hangup_started.discard(call_id)
+            except Exception:
+                logger.debug("Terminal lifecycle cleanup failed", call_id=call_id, exc_info=True)
             bg_tasks = self._call_bg_tasks.pop(call_id, set())
             for t in bg_tasks:
                 if not t.done():
@@ -10052,6 +10133,9 @@ class Engine:
                         )
                 except Exception:
                     logger.debug("Output suppression check failed", call_id=call_id, exc_info=True)
+                # This is real audio that will enter the caller-facing playback
+                # path.  Track it independently from echo/AEC gating state.
+                await self._note_provider_output_start(call_id)
                 encoding = event.get("encoding")
                 if isinstance(encoding, bytes):
                     try:
@@ -10449,6 +10533,10 @@ class Engine:
                     except asyncio.QueueFull:
                         logger.debug("Provider streaming queue full; dropping chunk", call_id=call_id)
             elif etype == "AgentAudioDone":
+                # Provider generation has ended. The downstream transport may
+                # still hold seconds of audio, so lifecycle completion and drain
+                # completion remain separate signals.
+                await self._note_provider_output_end(call_id, session)
                 # If we were suppressing output due to barge-in, end suppression at a segment boundary.
                 # This prevents cutting into the next (new) response once the provider finishes the interrupted one.
                 try:
@@ -10638,29 +10726,11 @@ class Engine:
                             await self._commit_pending_deferred_transfer_for_call(call_id, session)
                             return
                         if session and getattr(session, 'cleanup_after_tts', False):
-                            logger.info("🔚 Cleanup after TTS requested - hanging up call", call_id=call_id)
-                            # Delay to ensure audio completes through RTP pipeline.
-                            # Use the same logic as HangupReady (provider/global configurable).
-                            hangup_delay = getattr(self.config, 'farewell_hangup_delay_sec', 2.5)
-                            try:
-                                provider_name = getattr(session, 'provider', None)
-                                if provider_name and provider_name in self.config.providers:
-                                    provider_cfg = self.config.providers.get(provider_name, {})
-                                    provider_delay = (
-                                        provider_cfg.get('farewell_hangup_delay_sec')
-                                        if isinstance(provider_cfg, dict)
-                                        else getattr(provider_cfg, 'farewell_hangup_delay_sec', None)
-                                    )
-                                    if provider_delay is not None:
-                                        hangup_delay = provider_delay
-                            except Exception:
-                                pass
-                            await asyncio.sleep(hangup_delay)
-                            try:
-                                await self.ari_client.hangup_channel(session.caller_channel_id)
-                                logger.info("✅ Call hung up successfully", call_id=call_id, channel_id=session.caller_channel_id)
-                            except Exception as e:
-                                logger.error("Failed to hang up call", call_id=call_id, error=str(e), exc_info=True)
+                            logger.info("🔚 Cleanup after TTS requested - draining terminal audio", call_id=call_id)
+                            await self._terminate_call_after_audio(
+                                call_id,
+                                reason="cleanup_after_tts",
+                            )
                     except Exception as e:
                         logger.debug("Error checking cleanup_after_tts flag", call_id=call_id, error=str(e))
             
@@ -10678,28 +10748,6 @@ class Engine:
                     had_audio=had_audio
                 )
                 
-                # Delay to ensure audio completes through RTP pipeline
-                # Accounts for: RTP transmission, jitter buffer, and playback
-                # Check provider-specific delay first, then fall back to global config
-                hangup_delay = getattr(self.config, 'farewell_hangup_delay_sec', 2.5)
-                try:
-                    session = await self.session_store.get_by_call_id(call_id)
-                    if session:
-                        provider_name = getattr(session, 'provider_name', None) or getattr(session, 'provider', None)
-                        if provider_name and provider_name in self.config.providers:
-                            provider_cfg = self.config.providers.get(provider_name, {})
-                            provider_delay = provider_cfg.get('farewell_hangup_delay_sec') if isinstance(provider_cfg, dict) else getattr(provider_cfg, 'farewell_hangup_delay_sec', None)
-                            if provider_delay is not None:
-                                hangup_delay = provider_delay
-                                logger.debug(
-                                    "Using provider-specific farewell delay",
-                                    call_id=call_id,
-                                    provider=provider_name,
-                                    delay=hangup_delay
-                                )
-                except Exception as e:
-                    logger.debug(f"Could not get provider delay, using global: {e}")
-
                 # If no farewell audio was produced (common when the model emits hangup_call but never
                 # follows up with an assistant turn), play a minimal server-side goodbye prompt so the
                 # call doesn't end abruptly.
@@ -10733,27 +10781,11 @@ class Engine:
                     except Exception:
                         logger.debug("Farewell fallback playback failed", call_id=call_id, exc_info=True)
 
-                # For server-side farewell playback, we can hang up immediately after playback finishes.
-                if not played_farewell_fallback:
-                    await asyncio.sleep(hangup_delay)
-                
-                try:
-                    session = await self.session_store.get_by_call_id(call_id)
-                    if session:
-                        await self.ari_client.hangup_channel(session.caller_channel_id)
-                        logger.info(
-                            "✅ Call hung up successfully (farewell completed)",
-                            call_id=call_id,
-                            channel_id=session.caller_channel_id
-                        )
-                    else:
-                        logger.warning("No session found for HangupReady", call_id=call_id)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to hangup after farewell (caller may have already disconnected)",
-                        call_id=call_id,
-                        error=str(e),
-                    )
+                await self._terminate_call_after_audio(
+                    call_id,
+                    reason=f"hangup_ready:{reason}",
+                    audio_already_drained=played_farewell_fallback,
+                )
             
             elif etype == "function_call":
                 # Handle tool/function calls from providers (ElevenLabs, etc.)
@@ -10896,13 +10928,10 @@ class Engine:
                                                 call_id=call_id,
                                                 timeout_sec=farewell_timeout,
                                             )
-                                            try:
-                                                await self.ari_client.hangup_channel(current.caller_channel_id)
-                                            except Exception:
-                                                logger.debug(
-                                                    "Forced hangup failed (may already be hung up)",
-                                                    call_id=call_id,
-                                                )
+                                            await self._terminate_call_after_audio(
+                                                call_id,
+                                                reason="local_farewell_timeout",
+                                            )
                                     except asyncio.CancelledError:
                                         return
                                     except Exception:
@@ -10913,12 +10942,20 @@ class Engine:
                             else:
                                 # Use Asterisk's built-in goodbye sound - reliable for slow hardware
                                 try:
-                                    await self.ari_client.play_media(
+                                    playback = await self.ari_client.play_media(
                                         session.caller_channel_id,
                                         "sound:goodbye"
                                     )
-                                    # Wait for the sound to play (~2 seconds)
-                                    await asyncio.sleep(3.0)
+                                    playback_id = playback.get("id") if isinstance(playback, dict) else None
+                                    if playback_id:
+                                        waiter = asyncio.get_running_loop().create_future()
+                                        self._ari_playback_waiters[playback_id] = waiter
+                                        try:
+                                            await asyncio.wait_for(waiter, timeout=8.0)
+                                        except asyncio.TimeoutError:
+                                            logger.warning("Goodbye playback completion timed out", call_id=call_id)
+                                        finally:
+                                            self._ari_playback_waiters.pop(playback_id, None)
                                     logger.info("✅ Goodbye sound played", call_id=call_id)
                                 except Exception as sound_err:
                                     logger.warning(
@@ -10926,16 +10963,14 @@ class Engine:
                                         call_id=call_id,
                                         error=str(sound_err),
                                     )
-                                    await asyncio.sleep(1.0)
                             
                             logger.info("✅ Farewell wait complete", call_id=call_id)
 
-                            # Explicitly hang up after farewell playback (asterisk mode only)
-                            try:
-                                await self.ari_client.hangup_channel(session.caller_channel_id)
-                                logger.info("✅ Call hung up after farewell", call_id=call_id)
-                            except Exception:
-                                logger.debug("Hangup after farewell failed (may already be hung up)", call_id=call_id)
+                            await self._terminate_call_after_audio(
+                                call_id,
+                                reason="local_asterisk_farewell",
+                                audio_already_drained=True,
+                            )
                             break
                         elif result.get("transferred"):
                             # Transfer already handled
@@ -10952,7 +10987,21 @@ class Engine:
             elif etype == "transcript":
                 # User speech transcript from provider (ElevenLabs, etc.)
                 text = event.get("text", "").strip()
+                if text == "...":
+                    # ElevenLabs uses this pseudo-transcript for its hosted
+                    # turn-after-silence policy. It is not caller activity. Mark
+                    # the following output so it pauses rather than resets AVA's
+                    # independent inactivity deadline.
+                    try:
+                        session.no_input_state["provider_silence_turn"] = True
+                        await self._save_session(session)
+                    except Exception:
+                        logger.debug("Failed marking provider silence turn", call_id=call_id, exc_info=True)
                 if text and text != "...":
+                    try:
+                        session.no_input_state.pop("provider_silence_turn", None)
+                    except Exception:
+                        pass
                     await self._no_input_note_activity(call_id, "provider:transcript")
                     await self._no_input_note_processing(call_id, True)
                     # Keep a quick-access copy for guardrails (e.g., hangup intent) and observability.
@@ -10999,60 +11048,76 @@ class Engine:
         call_id: str,
         *,
         announcement_id: str,
-        previous_tts_started_ts: float,
+        previous_tts_started_ts: float = 0.0,
         timeout_sec: float = 25.0,
     ) -> bool:
-        """Wait until the dedicated provider/pipeline speech starts and drains."""
-        deadline = time.monotonic() + max(1.0, timeout_sec)
-        started = False
-        while time.monotonic() < deadline:
-            session = await self.session_store.get_by_call_id(call_id)
-            if not session:
-                return False
-            started_ts = float(getattr(session, "tts_started_ts", 0.0) or 0.0)
-            if bool(getattr(session, "tts_playing", False)) or started_ts > previous_tts_started_ts:
-                started = True
-            if started and not bool(getattr(session, "tts_playing", False)):
-                # AgentAudioDone/turnComplete ends provider generation, but continuous
-                # playback may still have seconds queued. Keep a dedicated gating token
-                # through the transport drain so the remaining tail cannot echo back into
-                # the provider after the normal per-segment token is cleared.
-                drain_token = f"no_input_drain:{announcement_id}"
-                drain_gated = False
+        """Wait for correlated provider audio generation, then transport drain.
+
+        ``previous_tts_started_ts`` is retained for API compatibility with older
+        tests/callers, but TTS gating is deliberately no longer a completion
+        signal for native-AEC providers.
+        """
+        del previous_tts_started_ts
+        operations = getattr(self, "_provider_output_operations", {})
+        operation = operations.get(call_id)
+        if not operation or operation.get("output_id") != announcement_id:
+            logger.warning(
+                "No-input announcement lifecycle missing",
+                call_id=call_id,
+                announcement_id=announcement_id,
+            )
+            return False
+
+        timeout_sec = max(1.0, float(timeout_sec))
+        started_at = time.monotonic()
+        try:
+            await asyncio.wait_for(operation["audio_started"].wait(), timeout=timeout_sec)
+            remaining = max(0.1, timeout_sec - (time.monotonic() - started_at))
+            await asyncio.wait_for(operation["generation_done"].wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "No-input announcement completion timed out",
+                call_id=call_id,
+                announcement_id=announcement_id,
+                started=operation["audio_started"].is_set(),
+                generation_done=operation["generation_done"].is_set(),
+            )
+            return False
+
+        # AgentAudioDone/turnComplete ends provider generation, but continuous
+        # playback may still have seconds queued. Keep a dedicated gating token
+        # through transport drain so the remaining tail cannot echo upstream.
+        drain_token = f"no_input_drain:{announcement_id}"
+        drain_gated = False
+        try:
+            if self.conversation_coordinator:
+                drain_gated = bool(await self.conversation_coordinator.on_tts_start(call_id, drain_token))
+            else:
+                drain_gated = bool(await self.session_store.set_gating_token(call_id, drain_token))
+            return await self._wait_for_call_audio_drain(
+                call_id,
+                timeout_sec=30.0,
+                quiet_sec=self._terminal_transport_quiet_sec(),
+                reason="no_input_announcement",
+            )
+        finally:
+            if drain_gated:
                 try:
                     if self.conversation_coordinator:
-                        drain_gated = bool(
-                            await self.conversation_coordinator.on_tts_start(call_id, drain_token)
+                        await self.conversation_coordinator.on_tts_end(
+                            call_id,
+                            drain_token,
+                            reason="no-input-drain-complete",
                         )
                     else:
-                        drain_gated = bool(await self.session_store.set_gating_token(call_id, drain_token))
-                    return await self._wait_for_call_audio_drain(
-                        call_id,
-                        timeout_sec=30.0,
-                        quiet_sec=0.35,
-                        reason="no_input_announcement",
+                        await self.session_store.clear_gating_token(call_id, drain_token)
+                except Exception:
+                    logger.debug(
+                        "Failed clearing no-input drain gating",
+                        call_id=call_id,
+                        announcement_id=announcement_id,
+                        exc_info=True,
                     )
-                finally:
-                    if drain_gated:
-                        try:
-                            if self.conversation_coordinator:
-                                await self.conversation_coordinator.on_tts_end(
-                                    call_id,
-                                    drain_token,
-                                    reason="no-input-drain-complete",
-                                )
-                            else:
-                                await self.session_store.clear_gating_token(call_id, drain_token)
-                        except Exception:
-                            logger.debug(
-                                "Failed clearing no-input drain gating",
-                                call_id=call_id,
-                                announcement_id=announcement_id,
-                                exc_info=True,
-                            )
-            await asyncio.sleep(0.05)
-        logger.warning("No-input announcement completion timed out", call_id=call_id, started=started)
-        return False
 
     async def _call_audio_drain_snapshot(self, call_id: str) -> Dict[str, Any]:
         """Return pending caller-facing audio across provider, stream, and file paths."""
@@ -11107,6 +11172,14 @@ class Engine:
             "active_playbacks": active_playbacks,
             "last_real_emit_ts": last_real_emit_ts,
         }
+
+    def _terminal_transport_quiet_sec(self) -> float:
+        """Return the post-emit safety tail for the active call transport."""
+        transport = str(getattr(getattr(self, "config", None), "audio_transport", "audiosocket") or "").lower()
+        # UDP/RTP has no delivery acknowledgement. Its real-time pacer gives us
+        # an accurate last-frame timestamp, then this slightly larger post-roll
+        # covers Asterisk/network jitter. AudioSocket uses TCP backpressure.
+        return 0.5 if transport == "externalmedia" else 0.35
 
     async def _wait_for_call_audio_drain(
         self,
@@ -11184,6 +11257,119 @@ class Engine:
         )
         return False
 
+    async def _terminate_call_after_audio(
+        self,
+        call_id: str,
+        *,
+        reason: str,
+        call_outcome: Optional[str] = None,
+        audio_already_drained: bool = False,
+        drain_timeout_sec: float = 30.0,
+    ) -> bool:
+        """Idempotently drain caller-facing audio and hang up the caller leg.
+
+        Providers and tools report terminal intent; this method is the sole
+        owner of transport drain and ARI hangup. Transfers always take priority.
+        """
+        locks = getattr(self, "_terminal_hangup_locks", None)
+        if locks is None:
+            locks = {}
+            self._terminal_hangup_locks = locks
+        started = getattr(self, "_terminal_hangup_started", None)
+        if started is None:
+            started = set()
+            self._terminal_hangup_started = started
+        lock = locks.setdefault(call_id, asyncio.Lock())
+
+        async with lock:
+            if call_id in started:
+                logger.info("Terminal hangup already owned", call_id=call_id, reason=reason)
+                return False
+
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session or bool(getattr(session, "cleanup_in_progress", False)):
+                return False
+            if self._session_was_transferred(session) or self._session_has_pending_attended_transfer(session):
+                logger.info("Terminal hangup skipped during transfer", call_id=call_id, reason=reason)
+                return False
+
+            started.add(call_id)
+            fallback_tasks = getattr(self, "_terminal_fallback_tasks", {})
+            fallback = fallback_tasks.pop(call_id, None)
+            current_task = asyncio.current_task()
+            if fallback and fallback is not current_task and not fallback.done():
+                fallback.cancel()
+
+            drained = True
+            if not audio_already_drained:
+                drained = await self._wait_for_call_audio_drain(
+                    call_id,
+                    timeout_sec=drain_timeout_sec,
+                    quiet_sec=self._terminal_transport_quiet_sec(),
+                    reason=reason,
+                )
+
+            session = await self.session_store.get_by_call_id(call_id)
+            if not session or self._session_was_transferred(session):
+                return False
+            if call_outcome:
+                session.call_outcome = call_outcome
+            session.cleanup_after_tts = False
+            await self._save_session(session)
+            logger.info(
+                "Executing terminal ARI hangup",
+                call_id=call_id,
+                channel_id=session.caller_channel_id,
+                reason=reason,
+                audio_drained=drained,
+                transport=getattr(getattr(self, "config", None), "audio_transport", None),
+            )
+            try:
+                await self.ari_client.hangup_channel(session.caller_channel_id)
+                return True
+            except Exception:
+                logger.debug(
+                    "Terminal ARI hangup failed (channel may already be gone)",
+                    call_id=call_id,
+                    reason=reason,
+                    exc_info=True,
+                )
+                return False
+
+    def _schedule_terminal_fallback(self, call_id: str, *, reason: str, timeout_sec: float = 15.0) -> None:
+        """Bound a provider/tool terminal flow that never emits audio completion."""
+        tasks = getattr(self, "_terminal_fallback_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._terminal_fallback_tasks = tasks
+        previous = tasks.pop(call_id, None)
+        if previous and not previous.done():
+            previous.cancel()
+
+        async def _fallback() -> None:
+            try:
+                await asyncio.sleep(max(1.0, float(timeout_sec)))
+                session = await self.session_store.get_by_call_id(call_id)
+                if session and bool(getattr(session, "cleanup_after_tts", False)):
+                    logger.warning(
+                        "Terminal audio completion timeout reached",
+                        call_id=call_id,
+                        reason=reason,
+                        timeout_sec=timeout_sec,
+                    )
+                    await self._terminate_call_after_audio(
+                        call_id,
+                        reason=f"{reason}:fallback_timeout",
+                    )
+            except asyncio.CancelledError:
+                return
+            finally:
+                if tasks.get(call_id) is asyncio.current_task():
+                    tasks.pop(call_id, None)
+
+        task = asyncio.create_task(_fallback(), name=f"terminal-fallback-{call_id}")
+        tasks[call_id] = task
+
     async def _speak_no_input_announcement(self, call_id: str, text: str, kind: str) -> bool:
         """Speak a watchdog message in the call's configured provider/pipeline voice."""
         message = str(text or "").strip()
@@ -11193,9 +11379,9 @@ class Engine:
         if not session or session.cleanup_in_progress or self._session_was_transferred(session):
             return False
 
-        previous_started = float(getattr(session, "tts_started_ts", 0.0) or 0.0)
         announcement_id = f"no-input:{kind}:{uuid.uuid4().hex}"
         delivery_complete = False
+        self._begin_provider_output_operation(call_id, announcement_id, f"no_input_{kind}")
         session.no_input_state.update(
             {
                 "announcement_active": True,
@@ -11274,7 +11460,6 @@ class Engine:
             delivery_complete = await self._wait_for_no_input_announcement(
                 call_id,
                 announcement_id=announcement_id,
-                previous_tts_started_ts=previous_started,
             )
             return delivery_complete
         except Exception:
@@ -11287,6 +11472,7 @@ class Engine:
             )
             return False
         finally:
+            self._end_provider_output_operation(call_id, announcement_id)
             try:
                 current = await self.session_store.get_by_call_id(call_id)
                 current_state = getattr(current, "no_input_state", None) if current else None
@@ -11326,10 +11512,13 @@ class Engine:
             provider=session.provider_name,
             pipeline=session.pipeline_name,
         )
-        try:
-            await self.ari_client.hangup_channel(session.caller_channel_id)
-        except Exception:
-            logger.debug("No-input ARI hangup failed (channel may already be gone)", call_id=call_id, exc_info=True)
+        await self._terminate_call_after_audio(
+            call_id,
+            reason="no_input_timeout",
+            call_outcome="no_input_timeout",
+            # _speak_no_input_announcement already completed the transport drain.
+            audio_already_drained=True,
+        )
 
     def _as_to_pcm16_16k(self, audio_bytes: bytes) -> bytes:
         """Convert AudioSocket inbound bytes to PCM16 @ 16 kHz for pipeline STT.
@@ -12750,12 +12939,11 @@ class Engine:
                                             except Exception as e:
                                                 logger.error("Farewell TTS failed", error=str(e))
                                         
-                                        logger.info("Executing explicit hangup via ARI", call_id=call_id)
-                                        try:
-                                            channel_id = getattr(session, "caller_channel_id", None) or call_id
-                                            await self.ari_client.hangup_channel(channel_id)
-                                        except Exception as e:
-                                            logger.error("ARI hangup failed", error=str(e))
+                                        await self._terminate_call_after_audio(
+                                            call_id,
+                                            reason="pipeline_hangup_call",
+                                            audio_already_drained=True,
+                                        )
                                         return
 
                                     canonical_tool = tool_registry.canonicalize_tool_name(name)
@@ -12903,7 +13091,11 @@ class Engine:
                                                                             fw_pid,
                                                                             timeout_sec=(len(fw_bytes) / 8000.0 + 3.0),
                                                                         )
-                                                                await self.ari_client.hangup_channel(getattr(session, 'channel_id', call_id))
+                                                                await self._terminate_call_after_audio(
+                                                                    call_id,
+                                                                    reason="pipeline_followup_hangup_call",
+                                                                    audio_already_drained=True,
+                                                                )
                                                                 return
                                         except Exception as e:
                                             logger.error("LLM continuation failed", error=str(e), exc_info=True)
@@ -15308,26 +15500,19 @@ class Engine:
 
                     # Handle special tools
                     if function_name == "hangup_call" and result.get("will_hangup"):
-                        # Skip delayed hangup for local provider - ToolCall handler manages TTS and hangup
+                        # Skip fallback scheduling for local provider - ToolCall handler manages TTS.
                         if self._get_provider_kind(provider_name) == "local":
                             logger.info("Hangup requested - local provider will handle TTS and hangup", call_id=call_id)
                         else:
-                            # For full agent providers like ElevenLabs, they manage their own TTS
-                            # so we should hangup after a short delay for the farewell to play
-                            logger.info("Hangup requested - scheduling delayed hangup", call_id=call_id)
-
-                            # Schedule hangup after delay to let farewell audio play
-                            async def delayed_hangup():
-                                await asyncio.sleep(3.0)  # Wait for farewell TTS
-                                try:
-                                    current_session = await self.session_store.get_by_call_id(call_id)
-                                    if current_session:
-                                        await self.ari_client.hangup_channel(current_session.caller_channel_id)
-                                        logger.info("✅ Call hung up after farewell", call_id=call_id)
-                                except Exception as e:
-                                    logger.debug(f"Delayed hangup failed (may already be hung up): {e}", call_id=call_id)
-
-                            self._fire_and_forget_for_call(call_id, delayed_hangup(), name=f"delayed-hangup-{call_id}")
+                            # Full-agent providers speak after receiving the tool result.
+                            # Their AgentAudioDone/response-complete event owns normal
+                            # termination; this is only a bounded missing-event fallback.
+                            logger.info("Hangup requested - awaiting provider farewell completion", call_id=call_id)
+                            self._schedule_terminal_fallback(
+                                call_id,
+                                reason=f"{provider_name}:hangup_call",
+                                timeout_sec=15.0,
+                            )
                 elif not blocked_result:
                     logger.warning(
                         "Tool not found in registry",

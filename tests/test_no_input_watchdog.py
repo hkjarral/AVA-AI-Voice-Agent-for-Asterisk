@@ -107,6 +107,30 @@ async def test_sustained_caller_speech_and_agent_output_pause_the_clock():
 
 
 @pytest.mark.asyncio
+async def test_hosted_silence_output_pauses_without_resetting_deadline():
+    announcements = []
+
+    async def announce(call_id, text, kind):
+        announcements.append(kind)
+        return True
+
+    watchdog = NoInputWatchdog(announce, AsyncMock())
+    policy = NoInputPolicy(initial_timeout_sec=0.08, grace_timeout_sec=0.03, max_check_ins=1)
+    await watchdog.register("call-hosted-silence", policy, is_outbound=False)
+    try:
+        await watchdog.mark_ready("call-hosted-silence")
+        await asyncio.sleep(0.05)
+        await watchdog.note_agent_output_start("call-hosted-silence")
+        await asyncio.sleep(0.05)
+        assert announcements == []
+        await watchdog.note_agent_output_end("call-hosted-silence", reset_timer=False)
+        # Only the ~30ms remaining before hosted output should be restored.
+        await _wait_until(lambda: announcements == ["check_in"], timeout=0.07)
+    finally:
+        await watchdog.stop("call-hosted-silence")
+
+
+@pytest.mark.asyncio
 async def test_transfer_policy_callback_prevents_prompts_while_caller_is_on_hold():
     announcements = []
     paused = True
@@ -228,6 +252,48 @@ async def test_caller_audio_drain_waits_for_stream_buffers_and_quiet_tail():
     assert await drain_task is True
 
 
+def test_terminal_quiet_tail_covers_audiosocket_and_externalmedia():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(audio_transport="audiosocket")
+    assert engine._terminal_transport_quiet_sec() == 0.35
+    engine.config.audio_transport = "externalmedia"
+    assert engine._terminal_transport_quiet_sec() == 0.5
+
+
+@pytest.mark.asyncio
+async def test_terminal_hangup_is_idempotent_and_uses_shared_drain():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(audio_transport="audiosocket")
+    engine.session_store = SessionStore()
+    engine.conversation_coordinator = None
+    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
+    engine._wait_for_call_audio_drain = AsyncMock(return_value=True)
+    session = CallSession(call_id="terminal-call", caller_channel_id="channel-terminal")
+    await engine.session_store.upsert_call(session)
+
+    assert await engine._terminate_call_after_audio("terminal-call", reason="test") is True
+    assert await engine._terminate_call_after_audio("terminal-call", reason="duplicate") is False
+    engine._wait_for_call_audio_drain.assert_awaited_once()
+    engine.ari_client.hangup_channel.assert_awaited_once_with("channel-terminal")
+
+
+@pytest.mark.asyncio
+async def test_terminal_hangup_yields_to_transfer_state():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(audio_transport="externalmedia")
+    engine.session_store = SessionStore()
+    engine.conversation_coordinator = None
+    engine.ari_client = SimpleNamespace(hangup_channel=AsyncMock())
+    engine._wait_for_call_audio_drain = AsyncMock(return_value=True)
+    session = CallSession(call_id="transfer-call", caller_channel_id="channel-transfer")
+    session.transfer_active = True
+    await engine.session_store.upsert_call(session)
+
+    assert await engine._terminate_call_after_audio("transfer-call", reason="test") is False
+    engine._wait_for_call_audio_drain.assert_not_awaited()
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_no_input_wait_keeps_gating_active_until_transport_drains(monkeypatch):
     engine = Engine.__new__(Engine)
@@ -239,6 +305,13 @@ async def test_no_input_wait_keeps_gating_active_until_transport_drains(monkeypa
     session.tts_started_ts = 2.0
     session.tts_playing = False
     await engine.session_store.upsert_call(session)
+    operation = engine._begin_provider_output_operation(
+        call_id,
+        "no-input:final:test",
+        "no_input_final",
+    )
+    operation["audio_started"].set()
+    operation["generation_done"].set()
 
     async def fake_drain(_call_id, **_kwargs):
         during = await engine.session_store.get_by_call_id(call_id)

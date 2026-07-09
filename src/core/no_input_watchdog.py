@@ -86,6 +86,7 @@ class _CallState:
     phase: str = "waiting"
     check_ins: int = 0
     deadline: Optional[float] = None
+    output_pause_remaining: Optional[float] = None
     last_activity_at: float = field(default_factory=time.monotonic)
     last_activity_source: str = "call_start"
 
@@ -225,22 +226,39 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
+        if not state.output_active:
+            state.output_pause_remaining = (
+                max(0.0, float(state.deadline) - self._clock())
+                if state.deadline is not None
+                else None
+            )
         state.output_active = True
         state.processing = False
         state.deadline = None
         self._wake(state)
 
-    async def note_agent_output_end(self, call_id: str) -> None:
+    async def note_agent_output_end(self, call_id: str, *, reset_timer: bool = True) -> None:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
         state.output_active = False
         state.processing = False
-        if not state.self_announcement:
+        if not state.self_announcement and reset_timer:
             state.check_ins = 0
             state.phase = "waiting"
             if state.ready and not state.suspended:
                 self._reset_initial_deadline(state)
+        elif not state.self_announcement and state.ready and not state.suspended:
+            # Hosted full-agent platforms may synthesize a response to their own
+            # silence pseudo-turn (for example ElevenLabs' "...").  That output
+            # should pause AVA's caller-idle deadline while it is audible, but it
+            # must not buy the hosted agent a fresh inactivity window.
+            remaining = state.output_pause_remaining
+            if remaining is None:
+                self._reset_initial_deadline(state)
+            else:
+                state.deadline = self._clock() + max(0.0, remaining)
+        state.output_pause_remaining = None
         self._wake(state)
 
     async def set_suspended(self, call_id: str, suspended: bool) -> None:

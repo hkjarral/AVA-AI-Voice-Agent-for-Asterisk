@@ -1,4 +1,6 @@
 import json
+import asyncio
+import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +12,8 @@ from src.providers.google_live import GoogleLiveProvider
 from src.providers.grok import GrokProvider
 from src.providers.local import LocalProvider
 from src.providers.openai_realtime import OpenAIRealtimeProvider
+from src.providers.elevenlabs_config import ElevenLabsAgentConfig
+from src.config import LLMConfig
 
 
 class _WebSocket:
@@ -73,6 +77,131 @@ async def test_elevenlabs_injects_system_user_message_for_agent_voice():
     payload = json.loads(provider._ws.send.await_args.args[0])
     assert payload["type"] == "user_message"
     assert "Are you still there?" in payload["text"]
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_response_complete_emits_real_audio_boundary():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = ElevenLabsAgentProvider(
+        ElevenLabsAgentConfig(agent_id="agent-test"),
+        on_event,
+    )
+    provider._call_id = "call-eleven-boundary"
+    audio = base64.b64encode(b"\x00\x00" * 160).decode()
+
+    await provider._handle_message(json.dumps({
+        "type": "audio",
+        "audio_event": {"audio_base_64": audio},
+    }))
+    await provider._handle_message(json.dumps({
+        "type": "agent_response_complete",
+        "agent_response_complete_event": {"event_id": "evt-1"},
+    }))
+
+    assert [event["type"] for event in events] == ["AgentAudio", "AgentAudioDone"]
+    assert events[-1]["provider_event_id"] == "evt-1"
+    assert provider._in_audio_burst is False
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_audio_idle_fallback_emits_boundary_without_client_event():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = ElevenLabsAgentProvider(
+        ElevenLabsAgentConfig(agent_id="agent-test"),
+        on_event,
+    )
+    provider._call_id = "call-eleven-idle"
+    provider._in_audio_burst = True
+    provider._last_audio_monotonic = 1.0
+    provider._schedule_audio_idle_completion(idle_sec=0.01)
+    await asyncio.sleep(0.55)
+
+    assert events[-1]["type"] == "AgentAudioDone"
+    assert events[-1]["reason"] == "audio_idle_fallback"
+
+
+class _MessageWebSocket:
+    def __init__(self, messages):
+        self._messages = list(messages)
+
+    def __aiter__(self):
+        self._iterator = iter(self._messages)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iterator)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+@pytest.mark.asyncio
+async def test_deepgram_control_text_does_not_split_audio_burst():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = DeepgramProvider(
+        {"output_encoding": "mulaw", "output_sample_rate_hz": 8000},
+        LLMConfig(),
+        on_event,
+    )
+    provider.call_id = "call-deepgram-boundary"
+    provider.websocket = _MessageWebSocket([
+        b"\xff" * 160,
+        json.dumps({"type": "ConversationText", "role": "assistant", "text": "Hello"}),
+        b"\xff" * 160,
+        json.dumps({"type": "AgentAudioDone"}),
+    ])
+
+    await provider._receive_loop()
+
+    event_types = [event.get("type") for event in events]
+    assert event_types.count("AgentAudioDone") == 1
+    media_lifecycle = [
+        event_type
+        for event_type in event_types
+        if event_type in {"AgentAudio", "ConversationText", "AgentAudioDone"}
+    ]
+    assert media_lifecycle == ["AgentAudio", "ConversationText", "AgentAudio", "AgentAudioDone"]
+
+
+@pytest.mark.asyncio
+async def test_deepgram_hangup_tool_uses_canonical_farewell_and_arms_fallback():
+    provider = DeepgramProvider(
+        {"output_encoding": "mulaw", "output_sample_rate_hz": 8000},
+        LLMConfig(),
+        AsyncMock(),
+    )
+    provider.call_id = "call-deepgram-tool"
+    provider.tool_adapter.handle_tool_call_event = AsyncMock(return_value={
+        "function_call_id": "tool-1",
+        "function_name": "hangup_call",
+        "status": "success",
+        "message": "Goodbye from Deepgram.",
+        "will_hangup": True,
+    })
+    provider.tool_adapter.send_tool_result = AsyncMock()
+
+    await provider._handle_function_call({
+        "type": "FunctionCallRequest",
+        "functions": [{"id": "tool-1", "name": "hangup_call", "arguments": "{}"}],
+    })
+
+    assert provider._hangup_pending is True
+    assert provider._hangup_audio_started is False
+    assert provider._farewell_message == "Goodbye from Deepgram."
+    assert provider._hangup_fallback_task is not None
+    provider._cancel_hangup_audio_fallback()
 
 
 @pytest.mark.asyncio
