@@ -615,9 +615,9 @@ run_rollback() {
     fi
 
     # Best-effort: preserve any current local changes before switching branches.
-    if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)" ]; then
+    if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain --untracked-files=no 2>/dev/null || true)" ]; then
       echo "==> Working tree is dirty; stashing changes (best-effort)" >&2
-      git -c safe.directory="${PROJECT_ROOT}" stash push -u -m "aava rollback ${JOB_ID}" >/dev/null 2>&1 || true
+      git -c safe.directory="${PROJECT_ROOT}" stash push -m "aava rollback ${JOB_ID}" >/dev/null 2>&1 || true
     fi
 
     git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}"

@@ -34,3 +34,11 @@ def test_nested_runtime_databases_are_ignored() -> None:
     assert "data/**/*.db" in gitignore
     assert "data/**/*.db-wal" in gitignore
     assert "data/operator/.migration.lock" in gitignore
+
+
+def test_rollback_does_not_stash_untracked_runtime_state() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+
+    assert "status --porcelain --untracked-files=no" in runner
+    assert 'stash push -m "aava rollback ${JOB_ID}"' in runner
+    assert 'stash push -u -m "aava rollback ${JOB_ID}"' not in runner
