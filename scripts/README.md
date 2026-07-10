@@ -50,6 +50,11 @@ This document summarizes the utilities under `scripts/` and when to use them.
   - Remote log/recording capture. Stores wav stats and now transcripts at `logs/remote/<ts>/transcripts/`.
   - When `/tmp/ai-engine-captures/<call_id>` exists in the container, the capture bundle is copied into `logs/remote/<ts>/captures/` for offline waveform review.
 
+- `scripts/index_call_archives.py`
+  - Builds a deduplicated release-evidence table from structured `RCA_CALL_START` / `RCA_CALL_END` events under `logs/archived` and `logs/remote`.
+  - Records only call id, revision, provider/pipeline, transport, outcome, media confirmation, and archive links; caller numbers, transcripts, prompts, and tool arguments are deliberately excluded.
+  - Usage: `python3 scripts/index_call_archives.py --format markdown` or `--format json`.
+
 ## Provider & Model Management
 
 - `scripts/switch_provider.py`

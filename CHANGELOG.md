@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Archived call evidence indexer** (`scripts/index_call_archives.py`): converts local `logs/archived` and `logs/remote` RCA bundles into a deduplicated Markdown or JSON release-evidence matrix keyed by call ID, Git revision, provider/pipeline, transport, outcome, and media confirmation. The index deliberately excludes caller identity, transcripts, prompts, and tool arguments. Unit coverage pins deduplication, evidence selection, and PII exclusion.
 - **Automated Admin UI external-link validation** (`scripts/check_admin_ui_urls.py`, `.github/workflows/catalog-url-check.yml`): CI and the weekly scheduled check now verify the API endpoints, provider consoles, and documentation links exposed by the Admin UI without credentials. API routes are checked with lightweight unauthenticated probes, and model artifacts retain their existing metadata/range validation without downloading complete models. Failures upload separate reports and scheduled failures create or update a deduplicated tracking issue.
 - **Dependabot coverage for GitHub Actions** (`.github/dependabot.yml`): weekly grouped pull requests now keep workflow actions current alongside the existing dependency ecosystems.
 
