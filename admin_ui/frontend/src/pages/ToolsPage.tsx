@@ -186,7 +186,15 @@ const ToolsPage = () => {
 
     const mergeToolsConfig = (baseConfig: any, newToolsConfig: any) => {
         // Extract root-level settings that should not be nested under tools
-        const { farewell_hangup_delay_sec, on_provider_failure, provider_failure_prompt, ...toolsOnly } = newToolsConfig;
+        const {
+            farewell_hangup_delay_sec,
+            on_provider_failure,
+            provider_failure_prompt,
+            provider_failure_redirect_context,
+            provider_failure_redirect_extension,
+            provider_failure_redirect_priority,
+            ...toolsOnly
+        } = newToolsConfig;
 
         // P1 Fix: Preserve ALL existing tool entries that are not being explicitly updated.
         // This prevents silent config loss of custom/unknown tool entries.
@@ -221,6 +229,15 @@ const ToolsPage = () => {
         }
         if (provider_failure_prompt !== undefined) {
             updatedConfig.provider_failure_prompt = provider_failure_prompt;
+        }
+        if (provider_failure_redirect_context !== undefined) {
+            updatedConfig.provider_failure_redirect_context = provider_failure_redirect_context;
+        }
+        if (provider_failure_redirect_extension !== undefined) {
+            updatedConfig.provider_failure_redirect_extension = provider_failure_redirect_extension;
+        }
+        if (provider_failure_redirect_priority !== undefined) {
+            updatedConfig.provider_failure_redirect_priority = provider_failure_redirect_priority;
         }
         return updatedConfig;
     };
@@ -364,7 +381,15 @@ const ToolsPage = () => {
                     <ConfigSection title="Built-in Tools" description="Core tools available during the conversation (transfer, hangup, email, etc.)">
                         <ConfigCard>
                             <ToolForm
-                                config={{ ...(config.tools || {}), farewell_hangup_delay_sec: config.farewell_hangup_delay_sec, on_provider_failure: config.on_provider_failure, provider_failure_prompt: config.provider_failure_prompt }}
+                                config={{
+                                    ...(config.tools || {}),
+                                    farewell_hangup_delay_sec: config.farewell_hangup_delay_sec,
+                                    on_provider_failure: config.on_provider_failure,
+                                    provider_failure_prompt: config.provider_failure_prompt,
+                                    provider_failure_redirect_context: config.provider_failure_redirect_context,
+                                    provider_failure_redirect_extension: config.provider_failure_redirect_extension,
+                                    provider_failure_redirect_priority: config.provider_failure_redirect_priority,
+                                }}
                                 contexts={config.contexts || {}}
                                 hangupUsage={hangupUsage}
                                 onChange={updateToolsConfig}

@@ -1712,10 +1712,35 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                     onChange={(e) => updateConfig('on_provider_failure', e.target.value)}
                                     options={[
                                         { value: 'announce_hangup', label: 'Play error message and hang up (default)' },
+                                        { value: 'dialplan_redirect', label: 'Continue in dialplan (opt-in)' },
                                         { value: 'leave_open', label: 'Leave the line open' },
                                     ]}
-                                    tooltip="What happens if the AI provider fails to start: play an error message and hang up (default), or leave the line open. Leaving the line open means the caller hears silence until they hang up."
+                                    tooltip="What happens if the AI provider fails to start. Dialplan redirect requires an explicit context and falls back to announcement/hangup if continuation fails."
                                 />
+                                {(config.on_provider_failure ?? 'announce_hangup') === 'dialplan_redirect' && (
+                                    <>
+                                        <FormInput
+                                            label="Failure Dialplan Context"
+                                            value={config.provider_failure_redirect_context ?? ''}
+                                            onChange={(e) => updateConfig('provider_failure_redirect_context', e.target.value)}
+                                            tooltip="Required opt-in dialplan context. The caller leaves Stasis and continues here when provider startup fails."
+                                        />
+                                        <FormInput
+                                            label="Failure Extension"
+                                            value={config.provider_failure_redirect_extension ?? 's'}
+                                            onChange={(e) => updateConfig('provider_failure_redirect_extension', e.target.value)}
+                                            tooltip="Extension within the failure context (usually s)."
+                                        />
+                                        <FormInput
+                                            label="Failure Priority"
+                                            type="number"
+                                            min="1"
+                                            value={config.provider_failure_redirect_priority ?? 1}
+                                            onChange={(e) => updateConfig('provider_failure_redirect_priority', Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                            tooltip="Dialplan priority to resume at (usually 1)."
+                                        />
+                                    </>
+                                )}
                                 {(config.on_provider_failure ?? 'announce_hangup') !== 'leave_open' && (
                                     <FormInput
                                         label="Provider Failure Prompt (sound file)"

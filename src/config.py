@@ -1044,11 +1044,19 @@ class AppConfig(BaseModel):
     # prompt then hangs up so the caller is not left in silent dead air;
     # "leave_open" preserves the legacy behavior (log + cleanup only, line stays
     # open until the caller hangs up).
-    on_provider_failure: str = Field(default="announce_hangup")
+    on_provider_failure: Literal["announce_hangup", "dialplan_redirect", "leave_open"] = Field(
+        default="announce_hangup"
+    )
     # Asterisk sound file played to the caller before hangup when a provider fails
     # to start. May be a bare sound name ("custom/foo") or a "sound:"/"recording:"
     # URI. Best-effort: if missing/unplayable the channel is still hung up.
     provider_failure_prompt: str = Field(default="sorry-youre-having-problems")
+    # Opt-in recovery route used only when on_provider_failure=dialplan_redirect.
+    # The caller leaves Stasis and resumes at this dialplan location; auxiliary
+    # media channels are cleaned up without hanging up the caller channel.
+    provider_failure_redirect_context: Optional[str] = None
+    provider_failure_redirect_extension: str = Field(default="s", min_length=1)
+    provider_failure_redirect_priority: int = Field(default=1, ge=1)
 
     # Ensure tests that construct AppConfig(**dict) directly still get normalized pipelines
     # similar to load_config(), which calls _normalize_pipelines().

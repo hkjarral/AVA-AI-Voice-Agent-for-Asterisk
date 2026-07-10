@@ -72,6 +72,7 @@ class CallSession:
     pipeline_name: Optional[str] = None
     pipeline_components: Dict[str, str] = field(default_factory=dict)
     pipeline_resolution_error: Optional[str] = None
+    provider_failure_action_started: bool = False
     context_name: Optional[str] = None  # AI_CONTEXT from dialplan (for pipeline greeting/prompt resolution)
     routing_method: Optional[str] = None  # how context was selected: 'ai_agent' | 'ai_context' | 'default' | None
     # Per-agent post-call email overrides (H5), threaded from ContextConfig at transport

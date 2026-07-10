@@ -14,7 +14,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
+from src.config import AppConfig
 from src.core.models import CallSession
 from src.core.session_store import SessionStore
 from src.engine import Engine
@@ -46,11 +48,15 @@ def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
         audiosocket=None,
         on_provider_failure=on_provider_failure,
         provider_failure_prompt=prompt,
+        provider_failure_redirect_context="aava-provider-failure",
+        provider_failure_redirect_extension="s",
+        provider_failure_redirect_priority=1,
     )
     # ARI client primitives the failure path may reuse.
     engine.ari_client = MagicMock()
     engine.ari_client.play_sound = AsyncMock(return_value={"id": "pb-123"})
     engine.ari_client.hangup_channel = AsyncMock()
+    engine.ari_client.continue_in_dialplan = AsyncMock(return_value=True)
     # Heavy collaborators stubbed: not under test here.
     engine._execute_pre_call_tools = AsyncMock(return_value=None)
     engine._apply_provider_overrides = MagicMock()
@@ -121,3 +127,48 @@ async def test_explicit_missing_pipeline_never_falls_back_to_default_provider():
     assert "missing_pipeline" in session.pipeline_resolution_error
     assert session.error_message == session.pipeline_resolution_error
     engine.ari_client.hangup_channel.assert_awaited_once_with("chan-1")
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_can_redirect_to_dialplan_once():
+    engine = _make_engine("dialplan_redirect")
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+    await engine._handle_provider_start_failure(session)
+
+    engine.ari_client.continue_in_dialplan.assert_awaited_once_with(
+        "chan-1",
+        context="aava-provider-failure",
+        extension="s",
+        priority=1,
+    )
+    assert session.transfer_active is True
+    assert session.transfer_state == "provider_failure_redirect"
+    engine.ari_client.play_sound.assert_not_awaited()
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_failure_redirect_restores_cleanup_and_hangs_up():
+    engine = _make_engine("dialplan_redirect")
+    engine.ari_client.continue_in_dialplan.return_value = False
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+
+    assert session.transfer_active is False
+    assert session.transfer_state is None
+    engine.ari_client.play_sound.assert_awaited_once()
+    engine.ari_client.hangup_channel.assert_awaited_once_with("chan-1")
+
+
+def test_unknown_provider_failure_policy_is_rejected_at_config_load():
+    with pytest.raises(ValidationError, match="on_provider_failure"):
+        AppConfig(
+            default_provider="local",
+            providers={"local": {"enabled": True}},
+            asterisk={"host": "127.0.0.1", "username": "ari", "password": "secret"},
+            llm={"initial_greeting": "hi", "prompt": "prompt"},
+            on_provider_failure="typo_fallback",
+        )

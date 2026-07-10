@@ -14780,11 +14780,7 @@ class Engine:
 
     async def _handle_pipeline_resolution_failure(self, session: CallSession) -> None:
         """End an already-answered call after an explicit pipeline cannot start."""
-        on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
-        if on_failure != "leave_open":
-            await self._announce_provider_failure_and_hangup(
-                session.call_id, session.caller_channel_id
-            )
+        await self._handle_provider_start_failure(session)
  
     async def _ensure_provider_session_started(self, call_id: str) -> None:
         """Single-flight wrapper around _start_provider_session (prevents duplicate concurrent starts)."""
@@ -15295,11 +15291,86 @@ class Engine:
             # so on failure it stays open and SILENT (dead air) until the caller hangs
             # up. Unless configured to leave the line open, play a best-effort error
             # prompt and hang up so the caller is not stranded.
-            on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
-            if on_failure != "leave_open":
-                channel_id = getattr(_sess, "caller_channel_id", None) if _sess is not None else None
-                if channel_id:
-                    await self._announce_provider_failure_and_hangup(call_id, channel_id)
+            if _sess is not None:
+                await self._handle_provider_start_failure(_sess)
+
+    async def _handle_provider_start_failure(self, session: CallSession) -> None:
+        """Apply the configured, idempotent recovery action for provider startup failure."""
+        if getattr(session, "provider_failure_action_started", False):
+            logger.debug("Provider-failure action already started", call_id=session.call_id)
+            return
+
+        session.provider_failure_action_started = True
+        await self._save_session(session)
+        on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
+
+        if on_failure == "leave_open":
+            return
+
+        if on_failure == "dialplan_redirect":
+            context = str(
+                getattr(self.config, "provider_failure_redirect_context", "") or ""
+            ).strip()
+            extension = str(
+                getattr(self.config, "provider_failure_redirect_extension", "s") or "s"
+            ).strip()
+            priority = int(
+                getattr(self.config, "provider_failure_redirect_priority", 1) or 1
+            )
+            if context:
+                session.transfer_active = True
+                session.transfer_state = "provider_failure_redirect"
+                session.transfer_target = f"{context},{extension},{priority}"
+                await self._save_session(session)
+                try:
+                    redirected = await self.ari_client.continue_in_dialplan(
+                        session.caller_channel_id,
+                        context=context,
+                        extension=extension,
+                        priority=priority,
+                    )
+                except Exception:
+                    redirected = False
+                    logger.warning(
+                        "Provider-failure dialplan redirect raised",
+                        call_id=session.call_id,
+                        context=context,
+                        extension=extension,
+                        priority=priority,
+                        exc_info=True,
+                    )
+                if redirected:
+                    logger.info(
+                        "Provider-failure dialplan redirect initiated",
+                        call_id=session.call_id,
+                        context=context,
+                        extension=extension,
+                        priority=priority,
+                    )
+                    return
+
+                # Continue failed: restore cleanup ownership before using the
+                # safe announcement/hangup fallback.
+                session.transfer_active = False
+                session.transfer_state = None
+                session.transfer_target = None
+                await self._save_session(session)
+                logger.error(
+                    "Provider-failure dialplan redirect failed; announcing and hanging up",
+                    call_id=session.call_id,
+                    context=context,
+                    extension=extension,
+                    priority=priority,
+                )
+            else:
+                logger.error(
+                    "Provider-failure dialplan redirect has no context; announcing and hanging up",
+                    call_id=session.call_id,
+                )
+
+        await self._announce_provider_failure_and_hangup(
+            session.call_id, session.caller_channel_id
+        )
 
     async def _announce_provider_failure_and_hangup(self, call_id: str, channel_id: str) -> None:
         """HIGH-3: best-effort error prompt to the caller, then hang up the channel.

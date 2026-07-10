@@ -153,6 +153,45 @@ See also:
 
 ---
 
+## Provider-start failure recovery
+
+Provider and explicit pipeline startup failures use these root-level settings:
+
+| Key | Default | Description |
+|---|---|---|
+| `on_provider_failure` | `announce_hangup` | `announce_hangup`, opt-in `dialplan_redirect`, or legacy `leave_open` |
+| `provider_failure_prompt` | `sorry-youre-having-problems` | Asterisk sound played before the safe fallback hangup |
+| `provider_failure_redirect_context` | unset | Required Asterisk context for `dialplan_redirect` |
+| `provider_failure_redirect_extension` | `s` | Extension within the recovery context |
+| `provider_failure_redirect_priority` | `1` | Priority within the recovery extension |
+
+`dialplan_redirect` marks the caller as transferred before issuing ARI
+`continueInDialplan`, so Stasis cleanup removes AAVA's bridge/media channels but
+does not hang up the caller. The continuation is attempted once. A missing
+context, ARI error, or rejected continuation falls back to the configured error
+prompt and hangup; it never leaves the caller in silent dead air.
+
+Example:
+
+```yaml
+on_provider_failure: dialplan_redirect
+provider_failure_redirect_context: aava-provider-failure
+provider_failure_redirect_extension: s
+provider_failure_redirect_priority: 1
+```
+
+```asterisk
+[aava-provider-failure]
+exten => s,1,NoOp(AAVA provider startup failed)
+ same => n,Playback(sorry-youre-having-problems)
+ same => n,Goto(from-internal,6000,1)
+```
+
+The recovery route must not send the same channel directly back to the failing
+AAVA agent, or the dialplan can create a retry loop.
+
+---
+
 ## Outbound Campaign Dialer (Milestone 22)
 
 Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI originate**, with **dialplan-assisted AMD** for voicemail detection.

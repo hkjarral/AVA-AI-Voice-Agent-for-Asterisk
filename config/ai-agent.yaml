@@ -29,6 +29,14 @@ barge_in:
   provider_output_suppress_chunk_extend_ms: 250
 config_version: 6
 farewell_hangup_delay_sec: 3
+# Provider-start failure policy. The safe default plays an Asterisk prompt and
+# hangs up. To opt into dialplan recovery, set on_provider_failure to
+# dialplan_redirect and provide a context that does not route back into AAVA.
+on_provider_failure: announce_hangup
+provider_failure_prompt: sorry-youre-having-problems
+# provider_failure_redirect_context: aava-provider-failure
+# provider_failure_redirect_extension: s
+# provider_failure_redirect_priority: 1
 contexts:
   default:
     greeting: Hello
