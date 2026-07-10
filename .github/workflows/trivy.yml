@@ -20,6 +20,7 @@ on:
       - 'requirements.txt'
       - 'local_ai_server/Dockerfile'
       - 'local_ai_server/requirements*.txt'
+      - '.github/workflows/trivy.yml'
   schedule:
     # Run weekly on Monday at 7am UTC (after CodeQL)
     - cron: '0 7 * * 1'
