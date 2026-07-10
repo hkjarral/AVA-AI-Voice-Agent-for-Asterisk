@@ -67,7 +67,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                                         <strong>Voice Agent WebSocket</strong> — endpoint for Deepgram's all-in-one Voice Agent (Listen + Think + Speak over a single WS).
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>US: <code>wss://agent.deepgram.com/v1/agent/converse</code></li>
-                                            <li>EU: <code>wss://agent.eu.deepgram.com/v1/agent/converse</code></li>
+                                            <li>EU: <code>wss://api.eu.deepgram.com/v1/agent/converse</code></li>
                                         </ul>
                                         Only change for region routing or a proxy.
                                     </>
@@ -84,7 +84,7 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                             placeholder="wss://agent.deepgram.com/v1/agent/converse"
                         />
                         <p className="text-xs text-muted-foreground">
-                            Deepgram Voice Agent WebSocket endpoint for full agent provider. Change for EU region (wss://agent.eu.deepgram.com/v1/agent/converse).
+                            Deepgram Voice Agent WebSocket endpoint for full agent provider. Change for EU region (wss://api.eu.deepgram.com/v1/agent/converse).
                         </p>
                     </div>
                     <div className="space-y-2">

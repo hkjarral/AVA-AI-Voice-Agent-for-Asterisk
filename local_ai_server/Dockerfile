@@ -53,8 +53,11 @@ RUN if [ "$INCLUDE_VOSK" = "true" ]; then \
 
 RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
         echo "📦 Installing Sherpa-ONNX STT..." && \
-        SHERPA_REQUIREMENT="$(grep -m 1 '^sherpa-onnx' requirements.txt)" && \
-        test -n "$SHERPA_REQUIREMENT" && \
+        SHERPA_REQUIREMENT="$(grep -m 1 '^sherpa-onnx' requirements.txt || true)"; \
+        if [ -z "$SHERPA_REQUIREMENT" ]; then \
+            echo "❌ INCLUDE_SHERPA=true but requirements.txt has no sherpa-onnx entry" >&2; \
+            exit 1; \
+        fi; \
         pip install --no-cache-dir "$SHERPA_REQUIREMENT"; \
     fi
 
@@ -118,8 +121,11 @@ RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
 
 RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
         echo "📦 Installing llama-cpp-python LLM..." && \
-        LLAMA_CPP_REQUIREMENT="$(grep -m 1 '^llama-cpp-python' requirements.txt)" && \
-        test -n "$LLAMA_CPP_REQUIREMENT" && \
+        LLAMA_CPP_REQUIREMENT="$(grep -m 1 '^llama-cpp-python' requirements.txt || true)"; \
+        if [ -z "$LLAMA_CPP_REQUIREMENT" ]; then \
+            echo "❌ INCLUDE_LLAMA=true but requirements.txt has no llama-cpp-python entry" >&2; \
+            exit 1; \
+        fi; \
         pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
 

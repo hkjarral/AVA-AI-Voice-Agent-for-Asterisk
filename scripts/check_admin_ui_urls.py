@@ -4,20 +4,23 @@
 The model catalog has a dedicated checker because model artifacts require a
 strict 2xx/redirect result. This checker covers the other URLs users see or
 depend on in the Admin UI: documentation, API-key consoles, provider API
-bases, and provider validation endpoints.
+bases, HTTPS validation endpoints, and realtime WebSocket routes.
 
 No credentials are used. Authenticated API responses such as 401 and 403 are
-treated as proof that the endpoint exists. HEAD-hostile sites are retried with
-a one-byte ranged GET so the checker never intentionally downloads a large
-response.
+treated as proof that the endpoint exists. WebSocket URLs receive a standard
+unauthenticated upgrade handshake. HEAD-hostile sites use a one-byte ranged GET
+fallback, and transient network/5xx failures are retried with exponential
+backoff, so the checker avoids both full downloads and one-off CI failures.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import ipaddress
 import re
+import secrets
 import sys
 import time
 import urllib.error
@@ -36,12 +39,14 @@ SOURCE_ROOTS = (
 SOURCE_SUFFIXES = {".ts", ".tsx", ".py"}
 EXCLUDED_FILES = {"models_catalog.py"}
 
-URL_RE = re.compile(r"https://[^\s\"'`<>{}\\]+")
+URL_RE = re.compile(r"(?:https|wss)://[^\s\"'`<>{}\\]+")
 TRAILING_PUNCTUATION = ".,;:!?)]"
-ALLOWED_SCHEMES = {"https"}
+ALLOWED_SCHEMES = {"https", "wss"}
 SUCCESS_CODES = {200, 201, 202, 203, 204, 206, 301, 302, 303, 307, 308}
 AUTHENTICATED_CODES = {401, 403}
 API_ROUTE_EXISTS_CODES = {400, 401, 403, 405, 422}
+WEBSOCKET_ROUTE_EXISTS_CODES = {101, 400, 401, 403, 426}
+TRANSIENT_CODES = {429, 500, 502, 503, 504}
 
 API_HOSTS = {
     "api.anthropic.com",
@@ -82,6 +87,7 @@ API_PROBES = {
 
 SKIPPED_HOSTS = {
     "api.example.com",
+    "api.provider.com",
     "example.com",
     "localhost",
     "127.0.0.1",
@@ -105,11 +111,13 @@ class UrlResult:
 
 
 def _strip_url(url: str) -> str:
+    if "..." in url:
+        return url.rstrip(")]")
     return url.rstrip(TRAILING_PUNCTUATION)
 
 
 def extract_urls_from_text(text: str) -> set[str]:
-    """Extract literal HTTPS URLs while leaving templates for skip handling."""
+    """Extract literal HTTPS/WSS URLs while leaving templates for skip handling."""
     return {_strip_url(match.group(0)) for match in URL_RE.finditer(text)}
 
 
@@ -128,7 +136,7 @@ def skip_reason(url: str) -> str | None:
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower()
     if parsed.scheme.lower() not in ALLOWED_SCHEMES or not host:
-        return "not a complete HTTPS URL"
+        return "not a complete secure external URL"
     if parsed.username or parsed.password:
         return "embedded credentials are forbidden"
     if host in SKIPPED_HOSTS or host.endswith(".example.com"):
@@ -145,7 +153,10 @@ def skip_reason(url: str) -> str | None:
 
 
 def classify_url(url: str) -> str:
-    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() == "wss":
+        return "websocket"
+    host = (parsed.hostname or "").lower()
     if host in API_HOSTS or host.endswith(".speech.microsoft.com"):
         return "api"
     if host.endswith(".api.cognitive.microsoft.com"):
@@ -159,8 +170,12 @@ def _without_fragment(url: str) -> str:
 
 
 def probe_url_for(url: str) -> str:
-    normalized = _without_fragment(url).rstrip("/")
-    return API_PROBES.get(normalized, _without_fragment(url))
+    without_fragment = _without_fragment(url)
+    parts = urllib.parse.urlsplit(without_fragment)
+    if parts.scheme.lower() == "wss":
+        return urllib.parse.urlunsplit(parts._replace(scheme="https"))
+    normalized = without_fragment.rstrip("/")
+    return API_PROBES.get(normalized, without_fragment)
 
 
 def collect_targets() -> tuple[list[UrlTarget], dict[str, list[str]]]:
@@ -212,19 +227,141 @@ def _request(
     url: str,
     method: str,
     timeout: int,
+    *,
+    websocket_handshake: bool = False,
 ):
     headers = {"User-Agent": "AAVA-admin-ui-url-check/1.0"}
     data = None
-    if method == "GET":
+    if websocket_handshake:
+        headers.update(
+            {
+                "Connection": "Upgrade",
+                "Upgrade": "websocket",
+                "Sec-WebSocket-Version": "13",
+                "Sec-WebSocket-Key": base64.b64encode(
+                    secrets.token_bytes(16)
+                ).decode("ascii"),
+            }
+        )
+    elif method == "GET":
         headers["Range"] = "bytes=0-0"
     elif method == "POST":
         headers["Content-Type"] = "application/json"
         data = b"{}"
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     response = opener.open(request, timeout=timeout)  # nosec B310: HTTPS validated.
-    if method == "GET":
+    if method == "GET" and not websocket_handshake:
         response.read(1)
     return response
+
+
+def _check_target_once(
+    target: UrlTarget,
+    opener: urllib.request.OpenerDirector,
+    timeout: int,
+) -> UrlResult:
+    if target.category == "websocket":
+        try:
+            with _request(
+                opener,
+                target.probe_url,
+                "GET",
+                timeout,
+                websocket_handshake=True,
+            ) as response:
+                return UrlResult(
+                    target,
+                    response.status == 101,
+                    response.status,
+                    "WebSocket upgrade handshake",
+                )
+        except urllib.error.HTTPError as error:
+            if error.code in WEBSOCKET_ROUTE_EXISTS_CODES:
+                return UrlResult(
+                    target,
+                    True,
+                    error.code,
+                    "WebSocket route exists; authentication or valid handshake required",
+                )
+            return UrlResult(target, False, error.code, str(error.reason or ""))
+        except urllib.error.URLError as error:
+            return UrlResult(target, False, 0, f"URLError: {error.reason}")
+
+    try:
+        with _request(opener, target.probe_url, "HEAD", timeout) as response:
+            return UrlResult(target, response.status in SUCCESS_CODES, response.status, "HEAD")
+    except urllib.error.HTTPError as error:
+        if error.code in AUTHENTICATED_CODES:
+            return UrlResult(target, True, error.code, "authentication required")
+        # Many documentation sites and APIs reject HEAD. A ranged GET
+        # distinguishes that behavior from an actually missing URL.
+        if error.code in {400, 404, 405}:
+            try:
+                with _request(opener, target.probe_url, "GET", timeout) as response:
+                    return UrlResult(
+                        target,
+                        response.status in SUCCESS_CODES,
+                        response.status,
+                        "ranged GET fallback",
+                    )
+            except urllib.error.HTTPError as get_error:
+                if get_error.code in AUTHENTICATED_CODES | {405}:
+                    return UrlResult(
+                        target,
+                        True,
+                        get_error.code,
+                        "endpoint exists; authentication or method required",
+                    )
+                if (
+                    target.category == "api"
+                    and get_error.code in API_ROUTE_EXISTS_CODES
+                ):
+                    return UrlResult(
+                        target,
+                        True,
+                        get_error.code,
+                        "API route exists; request requires auth or valid body",
+                    )
+                if target.category == "api" and get_error.code == 404:
+                    try:
+                        with _request(
+                            opener, target.probe_url, "POST", timeout
+                        ) as response:
+                            return UrlResult(
+                                target,
+                                response.status in SUCCESS_CODES,
+                                response.status,
+                                "unauthenticated POST probe",
+                            )
+                    except urllib.error.HTTPError as post_error:
+                        if post_error.code in API_ROUTE_EXISTS_CODES:
+                            return UrlResult(
+                                target,
+                                True,
+                                post_error.code,
+                                "API route exists; request requires auth or valid body",
+                            )
+                        return UrlResult(
+                            target,
+                            False,
+                            post_error.code,
+                            str(post_error.reason or ""),
+                        )
+                    except urllib.error.URLError as post_error:
+                        return UrlResult(
+                            target,
+                            False,
+                            0,
+                            f"URLError: {post_error.reason}",
+                        )
+                return UrlResult(
+                    target, False, get_error.code, str(get_error.reason or "")
+                )
+            except urllib.error.URLError as get_error:
+                return UrlResult(target, False, 0, f"URLError: {get_error.reason}")
+        return UrlResult(target, False, error.code, str(error.reason or ""))
+    except urllib.error.URLError as error:
+        return UrlResult(target, False, 0, f"URLError: {error.reason}")
 
 
 def check_target(
@@ -233,95 +370,32 @@ def check_target(
     max_retries: int = 3,
 ) -> UrlResult:
     opener = urllib.request.build_opener(HttpsOnlyRedirectHandler)
-    last_detail = "unknown failure"
     delay = 1.0
+    last_result = UrlResult(target, False, 0, "unknown failure")
 
     for attempt in range(max_retries):
         try:
-            with _request(opener, target.probe_url, "HEAD", timeout) as response:
-                return UrlResult(target, response.status in SUCCESS_CODES, response.status, "HEAD")
-        except urllib.error.HTTPError as error:
-            if error.code in AUTHENTICATED_CODES:
-                return UrlResult(target, True, error.code, "authentication required")
-            if error.code == 429 and attempt < max_retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                last_detail = "rate limited"
-                continue
-            # Many documentation sites and APIs reject HEAD. A ranged GET
-            # distinguishes that behavior from an actually missing URL.
-            if error.code in {400, 404, 405}:
-                try:
-                    with _request(opener, target.probe_url, "GET", timeout) as response:
-                        return UrlResult(
-                            target,
-                            response.status in SUCCESS_CODES,
-                            response.status,
-                            "ranged GET fallback",
-                        )
-                except urllib.error.HTTPError as get_error:
-                    if get_error.code in AUTHENTICATED_CODES | {405}:
-                        return UrlResult(
-                            target,
-                            True,
-                            get_error.code,
-                            "endpoint exists; authentication or method required",
-                        )
-                    if (
-                        target.category == "api"
-                        and get_error.code in API_ROUTE_EXISTS_CODES
-                    ):
-                        return UrlResult(
-                            target,
-                            True,
-                            get_error.code,
-                            "API route exists; request requires auth or valid body",
-                        )
-                    if target.category == "api" and get_error.code == 404:
-                        try:
-                            with _request(opener, target.probe_url, "POST", timeout) as response:
-                                return UrlResult(
-                                    target,
-                                    response.status in SUCCESS_CODES,
-                                    response.status,
-                                    "unauthenticated POST probe",
-                                )
-                        except urllib.error.HTTPError as post_error:
-                            if post_error.code in API_ROUTE_EXISTS_CODES:
-                                return UrlResult(
-                                    target,
-                                    True,
-                                    post_error.code,
-                                    "API route exists; request requires auth or valid body",
-                                )
-                            return UrlResult(
-                                target,
-                                False,
-                                post_error.code,
-                                str(post_error.reason or ""),
-                            )
-                        except urllib.error.URLError as post_error:
-                            return UrlResult(
-                                target,
-                                False,
-                                0,
-                                f"URLError: {post_error.reason}",
-                            )
-                    return UrlResult(target, False, get_error.code, str(get_error.reason or ""))
-                except urllib.error.URLError as get_error:
-                    return UrlResult(target, False, 0, f"URLError: {get_error.reason}")
-            return UrlResult(target, False, error.code, str(error.reason or ""))
-        except urllib.error.URLError as error:
-            last_detail = f"URLError: {error.reason}"
-            if attempt < max_retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            return UrlResult(target, False, 0, last_detail)
+            last_result = _check_target_once(target, opener, timeout)
         except Exception as error:  # Keep one unexpected site from aborting the run.
-            return UrlResult(target, False, 0, f"{type(error).__name__}: {error}")
+            last_result = UrlResult(
+                target,
+                False,
+                0,
+                f"{type(error).__name__}: {error}",
+            )
 
-    return UrlResult(target, False, 429, last_detail)
+        if last_result.ok:
+            return last_result
+        is_transient = (
+            last_result.code == 0 or last_result.code in TRANSIENT_CODES
+        )
+        if not is_transient or attempt == max_retries - 1:
+            return last_result
+
+        time.sleep(delay)
+        delay *= 2
+
+    return last_result
 
 
 def main() -> int:
@@ -335,6 +409,7 @@ def main() -> int:
     print(
         f"Checking {len(targets)} unique Admin UI URLs "
         f"({sum(t.category == 'api' for t in targets)} API, "
+        f"{sum(t.category == 'websocket' for t in targets)} WebSocket, "
         f"{sum(t.category == 'ui' for t in targets)} UI/documentation).",
         file=sys.stderr,
     )

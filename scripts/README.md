@@ -87,13 +87,16 @@ models surfaced in the Admin UI Models page.
 - `scripts/check_admin_ui_urls.py`
   - Extracts complete external URLs from the Admin UI frontend and backend API,
     excluding model artifacts already owned by `check_catalog_urls.py`.
-  - Validates documentation, signup/API-key pages, API bases, and provider
-    validation endpoints without credentials. `401`, `403`, and method/body
-    validation responses prove an authenticated API route still exists; `404`,
-    `410`, TLS, DNS, and unsafe redirect failures fail the check.
+  - Validates documentation, signup/API-key pages, API bases, provider
+    validation endpoints, and `wss://` realtime provider routes without
+    credentials. WebSockets receive a standard unauthenticated upgrade
+    handshake; `101`, authentication, and handshake-validation responses prove
+    the route still exists. `404`, `410`, TLS, DNS, and unsafe redirect failures
+    fail the check.
   - Uses `HEAD` first, a one-byte ranged `GET` fallback, and an empty
-    unauthenticated `POST` only for POST-only API probes. It never performs a
-    full model download.
+    unauthenticated `POST` only for POST-only API probes. Transient network,
+    rate-limit, and 5xx failures use bounded exponential-backoff retries. It
+    never performs a full model download.
   - Usage: `python3 scripts/check_admin_ui_urls.py [--max-workers N]`
 
 The combined workflow runs on relevant pull requests, weekly on `main`, and on
