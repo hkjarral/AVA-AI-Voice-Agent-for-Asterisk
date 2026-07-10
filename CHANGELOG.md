@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Stale Admin UI provider links refreshed** (provider forms, Providers page, and setup wizard): corrected moved Telnyx, ElevenLabs, Kroko, and Asterisk documentation URLs. URL-check pipelines now use `pipefail`, so a checker failure cannot be masked by `tee`, and scheduled issue creation uses labels that exist in the repository.
+- **Local AI optional dependency pins now have one source of truth** (`local_ai_server/requirements.txt`, `local_ai_server/Dockerfile`, `local_ai_server/Dockerfile.gpu`): CPU and CUDA images install Sherpa-ONNX and llama-cpp-python from the shared requirements file instead of maintaining stale Dockerfile-specific versions. Sherpa-ONNX is updated to 1.13.4, and regression coverage prevents duplicate hard-coded pins from returning.
 
 ## [7.3.1] - 2026-07-09
 

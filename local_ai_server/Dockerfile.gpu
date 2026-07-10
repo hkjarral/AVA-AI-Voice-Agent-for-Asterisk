@@ -41,7 +41,8 @@ RUN if [ -f "${CUDA_HOME}/lib64/stubs/libcuda.so" ] && [ ! -e "${CUDA_HOME}/lib6
         ln -s "${CUDA_HOME}/lib64/stubs/libcuda.so" "${CUDA_HOME}/lib64/stubs/libcuda.so.1"; \
     fi
 
-# Copy requirements first for optimal caching
+# Copy requirements first for optimal caching and shared optional-backend pins
+COPY requirements.txt .
 COPY requirements-base.txt .
 
 # Install base dependencies (always required)
@@ -54,7 +55,9 @@ RUN if [ "$INCLUDE_VOSK" = "true" ]; then \
     fi
 
 RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
-        pip install --no-cache-dir sherpa-onnx==1.12.40; \
+        SHERPA_REQUIREMENT="$(grep -m 1 '^sherpa-onnx' requirements.txt)" && \
+        test -n "$SHERPA_REQUIREMENT" && \
+        pip install --no-cache-dir "$SHERPA_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
@@ -110,9 +113,11 @@ RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
     fi
 
 RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
+        LLAMA_CPP_REQUIREMENT="$(grep -m 1 '^llama-cpp-python' requirements.txt)" && \
+        test -n "$LLAMA_CPP_REQUIREMENT" && \
         CMAKE_ARGS="-DGGML_CUDA=on -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF" \
         FORCE_CMAKE=1 \
-        pip install --no-cache-dir llama-cpp-python==0.3.21; \
+        pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
 
 # Pre-install spacy model for Kokoro TTS (only if Kokoro included)
