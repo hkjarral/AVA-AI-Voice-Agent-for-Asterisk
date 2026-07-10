@@ -42,3 +42,11 @@ def test_rollback_does_not_stash_untracked_runtime_state() -> None:
     assert "status --porcelain --untracked-files=no" in runner
     assert 'stash push -m "aava rollback ${JOB_ID}"' in runner
     assert 'stash push -u -m "aava rollback ${JOB_ID}"' not in runner
+
+
+def test_source_built_cli_is_written_as_the_project_owner() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+
+    assert '--user "$(id -u):$(id -g)"' in runner
+    assert "-e GOCACHE=/tmp/go-build" in runner
+    assert "-e GOMODCACHE=/tmp/go-mod" in runner

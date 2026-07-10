@@ -222,8 +222,12 @@ sync_agent_cli() {
 
     set +e
     docker run --rm \
+      --user "$(id -u):$(id -g)" \
       -v "${PROJECT_ROOT}:/src" \
       -w /src/cli \
+      -e HOME=/tmp \
+      -e GOCACHE=/tmp/go-build \
+      -e GOMODCACHE=/tmp/go-mod \
       -e AAVA_CLI_VERSION="${ver}" \
       -e AAVA_BUILD_TIME="${bt}" \
       golang:1.22-bookworm \
