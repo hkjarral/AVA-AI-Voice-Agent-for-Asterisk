@@ -14,6 +14,7 @@ from scripts.check_admin_ui_urls import (
     extract_urls_from_text,
     probe_url_for,
     skip_reason,
+    websocket_route_exists,
 )
 
 
@@ -78,7 +79,7 @@ def test_classification_and_stable_api_probes() -> None:
     )
 
 
-@pytest.mark.parametrize("route_code", [101, 400, 401, 403, 426])
+@pytest.mark.parametrize("route_code", [101, 401, 403, 426])
 def test_websocket_probe_accepts_route_level_response(route_code: int) -> None:
     target = UrlTarget(
         url="wss://socket.vendor.example/v1/live",
@@ -96,6 +97,55 @@ def test_websocket_probe_accepts_route_level_response(route_code: int) -> None:
     assert result.ok is True
     assert result.code == route_code
     assert "WebSocket route exists" in result.detail
+
+
+def test_google_websocket_probe_accepts_provider_specific_bad_request() -> None:
+    target = UrlTarget(
+        url=(
+            "wss://generativelanguage.googleapis.com/ws/"
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        ),
+        probe_url=(
+            "https://generativelanguage.googleapis.com/ws/"
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        ),
+        category="websocket",
+        sources=("GoogleLiveProviderForm.tsx",),
+    )
+
+    with patch(
+        "scripts.check_admin_ui_urls._request",
+        side_effect=_http_error(target.probe_url, 400),
+    ):
+        result = check_target(target, max_retries=1)
+
+    assert result.ok is True
+    assert websocket_route_exists(target, 400) is True
+
+
+def test_websocket_bad_request_does_not_validate_a_misspelled_route() -> None:
+    target = UrlTarget(
+        url=(
+            "wss://generativelanguage.googleapis.com/ws/"
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentTypo"
+        ),
+        probe_url=(
+            "https://generativelanguage.googleapis.com/ws/"
+            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentTypo"
+        ),
+        category="websocket",
+        sources=("GoogleLiveProviderForm.tsx",),
+    )
+
+    with patch(
+        "scripts.check_admin_ui_urls._request",
+        side_effect=_http_error(target.probe_url, 400),
+    ):
+        result = check_target(target, max_retries=1)
+
+    assert result.ok is False
+    assert result.code == 400
+    assert websocket_route_exists(target, 400) is False
 
 
 def test_websocket_probe_accepts_upgrade() -> None:

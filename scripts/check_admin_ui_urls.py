@@ -45,7 +45,13 @@ ALLOWED_SCHEMES = {"https", "wss"}
 SUCCESS_CODES = {200, 201, 202, 203, 204, 206, 301, 302, 303, 307, 308}
 AUTHENTICATED_CODES = {401, 403}
 API_ROUTE_EXISTS_CODES = {400, 401, 403, 405, 422}
-WEBSOCKET_ROUTE_EXISTS_CODES = {101, 400, 401, 403, 426}
+WEBSOCKET_ROUTE_EXISTS_CODES = {101, 401, 403, 426}
+WEBSOCKET_BAD_REQUEST_ROUTES = {
+    (
+        "generativelanguage.googleapis.com",
+        "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+    ),
+}
 TRANSIENT_CODES = {429, 500, 502, 503, 504}
 
 API_HOSTS = {
@@ -178,6 +184,17 @@ def probe_url_for(url: str) -> str:
     return API_PROBES.get(normalized, without_fragment)
 
 
+def websocket_route_exists(target: UrlTarget, code: int) -> bool:
+    if code in WEBSOCKET_ROUTE_EXISTS_CODES:
+        return True
+    if code != 400:
+        return False
+
+    parsed = urllib.parse.urlsplit(target.probe_url)
+    route = ((parsed.hostname or "").lower(), parsed.path)
+    return route in WEBSOCKET_BAD_REQUEST_ROUTES
+
+
 def collect_targets() -> tuple[list[UrlTarget], dict[str, list[str]]]:
     found: dict[str, set[str]] = defaultdict(set)
     skipped: dict[str, list[str]] = defaultdict(list)
@@ -276,7 +293,7 @@ def _check_target_once(
                     "WebSocket upgrade handshake",
                 )
         except urllib.error.HTTPError as error:
-            if error.code in WEBSOCKET_ROUTE_EXISTS_CODES:
+            if websocket_route_exists(target, error.code):
                 return UrlResult(
                     target,
                     True,
