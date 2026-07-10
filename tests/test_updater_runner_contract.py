@@ -10,6 +10,15 @@ def test_active_call_probe_keeps_stdin_open_for_embedded_python() -> None:
     assert "docker exec -i ai_engine python3 - <<'PY'" in runner
 
 
+def test_updater_drops_to_the_project_owner_before_writing() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert 'project_uid="$(stat -c \'%u\' "${PROJECT_ROOT}")"' in runner
+    assert 'exec gosu "${user_name}" "$0" "$@"' in runner
+    assert "gosu" in dockerfile
+
+
 def test_updater_image_embeds_the_requested_cli_version() -> None:
     dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
 

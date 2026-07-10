@@ -31,7 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     gnupg \
+    gosu \
     jq \
+    passwd \
     util-linux \
     tzdata \
     && install -m 0755 -d /etc/apt/keyrings \

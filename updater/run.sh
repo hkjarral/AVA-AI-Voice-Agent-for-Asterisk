@@ -15,6 +15,47 @@ CLI_INSTALL_PATH="${AAVA_UPDATE_CLI_INSTALL_PATH:-}" # optional absolute host pa
 BUILD_CLI_FROM_SOURCE="${AAVA_UPDATE_BUILD_CLI_FROM_SOURCE:-false}" # true|false
 KEEP_JOB_LOGS="${AAVA_UPDATE_KEEP_JOB_LOGS:-10}" # keep last N job logs
 
+drop_to_project_owner() {
+  if [ "$(id -u)" -ne 0 ] || [ ! -d "${PROJECT_ROOT}" ]; then
+    return 0
+  fi
+
+  local project_uid project_gid socket_gid user_name primary_group socket_group
+  project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
+  project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
+  if [ "${project_uid}" = "0" ]; then
+    return 0
+  fi
+
+  primary_group="$(getent group "${project_gid}" | cut -d: -f1 | head -n 1)"
+  if [ -z "${primary_group}" ]; then
+    primary_group="aava-project-${project_gid}"
+    groupadd -g "${project_gid}" "${primary_group}"
+  fi
+
+  user_name="$(getent passwd "${project_uid}" | cut -d: -f1 | head -n 1)"
+  if [ -z "${user_name}" ]; then
+    user_name="aava-updater-${project_uid}"
+    useradd --no-create-home -u "${project_uid}" -g "${project_gid}" -s /bin/bash "${user_name}"
+  fi
+
+  if [ -S /var/run/docker.sock ]; then
+    socket_gid="$(stat -c '%g' /var/run/docker.sock)"
+    if [ "${socket_gid}" != "${project_gid}" ]; then
+      socket_group="$(getent group "${socket_gid}" | cut -d: -f1 | head -n 1)"
+      if [ -z "${socket_group}" ]; then
+        socket_group="aava-docker-${socket_gid}"
+        groupadd -g "${socket_gid}" "${socket_group}"
+      fi
+      usermod -aG "${socket_group}" "${user_name}"
+    fi
+  fi
+
+  exec gosu "${user_name}" "$0" "$@"
+}
+
+drop_to_project_owner "$@"
+
 UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
 JOBS_DIR="${UPDATES_DIR}/jobs"
 BIN_DIR="${PROJECT_ROOT}/.agent/bin"
