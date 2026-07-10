@@ -1,6 +1,6 @@
 # Transport & Playback Mode Compatibility Guide
 
-**Last Updated**: January 7, 2026  
+**Last Updated**: July 10, 2026
 **Issue**: Linear AAVA-28, AAVA-85
 
 ## Overview
@@ -10,6 +10,8 @@ This document defines the **validated and supported** combinations of audio tran
 For **v5.1.4+**: both **AudioSocket** and **ExternalMedia RTP** are validated options for pipeline deployments and full-agent deployments. Choose based on what fits your Asterisk environment and network constraints (TCP `8090` for AudioSocket vs UDP `18080` for ExternalMedia RTP), and confirm the combination you’re running matches the matrix below.
 
 Note: AudioSocket is currently validated with `audiosocket.format: slin`.
+Release-specific evidence, including combinations that still require
+revalidation, is tracked in `docs/baselines/golden/`.
 
 ---
 

@@ -439,9 +439,9 @@ This applies to **all topologies**. The key settings:
 default_provider: local
 active_pipeline: local_only
 
-# IMPORTANT: Use externalmedia for pipelines (not audiosocket)
-# AudioSocket + Pipelines has a known Asterisk bridge routing conflict.
-# See docs/Transport-Mode-Compatibility.md
+# Both transports are supported for pipelines. ExternalMedia + file playback is
+# the most extensively validated local-only baseline; AudioSocket + file
+# playback is supported as documented in Transport-Mode-Compatibility.md.
 audio_transport: externalmedia
 
 providers:
@@ -505,7 +505,7 @@ contexts:
       Keep responses under 2 sentences when possible.
 ```
 
-> **Transport note:** Pipelines use file-based playback, which requires ExternalMedia RTP transport. AudioSocket + Pipelines causes an Asterisk bridge conflict (greeting only, then silence). See [Transport Compatibility](Transport-Mode-Compatibility.md).
+> **Transport note:** ExternalMedia RTP + file playback remains the most extensively validated local-only pipeline path. AudioSocket + pipeline file playback is also supported; use the release-specific validation matrix in [Transport Compatibility](Transport-Mode-Compatibility.md) when choosing a production baseline.
 
 ### Important: Do NOT include cloud model names
 
@@ -678,11 +678,12 @@ If you see "Pipeline LLM validation FAILED" but calls still work:
 
 ### Only Greeting Heard, Then Silence
 
-Most likely **wrong transport**. Pipelines require ExternalMedia RTP:
+First verify the configured transport and playback combination against the current [Transport Compatibility](Transport-Mode-Compatibility.md) matrix. ExternalMedia RTP + file playback is the conservative local-only baseline:
 
 ```yaml
 # In config/ai-agent.yaml
-audio_transport: externalmedia    # NOT audiosocket for pipelines
+audio_transport: externalmedia    # conservative local-only baseline
+downstream_mode: file
 ```
 
 See [Transport Compatibility](Transport-Mode-Compatibility.md) for the full matrix.
