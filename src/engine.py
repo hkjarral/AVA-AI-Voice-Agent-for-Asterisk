@@ -305,6 +305,7 @@ class Engine:
         # call arrived — but a /ready-gating load balancer never routes the
         # first call. The task connects proactively and re-arms on drop.)
         self._local_warm_task: Optional[asyncio.Task] = None
+        self._pipeline_readiness_task: Optional[asyncio.Task] = None
         self._outbound_last_dial_ts: Dict[str, float] = {}
         self._outbound_attempt_meta_by_attempt_id: Dict[str, Dict[str, Any]] = {}
         self._outbound_attempt_meta_by_channel_id: Dict[str, Dict[str, Any]] = {}
@@ -1003,6 +1004,11 @@ class Engine:
                 self._local_warm_task = asyncio.create_task(self._local_warm_loop())
         except Exception:
             logger.debug("Failed to start local warm task", exc_info=True)
+        try:
+            if not self._pipeline_readiness_task:
+                self._pipeline_readiness_task = asyncio.create_task(self._pipeline_readiness_refresh_loop())
+        except Exception:
+            logger.debug("Failed to start pipeline readiness refresh task", exc_info=True)
         logger.info("Engine started and listening for calls.")
 
     def _on_ari_listener_task_done(self, task: "asyncio.Task") -> None:
@@ -1725,6 +1731,26 @@ class Engine:
             raise
         except Exception:
             logger.debug("Local warm loop exited", exc_info=True)
+
+    async def _pipeline_readiness_refresh_loop(self, interval_sec: float = 15.0) -> None:
+        """Refresh local pipeline readiness after Local AI Server startup races."""
+        refresh = getattr(self.pipeline_orchestrator, "refresh_unhealthy_local_pipelines", None)
+        if not callable(refresh):
+            return
+        try:
+            while True:
+                await asyncio.sleep(max(1.0, float(interval_sec)))
+                try:
+                    remaining = int(await refresh())
+                except Exception:
+                    logger.debug("Pipeline readiness refresh pass failed", exc_info=True)
+                    continue
+                if remaining == 0:
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Pipeline readiness refresh loop exited", exc_info=True)
 
     async def _outbound_scheduler_loop(self) -> None:
         """Background control-plane: lease leads and originate outbound calls."""
@@ -2556,7 +2582,7 @@ class Engine:
 
         # Stop background loop tasks (warm/probe, retention) so they don't run
         # after shutdown begins.
-        for attr in ("_local_warm_task", "_retention_cleanup_task"):
+        for attr in ("_local_warm_task", "_pipeline_readiness_task", "_retention_cleanup_task"):
             try:
                 t = getattr(self, attr, None)
                 if t and not t.done():

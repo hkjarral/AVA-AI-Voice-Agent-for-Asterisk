@@ -285,6 +285,36 @@ class PipelineOrchestrator:
         details = self.pipeline_status().get(pipeline_name)
         return bool(details and details.get("valid") and details.get("healthy"))
 
+    @staticmethod
+    def _uses_local_component(entry: PipelineEntry) -> bool:
+        return any(
+            str(component or "").startswith("local_")
+            for component in (entry.stt, entry.llm, entry.tts)
+        )
+
+    async def refresh_unhealthy_local_pipelines(self) -> int:
+        """Retry startup connectivity checks for valid local-component pipelines.
+
+        Local AI Server commonly becomes reachable after the engine. Static
+        validation errors remain unavailable, and cloud-only pipelines are not
+        polled in the background. Returns the number of local pipelines that
+        are still unhealthy after the refresh.
+        """
+        if not self._started:
+            return 0
+
+        pipelines = getattr(self.config, "pipelines", {}) or {}
+        remaining = 0
+        for name, entry in pipelines.items():
+            if name in self._invalid_pipelines or not self._uses_local_component(entry):
+                continue
+            current = self._pipeline_validation_results.get(name, {})
+            if not current.get("healthy", False):
+                self._pipeline_validation_results[name] = await self._validate_pipeline_connectivity(name, entry)
+            if not self._pipeline_validation_results.get(name, {}).get("healthy", False):
+                remaining += 1
+        return remaining
+
     async def start(self) -> None:
         if not self.enabled:
             logger.info("Pipeline orchestrator disabled - no pipelines configured.")

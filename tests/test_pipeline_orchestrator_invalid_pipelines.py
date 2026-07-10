@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from src.config import AppConfig
 from src.pipelines.orchestrator import PipelineOrchestrator, PipelineOrchestratorError
@@ -99,3 +100,46 @@ async def test_orchestrator_uses_first_valid_pipeline_only_without_explicit_sele
     resolution = orchestrator.get_pipeline("call-4")
     assert resolution is not None
     assert resolution.pipeline_name == "openai_stack"
+
+
+@pytest.mark.asyncio
+async def test_local_pipeline_connectivity_can_recover_after_startup(monkeypatch):
+    orchestrator = PipelineOrchestrator(_build_app_config_with_one_invalid_pipeline())
+    local_entry = SimpleNamespace(stt="local_stt", llm="native_llm", tts="local_tts")
+    orchestrator.config.pipelines = {"local_stack": local_entry}
+    orchestrator._started = True
+    orchestrator._pipeline_validation_results = {
+        "local_stack": {"healthy": False, "failures": [{"component": "stt"}]}
+    }
+
+    calls = []
+
+    async def now_healthy(name, entry):
+        calls.append((name, entry))
+        return {"healthy": True, "failures": []}
+
+    monkeypatch.setattr(orchestrator, "_validate_pipeline_connectivity", now_healthy)
+
+    remaining = await orchestrator.refresh_unhealthy_local_pipelines()
+
+    assert remaining == 0
+    assert calls == [("local_stack", local_entry)]
+    assert orchestrator.pipeline_status()["local_stack"]["healthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_cloud_only_pipeline_is_not_background_polled(monkeypatch):
+    orchestrator = PipelineOrchestrator(_build_app_config_with_one_invalid_pipeline())
+    cloud_entry = SimpleNamespace(stt="openai_stt", llm="openai_llm", tts="openai_tts")
+    orchestrator.config.pipelines = {"cloud_stack": cloud_entry}
+    orchestrator._started = True
+    orchestrator._pipeline_validation_results = {
+        "cloud_stack": {"healthy": False, "failures": [{"component": "stt"}]}
+    }
+
+    async def should_not_run(_name, _entry):
+        raise AssertionError("cloud-only connectivity must not be background polled")
+
+    monkeypatch.setattr(orchestrator, "_validate_pipeline_connectivity", should_not_run)
+
+    assert await orchestrator.refresh_unhealthy_local_pipelines() == 0
