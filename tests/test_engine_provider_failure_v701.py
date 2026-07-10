@@ -18,6 +18,7 @@ import pytest
 from src.core.models import CallSession
 from src.core.session_store import SessionStore
 from src.engine import Engine
+from src.pipelines.orchestrator import PipelineOrchestratorError
 
 
 class _FailingProvider:
@@ -35,6 +36,7 @@ def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine.session_store = SessionStore()
     engine._call_providers = {}
     engine.provider_factories = {"local": _FailingProvider}
+    engine.providers = {"local": object()}
     engine.pipeline_orchestrator = SimpleNamespace(enabled=False)
     engine.conversation_coordinator = None
     engine.transport_orchestrator = MagicMock()
@@ -55,6 +57,13 @@ def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine._save_session = AsyncMock()
     engine._wait_for_ari_playback = AsyncMock(return_value=True)
     return engine
+
+
+class _MissingPipelineOrchestrator:
+    enabled = True
+
+    def get_pipeline(self, call_id, pipeline_name=None):
+        raise PipelineOrchestratorError(f"Pipeline '{pipeline_name}' is not configured")
 
 
 async def _register_session(engine):
@@ -94,3 +103,21 @@ async def test_leave_open_preserves_legacy_no_hangup():
     # HIGH-1b still holds.
     assert session.error_message
     assert "provider_start_failed" in session.error_message
+
+
+@pytest.mark.asyncio
+async def test_explicit_missing_pipeline_never_falls_back_to_default_provider():
+    engine = _make_engine("announce_hangup")
+    fallback_factory = MagicMock(side_effect=AssertionError("default provider must not start"))
+    engine.provider_factories = {"local": fallback_factory}
+    engine.pipeline_orchestrator = _MissingPipelineOrchestrator()
+    session = await _register_session(engine)
+    session.pipeline_name = "missing_pipeline"
+
+    await engine._start_provider_session("call-1")
+
+    fallback_factory.assert_not_called()
+    assert session.pipeline_resolution_error
+    assert "missing_pipeline" in session.pipeline_resolution_error
+    assert session.error_message == session.pipeline_resolution_error
+    engine.ari_client.hangup_channel.assert_awaited_once_with("chan-1")

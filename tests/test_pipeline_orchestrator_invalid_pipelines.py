@@ -1,7 +1,11 @@
 import pytest
 
 from src.config import AppConfig
-from src.pipelines.orchestrator import PipelineOrchestrator
+from src.pipelines.orchestrator import PipelineOrchestrator, PipelineOrchestratorError
+
+
+async def _healthy_connectivity(_name, _entry):
+    return {"healthy": True, "failures": []}
 
 
 def _build_app_config_with_one_invalid_pipeline() -> AppConfig:
@@ -39,12 +43,59 @@ async def test_orchestrator_skips_invalid_pipelines_and_keeps_valid_ones(monkeyp
 
     app_config = _build_app_config_with_one_invalid_pipeline()
     orchestrator = PipelineOrchestrator(app_config)
+    monkeypatch.setattr(orchestrator, "_validate_pipeline_connectivity", _healthy_connectivity)
     await orchestrator.start()
 
     assert orchestrator.started
     assert "google_stack" in orchestrator._invalid_pipelines
+    status = orchestrator.pipeline_status()
+    assert status["openai_stack"]["healthy"] is True
+    assert status["google_stack"]["valid"] is False
+    assert status["google_stack"]["healthy"] is False
 
-    resolution = orchestrator.get_pipeline("call-1", "google_stack")
+    with pytest.raises(PipelineOrchestratorError, match="google_stack.*invalid"):
+        orchestrator.get_pipeline("call-1", "google_stack")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_rejects_explicit_missing_pipeline(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    orchestrator = PipelineOrchestrator(_build_app_config_with_one_invalid_pipeline())
+    monkeypatch.setattr(orchestrator, "_validate_pipeline_connectivity", _healthy_connectivity)
+    await orchestrator.start()
+
+    with pytest.raises(PipelineOrchestratorError, match="does_not_exist.*not found"):
+        orchestrator.get_pipeline("call-2", "does_not_exist")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_rejects_invalid_active_pipeline(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    app_config = _build_app_config_with_one_invalid_pipeline()
+    app_config.active_pipeline = "google_stack"
+    orchestrator = PipelineOrchestrator(app_config)
+    monkeypatch.setattr(orchestrator, "_validate_pipeline_connectivity", _healthy_connectivity)
+    await orchestrator.start()
+
+    with pytest.raises(PipelineOrchestratorError, match="google_stack.*invalid"):
+        orchestrator.get_pipeline("call-3")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_first_valid_pipeline_only_without_explicit_selection(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    app_config = _build_app_config_with_one_invalid_pipeline()
+    app_config.active_pipeline = None
+    orchestrator = PipelineOrchestrator(app_config)
+    monkeypatch.setattr(orchestrator, "_validate_pipeline_connectivity", _healthy_connectivity)
+    await orchestrator.start()
+
+    resolution = orchestrator.get_pipeline("call-4")
     assert resolution is not None
     assert resolution.pipeline_name == "openai_stack"
-

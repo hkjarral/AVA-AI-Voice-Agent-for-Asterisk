@@ -21,16 +21,16 @@ import pytest
 from src.engine import Engine
 
 
-def _make_engine(*, default_provider, providers, provider_kinds):
+def _make_engine(*, default_provider, providers, provider_kinds, pipelines=None, pipeline_orchestrator=None):
     """Minimal Engine wired only for the readiness path."""
     engine = Engine.__new__(Engine)
     engine.config = MagicMock()
     engine.config.default_provider = default_provider
     engine.config.audio_transport = "audiosocket"
-    engine.config.pipelines = {}
+    engine.config.pipelines = pipelines or {}
     engine.providers = providers
     engine.provider_kinds = provider_kinds
-    engine.pipeline_orchestrator = None
+    engine.pipeline_orchestrator = pipeline_orchestrator
 
     # ARI + transport up so the only variable under test is default-provider readiness.
     engine.ari_client = MagicMock()
@@ -59,6 +59,16 @@ class _CloudProviderStub:
 
     def is_connected(self):
         return False  # cloud providers connect on demand; must not gate readiness
+
+
+class _PipelineOrchestratorStub:
+    started = True
+
+    def __init__(self, ready):
+        self.ready = ready
+
+    def is_pipeline_ready(self, pipeline_name):
+        return self.ready and pipeline_name == "local_hybrid"
 
 
 async def _call_ready(engine):
@@ -101,6 +111,40 @@ async def test_cloud_default_ready_regardless_of_connection():
     )
     status, body = await _call_ready(engine)
     assert status == 200
+    assert body["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_default_pipeline_connectivity_failure_is_not_ready():
+    engine = _make_engine(
+        default_provider="local_hybrid",
+        providers={},
+        provider_kinds={},
+        pipelines={"local_hybrid": MagicMock()},
+        pipeline_orchestrator=_PipelineOrchestratorStub(ready=False),
+    )
+
+    status, body = await _call_ready(engine)
+
+    assert status == 503
+    assert body["pipeline_ok"] is False
+    assert body["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_default_pipeline_connectivity_success_is_ready():
+    engine = _make_engine(
+        default_provider="local_hybrid",
+        providers={},
+        provider_kinds={},
+        pipelines={"local_hybrid": MagicMock()},
+        pipeline_orchestrator=_PipelineOrchestratorStub(ready=True),
+    )
+
+    status, body = await _call_ready(engine)
+
+    assert status == 200
+    assert body["pipeline_ok"] is True
     assert body["ready"] is True
 
 

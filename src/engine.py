@@ -3899,7 +3899,7 @@ class Engine:
             elif ai_provider_value:
                 # Treat as a pipeline name for this call
                 pipeline_resolution = await self._assign_pipeline_to_session(
-                    session, pipeline_name=ai_provider_value
+                    session, pipeline_name=ai_provider_value, strict=True
                 )
                 if pipeline_resolution:
                     logger.info(
@@ -3916,13 +3916,9 @@ class Engine:
                         await self._ensure_pipeline_runner(session, forced=True)
                     except Exception:
                         logger.debug("Failed to start pipeline runner", call_id=caller_channel_id, exc_info=True)
-                elif getattr(self.pipeline_orchestrator, "started", False):
-                    logger.warning(
-                        "Requested pipeline via AI_PROVIDER not found; falling back",
-                        channel_id=caller_channel_id,
-                        requested_pipeline=ai_provider_value,
-                    )
-                    pipeline_resolution = await self._assign_pipeline_to_session(session)
+                else:
+                    await self._handle_pipeline_resolution_failure(session)
+                    return
             else:
                 # Default behavior: check context pipeline first, then provider
                 # If context specifies a pipeline, use modular pipeline even if provider is set
@@ -3942,13 +3938,16 @@ class Engine:
                 if context_pipeline:
                     # Use the pipeline specified by context
                     pipeline_resolution = await self._assign_pipeline_to_session(
-                        session, pipeline_name=context_pipeline
+                        session, pipeline_name=context_pipeline, strict=True
                     )
                     if pipeline_resolution:
                         try:
                             await self._ensure_pipeline_runner(session, forced=True)
                         except Exception:
                             logger.debug("Failed to start pipeline runner", call_id=caller_channel_id, exc_info=True)
+                    else:
+                        await self._handle_pipeline_resolution_failure(session)
+                        return
                 elif session.provider_name and session.provider_name in self.providers:
                     # Skip pipeline resolution if context already set a monolithic provider
                     logger.info(
@@ -14635,11 +14634,21 @@ class Engine:
         self,
         session: CallSession,
         pipeline_name: Optional[str] = None,
+        *,
+        strict: bool = False,
     ) -> Optional[PipelineResolution]:
         """Resolve modular pipeline components for a session and persist metadata."""
         if not getattr(self, "pipeline_orchestrator", None):
+            if strict:
+                await self._record_pipeline_resolution_failure(
+                    session, pipeline_name, "pipeline orchestrator is unavailable"
+                )
             return None
         if not self.pipeline_orchestrator.enabled:
+            if strict:
+                await self._record_pipeline_resolution_failure(
+                    session, pipeline_name, "pipeline orchestrator is disabled"
+                )
             return None
         # If a monolithic provider is selected for this session (e.g., google_live),
         # do not auto-attach the active pipeline unless explicitly requested.
@@ -14658,6 +14667,8 @@ class Engine:
                 error=str(exc),
                 exc_info=True,
             )
+            if strict:
+                await self._record_pipeline_resolution_failure(session, pipeline_name, str(exc))
             return None
         except Exception as exc:
             logger.error(
@@ -14667,6 +14678,8 @@ class Engine:
                 error=str(exc),
                 exc_info=True,
             )
+            if strict:
+                await self._record_pipeline_resolution_failure(session, pipeline_name, str(exc))
             return None
  
         if not resolution:
@@ -14675,6 +14688,10 @@ class Engine:
                 call_id=session.call_id,
                 requested_pipeline=pipeline_name,
             )
+            if strict:
+                await self._record_pipeline_resolution_failure(
+                    session, pipeline_name, "pipeline resolution returned no result"
+                )
             return None
  
         component_summary = resolution.component_summary()
@@ -14741,6 +14758,33 @@ class Engine:
                 )
  
         return resolution
+
+    async def _record_pipeline_resolution_failure(
+        self,
+        session: CallSession,
+        pipeline_name: Optional[str],
+        detail: str,
+    ) -> None:
+        """Persist an explicit pipeline-selection failure without changing providers."""
+        requested = pipeline_name or getattr(session, "pipeline_name", None) or "<default>"
+        message = f"pipeline_resolution_failed: {requested}: {detail}"
+        session.pipeline_resolution_error = message
+        session.error_message = message
+        await self._save_session(session)
+        logger.error(
+            "Explicit pipeline selection unavailable",
+            call_id=session.call_id,
+            requested_pipeline=requested,
+            error=detail,
+        )
+
+    async def _handle_pipeline_resolution_failure(self, session: CallSession) -> None:
+        """End an already-answered call after an explicit pipeline cannot start."""
+        on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
+        if on_failure != "leave_open":
+            await self._announce_provider_failure_and_hangup(
+                session.call_id, session.caller_channel_id
+            )
  
     async def _ensure_provider_session_started(self, call_id: str) -> None:
         """Single-flight wrapper around _start_provider_session (prevents duplicate concurrent starts)."""
@@ -14892,8 +14936,12 @@ class Engine:
             if getattr(self.pipeline_orchestrator, "enabled", False):
                 if getattr(session, "pipeline_name", None):
                     pipeline_resolution = await self._assign_pipeline_to_session(
-                        session, pipeline_name=session.pipeline_name
+                        session, pipeline_name=session.pipeline_name, strict=True
                     )
+
+            if getattr(session, "pipeline_resolution_error", None):
+                await self._handle_pipeline_resolution_failure(session)
+                return
 
             # Pipeline-only mode: if a pipeline is selected for this call, do not start
             # the legacy provider session or play the provider-managed greeting.
@@ -16339,6 +16387,29 @@ class Engine:
             pass  # Don't fail health endpoint if warning computation fails
         return warnings
 
+    def _pipeline_status_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        orchestrator = getattr(self, "pipeline_orchestrator", None)
+        status_fn = getattr(orchestrator, "pipeline_status", None)
+        if callable(status_fn):
+            try:
+                return dict(status_fn())
+            except Exception:
+                logger.debug("Failed to build pipeline readiness snapshot", exc_info=True)
+        return {}
+
+    def _pipeline_is_ready(self, pipeline_name: Optional[str]) -> bool:
+        orchestrator = getattr(self, "pipeline_orchestrator", None)
+        ready_fn = getattr(orchestrator, "is_pipeline_ready", None)
+        if callable(ready_fn):
+            try:
+                return bool(ready_fn(pipeline_name))
+            except Exception:
+                logger.debug("Failed to resolve pipeline readiness", pipeline=pipeline_name, exc_info=True)
+                return False
+        # Compatibility for lightweight test/runtime stubs that predate the
+        # detailed readiness contract.
+        return bool(orchestrator and getattr(orchestrator, "started", False))
+
     async def _build_live_status_components(self) -> Dict[str, Dict[str, Any]]:
         """Build Admin UI live-status components from the engine's in-memory state."""
         providers_info: Dict[str, Dict[str, Any]] = {}
@@ -16371,7 +16442,7 @@ class Engine:
             except Exception:
                 default_ready = False
         elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):
-            default_ready = bool(getattr(self, "pipeline_orchestrator", None) and self.pipeline_orchestrator.started)
+            default_ready = self._pipeline_is_ready(default_target)
 
         ari_connected = bool(self.ari_client and self.ari_client.running)
         if getattr(self.config, "audio_transport", None) == "audiosocket":
@@ -16390,7 +16461,13 @@ class Engine:
             conversation_summary = {}
 
         is_ready = ari_connected and transport_ok and default_ready
-        config_warnings = self._compute_nat_warnings()
+        pipeline_status = self._pipeline_status_snapshot()
+        pipeline_warnings = [
+            f"{name}: {details.get('error') or 'connectivity validation failed'}"
+            for name, details in pipeline_status.items()
+            if not details.get("valid") or not details.get("healthy")
+        ]
+        config_warnings = [*self._compute_nat_warnings(), *pipeline_warnings]
         warnings = list(config_warnings)
         provider_warning_severity = "info" if is_ready else "degraded"
         if provider_warnings:
@@ -16419,6 +16496,7 @@ class Engine:
                     "llm": getattr(cfg, "llm", None),
                     "tts": getattr(cfg, "tts", None),
                     "tools": getattr(cfg, "tools", None),
+                    **pipeline_status.get(name, {}),
                 }
                 for name, cfg in (getattr(self.config, "pipelines", {}) or {}).items()
             },
@@ -16467,13 +16545,15 @@ class Engine:
         try:
             # Gather pipeline details
             pipelines_info = {}
+            pipeline_status = self._pipeline_status_snapshot()
             if self.config and hasattr(self.config, 'pipelines'):
                 for p_name, p_cfg in self.config.pipelines.items():
                     pipelines_info[p_name] = {
                         "stt": p_cfg.stt,
                         "llm": p_cfg.llm,
                         "tts": p_cfg.tts,
-                        "tools": p_cfg.tools
+                        "tools": p_cfg.tools,
+                        **pipeline_status.get(p_name, {}),
                     }
 
             # Gather provider details - only mark ready if is_ready() explicitly returns True
@@ -16512,7 +16592,7 @@ class Engine:
                 except Exception:
                     default_ready = False
             elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):
-                default_ready = bool(getattr(self, "pipeline_orchestrator", None) and self.pipeline_orchestrator.started)
+                default_ready = self._pipeline_is_ready(default_target)
             ari_connected = bool(self.ari_client and self.ari_client.running)
             audiosocket_listening = self.audio_socket_server is not None if self.config.audio_transport == 'audiosocket' else True
             is_ready = ari_connected and audiosocket_listening and default_ready
@@ -16558,7 +16638,14 @@ class Engine:
                     "rtp_port": getattr(self.config.external_media, 'rtp_port', None) if self.config.external_media else None,
                     "port_range": getattr(self.config.external_media, 'port_range', None) if self.config.external_media else None,
                 },
-                "config_warnings": self._compute_nat_warnings(),
+                "config_warnings": [
+                    *self._compute_nat_warnings(),
+                    *[
+                        f"{name}: {details.get('error') or 'connectivity validation failed'}"
+                        for name, details in pipeline_status.items()
+                        if not details.get("valid") or not details.get("healthy")
+                    ],
+                ],
                 "audiosocket_listening": audiosocket_listening,
                 "conversation": {
                     "gating_active": conversation_summary.get("gating_active", 0),
@@ -16607,7 +16694,7 @@ class Engine:
                 except Exception:
                     provider_ok = True
             elif self.config and hasattr(self.config, "pipelines") and default_target in (self.config.pipelines or {}):
-                pipeline_ok = bool(getattr(self, "pipeline_orchestrator", None) and self.pipeline_orchestrator.started)
+                pipeline_ok = self._pipeline_is_ready(default_target)
 
             default_ok = provider_ok or pipeline_ok
             is_ready = ari_connected and transport_ok and default_ok
