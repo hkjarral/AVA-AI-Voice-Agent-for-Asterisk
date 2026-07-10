@@ -33,3 +33,4 @@ def test_nested_runtime_databases_are_ignored() -> None:
 
     assert "data/**/*.db" in gitignore
     assert "data/**/*.db-wal" in gitignore
+    assert "data/operator/.migration.lock" in gitignore

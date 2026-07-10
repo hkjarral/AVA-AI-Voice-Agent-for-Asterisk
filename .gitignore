@@ -319,6 +319,7 @@ data/**/*.sqlite
 data/**/*.db-journal
 data/**/*.db-wal
 data/**/*.db-shm
+data/operator/.migration.lock
 !data/.gitkeep
 
 # Custom (community) model entries — user-specific, persists across upgrades
