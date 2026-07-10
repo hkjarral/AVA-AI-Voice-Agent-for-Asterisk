@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Automated Admin UI external-link validation** (`scripts/check_admin_ui_urls.py`, `.github/workflows/catalog-url-check.yml`): CI and the weekly scheduled check now verify the API endpoints, provider consoles, and documentation links exposed by the Admin UI without credentials. API routes are checked with lightweight unauthenticated probes, and model artifacts retain their existing metadata/range validation without downloading complete models. Failures upload separate reports and scheduled failures create or update a deduplicated tracking issue.
+- **Dependabot coverage for GitHub Actions** (`.github/dependabot.yml`): weekly grouped pull requests now keep workflow actions current alongside the existing dependency ecosystems.
+
+### Changed
+
+- **GitHub Actions upgraded to Node 24-compatible major versions** (`.github/workflows/`): first-party GitHub, Docker, CodeQL, and release actions now use their current runtime-compatible releases, removing the Node 20 deprecation path while preserving existing job and check identities.
+
+### Fixed
+
+- **Stale Admin UI provider links refreshed** (provider forms, Providers page, and setup wizard): corrected moved Telnyx, ElevenLabs, Kroko, and Asterisk documentation URLs. URL-check pipelines now use `pipefail`, so a checker failure cannot be masked by `tee`, and scheduled issue creation uses labels that exist in the repository.
+
 ## [7.3.1] - 2026-07-09
 
 ### Added
