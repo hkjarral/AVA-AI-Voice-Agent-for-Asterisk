@@ -79,6 +79,49 @@ func TestBackupPathIfExists(t *testing.T) {
 	}
 }
 
+func TestConfiguredHealthPortPrecedence(t *testing.T) {
+	root := chdirTemp(t)
+	t.Setenv("HEALTH_BIND_PORT", "")
+
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "ai-agent.yaml"), []byte("health:\n  port: 16000\n"), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+	if got := configuredHealthPort(); got != 16000 {
+		t.Fatalf("base YAML port mismatch: got %d want 16000", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "config", "ai-agent.local.yaml"), []byte("health:\n  port: 17000\n"), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+	if got := configuredHealthPort(); got != 17000 {
+		t.Fatalf("local YAML port mismatch: got %d want 17000", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HEALTH_BIND_PORT=18000\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if got := configuredHealthPort(); got != 18000 {
+		t.Fatalf(".env port mismatch: got %d want 18000", got)
+	}
+
+	t.Setenv("HEALTH_BIND_PORT", "19000")
+	if got := configuredHealthPort(); got != 19000 {
+		t.Fatalf("environment port mismatch: got %d want 19000", got)
+	}
+}
+
+func TestConfiguredHealthPortDefault(t *testing.T) {
+	chdirTemp(t)
+	t.Setenv("HEALTH_BIND_PORT", "")
+
+	if got := configuredHealthPort(); got != 15000 {
+		t.Fatalf("default port mismatch: got %d want 15000", got)
+	}
+}
+
 // TestBackupSQLiteHostCopy proves the stopped-engine fallback copies the DB and
 // any present -wal/-shm sidecars while skipping absent sidecars. This is the path
 // taken when ai_engine is not running, so a stopped/unhealthy container no longer

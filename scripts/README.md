@@ -70,19 +70,35 @@ This document summarizes the utilities under `scripts/` and when to use them.
   - Usage: `./scripts/setup-vertex.sh [project-id]`
   - Full guide: [docs/Provider-Vertex-Setup.md](../docs/Provider-Vertex-Setup.md)
 
-## Catalog Maintenance
+## Admin UI URL and Catalog Maintenance
 
-These scripts maintain `admin_ui/backend/api/models_catalog.py` — the curated list of STT/TTS/LLM models surfaced in the Admin UI Models page. Both are stdlib-only.
+These stdlib-only utilities validate the Admin UI's external URLs and maintain
+`admin_ui/backend/api/models_catalog.py` — the curated list of STT/TTS/LLM
+models surfaced in the Admin UI Models page.
 
 - `scripts/check_catalog_urls.py`
   - HEADs every download URL in the catalog (including Kokoro's nested `voice_files`)
     in parallel and reports any that aren't reachable. Validates URLs are HTTPS
     before opening them. Exits non-zero on any failure so it can gate CI.
   - Usage: `python3 scripts/check_catalog_urls.py [--include-cloud] [--max-workers N]`
-  - Also wired up as the `Catalog URL Check` GitHub Actions workflow:
-    runs on every PR that touches the catalog (blocks merge), weekly on `main`
-    (opens or comments on a single `catalog-broken` issue rather than spamming
-    new ones), and on manual dispatch.
+  - Also wired up as the model-artifact half of the `Admin UI URL Validation`
+    GitHub Actions workflow.
+
+- `scripts/check_admin_ui_urls.py`
+  - Extracts complete external URLs from the Admin UI frontend and backend API,
+    excluding model artifacts already owned by `check_catalog_urls.py`.
+  - Validates documentation, signup/API-key pages, API bases, and provider
+    validation endpoints without credentials. `401`, `403`, and method/body
+    validation responses prove an authenticated API route still exists; `404`,
+    `410`, TLS, DNS, and unsafe redirect failures fail the check.
+  - Uses `HEAD` first, a one-byte ranged `GET` fallback, and an empty
+    unauthenticated `POST` only for POST-only API probes. It never performs a
+    full model download.
+  - Usage: `python3 scripts/check_admin_ui_urls.py [--max-workers N]`
+
+The combined workflow runs on relevant pull requests, weekly on `main`, and on
+manual dispatch. Pull-request failures block merge. Scheduled failures open or
+update a single deduplicated tracking issue rather than creating duplicates.
 
 - `scripts/regenerate_piper_catalog.py`
   - Walks `rhasspy/piper-voices` v1.0.0 on HuggingFace, fetches per-voice metadata

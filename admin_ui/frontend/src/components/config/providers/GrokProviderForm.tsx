@@ -145,11 +145,11 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                     </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Voice</label>
+                            <label className="text-sm font-medium">Default Voice</label>
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Voice</strong> — which speaker xAI uses for synthesized audio.
+                                        <strong>Default Voice</strong> — which speaker xAI uses for synthesized audio. Agents can override this per agent (Agents page); this value is the fallback when an agent doesn't set its own voice.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li><code>eve</code> — energetic, upbeat</li>
                                             <li><code>ara</code> — warm, friendly</li>

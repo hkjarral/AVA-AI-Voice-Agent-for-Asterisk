@@ -84,6 +84,11 @@ class CallSession:
     status: str = "initializing"
     last_transcript: Optional[str] = None
     last_agent_response: Optional[str] = None
+    # Resolved caller-inactivity policy and runtime details. The policy is
+    # captured per call so a hot reload affects new calls without mutating an
+    # already-running conversation.
+    no_input_policy: Dict[str, Any] = field(default_factory=dict)
+    no_input_state: Dict[str, Any] = field(default_factory=dict)
     
     # Conversation tracking for email tools
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -114,7 +119,7 @@ class CallSession:
     cleanup_after_tts: bool = False
     cleanup_in_progress: bool = False
     cleanup_completed: bool = False
-    call_outcome: str = ""  # caller_hangup | agent_hangup | transferred
+    call_outcome: str = ""  # caller_hangup | agent_hangup | transferred | no_input_timeout
     pending_local_channel_id: Optional[str] = None
     pending_external_media_id: Optional[str] = None
     ssrc: Optional[int] = None

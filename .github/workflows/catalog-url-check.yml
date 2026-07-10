@@ -1,12 +1,10 @@
-name: Catalog URL Check
+name: Admin UI URL Validation
 
-# Verifies every model download URL in models_catalog.py is reachable.
-# Catches the same class of breakage that produced issue #358 (typo'd HF path)
-# and the broader audit that found 4 more dead links (Triangle104 deleted repo,
-# Qwen official-vs-mirror split-file mismatches).
+# Verifies model download artifacts plus the external API/documentation links
+# surfaced by the Admin UI. No credentials or full model downloads are used.
 #
 # Runs on:
-#   - PRs that touch the catalog or the checker itself (fast feedback)
+#   - PRs that touch Admin UI URLs, the catalog, or either checker
 #   - Weekly on main (catches upstream repo deletions between PRs)
 #   - Manual dispatch (sanity check on demand)
 
@@ -14,13 +12,21 @@ on:
   pull_request:
     paths:
       - "admin_ui/backend/api/models_catalog.py"
+      - "admin_ui/backend/api/**"
+      - "admin_ui/frontend/src/**"
+      - "scripts/check_admin_ui_urls.py"
       - "scripts/check_catalog_urls.py"
+      - "tests/test_admin_ui_url_checker.py"
       - ".github/workflows/catalog-url-check.yml"
   push:
     branches: [main]
     paths:
       - "admin_ui/backend/api/models_catalog.py"
+      - "admin_ui/backend/api/**"
+      - "admin_ui/frontend/src/**"
+      - "scripts/check_admin_ui_urls.py"
       - "scripts/check_catalog_urls.py"
+      - "tests/test_admin_ui_url_checker.py"
   schedule:
     # Sundays 06:00 UTC — quiet hour, low chance of overlap with weekday PRs
     - cron: "0 6 * * 0"
@@ -34,49 +40,70 @@ jobs:
       issues: write  # only used by the open-issue step on scheduled failure
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - name: Run catalog URL checker
-        id: check
+      - name: Validate model catalog URLs
+        id: catalog
         run: |
-          python scripts/check_catalog_urls.py | tee url_check_report.txt
+          set -o pipefail
+          python scripts/check_catalog_urls.py 2>&1 | tee model_url_report.txt
         continue-on-error: true
 
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: catalog-url-report
-          path: url_check_report.txt
-
-      - name: Fail PR if any URL broke
-        if: steps.check.outcome == 'failure' && github.event_name != 'schedule'
+      - name: Validate Admin UI API and documentation URLs
+        id: admin_ui
         run: |
-          echo "::error::Catalog URL check failed. See report artifact for details."
+          set -o pipefail
+          python scripts/check_admin_ui_urls.py 2>&1 | tee admin_ui_url_report.txt
+        continue-on-error: true
+
+      - name: Upload URL validation reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: admin-ui-url-reports
+          path: |
+            model_url_report.txt
+            admin_ui_url_report.txt
+
+      - name: Fail non-scheduled runs if any URL broke
+        if: (steps.catalog.outcome == 'failure' || steps.admin_ui.outcome == 'failure') && github.event_name != 'schedule'
+        run: |
+          echo "::error::Admin UI URL validation failed. See report artifacts for details."
           exit 1
 
       - name: Open tracking issue (scheduled run only)
-        if: steps.check.outcome == 'failure' && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        if: (steps.catalog.outcome == 'failure' || steps.admin_ui.outcome == 'failure') && github.event_name == 'schedule'
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const report = fs.readFileSync('url_check_report.txt', 'utf8');
-            const title = 'Catalog URL check failed (scheduled run)';
-            // De-dupe: don't open a second issue if one is already open
-            const { data: existing } = await github.rest.issues.listForRepo({
+            const modelReport = fs.readFileSync('model_url_report.txt', 'utf8');
+            const adminReport = fs.readFileSync('admin_ui_url_report.txt', 'utf8');
+            const sections = [];
+            if ('${{ steps.catalog.outcome }}' === 'failure') {
+              sections.push('## Model catalog', modelReport);
+            }
+            if ('${{ steps.admin_ui.outcome }}' === 'failure') {
+              sections.push('## Admin UI API/documentation links', adminReport);
+            }
+            const report = sections.join('\n\n');
+            const title = 'Admin UI URL validation failed (scheduled run)';
+            // De-dupe by title; this does not depend on a repository-specific label.
+            const { data: openIssues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'catalog-broken',
+              labels: 'bug',
+              per_page: 100,
             });
+            const existing = openIssues.find((issue) => issue.title === title);
             const body = [
-              'The weekly catalog URL check found broken download links.',
+              'The weekly Admin UI URL validation found broken model, API, or documentation links.',
               '',
               'Run: ' + context.payload.repository.html_url + '/actions/runs/' + context.runId,
               '',
@@ -84,11 +111,11 @@ jobs:
               report.trim().slice(-3000),
               '```',
             ].join('\n');
-            if (existing.length > 0) {
+            if (existing) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: existing[0].number,
+                issue_number: existing.number,
                 body: body,
               });
             } else {
@@ -96,7 +123,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title: title,
-                labels: ['catalog-broken', 'bug'],
+                labels: ['bug', 'dependencies'],
                 body: body,
               });
             }

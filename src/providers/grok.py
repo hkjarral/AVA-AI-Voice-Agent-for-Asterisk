@@ -112,6 +112,7 @@ class GrokProvider(AIProviderInterface):
         self._send_lock = asyncio.Lock()
 
         self._call_id: Optional[str] = None
+        self._session_voice: Optional[str] = None  # Per-call voice override from agent/context
         self._pending_response: bool = False
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
         self._greeting_response_id: Optional[str] = None  # Track greeting to protect from barge-in
@@ -407,6 +408,8 @@ class GrokProvider(AIProviderInterface):
         else:
             self._allowed_tools = []
 
+        self._set_session_voice_from_context(context)
+
         self._reset_output_meter()
 
         url = self._build_ws_url()
@@ -613,6 +616,35 @@ class GrokProvider(AIProviderInterface):
             await self._reconnect_with_backoff()
         except Exception:
             logger.error("Failed to send audio to Grok", call_id=self._call_id, exc_info=True)
+
+    async def speak_text(self, text: str) -> bool:
+        """Create a tools-disabled response in the active configured voice."""
+        if not text or not self.websocket or self.websocket.state.name != "OPEN":
+            return False
+        response: Dict[str, Any] = {
+            "instructions": (
+                "Speak exactly the sentence between <message> tags. Do not add, remove, "
+                f"or paraphrase words. Do not call tools. <message>{text}</message>"
+            ),
+            "tools": [],
+        }
+        if not self._is_ga:
+            response["modalities"] = self._response_modalities
+            response["input"] = []
+        try:
+            await self._send_json(
+                {
+                    "type": "response.create",
+                    "event_id": f"resp-no-input-{uuid.uuid4()}",
+                    "response": response,
+                }
+            )
+            self._pending_response = True
+            logger.info("Sent no-input announcement to Grok", call_id=self._call_id, text_preview=text[:80])
+            return True
+        except Exception:
+            logger.warning("Failed to send no-input announcement to Grok", call_id=self._call_id, exc_info=True)
+            return False
 
     async def cancel_response(self):
         """Cancel any in-progress response generation (for barge-in)."""
@@ -914,6 +946,7 @@ class GrokProvider(AIProviderInterface):
                 logger.debug("Failed to release response.done sentinels on stop_session", exc_info=True)
             self.websocket = None
             self._call_id = None
+            self._session_voice = None
             self._closing = False
             self._closed = True
             self._pending_response = False
@@ -929,9 +962,25 @@ class GrokProvider(AIProviderInterface):
             "name": "GrokProvider",
             "type": "cloud",
             "model": self.config.model,
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "supported_codecs": self.supported_codecs,
         }
+
+    def _set_session_voice_from_context(self, context: Optional[Dict[str, Any]]) -> None:
+        """Apply a per-agent/per-call voice override.
+
+        No validation: xAI accepts custom cloned-voice IDs alongside the named
+        voices, so an unrecognized value may be a legitimate clone ID.
+        """
+        self._session_voice = None
+        raw = (context or {}).get("voice")
+        if isinstance(raw, str) and raw.strip():
+            self._session_voice = raw.strip()
+            logger.info(
+                "Using per-call Grok voice override",
+                call_id=self._call_id,
+                voice=self._session_voice,
+            )
 
     def is_ready(self) -> bool:
         return bool(self.config.api_key)
@@ -1002,7 +1051,7 @@ class GrokProvider(AIProviderInterface):
             out_rate = int(getattr(self.config, "output_sample_rate_hz", 8000) or 8000)
 
         session: Dict[str, Any] = {
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "audio": {
                 "input":  {"format": {"type": in_fmt_type,  "rate": in_rate}},
                 "output": {"format": {"type": out_fmt_type, "rate": out_rate}},

@@ -18,6 +18,14 @@ Active and upcoming work. Pick something up and [get involved](#how-to-contribut
 
 Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail drop, consent gate, and Admin UI are working. Current focus: DNC, retry automation, outcome classification, and resilience hardening (see Phases 6-8 in spec).
 
+### v7.3.1 — Caller Inactivity Watchdog (Shipped July 2026)
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Provider-independent caller inactivity (#506)** | Inbound calls now get a 30-second silence check-in and a 15-second reply grace period by default; outbound agents opt in. Check-ins use the active agent voice across full-agent providers and modular pipelines. | ✅ Shipped |
+| **Transport-safe terminal speech** | Watchdog and tool farewells drain provider, AudioSocket, ExternalMedia/RTP, and ARI playback state before one idempotent hangup owner disconnects the call. | ✅ Shipped |
+| **Deepgram and ElevenLabs lifecycle hardening** | Deepgram response boundaries/tool ordering and ElevenLabs completion/silence ownership now converge on the same engine lifecycle. | ✅ Shipped |
+
 ### Completed Milestones (Recent)
 
 | Milestone | Version | Details |
@@ -174,4 +182,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: June 2026 | **Current Version**: v7.2.0
+**Last Updated**: July 2026 | **Current Version**: v7.3.1

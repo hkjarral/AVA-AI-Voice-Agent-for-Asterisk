@@ -17,6 +17,7 @@ import os
 import audioop
 from ..audio.resampler import resample_audio
 import struct
+import time
 from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass
 
@@ -27,6 +28,19 @@ from .base import AIProviderInterface, ProviderCapabilities, ProviderCapabilitie
 from .elevenlabs_config import ElevenLabsAgentConfig
 
 logger = logging.getLogger(__name__)
+
+
+def ignored_platform_voice(context) -> Optional[str]:
+    """Return a per-agent voice override that will be ignored, if any.
+
+    ElevenLabs Agent voices are configured on the ElevenLabs platform (baked
+    into the agent), so a per-agent AVA voice override cannot apply — callers
+    log it so operators aren't left guessing why the voice didn't change.
+    """
+    raw = (context or {}).get("voice")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
 
 
 @dataclass
@@ -78,6 +92,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self._closing = False
         self._closed = False
         self._in_audio_burst: bool = False
+        self._audio_idle_task: Optional[asyncio.Task] = None
+        self._last_audio_monotonic: float = 0.0
         
         # Audio resampling state
         self._resample_state_in = None  # For input resampling
@@ -132,7 +148,14 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         """
         self._call_id = call_id
         self._session_state = ElevenLabsSessionState()
-        
+        ignored_voice = ignored_platform_voice(context)
+        if ignored_voice:
+            logger.info(
+                "Agent voice override '%s' ignored (call_id=%s): ElevenLabs Agent voice "
+                "is managed on the ElevenLabs platform, not per AVA agent.",
+                ignored_voice, call_id,
+            )
+
         # Reset connection state for new session
         self._connected = False
         self._closing = False
@@ -366,6 +389,26 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             logger.debug(f"[elevenlabs] [{self._call_id}] Sent interrupt")
         except Exception as e:
             logger.warning(f"[elevenlabs] [{self._call_id}] Failed to send interrupt: {e}")
+
+    async def speak_text(self, text: str) -> bool:
+        """Inject an engine announcement through the active ElevenLabs agent voice."""
+        if not text or not self._ws or not self._connected:
+            return False
+        message = {
+            "type": "user_message",
+            "text": (
+                "[SYSTEM EVENT] Speak exactly the sentence between <message> tags. "
+                "Do not add, remove, or paraphrase words. "
+                f"<message>{text}</message>"
+            ),
+        }
+        try:
+            await self._ws.send(json.dumps(message))
+            logger.info(f"[elevenlabs] [{self._call_id}] Sent no-input announcement request")
+            return True
+        except Exception as exc:
+            logger.warning(f"[elevenlabs] [{self._call_id}] Failed to send no-input announcement: {exc}")
+            return False
     
     async def stop_session(self) -> None:
         """Close the connection and clean up resources."""
@@ -375,16 +418,12 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         previous_call_id = self._call_id
         try:
             logger.info(f"[elevenlabs] [{self._call_id}] Stopping session...")
+            self._cancel_audio_idle_completion()
             
             # Emit final AgentAudioDone if we were mid-burst
             if self._in_audio_burst and self.on_event:
-                self._in_audio_burst = False
                 try:
-                    await self.on_event({
-                        "type": "AgentAudioDone",
-                        "call_id": self._call_id,
-                        "streaming_done": True,
-                    })
+                    await self._emit_audio_done(reason="stop_session")
                 except Exception:
                     logger.debug(f"[elevenlabs] [{self._call_id}] Failed to emit AgentAudioDone during stop_session")
             
@@ -484,6 +523,9 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         
         elif msg_type == "agent_response":
             await self._handle_agent_response(data)
+
+        elif msg_type == "agent_response_complete":
+            await self._handle_agent_response_complete(data)
         
         elif msg_type == "user_transcript":
             await self._handle_user_transcript(data)
@@ -548,7 +590,6 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         
         # Track turn latency on first audio output (Milestone 21 - Call History)
         if self._turn_start_time is not None and not self._turn_first_audio_received:
-            import time
             self._turn_first_audio_received = True
             turn_latency_ms = (time.time() - self._turn_start_time) * 1000
             # Save to session for call history
@@ -592,6 +633,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "encoding": self.config.target_encoding,
             "sample_rate": self.config.target_sample_rate_hz,
         })
+        self._last_audio_monotonic = time.monotonic()
+        self._schedule_audio_idle_completion()
     
     def _convert_output_audio(self, pcm16_audio: bytes) -> bytes:
         """Convert PCM16 audio from ElevenLabs to telephony format."""
@@ -630,6 +673,55 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 "text": text,
                 "role": "assistant",
             })
+
+    async def _handle_agent_response_complete(self, data: Dict[str, Any]) -> None:
+        """Handle ElevenLabs' authoritative normal response boundary."""
+        event = data.get("agent_response_complete_event", {}) or {}
+        await self._emit_audio_done(
+            reason="agent_response_complete",
+            event_id=event.get("event_id") or data.get("event_id"),
+        )
+
+    def _cancel_audio_idle_completion(self) -> None:
+        task = self._audio_idle_task
+        self._audio_idle_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _schedule_audio_idle_completion(self, idle_sec: float = 2.0) -> None:
+        """Fallback boundary for agents without agent_response_complete enabled."""
+        self._cancel_audio_idle_completion()
+        observed_at = self._last_audio_monotonic
+
+        async def _idle() -> None:
+            try:
+                await asyncio.sleep(max(0.5, float(idle_sec)))
+                if observed_at != self._last_audio_monotonic:
+                    return
+                await self._emit_audio_done(reason="audio_idle_fallback")
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._audio_idle_task is asyncio.current_task():
+                    self._audio_idle_task = None
+
+        self._audio_idle_task = asyncio.create_task(
+            _idle(),
+            name=f"elevenlabs-audio-idle-{self._call_id}",
+        )
+
+    async def _emit_audio_done(self, *, reason: str, event_id: Optional[str] = None) -> None:
+        if not self._in_audio_burst or not self.on_event:
+            return
+        self._cancel_audio_idle_completion()
+        self._in_audio_burst = False
+        await self.on_event({
+            "type": "AgentAudioDone",
+            "call_id": self._call_id,
+            "streaming_done": True,
+            "reason": reason,
+            "provider_event_id": event_id,
+        })
     
     async def _handle_user_transcript(self, data: Dict[str, Any]) -> None:
         """Handle user transcript (STT result)."""
@@ -690,13 +782,8 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         
         # Signal end of audio burst on interruption
         if self._in_audio_burst and self.on_event:
-            self._in_audio_burst = False
             try:
-                await self.on_event({
-                    "type": "AgentAudioDone",
-                    "call_id": self._call_id,
-                    "streaming_done": True,
-                })
+                await self._emit_audio_done(reason="interruption")
             except Exception:
                 logger.debug(f"[elevenlabs] [{self._call_id}] Failed to emit AgentAudioDone on interruption")
         

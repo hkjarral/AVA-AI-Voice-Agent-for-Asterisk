@@ -24,6 +24,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { FormLabel } from '../components/ui/FormComponents';
 import { toast } from 'sonner';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived' | 'completed';
 type LeadImportIssueRow = { row_number: number; phone_number: string; error_reason?: string; warning_reason?: string };
@@ -201,34 +202,6 @@ const _commentOutLine = (line: string): string => {
     if (_isCommented(line)) return line;
     if (/^\s*\[/.test(line)) return line;
     return `; ${line}`;
-};
-
-const copyTextToClipboard = async (text: string): Promise<boolean> => {
-    try {
-        if (window.isSecureContext && navigator?.clipboard?.writeText) {
-            await navigator.clipboard.writeText(text);
-            return true;
-        }
-    } catch {
-        // ignore and try fallback
-    }
-    try {
-        const el = document.createElement('textarea');
-        el.value = text;
-        el.setAttribute('readonly', 'true');
-        el.style.position = 'fixed';
-        el.style.left = '-9999px';
-        el.style.top = '0';
-        document.body.appendChild(el);
-        el.focus();
-        el.select();
-        el.setSelectionRange(0, el.value.length);
-        const ok = document.execCommand('copy');
-        document.body.removeChild(el);
-        return ok;
-    } catch {
-        return false;
-    }
 };
 
 const withinDailyWindow = (nowHHMM: string, startHHMM: string, endHHMM: string): boolean => {

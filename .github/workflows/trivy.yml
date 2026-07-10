@@ -36,7 +36,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Build ai-engine image
       run: docker build -t ai-engine:${{ github.sha }} .
@@ -100,28 +100,28 @@ jobs:
         timeout: '30m'
 
     - name: Upload ai-engine results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: always()
       with:
         sarif_file: 'trivy-ai-engine.sarif'
         category: 'trivy-ai-engine'
 
     - name: Upload local-ai-server results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: always() && github.event_name != 'schedule'
       with:
         sarif_file: 'trivy-local-ai-server.sarif'
         category: 'trivy-local-ai-server'
 
     - name: Upload local-ai-server full results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       if: github.event_name == 'schedule'
       with:
         sarif_file: 'trivy-local-ai-server-full.sarif'
         category: 'trivy-local-ai-server-full'
 
     - name: Upload Trivy results as artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: trivy-results-${{ github.sha }}

@@ -31,7 +31,7 @@ Keep these Asterisk details handy (you will need them during setup):
 
 ## 2. Choose and Configure an AI-Powered IDE
 
-You can develop with any editor, but the project is optimized for AI-enabled IDEs that understand the repo and AVA (the project manager persona defined in `AVA.mdc`).
+You can develop with any editor, but the project is optimized for AI coding assistants primed with `AVA.mdc` (the project's AI-assistant context file — project map, engineering guardrails, and contribution workflow).
 
 ### Recommended: Windsurf (with referral link)
 
@@ -44,7 +44,7 @@ You can develop with any editor, but the project is optimized for AI-enabled IDE
    - Read local files in the repo.
    - Use its AI assistant on the project.
 
-Once the repo is open, you can address the project manager persona (AVA) directly in Windsurf chats to ask for onboarding help, architecture summaries, or feature guidance.
+Once the repo is open, load `AVA.mdc` as context in your assistant's chat and ask it for onboarding help, architecture summaries, or feature guidance.
 
 ### Other IDEs (Cursor, VS Code, etc.)
 

@@ -318,13 +318,13 @@ const DeepgramProviderForm: React.FC<DeepgramProviderFormProps> = ({ config, onC
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
                             <label className="text-sm font-medium">
-                                Voice Model
+                                Default Voice Model
                                 <span className="text-xs text-muted-foreground ml-2">(tts_model)</span>
                             </label>
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Speak (TTS) Voice</strong> — Deepgram Aura voice that synthesizes the agent's replies.
+                                        <strong>Speak (TTS) Voice</strong> — Deepgram Aura voice that synthesizes the agent's replies. Agents can override this per agent (Agents page); this value is the fallback when an agent doesn't set its own voice.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li><code>aura-2-*</code> — newest generation, best naturalness</li>
                                             <li><code>aura-*</code> — legacy, still supported</li>

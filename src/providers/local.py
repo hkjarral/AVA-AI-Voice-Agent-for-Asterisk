@@ -2072,10 +2072,33 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         except Exception:
             logger.error("Error receiving events from Local AI Server", exc_info=True)
 
-    async def speak(self, text: str):
-        # This provider works by streaming STT->LLM->TTS on the server side.
-        # Direct speech injection is not the primary mode of operation.
-        logger.warning("Direct 'speak' method not implemented for this provider. Use the streaming pipeline.")
+    async def speak_text(self, text: str) -> bool:
+        """Request direct TTS using the local agent's configured voice."""
+        if not text or not self.websocket or self.websocket.state.name != "OPEN":
+            return False
+        try:
+            await self.websocket.send(
+                json.dumps(
+                    {
+                        "type": "tts_request",
+                        "text": text,
+                        "call_id": self._active_call_id or "announcement",
+                    }
+                )
+            )
+            logger.info(
+                "Sent direct speech request to Local AI Server",
+                call_id=self._active_call_id,
+                text_preview=text[:80],
+            )
+            return True
+        except Exception:
+            logger.warning("Failed to send direct speech request to Local AI Server", exc_info=True)
+            return False
+
+    async def speak(self, text: str) -> bool:
+        """Backward-compatible alias for the legacy provider API."""
+        return await self.speak_text(text)
     
     async def text_to_speech(self, text: str) -> Optional[bytes]:
         """Generate TTS audio for the given text."""

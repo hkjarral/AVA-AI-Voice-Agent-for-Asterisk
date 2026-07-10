@@ -18,7 +18,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/hkjarral/ava-ai-voice-agent-for-asterisk/cli/internal/check"
@@ -189,24 +188,15 @@ func runUpdate() (retErr error) {
 		return runUpdatePlan(ctx)
 	}
 
-	printUpdateStep("Creating backups")
-	if err := createUpdateBackups(ctx); err != nil {
-		return err
-	}
-
-	printUpdateStep("Checking working tree")
-	dirty, err := gitIsDirty(updateStashUntracked)
+	releaseLock, err := acquireUpdateLock(ctx.repoRoot)
 	if err != nil {
 		return err
 	}
-	if dirty {
-		if updateNoStash {
-			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
-		}
-		printUpdateInfo("Working tree is dirty; stashing changes")
-		if err := gitStash(ctx, updateStashUntracked); err != nil {
-			return err
-		}
+	defer releaseLock()
+
+	printUpdateStep("Creating backups")
+	if err := createUpdateBackups(ctx); err != nil {
+		return err
 	}
 
 	tagRef, isTag := normalizeSemverTagRef(updateRef)
@@ -237,35 +227,32 @@ func runUpdate() (retErr error) {
 	ctx.newSHA = targetSHA
 
 	currentBranch, _ := gitCurrentBranch()
+	branchMismatch := false
+	checkoutExistingBranch := false
+	branchHead := ctx.oldSHA
 	if isTag && (strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD") {
 		return fmt.Errorf("cannot update to tag %q from a detached HEAD; checkout a branch (e.g., `git checkout main`) and re-run", updateRef)
 	}
 	if !isTag {
-		branchMismatch := strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
+		branchMismatch = strings.TrimSpace(currentBranch) == "" || strings.TrimSpace(currentBranch) == "HEAD" || strings.TrimSpace(currentBranch) != strings.TrimSpace(updateRef)
 		if branchMismatch {
 			if !updateCheckout {
 				return fmt.Errorf("target ref %q differs from current branch %q; re-run with --checkout to allow switching branches", updateRef, currentBranch)
 			}
-			printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
 			exists, existsErr := gitLocalBranchExists(updateRef)
 			if existsErr != nil {
 				return existsErr
 			}
 			if exists {
-				if err := gitCheckout(updateRef); err != nil {
+				checkoutExistingBranch = true
+				branchHead, err = gitRevParse(updateRef)
+				if err != nil {
 					return err
 				}
 			} else {
-				if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
-					return err
-				}
+				branchHead = targetSHA
 			}
 		}
-	}
-
-	branchHead, err := gitRevParse("HEAD")
-	if err != nil {
-		return err
 	}
 
 	updateAvailable, relErr := gitIsAncestor(branchHead, targetSHA)
@@ -282,14 +269,6 @@ func runUpdate() (retErr error) {
 		printUpdateInfo("Already up to date on %s (%s)", updateRef, shortSHA(branchHead))
 		finalSHA = branchHead
 	} else if updateAvailable {
-		printUpdateStep("Fast-forwarding code")
-		mergeRef := targetRemoteRef
-		if isTag {
-			mergeRef = updateRef
-		}
-		if err := gitMergeFastForward(mergeRef); err != nil {
-			return err
-		}
 		finalSHA = targetSHA
 	} else if remoteIsAncestor {
 		printUpdateInfo("Local branch is ahead of %s; skipping fast-forward update", targetLabel)
@@ -299,14 +278,63 @@ func runUpdate() (retErr error) {
 	}
 	ctx.newSHA = finalSHA
 
+	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
+		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
+		if err != nil {
+			return err
+		}
+		decideDockerActions(ctx)
+		applyServiceFilters(ctx)
+		if err := preflightDockerChangeGuard(ctx); err != nil {
+			return err
+		}
+	}
+
+	printUpdateStep("Checking working tree")
+	dirty, err := gitIsDirty(updateStashUntracked)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		if updateNoStash {
+			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
+		}
+		printUpdateInfo("Working tree is dirty; stashing changes")
+		if err := gitStash(ctx, updateStashUntracked); err != nil {
+			return err
+		}
+	}
+
+	if branchMismatch {
+		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
+		if checkoutExistingBranch {
+			if err := gitCheckout(updateRef); err != nil {
+				return err
+			}
+		} else {
+			if err := gitCheckoutTrack(updateRef, targetRemoteRef); err != nil {
+				return err
+			}
+		}
+	}
+	if strings.TrimSpace(branchHead) != strings.TrimSpace(targetSHA) && updateAvailable {
+		printUpdateStep("Fast-forwarding code")
+		mergeRef := targetRemoteRef
+		if isTag {
+			mergeRef = updateRef
+		}
+		if err := gitMergeFastForward(mergeRef); err != nil {
+			return err
+		}
+	}
+
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
 		if err := gitStashPop(ctx); err != nil {
-			printUpdateInfo("⚠ Stash pop conflict detected; recovering from backup")
+			printUpdateInfo("WARN: stash pop failed; recovering operator config from update backup: %v", err)
 			if recoverErr := recoverFromStashConflict(ctx); recoverErr != nil {
-				return fmt.Errorf("stash pop failed and recovery also failed: %w (original: %v)", recoverErr, err)
+				return fmt.Errorf("stash pop failed and automatic recovery failed; local changes are preserved in git stash and require manual resolution: %w", recoverErr)
 			}
-			printUpdateInfo("Operator config restored from backup — update will continue")
 		}
 	}
 
@@ -315,15 +343,6 @@ func runUpdate() (retErr error) {
 	// are inherited by default.
 	if err := migrateBaseConfigEditsToLocal(); err != nil {
 		return err
-	}
-
-	if strings.TrimSpace(ctx.oldSHA) != strings.TrimSpace(ctx.newSHA) {
-		ctx.changedFiles, err = gitDiffNames(ctx.oldSHA, ctx.newSHA)
-		if err != nil {
-			return err
-		}
-		decideDockerActions(ctx)
-		applyServiceFilters(ctx)
 	}
 
 	printUpdateStep("Applying Docker changes")
@@ -338,7 +357,7 @@ func runUpdate() (retErr error) {
 	}
 
 	printUpdateStep("Running agent check")
-	report, status, warnCount, failCount, err := runPostUpdateCheck()
+	report, status, warnCount, failCount, err := runPostUpdateCheckWithRetry(60*time.Second, 5*time.Second)
 	printPostUpdateCheck(report, warnCount, failCount)
 	printUpdateSummary(ctx, status, warnCount, failCount)
 	if err != nil {
@@ -348,6 +367,29 @@ func runUpdate() (retErr error) {
 		return errors.New("post-update check reported failures")
 	}
 	return nil
+}
+
+func acquireUpdateLock(repoRoot string) (func(), error) {
+	lockDir := filepath.Join(repoRoot, ".agent", "updates")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create update lock directory: %w", err)
+	}
+	lockPath := filepath.Join(lockDir, "update.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open update lock: %w", err)
+	}
+	if err := lockUpdateFile(f); err != nil {
+		_ = f.Close()
+		return nil, errors.New("another agent update or rollback is already running")
+	}
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
+	_, _ = f.WriteString(fmt.Sprintf("pid=%d started_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339)))
+	return func() {
+		unlockUpdateFile(f)
+		_ = f.Close()
+	}, nil
 }
 
 func runUpdatePlan(ctx *updateContext) error {
@@ -557,7 +599,7 @@ func maybeSelfUpdateAndReexec() {
 	// Re-exec into the updated binary so the rest of `agent update` runs the newest logic.
 	env := append(os.Environ(), "AAVA_AGENT_SKIP_SELF_UPDATE=1")
 	args := append([]string{exePath}, os.Args[1:]...)
-	_ = syscall.Exec(exePath, args, env)
+	execReplace(exePath, args, env)
 }
 
 func releaseBinaryName(goos string, goarch string) (string, bool) {
@@ -1483,6 +1525,35 @@ func decideDockerActions(ctx *updateContext) {
 	}
 }
 
+func updateMayTouchAIEngine(ctx *updateContext) bool {
+	return ctx.composeChanged || ctx.servicesToRebuild["ai_engine"] || ctx.servicesToRestart["ai_engine"]
+}
+
+func updateHasDockerChanges(ctx *updateContext) bool {
+	return len(ctx.servicesToRebuild) > 0 || len(ctx.servicesToRestart) > 0 || ctx.composeChanged
+}
+
+func preflightDockerChangeGuard(ctx *updateContext) error {
+	if !updateHasDockerChanges(ctx) {
+		return nil
+	}
+	if _, err := runCmd("docker", "compose", "version"); err != nil {
+		return fmt.Errorf("docker compose is required before updating checkout because Docker changes are planned: %w", err)
+	}
+	if !updateMayTouchAIEngine(ctx) || envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		return nil
+	}
+
+	activeCalls, reachable, err := queryActiveCalls()
+	if err == nil && reachable && activeCalls > 0 {
+		return fmt.Errorf("refusing to update checkout while %d active call(s) are in progress; retry after calls complete or set AAVA_UPDATE_FORCE_ACTIVE_CALLS=true", activeCalls)
+	}
+	if err != nil {
+		printUpdateInfo("WARN: unable to check active calls before updating checkout: %v", err)
+	}
+	return nil
+}
+
 func applyDockerActions(ctx *updateContext) error {
 	if len(ctx.servicesToRebuild) == 0 && len(ctx.servicesToRestart) == 0 && !ctx.composeChanged {
 		return nil
@@ -1497,17 +1568,55 @@ func applyDockerActions(ctx *updateContext) error {
 	// fail if their images aren't present. Instead, scope to services that are already running
 	// plus any services we explicitly intend to rebuild/restart.
 	runningServices := map[string]bool{}
+	runningServicesKnown := false
 	out, err := runCmd("docker", "compose", "ps", "--services", "--status", "running")
 	if err != nil {
 		// Fallback for older compose versions (or environments where --status isn't supported).
 		out, err = runCmd("docker", "compose", "ps", "--services")
 	}
 	if err == nil {
+		runningServicesKnown = true
 		for _, line := range strings.Split(out, "\n") {
 			svc := strings.TrimSpace(line)
 			if svc != "" {
 				runningServices[svc] = true
 			}
+		}
+	}
+
+	rebuildServices := sortedKeys(ctx.servicesToRebuild)
+	restartServices := sortedKeys(ctx.servicesToRestart)
+
+	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
+	if !updateIncludeUI {
+		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
+		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
+		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
+	}
+
+	// Don't rebuild services that the operator never started — auto-detection of changed files in
+	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
+	if runningServicesKnown {
+		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
+	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
+	// attempt (restart would fail anyway).
+	if runningServicesKnown && len(restartServices) > 0 {
+		restartServices = filterSlice(restartServices, func(svc string) bool {
+			return runningServices[svc]
+		})
+	}
+
+	if runningServices["ai_engine"] && (ctx.composeChanged || containsString(rebuildServices, "ai_engine") || containsString(restartServices, "ai_engine")) && !envBool("AAVA_UPDATE_FORCE_ACTIVE_CALLS") {
+		activeCalls, reachable, err := queryActiveCalls()
+		if err == nil && reachable && activeCalls > 0 {
+			printUpdateInfo("WARN: %d active call(s) started after update checkout; continuing to keep code and containers aligned", activeCalls)
+		}
+		if err != nil {
+			printUpdateInfo("WARN: unable to check active calls before ai_engine restart: %v", err)
 		}
 	}
 
@@ -1553,33 +1662,6 @@ func applyDockerActions(ctx *updateContext) error {
 		}
 	}
 
-	rebuildServices := sortedKeys(ctx.servicesToRebuild)
-	restartServices := sortedKeys(ctx.servicesToRestart)
-
-	// Avoid starting services that aren't already running unless explicitly targeted by rebuild/restart.
-	if !updateIncludeUI {
-		// If admin_ui is excluded, drop it even if a caller accidentally marked it.
-		rebuildServices = filterSlice(rebuildServices, func(s string) bool { return s != "admin_ui" })
-		restartServices = filterSlice(restartServices, func(s string) bool { return s != "admin_ui" })
-	}
-
-	// Don't rebuild services that the operator never started — auto-detection of changed files in
-	// e.g. local_ai_server/ should not force-start that service on deployments that don't use it.
-	// runningServices is non-empty whenever the query succeeded, so this guard is safe.
-	if len(runningServices) > 0 {
-		rebuildServices = filterSlice(rebuildServices, func(svc string) bool {
-			return runningServices[svc]
-		})
-	}
-
-	// If a service isn't running, and we aren't rebuilding it, prefer to skip a plain restart
-	// attempt (restart would fail anyway).
-	if len(restartServices) > 0 {
-		restartServices = filterSlice(restartServices, func(svc string) bool {
-			return runningServices[svc]
-		})
-	}
-
 	if len(rebuildServices) > 0 {
 		args := []string{"compose", "up", "-d", "--build"}
 		if updateForceRecreate {
@@ -1601,6 +1683,136 @@ func applyDockerActions(ctx *updateContext) error {
 	}
 
 	return nil
+}
+
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func envBool(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func configuredHealthPort() int {
+	const defaultPort = 15000
+	if port, ok := parseHealthPort(os.Getenv("HEALTH_BIND_PORT")); ok {
+		return port
+	}
+	if raw, ok := dotenvValue(".env", "HEALTH_BIND_PORT"); ok {
+		if port, ok := parseHealthPort(raw); ok {
+			return port
+		}
+	}
+
+	cfg := map[string]any{}
+	if base, err := configmerge.ReadYAMLFile(filepath.Join("config", "ai-agent.yaml")); err == nil {
+		cfg = base
+	}
+	if local, err := configmerge.ReadYAMLFile(filepath.Join("config", "ai-agent.local.yaml")); err == nil {
+		cfg = configmerge.DeepMerge(cfg, local)
+	}
+	if health, ok := cfg["health"].(map[string]any); ok {
+		if port, ok := parseHealthPortValue(health["port"]); ok {
+			return port
+		}
+	}
+	return defaultPort
+}
+
+func parseHealthPortValue(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return parseHealthPort(strconv.Itoa(v))
+	case int64:
+		return parseHealthPort(strconv.FormatInt(v, 10))
+	case float64:
+		if v == float64(int(v)) {
+			return parseHealthPort(strconv.Itoa(int(v)))
+		}
+	case string:
+		return parseHealthPort(v)
+	}
+	return 0, false
+}
+
+func parseHealthPort(raw string) (int, bool) {
+	p, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || p < 1 || p > 65535 {
+		return 0, false
+	}
+	return p, true
+}
+
+func dotenvValue(path, key string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != key {
+			continue
+		}
+		value := strings.TrimSpace(parts[1])
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		return value, true
+	}
+	return "", false
+}
+
+func queryActiveCalls() (int, bool, error) {
+	port := configuredHealthPort()
+	script := fmt.Sprintf(`
+import json, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:%d/sessions/stats", timeout=3) as resp:
+        print(resp.read().decode("utf-8"))
+except Exception as e:
+    print(json.dumps({"_probe_error": str(e)}))
+`, port)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "exec", "ai_engine", "python3", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats timed out after 8s")
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("docker exec ai_engine sessions/stats failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(out), &payload); err != nil {
+		return 0, true, err
+	}
+	if probeErr, ok := payload["_probe_error"].(string); ok && strings.TrimSpace(probeErr) != "" {
+		return 0, false, errors.New(probeErr)
+	}
+	for _, key := range []string{"active_calls", "active_sessions"} {
+		if raw, ok := payload[key]; ok {
+			switch v := raw.(type) {
+			case float64:
+				return int(v), true, nil
+			case int:
+				return v, true, nil
+			}
+		}
+	}
+	return 0, true, nil
 }
 
 func filterSlice(in []string, keep func(string) bool) []string {
@@ -1631,6 +1843,36 @@ func runPostUpdateCheck() (report *check.Report, status string, warnCount int, f
 		return report, "WARN", warnCount, 0, nil
 	}
 	return report, "PASS", 0, 0, nil
+}
+
+func runPostUpdateCheckWithRetry(timeout time.Duration, interval time.Duration) (report *check.Report, status string, warnCount int, failCount int, err error) {
+	deadline := time.Now().Add(timeout)
+	var lastReport *check.Report
+	var lastStatus string
+	var lastWarn int
+	var lastFail int
+	var lastErr error
+	attempt := 0
+
+	for {
+		attempt++
+		report, status, warnCount, failCount, err = runPostUpdateCheck()
+		if err == nil && failCount == 0 {
+			if attempt > 1 {
+				printUpdateInfo("agent check passed after retry %d", attempt-1)
+			}
+			return report, status, warnCount, failCount, err
+		}
+
+		lastReport, lastStatus, lastWarn, lastFail, lastErr = report, status, warnCount, failCount, err
+		if time.Now().Add(interval).After(deadline) {
+			return lastReport, lastStatus, lastWarn, lastFail, lastErr
+		}
+		if attempt == 1 {
+			printUpdateInfo("agent check failed; retrying for up to %s while services settle", timeout.String())
+		}
+		time.Sleep(interval)
+	}
 }
 
 func printUpdateFailureRecovery(ctx *updateContext, err error) {

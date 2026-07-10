@@ -258,7 +258,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                                             </ul>
                                         </>
                                     }
-                                    link="https://elevenlabs.io/docs/speech-synthesis/voice-settings"
+                                    link="https://elevenlabs.io/docs/api-reference/voices/settings/get"
                                     linkText="Voice settings reference"
                                 />
                             </div>
@@ -290,7 +290,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                                             </ul>
                                         </>
                                     }
-                                    link="https://elevenlabs.io/docs/speech-synthesis/voice-settings"
+                                    link="https://elevenlabs.io/docs/api-reference/voices/settings/get"
                                     linkText="Voice settings reference"
                                 />
                             </div>

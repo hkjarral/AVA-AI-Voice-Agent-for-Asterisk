@@ -3333,8 +3333,8 @@ class StreamingPlaybackManager:
         except Exception:
             logger.debug("start_segment_gating failed", call_id=call_id, exc_info=True)
 
-    async def end_segment_gating(self, call_id: str) -> None:
-        """End per-segment TTS gating in continuous-stream mode."""
+    async def end_segment_gating(self, call_id: str, *, notify_no_input: bool = True) -> None:
+        """End segment gating, optionally leaving provider-output timing active."""
         try:
             info = self.active_streams.get(call_id)
             if not info:
@@ -3344,7 +3344,12 @@ class StreamingPlaybackManager:
                 return
             if self.conversation_coordinator:
                 try:
-                    await self.conversation_coordinator.on_tts_end(call_id, stream_id, reason="segment-end")
+                    await self.conversation_coordinator.on_tts_end(
+                        call_id,
+                        stream_id,
+                        reason="segment-end",
+                        notify_no_input=notify_no_input,
+                    )
                 except Exception:
                     pass
             else:

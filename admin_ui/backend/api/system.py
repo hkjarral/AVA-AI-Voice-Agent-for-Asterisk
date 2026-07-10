@@ -9,6 +9,7 @@ import shutil
 import logging
 import re
 import subprocess
+import threading
 import time
 import uuid
 import yaml
@@ -432,17 +433,50 @@ def _get_health_api_token() -> str:
     return (os.getenv("HEALTH_API_TOKEN") or _dotenv_value("HEALTH_API_TOKEN") or "").strip()
 
 
+def _parse_health_port(raw) -> Optional[int]:
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return None
+    if 1 <= port <= 65535:
+        return port
+    return None
+
+
+def _configured_ai_engine_health_port() -> int:
+    for raw in (os.getenv("HEALTH_BIND_PORT"), _dotenv_value("HEALTH_BIND_PORT")):
+        port = _parse_health_port(raw)
+        if port:
+            return port
+
+    try:
+        from settings import CONFIG_PATH, LOCAL_CONFIG_PATH
+        for path in (LOCAL_CONFIG_PATH, CONFIG_PATH):
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            if isinstance(cfg, dict):
+                port = _parse_health_port((cfg.get("health") or {}).get("port"))
+                if port:
+                    return port
+    except Exception:
+        pass
+    return 15000
+
+
 def _ai_engine_sessions_stats_urls() -> List[str]:
     urls: List[str] = []
     env_url = (os.getenv("AI_ENGINE_HEALTH_URL") or _dotenv_value("AI_ENGINE_HEALTH_URL") or "").strip()
     if env_url:
         urls.append(env_url.rstrip("/") + "/sessions/stats")
+    port = _configured_ai_engine_health_port()
     # Candidates (some deployments run outside Docker, others inside Compose network).
     urls.extend(
         [
-            "http://127.0.0.1:15000/sessions/stats",
-            "http://ai_engine:15000/sessions/stats",
-            "http://ai-engine:15000/sessions/stats",
+            f"http://127.0.0.1:{port}/sessions/stats",
+            f"http://ai_engine:{port}/sessions/stats",
+            f"http://ai-engine:{port}/sessions/stats",
         ]
     )
     # Deduplicate while preserving order.
@@ -519,10 +553,48 @@ async def _fetch_ai_engine_sessions_stats() -> Optional[dict]:
             if not container:
                 return None
             # Use python3 + urllib to avoid requiring curl/wget.
-            cmd = (
-                "python3 -c 'import json,urllib.request; "
-                "print(json.dumps(json.load(urllib.request.urlopen(\"http://127.0.0.1:15000/sessions/stats\"))))'"
-            )
+            fallback_port = _configured_ai_engine_health_port()
+            cmd = f"""python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+
+def add_port(candidates, raw):
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return
+    if 1 <= port <= 65535 and port not in candidates:
+        candidates.append(port)
+
+
+ports = []
+add_port(ports, os.getenv("HEALTH_BIND_PORT", ""))
+try:
+    import yaml
+    for path in ("/app/config/ai-agent.local.yaml", "/app/config/ai-agent.yaml"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {{}}
+            add_port(ports, (cfg.get("health") or {{}}).get("port"))
+        except Exception:
+            pass
+except Exception:
+    pass
+add_port(ports, {fallback_port})
+add_port(ports, 15000)
+
+for port in ports:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{{port}}/sessions/stats", timeout=3) as resp:
+            print(json.dumps(json.load(resp)))
+        sys.exit(0)
+    except Exception:
+        pass
+sys.exit(2)
+PY"""
             code, out = container.exec_run(["sh", "-lc", cmd])
             if code != 0:
                 return None
@@ -3349,9 +3421,12 @@ async def ari_extension_status(key: str = "", device_state_tech: str = "auto", d
 
 _UPDATER_IMAGE_REPO = "asterisk-ai-voice-agent-updater"
 _UPDATER_IMAGE_LOCK = None
+_UPDATE_JOB_LOCK = threading.Lock()
 _UPDATES_STATUS_CACHE: dict = {"checked_at": 0.0, "data": None, "checked_remote": False}
 _UPDATES_STATUS_CACHE_TTL_SEC = 600  # 10 minutes
 _UPDATES_STATUS_CACHE_LOCK = None
+_UPDATE_RUNNING_STATUSES = {"starting", "running"}
+_UPDATE_STALE_AFTER_SEC = 60 * 60
 
 
 def _updater_remote_image_repo() -> str:
@@ -3375,12 +3450,206 @@ def _updater_lock():
     return _UPDATER_IMAGE_LOCK
 
 
+def _update_job_lock():
+    return _UPDATE_JOB_LOCK
+
+
 def _updates_status_cache_lock():
     global _UPDATES_STATUS_CACHE_LOCK
     if _UPDATES_STATUS_CACHE_LOCK is None:
         import threading
         _UPDATES_STATUS_CACHE_LOCK = threading.Lock()
     return _UPDATES_STATUS_CACHE_LOCK
+
+
+_CLI_INSTALL_PATH_RE = re.compile(r"^/[A-Za-z0-9._+@=-]+(?:/[A-Za-z0-9._+@=-]+)*$")
+
+
+def _validate_cli_install_path(path: Optional[str]) -> Optional[str]:
+    p = (path or "").strip()
+    if not p:
+        return None
+    if "\x00" in p or not _CLI_INSTALL_PATH_RE.fullmatch(p):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid CLI install path. Use an absolute path with simple path characters only.",
+        )
+    if "/../" in p or p.endswith("/..") or "/./" in p or p.endswith("/."):
+        raise HTTPException(status_code=400, detail="Invalid CLI install path")
+    return p
+
+
+def _updates_jobs_dir() -> str:
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    return os.path.join(project_root, ".agent", "updates", "jobs")
+
+
+def _updates_dir() -> str:
+    project_root = os.getenv("PROJECT_ROOT", "/app/project")
+    return os.path.join(project_root, ".agent", "updates")
+
+
+def _updater_image_status_path() -> str:
+    return os.path.join(_updates_dir(), "updater-image-status.json")
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_updater_image_status(
+    *,
+    status: str,
+    phase: str,
+    image: str,
+    message: str,
+    detail_tail: Optional[list[str]] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+) -> None:
+    try:
+        import json
+
+        path = _updater_image_status_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        existing: dict = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception:
+                existing = {}
+        payload = {
+            **existing,
+            "status": status,
+            "phase": phase,
+            "image": image,
+            "message": message,
+            "updated_at": _now_iso(),
+        }
+        if started_at is not None:
+            payload["started_at"] = started_at
+        elif not payload.get("started_at") or status == "running":
+            payload["started_at"] = existing.get("started_at") or _now_iso()
+        if finished_at is not None:
+            payload["finished_at"] = finished_at
+        elif status in {"success", "error"}:
+            payload["finished_at"] = _now_iso()
+        if detail_tail is not None:
+            payload["detail_tail"] = detail_tail[-40:]
+        import threading
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except Exception:
+        logger.debug("Failed to write updater image status", exc_info=True)
+
+
+def _read_updater_image_status() -> dict:
+    import json
+
+    path = _updater_image_status_path()
+    if not os.path.exists(path):
+        return {"status": "idle", "phase": "idle", "message": "Updater image has not been prepared yet"}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f) or {}
+    except Exception:
+        return {"status": "unknown", "phase": "unknown", "message": "Updater image status is unavailable"}
+    payload.setdefault("status", "unknown")
+    payload.setdefault("phase", "unknown")
+    payload.setdefault("message", "")
+    if payload.get("status") == "running":
+        try:
+            if time.time() - os.path.getmtime(path) > _UPDATE_STALE_AFTER_SEC:
+                payload["status"] = "error"
+                payload["phase"] = "stale"
+                payload["message"] = "Updater image preparation appears stale"
+                payload.setdefault("finished_at", _now_iso())
+        except Exception:
+            pass
+    return payload
+
+
+def _parse_update_dt(s: Optional[str]):
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _is_update_job_stale(job: dict, *, state_path: Optional[str] = None, log_path: Optional[str] = None) -> bool:
+    status = str((job or {}).get("status") or "").lower()
+    if status not in _UPDATE_RUNNING_STATUSES:
+        return False
+
+    candidates: list[float] = []
+    try:
+        st = _parse_update_dt(job.get("heartbeat_at") or job.get("started_at"))
+        if st is not None:
+            candidates.append(st.timestamp())
+    except Exception:
+        pass
+    for p in (log_path, state_path):
+        if p:
+            try:
+                if os.path.exists(p):
+                    candidates.append(os.path.getmtime(p))
+            except Exception:
+                pass
+    if not candidates:
+        return False
+    return (time.time() - max(candidates)) > _UPDATE_STALE_AFTER_SEC
+
+
+def _read_update_job(job_id: str) -> tuple[dict, str, str]:
+    jobs_dir = _updates_jobs_dir()
+    state_path = os.path.join(jobs_dir, f"{job_id}.json")
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+
+    import json
+
+    job: dict
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                job = json.load(f) or {}
+        except Exception:
+            job = {"job_id": job_id, "status": "unknown"}
+    else:
+        job = {"job_id": job_id, "status": "running"}
+    job.setdefault("job_id", job_id)
+
+    if _is_update_job_stale(job, state_path=state_path, log_path=log_path):
+        job = {
+            **job,
+            "status": "stale",
+            "stale": True,
+            "failure_reason": "job heartbeat/log output stopped before completion",
+        }
+    return job, state_path, log_path
+
+
+def _find_active_update_job() -> Optional[dict]:
+    import glob
+
+    jobs_dir = _updates_jobs_dir()
+    if not os.path.isdir(jobs_dir):
+        return None
+
+    for state_path in sorted(glob.glob(os.path.join(jobs_dir, "*.json")), key=os.path.getmtime, reverse=True):
+        job_id = os.path.splitext(os.path.basename(state_path))[0]
+        job, _state, log_path = _read_update_job(job_id)
+        if str(job.get("status") or "").lower() in _UPDATE_RUNNING_STATUSES and not job.get("stale"):
+            return job
+    return None
 
 
 # Allow an optional registry host with port prefix (e.g. "registry.example.com:5000/...").
@@ -3425,6 +3694,129 @@ def _run_docker(args: list[str], *, cwd: Optional[str] = None, timeout_sec: int 
         return 1, str(e)
 
 
+def _run_docker_with_updater_status(
+    args: list[str],
+    *,
+    cwd: Optional[str] = None,
+    timeout_sec: int = 60,
+    image: str,
+    phase: str,
+    message: str,
+) -> tuple[int, str]:
+    """
+    Run Docker CLI while persisting a small progress/tail file for the Updates UI.
+    """
+    if not args or any((not isinstance(a, str) or a == "" or "\x00" in a or any(c.isspace() for c in a)) for a in args):
+        raise ValueError("invalid docker args")
+
+    import selectors
+
+    started = _now_iso()
+    tail: list[str] = []
+    _write_updater_image_status(
+        status="running",
+        phase=phase,
+        image=image,
+        message=message,
+        detail_tail=tail,
+        started_at=started,
+    )
+    try:
+        proc = subprocess.Popen(
+            ["docker", *args],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=os.environ.copy(),
+        )
+    except Exception as e:
+        _write_updater_image_status(
+            status="error",
+            phase=phase,
+            image=image,
+            message=f"{message} failed to start",
+            detail_tail=[str(e)],
+            started_at=started,
+            finished_at=_now_iso(),
+        )
+        return 1, str(e)
+
+    sel = selectors.DefaultSelector()
+    if proc.stdout is not None:
+        sel.register(proc.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout_sec if timeout_sec else None
+
+    def _append(text: str) -> None:
+        for line in text.splitlines():
+            if line:
+                tail.append(line[-500:])
+        del tail[:-40]
+
+    try:
+        while True:
+            if deadline is not None and time.monotonic() > deadline:
+                proc.kill()
+                rest = ""
+                try:
+                    rest, _ = proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                _append(rest or "timeout")
+                out = "\n".join(tail)
+                _write_updater_image_status(
+                    status="error",
+                    phase=phase,
+                    image=image,
+                    message=f"{message} timed out",
+                    detail_tail=tail,
+                    started_at=started,
+                    finished_at=_now_iso(),
+                )
+                return 124, out or "timeout"
+
+            events = sel.select(timeout=0.5)
+            for key, _mask in events:
+                line = key.fileobj.readline()
+                if line:
+                    _append(line)
+                    _write_updater_image_status(
+                        status="running",
+                        phase=phase,
+                        image=image,
+                        message=message,
+                        detail_tail=tail,
+                        started_at=started,
+                    )
+
+            if proc.poll() is not None:
+                if proc.stdout is not None:
+                    try:
+                        _append(proc.stdout.read() or "")
+                    except Exception:
+                        pass
+                break
+    finally:
+        try:
+            sel.close()
+        except Exception:
+            pass
+
+    code = int(proc.returncode or 0)
+    out = "\n".join(tail)
+    _write_updater_image_status(
+        status="success" if code == 0 else "error",
+        phase=phase,
+        image=image,
+        message=f"{message} complete" if code == 0 else f"{message} failed",
+        detail_tail=tail,
+        started_at=started,
+        finished_at=_now_iso(),
+    )
+    return code, out
+
+
 def _is_semver_tag(ref: str) -> bool:
     r = (ref or "").strip()
     if not r:
@@ -3432,6 +3824,19 @@ def _is_semver_tag(ref: str) -> bool:
     if r.startswith("v"):
         r = r[1:]
     return bool(re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", r))
+
+
+def _updater_prefer_pull_ref_for_update_target(ref: str) -> Optional[str]:
+    """
+    Return a remote updater-image tag only when the update target is a published release.
+
+    Branch/main/custom update paths must build the updater from the checked-out source so
+    UI-driven tests exercise updater/CLI changes that are part of the branch under review.
+    """
+    r = (ref or "").strip()
+    if _is_semver_tag(r):
+        return r
+    return None
 
 
 def _updater_pull_tags_for_ref(ref: str) -> list[str]:
@@ -3639,7 +4044,136 @@ def _updater_image_tag_for_sha(sha: Optional[str]) -> str:
     return f"{_UPDATER_IMAGE_REPO}:sha-{sha[:12]}"
 
 
-def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
+def _git_available() -> bool:
+    return bool(shutil.which("git"))
+
+
+def _resolve_update_ref_sha(ref: str) -> Optional[str]:
+    """
+    Resolve an update target ref to a commit SHA in the mounted project checkout.
+
+    Branch/main updater images must be built from the target ref, not from the currently
+    deployed checkout. This helper keeps that path best-effort but deterministic.
+    """
+    r = (ref or "").strip()
+    if not r or not _git_available():
+        return None
+    build_root = os.getenv("PROJECT_ROOT", "/app/project")
+    safe_dir = f"safe.directory={build_root}"
+
+    fetch_specs = []
+    if not _is_semver_tag(r):
+        fetch_specs.append(f"refs/heads/{r}:refs/remotes/origin/{r}")
+    fetch_specs.append(r)
+    for spec in fetch_specs:
+        try:
+            proc = subprocess.run(
+                ["git", "-c", safe_dir, "-C", build_root, "fetch", "-q", "origin", spec],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            if proc.returncode == 0:
+                break
+        except Exception:
+            continue
+
+    candidates = [
+        f"refs/remotes/origin/{r}",
+        f"origin/{r}",
+        f"refs/heads/{r}",
+        r,
+        "FETCH_HEAD",
+    ]
+    for candidate in candidates:
+        try:
+            proc = subprocess.run(
+                ["git", "-c", safe_dir, "-C", build_root, "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            continue
+        if proc.returncode == 0:
+            sha = (proc.stdout or "").strip()
+            if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+                return sha.lower()
+    return None
+
+
+def _materialize_git_archive_context(build_root: str, ref: str, sha: str) -> str:
+    import tarfile
+    import tempfile
+
+    contexts_root = os.path.join(build_root, ".agent", "updates", "build-contexts")
+    os.makedirs(contexts_root, exist_ok=True)
+    context_dir = tempfile.mkdtemp(prefix=f"updater-{sha[:12]}-", dir=contexts_root)
+    archive_path = os.path.join(context_dir, ".source.tar")
+    safe_dir = f"safe.directory={build_root}"
+    try:
+        with open(archive_path, "wb") as f:
+            subprocess.run(
+                ["git", "-c", safe_dir, "-C", build_root, "archive", "--format=tar", sha],
+                stdout=f,
+                stderr=subprocess.PIPE,
+                text=False,
+                timeout=90,
+                check=True,
+            )
+        root_abs = os.path.abspath(context_dir)
+        with tarfile.open(archive_path, "r") as tar:
+            for member in tar.getmembers():
+                member_name = os.path.normpath(member.name)
+                if (
+                    member_name in ("", ".")
+                    or os.path.isabs(member.name)
+                    or member_name == ".."
+                    or member_name.startswith(f"..{os.sep}")
+                ):
+                    raise RuntimeError(f"unsafe path in git archive for {ref}")
+                target = os.path.abspath(os.path.join(context_dir, member_name))
+                if target != root_abs and not target.startswith(root_abs + os.sep):
+                    raise RuntimeError(f"unsafe path in git archive for {ref}")
+
+                if member.isdir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                if member.isfile():
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    src = tar.extractfile(member)
+                    if src is None:
+                        raise RuntimeError(f"invalid file in git archive for {ref}")
+                    with src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    os.chmod(target, member.mode & 0o777)
+                    continue
+                if member.issym():
+                    link_target = member.linkname or ""
+                    link_abs = os.path.abspath(os.path.join(os.path.dirname(target), link_target))
+                    if os.path.isabs(link_target) or (
+                        link_abs != root_abs and not link_abs.startswith(root_abs + os.sep)
+                    ):
+                        raise RuntimeError(f"unsafe symlink in git archive for {ref}")
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    os.symlink(link_target, target)
+                    continue
+                raise RuntimeError(f"unsupported entry in git archive for {ref}")
+        os.remove(archive_path)
+        return context_dir
+    except Exception:
+        shutil.rmtree(context_dir, ignore_errors=True)
+        raise
+
+
+def _ensure_updater_image_for_sha(
+    host_project_root: str,
+    tag: str,
+    *,
+    require_local_source: bool = False,
+    source_ref: Optional[str] = None,
+    source_sha: Optional[str] = None,
+) -> str:
     lock = _updater_lock()
     with lock:
         try:
@@ -3653,25 +4187,63 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
 
             client = docker.from_env()
             try:
-                client.images.get(tag)
-                return
+                image = client.images.get(tag)
+                labels = getattr(image, "labels", None) or {}
+                if not require_local_source or (
+                    labels.get("aava.updater.source") in {"local", "ref"}
+                    and (not source_sha or labels.get("aava.updater.sha") == source_sha)
+                ):
+                    _write_updater_image_status(
+                        status="success",
+                        phase="cached",
+                        image=tag,
+                        message="Updater image is already available",
+                        detail_tail=[],
+                        finished_at=_now_iso(),
+                    )
+                    return tag
             except Exception:
                 pass
 
             build_root = os.getenv("PROJECT_ROOT", "/app/project")
+            build_context = build_root
+            cleanup_context: Optional[str] = None
+            source_label = "local"
+            if source_ref:
+                if not source_sha:
+                    raise HTTPException(status_code=500, detail=f"Failed to resolve updater source ref: {source_ref}")
+                build_context = _materialize_git_archive_context(build_root, source_ref, source_sha)
+                cleanup_context = build_context
+                source_label = "ref"
             # Avoid docker-py image build streaming decode issues by using Docker CLI.
             # Always use host networking to avoid restricted bridge DNS/egress environments.
             logger.info(
                 "Building updater image: %s (context=%s, network=host)",
                 _sanitize_for_log(tag),
-                _sanitize_for_log(build_root),
+                _sanitize_for_log(build_context),
             )
             safe_tag = _validate_docker_image_ref(tag)
-            code, out = _run_docker(
-                ["build", "--network=host", "-f", "updater/Dockerfile", "-t", safe_tag, "."],
-                cwd=build_root,
-                timeout_sec=1800,
-            )
+            args = [
+                "build",
+                "--network=host",
+                "--label",
+                f"aava.updater.source={source_label}",
+            ]
+            if source_ref:
+                args.extend(["--label", f"aava.updater.ref={source_ref}", "--label", f"aava.updater.sha={source_sha}"])
+            args.extend(["-f", "updater/Dockerfile", "-t", safe_tag, "."])
+            try:
+                code, out = _run_docker_with_updater_status(
+                    args,
+                    cwd=build_context,
+                    timeout_sec=1800,
+                    image=safe_tag,
+                    phase="building",
+                    message=f"Building updater image from {source_ref or 'local source'}",
+                )
+            finally:
+                if cleanup_context:
+                    shutil.rmtree(cleanup_context, ignore_errors=True)
             if code != 0:
                 tail = "\n".join((out or "").splitlines()[-40:]).strip()
                 # AAVA-179: Detect DNS resolution failures and provide a targeted fix
@@ -3698,6 +4270,7 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
                     logger.error("Updater build failed (tail):\n%s", tail)
                     raise HTTPException(status_code=500, detail=f"Failed to build updater image:\n{tail}\n\n{hint}")
                 raise HTTPException(status_code=500, detail=f"Failed to build updater image.\n\n{hint}")
+            return safe_tag
         except HTTPException:
             raise
         except Exception as e:
@@ -3705,7 +4278,14 @@ def _ensure_updater_image_for_sha(host_project_root: str, tag: str) -> None:
             raise HTTPException(status_code=500, detail="Failed to build updater image") from e
 
 
-def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, prefer_pull_ref: Optional[str], allow_build: bool) -> None:
+def _ensure_updater_image_for_ref(
+    host_project_root: str,
+    local_tag: str,
+    *,
+    prefer_pull_ref: Optional[str],
+    allow_build: bool,
+    source_ref: Optional[str] = None,
+) -> str:
     """
     Ensure the updater image exists locally under `local_tag`.
 
@@ -3713,22 +4293,87 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
     and retag it to the local tag used by updater jobs.
     """
     client = docker.from_env()
-    try:
-        client.images.get(local_tag)
-        return
-    except Exception:
-        pass
+    if not prefer_pull_ref:
+        if allow_build:
+            source_sha = _resolve_update_ref_sha(source_ref or "") if source_ref else None
+            tag = _updater_image_tag_for_sha(source_sha) if source_sha else local_tag
+            return _ensure_updater_image_for_sha(
+                host_project_root,
+                tag,
+                require_local_source=True,
+                source_ref=source_ref,
+                source_sha=source_sha,
+            )
+        try:
+            client.images.get(local_tag)
+            _write_updater_image_status(
+                status="success",
+                phase="cached",
+                image=local_tag,
+                message="Updater image is already available",
+                detail_tail=[],
+                finished_at=_now_iso(),
+            )
+            return local_tag
+        except Exception:
+            raise HTTPException(status_code=500, detail="Updater image missing and local build is disabled")
 
     # Best-effort: pull a published updater image (preferred for most installs).
     if prefer_pull_ref:
+        try:
+            client.images.get(local_tag)
+            _write_updater_image_status(
+                status="success",
+                phase="cached",
+                image=local_tag,
+                message="Updater image is already available",
+                detail_tail=[],
+                finished_at=_now_iso(),
+            )
+            return local_tag
+        except Exception:
+            pass
+
         remote_repo = _updater_remote_image_repo()
         for t in _updater_pull_tags_for_ref(prefer_pull_ref):
             remote_ref = _validate_docker_image_ref(f"{remote_repo}:{t}")
-            code, out = _run_docker(["pull", remote_ref], timeout_sec=900)
+            code, out = _run_docker_with_updater_status(
+                ["pull", remote_ref],
+                timeout_sec=900,
+                image=remote_ref,
+                phase="pulling",
+                message=f"Downloading updater image {remote_ref}",
+            )
             if code == 0:
-                _run_docker(["tag", remote_ref, _validate_docker_image_ref(local_tag)], timeout_sec=60)
+                _write_updater_image_status(
+                    status="running",
+                    phase="tagging",
+                    image=local_tag,
+                    message=f"Tagging updater image {remote_ref}",
+                    detail_tail=[],
+                )
+                tag_code, tag_out = _run_docker(["tag", remote_ref, _validate_docker_image_ref(local_tag)], timeout_sec=60)
+                if tag_code != 0:
+                    tail = "\n".join((tag_out or "").splitlines()[-20:]).strip()
+                    _write_updater_image_status(
+                        status="error",
+                        phase="tagging",
+                        image=local_tag,
+                        message=f"Failed to tag updater image {remote_ref}",
+                        detail_tail=[tail or "docker tag failed"],
+                        finished_at=_now_iso(),
+                    )
+                    raise HTTPException(status_code=500, detail=f"Failed to tag updater image: {tail or 'docker tag failed'}")
+                _write_updater_image_status(
+                    status="success",
+                    phase="ready",
+                    image=local_tag,
+                    message="Updater image is ready",
+                    detail_tail=[],
+                    finished_at=_now_iso(),
+                )
                 logger.info("Pulled updater image: %s -> %s", _sanitize_for_log(remote_ref), _sanitize_for_log(local_tag))
-                return
+                return local_tag
             logger.warning(
                 "Failed to pull updater image %s: %s",
                 _sanitize_for_log(remote_ref),
@@ -3738,7 +4383,7 @@ def _ensure_updater_image_for_ref(host_project_root: str, local_tag: str, *, pre
     if not allow_build:
         raise HTTPException(status_code=500, detail="Updater image missing and local build is disabled")
 
-    _ensure_updater_image_for_sha(host_project_root, local_tag)
+    return _ensure_updater_image_for_sha(host_project_root, local_tag)
 
 
 def _run_updater_ephemeral(
@@ -3760,7 +4405,14 @@ def _run_updater_ephemeral(
 
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
-    _ensure_updater_image_for_ref(host_project_root, tag, prefer_pull_ref=prefer_pull_ref, allow_build=allow_build)
+    source_ref = None if prefer_pull_ref else (env or {}).get("AAVA_UPDATE_REF")
+    tag = _ensure_updater_image_for_ref(
+        host_project_root,
+        tag,
+        prefer_pull_ref=prefer_pull_ref,
+        allow_build=allow_build,
+        source_ref=source_ref,
+    )
 
     client = docker.from_env()
     name = f"aava-update-ephemeral-{uuid.uuid4().hex[:10]}"
@@ -4004,7 +4656,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
 
     # Local info (via updater container; admin_ui may not include git)
     try:
-        code, out = _run_updater_ephemeral(
+        code, out = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4083,7 +4736,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
 
     # Remote v* tags
     try:
-        code2, out2 = _run_updater_ephemeral(
+        code2, out2 = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4153,7 +4807,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
     )
 
     try:
-        code3, out3 = _run_updater_ephemeral(
+        code3, out3 = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=rel_cmd,
@@ -4183,7 +4838,8 @@ async def updates_status(check_remote: bool = False, build_updater: bool = False
 
     changelog_latest = None
     try:
-        code4, out4 = _run_updater_ephemeral(
+        code4, out4 = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4237,7 +4893,8 @@ async def updates_branches(build_updater: bool = False):
     host_root = _project_host_root_from_admin_ui_container()
 
     try:
-        code, out = _run_updater_ephemeral(
+        code, out = await asyncio.to_thread(
+            _run_updater_ephemeral,
             host_root,
             env={"PROJECT_ROOT": host_root},
             command=(
@@ -4291,12 +4948,13 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         "AAVA_UPDATE_CHECKOUT": "true" if checkout else "false",
     }
     # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
-    code, out = _run_updater_ephemeral(
+    code, out = await asyncio.to_thread(
+        _run_updater_ephemeral,
         host_root,
         env=env,
         timeout_sec=120,
         capture_stderr=False,
-        prefer_pull_ref="latest",
+        prefer_pull_ref=_updater_prefer_pull_ref_for_update_target(ref),
         allow_build=True,
     )
     if code != 0:
@@ -4307,6 +4965,13 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         plan = json.loads(out)
     except Exception:
         raise HTTPException(status_code=500, detail="Updater returned invalid JSON")
+    try:
+        active = await _check_active_calls()
+        plan["active_calls"] = int(active.get("active_calls") or 0)
+        plan["active_calls_reachable"] = bool(active.get("reachable"))
+    except Exception:
+        plan["active_calls"] = None
+        plan["active_calls_reachable"] = False
     return UpdatePlanResponse(plan=plan)
 
 
@@ -4316,10 +4981,50 @@ class UpdateRunRequest(BaseModel):
     checkout: bool = True
     update_cli_host: bool = True
     cli_install_path: Optional[str] = None
+    force_active_calls: bool = False
 
 
 class UpdateRunResponse(BaseModel):
     job_id: str
+
+
+def _write_update_job_marker(job_id: str, payload: dict) -> None:
+    import json
+    import threading
+
+    jobs_dir = _updates_jobs_dir()
+    os.makedirs(jobs_dir, exist_ok=True)
+    state_path = os.path.join(jobs_dir, f"{job_id}.json")
+    tmp = f"{state_path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+    os.replace(tmp, state_path)
+
+
+def _mark_update_job_failed(job_id: str, reason: str, *, status: str = "failed", exit_code: int = 1) -> None:
+    import json
+    from datetime import datetime, timezone
+
+    jobs_dir = _updates_jobs_dir()
+    state_path = os.path.join(jobs_dir, f"{job_id}.json")
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            payload = json.load(f) or {}
+    except Exception:
+        payload = {"job_id": job_id}
+    payload.update(
+        {
+            "job_id": job_id,
+            "status": status,
+            "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "exit_code": exit_code,
+            "failure_reason": reason,
+        }
+    )
+    try:
+        _write_update_job_marker(job_id, payload)
+    except Exception:
+        logger.debug("Failed to mark update job failed", exc_info=True)
 
 
 @router.post("/updates/run", response_model=UpdateRunResponse)
@@ -4329,42 +5034,58 @@ async def updates_run(body: UpdateRunRequest):
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
     ref = _validate_git_ref(body.ref or "main")
-    # Prefer pulling a published updater image. For stable version updates (vX.Y.Z),
-    # try to pull the matching updater tag; otherwise fall back to pulling :latest.
-    prefer_pull = ref if _is_semver_tag(ref) else "latest"
-    _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref=prefer_pull, allow_build=True)
-
+    cli_path = _validate_cli_install_path(body.cli_install_path)
     job_id = uuid.uuid4().hex
 
-    # Create an initial job marker immediately so the UI doesn't hit a race where the
-    # updater container hasn't created its state/log files yet.
-    try:
-        project_root = os.getenv("PROJECT_ROOT", "/app/project")
-        jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
-        os.makedirs(jobs_dir, exist_ok=True)
-        state_path = os.path.join(jobs_dir, f"{job_id}.json")
-        log_path = os.path.join(jobs_dir, f"{job_id}.log")
-        import json
-        from datetime import datetime, timezone
+    with _update_job_lock():
+        active_job = _find_active_update_job()
+        if active_job:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Another update job is already running: {active_job.get('job_id') or 'unknown'}",
+            )
+        try:
+            from datetime import datetime, timezone
 
-        payload = {
-            "job_id": job_id,
-            "status": "starting",
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "finished_at": None,
-            "include_ui": bool(body.include_ui),
-            "exit_code": None,
-            "log_path": log_path,
-            "ref": (body.ref or "main").strip(),
-            "checkout": bool(body.checkout),
-            "update_cli_host": bool(body.update_cli_host),
-            "cli_install_path": (body.cli_install_path or "").strip() or None,
-        }
-        with open(state_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-    except Exception:
-        # Best-effort only; the updater container will still manage state/logs.
-        pass
+            log_path = os.path.join(_updates_jobs_dir(), f"{job_id}.log")
+            payload = {
+                "job_id": job_id,
+                "status": "starting",
+                "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "finished_at": None,
+                "include_ui": bool(body.include_ui),
+                "exit_code": None,
+                "log_path": log_path,
+                "ref": ref,
+                "checkout": bool(body.checkout),
+                "update_cli_host": bool(body.update_cli_host),
+                "cli_install_path": cli_path,
+                "repo_root": host_root,
+                "force_active_calls": bool(body.force_active_calls),
+            }
+            _write_update_job_marker(job_id, payload)
+        except Exception as e:
+            logger.exception("Failed to reserve update job: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to reserve update job")
+    # Stable releases can use published updater images; branch/main/custom targets build
+    # the updater from local source so branch-specific updater changes are exercised.
+    prefer_pull = _updater_prefer_pull_ref_for_update_target(ref)
+    try:
+        tag = await asyncio.to_thread(
+            _ensure_updater_image_for_ref,
+            host_root,
+            tag,
+            prefer_pull_ref=prefer_pull,
+            allow_build=True,
+            source_ref=None if prefer_pull else ref,
+        )
+    except HTTPException as e:
+        _mark_update_job_failed(job_id, str(e.detail))
+        raise
+    except Exception as e:
+        logger.exception("Failed to prepare updater image: %s", e)
+        _mark_update_job_failed(job_id, "Failed to prepare updater image")
+        raise HTTPException(status_code=500, detail="Failed to prepare updater image") from e
 
     client = docker.from_env()
     name = f"aava-update-{job_id[:12]}"
@@ -4383,8 +5104,9 @@ async def updates_run(body: UpdateRunRequest):
         "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if body.checkout else "false",
         "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if body.update_cli_host else "false",
+        "AAVA_UPDATE_BUILD_CLI_FROM_SOURCE": "true",
+        "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "true" if body.force_active_calls else "false",
     }
-    cli_path = (body.cli_install_path or "").strip()
     if cli_path:
         env["AAVA_UPDATE_CLI_INSTALL_PATH"] = cli_path
 
@@ -4399,6 +5121,7 @@ async def updates_run(body: UpdateRunRequest):
         )
     except Exception as e:
         logger.exception("Failed to start update runner: %s", e)
+        _mark_update_job_failed(job_id, "Failed to start update runner")
         raise HTTPException(status_code=500, detail="Failed to start update runner")
 
     return UpdateRunResponse(job_id=job_id)
@@ -4406,6 +5129,7 @@ async def updates_run(body: UpdateRunRequest):
 
 class UpdateRollbackRequest(BaseModel):
     from_job_id: str
+    force_active_calls: bool = False
 
 
 class UpdateRollbackResponse(BaseModel):
@@ -4423,7 +5147,6 @@ async def updates_rollback(body: UpdateRollbackRequest):
     host_docker_sock = _docker_sock_host_path_from_admin_ui_container()
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
-    _ensure_updater_image_for_ref(host_root, tag, prefer_pull_ref="latest", allow_build=True)
 
     from_job_id_raw = (body.from_job_id or "").strip()
     if not from_job_id_raw:
@@ -4453,39 +5176,54 @@ async def updates_rollback(body: UpdateRollbackRequest):
     pre_update_branch = (src_job.get("pre_update_branch") or "").strip() or None
     backup_dir_rel = (src_job.get("backup_dir_rel") or "").strip() or None
     update_cli_host = bool(src_job.get("update_cli_host", True))
-    cli_install_path = (src_job.get("cli_install_path") or "").strip() or None
+    cli_install_path = _validate_cli_install_path(src_job.get("cli_install_path"))
+    force_active_calls = bool(body.force_active_calls)
 
-    import uuid
     job_id = uuid.uuid4().hex
 
-    # Create an initial job marker immediately so the UI can start polling right away.
-    try:
-        os.makedirs(jobs_dir, exist_ok=True)
-        state_path = os.path.join(jobs_dir, f"{job_id}.json")
-        log_path = os.path.join(jobs_dir, f"{job_id}.log")
-        payload = {
-            "job_id": job_id,
-            "type": "rollback",
-            "rollback_from_job_id": from_job_id,
-            "status": "starting",
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "finished_at": None,
-            "include_ui": include_ui,
-            "update_cli_host": update_cli_host,
-            "cli_install_path": cli_install_path,
-            "exit_code": None,
-            "log_path": log_path,
-        }
-        if pre_update_branch:
-            payload["ref"] = pre_update_branch
-            payload["pre_update_branch"] = pre_update_branch
-        if backup_dir_rel:
-            payload["backup_dir_rel"] = backup_dir_rel
+    with _update_job_lock():
+        active_job = _find_active_update_job()
+        if active_job:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Another update job is already running: {active_job.get('job_id') or 'unknown'}",
+            )
+        try:
+            log_path = os.path.join(jobs_dir, f"{job_id}.log")
+            payload = {
+                "job_id": job_id,
+                "type": "rollback",
+                "rollback_from_job_id": from_job_id,
+                "status": "starting",
+                "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "finished_at": None,
+                "include_ui": include_ui,
+                "update_cli_host": update_cli_host,
+                "cli_install_path": cli_install_path,
+                "exit_code": None,
+                "log_path": log_path,
+                "repo_root": host_root,
+                "force_active_calls": force_active_calls,
+            }
+            if pre_update_branch:
+                payload["ref"] = pre_update_branch
+                payload["pre_update_branch"] = pre_update_branch
+            if backup_dir_rel:
+                payload["backup_dir_rel"] = backup_dir_rel
+            _write_update_job_marker(job_id, payload)
+        except Exception as e:
+            logger.exception("Failed to reserve rollback job: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to reserve rollback job")
 
-        with open(state_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-    except Exception:
-        pass
+    try:
+        tag = await asyncio.to_thread(_ensure_updater_image_for_ref, host_root, tag, prefer_pull_ref=None, allow_build=True)
+    except HTTPException as e:
+        _mark_update_job_failed(job_id, str(e.detail))
+        raise
+    except Exception as e:
+        logger.exception("Failed to prepare updater image for rollback: %s", e)
+        _mark_update_job_failed(job_id, "Failed to prepare updater image")
+        raise HTTPException(status_code=500, detail="Failed to prepare updater image") from e
 
     client = docker.from_env()
     name = f"aava-rollback-{job_id[:12]}"
@@ -4502,6 +5240,8 @@ async def updates_rollback(body: UpdateRollbackRequest):
         # Prefer the include_ui setting from the source job as a fallback for older jobs.
         "AAVA_UPDATE_INCLUDE_UI": "true" if include_ui else "false",
         "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if update_cli_host else "false",
+        "AAVA_UPDATE_BUILD_CLI_FROM_SOURCE": "true",
+        "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "true" if force_active_calls else "false",
     }
     if cli_install_path:
         env["AAVA_UPDATE_CLI_INSTALL_PATH"] = cli_install_path
@@ -4517,6 +5257,7 @@ async def updates_rollback(body: UpdateRollbackRequest):
         )
     except Exception as e:
         logger.exception("Failed to start rollback runner: %s", e)
+        _mark_update_job_failed(job_id, "Failed to start rollback runner")
         raise HTTPException(status_code=500, detail="Failed to start rollback runner")
 
     return UpdateRollbackResponse(job_id=job_id)
@@ -4525,6 +5266,15 @@ async def updates_rollback(body: UpdateRollbackRequest):
 class UpdateJobResponse(BaseModel):
     job: dict
     log_tail: Optional[str] = None
+
+
+class UpdateJobLogResponse(BaseModel):
+    job_id: str
+    log: str
+
+
+class UpdateImageStatusResponse(BaseModel):
+    status: dict
 
 
 def _tail_text_file(path: str, max_lines: int = 250, max_bytes: int = 512 * 1024) -> str:
@@ -4572,6 +5322,11 @@ class UpdateHistoryResponse(BaseModel):
     jobs: list[dict]
 
 
+@router.get("/updates/updater-image/status", response_model=UpdateImageStatusResponse)
+async def updates_updater_image_status():
+    return UpdateImageStatusResponse(status=_read_updater_image_status())
+
+
 @router.get("/updates/history", response_model=UpdateHistoryResponse)
 async def updates_history(limit: int = 10):
     """
@@ -4604,9 +5359,9 @@ async def updates_history(limit: int = 10):
 
     items: list[tuple[float, dict]] = []
     for path in glob.glob(os.path.join(jobs_dir, "*.json")):
+        job_id = os.path.splitext(os.path.basename(path))[0]
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                job = json.load(f) or {}
+            job, _state_path, _log_path = _read_update_job(job_id)
         except Exception:
             continue
 
@@ -4628,31 +5383,51 @@ async def updates_job(job_id: str):
         job_id = uuid.UUID(job_id_raw).hex
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid job_id format")
-    project_root = os.getenv("PROJECT_ROOT", "/app/project")
-    jobs_dir = os.path.join(project_root, ".agent", "updates", "jobs")
+    jobs_dir = _updates_jobs_dir()
     state_path = os.path.join(jobs_dir, f"{job_id}.json")
     log_path = os.path.join(jobs_dir, f"{job_id}.log")
-
-    import json
 
     if not os.path.exists(state_path) and not os.path.exists(log_path):
         raise HTTPException(status_code=404, detail="Update job not found")
 
-    job = {}
-    if os.path.exists(state_path):
-        try:
-            with open(state_path, "r", encoding="utf-8") as f:
-                job = json.load(f) or {}
-        except Exception:
-            job = {"job_id": job_id, "status": "unknown"}
-    else:
-        job = {"job_id": job_id, "status": "running"}
+    job, _state_path, log_path = _read_update_job(job_id)
 
     tail = None
     if os.path.exists(log_path):
         tail = _tail_text_file(log_path, max_lines=250)
 
     return UpdateJobResponse(job=job, log_tail=tail)
+
+
+@router.get("/updates/jobs/{job_id}/log", response_model=UpdateJobLogResponse)
+async def updates_job_log(job_id: str):
+    job_id_raw = (job_id or "").strip()
+    if not job_id_raw:
+        raise HTTPException(status_code=400, detail="Invalid job_id format")
+    try:
+        job_id = uuid.UUID(job_id_raw).hex
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid job_id format")
+
+    jobs_dir = _updates_jobs_dir()
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail="Update job log not found")
+
+    max_log_bytes = 5 * 1024 * 1024
+    try:
+        if os.path.getsize(log_path) > max_log_bytes:
+            raise HTTPException(status_code=413, detail="Update job log is too large to return inline")
+
+        def _read_log() -> str:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+
+        return UpdateJobLogResponse(job_id=job_id, log=await asyncio.to_thread(_read_log))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read update job log")
 
 
 # ============================================================================

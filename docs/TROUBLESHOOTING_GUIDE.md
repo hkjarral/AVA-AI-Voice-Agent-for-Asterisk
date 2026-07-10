@@ -525,6 +525,33 @@ docker logs ai_engine | grep -i "transcript\|stt\|speech"
 
 ---
 
+### 6. Caller Inactivity Watchdog Does Not Check In or Hang Up
+
+**Expected v7.3.1 behavior:** once the call is ready and both sides are idle, the inbound watchdog asks “Are you still there?” after 30 seconds, waits 15 seconds, speaks the full final warning, then records `no_input_timeout` and hangs up.
+
+Check the effective configuration:
+
+```yaml
+no_input:
+  enabled: true
+  inbound_enabled: true
+  initial_timeout_sec: 30
+  grace_timeout_sec: 15
+  max_check_ins: 1
+```
+
+Then search the call logs for:
+
+```text
+Caller inactivity watchdog registered
+Caller inactivity check-in
+Caller-facing audio drain complete
+Caller inactivity timeout reached
+Executing terminal ARI hangup
+```
+
+If the timer never starts, check for a stuck `processing`, caller-input, transfer, or output-active state. If announcements play but hangup is late, upgrade to v7.3.1 or newer; older native-AEC paths could wait 25 seconds because output completion was coupled to TTS gating. For ElevenLabs, enable `agent_response_complete`, set its hosted turn timeout to 30 seconds, and disable provider silence hangup (`silence_end_call_timeout: -1`). Outbound calls require an explicit per-agent `outbound_enabled: true` override.
+
 ## Troubleshooting Tools
 
 ### agent check

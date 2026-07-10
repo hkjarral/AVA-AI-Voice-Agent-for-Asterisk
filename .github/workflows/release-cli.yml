@@ -17,12 +17,12 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # Fetch all history for git describe
       
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.22'
       
@@ -64,7 +64,7 @@ jobs:
           tar -czf asterisk-ai-agent-cli-${{ steps.get_version.outputs.version }}.tar.gz -C release .
       
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-binaries-${{ steps.get_version.outputs.version }}
           path: |
@@ -74,7 +74,7 @@ jobs:
       
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             bin/agent-linux-amd64

@@ -28,14 +28,14 @@ Describe the feature you’d like to see. What problem does it solve?
 
 ## Desired Behavior
 
-Describe the desired call flow or behavior in as much detail as possible. If this maps to a known AAVA spec or has been discussed on our [Discord server](https://discord.gg/CAVACtaY), include the ID (e.g. `AAVA-63`).
+Describe the desired call flow or behavior in as much detail as possible. If this has been discussed on our [Discord server](https://discord.gg/ysg8fphxUe) or in a GitHub Discussion, link it.
 
-## AVA’s Input (Optional but Recommended)
+## AI Assistant Input (Optional but Recommended)
 
-If you’ve already asked AVA (the project manager persona defined in `AVA.mdc`) about this feature:
+If you’ve already explored this feature with an AI coding assistant primed with `AVA.mdc` (the project's AI-assistant context file):
 
-- What did AVA suggest (briefly)?
-- Did AVA map this to an existing AAVA issue or propose a new one?
+- What approach did it suggest (briefly)?
+- Which components or files did it identify as in scope?
 
 ## Additional Notes
 

@@ -12,6 +12,7 @@ from websockets.asyncio.client import ClientConnection
 
 from structlog import get_logger
 from prometheus_client import Gauge, Info
+from ..utils.voice_catalog import known_voice_map
 from ..audio.resampler import (
     mulaw_to_pcm16le,
     pcm16le_to_mulaw,
@@ -34,6 +35,33 @@ def _log_provider_task_exception(task: asyncio.Task) -> None:
     exc = task.exception()
     if exc:
         logger.error("Provider background task failed", task_name=task.get_name(), error=str(exc), exc_info=exc)
+
+
+def resolve_speak_model(session_voice: Optional[str], configured: Optional[str]) -> str:
+    """Resolve the `agent.speak.provider.model` (aura voice) for a session.
+
+    Per-agent voice override wins over the configured `tts_model`; the shipped
+    default is the final fallback. Overrides are validated against the known
+    Aura catalog (Deepgram rejects unknown speak models at Settings time) —
+    an unrecognized value, e.g. stale free text from the pre-7.3.0
+    display-only agent field, falls back to the configured model instead of
+    failing the session. Module-level pure function so the behavior is
+    unit-testable without a full provider (same pattern as
+    ``build_listen_provider_block``). Both the primary Settings payload and the
+    UNPARSABLE-retry minimal payload consume this via the single `speak_model`
+    local in ``_configure_agent``.
+    """
+    if isinstance(session_voice, str) and session_voice.strip():
+        canonical = known_voice_map("deepgram").get(session_voice.strip().lower())
+        if canonical:
+            return canonical
+        logger.warning(
+            "Agent voice is not a known Deepgram Aura model; using configured speak model",
+            requested_voice=session_voice.strip(),
+        )
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "aura-asteria-en"
 
 
 def build_listen_provider_block(
@@ -250,6 +278,8 @@ class DeepgramProvider(AIProviderInterface):
         self._user_last_ts: float = 0.0
         # Hangup tracking (for farewell + HangupReady event)
         self._hangup_pending: bool = False
+        self._hangup_audio_started: bool = False
+        self._hangup_fallback_task: Optional[asyncio.Task] = None
         self._farewell_message: Optional[str] = None
         # Cache declared Deepgram input settings
         try:
@@ -425,6 +455,9 @@ class DeepgramProvider(AIProviderInterface):
                 self._allowed_tools = list(context.get("tools") or [])
             else:
                 self._allowed_tools = []
+            # Per-agent/per-call voice override (agent.speak.provider.model).
+            raw_voice = (context or {}).get("voice")
+            self._session_voice = raw_voice.strip() if isinstance(raw_voice, str) and raw_voice.strip() else None
             # Capture Deepgram request id if provided
             try:
                 rid = None
@@ -481,7 +514,16 @@ class DeepgramProvider(AIProviderInterface):
         # In normal config flow this fallback never fires (config provides "nova-3"),
         # but kept consistent so the unhappy-path doesn't downgrade behind users' backs.
         listen_model = self._get_config_value('model', None) or getattr(self.llm_config, 'listen_model', None) or "nova-3"
-        speak_model = self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None) or "aura-asteria-en"
+        speak_model = resolve_speak_model(
+            getattr(self, "_session_voice", None),
+            self._get_config_value('tts_model', None) or getattr(self.llm_config, 'tts_model', None),
+        )
+        if getattr(self, "_session_voice", None):
+            logger.info(
+                "Using per-call Deepgram speak-model override",
+                call_id=self.call_id,
+                speak_model=speak_model,
+            )
 
         # Use configured output encoding/sample rate directly (no catalog fetch needed)
         self._dg_output_encoding = self._canonicalize_encoding(output_encoding)
@@ -964,12 +1006,14 @@ class DeepgramProvider(AIProviderInterface):
             # Check if this was a hangup request
             if result.get('function_name') == 'hangup_call' and result.get('status') == 'success':
                 self._hangup_pending = True
-                self._farewell_message = result.get('farewell_message', '')
+                self._hangup_audio_started = False
+                self._farewell_message = result.get('farewell_message') or result.get('message', '')
                 logger.info(
                     "🔚 Hangup tool executed - will trigger after farewell audio completes",
                     call_id=self.call_id,
                     farewell=self._farewell_message
                 )
+                self._schedule_hangup_audio_fallback()
             
             # Capture function name BEFORE send_tool_result (which pops it from result)
             func_name = result.get('function_name')
@@ -1033,6 +1077,7 @@ class DeepgramProvider(AIProviderInterface):
         if self._closed or self._closing:
             return
         self._closing = True
+        self._cancel_hangup_audio_fallback()
         try:
             if self._keep_alive_task:
                 self._keep_alive_task.cancel()
@@ -1328,9 +1373,14 @@ class DeepgramProvider(AIProviderInterface):
                                     function_count=len(functions),
                                     request_id=getattr(self, "request_id", None),
                                 )
-                                # Handle function call via tool adapter
-                                _t = asyncio.create_task(self._handle_function_call(event_data))
-                                _t.add_done_callback(_log_provider_task_exception)
+                                # Terminal calls are handled in receive order so
+                                # audio boundaries cannot race ahead of terminal
+                                # intent. Other tools remain concurrent.
+                                if func_name == "hangup_call":
+                                    await self._handle_function_call(event_data)
+                                else:
+                                    _t = asyncio.create_task(self._handle_function_call(event_data))
+                                    _t.add_done_callback(_log_provider_task_exception)
                             elif et == "ConnectionClosed":
                                 logger.info(
                                     "🔌 Deepgram ConnectionClosed",
@@ -1462,8 +1512,10 @@ class DeepgramProvider(AIProviderInterface):
                                     #     logger.debug("Post-ACK greeting injection failed", exc_info=True)
                         except Exception:
                             pass
-                        # If we were in an audio burst, a JSON control/event frame marks a boundary
-                        if self._in_audio_burst and self.on_event:
+                        # Only Deepgram's explicit AgentAudioDone event is an
+                        # audio boundary. ConversationText and other JSON control
+                        # frames can arrive while audio is still streaming.
+                        if et == "AgentAudioDone" and self._in_audio_burst and self.on_event:
                             await self.on_event({
                                 'type': 'AgentAudioDone',
                                 'streaming_done': True,
@@ -1472,7 +1524,7 @@ class DeepgramProvider(AIProviderInterface):
                             self._in_audio_burst = False
                             
                             # Check if farewell audio completed after hangup request
-                            if self._hangup_pending:
+                            if self._hangup_pending and self._hangup_audio_started:
                                 logger.info(
                                     "🔚 Farewell audio completed - emitting HangupReady",
                                     call_id=self.call_id,
@@ -1489,10 +1541,12 @@ class DeepgramProvider(AIProviderInterface):
                                     logger.error("Failed to emit HangupReady event", call_id=self.call_id, error=str(e))
                                 
                                 # Reset hangup tracking
+                                self._cancel_hangup_audio_fallback()
                                 self._hangup_pending = False
+                                self._hangup_audio_started = False
                                 self._farewell_message = None
 
-                        if self.on_event:
+                        if self.on_event and et != "AgentAudioDone":
                             await self.on_event(event_data)
                     except json.JSONDecodeError:
                         logger.error("Failed to parse JSON message from Deepgram", message=message)
@@ -1633,6 +1687,8 @@ class DeepgramProvider(AIProviderInterface):
                         )
                         self._first_output_chunk_logged = True
                     self._in_audio_burst = True
+                    if self._hangup_pending:
+                        self._hangup_audio_started = True
                     if self.on_event:
                         await self.on_event(audio_event)
         except websockets.exceptions.ConnectionClosed as e:
@@ -1652,7 +1708,7 @@ class DeepgramProvider(AIProviderInterface):
                     })
                     
                     # Check if farewell audio completed after hangup request (socket closing)
-                    if self._hangup_pending:
+                    if self._hangup_pending and self._hangup_audio_started:
                         logger.info(
                             "🔚 Farewell audio completed (socket closing) - emitting HangupReady",
                             call_id=self.call_id,
@@ -1669,20 +1725,68 @@ class DeepgramProvider(AIProviderInterface):
                             logger.error("Failed to emit HangupReady event", call_id=self.call_id, error=str(e))
                         
                         # Reset hangup tracking
+                        self._cancel_hangup_audio_fallback()
                         self._hangup_pending = False
+                        self._hangup_audio_started = False
                         self._farewell_message = None
                 except Exception:
                     pass
             self._in_audio_burst = False
 
-    async def speak(self, text: str):
+    def _cancel_hangup_audio_fallback(self) -> None:
+        task = self._hangup_fallback_task
+        self._hangup_fallback_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _schedule_hangup_audio_fallback(self, timeout_sec: float = 12.0) -> None:
+        """End a terminal tool flow if Deepgram never sends farewell audio."""
+        self._cancel_hangup_audio_fallback()
+
+        async def _fallback() -> None:
+            try:
+                await asyncio.sleep(max(1.0, float(timeout_sec)))
+                if not self._hangup_pending or not self.on_event:
+                    return
+                logger.warning(
+                    "Deepgram farewell audio timeout - emitting HangupReady",
+                    call_id=self.call_id,
+                    timeout_sec=timeout_sec,
+                )
+                await self.on_event({
+                    'type': 'HangupReady',
+                    'call_id': self.call_id,
+                    'reason': 'farewell_timeout' if self._hangup_audio_started else 'farewell_no_audio',
+                    'had_audio': self._hangup_audio_started,
+                })
+                self._hangup_pending = False
+                self._hangup_audio_started = False
+                self._farewell_message = None
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._hangup_fallback_task is asyncio.current_task():
+                    self._hangup_fallback_task = None
+
+        self._hangup_fallback_task = asyncio.create_task(
+            _fallback(),
+            name=f"deepgram-hangup-fallback-{self.call_id}",
+        )
+
+    async def speak_text(self, text: str) -> bool:
         if not text or not self.websocket:
-            return
+            return False
         inject_message = {"type": "InjectAgentMessage", "content": text}
         try:
             await self.websocket.send(json.dumps(inject_message))
+            return True
         except websockets.exceptions.ConnectionClosed as e:
             logger.error("Failed to send inject agent message: Connection is closed.", exc_info=True, code=e.code, reason=e.reason)
+            return False
+
+    async def speak(self, text: str):
+        """Backward-compatible alias for the legacy provider API."""
+        await self.speak_text(text)
 
     async def _inject_message_dual(self, text: str):
         if not text or not self.websocket:

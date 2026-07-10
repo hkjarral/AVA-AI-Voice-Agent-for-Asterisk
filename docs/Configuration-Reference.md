@@ -193,6 +193,17 @@ See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for 
   2) `llm.prompt` and `llm.initial_greeting` in YAML
   3) Env defaults `AI_ROLE`, `GREETING`
 
+## Voice (v7.3.0+)
+
+- Voice precedence per call: per-call override → agent voice (agents.db, or the optional
+  `voice:` key on a YAML context) → the provider's configured voice (default/fallback).
+- Supported for per-agent override: OpenAI Realtime (validated against the GA voice list —
+  unknown values fall back with a warning, never failing the call), Grok, Google Live, and
+  Deepgram Voice Agent. ElevenLabs Agent voices are platform-managed; pipeline TTS voices
+  come from the pipeline's TTS provider configuration.
+- The resolved voice and its source are logged (`Session voice resolved`) and recorded in
+  Call History per call. See [VOICE_SELECTION.md](VOICE_SELECTION.md).
+
 ## Transports
 
 - audio_transport: `audiosocket` | `externalmedia`
@@ -296,6 +307,27 @@ Common pitfalls:
 
 - Too-short utterances (e.g., 20 ms) cause empty STT transcripts → raise `min_utterance_duration_ms` and ensure `webrtc_end_silence_frames` is not too low.
 - Overly aggressive VAD (aggressiveness=2/3) may clip 8 kHz speech; prefer 0–1 for telephony.
+
+## Caller inactivity (`no_input`)
+
+The engine-level watchdog prevents an answered call from remaining open indefinitely when the caller stops responding. It is independent of provider endpointing/VAD: timing runs only while the conversation is ready and the caller, agent, and model are all idle.
+
+- `no_input.enabled`: Enables the policy. Defaults to `true`.
+- `no_input.inbound_enabled`: Applies the policy to inbound calls. Defaults to `true`.
+- `no_input.outbound_enabled`: Compatibility/default field; outbound calls still require `contexts.<name>.no_input.outbound_enabled: true` or the equivalent per-agent Admin UI option.
+- `no_input.initial_timeout_sec`: Idle time before the first check-in. Defaults to 30 seconds.
+- `no_input.grace_timeout_sec`: Reply window after each check-in. Defaults to 15 seconds.
+- `no_input.max_check_ins`: Number of check-ins before the final message and hangup. Defaults to 1; `0` skips directly to the final message.
+- `no_input.check_in_message`: Check-in text, spoken by the active provider/pipeline in the agent's configured voice.
+- `no_input.final_message`: Non-empty text spoken before the ARI hangup. Blank or whitespace-only per-agent values inherit the safe default.
+
+Caller media activity, provider speech-start events, and user transcripts reset the window. The timer pauses during greetings, agent TTS, LLM processing, sustained caller speech, and other output gating. A terminal watchdog hangup is stored in Call History as `no_input_timeout`, not as a provider error.
+
+Provider generation completion is not treated as caller playback completion. Before terminal hangup, the engine also drains provider/coalescing queues, jitter frames, frame remainder, active ARI playback, and a short transport-specific post-roll. This applies uniformly to AudioSocket and ExternalMedia/RTP; pipeline/file announcements use Asterisk `PlaybackFinished` as their authoritative boundary.
+
+Per-agent overrides are partial and inherit every omitted global field. In the Admin UI, configure global defaults under **Advanced Settings → Voice Activity Detection → Caller Inactivity** and agent-specific values under **Agents → Edit Agent → Caller Inactivity Overrides**.
+
+For ElevenLabs full-agent deployments, also follow the provider-side client-event and silence ownership settings in [Provider-ElevenLabs-Setup.md](Provider-ElevenLabs-Setup.md#ava-caller-inactivity-compatibility-v731).
 
 ## LLM block
 

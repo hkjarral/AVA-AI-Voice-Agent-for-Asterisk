@@ -12,6 +12,7 @@ import {
 } from './agentToolConfig';
 import { PromptToolHighlight } from '../ui/PromptToolHighlight';
 import { canonicalToolName, type ToolStatus } from '../../utils/promptTools';
+import { voiceControlState, type ProviderVoiceMeta } from '../../utils/agentVoice';
 
 export interface Agent {
     slug: string;
@@ -102,6 +103,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [providersRaw, setProvidersRaw] = useState<Record<string, unknown>>({});
     const [pipelinesRaw, setPipelinesRaw] = useState<Record<string, unknown>>({});
     const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
+    const [voiceMeta, setVoiceMeta] = useState<ProviderVoiceMeta[] | null>(null);
 
     // Templates (create only)
     const [templates, setTemplates] = useState<AgentTemplate[]>([]);
@@ -113,6 +115,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         if (!isOpen) return;
         loadConfig();
         loadCatalog();
+        loadVoiceMeta();
         if (isNew) loadTemplates();
     }, [isOpen, isNew]);
 
@@ -194,6 +197,16 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         }
     };
 
+    const loadVoiceMeta = async () => {
+        try {
+            const res = await axios.get('/api/config/providers/meta');
+            const providers = Array.isArray(res.data?.providers) ? res.data.providers : null;
+            setVoiceMeta(providers);
+        } catch {
+            setVoiceMeta(null); // Voice control degrades to free text
+        }
+    };
+
     const loadCatalog = async () => {
         try {
             const res = await axios.get('/api/tools/catalog');
@@ -247,12 +260,18 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         }
 
         const cfg = serializeAgentConfig(toolState);
+        // Don't persist a voice the selected engine can't use: if the voice
+        // control is disabled (pipeline / platform-managed / unsupported), a
+        // previously saved value would otherwise ride along invisibly and
+        // become active if the agent is later switched back (Codex on #503).
+        const voiceControl = voiceControlState(voiceMeta, engineValue, voice);
+        const effectiveVoice = voiceControl.control === 'disabled' ? null : (voice || null);
         setSaving(true);
         try {
             const baseBody: Record<string, unknown> = {
                 display_name: displayName.trim(),
                 provider: cfg.provider,
-                voice: voice || null,
+                voice: effectiveVoice,
                 audio_profile: audioProfile || null,
                 extension: extension || null,
                 role_label: roleLabel || null,
@@ -307,6 +326,39 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
         else if (raw.startsWith('pipeline:')) setToolState((s) => ({ ...s, pipeline: raw.slice('pipeline:'.length), provider: '' }));
         else if (raw.startsWith('provider:')) setToolState((s) => ({ ...s, provider: raw.slice('provider:'.length), pipeline: '' }));
     };
+
+    const updateNoInputOverride = (key: string, value: unknown) => {
+        setToolState((state) => {
+            const next = { ...state.noInput };
+            if (value === '' || value === undefined) delete next[key];
+            else next[key] = value;
+            return { ...state, noInput: next };
+        });
+    };
+
+    const updateNoInputNumberOverride = (
+        key: 'initial_timeout_sec' | 'grace_timeout_sec' | 'max_check_ins',
+        raw: string,
+        minimum: number,
+        maximum: number,
+        integerOnly = false,
+    ) => {
+        if (raw === '') {
+            updateNoInputOverride(key, '');
+            return;
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < minimum || value > maximum || (integerOnly && !Number.isInteger(value))) {
+            return;
+        }
+        updateNoInputOverride(key, value);
+    };
+
+    const noInputNumber = (key: string): number | '' =>
+        typeof toolState.noInput[key] === 'number' ? (toolState.noInput[key] as number) : '';
+
+    const noInputString = (key: string): string =>
+        typeof toolState.noInput[key] === 'string' ? (toolState.noInput[key] as string) : '';
 
     const profileOptions = [
         { value: '', label: '— default —' },
@@ -391,21 +443,66 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     tooltip="Choose a monolithic provider or a modular pipeline. They are mutually exclusive — picking one clears the other."
                 />
 
-                <div className="mb-4">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                        <label htmlFor="agent-voice" className="block text-sm font-medium">
-                            Voice (display-only)
-                        </label>
-                        <HelpTooltip content="Voice is configured on the provider, not per agent — this field is informational and does not change the call voice." />
-                    </div>
-                    <input
-                        id="agent-voice"
-                        value={voice}
-                        onChange={(e) => setVoice(e.target.value)}
-                        placeholder="e.g. alloy, nova, en-US-JennyNeural"
-                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    />
-                </div>
+                {(() => {
+                    const vc = voiceControlState(voiceMeta, engineValue, voice);
+                    const inputClass = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+                    return (
+                        <div className="mb-4">
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                                <label htmlFor="agent-voice" className="block text-sm font-medium">
+                                    Voice
+                                </label>
+                                <HelpTooltip content="Overrides the provider's default voice for this agent. Leave empty to use the provider's configured voice. Multiple agents can share one provider, each with its own voice." />
+                            </div>
+                            {vc.control === 'select' && (
+                                <select
+                                    id="agent-voice"
+                                    value={voice}
+                                    onChange={(e) => setVoice(e.target.value)}
+                                    className={inputClass}
+                                >
+                                    {vc.options.map((o) => (
+                                        <option key={o.id || '__default'} value={o.id}>{o.label}</option>
+                                    ))}
+                                </select>
+                            )}
+                            {vc.control === 'combo' && (
+                                <>
+                                    <input
+                                        id="agent-voice"
+                                        value={voice}
+                                        onChange={(e) => setVoice(e.target.value)}
+                                        placeholder="— provider default —"
+                                        list="agent-voice-options"
+                                        className={inputClass}
+                                    />
+                                    <datalist id="agent-voice-options">
+                                        {vc.options.map((o) => (
+                                            <option key={o.id} value={o.id}>{o.label}</option>
+                                        ))}
+                                    </datalist>
+                                </>
+                            )}
+                            {vc.control === 'disabled' && (
+                                <input
+                                    id="agent-voice"
+                                    value=""
+                                    disabled
+                                    placeholder={vc.note}
+                                    className={`${inputClass} opacity-60 cursor-not-allowed`}
+                                />
+                            )}
+                            {vc.control !== 'disabled' && vc.note && (
+                                <p className="text-xs text-muted-foreground mt-1">{vc.note}</p>
+                            )}
+                            {vc.unrecognized && (
+                                <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                                    This voice is not in the provider's catalog — calls will fall back to the provider's default voice until you pick a valid one.
+                                </p>
+                            )}
+                        </div>
+                    );
+                })()}
 
                 <FormSelect
                     id="agent-audio-profile"
@@ -494,6 +591,95 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                         </label>
                     </div>
                 )}
+
+                <details
+                    className="mb-4 border border-border rounded-lg bg-card/50"
+                >
+                    <summary className="cursor-pointer px-3 py-3 text-sm font-medium">
+                        Caller Inactivity Overrides
+                    </summary>
+                    <div className="px-3 pb-3 pt-1 space-y-4 border-t border-border">
+                        <p className="text-xs text-muted-foreground">
+                            Inbound calls inherit the global 30-second watchdog. Outbound calls stay disabled until this agent explicitly opts in.
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <FormSelect
+                                id="agent-no-input-enabled"
+                                label="Watchdog"
+                                options={[
+                                    { value: '', label: 'Inherit global setting' },
+                                    { value: 'enabled', label: 'Enabled for this agent' },
+                                    { value: 'disabled', label: 'Disabled for this agent' },
+                                ]}
+                                value={toolState.noInput.enabled === true ? 'enabled' : toolState.noInput.enabled === false ? 'disabled' : ''}
+                                onChange={(e) => updateNoInputOverride('enabled', e.target.value === '' ? '' : e.target.value === 'enabled')}
+                                tooltip="Overrides the global caller inactivity policy for this agent."
+                            />
+                            <FormSelect
+                                id="agent-no-input-outbound"
+                                label="Outbound Calls"
+                                options={[
+                                    { value: 'disabled', label: 'Disabled (default)' },
+                                    { value: 'enabled', label: 'Enable for this agent' },
+                                ]}
+                                value={toolState.noInput.outbound_enabled === true ? 'enabled' : 'disabled'}
+                                onChange={(e) => updateNoInputOverride('outbound_enabled', e.target.value === 'enabled' ? true : '')}
+                                tooltip="Outbound campaigns never inherit this globally. This agent must explicitly enable the watchdog."
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <FormInput
+                                id="agent-no-input-initial"
+                                label="Initial Silence (sec)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputNumber('initial_timeout_sec')}
+                                placeholder="Inherit: 30"
+                                onChange={(e) => updateNoInputNumberOverride('initial_timeout_sec', e.target.value, 1, 3600)}
+                            />
+                            <FormInput
+                                id="agent-no-input-grace"
+                                label="Reply Grace (sec)"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                value={noInputNumber('grace_timeout_sec')}
+                                placeholder="Inherit: 15"
+                                onChange={(e) => updateNoInputNumberOverride('grace_timeout_sec', e.target.value, 1, 3600)}
+                            />
+                            <FormInput
+                                id="agent-no-input-attempts"
+                                label="Check-In Attempts"
+                                type="number"
+                                min="0"
+                                max="10"
+                                step="1"
+                                value={noInputNumber('max_check_ins')}
+                                placeholder="Inherit: 1"
+                                onChange={(e) => updateNoInputNumberOverride('max_check_ins', e.target.value, 0, 10, true)}
+                            />
+                        </div>
+
+                        <FormInput
+                            id="agent-no-input-check-in"
+                            label="Check-In Message"
+                            value={noInputString('check_in_message')}
+                            placeholder="Inherit: Are you still there?"
+                            onChange={(e) => updateNoInputOverride('check_in_message', e.target.value)}
+                            tooltip="Spoken through the selected provider or pipeline in this agent's configured voice."
+                        />
+                        <FormInput
+                            id="agent-no-input-final"
+                            label="Final Message"
+                            value={noInputString('final_message')}
+                            placeholder="Inherit global final message"
+                            onChange={(e) => updateNoInputOverride('final_message', e.target.value)}
+                            tooltip="Spoken immediately before the engine ends an inactive call."
+                        />
+                    </div>
+                </details>
 
                 <div className="mb-2">
                     <FormInput

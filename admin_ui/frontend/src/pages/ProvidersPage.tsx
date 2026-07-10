@@ -1593,7 +1593,7 @@ const ProvidersPage: React.FC = () => {
                                 id: 'telnyx_llm',
                                 name: 'Telnyx LLM',
                                 desc: 'Telnyx AI Inference (OpenAI-compatible /chat/completions)',
-                                doc: 'https://developers.telnyx.com/docs/inference/overview',
+                                doc: 'https://developers.telnyx.com/docs/inference/getting-started/index',
                                 tooltip: (
                                     <>
                                         <strong>Telnyx LLM</strong> — modular LLM slot. Use inside a Pipeline alongside any STT/TTS.

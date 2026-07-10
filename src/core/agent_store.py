@@ -12,7 +12,8 @@ DB_DEFAULT = "/app/data/operator/agents.db"
 
 _EXTRA_FIELDS = ("pipeline","background_music","pre_call_tools","post_call_tools",
                  "in_call_http_tools","disable_global_pre_call_tools",
-                 "disable_global_in_call_tools","disable_global_post_call_tools")
+                 "disable_global_in_call_tools","disable_global_post_call_tools",
+                 "no_input")
 
 # Must match admin_ui/backend/agents_store.py:slugify so resolve-on-read can
 # recover the slug from a raw dialplan name (CRIT-1).
@@ -125,6 +126,7 @@ class EngineAgentStore:
         return ContextConfig(
             prompt=r["prompt"], greeting=r["greeting"], profile=r["audio_profile"],
             provider=r["provider"],
+            voice=r["voice"] if "voice" in cols else None,
             tools=tools,
             email_recipient=email_recipient,
             email_from=email_from,

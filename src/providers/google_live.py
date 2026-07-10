@@ -45,6 +45,7 @@ from structlog import get_logger
 from prometheus_client import Gauge, Counter
 
 from .base import AIProviderInterface, ProviderCapabilities
+from ..utils.voice_catalog import known_voice_map
 from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
@@ -101,6 +102,29 @@ def coerce_vad_sensitivity(value: Optional[str], valid: AbstractSet[str], defaul
     """Return value if it is an API-accepted sensitivity, else the safe default.
     Google Live rejects unknown values (e.g. *_MEDIUM) with WS close 1007."""
     return value if value in valid else default
+
+
+def resolve_google_voice(session_voice: Optional[str], configured: Optional[str]) -> str:
+    """Resolve the prebuilt voice name for a session.
+
+    Per-agent voice override wins over the configured ``tts_voice_name``;
+    "Aoede" is the shipped fallback. Overrides are validated (case-insensitive,
+    canonicalized) against the known prebuilt-voice catalog — Google rejects
+    unknown names at session setup, so a stale free-text value from the
+    pre-7.3.0 display-only agent field falls back to the configured voice
+    instead of failing the call.
+    """
+    if isinstance(session_voice, str) and session_voice.strip():
+        canonical = known_voice_map("google_live").get(session_voice.strip().lower())
+        if canonical:
+            return canonical
+        logger.warning(
+            "Agent voice is not a known Google Live prebuilt voice; using configured voice",
+            requested_voice=session_voice.strip(),
+        )
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "Aoede"
 
 
 # Metrics
@@ -949,7 +973,9 @@ class GoogleLiveProvider(AIProviderInterface):
             "speechConfig": {
                 "voiceConfig": {
                     "prebuiltVoiceConfig": {
-                        "voiceName": self.config.tts_voice_name or "Aoede"
+                        "voiceName": resolve_google_voice(
+                            (context or {}).get("voice"), self.config.tts_voice_name
+                        )
                     }
                 }
             },
@@ -1083,8 +1109,8 @@ class GoogleLiveProvider(AIProviderInterface):
             tools_count=len(tools),
         )
 
-    async def _send_message(self, message: Dict[str, Any]) -> None:
-        """Send a message to Google Live API."""
+    async def _send_message(self, message: Dict[str, Any]) -> bool:
+        """Send a message to Google Live API and report confirmed websocket acceptance."""
         summary = self._summarize_outbound(message)
         try:
             summary_with_ts = dict(summary)
@@ -1105,12 +1131,13 @@ class GoogleLiveProvider(AIProviderInterface):
                     message_keys=summary.get("keys"),
                 )
                 self._ws_unavailable_logged = True
-            return
+            return False
 
         async with self._send_lock:
             try:
                 await self.websocket.send(json.dumps(message))
                 self._ws_unavailable_logged = False
+                return True
             except Exception as e:
                 if isinstance(e, (ConnectionClosedError, ConnectionClosedOK)):
                     close_reason = getattr(e, "reason", None)
@@ -1125,7 +1152,7 @@ class GoogleLiveProvider(AIProviderInterface):
                         )
                         self._ws_send_close_logged = True
                     self._mark_ws_disconnected()
-                    return
+                    return False
                 logger.error(
                     "Failed to send message to Google Live",
                     call_id=self._call_id,
@@ -1135,6 +1162,7 @@ class GoogleLiveProvider(AIProviderInterface):
                 # Prevent log storms when the socket is already closed.
                 if not self._ws_is_open():
                     self._mark_ws_disconnected()
+                return False
 
     def _safe_jsonable(self, obj: Any, *, depth: int = 0, max_depth: int = 4, max_items: int = 30) -> Any:
         if depth >= max_depth:
@@ -1227,6 +1255,42 @@ class GoogleLiveProvider(AIProviderInterface):
             "✅ Greeting request sent to Gemini (Golden Baseline pattern)",
             call_id=self._call_id,
         )
+
+    async def speak_text(self, text: str) -> bool:
+        """Ask Gemini Live to speak an engine announcement in the session voice."""
+        if not text or not self._call_id or not self._ws_is_open():
+            return False
+        message = {
+            "clientContent": {
+                "turns": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": (
+                                    "System event: speak exactly the sentence between <message> tags. "
+                                    "Do not add, remove, or paraphrase words and do not call tools. "
+                                    f"<message>{text}</message>"
+                                )
+                            }
+                        ],
+                    }
+                ],
+                "turnComplete": True,
+            }
+        }
+        try:
+            if not await self._send_message(message):
+                return False
+            logger.info(
+                "Sent no-input announcement request to Google Live",
+                call_id=self._call_id,
+                text_preview=text[:80],
+            )
+            return True
+        except Exception:
+            logger.warning("Failed to send no-input announcement to Google Live", call_id=self._call_id, exc_info=True)
+            return False
 
     async def send_audio(self, audio_chunk: bytes, sample_rate: int = 8000, encoding: str = "ulaw") -> None:
         """
@@ -1519,6 +1583,17 @@ class GoogleLiveProvider(AIProviderInterface):
         if input_transcription:
             text = input_transcription.get("text", "")
             if text:
+                try:
+                    if self.on_event:
+                        await self.on_event(
+                            {
+                                "type": "CallerSpeechStarted",
+                                "call_id": self._call_id,
+                                "provider": self.provider_event_name(),
+                            }
+                        )
+                except Exception:
+                    logger.debug("Failed to emit caller speech activity", call_id=self._call_id, exc_info=True)
                 # If we armed a heuristic cleanup_after_tts fallback (no toolCall), cancel it when the
                 # user continues speaking. This prevents premature hangups during transcript/email
                 # capture where the model may say "thank you for calling" before the user is done.

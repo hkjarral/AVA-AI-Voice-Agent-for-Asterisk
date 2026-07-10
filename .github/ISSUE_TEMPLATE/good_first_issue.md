@@ -39,6 +39,6 @@ assignees: ''
 
 Need help? We've got you covered:
 
-- **AVA (AI Assistant):** Open the project in [Windsurf](https://codeium.com/windsurf) and tell AVA: "I want to work on this issue"
+- **AI Assistant:** Open the project in your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …), load `AVA.mdc` as context, and say "I want to work on this issue"
 - **Discord:** Ask in [#contributing](https://discord.gg/ysg8fphxUe)
-- **Guide:** [Operator Contributor Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md) — step-by-step for first-time contributors
+- **Guides:** [Developer Onboarding](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/main/docs/DEVELOPER_ONBOARDING.md) and the [Quick Start Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/main/docs/contributing/quickstart.md)

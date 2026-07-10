@@ -1,375 +1,288 @@
 ---
-description: AVA – project manager and senior engineer for the Asterisk AI Voice Agent
+description: AVA – AI assistant context for the Asterisk AI Voice Agent (load this first)
 globs: src/**/*.py, local_ai_server/**/*.py, admin_ui/**/*, cli/**/*, docs/**/*.md, config/**/*.yaml, scripts/**/*, monitoring/**/*, docker-compose*.yml, Dockerfile, Makefile
 trigger: manual
 ---
 
-# AVA – Project Manager Persona
+# AVA — AI Assistant Context
 
-You are **AVA**, the project manager and senior engineer for the Asterisk AI Voice Agent.
-Your job is to:
-- Help contributors and operators understand the system at a high level.
-- Decide *what* to work on next based on the roadmap and Linear issues.
-- Guide developers through concrete implementation steps, tests, and documentation.
-- Keep work aligned with the canonical docs and technical guardrails defined in IDE rule files.
+This is the first file to load into any AI coding assistant (Claude, Codex, Cursor,
+Windsurf, Copilot, Gemini, …) when working on the Asterisk AI Voice Agent. It gives your
+assistant the project map, architecture vocabulary, engineering guardrails, and
+contribution workflow so it can plan and review work the way maintainers do.
+
+It is self-contained: everything an external contributor's assistant needs is either in
+this file or in the committed docs it links to. If this file ever contradicts the code or
+the docs, trust the code, then the docs — and please open an issue so we can fix it here.
+
+> Last verified against: **v7.3.x** (2026-07). Freshness is checked as part of the release
+> checklist (`docs/RELEASE_CHECKLIST.md`).
+
+## What This Project Is
+
+A self-hosted AI voice agent platform for Asterisk/FreePBX. Callers talk to an AI agent
+over a real phone call; the engine bridges Asterisk audio to cloud or local AI providers,
+handles barge-in, tool calling (transfers, email, calendar, HTTP lookups, MCP), and
+records call history. Operators manage everything through a web Admin UI.
 
 ## Project Map (Core Components)
 
-This repo is a monorepo with multiple production components. When planning work, always identify which component(s) are in scope:
+This is a monorepo with several production components. Always identify which component(s)
+are in scope before planning work:
 
-- **AI Engine (Python)**: `src/` — call orchestration, ARI integration, transport orchestration, providers/pipelines, tool calling, metrics/health.
-- **Local AI Server (Python)**: `local_ai_server/` — local STT/TTS backends and related protocols; used by local/hybrid deployments.
+- **AI Engine (Python)**: `src/` — call orchestration, ARI integration, transport
+  orchestration, providers/pipelines, tool calling, call history, metrics/health.
+- **Local AI Server (Python)**: `local_ai_server/` — local STT/TTS/LLM backends
+  (Vosk, Sherpa, Piper, Kokoro, llama.cpp, …) for local/hybrid deployments.
 - **Admin UI**:
-  - Frontend: `admin_ui/frontend/` (Vite/React/TS)
-  - Backend: `admin_ui/backend/` (FastAPI) — config writes, container ops, setup wizard APIs.
-- **Agent CLI (Go)**: `cli/` — `agent init/doctor/demo/troubleshoot` distribution binary.
-- **Config & Baselines**: `config/` and `docs/baselines/golden/` — “golden baseline” configs and validated reference behavior.
+  - Frontend: `admin_ui/frontend/` (Vite/React/TypeScript, Vitest tests)
+  - Backend: `admin_ui/backend/` (FastAPI) — config writes, agents store, container ops,
+    setup wizard, system updates.
+- **Agent CLI (Go)**: `cli/` — `agent init/doctor/demo/troubleshoot/update` binary.
+- **Updater**: `updater/` — container image behind the Admin UI's Updates page.
+- **Config & Baselines**: `config/` (live YAML + golden baseline configs) and
+  `docs/baselines/golden/` (validated reference behavior per release).
 - **Ops & Monitoring**: `docker-compose*.yml`, `monitoring/`, `scripts/`, `Makefile`.
+
+Runtime data lives in `./data/` on the host (`/app/data/` inside containers): call history
+SQLite (`call_history.db`) and the agents store (`agents.db`).
 
 ## Architecture Vocabulary (Must-Know Concepts)
 
-When you plan or review work, use these terms consistently and tie changes back to them:
+Use these terms consistently and tie every change back to them:
 
-- **Two-container stack**: `ai-engine` (this repo’s Python engine) + `local-ai-server` (optional, used for local/hybrid pipelines).
-- **Upstream audio transports**: AudioSocket (TCP) and ExternalMedia RTP (UDP). Do not assume a “default” transport—always check `config/ai-agent.yaml` and the active golden baseline config.
-- **Audio profiles & negotiation**: codec/sample-rate decisions belong in `TransportOrchestrator` and YAML `profiles` (not hard-coded in providers).
-- **Session state & call lifecycle**: use `SessionStore` as the authoritative state layer; avoid introducing new ad-hoc dict state.
-- **Playback & gating**: `PlaybackManager` / `StreamingPlaybackManager` produce downstream audio; `ConversationCoordinator` and `AudioGatingManager` control capture/gating and barge-in behavior.
+- **Two-container core**: `ai_engine` (Python engine) + `admin_ui`; plus optional
+  `local_ai_server` (local/hybrid pipelines) and `updater`.
+- **Upstream audio transports**: AudioSocket (TCP) and ExternalMedia RTP (UDP). Never
+  assume a default — check `config/ai-agent.yaml` and the active golden baseline. See
+  `docs/Transport-Mode-Compatibility.md`.
+- **Audio profiles & negotiation**: codec/sample-rate decisions belong in
+  `TransportOrchestrator` (`src/core/transport_orchestrator.py`) and YAML `profiles` —
+  never hard-coded in providers.
+- **Agents (v7.0+)**: the primary way operators define who answers a call. Agents live in
+  `agents.db` (managed via the Admin UI Agents page, CRUD in
+  `admin_ui/backend/agents_store.py`), carry prompt, greeting, provider/pipeline
+  selection, tools, audio profile, and per-agent email settings. At call time the engine
+  resolves the agent via `src/core/agent_store.py` into a `ContextConfig`
+  (`src/core/transport_orchestrator.py`). Legacy YAML `contexts` remain as the headless
+  fallback (used when `agents.db` is absent or unreadable). See `docs/AGENTS.md`.
+- **ContextConfig**: the single runtime contract between config sources (agents.db or
+  YAML) and providers — prompt, greeting, provider/pipeline, tools, audio profile, email
+  overrides. Extending per-agent behavior means extending ContextConfig and threading the
+  field through `provider_context` in `src/engine.py` (the per-agent email fields are the
+  reference example of this pattern).
+- **Session state & call lifecycle**: `SessionStore` (`src/core/session_store.py`) is the
+  authoritative state layer. Never introduce new ad-hoc dictionary call state.
+- **Caller inactivity (v7.3.1+)**: `NoInputWatchdog` (`src/core/no_input_watchdog.py`)
+  owns caller-silence check-ins and terminal timeout. Inbound calls inherit the enabled
+  30-second default; outbound calls require a per-agent opt-in. Its speech must use the
+  active provider/pipeline voice, and terminal hangup must go through the engine's shared
+  caller-audio drain path so both AudioSocket and ExternalMedia/RTP finish playback first.
+  Do not add provider-owned competing silence hangups.
+- **Playback & gating**: `PlaybackManager` / `StreamingPlaybackManager` produce downstream
+  audio; `ConversationCoordinator` and `AudioGatingManager` control capture, gating, and
+  barge-in.
 - **Provider modes**:
-  - **Monolithic providers** (e.g., OpenAI Realtime / Deepgram Agent / Google Live / ElevenLabs Agent): provider handles STT+LLM+TTS end-to-end.
-  - **Modular pipelines**: separate STT/LLM/TTS adapters resolved by `PipelineOrchestrator`.
-- **Tool calling**: tools are registered in `src/tools/registry.py` and adapted per provider via `src/tools/adapters/*`; schema formats vary per provider (see `docs/contributing/COMMON_PITFALLS.md`).
-- **Per-call overrides**: `AI_PROVIDER`, `AI_AUDIO_PROFILE`, and `AI_CONTEXT` can override defaults (see architecture docs and IDE rules).
+  - **Full-agent (monolithic) providers** — provider handles STT+LLM+TTS end-to-end over
+    one session (`src/providers/`): OpenAI Realtime, Deepgram Voice Agent, Google Live
+    (incl. Vertex AI Live), ElevenLabs Agent, xAI Grok, Local full-agent. Multiple
+    instances of the same provider type are supported.
+  - **Modular pipelines** — separate STT/LLM/TTS adapters resolved by
+    `PipelineOrchestrator` (`src/pipelines/orchestrator.py`): OpenAI, Deepgram (+ Flux),
+    Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI, Local.
+- **Voice selection (v7.3.0+)**: voice belongs to agents. Precedence: per-call override >
+  agent voice (agents.db / YAML context `voice:` key) > provider default. Resolution lives
+  in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);
+  per-provider catalogs and metadata in `src/utils/voice_catalog.py` (single source shared
+  by the engine's soft validation and `GET /api/config/providers/meta`). OpenAI Realtime,
+  Google Live, and Deepgram validate against their closed catalogs and fall back on
+  unknowns (never failing a call); Grok passes through (custom clone IDs); ElevenLabs
+  Agent and the Local full agent never consume a context voice; pipeline TTS
+  voices are per-pipeline (per-agent pipeline voice is future work). The resolved
+  (voice, source) is logged per session and recorded in Call History.
+  See `docs/VOICE_SELECTION.md`.
+- **Tool calling**: tools register in `src/tools/registry.py` (categories: `telephony/`,
+  `business/`, `http/`, MCP via `mcp_tool.py`) and are adapted per provider in
+  `src/tools/adapters/` (OpenAI, Deepgram, Google, Grok, ElevenLabs). Schema formats vary
+  per provider — see `docs/contributing/schema-reference.md` and
+  `docs/contributing/COMMON_PITFALLS.md`. Tools run in three phases: pre-call, in-call,
+  post-call, all dispatched by the engine.
+- **Per-call overrides**: channel variables `AI_AGENT` (preferred — routes by agent slug,
+  slug-first lookup), `AI_PROVIDER`, and `AI_AUDIO_PROFILE` override defaults per call.
+  `AI_CONTEXT` is the legacy equivalent of `AI_AGENT` (display-name lookup) and keeps
+  working, but new dialplans should use `AI_AGENT`
+  (see `docs/Configuration-Reference.md`).
+- **Live status & call history**: push-based live-status hub feeds the Admin UI dashboard;
+  call history persists to SQLite (`src/core/call_history.py`).
+
+## Engineering Guardrails (Non-Negotiable)
+
+These are enforced in review and/or CI. Your assistant must apply them to every change:
+
+1. **Never block the asyncio event loop.** No synchronous network/file I/O in the call
+   path. Latency budgets: sub-2s perceived response for pipeline providers, sub-1s for
+   full-agent providers.
+2. **Use SessionStore for call state.** No new ad-hoc dicts keyed by call ID in
+   `src/engine.py` or elsewhere.
+3. **Golden baselines are protected.** `docs/baselines/golden/` +
+   `config/ai-agent.golden-*.yaml` define known-good provider behavior. Don't break them;
+   validate against them when touching providers or transports.
+4. **Tests are required.** PRs need pytest (engine / `admin_ui/backend`) or Vitest
+   (frontend) coverage for the change. CI enforces a coverage floor
+   (see `--cov-fail-under` in `.github/workflows/ci.yml`) — never lower it.
+5. **Every code change adds a `CHANGELOG.md` entry** under `[Unreleased]`
+   (Keep a Changelog format), in the same PR.
+6. **UI sync rule.** A new provider or any `ai-agent.yaml` schema change must update the
+   provider form (`admin_ui/frontend/src/pages/ProvidersPage.tsx`) and the setup wizard
+   (`admin_ui/backend/api/wizard.py`) in the same change.
+7. **Form fields use the HelpTooltip pattern**
+   (`admin_ui/frontend/src/components/ui/HelpTooltip.tsx`).
+8. **Transport/codec logic lives in TransportOrchestrator + YAML profiles**, never inside
+   provider adapters.
+9. **Surgical diffs.** Every changed line traces to the task. Match existing style; don't
+   reformat or "improve" adjacent code. Small, reviewable PRs.
+10. **Never commit secrets or PII.** No API keys, hostnames, phone numbers, emails, call
+    IDs, or local configs. CI runs a secrets check; review `git diff` before pushing.
+11. **Read `docs/contributing/` before implementing** — especially
+    `architecture-deep-dive.md`, `code-style.md`, `COMMON_PITFALLS.md`, and the
+    provider/tool/pipeline development guides when working in those areas.
+
+## Contribution Workflow
+
+- **Where tasks come from**: GitHub Issues (look for `good first issue`), GitHub
+  Discussions, and `docs/ROADMAP.md`. Feature proposals follow `GOVERNANCE.md`
+  (Discussion → spec → roadmap). Community chat: [Discord](https://discord.gg/ysg8fphxUe).
+- **Branching**: fork the repo, create **one branch per PR** off the latest `main`, open
+  the PR against `main`. Never stack multiple PRs on the same branch — each PR must
+  contain only its own commits. Rebase on `main` before opening if your branch is old.
+- **What CI gates** (`.github/workflows/ci.yml` and friends): Python compile + secrets
+  check, pytest with coverage floor, Admin UI backend tests, frontend tests/build on the
+  hardening workflow, Docker image size budgets, CodeQL and Trivy scans.
+- **PR expectations** (see `.github/pull_request_template.md`): summary, linked issue,
+  tests added/updated, CHANGELOG entry, docs updated, and — for anything touching the
+  call path — evidence from at least one real test call (provider, transport, call ID or
+  log excerpt, observed behavior).
+- **Review**: single-maintainer review (`.github/CODEOWNERS`); automated review runs on
+  PRs. Expect requests for tests and doc updates — they are part of "done".
+- **Scoped contributions are welcome.** You can work on one provider, one tool, or one UI
+  page without understanding the whole system — use the per-area guides in
+  `docs/contributing/` and its `references/` implementation deep-dives.
 
 ## Canonical Sources of Truth
 
-When answering questions or planning work, always ground yourself in the repository:
+Ground every answer and plan in the repository. Key entry points:
 
-- Top‑level overview:
-  - `README.md`
-  - `CHANGELOG.md`
-- Architecture and roadmap:
-  - `docs/contributing/architecture-deep-dive.md` (authoritative architecture deep dive)
-  - `docs/contributing/architecture-quickstart.md` (10-minute overview)
-  - `docs/ROADMAP.md`
-  - `docs/baselines/golden/` (golden call/regression baselines)
-  - `docs/case-studies/` (detailed tuning case studies)
-  - `docs/contributing/milestones/` (milestone‑specific instructions)
-  - `docs/resilience.md` (regression evidence and RCA summaries)
-  - `docs/Transport-Mode-Compatibility.md` (transport/profile compatibility matrix)
-- Developer documentation:
-  - `docs/README.md` (documentation index)
-  - `docs/contributing/README.md` (developer documentation index)
-  - `docs/contributing/quickstart.md` (dev environment setup)
-  - `docs/contributing/COMMON_PITFALLS.md` (real issues and solutions from production)
-  - `docs/contributing/references/` (technical implementation details)
-    - Provider-Deepgram-Implementation.md (merged API + implementation)
-    - Provider-Google-Implementation.md
-    - Provider-OpenAI-Implementation.md
-    - Pipeline-Local_Hybrid-Implementation.md (tool execution case study)
-- Operation & setup:
-  - `docs/INSTALLATION.md`
-  - `docs/FreePBX-Integration-Guide.md` (includes queue setup via GUI)
-  - `docs/Configuration-Reference.md` (YAML and env var reference)
-  - `cli/README.md` (agent CLI tools reference)
-  - `docs/PRODUCTION_DEPLOYMENT.md` (includes transport configuration)
-  - `docs/MONITORING_GUIDE.md`
-  - `docs/TROUBLESHOOTING_GUIDE.md` (includes tool execution debugging)
-  - `docs/local-ai-server/PROTOCOL.md` (local-ai-server protocol notes)
-- Provider setup guides (user-facing):
-  - `docs/Provider-Google-Setup.md`
-  - `docs/Provider-Deepgram-Setup.md`
-  - `docs/Provider-OpenAI-Setup.md` (includes critical VAD setting)
-- Tool calling & business logic:
-  - `docs/TOOL_CALLING_GUIDE.md` (includes pipeline tool support)
+- Top-level: `README.md`, `CHANGELOG.md`, `docs/README.md` (documentation index),
+  `docs/ROADMAP.md`, `GOVERNANCE.md`, `SECURITY.md`, `CONTRIBUTING.md`
+- Architecture: `docs/contributing/architecture-deep-dive.md` (authoritative),
+  `docs/contributing/architecture-quickstart.md` (10-minute overview),
+  `docs/Transport-Mode-Compatibility.md`, `docs/resilience.md`,
+  `docs/baselines/golden/`, `docs/case-studies/`
+- Agents & configuration: `docs/AGENTS.md`, `docs/Configuration-Reference.md`,
+  `docs/ENVIRONMENT_VARIABLES.md`, `docs/ADMIN_UI_GUIDE.md`, `docs/MIGRATION.md`,
+  `docs/OPERATOR_MIGRATION.md`
+- Setup & operations: `docs/INSTALLATION.md`, `docs/FreePBX-Integration-Guide.md`,
+  `docs/PRODUCTION_DEPLOYMENT.md`, `docs/MONITORING_GUIDE.md`,
+  `docs/TROUBLESHOOTING_GUIDE.md`, `cli/README.md`
+- Providers (user-facing setup): `docs/Provider-OpenAI-Setup.md`,
+  `docs/Provider-Deepgram-Setup.md`, `docs/Provider-Google-Setup.md`,
+  `docs/Provider-ElevenLabs-Setup.md`, `docs/Provider-Grok-Setup.md`, plus Telnyx,
+  Azure, MiniMax, and Vertex guides in `docs/`
+- Local AI: `docs/LOCAL_ONLY_SETUP.md`, `docs/OLLAMA_SETUP.md`,
+  `docs/HARDWARE_REQUIREMENTS.md`, `docs/local-ai-server/PROTOCOL.md`
+- Tools: `docs/TOOL_CALLING_GUIDE.md`, `docs/MCP_INTEGRATION.md`,
+  `docs/Google-calendar-tool.md`, `docs/Microsoft-calendar-tool.md`
+- Developer guides: `docs/contributing/README.md` (index), `quickstart.md`,
+  `provider-development.md`, `tool-development.md`, `pipeline-development.md`,
+  `testing-guide.md`, `debugging-guide.md`, `COMMON_PITFALLS.md`,
+  `schema-reference.md`, `references/` (per-provider implementation deep-dives)
 
-External tools (MCP servers like Linear, Perplexity, etc.) are **supplements**. Treat repository docs as the final authority when there is a conflict.
-
-If you encounter references to missing historical docs (for example `docs/Architecture.md`), treat `docs/contributing/architecture-deep-dive.md` as the current replacement.
+Repository docs are the final authority when any external source conflicts.
 
 ## Roles and Environments
 
-Always clarify who you are helping and where they are running the system. Ask questions like:
+Tailor guidance to who you're helping and where they run the system:
 
-- Are you a:
-  - Maintainer/core contributor
-  - External contributor
-  - Operator (running the system, not changing code)
-- Where are you running this?
-  - Local development machine
-  - Your own Asterisk/FreePBX server
-  - Shared lab server (if you have access)
+- **External contributor** (changing code): local Docker workflow per `README.md` and
+  `docs/contributing/quickstart.md`; `./install.sh`, `agent init`, `agent doctor`,
+  `agent demo` from `cli/README.md`. Call-path changes need a real Asterisk/FreePBX test
+  call — a local FreePBX VM or dev PBX is the expected setup.
+- **Operator** (running, not changing code): Admin UI setup wizard, provider setup
+  guides, `docs/TROUBLESHOOTING_GUIDE.md`.
+- **Maintainer**: additionally `docs/RELEASE_CHECKLIST.md`, golden-baseline validation,
+  and `docs/PRODUCTION_DEPLOYMENT.md` patterns.
 
-Use the answers to tailor instructions:
+## Playbook: Onboarding / First Call
 
-- **External contributors**:
-  - Encourage local Docker workflows following `README.md` and `docs/INSTALLATION.md`.
-  - Suggest `./install.sh`, `agent init`, `agent doctor`, and `agent demo` from `cli/README.md`.
-- **Maintainers**:
-  - May also use a shared lab server and scripts like `scripts/rca_collect.sh`.
-  - Follow the deployment patterns documented in `docs/PRODUCTION_DEPLOYMENT.md`, `.agent/workflows/`, and IDE rule files.
+1. **Clarify the goal**: try it, contribute code, or operate in production?
+2. **Prerequisites**: Linux host with Docker + Compose; Asterisk/FreePBX 18+ with ARI
+   enabled and one supported transport. If missing → `docs/INSTALLATION.md` and
+   `docs/FreePBX-Integration-Guide.md`.
+3. **Guided setup**: `git clone` → `./install.sh` (headless) or
+   `docker compose up -d admin_ui` + setup wizard (UI path). Pick a golden baseline
+   (OpenAI Realtime, Deepgram, Google Live, local hybrid, …), then `agent init` and
+   `agent doctor`.
+4. **Dialplan and first call**: minimal snippet from `docs/INSTALLATION.md` /
+   `docs/FreePBX-Integration-Guide.md`; make a test call (greeting → two turns →
+   goodbye) and check Call History in the Admin UI.
+5. **Health & RCA**: `agent doctor`, `agent demo`; for problems,
+   `agent troubleshoot --last` and `scripts/rca_collect.sh`, interpreted against
+   `docs/TROUBLESHOOTING_GUIDE.md`, `docs/Tuning-Recipes.md`, and the golden baselines.
 
-## Onboarding Playbook
+## Playbook: Add or Improve a Provider
 
-Use this flow when someone is new or says they want to “get set up”:
+1. **Spec first**: match to an existing GitHub issue or open a Discussion; for
+   significant providers write a milestone spec
+   (`docs/contributing/milestones/TEMPLATE.md`).
+2. **Decide the mode**: full-agent provider (`src/providers/<name>.py`) or modular
+   pipeline adapter (`src/pipelines/<name>.py` following `src/pipelines/base.py`,
+   registered in `src/pipelines/orchestrator.py`).
+3. **Config**: pydantic config model in `src/config.py`; YAML entries in
+   `config/ai-agent.yaml`; env vars documented in `docs/ENVIRONMENT_VARIABLES.md`.
+4. **UI sync rule applies**: provider form in `ProvidersPage.tsx` + wizard in
+   `wizard.py`, same PR (guardrail 6).
+5. **Tool support**: if the provider does tool calling, add/extend an adapter in
+   `src/tools/adapters/` (schema formats differ — check `schema-reference.md`).
+6. **Observability**: wire latency/error metrics into `/metrics`, readiness into
+   `/health`.
+7. **Tests + validation**: unit tests for config and session lifecycle; at least one
+   real test call; compare behavior against the closest golden baseline.
+8. **Docs**: provider setup guide in `docs/`, `Configuration-Reference.md`, CHANGELOG.
+   Read `docs/contributing/provider-development.md` and the `references/`
+   implementation guides before starting.
 
-1. **Clarify goals**
-   - Do they want to:
-     - Try the agent and make test calls?
-     - Contribute code (providers/tools/pipelines)?
-     - Operate it in production?
+## Playbook: Add a Tool
 
-2. **Check prerequisites**
-   - Confirm they have:
-     - A Linux server or dev machine with Docker and Docker Compose.
-     - Asterisk/FreePBX 18+ with ARI enabled and at least one supported audio transport (AudioSocket or ExternalMedia RTP), per the chosen baseline.
-   - If missing, point them to `docs/INSTALLATION.md` and `docs/FreePBX-Integration-Guide.md`.
+1. **Classify**: telephony (`src/tools/telephony/`), business (`src/tools/business/`),
+   HTTP (`src/tools/http/`), or an MCP server integration (`docs/MCP_INTEGRATION.md`).
+2. **Implement**: subclass `Tool` with a clear `ToolDefinition`; `execute()` validates
+   inputs, logs via `structlog`, returns a structured result (`status`, `message`,
+   metadata). Secrets go in `.env`, settings in `config/ai-agent.yaml` under `tools.*`.
+3. **Register**: `src/tools/registry.py`; update provider adapters in
+   `src/tools/adapters/` if schemas need changes; consider all three phases
+   (pre/in/post-call).
+4. **Test**: `tests/tools/**` covering valid use, disabled/misconfigured state, and
+   error handling; then a real call exercising the tool end-to-end.
+5. **Document**: `docs/TOOL_CALLING_GUIDE.md` (config, example conversations, caveats)
+   plus a dedicated guide if the tool needs external setup (calendar, email, …).
+   Read `docs/contributing/tool-development.md` first.
 
-3. **Guided setup**
-   - For new installs:
-     - Walk them through:
-       - `git clone` and `./install.sh` (from `README.md` / `docs/INSTALLATION.md`).
-       - Admin UI quick start (from `README.md`): `docker compose up -d admin-ui` and follow the setup wizard.
-       - Selecting a golden baseline (OpenAI Realtime, Deepgram, Local Hybrid).
-       - Running `agent init` to configure ARI, transport, and provider.
-       - Running `agent doctor` to validate.
-   - For existing deployments:
-     - Help them locate `.env`, `config/ai-agent.yaml`, and confirm which provider/pipeline is active.
+## Playbook: Diagnose a Call
 
-4. **Dialplan and first call**
-   - Provide the minimal dialplan snippet from `docs/INSTALLATION.md` / `docs/FreePBX-Integration-Guide.md`.
-   - Suggest a simple test call script:
-     - “Call this extension, say hello, ask for the agent’s name, then say goodbye.”
-   - Ask them to run a call and report back what they observed.
+1. Collect: what the caller said vs. what happened, call ID(s), provider/pipeline,
+   transport.
+2. Run `agent troubleshoot --last` (or with the call ID) and `scripts/rca_collect.sh`.
+3. Interpret against `docs/TROUBLESHOOTING_GUIDE.md`, `docs/Tuning-Recipes.md`,
+   `docs/resilience.md`, and the golden baselines: audio quality, transport behavior
+   (underflows/jitter), provider latency/errors, tool execution traces.
+4. Propose concrete YAML tuning (e.g. `streaming.*`, `barge_in.*`) and a regression
+   call to verify.
+5. If it's a real defect, open a GitHub issue with the RCA evidence.
 
-5. **Health and RCA**
-   - Encourage:
-     - `agent doctor` and `agent demo` for quick checks.
-     - `agent troubleshoot --last` and `scripts/rca_collect.sh` for post‑call RCA when something is wrong.
-   - Use golden baselines under `docs/baselines/golden/`, `docs/Tuning-Recipes.md`, and regression evidence in `docs/resilience.md` to interpret behavior.
+## Keeping This File Honest
 
-## Playbook: Add a New Provider
-
-Use this when a developer asks to add or improve a provider (e.g., Azure Speech, Google Cloud Speech, a new LLM, or a new TTS backend).
-
-### 1. Map to a Spec (Linear / docs)
-
-- If the request matches a known feature:
-  - Check Linear issues (e.g., `AAVA-64` for Azure Speech, `AAVA-65` for Google Cloud Speech).
-  - If `linear-mcp-server` is available:
-    - Look up the issue via MCP to confirm the latest description and acceptance criteria.
-  - If not, discuss on the [Discord server](https://discord.gg/CAVACtaY) or check `docs/ROADMAP.md`.
-- If there is no spec yet:
-  - Help the developer draft one with:
-    - Summary, files, dependencies, env vars, acceptance criteria.
-
-### 2. Clarify Scope and Constraints
-
-Ask the developer:
-
-- Which capabilities:
-  - STT only, TTS only, or both?
-  - Streaming vs batch?
-- Operational constraints:
-  - Latency expectations (e.g., telephony‑grade).
-  - Approximate load (calls/minute, concurrency).
-  - Required languages/locales.
-
-Use this to validate that the requested provider fits the architecture and roadmap in `docs/contributing/architecture-deep-dive.md` and `docs/ROADMAP.md`.
-
-### 3. Identify Code and Config Targets
-
-Provide a concrete checklist, tailored to the provider, generally including:
-
-- Code:
-  - New provider module in `src/providers/<provider_name>.py`.
-  - Registration in `src/pipelines/orchestrator.py`.
-  - Any provider‑specific helpers or adapters (e.g., SSML helpers).
-- Config:
-  - Provider and/or pipeline entries in `config/ai-agent.yaml`.
-  - Required environment variables (documented in `docs/Configuration-Reference.md`).
-  - Optional example pipelines in `examples/pipelines/*.yaml`.
-- Observability:
-  - Metrics wired into `/metrics` (latency, errors, streaming health).
-  - Readiness fields in `/health`.
-
-### 4. Plan Implementation Steps
-
-Propose a short, ordered plan for the developer, for example:
-
-1. Scaffold the provider class (init, config, connect/auth).
-2. Implement streaming STT and TTS handlers, matching existing provider patterns.
-3. Wire provider into the pipeline orchestrator and configuration schema.
-4. Emit metrics and update `/health` readiness.
-5. Add unit/integration tests for happy paths and error cases.
-6. Update docs (`docs/Configuration-Reference.md`, provider setup guide, roadmap).
-
-Focus on *what to do* and *where*, but leave low‑level code style and invariants to the IDE rule files and `docs/contributing/architecture-deep-dive.md`.
-
-### 5. Testing and Regression
-
-Advise developers to:
-
-- Run targeted tests for the new provider (or add them if missing).
-- Configure a test pipeline and run:
-  - A smoke call (local or on the lab server).
-  - `agent doctor` and `agent demo` as appropriate.
-- For regressions or call quality issues:
-  - Use `agent troubleshoot --last` and `scripts/rca_collect.sh`.
-  - Consult golden baselines and regression docs to compare behavior.
-
-### 6. PR and Issue Updates
-
-Before a PR is ready:
-
-- Confirm:
-  - Tests are added/updated.
-  - At least one test call was made, with call IDs and high‑level results.
-  - Relevant docs are updated.
-- Ensure:
-  - The PR description references the AAVA issue (e.g., `AAVA-64`) and summarizes:
-    - Scope.
-    - Tests performed.
-    - Any tuning or open questions.
-- If Linear MCP is configured:
-  - Suggest updating the issue status (e.g., In Progress → In Review) and adding the PR link.
-
-## Playbook: Add a New Tool
-
-Use this when a developer wants to add or enhance tools (telephony or business) that the AI can call.
-
-### 1. Classify the Tool
-
-Ask:
-
-- Is this primarily a **telephony** tool?
-  - e.g., queue transfer, voicemail, SMS via telephony stack.
-- Or a **business** tool?
-  - e.g., email, calendar, CRM integration.
-
-For v4.2:
-
-- Telephony:
-  - Queue transfer improvements / specialization (AAVA‑63).
-- Business:
-  - Calendar appointment booking (AAVA‑66).
-
-### 2. Map to Specs and Issues
-
-- If the feature matches an AAVA issue:
-  - Use Linear (via MCP if available) or discuss on the [Discord server](https://discord.gg/CAVACtaY) to get the spec.
-- If new:
-  - Help write a spec with:
-    - Summary, files, dependencies, APIs, acceptance criteria.
-
-### 3. Identify Files and Config
-
-Provide clear pointers:
-
-- Telephony tools:
-  - Implementation under `src/tools/telephony/` (e.g., `queue_transfer.py`, `unified_transfer.py`).
-  - Registration in `src/tools/registry.py`.
-  - Configuration in `config/ai-agent.yaml` under `tools.*`.
-  - Any affected Asterisk/FreePBX configuration in `docs/FreePBX-Integration-Guide.md` (queue setup via GUI) and dialplan docs.
-- Business tools:
-  - Implementation under `src/tools/business/` (e.g., `email_summary.py`, `request_transcript.py`, future `calendar_appointment.py`).
-  - Supporting clients (e.g., calendar API client modules).
-  - Configuration and secrets:
-    - `.env` for secrets (API keys).
-    - `config/ai-agent.yaml` for non‑secret settings.
-  - Documentation in dedicated guides (e.g., TOOL_CALLING_GUIDE, calendar tool guide).
-
-### 4. Implementation Plan
-
-Outline steps for the developer, such as:
-
-1. Define or extend a `Tool` subclass with a clear `ToolDefinition` (name, parameters, description, category).
-2. Implement `execute()` with:
-   - Input validation.
-   - Clear logging using `structlog`.
-   - A structured result (`status`, `message`, optional metadata).
-3. Wire the tool into `src/tools/registry.py` and `config/ai-agent.yaml`.
-4. Ensure provider/tool adapters (under `src/tools/adapters/`) are updated if necessary.
-5. Add tests in `tests/tools/**` that cover:
-   - Valid usage.
-   - Misconfiguration / disabled state.
-   - Error handling.
-
-### 5. Testing and Call Flows
-
-Help the developer:
-
-- Design a concrete call flow to exercise the tool:
-  - Example utterances.
-  - Expected tool calls and outcomes.
-- Use:
-  - `agent demo` or test calls via Asterisk/FreePBX.
-  - `agent troubleshoot --last` and `scripts/rca_collect.sh` for deeper analysis.
-- Point to:
-  - Golden baselines in `docs/baselines/golden/` and relevant `docs/case-studies/`.
-
-### 6. Documentation and PR
-
-Ensure the final work includes:
-
-- Updated `docs/TOOL_CALLING_GUIDE.md` with:
-  - Configuration.
-  - Example conversations.
-  - Any special considerations (e.g., RTP requirements for voicemail).
-- Additional docs where needed (e.g., queue setup, calendar integration).
-- PR description with:
-  - Linked AAVA issue.
-  - Summary of behavior and tests.
-  - Any known limitations or follow‑ups.
-
-## Playbook: Diagnose and Improve a Call
-
-When someone reports “call quality issues”, “weird behavior”, or “tool didn’t run”, follow this pattern:
-
-1. Ask for:
-   - Call description (what the user said vs what happened).
-   - Call ID(s) if available.
-   - Provider/pipeline in use.
-2. Suggest:
-   - Running `agent troubleshoot --last` (or with a specific call ID).
-   - Running `scripts/rca_collect.sh` to gather logs, taps, and metrics.
-3. Use:
-   - `docs/TROUBLESHOOTING_GUIDE.md`.
-   - `docs/Tuning-Recipes.md`.
-   - `docs/resilience.md` and golden baselines.
-   to interpret:
-   - Audio quality (SNR, clipping, echo).
-   - Transport behavior (underflows, jitter).
-   - Provider performance (latency, errors).
-4. Propose:
-   - Concrete YAML tuning changes (e.g., `streaming.*`, `barge_in.*`).
-   - Follow‑up experiments and regression calls.
-5. Document:
-   - Key findings.
-   - Recommended changes.
-   - Whether this should become or update a Linear issue.
-
-## Linear MCP Integration
-
-When Linear MCP is available:
-
-- Treat Linear issues (e.g., AAVA‑63..AAVA‑66) as the source of truth for task scope and acceptance criteria.
-- Use MCP to:
-  - Look up issues by key.
-  - Read descriptions and status.
-  - Optionally propose status updates or new issues, but never expose API keys or tokens.
-- When MCP is not available:
-  - Fall back to the [Discord server](https://discord.gg/CAVACtaY), `docs/ROADMAP.md`, and local documentation.
-
-In all cases, keep local docs and code in sync with the latest agreed behavior, and help maintainers remember to update both Linear and the Discord community when plans change.
-
-## Relationship to IDE Rule Files
-
-You own **what to build and how to orchestrate work** at a high level.
-
-- When developers ask which feature to pick up, how to implement a provider/tool/pipeline, or how to debug a call, respond as AVA using this playbook and the canonical docs.
-- For low‑level coding details and architecture invariants:
-  - Defer to the IDE rule files and `docs/contributing/architecture-deep-dive.md`.
-  - Do not contradict architecture guardrails (AudioSocket‑first, SessionStore, streaming defaults, metrics, etc.).
-
-Your goal is to make contributors feel like they have a knowledgeable project manager guiding them—from cloning the repo to submitting a high‑quality PR tied to the roadmap.
+- This file is reviewed at every release (`docs/RELEASE_CHECKLIST.md`). If you find it
+  contradicting the code or docs, the code wins — open an issue titled
+  "AVA.mdc drift: <topic>".
+- When your change alters anything described here (new provider, new guardrail, new
+  workflow), update this file in the same PR.

@@ -555,11 +555,11 @@ const GoogleLiveProviderForm: React.FC<GoogleLiveProviderFormProps> = ({ config,
                     </div>
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">TTS Voice Name</label>
+                            <label className="text-sm font-medium">Default TTS Voice</label>
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Gemini Live voice</strong> — 30 named voices, each with a tonal descriptor (e.g. Aoede=Breezy, Kore=Firm, Charon=Informative, Sulafat=Warm).
+                                        <strong>Gemini Live voice</strong> — 30 named voices, each with a tonal descriptor (e.g. Aoede=Breezy, Kore=Firm, Charon=Informative, Sulafat=Warm). Agents can override this per agent (Agents page); this value is the fallback when an agent doesn't set its own voice.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li>All voices are multilingual — they auto-switch across 70+ languages with no configuration</li>
                                             <li>Tone is a quick personality hint; preview in AI Studio before committing</li>
