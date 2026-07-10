@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.check_admin_ui_urls import (
+    UrlResult,
     UrlTarget,
     _validate_redirect,
     check_target,
@@ -243,6 +244,29 @@ def test_post_fallback_transient_error_is_retried() -> None:
     assert result.ok is True
     assert request.call_count == 4
     sleep.assert_called_once_with(1.0)
+
+
+def test_persistent_transient_error_stops_after_max_retries() -> None:
+    target = UrlTarget(
+        url="https://docs.vendor.example/page",
+        probe_url="https://docs.vendor.example/page",
+        category="ui",
+        sources=("example.tsx",),
+    )
+    transient_failure = UrlResult(target, False, 503, "service unavailable")
+
+    with (
+        patch(
+            "scripts.check_admin_ui_urls._check_target_once",
+            return_value=transient_failure,
+        ) as check_once,
+        patch("scripts.check_admin_ui_urls.time.sleep") as sleep,
+    ):
+        result = check_target(target, max_retries=3)
+
+    assert result is transient_failure
+    assert check_once.call_count == 3
+    assert [call.args for call in sleep.call_args_list] == [(1.0,), (2.0,)]
 
 
 @pytest.mark.parametrize(
