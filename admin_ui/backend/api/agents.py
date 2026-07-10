@@ -26,7 +26,10 @@ def _validate_optional_email(v):
         raise ValueError(f"invalid email address: {v!r}")
     return v
 CALL_HISTORY_DB = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
-TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "agent_templates.json")
+# Keep immutable application assets under the API package.  The container's
+# /app/data directory is a writable Compose volume, so storing this file there
+# makes the packaged copy disappear at runtime when that volume is mounted.
+TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "data", "agent_templates.json")
 # CORRECTION vs plan: the real default Stasis app is "asterisk-ai-voice-agent"
 # (confirmed from engine StasisStart logs + golden baselines), NOT "ai-voice-agent".
 STASIS_APP = os.environ.get("ASTERISK_APP_NAME", "asterisk-ai-voice-agent")

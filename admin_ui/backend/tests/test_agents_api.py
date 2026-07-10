@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -38,6 +40,13 @@ def test_dialplan_snippet(client):
 def test_templates_listed(client):
     names = {t["id"] for t in client.get("/api/agents/templates").json()}
     assert {"receptionist", "after_hours", "appointment_booker"} <= names
+
+
+def test_templates_are_packaged_outside_runtime_data_volume():
+    """Compose mounts /app/data, so immutable assets must live under /app/api."""
+    expected = Path(agents_api.__file__).parent / "data" / "agent_templates.json"
+    assert Path(agents_api.TEMPLATES_PATH).resolve() == expected.resolve()
+    assert expected.is_file()
 
 def test_stats_zero_for_new_agent(client):
     client.post("/api/agents", json={"display_name": "S", "provider": "x", "prompt": "p"})
