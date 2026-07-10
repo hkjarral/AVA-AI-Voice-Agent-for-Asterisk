@@ -160,7 +160,7 @@ const GenericProviderForm: React.FC<GenericProviderFormProps> = ({ config, onCha
     };
 
     const handleTypeChange = (type: string) => {
-        let updates: any = { type };
+        const updates: any = { type };
         let newFields = [...customFields];
 
         if (type === 'full') {

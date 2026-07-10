@@ -3139,7 +3139,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                                         className="px-3 py-1.5 text-xs rounded border hover:bg-accent"
                                         onClick={() => {
                                             const cals = { ...(config.google_calendar?.calendars || {}) };
-                                            let base = 'calendar'; let i = 1; let k = `${base}_${i}`;
+                                            const base = 'calendar'; let i = 1; let k = `${base}_${i}`;
                                             while (Object.prototype.hasOwnProperty.call(cals, k)) { i += 1; k = `${base}_${i}`; }
                                             cals[k] = { credentials_path: '', calendar_id: '', timezone: '' };
                                             onChange({ ...config, google_calendar: { ...(config.google_calendar || {}), calendars: cals } });

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Admin UI checks now gate pull requests** (`.github/workflows/ci.yml`, `admin_ui/frontend/`): PR CI installs the frontend dependencies and runs lint, Vitest, and the production build before merge. The 11 existing hard ESLint failures are fixed. The current 868-warning backlog is pinned as a no-regression baseline while `lint:strict` preserves the zero-warning target for incremental cleanup, avoiding a destabilizing mass rewrite during the v7.3.2 stabilization cycle.
 - **GitHub Actions upgraded to Node 24-compatible major versions** (`.github/workflows/`): first-party GitHub, Docker, CodeQL, and release actions now use their current runtime-compatible releases, removing the Node 20 deprecation path while preserving existing job and check identities.
 
 ### Fixed

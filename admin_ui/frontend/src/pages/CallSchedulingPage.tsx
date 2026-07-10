@@ -1959,7 +1959,7 @@ const CallSchedulingPage = () => {
                                                     ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-600'
                                                     : 'hover:bg-muted'
                                                     }`}
-                                                disabled={!modalConsentEnabled || !Boolean(String((campaignModalMode === 'create' ? (createForm as any).consent_media_uri : (editForm as any).consent_media_uri) || '').trim())}
+                                                disabled={!modalConsentEnabled || !String((campaignModalMode === 'create' ? (createForm as any).consent_media_uri : (editForm as any).consent_media_uri) || '').trim()}
                                                 onClick={() => {
                                                     const uri = String((campaignModalMode === 'create' ? (createForm as any).consent_media_uri : (editForm as any).consent_media_uri) || '').trim();
                                                     if (uri) previewRecordingByUri(uri);
@@ -2078,7 +2078,7 @@ const CallSchedulingPage = () => {
                                                     ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-600'
                                                     : 'hover:bg-muted'
                                                     }`}
-                                                disabled={!modalVoicemailEnabled || !Boolean(String((campaignModalMode === 'create' ? (createForm as any).voicemail_drop_media_uri : (editForm as any).voicemail_drop_media_uri) || '').trim())}
+                                                disabled={!modalVoicemailEnabled || !String((campaignModalMode === 'create' ? (createForm as any).voicemail_drop_media_uri : (editForm as any).voicemail_drop_media_uri) || '').trim()}
                                                 onClick={() => {
                                                     const uri = String((campaignModalMode === 'create' ? (createForm as any).voicemail_drop_media_uri : (editForm as any).voicemail_drop_media_uri) || '').trim();
                                                     if (uri) previewRecordingByUri(uri);

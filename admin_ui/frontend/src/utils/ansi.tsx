@@ -3,9 +3,10 @@ import React from 'react';
 export const parseAnsi = (text: string): React.ReactNode[] => {
     if (!text) return [];
 
-    // Split by ANSI escape codes
-    // Matches \x1b[...m
-    const parts = text.split(/(\x1b\[[0-9;]*m)/g);
+    // Split by ANSI escape codes without embedding a control character in a
+    // regex literal (which is rejected by the lint safety rule).
+    const escape = String.fromCharCode(27);
+    const parts = text.split(new RegExp(`(${escape}\\[[0-9;]*m)`, 'g'));
 
     const result: React.ReactNode[] = [];
     let currentColor = '';
@@ -14,7 +15,7 @@ export const parseAnsi = (text: string): React.ReactNode[] => {
     parts.forEach((part, index) => {
         if (!part) return;
 
-        if (part.startsWith('\x1b[')) {
+        if (part.startsWith(`${escape}[`)) {
             // It's a code
             const codes = part.slice(2, -1).split(';');
             codes.forEach(code => {

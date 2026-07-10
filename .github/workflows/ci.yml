@@ -134,6 +134,41 @@ jobs:
           cd admin_ui/backend
           PYTHONPATH=. pytest tests -q
 
+  # Frontend checks must gate pull requests. The extended regression workflow
+  # only runs after pushes to staging/main, which is too late to stop a broken
+  # Admin UI from merging.
+  admin-frontend-tests:
+    name: Admin UI frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: admin_ui/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: admin_ui/frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: admin_ui/frontend
+        run: npm run lint
+
+      - name: Test frontend
+        working-directory: admin_ui/frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: admin_ui/frontend
+        run: npm run build
+
   # ─────────────────────────────────────────────────────────────────────────────
   # Docker Image Size Check (AAVA-113)
   # Ensures images don't exceed size budgets

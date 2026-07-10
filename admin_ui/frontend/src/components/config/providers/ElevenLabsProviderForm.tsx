@@ -209,7 +209,7 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                                 placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
                             />
                             <p className="text-xs text-muted-foreground">
-                                Provide a Voice ID from the <a href="https://elevenlabs.io/app/voice-lab" target="_blank" className="text-primary underline">Voice Lab</a>.
+                                Provide a Voice ID from the <a href="https://elevenlabs.io/app/voice-lab" target="_blank" rel="noreferrer" className="text-primary underline">Voice Lab</a>.
                             </p>
                         </div>
 
