@@ -4229,6 +4229,8 @@ def _ensure_updater_image_for_sha(
                 "--label",
                 f"aava.updater.source={source_label}",
             ]
+            cli_version = source_ref.strip() if source_ref else ((source_sha or "local-dev")[:12])
+            args.extend(["--build-arg", f"AAVA_CLI_VERSION={cli_version}"])
             if source_ref:
                 args.extend(["--label", f"aava.updater.ref={source_ref}", "--label", f"aava.updater.sha={source_sha}"])
             args.extend(["-f", "updater/Dockerfile", "-t", safe_tag, "."])

@@ -103,6 +103,40 @@ def test_ensure_updater_image_for_ref_uses_cached_local_tag(monkeypatch, tmp_pat
     assert got == local_tag
 
 
+def test_updater_build_embeds_source_version_in_cli(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class MissingImages:
+        def get(self, _tag: str):
+            raise RuntimeError("not cached")
+
+    class FakeDockerClient:
+        images = MissingImages()
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return 0, "built"
+
+    monkeypatch.setattr(system.docker, "from_env", lambda: FakeDockerClient())
+    monkeypatch.setattr(system, "_run_docker_with_updater_status", fake_run)
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+
+    tag = system._ensure_updater_image_for_sha(
+        str(tmp_path),
+        "aava-updater:test",
+        require_local_source=True,
+        source_sha="abcdef1234567890",
+    )
+
+    assert tag == "aava-updater:test"
+    args = captured["args"]
+    assert isinstance(args, list)
+    assert ["--build-arg", "AAVA_CLI_VERSION=abcdef123456"] == args[
+        args.index("--build-arg") : args.index("--build-arg") + 2
+    ]
+
+
 @pytest.mark.parametrize(
     "value",
     [

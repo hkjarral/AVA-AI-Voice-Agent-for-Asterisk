@@ -191,7 +191,7 @@ test_piper.py
 docker-data/
 
 # Asterisk media files (generated at runtime)
-asterisk_media/
+/asterisk_media
 
 # Shipped outbound prompt assets (tracked in git)
 !assets/
@@ -314,6 +314,11 @@ data/*.sqlite
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/**/*.db
+data/**/*.sqlite
+data/**/*.db-journal
+data/**/*.db-wal
+data/**/*.db-shm
 !data/.gitkeep
 
 # Custom (community) model entries — user-specific, persists across upgrades

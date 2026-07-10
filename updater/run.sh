@@ -65,7 +65,9 @@ is_truthy() {
 }
 
 query_ai_engine_active_calls() {
-  docker exec ai_engine python3 - <<'PY'
+  # -i is required because the probe script is supplied on stdin. Without it,
+  # python receives an empty program and exits successfully with no count.
+  docker exec -i ai_engine python3 - <<'PY'
 import json
 import os
 import sys

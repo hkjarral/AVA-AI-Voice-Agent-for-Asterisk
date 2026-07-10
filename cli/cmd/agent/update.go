@@ -1845,6 +1845,18 @@ func runPostUpdateCheck() (report *check.Report, status string, warnCount int, f
 	return report, "PASS", 0, 0, nil
 }
 
+func reportHasTransientStartupWarning(report *check.Report) bool {
+	if report == nil {
+		return false
+	}
+	for _, item := range report.Items {
+		if item.Name == "ARI" && item.Status == check.StatusWarn && item.Message == "reachable but app not registered" {
+			return true
+		}
+	}
+	return false
+}
+
 func runPostUpdateCheckWithRetry(timeout time.Duration, interval time.Duration) (report *check.Report, status string, warnCount int, failCount int, err error) {
 	deadline := time.Now().Add(timeout)
 	var lastReport *check.Report
@@ -1857,7 +1869,8 @@ func runPostUpdateCheckWithRetry(timeout time.Duration, interval time.Duration) 
 	for {
 		attempt++
 		report, status, warnCount, failCount, err = runPostUpdateCheck()
-		if err == nil && failCount == 0 {
+		transientStartupWarning := attempt == 1 && err == nil && failCount == 0 && reportHasTransientStartupWarning(report)
+		if err == nil && failCount == 0 && !transientStartupWarning {
 			if attempt > 1 {
 				printUpdateInfo("agent check passed after retry %d", attempt-1)
 			}
@@ -1868,7 +1881,9 @@ func runPostUpdateCheckWithRetry(timeout time.Duration, interval time.Duration) 
 		if time.Now().Add(interval).After(deadline) {
 			return lastReport, lastStatus, lastWarn, lastFail, lastErr
 		}
-		if attempt == 1 {
+		if transientStartupWarning {
+			printUpdateInfo("ARI is reachable but the app is not registered yet; retrying once after services settle")
+		} else if attempt == 1 {
 			printUpdateInfo("agent check failed; retrying for up to %s while services settle", timeout.String())
 		}
 		time.Sleep(interval)
