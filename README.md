@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.2.0-blue.svg)
+![Version](https://img.shields.io/badge/version-7.3.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -55,8 +55,8 @@ For a complete **first successful call** walkthrough (dialplan + transport selec
 
 ```bash
 # Clone repository
-git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # Run preflight with auto-fix (creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
@@ -167,6 +167,35 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.3.1 — Silence watchdog & safe call endings ☎️</b></summary>
+
+**AVA now protects silent calls and finishes every terminal message before disconnecting.**
+
+- **30-second inbound inactivity protection by default** — AVA asks “Are you still there?”, waits 15 seconds for a reply, then speaks a configurable final warning and ends the call. Outbound agents remain opt-in.
+- **The agent keeps its configured voice** — check-ins and final warnings are synthesized by the active Google Live, OpenAI Realtime, Grok, Deepgram, ElevenLabs, local full-agent, or pipeline voice.
+- **Transport-safe hangup** — watchdog and `hangup_call` farewells drain AudioSocket or ExternalMedia/RTP streaming buffers and ARI file playback before ARI disconnects the caller. Fixed sleeps no longer clip long final sentences.
+- **Deepgram and ElevenLabs lifecycle fixes** — Deepgram control frames no longer split greetings, and ElevenLabs response-completion plus hosted-silence handling keeps AVA's watchdog authoritative.
+- **Global and per-agent controls** — configure defaults under **Advanced Settings → Voice Activity Detection → Caller Inactivity**, then optionally override them per agent. Call History labels watchdog endings as **No input timeout**.
+
+See [Caller inactivity configuration](docs/Configuration-Reference.md#caller-inactivity-no_input), [ElevenLabs setup](docs/Provider-ElevenLabs-Setup.md#ava-caller-inactivity-compatibility-v731), and the full [v7.3.1 changelog](CHANGELOG.md#731---2026-07-09).
+
+</details>
+
+<details>
+<summary><b>v7.3.0 — Per-agent voices 🎙️</b></summary>
+
+**Voice now belongs to agents.** Configure one provider, create multiple agents that share it — each with its own voice.
+
+- **Provider-aware voice picker** in the Agent form: a dropdown of OpenAI's 10 GA voices, suggestions + custom clone IDs for Grok, Google Live's 30 prebuilt voices, Deepgram's Aura models — the control adapts to the agent's selected AI Engine.
+- **Safe by default** — the provider-level voice becomes the *default voice*; agents without one behave exactly as before. Unrecognized values (OpenAI/Google/Deepgram catalogs are validated) log a warning and fall back — a bad voice value never fails a call.
+- **Observable** — every call logs the resolved voice and its source, and Call History shows "Voice: marin (from agent)" per call.
+- Agent voice changes apply instantly — no engine restart.
+
+Thanks @foytech for seeding this feature (#497). Full guide: [docs/VOICE_SELECTION.md](docs/VOICE_SELECTION.md).
+
+</details>
+
+<details>
 <summary><b>v7.2.0 — Live-status dashboard 📡</b></summary>
 
 Real-time system status for the Admin UI — pushed, not polled.
@@ -714,6 +743,13 @@ The `preflight.sh` script handles initial setup:
 - **[Local Profiles](docs/LOCAL_PROFILES.md)**
 - **[Monitoring Guide](docs/MONITORING_GUIDE.md)**
 
+### Integrations & Early-Stage Features
+- **[Outbound Calling](docs/OUTBOUND_CALLING.md)** — `Alpha` — scheduled campaigns, voicemail drop, consent gate
+- **[FreeSWITCH (FS-PBX) Setup](docs/FS-PBX-Setup-Instructions.md)** — `Community` — community-maintained guide
+- **[ViciDial Setup](docs/Vicidial-Setup.md)** — `Community` — community-tested configuration notes
+
+`Alpha` = usable but still hardening. `Community` = contributed and community-validated, not maintainer-tested on every release. Features without a label are stable.
+
 ### Development & Community
 - **[Roadmap](docs/ROADMAP.md)** - What's next, planned milestones, and how to get involved
 - **[Developer Documentation](docs/contributing/README.md)**
@@ -735,31 +771,28 @@ as valuable as code. If you do want to write code, see the Contributing Guide be
 ### 🚀 Get Started in 3 Steps
 
 ```bash
-git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
-cd Asterisk-AI-Voice-Agent
-./scripts/setup-contributor.sh
+git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+cd AVA-AI-Voice-Agent-for-Asterisk
 ```
 
-Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to contribute"**
+Then load **[AVA.mdc](AVA.mdc)** into your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …) — it carries the project map, engineering guardrails, and contribution workflow — and tell it what you want to build or fix.
 
 ### 📖 Guides
 
 | Guide | For |
 |-------|-----|
-| **[Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
 | **[Contributing Guide](CONTRIBUTING.md)** | Full contribution guidelines and workflow |
-| **[Coding Guidelines](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
-| **[Roadmap](docs/ROADMAP.md)** | What to work on next (13+ beginner-friendly tasks) |
+| **[Developer Quickstart](docs/contributing/quickstart.md)** | Dev environment setup in ~15 minutes |
+| **[Code Style](docs/contributing/code-style.md)** | Code standards for all contributions |
+| **[Roadmap](docs/ROADMAP.md)** | What to work on next |
 
 ### 🔧 Build Something New
 
-| Area | Guide | Template |
+| Area | Guide | Reference |
 |------|-------|----------|
-| Full Agent Provider | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-full-agent-provider.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/providers/template_full_agent.py) |
-| Pipeline Adapter (STT/LLM/TTS) | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-pipeline-adapter.md) | [Templates](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/tree/develop/examples/pipelines/) |
-| Pre-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/pre-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_pre_call_hook.py) |
-| In-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/in-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_in_call_hook.py) |
-| Post-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/post-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_post_call_hook.py) |
+| Full-Agent Provider | [Provider Development](docs/contributing/provider-development.md) | [Implementation deep-dives](docs/contributing/references/) |
+| Pipeline Adapter (STT/LLM/TTS) | [Pipeline Development](docs/contributing/pipeline-development.md) | [Example pipelines](examples/pipelines/) |
+| Tools & Call Hooks (pre/in/post-call) | [Tool Development](docs/contributing/tool-development.md) | [Tool Calling Guide](docs/TOOL_CALLING_GUIDE.md) |
 
 ### 👩‍💻 For Developers
 - [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) - Project overview and first tasks
@@ -789,7 +822,7 @@ Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to con
 </tr>
 </table>
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/RECOGNITION.md) for how we recognize contributions.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list — contributions are recognized there, in release notes, and on Discord.
 
 ---
 

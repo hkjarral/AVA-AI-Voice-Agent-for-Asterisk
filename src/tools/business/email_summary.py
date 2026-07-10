@@ -201,6 +201,8 @@ class SendEmailSummaryTool(Tool):
                 hangup_initiator = "agent"
             elif call_outcome == "transferred":
                 hangup_initiator = "system"
+            elif call_outcome == "no_input_timeout":
+                hangup_initiator = "system"
 
         variables = {
             "call_id": call_id,

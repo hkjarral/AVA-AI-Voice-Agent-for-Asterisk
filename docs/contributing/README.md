@@ -7,9 +7,9 @@ Welcome to Asterisk AI Voice Agent development! This directory contains everythi
 **New to the project?** Choose your path:
 
 ### For Operators (No Coding Required)
-1. **[Operator Contributor Guide](OPERATOR_CONTRIBUTOR_GUIDE.md)** - Zero-knowledge contributor walkthrough
-2. Run `scripts/setup-contributor.sh` and open in Windsurf
-3. Tell AVA: "I want to contribute"
+1. Clone the repo and open it in your AI coding assistant (Claude, Cursor, Windsurf, Codex, Copilot, …)
+2. Load [AVA.mdc](../../AVA.mdc) as context — it carries the project map, guardrails, and PR workflow
+3. Tell your assistant what you want to contribute
 
 ### For Developers
 1. **[Quick Start Guide](quickstart.md)** - Set up your dev environment in 15 minutes
@@ -20,20 +20,14 @@ Welcome to Asterisk AI Voice Agent development! This directory contains everythi
 
 ### Core Development
 
-- **[Tool Development](tool-development.md)** - Create telephony/business tools (hangup, transfer, email)
-- **[Provider Development](provider-development.md)** - Add STT/LLM/TTS providers (Azure, Google, etc.)
+- **[Tool Development](tool-development.md)** - Create telephony/business tools and pre/in/post-call hooks (hangup, transfer, email, CRM lookups, webhooks)
+- **[Provider Development](provider-development.md)** - Add full-agent providers and STT/LLM/TTS adapters
 - **[Pipeline Development](pipeline-development.md)** - Build custom audio processing pipelines
-- **[Coding Guidelines](CODING_GUIDELINES.md)** - Code standards for all contributions
 
-### Contribution Area Guides
+### Testing & Quality
 
-- **[Full Agent Providers](adding-full-agent-provider.md)** - Build monolithic STT+LLM+TTS providers
-- **[Pipeline Adapters](adding-pipeline-adapter.md)** - Build modular STT, LLM, or TTS adapters
-- **[Pre-Call Hooks](pre-call-hooks-development.md)** - Enrich calls with CRM/database lookups
-- **[In-Call Hooks](in-call-hooks-development.md)** - AI-invoked tools during conversation
-- **[Post-Call Hooks](post-call-hooks-development.md)** - Webhooks to Slack, Discord, CRM, etc.
 - **[Testing Guide](testing-guide.md)** - Test your changes with real calls
-- **[Testing Develop Branch](testing-develop-branch.md)** - Try new features while preserving your configs
+- **[Testing From Source](testing-from-source.md)** - Run the stack from a source checkout
 - **[Debugging Guide](debugging-guide.md)** - Debug with logs, RCA scripts, and agent CLI
 - **[Code Style](code-style.md)** - Project conventions and best practices
 
@@ -73,7 +67,7 @@ Technical specs for each provider:
 ### Development Workflow
 
 1. Fork and clone the repository
-2. Create a feature branch from `develop`
+2. Create a feature branch from the latest `main` (one branch per PR)
 3. Make changes following our code style
 4. Test with real calls using `agent rca`
 5. Submit PR with testing evidence
@@ -124,10 +118,10 @@ For end-user and operator documentation, see the parent [/docs](../) directory:
 
 ## 📅 Project Status
 
-- **Current Version:** 7.2.0
-- **Active Branch:** `develop`
+- **Current Version:** 7.3.1
+- **Active Branch:** `main` (feature branches → PR to `main`)
 - **Roadmap:** See [/docs/ROADMAP.md](../ROADMAP.md)
-- **Community Features:** GitHub Issues + Linear integration
+- **Community Features:** GitHub Issues + Discussions
 
 ---
 

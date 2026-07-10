@@ -125,6 +125,8 @@ class CallRecordResponse(BaseModel):
     pipeline_components: dict = {}
     context_name: Optional[str] = None
     routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
+    voice: Optional[str] = None  # Resolved session voice (v7.3.0; None = provider default)
+    voice_source: Optional[str] = None  # 'override' | 'agent' | 'provider-default' | None
     # Additive v7 aliases (see CallRecordSummaryResponse for semantics).
     agent_slug: Optional[str] = None
     agent_name: Optional[str] = None
@@ -298,6 +300,8 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         pipeline_components=record.pipeline_components or {},
         context_name=record.context_name,
         routing_method=getattr(record, "routing_method", None),
+        voice=getattr(record, "voice", None),
+        voice_source=getattr(record, "voice_source", None),
         agent_slug=agent_slug,
         agent_name=agent_name,
         conversation_history=record.conversation_history or [],
@@ -376,7 +380,8 @@ async def get_providers_health():
             if name not in provider_stats:
                 provider_stats[name] = {"total": 0, "succeeded": 0, "failed": 0}
             provider_stats[name]["total"] += 1
-            # Valid CallRecord.outcome values: completed, transferred, error, abandoned
+            # no_input_timeout is an expected policy outcome, not a provider failure.
+            # Valid values: completed, transferred, error, abandoned, no_input_timeout.
             if r.outcome in ("error", "abandoned"):
                 provider_stats[name]["failed"] += 1
             else:

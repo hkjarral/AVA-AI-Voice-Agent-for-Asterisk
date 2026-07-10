@@ -679,7 +679,10 @@ def persist_config_content(content: str) -> dict:
             # streaming is NOT hot-reloadable for the same reason
             # (StreamingPlaybackManager reads its params once at construction).
             # Both kept on the restart path (bot re-review, Finding 2).
-            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in'}
+            # no_input is resolved into an immutable per-call policy when a new
+            # session starts, so it is safe to hot-reload without changing calls
+            # already in progress.
+            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in', 'no_input'}
 
             # Check if only hot-reloadable keys changed
             all_keys = set(old_merged.keys()) | set(new_parsed.keys())
@@ -4276,3 +4279,40 @@ async def disconnect_microsoft_calendar(req: _MicrosoftDisconnectRequest):
                 },
             ) from exc
     return {"status": "success", "removed": removed, "token_cache_path": safe_path}
+
+
+@router.get("/providers/meta")
+async def get_providers_voice_meta():
+    """Per-provider voice metadata for the Agent form (v7.3.0).
+
+    Returns each configured provider instance with its full-agent kind,
+    voice_mode (static | freeform | platform_managed | unsupported), the
+    curated voice list for that kind, and the instance's configured default
+    voice. Catalog + kind inference live in src/utils/voice_catalog.py (single
+    source shared with the engine's soft validation).
+    """
+    project_root = getattr(settings, "PROJECT_ROOT", None)
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.utils.voice_catalog import full_agent_kind, provider_voice_meta
+
+    cfg = _read_merged_config_dict() or {}
+    providers = cfg.get("providers") or {}
+    out = []
+    for name, entry in providers.items():
+        if not isinstance(entry, dict):
+            continue
+        kind = full_agent_kind(name, entry)
+        meta = provider_voice_meta(kind)
+        voice_field = meta.get("voice_field")
+        default_voice = entry.get(voice_field) if voice_field else None
+        out.append({
+            "name": name,
+            "kind": kind,
+            "is_full_agent": kind is not None,
+            "enabled": bool(entry.get("enabled", True)),
+            "voice_mode": meta["voice_mode"],
+            "voices": meta["voices"],
+            "default_voice": default_voice,
+        })
+    return {"providers": out}

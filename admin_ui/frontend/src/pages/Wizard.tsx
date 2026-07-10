@@ -2774,7 +2774,7 @@ const Wizard = () => {
                                                 </ul>
                                             </>
                                         }
-                                        link="https://wiki.asterisk.org/wiki/display/AST/Asterisk+REST+Interface"
+                                        link="https://docs.asterisk.org/Configuration/Interfaces/Asterisk-REST-Interface-ARI/Getting-Started-with-ARI/"
                                         linkText="ARI docs"
                                     />
                                 </div>
@@ -2883,7 +2883,7 @@ const Wizard = () => {
                                                 </ul>
                                             </>
                                         }
-                                        link="https://wiki.asterisk.org/wiki/display/AST/Asterisk+REST+Interface"
+                                        link="https://docs.asterisk.org/Configuration/Interfaces/Asterisk-REST-Interface-ARI/Getting-Started-with-ARI/"
                                         linkText="ARI / Stasis docs"
                                     />
                                 </div>

@@ -43,7 +43,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         Create the key in the Telnyx portal under <em>API Keys</em>.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>
@@ -70,7 +70,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         like <code>Qwen/*</code> or <code>meta-llama/*</code>.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>
@@ -105,7 +105,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         {' '}<code>https://api.telnyx.com/v2/ai</code> unless Telnyx instructs you otherwise.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>
@@ -135,7 +135,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         like <code>openai/*</code> additionally require <code>api_key_ref</code>.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>
@@ -169,7 +169,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         Default <code>0.7</code> works well for most voice agents.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>
@@ -196,7 +196,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         <code>250</code> to enforce concise spoken answers and lower cost.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>
@@ -231,7 +231,7 @@ const TelnyxProviderForm: React.FC<TelnyxProviderFormProps> = ({ config, onChang
                                         fallback on slow responses.
                                     </>
                                 }
-                                link="https://developers.telnyx.com/docs/inference/overview"
+                                link="https://developers.telnyx.com/docs/inference/getting-started/index"
                                 linkText="Telnyx Inference docs"
                             />
                         </div>

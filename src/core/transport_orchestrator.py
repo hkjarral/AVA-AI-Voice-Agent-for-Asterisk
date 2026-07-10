@@ -72,6 +72,7 @@ class ContextConfig:
     greeting: Optional[str] = None
     profile: Optional[str] = None
     provider: Optional[str] = None
+    voice: Optional[str] = None  # Per-agent voice override; provider config voice is the fallback
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
     background_music: Optional[str] = None  # MOH class name for background music during calls
@@ -95,6 +96,82 @@ class ContextConfig:
     email_recipient: Optional[str] = None
     email_from: Optional[str] = None
     email_enabled: Optional[bool] = None
+    # Partial per-agent override of the global no_input policy. Missing fields
+    # inherit their global value.
+    no_input: Optional[Dict[str, Any]] = None
+
+
+def resolve_effective_voice(
+    overrides: Dict[str, Any],
+    context_config: Optional["ContextConfig"],
+) -> tuple:
+    """Resolve the session voice with its source for logging.
+
+    Precedence: per-call override > agent/context voice > provider default.
+    Returns (voice, source) where source is "override" | "agent" |
+    "provider-default"; voice is None when the provider config should decide.
+    """
+    override = (overrides or {}).get("voice")
+    if isinstance(override, str) and override.strip():
+        return override.strip(), "override"
+    ctx_voice = getattr(context_config, "voice", None)
+    if isinstance(ctx_voice, str) and ctx_voice.strip():
+        return ctx_voice.strip(), "agent"
+    return None, "provider-default"
+
+
+def apply_context_voice(
+    provider_context: Dict[str, Any],
+    overrides: Dict[str, Any],
+    context_config: Optional["ContextConfig"],
+    call_id: Optional[str] = None,
+    allowed_voices: Optional[Union[set, Dict[str, str]]] = None,
+    voice_unsupported: bool = False,
+) -> str:
+    """Apply the resolved session voice to a provider context and log the decision.
+
+    Leaves ``provider_context`` untouched when the provider's configured voice
+    should decide. Returns the decision source for callers that want it.
+
+    ``allowed_voices``/``voice_unsupported`` let the caller reconcile the value
+    with what the target provider can actually use, so Call History records the
+    voice the session USES rather than the raw request: an unknown value on a
+    closed-list provider (or any value on a provider that never consumes a
+    context voice — ElevenLabs Agent, Local) resolves to provider-default here,
+    matching the provider-side behavior. ``allowed_voices`` is a set of
+    lowercase ids, or a mapping of lowercase → canonical id for catalogs with
+    canonical casing (Google Live).
+    """
+    voice, source = resolve_effective_voice(overrides, context_config)
+    if voice and voice_unsupported:
+        logger.info(
+            "Agent voice not applicable for this provider; using provider default",
+            call_id=call_id, requested_voice=voice,
+        )
+        voice, source = None, "provider-default"
+    elif voice and allowed_voices is not None:
+        normalized = voice.lower()
+        if isinstance(allowed_voices, dict):
+            canonical = allowed_voices.get(normalized)
+        else:
+            canonical = normalized if normalized in allowed_voices else None
+        if canonical:
+            voice = canonical
+        else:
+            logger.warning(
+                "Agent voice not in provider catalog; using provider default",
+                call_id=call_id, requested_voice=voice,
+            )
+            voice, source = None, "provider-default"
+    if voice:
+        provider_context["voice"] = voice
+    logger.info(
+        "Session voice resolved",
+        call_id=call_id,
+        voice=voice or "(provider default)",
+        source=source,
+    )
+    return source
 
 
 @dataclass
@@ -189,6 +266,7 @@ class TransportOrchestrator:
                     greeting=context_dict.get('greeting'),
                     profile=context_dict.get('profile'),
                     provider=context_dict.get('provider'),
+                    voice=context_dict.get('voice'),
                     pipeline=context_dict.get('pipeline'),  # Modular pipeline name (e.g., local_hybrid)
                     tools=context_dict.get('tools'),  # In-call tools for function calling
                     background_music=context_dict.get('background_music'),  # MOH class for background music
@@ -211,6 +289,7 @@ class TransportOrchestrator:
                     email_recipient=context_dict.get('email_recipient'),
                     email_from=context_dict.get('email_from'),
                     email_enabled=_coerce_optional_bool(context_dict.get('email_enabled')),
+                    no_input=context_dict.get('no_input'),
                 )
                 logger.debug("Loaded context mapping", name=name, context=contexts[name])
             except Exception as exc:

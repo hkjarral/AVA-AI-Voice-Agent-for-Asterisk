@@ -18,6 +18,7 @@ export interface AgentToolState {
     disableGlobalInCall: string[];    // extra.disable_global_in_call_tools
     disableGlobalPostCall: string[];  // extra.disable_global_post_call_tools
     backgroundMusic: string;          // extra.background_music
+    noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
 }
@@ -26,12 +27,49 @@ const OWNED_EXTRA_KEYS = [
     'pipeline', 'background_music', 'pre_call_tools', 'post_call_tools',
     'in_call_http_tools', 'disable_global_pre_call_tools',
     'disable_global_in_call_tools', 'disable_global_post_call_tools',
+    'no_input',
 ];
 
 const asStrArray = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+const asObject = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
+
+const sanitizeNoInputOverrides = (raw: Record<string, unknown>): Record<string, unknown> => {
+    const sanitized: Record<string, unknown> = {};
+    const knownKeys = new Set([
+        'enabled', 'inbound_enabled', 'outbound_enabled',
+        'initial_timeout_sec', 'grace_timeout_sec', 'max_check_ins',
+        'check_in_message', 'final_message',
+    ]);
+    const unsafePassthroughKeys = new Set(['__proto__', 'constructor', 'prototype']);
+
+    for (const [key, value] of Object.entries(raw)) {
+        if (!knownKeys.has(key) && !unsafePassthroughKeys.has(key)) sanitized[key] = value;
+    }
+    for (const key of ['enabled', 'inbound_enabled', 'outbound_enabled']) {
+        if (typeof raw[key] === 'boolean') sanitized[key] = raw[key];
+    }
+    for (const key of ['initial_timeout_sec', 'grace_timeout_sec']) {
+        const value = raw[key];
+        if (typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 3600) {
+            sanitized[key] = value;
+        }
+    }
+    const attempts = raw['max_check_ins'];
+    if (typeof attempts === 'number' && Number.isInteger(attempts) && attempts >= 0 && attempts <= 10) {
+        sanitized['max_check_ins'] = attempts;
+    }
+    for (const key of ['check_in_message', 'final_message']) {
+        const value = raw[key];
+        if (typeof value === 'string' && value.trim() && value.trim().length <= 500) {
+            sanitized[key] = value.trim();
+        }
+    }
+    return sanitized;
+};
 
 function safeParseObject(raw?: string | null): Record<string, unknown> {
     if (!raw || !raw.trim()) return {};
@@ -80,6 +118,7 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         disableGlobalInCall: asStrArray(extra['disable_global_in_call_tools']),
         disableGlobalPostCall: asStrArray(extra['disable_global_post_call_tools']),
         backgroundMusic: asString(extra['background_music']),
+        noInput: asObject(extra['no_input']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
     };
@@ -106,6 +145,9 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     setArr('disable_global_pre_call_tools', state.disableGlobalPreCall);
     setArr('disable_global_in_call_tools', state.disableGlobalInCall);
     setArr('disable_global_post_call_tools', state.disableGlobalPostCall);
+    const noInput = sanitizeNoInputOverrides(state.noInput);
+    if (Object.keys(noInput).length) extra['no_input'] = noInput;
+    else delete extra['no_input'];
 
     return {
         provider: state.pipeline ? '' : state.provider,

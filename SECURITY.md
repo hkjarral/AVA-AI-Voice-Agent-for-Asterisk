@@ -2,23 +2,18 @@
 
 ## Supported Versions
 
-We actively support the following versions with security updates:
+**Support policy**: we support the **two most recent minor release trains**. When a new minor ships, the oldest supported train reaches end of support. This is an honest reflection of what a small maintainer team can patch — older versions still work, but security fixes land only on supported trains.
 
-| Version | Supported          | End of Support |
-| ------- | ------------------ | -------------- |
-| 7.2.x   | :white_check_mark: | TBD            |
-| 7.1.x   | :white_check_mark: | TBD            |
-| 7.0.x   | :white_check_mark: | TBD            |
-| 6.5.x   | :white_check_mark: | TBD            |
-| 6.4.x   | :white_check_mark: | TBD            |
-| 6.3.x   | :white_check_mark: | TBD            |
-| 6.2.x   | :white_check_mark: | TBD            |
-| 6.1.x   | :white_check_mark: | TBD            |
-| 6.0.x   | :white_check_mark: | TBD            |
-| 5.x     | :x:                | Ended          |
-| < 5.0   | :x:                | Ended          |
+| Version | Supported          | End of Support                      |
+| ------- | ------------------ | ----------------------------------- |
+| 7.3.x   | :white_check_mark: | Current                             |
+| 7.2.x   | :white_check_mark: | When the second following minor ships |
+| 7.1.x   | :x:                | Ended 2026-07-02                    |
+| 7.0.x   | :x:                | Ended 2026-07-02                    |
+| 6.x     | :x:                | Ended 2026-07-02                    |
+| < 6.0   | :x:                | Ended                               |
 
-**Recommendation**: Always use the latest v7.x release for the most recent security patches and features.
+**Recommendation**: Always upgrade to the latest release for the most recent security patches and features. Upgrade guides: [docs/MIGRATION.md](docs/MIGRATION.md) and [docs/OPERATOR_MIGRATION.md](docs/OPERATOR_MIGRATION.md).
 
 ---
 

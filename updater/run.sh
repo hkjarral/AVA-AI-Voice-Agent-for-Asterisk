@@ -9,8 +9,10 @@ REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
 REF="${AAVA_UPDATE_REF:-main}"
 CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
 ROLLBACK_FROM_JOB="${AAVA_UPDATE_ROLLBACK_FROM_JOB:-}"
+FORCE_ACTIVE_CALLS="${AAVA_UPDATE_FORCE_ACTIVE_CALLS:-false}" # true|false
 UPDATE_CLI_HOST="${AAVA_UPDATE_UPDATE_CLI_HOST:-true}" # true|false
 CLI_INSTALL_PATH="${AAVA_UPDATE_CLI_INSTALL_PATH:-}" # optional absolute host path
+BUILD_CLI_FROM_SOURCE="${AAVA_UPDATE_BUILD_CLI_FROM_SOURCE:-false}" # true|false
 KEEP_JOB_LOGS="${AAVA_UPDATE_KEEP_JOB_LOGS:-10}" # keep last N job logs
 
 UPDATES_DIR="${PROJECT_ROOT}/.agent/updates"
@@ -46,6 +48,99 @@ prune_job_logs() {
   done
 }
 
+acquire_update_lock() {
+  exec 200>"${UPDATES_DIR}/update.lock"
+  if ! flock -n 200; then
+    echo "ERR: another agent update or rollback is already running" >&2
+    return 2
+  fi
+  printf 'pid=%s started_at=%s\n' "$$" "$(now_iso)" >&200
+}
+
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+query_ai_engine_active_calls() {
+  docker exec ai_engine python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+
+def add_port(candidates, raw):
+    try:
+        port = int(str(raw).strip())
+    except Exception:
+        return
+    if 1 <= port <= 65535 and port not in candidates:
+        candidates.append(port)
+
+
+ports = []
+add_port(ports, os.getenv("HEALTH_BIND_PORT", ""))
+try:
+    import yaml
+    for path in ("/app/config/ai-agent.local.yaml", "/app/config/ai-agent.yaml"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            add_port(ports, (cfg.get("health") or {}).get("port"))
+        except Exception:
+            pass
+except Exception:
+    pass
+add_port(ports, 15000)
+
+last_error = ""
+for port in ports:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions/stats", timeout=3) as resp:
+            payload = json.load(resp)
+        print(int(payload.get("active_calls", payload.get("active_sessions", 0)) or 0))
+        sys.exit(0)
+    except Exception as exc:
+        last_error = str(exc)
+
+print(f"ERROR:{last_error}")
+sys.exit(2)
+PY
+}
+
+guard_rollback_active_calls() {
+  if is_truthy "${FORCE_ACTIVE_CALLS}"; then
+    echo "==> Active-call guard bypassed by override" >&2
+    return 0
+  fi
+
+  local output rc
+  set +e
+  output="$(query_ai_engine_active_calls 2>&1)"
+  rc=$?
+  set -e
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "WARN: unable to check active calls before rollback service changes: ${output}" >&2
+    return 0
+  fi
+
+  local active_calls
+  active_calls="$(printf '%s\n' "${output}" | tail -n 1 | tr -d '[:space:]')"
+  if ! [[ "${active_calls}" =~ ^[0-9]+$ ]]; then
+    echo "WARN: unable to parse active-call count before rollback service changes: ${output}" >&2
+    return 0
+  fi
+
+  if [ "${active_calls}" -gt 0 ]; then
+    echo "ERR: refusing to rollback while ${active_calls} active call(s) are in progress; retry after calls complete or enable the active-call override" >&2
+    return 1
+  fi
+}
+
 install_agent_if_needed() {
   # Prefer the baked-in agent binary from the updater image (built from the repo's cli/).
   if [ -x "${BUILTIN_AGENT}" ]; then
@@ -70,32 +165,38 @@ sync_agent_cli() {
   # so operators (and future UI jobs) can rely on a recent binary without SSHing to reinstall.
   mkdir -p "${BIN_DIR}"
 
-  # Prefer building from the updated repo using Docker + golang image (no host Go required).
-  # Best-effort: if this fails, fall back to copying the bundled agent binary from this image.
   echo "==> Updating agent CLI (project-local)..." >&2
 
-  ver="$(git -c safe.directory="${PROJECT_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "dev")"
-  bt="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if [ -x "${BUILTIN_AGENT}" ]; then
+    cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
+    chmod +x "${AGENT_BIN}" || true
+  fi
 
-  set +e
-  docker run --rm \
-    -v "${PROJECT_ROOT}:/src" \
-    -w /src/cli \
-    -e AAVA_CLI_VERSION="${ver}" \
-    -e AAVA_BUILD_TIME="${bt}" \
-    golang:1.22-bookworm \
-    bash -c "go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags \"-X main.version='\$AAVA_CLI_VERSION' -X main.buildTime='\$AAVA_BUILD_TIME'\" -o /src/.agent/bin/agent ./cmd/agent"
-  rc=$?
-  set -e
+  if [ "${BUILD_CLI_FROM_SOURCE}" = "true" ]; then
+    # Optional heavy path: build from updated source using Docker + golang image.
+    ver="$(git -c safe.directory="${PROJECT_ROOT}" describe --tags --always --dirty 2>/dev/null || echo "dev")"
+    bt="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-  if [ "${rc}" -ne 0 ]; then
-    echo "WARN: failed to build agent CLI from updated source; falling back to bundled agent binary" >&2
-    if [ -x "${BUILTIN_AGENT}" ]; then
-      cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
-      chmod +x "${AGENT_BIN}" || true
+    set +e
+    docker run --rm \
+      -v "${PROJECT_ROOT}:/src" \
+      -w /src/cli \
+      -e AAVA_CLI_VERSION="${ver}" \
+      -e AAVA_BUILD_TIME="${bt}" \
+      golang:1.22-bookworm \
+      bash -c "go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags \"-X main.version='\$AAVA_CLI_VERSION' -X main.buildTime='\$AAVA_BUILD_TIME'\" -o /src/.agent/bin/agent ./cmd/agent"
+    rc=$?
+    set -e
+
+    if [ "${rc}" -ne 0 ]; then
+      echo "WARN: failed to build agent CLI from updated source; keeping bundled agent binary" >&2
+      if [ -x "${BUILTIN_AGENT}" ]; then
+        cp -f "${BUILTIN_AGENT}" "${AGENT_BIN}" || true
+        chmod +x "${AGENT_BIN}" || true
+      fi
+    else
+      chmod +x "${AGENT_BIN}" 2>/dev/null || true
     fi
-  else
-    chmod +x "${AGENT_BIN}" 2>/dev/null || true
   fi
 
   if [ "${UPDATE_CLI_HOST}" != "true" ]; then
@@ -206,7 +307,8 @@ write_job_state() {
       finished_at: $finished_at,
       include_ui: ($include_ui == "true"),
       exit_code: (if $exit_code == "" then null else ($exit_code|tonumber) end),
-      log_path: (if $log_path == "" then null else $log_path end)
+      log_path: (if $log_path == "" then null else $log_path end),
+      heartbeat_at: (now | todate)
     }')"
 
   if [ -f "${state_file}" ]; then
@@ -262,6 +364,7 @@ run_update() {
     --arg type "update" \
     --arg ref "${REF}" \
     --arg remote "${REMOTE}" \
+    --arg repo_root "${PROJECT_ROOT}" \
     --arg checkout "${CHECKOUT}" \
     --arg backup_dir_rel "${BACKUP_DIR_REL}" \
     --arg pre_update_branch "${pre_update_branch}" \
@@ -270,6 +373,7 @@ run_update() {
     --arg plan_raw "${plan_json}" \
     '{
       type: $type,
+      repo_root: $repo_root,
       ref: $ref,
       remote: $remote,
       checkout: ($checkout == "true"),
@@ -308,7 +412,33 @@ run_update() {
     sync_agent_cli || true
     write_job_state "success" "${code}"
   else
-    write_job_state "failed" "${code}"
+    failure_status="failed"
+    failure_stage="update"
+    failure_reason="update command failed"
+    if grep -q "Check: FAIL" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_status="validation_failed"
+      failure_stage="post_update_check"
+      failure_reason="post-update agent check failed"
+    elif grep -qi "cannot fast-forward" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="diverged_branch"
+      failure_reason="local branch diverged from target"
+    elif grep -qi "stash pop failed" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="stash_conflict"
+      failure_reason="local changes require manual stash conflict resolution"
+    elif grep -qi "failed to parse.*ai-agent.*yaml\\|parse existing config/ai-agent.local.yaml" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="config_parse_error"
+      failure_reason="configuration YAML could not be parsed during migration"
+    elif grep -qi "docker compose .*failed\\|failed to restart" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="docker_failure"
+      failure_reason="docker compose operation failed"
+    fi
+    failure_patch="$(jq -n \
+      --arg failed_stage "${failure_stage}" \
+      --arg failure_reason "${failure_reason}" \
+      '{failed_stage: $failed_stage, failure_reason: $failure_reason}')"
+    jq -s '.[0] * .[1]' "${JOBS_DIR}/${JOB_ID}.json" <(echo "${failure_patch}") > "${JOBS_DIR}/${JOB_ID}.json.tmp" \
+      && mv "${JOBS_DIR}/${JOB_ID}.json.tmp" "${JOBS_DIR}/${JOB_ID}.json" 2>/dev/null || true
+    write_job_state "${failure_status}" "${code}"
   fi
 
   prune_job_logs || true
@@ -330,6 +460,14 @@ run_rollback() {
 
   JOB_LOG_PATH="${JOBS_DIR}/${JOB_ID}.log"
   export JOB_LOG_PATH
+
+  if ! acquire_update_lock 2> >(tee -a "${JOB_LOG_PATH}" >&2); then
+    JOB_FINISHED_AT="$(now_iso)"
+    export JOB_FINISHED_AT
+    write_job_state "failed" "2"
+    prune_job_logs || true
+    exit 2
+  fi
 
   src_state="${JOBS_DIR}/${ROLLBACK_FROM_JOB}.json"
   if [ ! -f "${src_state}" ]; then
@@ -403,6 +541,36 @@ run_rollback() {
     echo "==> Restoring code to: ${pre_branch}" >&2
     echo "==> Restoring operator config from: ${backup_rel}" >&2
 
+    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
+    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
+
+    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
+      extra=""
+      if [ "${include_ui_effective}" = "true" ]; then
+        extra=" + admin_ui"
+      fi
+      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
+      rebuild_services=("ai_engine" "local_ai_server")
+      if [ "${include_ui_effective}" = "true" ]; then
+        rebuild_services+=("admin_ui")
+      fi
+    fi
+
+    rollback_touches_ai_engine=false
+    if [ "${compose_changed}" = "true" ]; then
+      rollback_touches_ai_engine=true
+    fi
+    for svc in "${rebuild_services[@]}" "${restart_services[@]}"; do
+      if [ "${svc}" = "ai_engine" ]; then
+        rollback_touches_ai_engine=true
+        break
+      fi
+    done
+    if [ "${rollback_touches_ai_engine}" = "true" ]; then
+      guard_rollback_active_calls
+    fi
+
     # Best-effort: preserve any current local changes before switching branches.
     if [ -n "$(git -c safe.directory="${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)" ]; then
       echo "==> Working tree is dirty; stashing changes (best-effort)" >&2
@@ -433,22 +601,6 @@ run_rollback() {
       cp -r "${PROJECT_ROOT}/${backup_rel}/config/contexts" "${tmp_contexts}"
       rm -rf "${PROJECT_ROOT}/config/contexts"
       mv "${tmp_contexts}" "${PROJECT_ROOT}/config/contexts"
-    fi
-
-    mapfile -t rebuild_services < <(jq -r '.services_rebuild[]?' <<<"${plan_patch}" 2>/dev/null || true)
-    mapfile -t restart_services < <(jq -r '.services_restart[]?' <<<"${plan_patch}" 2>/dev/null || true)
-    compose_changed="$(jq -r '.compose_changed // false' <<<"${plan_patch}" 2>/dev/null || echo false)"
-
-    if [ "${#rebuild_services[@]}" -eq 0 ] && [ "${#restart_services[@]}" -eq 0 ]; then
-      extra=""
-      if [ "${include_ui_effective}" = "true" ]; then
-        extra=" + admin_ui"
-      fi
-      echo "==> No service impact found in source plan; defaulting rollback targets to ai_engine + local_ai_server${extra}" >&2
-      rebuild_services=("ai_engine" "local_ai_server")
-      if [ "${include_ui_effective}" = "true" ]; then
-        rebuild_services+=("admin_ui")
-      fi
     fi
 
     if [ "${compose_changed}" = "true" ]; then
@@ -495,6 +647,33 @@ run_rollback() {
           docker compose up -d --remove-orphans --no-build "${safe_targets[@]}"
         fi
       fi
+    fi
+
+    # Preserve partial installs: do not force-start/rebuild services the operator was not running.
+    mapfile -t running_svcs_now < <(docker compose ps --services --status running 2>/dev/null \
+      || docker compose ps --services 2>/dev/null \
+      || true)
+    if [ "${#running_svcs_now[@]}" -gt 0 ]; then
+      mapfile -t rebuild_services < <(
+        for svc in "${rebuild_services[@]}"; do
+          for r in "${running_svcs_now[@]}"; do
+            if [ "${svc}" = "${r}" ]; then
+              printf '%s\n' "${svc}"
+              break
+            fi
+          done
+        done
+      )
+      mapfile -t restart_services < <(
+        for svc in "${restart_services[@]}"; do
+          for r in "${running_svcs_now[@]}"; do
+            if [ "${svc}" = "${r}" ]; then
+              printf '%s\n' "${svc}"
+              break
+            fi
+          done
+        done
+      )
     fi
 
     if [ "${#rebuild_services[@]}" -gt 0 ]; then

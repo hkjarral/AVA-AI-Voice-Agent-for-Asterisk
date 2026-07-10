@@ -42,6 +42,8 @@ interface UpdatePlan {
   changed_files?: string[];
   changed_files_truncated?: boolean;
   warnings?: string[];
+  active_calls?: number | null;
+  active_calls_reachable?: boolean;
 }
 
 interface BranchesResponse {
@@ -57,6 +59,25 @@ interface UpdateJobResponse {
 interface UpdateHistoryResponse {
   jobs: any[];
 }
+
+interface UpdaterImageStatus {
+  status?: string;
+  phase?: string;
+  image?: string;
+  message?: string;
+  detail_tail?: string[];
+  started_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+}
+
+const TERMINAL_UPDATE_STATUSES = new Set(['success', 'failed', 'validation_failed', 'stale']);
+const isTerminalUpdateStatus = (st?: string) => TERMINAL_UPDATE_STATUSES.has((st || '').toLowerCase());
+const ROLLBACK_ELIGIBLE_STATUSES = new Set(['failed', 'validation_failed', 'stale']);
+const canRollbackJob = (job: any, st?: string) =>
+  ROLLBACK_ELIGIBLE_STATUSES.has((st || String(job?.status || '')).toLowerCase()) &&
+  Boolean(job?.pre_update_branch) &&
+  Boolean(job?.backup_dir_rel);
 
 const UpdatesPage = () => {
   const { confirm } = useConfirmDialog();
@@ -77,6 +98,7 @@ const UpdatesPage = () => {
   const [includeUI, setIncludeUI] = useState(true);
   const [updateCliHost, setUpdateCliHost] = useState(true);
   const [cliInstallPath, setCliInstallPath] = useState('');
+  const [forceActiveCalls, setForceActiveCalls] = useState(false);
   const [plan, setPlan] = useState<UpdatePlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -84,8 +106,10 @@ const UpdatesPage = () => {
   const [jobId, setJobId] = useState<string | null>(() => localStorage.getItem('aava_update_job_id'));
   const [job, setJob] = useState<any>(null);
   const [logTail, setLogTail] = useState<string>('');
+  const [fullLogLoading, setFullLogLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [updaterImageStatus, setUpdaterImageStatus] = useState<UpdaterImageStatus | null>(null);
 
   const [history, setHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -109,6 +133,14 @@ const UpdatesPage = () => {
     // For release tags, avoid branch switching semantics. For main/branches, allow checkout.
     return targetMode !== 'stable';
   }, [targetMode]);
+
+  const planHasActiveCalls = typeof plan?.active_calls === 'number' && plan.active_calls > 0;
+  const activeCallCheckUnavailable = plan?.active_calls_reachable === false;
+  const activeCallOverrideRequired = planHasActiveCalls || activeCallCheckUnavailable;
+  const updaterImageVisible =
+    !!updaterImageStatus &&
+    updaterImageStatus.status !== 'idle' &&
+    (statusLoading || planLoading || running || updaterImageStatus.status === 'error');
 
   const loadBranches = async (opts?: { force?: boolean; localBranch?: string }) => {
     setBranchesError(null);
@@ -184,28 +216,38 @@ const UpdatesPage = () => {
     }
   };
 
+  const fetchUpdaterImageStatus = async () => {
+    try {
+      const res = await axios.get<{ status: UpdaterImageStatus }>('/api/system/updates/updater-image/status');
+      setUpdaterImageStatus(res.data.status || null);
+    } catch (_err) {
+      // Best-effort progress signal only; the main update/status request owns user-facing errors.
+    }
+  };
+
   const copyRecoveryCommands = async (job: any) => {
     const preBranch = job?.pre_update_branch;
     const backupRel = job?.backup_dir_rel;
     if (!preBranch || !backupRel) return;
 
+    const shQuote = (value: unknown) => `'${String(value ?? '').replace(/'/g, "'\\''")}'`;
     const composeTargets = job?.include_ui ? 'ai_engine local_ai_server admin_ui' : 'ai_engine local_ai_server';
+    const repoRoot = job?.repo_root || job?.plan?.repo_root || '/root/Asterisk-AI-Voice-Agent';
     const text = [
       '# Roll back to pre-update code + restore operator config',
-      '# NOTE: this does NOT touch agents.db. To revert the YAML->agents.db',
-      '# migration as well, see docs/OPERATOR_MIGRATION.md (Rollback section).',
-      '# NOTE: adjust REPO if your checkout path differs.',
-      'REPO=/root/Asterisk-AI-Voice-Agent',
-      'cd \"$REPO\"',
-      'git config --global --add safe.directory \"$REPO\"',
+      '# NOTE: this restores code + config only. It does NOT restore agents.db or call_history.db.',
+      '# Restore DB snapshots manually only when you are sure newer call/agent data can be discarded.',
+      `REPO=${shQuote(repoRoot)}`,
+      'cd "$REPO"',
+      'git config --global --add safe.directory "$REPO"',
       '',
-      `git checkout \"${preBranch}\"`,
+      `git checkout ${shQuote(preBranch)}`,
       '',
-      `cp "${backupRel}/.env" .env`,
-      `cp "${backupRel}/config/ai-agent.yaml" config/ai-agent.yaml`,
-      `cp "${backupRel}/config/ai-agent.local.yaml" config/ai-agent.local.yaml 2>/dev/null || true`,
-      `cp "${backupRel}/config/users.json" config/users.json`,
-      `rm -rf config/contexts && cp -r \"${backupRel}/config/contexts\" config/contexts`,
+      `cp -- ${shQuote(`${backupRel}/.env`)} .env`,
+      `cp -- ${shQuote(`${backupRel}/config/ai-agent.yaml`)} config/ai-agent.yaml`,
+      `cp -- ${shQuote(`${backupRel}/config/ai-agent.local.yaml`)} config/ai-agent.local.yaml 2>/dev/null || true`,
+      `cp -- ${shQuote(`${backupRel}/config/users.json`)} config/users.json`,
+      `rm -rf config/contexts && cp -r -- ${shQuote(`${backupRel}/config/contexts`)} config/contexts`,
       '',
       `docker compose up -d --build ${composeTargets}`,
     ].join('\n');
@@ -233,9 +275,20 @@ const UpdatesPage = () => {
     });
     if (!ok) return;
 
+    const rollbackForceActiveCalls = await confirm({
+      title: 'Active-Call Safety',
+      description: 'Rollback will refuse to rebuild or restart ai_engine if active calls are detected.\n\nChoose Keep Guard for normal safe rollback behavior. Choose Enable Override only if you intentionally want rollback to proceed even when calls are active.',
+      confirmText: 'Enable Override',
+      cancelText: 'Keep Guard',
+      variant: 'destructive'
+    });
+
     setRunError(null);
     try {
-      const res = await axios.post('/api/system/updates/rollback', { from_job_id: fromJobId });
+      const res = await axios.post('/api/system/updates/rollback', {
+        from_job_id: fromJobId,
+        force_active_calls: rollbackForceActiveCalls,
+      });
       const id = res.data.job_id;
       setJobId(id);
       localStorage.setItem('aava_update_job_id', id);
@@ -265,13 +318,26 @@ const UpdatesPage = () => {
     setJob(res.data.job);
     setLogTail(res.data.log_tail || '');
     const st = (res.data.job?.status || '').toLowerCase();
-    setRunning(!(st === 'success' || st === 'failed'));
+    setRunning(!isTerminalUpdateStatus(st));
     setRunError(null);
 
-    if (st === 'success' || st === 'failed') {
+    if (isTerminalUpdateStatus(st)) {
       fetchHistory();
     }
     return st;
+  };
+
+  const fetchFullLog = async () => {
+    if (!jobId) return;
+    setFullLogLoading(true);
+    try {
+      const res = await axios.get<{ job_id: string; log: string }>(`/api/system/updates/jobs/${jobId}/log`);
+      setLogTail(res.data.log || '');
+    } catch (err: any) {
+      setRunError(err.response?.data?.detail || err.message || 'Failed to load full log');
+    } finally {
+      setFullLogLoading(false);
+    }
   };
 
   const runUpdate = async () => {
@@ -296,7 +362,7 @@ const UpdatesPage = () => {
 
     const ok = await confirm({
       title: 'Proceed with Update?',
-      description: `Target: ${targetRef || 'unknown'}\nUpdate UI: ${includeUI ? 'yes' : 'no'}\nUpdate CLI: ${updateCliHost ? 'yes' : 'no'}\nWill rebuild: ${rebuild}\nWill restart: ${restart}\nFiles changed: ${plan.changed_file_count ?? 'unknown'}\n\nThe updater will stash local changes first. Services may restart during update.`,
+      description: `Target: ${targetRef || 'unknown'}\nMode: ${targetMode === 'stable' ? 'stable release' : targetMode === 'main' ? 'main hotfixes' : 'advanced branch'}\nUpdate UI: ${includeUI ? 'yes' : 'no'}\nUpdate CLI: ${updateCliHost ? 'yes' : 'no'}\nWill rebuild: ${rebuild}\nWill restart: ${restart}\nSkipped services: ${skipped}\nFiles changed: ${plan.changed_file_count ?? 'unknown'}\nActive calls: ${typeof plan.active_calls === 'number' ? plan.active_calls : 'unknown'}${forceActiveCalls ? ' (override enabled)' : ''}\n\nThe updater will stash local changes first. Services may restart during update.`,
       confirmText: 'Start Update',
       variant: 'default'
     });
@@ -309,6 +375,7 @@ const UpdatesPage = () => {
         checkout: targetCheckout,
         update_cli_host: updateCliHost,
         cli_install_path: cliInstallPath.trim() || null,
+        force_active_calls: forceActiveCalls,
       });
       const id = res.data.job_id;
       setJobId(id);
@@ -329,15 +396,14 @@ const UpdatesPage = () => {
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
-    let interval: any;
     let notFoundCount = 0;
     const MAX_NOT_FOUND = 10; // ~20s at 2s intervals
     const tick = async () => {
       try {
         const st = await fetchJob(jobId);
         notFoundCount = 0;
-        if (!cancelled && (st === 'success' || st === 'failed')) {
-          clearInterval(interval);
+        if (!cancelled && isTerminalUpdateStatus(st)) {
+          window.clearInterval(interval);
         }
       } catch (err: any) {
         const status = err?.response?.status;
@@ -347,7 +413,7 @@ const UpdatesPage = () => {
           if (status === 404) {
             notFoundCount += 1;
             if (notFoundCount < MAX_NOT_FOUND) return;
-            clearInterval(interval);
+            window.clearInterval(interval);
             setRunning(false);
             setJob(null);
             setJobId(null);
@@ -355,17 +421,77 @@ const UpdatesPage = () => {
             setRunError('Update job not found (may be stale or pruned).');
             return;
           }
-          setRunError(err.response?.data?.detail || err.message || 'Failed to read update job');
+          const msg = err.response?.data?.detail || err.message || 'Failed to read update job';
+          if (running || job?.include_ui || includeUI) {
+            setRunError(`Waiting for Admin UI/update job to come back online: ${msg}`);
+            return;
+          }
+          setRunError(msg);
         }
       }
     };
+    const interval = window.setInterval(tick, 2000);
     tick();
-    interval = setInterval(tick, 2000);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      window.clearInterval(interval);
     };
   }, [jobId]);
+
+  useEffect(() => {
+    if (!(statusLoading || planLoading || running)) return;
+    fetchUpdaterImageStatus();
+    const interval = window.setInterval(fetchUpdaterImageStatus, 1500);
+    return () => window.clearInterval(interval);
+  }, [statusLoading, planLoading, running]);
+
+  useEffect(() => {
+    if (!activeCallOverrideRequired && forceActiveCalls) {
+      setForceActiveCalls(false);
+    }
+  }, [activeCallOverrideRequired, forceActiveCalls]);
+
+  const renderUpdaterImageStatus = (section: 'status' | 'plan' | 'run') => {
+    if (!updaterImageVisible) return null;
+    if (section === 'status' && !statusLoading && updaterImageStatus?.status !== 'error') return null;
+    if (section === 'plan' && (!planLoading || statusLoading)) return null;
+    if (section === 'run' && (!running || statusLoading || planLoading)) return null;
+    const st = updaterImageStatus?.status || 'unknown';
+    const phase = updaterImageStatus?.phase || 'updater image';
+    const tail = updaterImageStatus?.detail_tail || [];
+    const isActive = st === 'running';
+    const isError = st === 'error';
+    return (
+      <div
+        className={`rounded-md border p-3 text-xs ${
+          isError
+            ? 'border-destructive/30 bg-destructive/10'
+            : 'border-border bg-card/30'
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 font-medium">
+            {isError ? (
+              <XCircle className="w-3.5 h-3.5 text-destructive" />
+            ) : isActive ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <CheckCircle2 className="w-3.5 h-3.5" />
+            )}
+            <span className="capitalize">{phase.replace(/_/g, ' ')}</span>
+          </div>
+          {updaterImageStatus?.updated_at && <div className="text-muted-foreground">{updaterImageStatus.updated_at}</div>}
+        </div>
+        <div className="mt-1 text-muted-foreground">{updaterImageStatus?.message || 'Preparing updater image'}</div>
+        {updaterImageStatus?.image && <div className="mt-1 font-mono break-all">{updaterImageStatus.image}</div>}
+        {tail.length ? (
+          <pre className="mt-2 max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/70 p-2 font-mono">
+            {tail.join('\n')}
+          </pre>
+        ) : null}
+      </div>
+    );
+  };
 
   const previewLabel = useMemo(() => {
     if (!initialized) return 'Not checked';
@@ -425,6 +551,7 @@ const UpdatesPage = () => {
           {statusError && <div className="text-sm text-destructive">{statusError}</div>}
           {branchesError && <div className="text-sm text-muted-foreground">{branchesError}</div>}
           {status && status.error && <div className="text-sm text-muted-foreground">{status.error}</div>}
+          {renderUpdaterImageStatus('status')}
 
           <div className="flex items-center gap-2">
             {previewIcon}
@@ -512,6 +639,7 @@ const UpdatesPage = () => {
                     className="rounded border-border"
                   />
                   Advanced (pick a branch)
+                  <span className="ml-auto text-xs text-muted-foreground">custom</span>
                 </label>
               </div>
 
@@ -582,6 +710,7 @@ const UpdatesPage = () => {
           )}
 
           {planError && <div className="text-sm text-destructive">{planError}</div>}
+          {renderUpdaterImageStatus('plan')}
 
           {plan && (
             <div className="space-y-2 text-sm">
@@ -619,6 +748,28 @@ const UpdatesPage = () => {
                 </div>
               ) : null}
 
+              {activeCallOverrideRequired ? (
+                <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
+                  <div className="font-medium">
+                    {planHasActiveCalls ? `Active calls detected: ${plan.active_calls}` : 'Active-call status unavailable'}
+                  </div>
+                  {!planHasActiveCalls && (
+                    <div className="mt-1 text-muted-foreground">
+                      The updater could not verify whether calls are active. Explicitly allow the update to proceed.
+                    </div>
+                  )}
+                  <label className="mt-2 flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={forceActiveCalls}
+                      onChange={(e) => setForceActiveCalls(e.target.checked)}
+                      className="rounded border-border"
+                    />
+                    Allow update to restart services while call status is active or unknown
+                  </label>
+                </div>
+              ) : null}
+
               {plan.changed_files?.length ? (
                 <div className="border border-border rounded-lg bg-card/30 p-3">
                   <div className="text-xs text-muted-foreground mb-2">
@@ -649,10 +800,11 @@ const UpdatesPage = () => {
 
         <div className="space-y-3">
           {runError && <div className="text-sm text-destructive">{runError}</div>}
+          {renderUpdaterImageStatus('run')}
           <div className="flex items-center gap-2">
             <button
               onClick={runUpdate}
-              disabled={running || !initialized || !plan}
+              disabled={running || !initialized || !plan || (activeCallOverrideRequired && !forceActiveCalls)}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               title="Proceed"
             >
@@ -670,21 +822,40 @@ const UpdatesPage = () => {
             <div className="flex items-center gap-2 text-sm">
               {String(job.status || '').toLowerCase() === 'success' ? (
                 <CheckCircle2 className="w-4 h-4 text-primary" />
-              ) : String(job.status || '').toLowerCase() === 'failed' ? (
+              ) : ['failed', 'validation_failed', 'stale'].includes(String(job.status || '').toLowerCase()) ? (
                 <XCircle className="w-4 h-4 text-destructive" />
               ) : (
                 <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />
               )}
-              <div className="font-medium capitalize">{job.status || 'running'}</div>
+              <div className="font-medium capitalize">{String(job.status || 'running').replace(/_/g, ' ')}</div>
               {job.exit_code !== undefined && job.exit_code !== null && <div className="text-muted-foreground">exit={job.exit_code}</div>}
             </div>
           )}
 
+          {job?.failure_reason && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
+              <div className="font-medium text-destructive">{job.failed_stage ? String(job.failed_stage).replace(/_/g, ' ') : 'Failure reason'}</div>
+              <div className="mt-1 text-muted-foreground">{job.failure_reason}</div>
+            </div>
+          )}
+
           <div className="border border-border rounded-lg bg-card/30 p-3">
-            <div className="text-xs text-muted-foreground mb-2">Live output (tail)</div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs text-muted-foreground">Live output (tail)</div>
+              {jobId && (
+                <button
+                  onClick={fetchFullLog}
+                  disabled={fullLogLoading}
+                  className="text-xs px-2 py-1 rounded-md border border-border hover:bg-accent disabled:opacity-50"
+                  title="Load full log"
+                >
+                  {fullLogLoading ? 'Loading…' : 'Load full log'}
+                </button>
+              )}
+            </div>
             <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-[340px] overflow-auto">
               {logTail ||
-                (job && ['success', 'failed'].includes(String(job.status || '').toLowerCase())
+                (job && isTerminalUpdateStatus(String(job.status || '').toLowerCase())
                   ? 'No log available for this job.'
                   : 'No output yet.')}
             </pre>
@@ -743,9 +914,9 @@ const UpdatesPage = () => {
                           <span className="inline-flex items-center gap-1 text-primary">
                             <CheckCircle2 className="w-4 h-4" /> success
                           </span>
-                        ) : st === 'failed' ? (
+                        ) : ['failed', 'validation_failed', 'stale'].includes(st) ? (
                           <span className="inline-flex items-center gap-1 text-destructive">
-                            <XCircle className="w-4 h-4" /> failed
+                            <XCircle className="w-4 h-4" /> {st.replace(/_/g, ' ')}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-muted-foreground">
@@ -758,7 +929,7 @@ const UpdatesPage = () => {
                       <td className="px-3 py-2 font-mono text-xs">{restart || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{files !== '' ? String(files) : '-'}</td>
                       <td className="px-3 py-2">
-                        {st === 'failed' && h.pre_update_branch && h.backup_dir_rel ? (
+                        {canRollbackJob(h, st) ? (
                           <div className="inline-flex items-center gap-2">
                             <button
                               onClick={() => rollbackFromJob(h)}

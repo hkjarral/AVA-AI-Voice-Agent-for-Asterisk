@@ -96,6 +96,9 @@ class HangupCallTool(Tool):
             return {
                 "status": "success",
                 "message": farewell,
+                # Canonical terminal-audio field for provider adapters. Keep
+                # `message` for backwards compatibility with generic tools.
+                "farewell_message": farewell,
                 "will_hangup": True
             }
             
@@ -104,6 +107,7 @@ class HangupCallTool(Tool):
             return {
                 "status": "error",
                 "message": "Goodbye!",
+                "farewell_message": "Goodbye!",
                 "will_hangup": True,
                 "error": str(e)
             }

@@ -938,7 +938,7 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                                                     </ul>
                                                 </>
                                             }
-                                            link="https://kroko.ai/docs"
+                                            link="https://docs.kroko.ai/"
                                             linkText="Kroko docs"
                                         />
                                     </div>

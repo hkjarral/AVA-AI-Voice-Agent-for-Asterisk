@@ -57,3 +57,4 @@ Run at least one successful call for each baseline you intend to claim as suppor
 - [ ] `docs/README.md` links verified (no broken links to renamed/deleted files)
 - [ ] `docs/contributing/README.md` "Current Version" updated
 - [ ] `README.md` version badge updated
+- [ ] `AVA.mdc` reviewed for drift (provider roster, architecture vocabulary, guardrails, "Last verified" stamp) — contributors load this file into their AI assistants first; stale content actively misleads

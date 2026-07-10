@@ -9,8 +9,10 @@ import {
 } from 'lucide-react';
 import { ConfigSection } from '../components/ui/ConfigSection';
 import { ConfigCard } from '../components/ui/ConfigCard';
+import { Modal } from '../components/ui/Modal';
 import AgentForm from '../components/agents/AgentForm';
 import type { Agent } from '../components/agents/AgentForm';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -127,6 +129,7 @@ const AgentsPage = () => {
     const [error, setError] = useState<string | null>(null);
     const [driftBanner, setDriftBanner] = useState(false);
     const [editingAgent, setEditingAgent] = useState<Agent | null | undefined>(undefined);
+    const [manualDialplan, setManualDialplan] = useState<{ slug: string; dialplan: string } | null>(null);
     // undefined = form closed, null = new agent, Agent = edit
 
     useEffect(() => {
@@ -208,10 +211,21 @@ const AgentsPage = () => {
     const handleCopyDialplan = async (slug: string) => {
         try {
             const res = await axios.get<{ dialplan: string }>(`/api/agents/${slug}/dialplan`);
-            await navigator.clipboard.writeText(res.data.dialplan);
-            toast.success('Dialplan snippet copied to clipboard');
+            const dialplan = res.data?.dialplan;
+            if (typeof dialplan !== 'string' || dialplan.length === 0) {
+                toast.error('Dialplan snippet was empty');
+                return;
+            }
+
+            const copied = await copyTextToClipboard(dialplan);
+            if (copied) {
+                toast.success('Dialplan snippet copied to clipboard');
+            } else {
+                setManualDialplan({ slug, dialplan });
+                toast.error('Clipboard unavailable. Copy the snippet manually.');
+            }
         } catch {
-            toast.error('Failed to copy dialplan');
+            toast.error('Failed to load dialplan snippet');
         }
     };
 
@@ -507,6 +521,38 @@ const AgentsPage = () => {
                 onSaved={loadAll}
                 agent={editingAgent ?? null}
             />
+
+            <Modal
+                isOpen={manualDialplan !== null}
+                onClose={() => setManualDialplan(null)}
+                title="Copy Dialplan Manually"
+                size="lg"
+                footer={
+                    <button
+                        type="button"
+                        onClick={() => setManualDialplan(null)}
+                        className="px-4 py-2 rounded-md border border-border bg-card hover:bg-accent text-sm font-medium transition-colors"
+                    >
+                        Close
+                    </button>
+                }
+            >
+                <div className="space-y-3">
+                    <p className="text-sm text-muted-foreground">
+                        Clipboard access is unavailable in this browser context. Select the snippet below and copy it manually.
+                    </p>
+                    <label htmlFor="manual-dialplan-snippet" className="text-sm font-medium">
+                        Dialplan for {manualDialplan?.slug}
+                    </label>
+                    <textarea
+                        id="manual-dialplan-snippet"
+                        readOnly
+                        value={manualDialplan?.dialplan ?? ''}
+                        onFocus={(event) => event.currentTarget.select()}
+                        className="w-full min-h-64 rounded-md border border-border bg-background p-3 font-mono text-sm leading-6 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                </div>
+            </Modal>
         </div>
     );
 };

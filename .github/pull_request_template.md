@@ -4,8 +4,7 @@ Describe the changes in this PR. What problem does it solve or what feature does
 
 ## Related Issue(s)
 
-- Linear / AAVA issue(s): <!-- e.g. AAVA-63, AAVA-64 -->
-- GitHub issue(s): <!-- optional -->
+- GitHub issue(s): <!-- e.g. #123; write "closes #123" to auto-close on merge -->
 
 ## Implementation Notes
 
@@ -14,7 +13,7 @@ Describe the changes in this PR. What problem does it solve or what feature does
 - High-level design decisions:
   - 
 
-If you used AVA (project manager persona defined in `AVA.mdc`) to plan this work, summarize the agreed plan briefly.
+If you used an AI coding assistant primed with `AVA.mdc` (the project's AI-assistant context file) to plan this work, summarize the agreed plan briefly.
 
 ## Testing
 

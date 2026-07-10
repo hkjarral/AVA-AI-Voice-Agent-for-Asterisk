@@ -69,6 +69,12 @@ _OPENAI_SESSION_AUDIO_INFO = Info(
     "OpenAI Realtime session audio format assumptions and provider acknowledgements",
 )
 
+# GA voice catalog (closed list) — single-sourced from the shared voice
+# catalog; used to soft-validate per-agent voice overrides. An unknown value
+# falls back to the provider's configured voice instead of reaching the OpenAI
+# session, because the agent voice field was free-text/display-only pre-7.3.0.
+from ..utils.voice_catalog import OPENAI_GA_VOICES  # noqa: E402  (re-exported)
+
 
 class OpenAIRealtimeProvider(AIProviderInterface):
     """
@@ -105,6 +111,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._beta_warned: bool = False
 
         self._call_id: Optional[str] = None
+        self._session_voice: Optional[str] = None  # Per-call voice override from agent/context
         self._pending_response: bool = False
         self._current_response_id: Optional[str] = None  # Track active response for cancellation
         self._greeting_response_id: Optional[str] = None  # Track greeting to protect from barge-in
@@ -393,6 +400,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         else:
             self._allowed_tools = []
 
+        self._set_session_voice_from_context(context)
+
         self._reset_output_meter()
 
         url = self._build_ws_url()
@@ -590,6 +599,35 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             await self._reconnect_with_backoff()
         except Exception:
             logger.error("Failed to send audio to OpenAI Realtime", call_id=self._call_id, exc_info=True)
+
+    async def speak_text(self, text: str) -> bool:
+        """Create a tools-disabled response in the active configured voice."""
+        if not text or not self.websocket or self.websocket.state.name != "OPEN":
+            return False
+        response: Dict[str, Any] = {
+            "instructions": (
+                "Speak exactly the sentence between <message> tags. Do not add, remove, "
+                f"or paraphrase words. Do not call tools. <message>{text}</message>"
+            ),
+            "tools": [],
+        }
+        if not self._is_ga:
+            response["modalities"] = self._response_modalities
+            response["input"] = []
+        try:
+            await self._send_json(
+                {
+                    "type": "response.create",
+                    "event_id": f"resp-no-input-{uuid.uuid4()}",
+                    "response": response,
+                }
+            )
+            self._pending_response = True
+            logger.info("Sent no-input announcement to OpenAI", call_id=self._call_id, text_preview=text[:80])
+            return True
+        except Exception:
+            logger.warning("Failed to send no-input announcement to OpenAI", call_id=self._call_id, exc_info=True)
+            return False
 
     async def cancel_response(self):
         """Cancel any in-progress response generation (for barge-in)."""
@@ -891,6 +929,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 logger.debug("Failed to release response.done sentinels on stop_session", exc_info=True)
             self.websocket = None
             self._call_id = None
+            self._session_voice = None
             self._closing = False
             self._closed = True
             self._pending_response = False
@@ -906,9 +945,35 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             "name": "OpenAIRealtimeProvider",
             "type": "cloud",
             "model": self.config.model,
-            "voice": self.config.voice,
+            "voice": self._session_voice or self.config.voice,
             "supported_codecs": self.supported_codecs,
         }
+
+    def _set_session_voice_from_context(self, context: Optional[Dict[str, Any]]) -> None:
+        """Apply a per-agent/per-call voice override with soft validation.
+
+        Unknown values (the field was display-only free text before v7.3.0)
+        fall back to the configured provider voice; the call never fails.
+        """
+        self._session_voice = None
+        raw = (context or {}).get("voice")
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        candidate = raw.strip().lower()
+        if candidate not in OPENAI_GA_VOICES:
+            logger.warning(
+                "Agent voice not in OpenAI GA catalog; falling back to provider default",
+                call_id=self._call_id,
+                requested_voice=raw.strip(),
+                fallback_voice=self.config.voice,
+            )
+            return
+        self._session_voice = candidate
+        logger.info(
+            "Using per-call OpenAI voice override",
+            call_id=self._call_id,
+            voice=candidate,
+        )
 
     def is_ready(self) -> bool:
         return bool(self.config.api_key)
@@ -1038,7 +1103,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     "input": audio_input,
                     "output": {
                         "format": {"type": "audio/pcm", "rate": 24000},
-                        "voice": self.config.voice,
+                        "voice": self._session_voice or self.config.voice,
                     },
                 },
             }
@@ -1059,7 +1124,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 "modalities": output_modalities,
                 "input_audio_format": in_fmt,
                 "output_audio_format": out_fmt,
-                "voice": self.config.voice,
+                "voice": self._session_voice or self.config.voice,
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 },

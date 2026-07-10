@@ -296,11 +296,11 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
 
                     <div className="space-y-2">
                         <div className="flex items-center gap-1.5">
-                            <label className="text-sm font-medium">Voice</label>
+                            <label className="text-sm font-medium">Default Voice</label>
                             <HelpTooltip
                                 content={
                                     <>
-                                        <strong>Voice</strong> — speaker identity used for synthesized audio. 10 voices total, sourced from OpenAI's <code>session.update</code> accepted-values set.
+                                        <strong>Default Voice</strong> — speaker identity used for synthesized audio. 10 voices total, sourced from OpenAI's <code>session.update</code> accepted-values set. Agents can override this per agent (Agents page); this value is the fallback when an agent doesn't set its own voice.
                                         <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                             <li><code>cedar</code> and <code>marin</code> — Realtime-exclusive voices added 2026-05-14 with the Realtime API GA launch</li>
                                             <li>Voice identity stays consistent across the call; pick one matching the agent's persona</li>

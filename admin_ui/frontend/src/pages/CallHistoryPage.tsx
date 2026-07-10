@@ -24,6 +24,8 @@ interface CallRecordSummary {
     pipeline_name: string | null;
     context_name: string | null;
     routing_method: string | null;  // 'ai_agent' | 'ai_context' | 'default' | null
+    voice?: string | null;          // Resolved session voice (v7.3.0; null = provider default)
+    voice_source?: string | null;   // 'override' | 'agent' | 'provider-default' | null
     outcome: string;
     error_message: string | null;
     avg_turn_latency_ms: number;
@@ -137,9 +139,16 @@ const OutcomeIcon = ({ outcome }: { outcome: string }) => {
             return <AlertCircle className="w-4 h-4 text-red-500" />;
         case 'abandoned':
             return <PhoneOff className="w-4 h-4 text-yellow-500" />;
+        case 'no_input_timeout':
+            return <PhoneOff className="w-4 h-4 text-amber-500" />;
         default:
             return <Phone className="w-4 h-4 text-muted-foreground" />;
     }
+};
+
+const outcomeLabel = (outcome: string): string => {
+    if (outcome === 'no_input_timeout') return 'No input timeout';
+    return outcome.replace(/_/g, ' ');
 };
 
 // How a call was routed to its agent (engine writes call_records.routing_method).
@@ -491,6 +500,8 @@ const CallHistoryPage = () => {
                     pipeline_name: detail.pipeline_name,
                     context_name: detail.context_name,
                     routing_method: detail.routing_method,
+                    voice: detail.voice,
+                    voice_source: detail.voice_source,
                     outcome: detail.outcome,
                     error_message: detail.error_message,
                     avg_turn_latency_ms: detail.avg_turn_latency_ms,
@@ -864,7 +875,7 @@ const CallHistoryPage = () => {
                             >
                                 <option value="">All</option>
                                 {filterOptions?.outcomes.map(o => (
-                                    <option key={o} value={o}>{o}</option>
+                                    <option key={o} value={o}>{outcomeLabel(o)}</option>
                                 ))}
                             </select>
                         </div>
@@ -974,7 +985,7 @@ const CallHistoryPage = () => {
                                         <td className="px-4 py-3">
                                             <div className="flex items-center gap-2">
                                                 <OutcomeIcon outcome={call.outcome} />
-                                                <span className="text-sm capitalize">{call.outcome}</span>
+                                                <span className="text-sm capitalize">{outcomeLabel(call.outcome)}</span>
                                             </div>
                                         </td>
                                         <td className="px-4 py-3 text-sm">{call.total_turns}</td>
@@ -1141,7 +1152,7 @@ const CallHistoryPage = () => {
                                     <div className="text-sm text-muted-foreground">Outcome</div>
                                     <div className="flex items-center gap-2">
                                         <OutcomeIcon outcome={modalCall.outcome} />
-                                        <span className="font-medium capitalize">{modalCall.outcome}</span>
+                                        <span className="font-medium capitalize">{outcomeLabel(modalCall.outcome)}</span>
                                     </div>
                                 </div>
                                 <div>
@@ -1190,6 +1201,17 @@ const CallHistoryPage = () => {
                                             <span className="ml-2"><RoutingBadge method={modalCall.routing_method} /></span>
                                         )}
                                     </div>
+                                    {(modalCall.voice || modalCall.voice_source) && (
+                                        <div>
+                                            <span className="text-muted-foreground">Voice:</span>{' '}
+                                            <span className="font-medium">{modalCall.voice || 'provider default'}</span>
+                                            {modalCall.voice_source && (
+                                                <span className="text-xs text-muted-foreground">
+                                                    {' '}({modalCall.voice_source === 'provider-default' ? 'provider default' : `from ${modalCall.voice_source}`})
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
                                     <div>
                                         <span className="text-muted-foreground">Audio:</span>{' '}
                                         <span className="font-medium">{selectedCall?.caller_audio_format || '-'}</span>

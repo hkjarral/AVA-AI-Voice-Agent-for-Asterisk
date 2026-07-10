@@ -2200,6 +2200,17 @@ mcp:
           expose_as: mcp_aviation_atis
           description: Get current ATIS for an ICAO airport code (e.g., LSMP, KJFK)
           speech_field: atis_text
+# Provider-independent caller inactivity policy. Timing starts only while the
+# agent is ready and neither speaking nor processing a caller turn.
+no_input:
+  enabled: true
+  inbound_enabled: true
+  outbound_enabled: false
+  initial_timeout_sec: 30
+  grace_timeout_sec: 15
+  max_check_ins: 1
+  check_in_message: "Are you still there?"
+  final_message: "I still can't hear you, so I'll end the call now. Goodbye."
 vad:
   enhanced_enabled: true
   fallback_buffer_size: 128000
