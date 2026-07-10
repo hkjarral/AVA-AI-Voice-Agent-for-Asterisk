@@ -16,6 +16,8 @@ def test_updater_drops_to_the_project_owner_before_writing() -> None:
 
     assert 'project_uid="$(stat -c \'%u\' "${PROJECT_ROOT}")"' in runner
     assert 'exec gosu "${user_name}" "$0" "$@"' in runner
+    assert 'getent group "${project_gid}" 2>/dev/null' in runner
+    assert "|| true" in runner
     assert "gosu" in dockerfile
 
 

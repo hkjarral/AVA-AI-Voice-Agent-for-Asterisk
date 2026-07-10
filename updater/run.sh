@@ -27,13 +27,13 @@ drop_to_project_owner() {
     return 0
   fi
 
-  primary_group="$(getent group "${project_gid}" | cut -d: -f1 | head -n 1)"
+  primary_group="$(getent group "${project_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
   if [ -z "${primary_group}" ]; then
     primary_group="aava-project-${project_gid}"
     groupadd -g "${project_gid}" "${primary_group}"
   fi
 
-  user_name="$(getent passwd "${project_uid}" | cut -d: -f1 | head -n 1)"
+  user_name="$(getent passwd "${project_uid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
   if [ -z "${user_name}" ]; then
     user_name="aava-updater-${project_uid}"
     useradd --no-create-home -u "${project_uid}" -g "${project_gid}" -s /bin/bash "${user_name}"
@@ -42,7 +42,7 @@ drop_to_project_owner() {
   if [ -S /var/run/docker.sock ]; then
     socket_gid="$(stat -c '%g' /var/run/docker.sock)"
     if [ "${socket_gid}" != "${project_gid}" ]; then
-      socket_group="$(getent group "${socket_gid}" | cut -d: -f1 | head -n 1)"
+      socket_group="$(getent group "${socket_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
       if [ -z "${socket_group}" ]; then
         socket_group="aava-docker-${socket_gid}"
         groupadd -g "${socket_gid}" "${socket_group}"
