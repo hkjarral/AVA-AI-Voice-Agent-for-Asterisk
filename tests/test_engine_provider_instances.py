@@ -92,3 +92,39 @@ async def test_named_grok_instance_triggers_local_vad_fallback():
     )
 
     assert applied == [("call-grok3", "local_vad_fallback", "grok3:externalmedia")]
+
+
+def test_named_grok_instance_inherits_base_runtime_config():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(
+        providers={
+            "grok": {
+                "api_key": "base-key",
+                "voice": "ara",
+                "turn_detection": {
+                    "type": "server_vad",
+                    "silence_duration_ms": 1000,
+                    "prefix_padding_ms": 300,
+                    "threshold": 0.5,
+                },
+            }
+        },
+        llm=SimpleNamespace(prompt="fallback prompt", initial_greeting="fallback greeting"),
+    )
+
+    cfg = engine._build_grok_config(
+        {
+            "type": "grok",
+            "api_key": "instance-key",
+            "display_name": "Grok Three",
+        },
+        "grok3",
+    )
+
+    assert cfg is not None
+    assert cfg.api_key == "instance-key"
+    assert cfg.voice == "ara"
+    assert cfg.turn_detection is not None
+    assert cfg.turn_detection.silence_duration_ms == 1000
+    assert cfg.turn_detection.prefix_padding_ms == 300
+    assert cfg.display_name == "Grok Three"

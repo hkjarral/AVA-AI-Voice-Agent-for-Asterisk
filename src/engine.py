@@ -9833,7 +9833,20 @@ class Engine:
     def _build_grok_config(self, provider_cfg: Dict[str, Any], provider_key: str = "grok") -> Optional[GrokProviderConfig]:
         """Construct a GrokProviderConfig from raw provider settings."""
         try:
-            merged = dict(provider_cfg)
+            # Named Grok instances created by the Admin UI commonly store only
+            # identity/credential fields.  Inherit the canonical `grok` template
+            # so voice/audio/turn-detection behavior does not silently fall back
+            # to dataclass defaults (notably the too-short 200 ms VAD cutoff).
+            merged: Dict[str, Any] = {}
+            if provider_key != "grok":
+                try:
+                    providers_cfg = getattr(self.config, "providers", {}) or {}
+                    base_grok = providers_cfg.get("grok") if hasattr(providers_cfg, "get") else None
+                    if isinstance(base_grok, dict):
+                        merged.update(base_grok)
+                except Exception:
+                    logger.debug("Failed to inherit base Grok provider config", provider=provider_key, exc_info=True)
+            merged.update(dict(provider_cfg))
 
             merged['api_key'] = resolve_secret_value(
                 merged,

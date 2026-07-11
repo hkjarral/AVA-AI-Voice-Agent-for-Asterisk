@@ -763,9 +763,9 @@ class GrokProviderConfig(BaseModel):
 
     class TurnDetectionConfig(BaseModel):
         type: str = Field(default="server_vad")
-        silence_duration_ms: int = Field(default=200)
+        silence_duration_ms: int = Field(default=600)
         threshold: float = Field(default=0.5)
-        prefix_padding_ms: int = Field(default=200)
+        prefix_padding_ms: int = Field(default=300)
 
     turn_detection: Optional[TurnDetectionConfig] = None
 
