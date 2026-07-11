@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,3 +39,56 @@ async def test_call_history_persists_provider_instance_key(monkeypatch):
     await engine._persist_call_history(session, "call-1")
 
     assert captured["record"].provider_name == "acme_google_live"
+
+
+def test_provider_fallback_allowlist_matches_named_instance_by_kind():
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"grok3": "grok"}
+
+    assert engine._provider_fallback_is_allowed("grok3", {"grok"}) is True
+    assert engine._provider_fallback_is_allowed("grok3", {"deepgram"}) is False
+    assert engine._provider_fallback_is_allowed("grok3", set()) is True
+
+
+@pytest.mark.asyncio
+async def test_named_grok_instance_triggers_local_vad_fallback():
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"grok3": "grok"}
+    engine.config = SimpleNamespace(
+        default_provider="grok",
+        barge_in=SimpleNamespace(
+            enabled=True,
+            provider_fallback_enabled=True,
+            provider_fallback_providers=["grok"],
+            energy_threshold=1000,
+            min_ms=20,
+            cooldown_ms=500,
+        ),
+    )
+    engine.streaming_playback_manager = SimpleNamespace(is_stream_active=lambda call_id: True)
+    engine.vad_manager = None
+    applied = []
+
+    async def apply(call_id, *, source, reason):
+        applied.append((call_id, source, reason))
+
+    engine._apply_barge_in_action = apply
+    session = SimpleNamespace(
+        call_id="call-grok3",
+        provider_name="grok3",
+        media_rx_confirmed=True,
+        vad_state={},
+        barge_in_candidate_ms=0,
+        barge_start_ts=0.0,
+        last_barge_in_ts=0.0,
+    )
+
+    await engine._maybe_provider_barge_in_fallback(
+        session,
+        pcm16=b"\xff\x7f" * 160,
+        pcm_rate_hz=16000,
+        audiosocket_wire=None,
+        source="externalmedia",
+    )
+
+    assert applied == [("call-grok3", "local_vad_fallback", "grok3:externalmedia")]

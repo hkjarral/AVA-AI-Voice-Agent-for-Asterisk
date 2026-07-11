@@ -2696,6 +2696,13 @@ class Engine:
             return None
         return self.provider_kinds.get(provider_name) or provider_name
 
+    def _provider_fallback_is_allowed(self, provider_name: str, allow: set[str]) -> bool:
+        """Match fallback policy by configured instance name or provider kind."""
+        if not allow:
+            return True
+        provider_kind = self._get_provider_kind(provider_name) or provider_name
+        return provider_name in allow or provider_kind in allow
+
     def _assign_session_provider(self, session: CallSession, provider_name: str) -> None:
         session.provider_name = provider_name
         try:
@@ -8867,7 +8874,7 @@ class Engine:
             call_id = session.call_id
             provider_name = getattr(session, "provider_name", None) or getattr(self.config, "default_provider", "")
             allow = set((getattr(cfg, "provider_fallback_providers", None) or []) or [])
-            if allow and provider_name not in allow:
+            if not self._provider_fallback_is_allowed(provider_name, allow):
                 return
 
             # Only relevant while streaming playback is active (agent is speaking).
