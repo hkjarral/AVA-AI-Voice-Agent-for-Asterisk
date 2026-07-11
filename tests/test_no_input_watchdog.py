@@ -197,6 +197,33 @@ async def test_sustained_caller_speech_and_agent_output_pause_the_clock():
 
 
 @pytest.mark.asyncio
+async def test_unmatched_input_end_does_not_extend_check_in_grace_deadline():
+    watchdog = NoInputWatchdog(AsyncMock(return_value=True), AsyncMock(), clock=lambda: 1000.0)
+    policy = NoInputPolicy(initial_timeout_sec=30.0, grace_timeout_sec=15.0, max_check_ins=1)
+    await watchdog.register("call-unmatched-end", policy, is_outbound=False)
+    try:
+        state = watchdog._states["call-unmatched-end"]
+        state.ready = True
+        state.input_active = False
+        state.phase = "grace"
+        state.check_ins = 1
+        state.deadline = 1015.0
+
+        await watchdog.note_input_state(
+            "call-unmatched-end",
+            False,
+            "asterisk:talk_detect",
+        )
+
+        snapshot = watchdog.snapshot("call-unmatched-end")
+        assert snapshot["phase"] == "grace"
+        assert snapshot["check_ins"] == 1
+        assert snapshot["deadline"] == 1015.0
+    finally:
+        await watchdog.stop("call-unmatched-end")
+
+
+@pytest.mark.asyncio
 async def test_hosted_silence_output_pauses_without_resetting_deadline():
     announcements = []
 

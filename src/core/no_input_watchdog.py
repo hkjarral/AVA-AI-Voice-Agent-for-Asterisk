@@ -266,6 +266,12 @@ class NoInputWatchdog:
         state = self._states.get(call_id)
         if not state or state.terminal:
             return
+        was_active = state.input_active
+        # TALK_DETECT and provider VAD end events are not guaranteed to be paired
+        # with a start event.  An unmatched/duplicate end must be a no-op: resetting
+        # the deadline here can indefinitely postpone the post-check-in grace timeout.
+        if not active and not was_active:
+            return
         state.input_active = bool(active)
         if active:
             state.last_activity_at = self._clock()
