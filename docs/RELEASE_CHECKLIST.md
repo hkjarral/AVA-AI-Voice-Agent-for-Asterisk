@@ -68,6 +68,25 @@ Run at least one successful call for each baseline you intend to claim as suppor
   candidate revision has evidence for every matrix row without exposing caller
   identity, transcripts, prompts, or tool arguments.
 
+### Current candidate status (`4b6d097b`)
+
+- The supervised AudioSocket and ExternalMedia sweep has accepted evidence for
+  every configured provider/pipeline pair, with exact call IDs and revisions in
+  the matrix.
+- Grok ExternalMedia has targeted current-candidate coverage for clean
+  interruption, replacement-turn context, inactivity announcements, terminal
+  drain, and `no_input_timeout` cleanup.
+- Earlier accepted calls remain provisional until replayed on the frozen code
+  candidate, as explicitly marked in the matrix.
+- Setup-wizard first-run, deployed provider-failure redirect/fallback, and the
+  final destructive updater/rollback sequence remain release-tag blockers.
+- GitHub Actions remains authoritative for coverage, image-size, and security
+  scanner jobs; local results do not replace green PR checks.
+
+Do not change the README version badge, stable-version labels, or tagged upgrade
+commands to v7.3.2 until the tag exists. Candidate documentation may describe
+the unreleased scope as long as it labels it clearly.
+
 ## Post-release Hygiene
 
 - Update `CHANGELOG.md`
@@ -76,10 +95,10 @@ Run at least one successful call for each baseline you intend to claim as suppor
 
 ## Documentation Checklist
 
-- [ ] Version references in `docs/INSTALLATION.md` updated to new version
-- [ ] `SECURITY.md` supported versions table reflects current release series
-- [ ] `docs/ROADMAP.md` "What's Next" section reflects current state
-- [ ] `docs/README.md` links verified (no broken links to renamed/deleted files)
-- [ ] `docs/contributing/README.md` "Current Version" updated
-- [ ] `README.md` version badge updated
-- [ ] `AVA.mdc` reviewed for drift (provider roster, architecture vocabulary, guardrails, "Last verified" stamp) — contributors load this file into their AI assistants first; stale content actively misleads
+- [x] `docs/INSTALLATION.md` distinguishes latest stable v7.3.1 from the v7.3.2 candidate
+- [x] `SECURITY.md` supported versions table reflects the supported 7.3.x / 7.2.x trains
+- [x] `docs/ROADMAP.md` "What's Next" section reflects v7.3.2 candidate scope
+- [x] `docs/README.md` links verified (no broken links to renamed/deleted files)
+- [x] `docs/contributing/README.md` distinguishes latest stable and active candidate
+- [ ] `README.md` version badge updated after the v7.3.2 tag is published
+- [x] `AVA.mdc` reviewed for drift (provider roster, architecture vocabulary, guardrails, "Last verified" stamp)

@@ -2,6 +2,30 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.3.1 to v7.3.2 (release candidate)
+
+v7.3.2 is a stabilization-only patch with no required schema migration and no
+new provider additions. Existing provider keys, agent slugs, dialplan variables,
+and transport settings remain compatible.
+
+Notable upgrade behavior:
+
+- Named Grok instances inherit the canonical `grok` voice, audio, and
+  turn-detection settings before applying instance-specific credentials and
+  metadata. Add an explicit value on the named instance only when it should
+  intentionally differ from the canonical block.
+- Grok caller-inactivity announcements use xAI `force_message`; no operator
+  configuration change is required.
+- `on_provider_failure: dialplan_redirect` is opt-in. Existing installations
+  retain `announce_hangup` unless explicitly changed. Validate the redirect
+  context/extension/priority on the target PBX before enabling it.
+- Updater ownership, rollback, dirty-worktree handling, and validation retries
+  are hardened without changing the normal `agent update` or Admin UI workflow.
+
+Do not deploy the candidate to production solely from this section. Complete
+the [v7.3.2 validation matrix](baselines/golden/v7.3.2-validation-matrix.md),
+take backups, and use the published tag when it exists.
+
 ## v7.x to v7.2.0
 
 **Fully back-compatible.** v7.2.0 is additive — no config, schema, or behavioral changes for existing deployments.
@@ -42,7 +66,7 @@ New in v6.5.1 (opt-in):
 - **Local provider hot-path hardening** — internal change, no operator-visible config; if you observed audio glitching on `local_ai_server` reconnect events under v6.5.0, those should be fixed.
 
 New in v6.5.2:
-- **xAI Grok Voice Agent realtime provider (NEW)** — fifth full-agent realtime provider. Single-instance setup: set `XAI_API_KEY` in `.env` and add a `grok:` block to `config/ai-agent.yaml`. Multi-tenant setup: create instances like `acme_grok` / `globex_grok` with `type: grok` and per-instance `api_key_file: /app/project/secrets/providers/<key>/api-key`. See [Provider-Grok-Setup.md](Provider-Grok-Setup.md) and [Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). 30-minute hard session cap per xAI's docs — AAVA logs a structured warning at 28 minutes (configurable via `session_warn_after_seconds`).
+- **xAI Grok Voice Agent realtime provider (NEW)** — fifth full-agent realtime provider. Single-instance setup: set `XAI_API_KEY` in `.env` and add a `grok:` block to `config/ai-agent.yaml`. Multi-instance setup: create instances like `acme_grok` / `globex_grok` with `type: grok` and per-instance `api_key_file: /app/project/secrets/providers/<key>/api-key`. See [Provider-Grok-Setup.md](Provider-Grok-Setup.md) and [Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). AAVA retains a conservative 28-minute warning from older xAI limits; xAI's current model page lists a 120-minute maximum session.
 - **Multi-instance full-agent providers (NEW)** — operators can now configure multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live` both using `type: google_live`). Single-instance YAML (legacy `openai_realtime:` / `google_live:` / `deepgram:` / `elevenlabs:` / `grok:` block where the YAML key equals the kind) continues to work unchanged.
 - **Per-instance credentials UX in Admin UI** — Add/Edit Provider modal exposes a uniform paste-style credentials uploader across all full-agent providers. Credential files are written under `/app/project/secrets/providers/<provider_key>/`. EnvPage adds a new "Per-Instance Provider Credentials" section that surfaces credential file presence per provider.
 - **Browser playback for `.ulaw` recordings** — the Call Details modal now plays compact `.ulaw` recordings (and uppercase `.WAV`, compressed WAV, and `.gsm` via `sox`) in addition to PCM `.wav`. New env var `AAVA_RECORDING_TRANSCODE_TIMEOUT_SEC` (default `120`) for the `sox` transcode timeout.

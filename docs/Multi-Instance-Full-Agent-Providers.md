@@ -26,7 +26,11 @@ providers:
 
 Supported full-agent `type` values are `openai_realtime`, `deepgram`, `google_live`, `elevenlabs_agent`, `grok`, and `local`. `local` is limited to one instance.
 
-> **Note on `grok`:** xAI documents a 30-minute hard cap per session. AAVA logs a structured warning at 28 minutes (configurable via `session_warn_after_seconds`) and lets xAI close the socket; existing call-teardown handles the close cleanly. See [Provider-Grok-Setup.md](Provider-Grok-Setup.md) for full setup details.
+> **Note on `grok`:** named instances inherit the canonical `grok` runtime
+> settings (voice, audio, VAD, and pacing) before applying their own credentials
+> and metadata. AAVA retains a conservative 28-minute warning from older xAI
+> limits; xAI's current model page lists a 120-minute maximum. See
+> [Provider-Grok-Setup.md](Provider-Grok-Setup.md) for current details.
 
 ## Admin UI Flow
 

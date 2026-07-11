@@ -18,6 +18,19 @@ Active and upcoming work. Pick something up and [get involved](#how-to-contribut
 
 Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail drop, consent gate, and Admin UI are working. Current focus: DNC, retry automation, outcome classification, and resilience hardening (see Phases 6-8 in spec).
 
+### v7.3.2 — Stabilization Release Candidate
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Call-path stabilization** | AudioSocket and ExternalMedia lifecycle fixes across full-agent providers and modular pipelines, including Grok interruption and caller inactivity. | 🧪 Candidate validation |
+| **Updater and rollback hardening** | Checkout ownership, active-call probes, dirty-worktree handling, source-built CLI versioning, and post-update validation retry. | 🧪 Candidate validation |
+| **Provider-failure recovery** | Opt-in, validated-target dialplan redirect with idempotent cleanup and announce/hangup fallback. | 🧪 PBX gate pending |
+| **Contributor/release gates** | Admin backend/frontend PR checks, five-target CLI cross-compile, archived evidence index, and revision-pinned validation matrix. | ✅ Implemented |
+
+No provider additions are in scope. See the
+[v7.3.2 validation matrix](baselines/golden/v7.3.2-validation-matrix.md) for the
+remaining live and destructive-test gates.
+
 ### v7.3.1 — Caller Inactivity Watchdog (Shipped July 2026)
 
 | Feature | Description | Status |
@@ -76,7 +89,7 @@ Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail d
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **xAI Grok Voice Agent realtime provider (PR #394)** | Fifth full-agent realtime provider, structurally parallel to OpenAI Realtime and Google Live. μ-law @ 8 kHz both directions (xAI accepts `audio/pcmu` natively, no resampling), five named voices + custom voice ID, custom function-tools identical to OpenAI Realtime, YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`). 30-min hard session cap per xAI's docs; structured warning at 28 min. Multi-instance from day one. Setup: [docs/Provider-Grok-Setup.md](Provider-Grok-Setup.md). | ✅ Shipped |
+| **xAI Grok Voice Agent realtime provider (PR #394)** | Fifth full-agent realtime provider, structurally parallel to OpenAI Realtime and Google Live. μ-law @ 8 kHz caller input, observed PCM16 @ 24 kHz output converted for Asterisk, five named voices + custom voice ID, custom function-tools identical to OpenAI Realtime, and a YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`). AAVA retains a conservative 28-minute warning from the provider's earlier session limit; xAI's current model page lists a 120-minute maximum. Multi-instance from day one. Setup: [Provider-Grok-Setup.md](Provider-Grok-Setup.md). | ✅ Shipped |
 | **Multi-instance full-agent providers** | Multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live`). Provider instance keys are immutable call-routing identities; YAML `type` selects the kind. Per-instance credentials at `/app/project/secrets/providers/<provider_key>/`. Routing via `AI_PROVIDER`, `contexts.<name>.provider`, or DID-based dispatch. Setup: [docs/Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). | ✅ Shipped |
 | **Uniform per-instance credentials UX (PR #395)** | Shared `ProviderCredentialsCard` paste-style uploader wired into Grok, OpenAI Realtime, Deepgram, Google Live, and ElevenLabs Agent forms. EnvPage adds a "Per-Instance Provider Credentials" status section so operators can audit credentials without SSH. | ✅ Shipped |
 | **Dashboard System Topology overhaul** | Tri-state per-component health (`null` / `true` / `false`) with 2-strike debounce so transient probe blips don't flip dots red. Backend probe timeouts bumped (ai_engine 1.5 s → 5 s; local_ai_server 2.5 s → 5 s). Layout rebuilt as explicit CSS grid with responsive provider grid, Models 3-col grid, and Asterisk + AI Engine cards stretched to match Providers height. Provider cards grouped by type. | ✅ Shipped |
@@ -137,7 +150,7 @@ Great for first-time contributors. **AVA helps you with all of these** — just 
 | Add a post-call webhook (Slack, Discord, n8n) | [open issues: post-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+post-call) — see also `docs/TOOL_CALLING_GUIDE.md` (HTTP tools) | You use these tools daily — AVA connects them |
 | Add an in-call appointment checker | [open issues: in-call hooks](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues?q=is%3Aopen+is%3Aissue+in-call) — see also `docs/Google-calendar-tool.md` | You book appointments by phone — AVA builds it |
 | Test coverage for `src/tools/telephony/` | Python, pytest | You understand voicemail — AVA helps you write the tests |
-| Improve error messages in `agent doctor` | Go CLI | You've seen the confusing errors — AVA fixes them |
+| Improve error messages in `agent check` | Go CLI | You've seen the confusing errors — AVA fixes them |
 | Admin UI accessibility audit (Lighthouse/axe) | React, CSS | Run the audit, AVA fixes what it finds |
 | JSON Schema for `ai-agent.yaml` | JSON Schema, YAML | Define what's valid in the config you use daily |
 
@@ -182,4 +195,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: July 2026 | **Current Version**: v7.3.1
+**Last Updated**: July 2026 | **Latest Stable**: v7.3.1 | **Next Candidate**: v7.3.2

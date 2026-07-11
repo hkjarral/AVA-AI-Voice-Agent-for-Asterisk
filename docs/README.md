@@ -9,6 +9,7 @@
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
 - **[Configuration Reference](Configuration-Reference.md)** - All settings explained
 - **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
+- **[v7.3.2 Stabilization Matrix](baselines/golden/v7.3.2-validation-matrix.md)** - revision-pinned AudioSocket, ExternalMedia, updater, and failure-recovery release evidence
 - **[Voice Selection](VOICE_SELECTION.md)** - Per-agent voices (v7.3.0+): precedence, per-provider behavior, troubleshooting
 - **[Tool Calling Guide](TOOL_CALLING_GUIDE.md)** - Using telephony and business tools
 - **[MCP Tool Integration](MCP_INTEGRATION.md)** - Experimental MCP tools (design + branch guide)
@@ -18,11 +19,11 @@
 
 ## Provider Setup Guides
 
-- **[Google Live API Setup](Provider-Google-Setup.md)** - Google Cloud Speech integration
+- **[Google Live API Setup](Provider-Google-Setup.md)** - Gemini Live native-audio full-agent integration
 - **[Deepgram Voice Agent Setup](Provider-Deepgram-Setup.md)** - Deepgram all-in-one provider
-- **[OpenAI Realtime API Setup](Provider-OpenAI-Setup.md)** - GPT-4o Realtime integration
+- **[OpenAI Realtime API Setup](Provider-OpenAI-Setup.md)** - OpenAI GA `gpt-realtime` full-agent integration
 - **[ElevenLabs Agent Setup](Provider-ElevenLabs-Setup.md)** - ElevenLabs Conversational AI with premium voices
-- **[xAI Grok Voice Agent Setup](Provider-Grok-Setup.md)** - Grok realtime full-agent provider (μ-law @ 8 kHz, 30-min cap)
+- **[xAI Grok Voice Agent Setup](Provider-Grok-Setup.md)** - Grok realtime full-agent provider (μ-law @ 8 kHz, server VAD, tools, and long-session guidance)
 - **[Telnyx AI Inference Setup](Provider-Telnyx-Setup.md)** - OpenAI-compatible LLM via Telnyx
 - **[Azure Speech Service Setup](Provider-Azure-Setup.md)** - Azure STT & TTS pipeline adapters
 - **[MiniMax LLM Setup](Provider-MiniMax-Setup.md)** - MiniMax M3 LLM via OpenAI-compatible API

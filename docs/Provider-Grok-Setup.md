@@ -21,7 +21,7 @@ AAVA ships a full-agent realtime provider for xAI's [Grok Voice Agent API](https
    ```
 4. Restart the AI engine and place a test call.
 
-## Multi-tenant deployments
+## Multi-instance deployments
 
 Grok is a registered full-agent kind in the multi-instance system. To run isolated instances per customer, give each instance a stable key and a separate credential file:
 
@@ -61,19 +61,44 @@ Set `voice:` to either a named voice or a custom voice ID. The admin UI exposes 
 
 ## Audio path
 
-Default: **μ-law @ 8 kHz both directions, no resampling.** xAI accepts `audio/pcmu` natively, and Asterisk's native telephony format is μ-law @ 8 kHz, so frames pass straight through. This saves ~10–15 ms latency and CPU per concurrent call.
+Default input: **μ-law @ 8 kHz passthrough.** xAI accepts `audio/pcmu`
+natively, so caller audio can pass from Asterisk without input resampling.
 
-For wideband audio (when AudioSocket runs in `slin16` mode), switch the encoding in YAML:
+Default output: **PCM16 @ 24 kHz from xAI, converted to μ-law @ 8 kHz for
+Asterisk.** Live sessions have shown that xAI emits 24 kHz PCM16 even when a
+different per-session output format is requested. AAVA declares that observed
+provider rate explicitly, then downsamples and encodes it at the transport
+boundary. Do not configure Grok output as 8 kHz μ-law unless a captured
+session trace proves that your xAI endpoint actually emits it.
+
+For wideband caller input (when AudioSocket runs in `slin16` mode), switch the
+provider input encoding while retaining the observed 24 kHz output:
 
 ```yaml
 grok:
   provider_input_encoding: "linear16"
   provider_input_sample_rate_hz: 24000
-  output_encoding: "linear16"
+  output_encoding: "linear16"          # xAI output observed by AAVA
   output_sample_rate_hz: 24000
+  target_encoding: "ulaw"              # Asterisk transport output
+  target_sample_rate_hz: 8000
 ```
 
-The provider then resamples 8 kHz ↔ 24 kHz at the AudioSocket boundary. Audio quality improves, at the cost of ~10–15 ms latency.
+The provider resamples input only when provider and transport rates differ; the
+normal telephony output conversion remains 24 kHz PCM16 → 8 kHz μ-law.
+
+## Barge-in and platform announcements
+
+- xAI server VAD is the primary turn detector. `turn_detection` controls the
+  threshold, prefix padding, and end-of-turn silence.
+- ExternalMedia also enables AVA's local fallback so caller speech can flush
+  caller-facing and provider-side buffers before the xAI interruption event.
+  Cancelled deltas are discarded until the replacement response.
+- Named instances such as `grok3` inherit the canonical `grok` voice, audio, and
+  turn-detection settings, then apply their own credentials and metadata.
+- Caller-inactivity check-ins use xAI's interruptible `force_message` item. It
+  speaks the configured text verbatim and supplies a normal response lifecycle;
+  AVA waits for generated audio to drain before starting grace or hangup.
 
 ## Tool calling
 
@@ -94,7 +119,7 @@ Entries in `extra_tools` are forwarded verbatim into the `session.update.tools` 
 
 ## Known limits
 
-- **30-minute hard session cap.** xAI closes the WebSocket at the 30-min mark per the docs. AAVA logs a structured warning at the threshold set by `session_warn_after_seconds` (default 1680 sec = 28 min) so operators can correlate any user-facing call drops with this documented limit. Set to `0` to disable the warning. There is no automatic reconnect in v1; existing call-teardown handles the close cleanly.
+- **Long sessions.** xAI's current [Voice Agent model page](https://docs.x.ai/developers/models/voice-agent-api) lists a 120-minute maximum session. AAVA retains a conservative warning threshold of 1680 seconds (28 minutes) for compatibility with older xAI limits and deployments; it is a warning, not the current documented hard cap. Set `session_warn_after_seconds: 0` to disable it. Provider/socket closure still uses normal call teardown.
 - **100 concurrent sessions per team** (xAI account-level limit, not enforced by AAVA).
 - **Voice cloning workflow** is not in the admin UI; clone voices in your xAI workspace and paste the resulting voice ID into the `voice` field.
 
@@ -132,5 +157,5 @@ xAI's published rate is $3/hr per session (`$0.05/min`). Materially cheaper than
 ## Troubleshooting
 
 - **"Grok Voice Agent provider requires XAI_API_KEY"**: the engine couldn't resolve a credential. Verify `api_key`, `api_key_file`, or the `XAI_API_KEY` env var (legacy single-instance fallback).
-- **No audio coming back**: confirm `audio/pcmu` matches your AudioSocket format. If AudioSocket runs in `slin16` mode, the engine logs a `describe_alignment()` warning at startup; switch the YAML defaults per the "Audio path" section above.
-- **Session drops near 30 min**: expected per xAI docs. Watch for the 28-min warning log line to confirm.
+- **No audio coming back**: confirm caller input is `audio/pcmu` at 8 kHz and provider output is declared as `linear16` at 24 kHz with an 8 kHz μ-law transport target. If rates disagree, inspect the call's `RCA_CALL_START` and Grok session-assumption logs before changing YAML.
+- **Session drops near 30 min**: this is no longer the current documented xAI limit. Archive the call and check provider close/error events, account policy, and whether an older endpoint or organization limit applies. The 28-minute AAVA warning is intentionally conservative.

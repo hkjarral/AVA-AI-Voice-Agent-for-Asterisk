@@ -15,8 +15,8 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.3.x** (2026-07). Freshness is checked as part of the release
-> checklist (`docs/RELEASE_CHECKLIST.md`).
+> Last verified against: **v7.3.2 release candidate** (2026-07). Freshness is
+> checked as part of the release checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
 
@@ -38,7 +38,9 @@ are in scope before planning work:
   - Frontend: `admin_ui/frontend/` (Vite/React/TypeScript, Vitest tests)
   - Backend: `admin_ui/backend/` (FastAPI) — config writes, agents store, container ops,
     setup wizard, system updates.
-- **Agent CLI (Go)**: `cli/` — `agent init/doctor/demo/troubleshoot/update` binary.
+- **Agent CLI (Go)**: `cli/` — canonical commands are `agent setup`, `agent check`,
+  `agent rca`, `agent update`, and `agent version`; older command names remain hidden
+  compatibility aliases where supported.
 - **Updater**: `updater/` — container image behind the Admin UI's Updates page.
 - **Config & Baselines**: `config/` (live YAML + golden baseline configs) and
   `docs/baselines/golden/` (validated reference behavior per release).
@@ -141,8 +143,10 @@ These are enforced in review and/or CI. Your assistant must apply them to every 
    provider adapters.
 9. **Surgical diffs.** Every changed line traces to the task. Match existing style; don't
    reformat or "improve" adjacent code. Small, reviewable PRs.
-10. **Never commit secrets or PII.** No API keys, hostnames, phone numbers, emails, call
-    IDs, or local configs. CI runs a secrets check; review `git diff` before pushing.
+10. **Never commit secrets or caller PII.** No API keys, private hostnames, phone numbers,
+    emails, raw transcripts, tool arguments, or local configs. A call ID may appear only
+    in revision-pinned release/RCA evidence when needed for traceability and must never be
+    paired with caller identity. CI runs a secrets check; review `git diff` before pushing.
 11. **Read `docs/contributing/` before implementing** — especially
     `architecture-deep-dive.md`, `code-style.md`, `COMMON_PITFALLS.md`, and the
     provider/tool/pipeline development guides when working in those areas.
@@ -156,8 +160,8 @@ These are enforced in review and/or CI. Your assistant must apply them to every 
   the PR against `main`. Never stack multiple PRs on the same branch — each PR must
   contain only its own commits. Rebase on `main` before opening if your branch is old.
 - **What CI gates** (`.github/workflows/ci.yml` and friends): Python compile + secrets
-  check, pytest with coverage floor, Admin UI backend tests, frontend tests/build on the
-  hardening workflow, Docker image size budgets, CodeQL and Trivy scans.
+  check, pytest with coverage floor, Admin UI backend tests, frontend tests/build in the
+  main CI workflow, Docker image size budgets, CodeQL and Trivy scans.
 - **PR expectations** (see `.github/pull_request_template.md`): summary, linked issue,
   tests added/updated, CHANGELOG entry, docs updated, and — for anything touching the
   call path — evidence from at least one real test call (provider, transport, call ID or
@@ -204,8 +208,8 @@ Repository docs are the final authority when any external source conflicts.
 Tailor guidance to who you're helping and where they run the system:
 
 - **External contributor** (changing code): local Docker workflow per `README.md` and
-  `docs/contributing/quickstart.md`; `./install.sh`, `agent init`, `agent doctor`,
-  `agent demo` from `cli/README.md`. Call-path changes need a real Asterisk/FreePBX test
+  `docs/contributing/quickstart.md`; `./install.sh`, `agent setup`, and `agent check`
+  from `cli/README.md`. Call-path changes need a real Asterisk/FreePBX test
   call — a local FreePBX VM or dev PBX is the expected setup.
 - **Operator** (running, not changing code): Admin UI setup wizard, provider setup
   guides, `docs/TROUBLESHOOTING_GUIDE.md`.
@@ -220,13 +224,13 @@ Tailor guidance to who you're helping and where they run the system:
    `docs/FreePBX-Integration-Guide.md`.
 3. **Guided setup**: `git clone` → `./install.sh` (headless) or
    `docker compose up -d admin_ui` + setup wizard (UI path). Pick a golden baseline
-   (OpenAI Realtime, Deepgram, Google Live, local hybrid, …), then `agent init` and
-   `agent doctor`.
+   (OpenAI Realtime, Deepgram, Google Live, local hybrid, …), then `agent setup` and
+   `agent check`.
 4. **Dialplan and first call**: minimal snippet from `docs/INSTALLATION.md` /
    `docs/FreePBX-Integration-Guide.md`; make a test call (greeting → two turns →
    goodbye) and check Call History in the Admin UI.
-5. **Health & RCA**: `agent doctor`, `agent demo`; for problems,
-   `agent troubleshoot --last` and `scripts/rca_collect.sh`, interpreted against
+5. **Health & RCA**: run `agent check`; for call problems, run `agent rca` with the call
+   ID when available and use the archive-first collection workflow, interpreted against
    `docs/TROUBLESHOOTING_GUIDE.md`, `docs/Tuning-Recipes.md`, and the golden baselines.
 
 ## Playbook: Add or Improve a Provider
@@ -271,7 +275,8 @@ Tailor guidance to who you're helping and where they run the system:
 
 1. Collect: what the caller said vs. what happened, call ID(s), provider/pipeline,
    transport.
-2. Run `agent troubleshoot --last` (or with the call ID) and `scripts/rca_collect.sh`.
+2. Run `agent rca` with the call ID when available and preserve the raw evidence in a
+   timestamped archive before interpreting or filtering it.
 3. Interpret against `docs/TROUBLESHOOTING_GUIDE.md`, `docs/Tuning-Recipes.md`,
    `docs/resilience.md`, and the golden baselines: audio quality, transport behavior
    (underflows/jitter), provider latency/errors, tool execution traces.

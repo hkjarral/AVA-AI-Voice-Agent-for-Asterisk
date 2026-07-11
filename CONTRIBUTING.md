@@ -4,9 +4,6 @@ Thank you for your interest in contributing! All contributions are welcome — c
 
 By participating, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-<!-- TODO: Add YouTube video link once recorded -->
-<!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->
-
 ## Why Contribute?
 
 **You don't need to know how to code.** Our AI assistant AVA writes the code for you.

@@ -1,12 +1,13 @@
-# Asterisk AI Voice Agent - Installation Guide (v7.3.1)
+# Asterisk AI Voice Agent - Installation Guide (v7.3.x)
 
-This guide provides detailed instructions for setting up the Asterisk AI Voice Agent v7.3.1 on your server.
+This guide covers the supported v7.3 release train. The latest published tag is
+v7.3.1; v7.3.2 remains a release candidate until its validation matrix is complete.
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.3.1 (Existing Checkout)
+## Upgrade within v7.3.x (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -36,19 +37,16 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 
 ### 1) Pull the new release
 
-To upgrade to the tagged `v7.3.1` release (once the tag is published):
+To upgrade to the latest published `v7.3.1` tag:
 
 ```bash
 git fetch --tags
 git checkout v7.3.1
 ```
 
-If the tag is not published yet, track `main` temporarily:
-
-```bash
-git checkout main
-git pull
-```
+To test an unreleased candidate, use its documented branch only on a development
+server. Do not point a production updater at a candidate branch unless you have
+backups and a tested rollback path.
 
 If you track branches instead of tags:
 

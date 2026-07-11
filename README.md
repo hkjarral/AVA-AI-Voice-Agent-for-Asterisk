@@ -167,6 +167,30 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.3.2 release candidate — stabilization only 🛡️</b></summary>
+
+v7.3.2 is the stabilization candidate for the next patch release; the
+latest published tag remains v7.3.1 until the release gate is complete.
+
+- **No new providers** — scope is limited to reliability, deployment safety,
+  documentation, and contributor-facing CI.
+- **Grok ExternalMedia repaired** — clean barge-in, cancelled-output quarantine,
+  named-instance runtime inheritance, complete replacement turns, and exact
+  inactivity announcements through xAI `force_message`.
+- **AudioSocket and modular pipelines hardened** — terminal playback, pipeline
+  producer ownership, talk-detect echo, and inactivity-grace regressions are
+  covered by focused tests and supervised calls.
+- **Updater and provider-failure recovery hardened** — safer ownership,
+  rollback/stash handling, readiness validation, and an opt-in dialplan redirect.
+- **PR quality gates expanded** — Admin backend/frontend checks and CLI
+  cross-compilation now run before merge.
+
+Release evidence and remaining gates are tracked in the
+[v7.3.2 validation matrix](docs/baselines/golden/v7.3.2-validation-matrix.md).
+
+</details>
+
+<details open>
 <summary><b>v7.3.1 — Silence watchdog & safe call endings ☎️</b></summary>
 
 **AVA now protects silent calls and finishes every terminal message before disconnecting.**
@@ -269,10 +293,10 @@ If you have an `ai-agent.local.yaml` that explicitly pins `api_version: beta`, r
 
 ### 🆕 xAI Grok Voice Agent realtime provider (NEW, v6.5.2)
 - Fifth full-agent realtime provider — structurally parallel to OpenAI Realtime and Google Live, built on a multi-instance foundation from day one
-- μ-law @ 8 kHz both directions by default (xAI accepts `audio/pcmu` natively; matches Asterisk telephony format with no resampling)
+- μ-law @ 8 kHz caller input with no input resampling; observed xAI output is PCM16 @ 24 kHz and AAVA converts it to the configured Asterisk transport format
 - Five named voices (`eve`, `ara`, `rex`, `sal`, `leo`) plus custom voice ID free-text for cloned voices
 - Custom function-tools identical to OpenAI Realtime; xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`) accepted via YAML `extra_tools` escape hatch
-- 30-minute hard session cap per xAI's docs — structured warning at 28 minutes so operators can correlate call drops with this limit
+- Conservative long-session warning at 28 minutes for compatibility with older xAI limits; xAI's current Voice Agent model page lists a 120-minute maximum session
 - Setup guide: [docs/Provider-Grok-Setup.md](docs/Provider-Grok-Setup.md)
 
 ### 🏢 Multi-instance full-agent providers (NEW, v6.5.2)
@@ -280,7 +304,7 @@ If you have an `ai-agent.local.yaml` that explicitly pins `api_version: beta`, r
 - Per-instance credential files at `/app/project/secrets/providers/<provider_key>/{api-key,agent-id,vertex-json}` — the new per-provider Vertex upload path does NOT mutate `.env`
 - Route via `AI_PROVIDER` channel var, `contexts.<name>.provider:` YAML, or DID-based dispatch with Asterisk `Gosub`
 - Setup guide: [docs/Multi-Instance-Full-Agent-Providers.md](docs/Multi-Instance-Full-Agent-Providers.md)
-- **Breaking for multi-tenant setups:** short aliases `AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent` now fail validation — use exact provider instance keys instead. Single-instance setups using the canonical block names are unaffected.
+- **Breaking for multi-instance setups:** short aliases `AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent` now fail validation — use exact provider instance keys instead. Single-instance setups using the canonical block names are unaffected.
 
 ### 🎛 Admin UI polish (v6.5.2)
 - Uniform per-instance credentials paste-style uploader across all full-agent provider forms (Grok, OpenAI Realtime, Deepgram, Google Live, ElevenLabs Agent)
@@ -433,8 +457,8 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
    - Config: `config/ai-agent.golden-telnyx.yaml`
    - *Best for: Model flexibility, cost optimization, multi-provider access.*
 
-7. **xAI Grok Voice Agent** (Realtime, μ-law Native)
-   - xAI realtime voice with five named voices (`eve`/`ara`/`rex`/`sal`/`leo`) or a custom cloned voice; μ-law @ 8 kHz both directions, no resampling (<2s response).
+7. **xAI Grok Voice Agent** (Realtime Voice)
+   - xAI realtime voice with five named voices (`eve`/`ara`/`rex`/`sal`/`leo`) or a custom cloned voice; μ-law @ 8 kHz caller input and observed PCM16 @ 24 kHz output converted for Asterisk.
    - Config: `config/ai-agent.golden-grok.yaml`
    - *Best for: xAI ecosystem, telephony-native low-latency audio.*
 
@@ -764,9 +788,6 @@ The `preflight.sh` script handles initial setup:
 **You don't need to be a developer to contribute.** File feature ideas, report bugs
 with logs attached, improve documentation, or share your dialplan recipes — these are
 as valuable as code. If you do want to write code, see the Contributing Guide below.
-
-<!-- TODO: Add YouTube video link once recorded -->
-<!-- **Watch the 5-minute walkthrough:** [YouTube Video](https://youtube.com/...) -->
 
 ### 🚀 Get Started in 3 Steps
 
