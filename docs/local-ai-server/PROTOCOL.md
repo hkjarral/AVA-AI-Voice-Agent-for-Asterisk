@@ -542,7 +542,27 @@ Schema:
 
 ## Model Switching
 
-`switch_model` updates server-side model/backend selections and reloads models without restarting the container.
+Global `switch_model` updates server-side model/backend selections and reloads models without restarting the container.
+
+For call instructions, use a session-scoped switch. It updates only the current
+WebSocket's prompt, resets that session's conversation when `call_id` changes,
+does not reload models, and replies with a `switch_response`. AI Engine sends
+this during call setup:
+
+```json
+{
+  "type": "switch_model",
+  "scope": "session",
+  "call_id": "1712345678.42",
+  "dry_run": true,
+  "llm_config": {
+    "system_prompt": "You are the sales agent for Example Company."
+  }
+}
+```
+
+Do not use a global prompt switch for per-call agent instructions. Unscoped
+requests remain available as a temporary compatibility path for older clients.
 
 Request (examples):
 
@@ -580,7 +600,7 @@ Request (examples):
   "llm_config": {
     "context": 2048,
     "max_tokens": 128,
-    "chat_format": "llama-3",
+    "chat_format": "auto",
     "gpu_layers": -1,
     "system_prompt": "You are a helpful voice assistant."
   }

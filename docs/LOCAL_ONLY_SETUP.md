@@ -138,7 +138,7 @@ KOKORO_VOICE=af_heart
 
 # LLM — GPU-accelerated inference
 LOCAL_LLM_MODEL_PATH=/app/models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf
-LOCAL_LLM_GPU_LAYERS=-1          # -1 = offload ALL layers to GPU
+LOCAL_LLM_GPU_LAYERS=-1          # -1 = AVA auto-selects a conservative layer count
 LOCAL_LLM_CONTEXT=4096           # larger context with GPU headroom
 LOCAL_LLM_MAX_TOKENS=150
 
@@ -149,6 +149,10 @@ LOCAL_WS_URL=ws://127.0.0.1:8765
 ### 3. Build with GPU Compose Overlay
 
 The GPU compose file (`docker-compose.gpu.yml`) builds a CUDA-enabled `local_ai_server` image using `Dockerfile.gpu`:
+
+> AVA's supported GPU image is NVIDIA CUDA-only. AMD/ROCm and Apple Metal are
+> not currently implemented by the Docker deployment path; those hosts must use
+> CPU mode unless they maintain a custom inference server.
 
 ```bash
 docker compose -p asterisk-ai-voice-agent \

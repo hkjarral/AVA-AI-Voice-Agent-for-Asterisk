@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Local AI call state is session-scoped** (`src/providers/local.py`, `local_ai_server/session.py`, `local_ai_server/ws_protocol.py`): AI Engine now synchronizes each agent prompt into its WebSocket session instead of mutating the Local AI Server's global model configuration. Reused connections reset conversation history even when consecutive calls use identical prompts. Unscoped `switch_model` requests remain supported temporarily for older clients.
+- **Local TTS no longer blocks the WebSocket event loop** (`local_ai_server/server.py`): Piper, Kokoro, MeloTTS, Silero, and Matcha synthesis run in a bounded worker while access to the active model remains serialized. Health/status traffic, barge-in control messages, and other sessions remain responsive during synthesis.
+- **Hangup-only local agents regain streaming for normal turns** (`local_ai_server/server.py`): when `hangup_call` is the sole allowed tool, ordinary conversation can use streaming LLM-to-TTS instead of paying for a second structured tool-decision inference. Explicit end-call utterances remain on the deterministic server-gated path.
+- **GPU image dependencies are reproducible and build-checked** (`local_ai_server/Dockerfile.gpu`, `local_ai_server/requirements.txt`, `.github/workflows/local-ai-gpu-build.yml`): the CUDA image now includes cuDNN for Faster-Whisper, pins Faster-Whisper and Kokoro from the shared requirements file, and receives a scheduled/relevant-PR image build plus dependency-import smoke test. AVA continues to support NVIDIA CUDA only; AMD hardware is no longer routed into the CUDA profile.
+
+### Fixed
+
+- **Late Local AI output is quarantined after barge-in or disconnect** (`local_ai_server/session.py`, `local_ai_server/server.py`): per-session response generations prevent completed background LLM/TTS work from emitting stale audio, tool decisions, or response events after a newer caller turn or closed WebSocket.
+- **Local AI configuration and capability drift** (`local_ai_server/config.py`, `local_ai_server/capabilities.py`, `local_ai_server/server.py`): the documented `LOCAL_TTS_PHRASE_CACHE_ENABLED` key now works while retaining the older alias, Kokoro/Silero/Matcha fillers use the active voice backend, Matcha is represented in capabilities, and Silero/Matcha readiness requires their runtime model assets instead of package imports alone.
+- **GGUF-native chat templates can be selected explicitly** (`LOCAL_LLM_CHAT_FORMAT=auto`): llama.cpp may use the template embedded in GGUF metadata while AVA retains structured chat-completion behavior. Existing explicit chat formats and the empty legacy raw-completion mode remain compatible.
+
 ## [7.3.2] - 2026-07-11
 
 ### Added

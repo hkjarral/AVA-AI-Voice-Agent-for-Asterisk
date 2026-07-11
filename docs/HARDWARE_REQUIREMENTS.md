@@ -198,7 +198,9 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build loc
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec local_ai_server nvidia-smi
 ```
 
-Tune `LOCAL_LLM_GPU_LAYERS=-1` (all layers) in `.env`. See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for topology-specific configuration.
+Use `LOCAL_LLM_GPU_LAYERS=-1` for AVA's conservative VRAM-based auto-selection,
+or configure an explicit positive layer count after measuring model-specific
+VRAM usage. See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for topology-specific configuration.
 
 ---
 

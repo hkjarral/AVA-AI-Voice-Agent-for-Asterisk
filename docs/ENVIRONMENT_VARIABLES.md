@@ -101,6 +101,8 @@ If you’re not sure, start without these; use `agent check` and `docs/Transport
 - `FASTER_WHISPER_COMPUTE_TYPE`: quantization precision — `int8` (default, required for CPU), `float16` (CUDA only), or `float32`. The Models page UI prevents `float16` when device is `cpu`.
 - `LOCAL_ENABLE_FILLER_AUDIO`: `true`/`false` (default `false`) — enables pre-synthesized filler audio ("one moment…") during LLM inference. Runtime-only: toggling via the Models page or a `switch_model` WS message does **not** reload STT/LLM/TTS; enabling pre-synthesizes phrases with the active TTS backend, disabling clears the cache.
 - `LOCAL_LLM_STREAMING_TTS_OVERLAP`: `true`/`false` (default `true`) — when enabled, TTS synthesis starts on the first LLM token chunk rather than waiting for the full response. Disable on CPU-only deployments where the overlap increases latency. Same runtime-only toggle semantics as `LOCAL_ENABLE_FILLER_AUDIO`.
+- `LOCAL_LLM_CHAT_FORMAT`: explicit llama.cpp chat format such as `chatml`/`llama-3`; use `auto` to select the chat template embedded in GGUF metadata. An empty value retains the legacy raw-completion path for upgraded installations.
+- `LOCAL_TTS_PHRASE_CACHE_ENABLED`: `true`/`false` (default `false`) — caches repeated short synthesized phrases. The older undocumented `LOCAL_TTS_PHRASE_CACHE` key remains a temporary compatibility alias; the documented key wins if both are set.
 
 ### Call History / storage
 
