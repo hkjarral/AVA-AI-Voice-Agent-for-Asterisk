@@ -2779,14 +2779,27 @@ class Engine:
                         logger.error("Deepgram provider requires OpenAI API key in LLM config")
                         continue
 
-                    provider = DeepgramProvider(deepgram_config, self.config.llm, self.on_provider_event)
+                    hangup_policy = resolve_hangup_policy(
+                        getattr(self.config, "tools", None)
+                    )
+                    provider = DeepgramProvider(
+                        deepgram_config,
+                        self.config.llm,
+                        self.on_provider_event,
+                        hangup_policy=hangup_policy,
+                    )
                     self._set_provider_identity(provider, name, kind)
                     # Set session store for turn latency tracking (Milestone 21)
                     provider.set_session_store(self.session_store)
                     self.providers[name] = provider
                     # Per-call factory (supports concurrent calls).
-                    self.provider_factories[name] = lambda cfg=deepgram_config, key=name, p_kind=kind: self._provider_with_identity(
-                        DeepgramProvider(self._clone_config(cfg), self.config.llm, self.on_provider_event),
+                    self.provider_factories[name] = lambda cfg=deepgram_config, policy=hangup_policy, key=name, p_kind=kind: self._provider_with_identity(
+                        DeepgramProvider(
+                            self._clone_config(cfg),
+                            self.config.llm,
+                            self.on_provider_event,
+                            hangup_policy=policy,
+                        ),
                         key,
                         p_kind,
                     )
@@ -12463,7 +12476,7 @@ class Engine:
                                 # Record time when a final transcript arrives
                                 self._last_transcript_ts[call_id] = time.time()
                                 transcript_queue.put_nowait(final)
-                                logger.info(
+                                logger.debug(
                                     "Pipeline STT final enqueued for dialog",
                                     call_id=call_id,
                                     transcript_preview=str(final or "")[:80],

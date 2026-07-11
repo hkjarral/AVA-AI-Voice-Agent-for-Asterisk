@@ -26,6 +26,7 @@ from src.tools.registry import tool_registry
 from src.tools.adapters.deepgram import DeepgramToolAdapter
 from src.tools.telephony.hangup_policy import (
     DEFAULT_HANGUP_MARKERS,
+    normalize_hangup_policy,
     text_contains_end_call_intent,
     text_is_short_polite_closing,
 )
@@ -143,11 +144,11 @@ _DEEPGRAM_SETTINGS_ACK_LATENCY_MS = Gauge(
 )
 
 class DeepgramProvider(AIProviderInterface):
-    _FALLBACK_END_MARKERS = [
+    _FALLBACK_END_MARKERS = tuple(
         marker
         for marker in DEFAULT_HANGUP_MARKERS["end_call"]
         if marker not in {"thanks", "thank you", "no thanks", "no thank you"}
-    ]
+    )
 
     @classmethod
     def next_farewell_fallback_state(
@@ -156,6 +157,8 @@ class DeepgramProvider(AIProviderInterface):
         *,
         role: str,
         text: str,
+        end_markers: Optional[List[str]] = None,
+        assistant_farewell_markers: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Advance missed-hangup state using ordered Deepgram lifecycle text."""
         current = dict(state or {})
@@ -165,8 +168,13 @@ class DeepgramProvider(AIProviderInterface):
             return current
 
         if role == "user":
+            fallback_end_markers = [
+                marker
+                for marker in (end_markers or cls._FALLBACK_END_MARKERS)
+                if marker not in {"thanks", "thank you", "no thanks", "no thank you"}
+            ]
             has_end_intent = (
-                text_contains_end_call_intent(text, cls._FALLBACK_END_MARKERS)
+                text_contains_end_call_intent(text, fallback_end_markers)
                 or text_is_short_polite_closing(text)
             )
             if not has_end_intent:
@@ -179,17 +187,24 @@ class DeepgramProvider(AIProviderInterface):
 
         if current.get("pending") and text_contains_end_call_intent(
             text,
-            DEFAULT_HANGUP_MARKERS["assistant_farewell"],
+            assistant_farewell_markers
+            or DEFAULT_HANGUP_MARKERS["assistant_farewell"],
         ):
             current["farewell_seen"] = True
             current["assistant_text"] = text
         return current
 
     def _track_farewell_fallback(self, *, role: str, text: str) -> None:
+        markers = self._hangup_policy.get("markers") or {}
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role == "user":
+            self._farewell_fallback_audio_seen = False
         self._farewell_fallback_state = self.next_farewell_fallback_state(
             self._farewell_fallback_state,
             role=role,
             text=text,
+            end_markers=markers.get("end_call"),
+            assistant_farewell_markers=markers.get("assistant_farewell"),
         )
 
     def _consume_farewell_fallback(self) -> bool:
@@ -201,9 +216,10 @@ class DeepgramProvider(AIProviderInterface):
         )
         if should_hangup:
             self._farewell_fallback_state = {}
+            self._farewell_fallback_audio_seen = False
         return should_hangup
 
-    async def _emit_farewell_fallback_if_needed(self) -> bool:
+    async def _emit_farewell_fallback_if_needed(self, *, had_audio: bool = True) -> bool:
         if not self.on_event or not self._consume_farewell_fallback():
             return False
         logger.warning(
@@ -214,9 +230,40 @@ class DeepgramProvider(AIProviderInterface):
             'type': 'HangupReady',
             'call_id': self.call_id,
             'reason': 'farewell_without_tool',
-            'had_audio': True,
+            'had_audio': had_audio,
         })
         return True
+
+    def _cancel_farewell_text_fallback(self) -> None:
+        task = getattr(self, "_farewell_text_fallback_task", None)
+        self._farewell_text_fallback_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _schedule_farewell_text_fallback(self, timeout_sec: float = 2.0) -> None:
+        """End a missed-tool farewell if Deepgram never emits any audio."""
+        self._cancel_farewell_text_fallback()
+
+        async def _fallback() -> None:
+            try:
+                await asyncio.sleep(max(0.0, float(timeout_sec)))
+                if self._in_audio_burst:
+                    return
+                await self._emit_farewell_fallback_if_needed(
+                    had_audio=bool(
+                        getattr(self, "_farewell_fallback_audio_seen", False)
+                    )
+                )
+            except asyncio.CancelledError:
+                return
+            finally:
+                if self._farewell_text_fallback_task is asyncio.current_task():
+                    self._farewell_text_fallback_task = None
+
+        self._farewell_text_fallback_task = asyncio.create_task(
+            _fallback(),
+            name=f"deepgram-farewell-text-fallback-{self.call_id}",
+        )
 
     @staticmethod
     def _canonicalize_encoding(value: Optional[str]) -> str:
@@ -306,11 +353,19 @@ class DeepgramProvider(AIProviderInterface):
         except Exception:
             logger.debug("Deepgram output format update failed", encoding=encoding, sample_rate=sample_rate, source=source, exc_info=True)
 
-    def __init__(self, config: Dict[str, Any], llm_config: LLMConfig, on_event: Callable[[Dict[str, Any]], None]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        llm_config: LLMConfig,
+        on_event: Callable[[Dict[str, Any]], None],
+        *,
+        hangup_policy: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(on_event)
         self.set_provider_identity(provider_key="deepgram", provider_kind="deepgram")
         self.config = config
         self.llm_config = llm_config
+        self._hangup_policy = normalize_hangup_policy(hangup_policy)
         self.websocket: Optional[ClientConnection] = None
         self._keep_alive_task: Optional[asyncio.Task] = None
         self._receive_task: Optional[asyncio.Task] = None
@@ -360,10 +415,12 @@ class DeepgramProvider(AIProviderInterface):
         self._hangup_pending: bool = False
         self._hangup_audio_started: bool = False
         self._hangup_fallback_task: Optional[asyncio.Task] = None
+        self._farewell_text_fallback_task: Optional[asyncio.Task] = None
         self._farewell_message: Optional[str] = None
         # Provider-local because shared media/VAD state is mutated throughout
         # a turn and is not a reliable lifecycle handoff boundary.
         self._farewell_fallback_state: Dict[str, Any] = {}
+        self._farewell_fallback_audio_seen: bool = False
         # Cache declared Deepgram input settings
         try:
             self._dg_input_rate = int(self._get_config_value('input_sample_rate_hz', 8000) or 8000)
@@ -1162,6 +1219,7 @@ class DeepgramProvider(AIProviderInterface):
             return
         self._closing = True
         self._cancel_hangup_audio_fallback()
+        self._cancel_farewell_text_fallback()
         try:
             if self._keep_alive_task:
                 self._keep_alive_task.cancel()
@@ -1507,7 +1565,20 @@ class DeepgramProvider(AIProviderInterface):
                                     role = event_data.get("role")
                                     text = event_data.get("text") or event_data.get("content")
                                     self._track_farewell_fallback(role=role, text=text)
-                                    logger.info(
+                                    if str(role or "").strip().lower() == "user":
+                                        self._cancel_farewell_text_fallback()
+                                    elif (
+                                        self._farewell_fallback_state.get("pending")
+                                        and self._farewell_fallback_state.get("farewell_seen")
+                                        and not self._in_audio_burst
+                                    ):
+                                        # ConversationText can be terminal even
+                                        # when Deepgram never sends a binary
+                                        # audio burst or AgentAudioDone. Allow a
+                                        # short window for late audio, then end
+                                        # the missed-tool farewell explicitly.
+                                        self._schedule_farewell_text_fallback()
+                                    logger.debug(
                                         "Deepgram conversation text",
                                         call_id=self.call_id,
                                         role=role,
@@ -1609,7 +1680,7 @@ class DeepgramProvider(AIProviderInterface):
                             })
                             self._in_audio_burst = False
 
-                            await self._emit_farewell_fallback_if_needed()
+                            await self._emit_farewell_fallback_if_needed(had_audio=True)
 
                             # Check if farewell audio completed after hangup request
                             if self._hangup_pending and self._hangup_audio_started:
@@ -1775,6 +1846,9 @@ class DeepgramProvider(AIProviderInterface):
                         )
                         self._first_output_chunk_logged = True
                     self._in_audio_burst = True
+                    if self._farewell_fallback_state.get("pending"):
+                        self._farewell_fallback_audio_seen = True
+                    self._cancel_farewell_text_fallback()
                     if self._hangup_pending:
                         self._hangup_audio_started = True
                     if self.on_event:
@@ -1794,7 +1868,7 @@ class DeepgramProvider(AIProviderInterface):
                         'streaming_done': True,
                         'call_id': self.call_id
                     })
-                    await self._emit_farewell_fallback_if_needed()
+                    await self._emit_farewell_fallback_if_needed(had_audio=True)
                     
                     # Check if farewell audio completed after hangup request (socket closing)
                     if self._hangup_pending and self._hangup_audio_started:

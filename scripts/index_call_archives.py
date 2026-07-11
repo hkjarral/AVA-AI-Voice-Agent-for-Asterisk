@@ -120,6 +120,31 @@ def build_index(roots: Iterable[Path]) -> list[dict[str, Any]]:
                     },
                 )
 
+                score = _source_score(archive, call_id)
+                current_score = source_scores.get(call_id)
+                if current_score is None or score > current_score:
+                    source_scores[call_id] = score
+                    for field in (
+                        "start_timestamp",
+                        "end_timestamp",
+                        "provider",
+                        "pipeline",
+                        "context",
+                        "transport",
+                        "wire_encoding",
+                        "wire_sample_rate_hz",
+                        "outcome",
+                        "duration_seconds",
+                        "media_rx_confirmed",
+                    ):
+                        row[field] = None
+                    row["source_archive"] = str(archive)
+                    row["git_head"] = _git_head(archive)
+                    analysis = archive / "analysis.md"
+                    row["analysis"] = str(analysis) if analysis.is_file() else None
+                elif score < current_score:
+                    continue
+
                 if payload["event"] == "RCA_CALL_START":
                     row["start_timestamp"] = row["start_timestamp"] or payload.get("timestamp")
                     row["wire_encoding"] = row["wire_encoding"] or payload.get("wire_encoding")
@@ -135,14 +160,6 @@ def build_index(roots: Iterable[Path]) -> list[dict[str, Any]]:
                 row["pipeline"] = payload.get("pipeline_name") or row["pipeline"]
                 row["context"] = payload.get("context_name") or payload.get("context") or row["context"]
                 row["transport"] = payload.get("audio_transport") or payload.get("transport") or row["transport"]
-
-                score = _source_score(archive, call_id)
-                if call_id not in source_scores or score > source_scores[call_id]:
-                    source_scores[call_id] = score
-                    row["source_archive"] = str(archive)
-                    row["git_head"] = _git_head(archive)
-                    analysis = archive / "analysis.md"
-                    row["analysis"] = str(analysis) if analysis.is_file() else None
 
     return sorted(
         calls.values(),

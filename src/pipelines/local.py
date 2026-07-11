@@ -340,8 +340,8 @@ class _LocalAdapterBase:
                     attempt=attempt,
                     error=str(exc),
                 )
-                # Remove stale session so next attempt reconnects
-                self._sessions.pop(call_id, None)
+                # Keep the stale session indexed until _reconnect_session()
+                # transfers its streaming queue/lock to the new WebSocket.
                 if attempt < max_attempts:
                     delay = _RECONNECT_DELAY_BASE_SEC * (2 ** (attempt - 1))
                     await asyncio.sleep(delay)
@@ -391,9 +391,32 @@ class _LocalAdapterBase:
                 )
                 return existing
             
+            # Preserve streaming state across the new WebSocket. iter_results()
+            # waits on the original queue for the lifetime of the dialog worker,
+            # so replacing it here would silently orphan all post-reconnect STT
+            # finals.
+            result_queue = existing.result_queue if existing else None
+            send_lock = existing.send_lock if existing else None
+            stopping = existing.stopping if existing else False
+            receiver_restart_count = existing.receiver_restart_count if existing else 0
+            last_final_result_ts = existing.last_final_result_ts if existing else 0.0
+
             # Clean up stale session
             if existing:
                 self._sessions.pop(call_id, None)
+                if existing.receiver_task and not existing.receiver_task.done():
+                    existing.receiver_task.cancel()
+                    try:
+                        await existing.receiver_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug(
+                            "Local adapter receiver cleanup failed during reconnect",
+                            component=self.component_key,
+                            call_id=call_id,
+                            exc_info=True,
+                        )
                 try:
                     await existing.websocket.close()
                 except Exception:
@@ -411,6 +434,13 @@ class _LocalAdapterBase:
             session = self._sessions.get(call_id)
             if not session or session.websocket.state.name != "OPEN":
                 raise RuntimeError(f"Failed to reconnect session for call {call_id}")
+
+            if result_queue is not None:
+                session.result_queue = result_queue
+                session.send_lock = send_lock
+                session.stopping = stopping
+                session.receiver_restart_count = receiver_restart_count
+                session.last_final_result_ts = last_final_result_ts
             
             logger.info(
                 "Local adapter session reconnected successfully",
@@ -654,18 +684,18 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
         
         try:
             async with session.send_lock:
-                # Check connection state before sending
-                if session.websocket.state.name != "OPEN":
-                    logger.debug(
-                        "WebSocket not open, attempting reconnection for STT audio",
-                        component=self.component_key,
-                        call_id=call_id,
-                        ws_state=session.websocket.state.name,
-                    )
-                    # Use retry logic
-                    await self._send_json_with_retry(call_id, payload, session.options)
-                else:
-                    await self._send_json(session, payload)
+                await self._send_json_with_retry(call_id, payload, session.options)
+
+            # Reconnection replaces the session object but deliberately keeps
+            # the queue consumed by iter_results(). Bind a receiver to the new
+            # WebSocket before the next STT result arrives.
+            active_session = self._sessions.get(call_id)
+            if active_session is not None:
+                self._ensure_stream_receiver(
+                    active_session,
+                    active_session.options,
+                    reason="session_reconnect",
+                )
         except (ConnectionClosed, ConnectionClosedError) as exc:
             logger.warning(
                 "STT send_audio connection closed, will retry on next audio",
@@ -673,8 +703,6 @@ class LocalSTTAdapter(_LocalAdapterBase, STTComponent):
                 call_id=call_id,
                 error=str(exc),
             )
-            # Remove stale session so next call can reconnect
-            self._sessions.pop(call_id, None)
             return  # Don't crash - skip this frame
         except Exception as exc:
             logger.warning(

@@ -68,3 +68,18 @@ def test_hash_changes_when_local_context_changes(tmp_path):
     _write(local, "contexts:\n  local_only: {provider: local, prompt: two}\n")
     h2 = contexts_hash(merged_effective_contexts(str(base), str(ext)))
     assert h1 != h2
+
+
+def test_external_context_returns_after_local_override_deletes_inline_name(tmp_path):
+    base = tmp_path / "ai-agent.yaml"
+    local = tmp_path / "ai-agent.local.yaml"
+    ext = tmp_path / "contexts"; ext.mkdir()
+    _write(base, "contexts:\n  demo: {provider: openai_realtime, prompt: inline}\n")
+    _write(local, "contexts:\n  demo: null\n")
+    _write(ext / "demo.yaml", "name: demo\nprovider: local\nprompt: external\n")
+
+    merged = merged_effective_contexts(str(base), str(ext))
+
+    assert merged["demo"]["provider"] == "local"
+    assert merged["demo"]["prompt"] == "external"
+    assert merged["demo"]["_source_file"] == "contexts/demo.yaml"

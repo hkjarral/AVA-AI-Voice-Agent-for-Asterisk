@@ -194,6 +194,49 @@ async def test_local_stt_stream_recovers_receiver_without_ending_results(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_local_stt_stream_preserves_result_queue_across_websocket_reconnect(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = LocalProviderConfig(**app_config.providers["local"])
+    adapter = LocalSTTAdapter("local_stt", app_config, provider_config, {"mode": "stt"})
+    first_ws = _MockWebSocket()
+    second_ws = _MockWebSocket()
+    first_ws.push(json.dumps({"type": "mode_ready", "mode": "stt", "call_id": "call-reconnect"}))
+    second_ws.push(json.dumps({"type": "mode_ready", "mode": "stt", "call_id": "call-reconnect"}))
+    sockets = iter((first_ws, second_ws))
+
+    async def fake_connect(*_args, **_kwargs):
+        return next(sockets)
+
+    monkeypatch.setattr("src.pipelines.local.websockets.connect", fake_connect)
+
+    await adapter.start_stream(
+        "call-reconnect",
+        {"mode": "stt"},
+        sample_rate_hz=16000,
+        fmt="linear16",
+    )
+    original = adapter._sessions["call-reconnect"]
+    original_queue = original.result_queue
+    result_task = asyncio.create_task(anext(adapter.iter_results("call-reconnect")))
+    await asyncio.sleep(0)
+    original.websocket.state.name = "CLOSED"
+
+    await adapter.send_audio("call-reconnect", b"\x01\x02" * 160, fmt="linear16")
+
+    reconnected = adapter._sessions["call-reconnect"]
+    assert reconnected is not original
+    assert reconnected.result_queue is original_queue
+    second_ws.push(json.dumps({
+        "type": "stt_result",
+        "text": "result after reconnect",
+        "is_partial": False,
+        "is_final": True,
+    }))
+    assert await asyncio.wait_for(result_task, timeout=1) == "result after reconnect"
+    await adapter.close_call("call-reconnect")
+
+
+@pytest.mark.asyncio
 async def test_local_llm_adapter_generate(monkeypatch):
     app_config = _build_app_config()
     provider_config = LocalProviderConfig(**app_config.providers["local"])

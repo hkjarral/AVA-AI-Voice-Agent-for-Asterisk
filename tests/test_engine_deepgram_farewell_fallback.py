@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from src.providers.deepgram import DeepgramProvider
@@ -111,5 +113,54 @@ async def test_provider_emits_hangup_ready_at_audio_boundary():
             "call_id": "call-live-sequence",
             "reason": "farewell_without_tool",
             "had_audio": True,
+        }
+    ]
+
+
+def test_custom_hangup_markers_drive_deepgram_fallback_state():
+    state = DeepgramProvider.next_farewell_fallback_state(
+        {},
+        role="user",
+        text="Please terminate this session.",
+        end_markers=["terminate this session"],
+        assistant_farewell_markers=["session closed"],
+    )
+    state = DeepgramProvider.next_farewell_fallback_state(
+        state,
+        role="assistant",
+        text="Session closed.",
+        end_markers=["terminate this session"],
+        assistant_farewell_markers=["session closed"],
+    )
+
+    assert state["pending"] is True
+    assert state["farewell_seen"] is True
+
+
+@pytest.mark.asyncio
+async def test_terminal_text_without_audio_emits_fallback_after_grace():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider.call_id = "call-text-only"
+    provider.on_event = on_event
+    provider._farewell_fallback_state = {"pending": True, "farewell_seen": True}
+    provider._hangup_pending = False
+    provider._in_audio_burst = False
+    provider._farewell_fallback_audio_seen = False
+    provider._farewell_text_fallback_task = None
+
+    provider._schedule_farewell_text_fallback(timeout_sec=0)
+    await asyncio.sleep(0.01)
+
+    assert events == [
+        {
+            "type": "HangupReady",
+            "call_id": "call-text-only",
+            "reason": "farewell_without_tool",
+            "had_audio": False,
         }
     ]

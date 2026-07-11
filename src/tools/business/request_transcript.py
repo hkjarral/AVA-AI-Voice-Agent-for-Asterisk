@@ -118,9 +118,15 @@ class RequestTranscriptTool(Tool):
 
             # Resolve the session before parsing an address because cancellation
             # deliberately has no caller_email parameter.
-            session = await context.get_session()
-            if not session:
+            try:
+                session = await context.get_session()
+            except RuntimeError as exc:
                 logger.error("No session found", call_id=call_id)
+                logger.debug(
+                    "Request transcript session lookup failed",
+                    call_id=call_id,
+                    error=str(exc),
+                )
                 return {
                     "status": "error",
                     "message": "I'm sorry, I couldn't access the call data to update the transcript request.",

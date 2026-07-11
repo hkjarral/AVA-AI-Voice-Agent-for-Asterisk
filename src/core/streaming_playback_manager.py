@@ -750,6 +750,7 @@ class StreamingPlaybackManager:
                 'target_sample_rate': resolved_target_rate,
                 'tx_bytes': 0,
                 'real_tx_bytes': 0,
+                'real_tx_bytes_segment_baseline': 0,
                 'queued_bytes': 0,
                 'frames_sent': 0,
                 'underflow_events': 0,
@@ -3291,6 +3292,11 @@ class StreamingPlaybackManager:
             bytes_per_sample = 1 if self._is_mulaw(fmt) or fmt in ("alaw", "g711_alaw") else 2
             rate = max(1, int(info.get("target_sample_rate") or self.sample_rate or 8000))
             real_bytes = max(0, int(info.get("real_tx_bytes", 0) or 0))
+            baseline = max(
+                0,
+                int(info.get("real_tx_bytes_segment_baseline", 0) or 0),
+            )
+            real_bytes = max(0, real_bytes - baseline)
             return int(round((real_bytes * 1000.0) / float(bytes_per_sample * rate)))
         except Exception:
             return 0
@@ -3308,7 +3314,6 @@ class StreamingPlaybackManager:
             
             # Increment segment counter for warm-up optimization
             info['segments_played'] = info.get('segments_played', 0) + 1
-            
             try:
                 rate = int(info.get('target_sample_rate') or 0)
             except Exception:
@@ -3334,6 +3339,14 @@ class StreamingPlaybackManager:
             info = self.active_streams.get(call_id)
             if not info:
                 return
+            # This method runs on the first provider chunk of each assistant
+            # item. Baseline here rather than at AgentAudioDone, because the
+            # previous item may still have queued transport audio when provider
+            # generation ends.
+            info['real_tx_bytes_segment_baseline'] = max(
+                0,
+                int(info.get('real_tx_bytes', 0) or 0),
+            )
             stream_id = str(info.get('stream_id') or '')
             if not stream_id:
                 return

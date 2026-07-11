@@ -435,6 +435,20 @@ class TestRequestTranscriptTool:
         )
         
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_missing_session_returns_specific_error(
+        self, transcript_tool, tool_context, enabled_config
+    ):
+        tool_context.session_store.get_by_call_id.return_value = None
+
+        result = await transcript_tool.execute(
+            parameters={"action": "cancel"},
+            context=tool_context,
+        )
+
+        assert result["status"] == "error"
+        assert "access the call data" in result["message"]
     
     @pytest.mark.asyncio
     async def test_whitespace_only_email(

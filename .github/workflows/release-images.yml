@@ -44,6 +44,7 @@ jobs:
           fi
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
           echo "publish_latest=${PUBLISH_LATEST}" >> "$GITHUB_OUTPUT"
 
@@ -122,4 +123,6 @@ jobs:
           context: .
           file: ./updater/Dockerfile
           push: true
+          build-args: |
+            AAVA_CLI_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.updater_tags }}

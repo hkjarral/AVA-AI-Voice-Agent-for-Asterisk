@@ -27,6 +27,17 @@ drop_to_project_owner() {
     return 0
   fi
 
+  # Older updater images wrote this tree as root. Repair that state while we
+  # still have privileges so the project owner can create locks, job files,
+  # backups, and replacement CLI binaries after the re-exec. Refuse a
+  # top-level symlink rather than recursively changing an unrelated path.
+  if [ -L "${PROJECT_ROOT}/.agent" ]; then
+    echo "ERR: refusing to repair symlinked updater state: ${PROJECT_ROOT}/.agent" >&2
+    return 2
+  fi
+  mkdir -p "${PROJECT_ROOT}/.agent"
+  chown -R --no-dereference "${project_uid}:${project_gid}" "${PROJECT_ROOT}/.agent"
+
   primary_group="$(getent group "${project_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
   if [ -z "${primary_group}" ]; then
     primary_group="aava-project-${project_gid}"
@@ -624,7 +635,20 @@ run_rollback() {
       git -c safe.directory="${PROJECT_ROOT}" stash push -m "aava rollback ${JOB_ID}" >/dev/null 2>&1 || true
     fi
 
-    git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}"
+    checkout_error="$(mktemp)"
+    if ! git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}" 2>"${checkout_error}"; then
+      if grep -qi "untracked working tree files would be overwritten" "${checkout_error}"; then
+        echo "==> Untracked paths conflict with rollback target; preserving them in a dedicated stash" >&2
+        git -c safe.directory="${PROJECT_ROOT}" stash push -u \
+          -m "aava rollback ${JOB_ID} untracked checkout conflicts" >/dev/null
+        git -c safe.directory="${PROJECT_ROOT}" checkout "${pre_branch}"
+      else
+        cat "${checkout_error}" >&2
+        rm -f "${checkout_error}"
+        exit 1
+      fi
+    fi
+    rm -f "${checkout_error}"
 
     if [ -f "${PROJECT_ROOT}/${backup_rel}/.env" ]; then
       cp -f "${PROJECT_ROOT}/${backup_rel}/.env" "${PROJECT_ROOT}/.env"

@@ -77,3 +77,50 @@ def test_render_markdown_links_the_preferred_analysis(tmp_path: Path) -> None:
     assert "local_hybrid" in output
     assert "externalmedia" in output
     assert str(archive / "analysis.md") in output
+
+
+def test_duplicate_call_fields_come_from_preferred_archive(tmp_path: Path) -> None:
+    low = tmp_path / "logs" / "archived" / "rca-20260709-203100"
+    high = tmp_path / "logs" / "archived" / "rca-20260709-203101"
+    (high / "runtime").mkdir(parents=True)
+    (high / "runtime" / "git-head.txt").write_text("preferred-sha\n", encoding="utf-8")
+    (high / "call_id.txt").write_text("call-duplicate\n", encoding="utf-8")
+    (high / "analysis.md").write_text("# Preferred\n", encoding="utf-8")
+    _write_events(
+        low,
+        {
+            "event": "RCA_CALL_END",
+            "call_id": "call-duplicate",
+            "provider_name": "wrong-provider",
+            "audio_transport": "audiosocket",
+            "call_outcome": "provider_error",
+        },
+    )
+    _write_events(
+        high,
+        {
+            "event": "RCA_CALL_START",
+            "timestamp": "2026-07-09T13:00:00Z",
+            "call_id": "call-duplicate",
+            "provider_name": "google_live",
+            "audio_transport": "externalmedia",
+        },
+        {
+            "event": "RCA_CALL_END",
+            "timestamp": "2026-07-09T13:01:00Z",
+            "call_id": "call-duplicate",
+            "provider_name": "google_live",
+            "audio_transport": "externalmedia",
+            "call_outcome": "agent_hangup",
+            "duration_seconds": 60,
+        },
+    )
+
+    row = build_index([tmp_path / "logs"])[0]
+
+    assert row["source_archive"] == str(high)
+    assert row["git_head"] == "preferred-sha"
+    assert row["provider"] == "google_live"
+    assert row["transport"] == "externalmedia"
+    assert row["outcome"] == "agent_hangup"
+    assert row["duration_seconds"] == 60

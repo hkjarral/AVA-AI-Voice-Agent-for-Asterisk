@@ -81,6 +81,18 @@ def test_playback_position_uses_real_audio_not_filler_bytes():
     assert mgr.get_playback_position_ms("call-position") == 7_840
 
 
+def test_playback_position_is_scoped_to_current_segment():
+    mgr = make_manager()
+    mgr.active_streams["call-segment-position"] = {
+        "target_format": "ulaw",
+        "target_sample_rate": 8000,
+        "real_tx_bytes": 24_000,
+        "real_tx_bytes_segment_baseline": 16_000,
+    }
+
+    assert mgr.get_playback_position_ms("call-segment-position") == 1_000
+
+
 def test_first_segment_releases_short_audio_after_producer_closes():
     mgr = make_manager()
     call_id = "test-call-short"
@@ -115,6 +127,7 @@ async def test_mark_segment_boundary_increments_and_resets_attack():
         'stream_id': "stream:resp:test-call-3:1",
         'target_sample_rate': 8000,
         'segments_played': 0,
+        'real_tx_bytes': 8_000,
     }
     # attack bytes expected: sr * (attack_ms/1000) * 2
     expected_attack = int(max(0, int(8000 * (mgr.attack_ms / 1000.0)) * 2))
@@ -124,3 +137,19 @@ async def test_mark_segment_boundary_increments_and_resets_attack():
     info = mgr.active_streams[call_id]
     assert info['segments_played'] == 1
     assert info.get('attack_bytes_remaining') == expected_attack
+
+
+@pytest.mark.asyncio
+async def test_start_segment_gating_baselines_actual_playback_position():
+    mgr = make_manager()
+    call_id = "test-call-segment-baseline"
+    mgr.active_streams[call_id] = {
+        'stream_id': "stream:resp:test-call-segment-baseline:1",
+        'real_tx_bytes': 8_000,
+    }
+
+    await mgr.start_segment_gating(call_id)
+
+    assert (
+        mgr.active_streams[call_id]['real_tx_bytes_segment_baseline'] == 8_000
+    )
