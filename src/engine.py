@@ -9262,6 +9262,27 @@ class Engine:
         except Exception as exc:
             logger.error("Error handling AudioSocket DTMF", conn_id=conn_id, error=str(exc), exc_info=True)
 
+    def _externalmedia_continuous_input_mode(
+        self,
+        provider_name: str,
+        capabilities: Any,
+        *,
+        audio_capture_enabled: bool,
+    ) -> str:
+        """Choose whether gated ExternalMedia caller audio is forwarded, silenced, or dropped."""
+        if audio_capture_enabled:
+            return "forward"
+        if self._get_provider_kind(provider_name) == "google_live":
+            return "silence"
+        if bool(
+            capabilities
+            and getattr(capabilities, "requires_continuous_audio", False)
+            and getattr(capabilities, "has_native_vad", False)
+            and getattr(capabilities, "has_native_barge_in", False)
+        ):
+            return "forward"
+        return "drop"
+
     async def _on_rtp_audio(self, caller_channel_id: str, ssrc: int, pcm_16k: bytes) -> None:
         """Route inbound ExternalMedia RTP audio to the active provider.
 
@@ -9461,9 +9482,9 @@ class Engine:
             except Exception:
                 continuous_input = False
 
-            # For continuous-input providers, forward audio (but respect gating during TTS playback)
-            # OpenAI Realtime has server-side echo cancellation, but we still need to gate during TTS
-            # to prevent the provider from hearing its own audio as "user speech"
+            # For continuous-input providers, preserve caller audio when the provider
+            # owns native VAD/barge-in. Dropping those frames makes interruption
+            # impossible until output gating has already cleared.
             if continuous_input:
                 if not provider or not hasattr(provider, 'send_audio'):
                     if caller_channel_id not in self._provider_start_tasks and not getattr(session, "provider_session_active", False):
@@ -9473,12 +9494,13 @@ class Engine:
                 # Preserve original inbound audio for local barge-in fallback checks (never run VAD on silence-substituted frames).
                 pcm_for_barge_in = pcm_16k
 
-                # CRITICAL: Check if audio capture is disabled (TTS playing)
-                # For Google Live: Send silence frames to maintain stream continuity (like AudioSocket)
-                # For OpenAI/Deepgram: Can drop audio (they handle gaps gracefully)
-                needs_gating = self._get_provider_kind(provider_name) == "google_live"
-                
-                if needs_gating and not session.audio_capture_enabled:
+                gating_mode = self._externalmedia_continuous_input_mode(
+                    provider_name,
+                    capabilities,
+                    audio_capture_enabled=bool(session.audio_capture_enabled),
+                )
+
+                if gating_mode == "silence":
                     # Send SILENCE instead of dropping to maintain Google Live's stream
                     logger.debug(
                         "🔇 GATING ACTIVE - Sending silence frame for Google Live (TTS playing)",
@@ -9487,9 +9509,9 @@ class Engine:
                     )
                     # Replace audio with silence (zero-filled PCM16)
                     pcm_16k = b'\x00' * len(pcm_16k)
-                elif not needs_gating and not session.audio_capture_enabled:
-                    # For other providers, do not forward audio during TTS, but still run
-                    # local barge-in detection on the real inbound frames so interruptions work.
+                elif gating_mode == "drop":
+                    # Providers without native interruption ownership stay gated and
+                    # use AVA's conservative local barge-in fallback.
                     logger.debug(
                         "Dropping RTP audio for continuous provider during TTS playback",
                         call_id=caller_channel_id,
@@ -9510,6 +9532,12 @@ class Engine:
                             exc_info=True,
                         )
                     return
+                elif not session.audio_capture_enabled:
+                    logger.debug(
+                        "Forwarding RTP audio during provider output for native barge-in",
+                        call_id=caller_channel_id,
+                        provider=provider_name,
+                    )
                 if not getattr(session, "provider_session_active", False):
                     return
                 # Encode audio for provider (same as AudioSocket path)

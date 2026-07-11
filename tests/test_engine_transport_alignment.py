@@ -16,6 +16,7 @@ def _make_session(call_id: str, fmt: str, rate: int) -> CallSession:
 def _make_engine() -> Engine:
     engine = Engine.__new__(Engine)
     engine.providers = {}
+    engine.provider_kinds = {}
     engine._call_providers = {}
     engine.call_audio_preferences = {}
     engine._transport_card_logged = set()
@@ -87,3 +88,49 @@ def test_resolve_stream_targets_pass_through_when_aligned():
     assert remediation is None
     assert session.codec_alignment_ok is True
     _CODEC_ALIGNMENT.remove("openai_realtime")
+
+
+@pytest.mark.parametrize("provider_name", ["grok", "grok3", "openai_realtime", "deepgram", "elevenlabs_agent"])
+def test_externalmedia_forwards_gated_audio_to_native_barge_in_providers(provider_name):
+    engine = _make_engine()
+    capabilities = types.SimpleNamespace(
+        requires_continuous_audio=True,
+        has_native_vad=True,
+        has_native_barge_in=True,
+    )
+
+    assert engine._externalmedia_continuous_input_mode(
+        provider_name,
+        capabilities,
+        audio_capture_enabled=False,
+    ) == "forward"
+
+
+def test_externalmedia_keeps_google_silence_gating_during_output():
+    engine = _make_engine()
+    capabilities = types.SimpleNamespace(
+        requires_continuous_audio=True,
+        has_native_vad=True,
+        has_native_barge_in=True,
+    )
+
+    assert engine._externalmedia_continuous_input_mode(
+        "google_live",
+        capabilities,
+        audio_capture_enabled=False,
+    ) == "silence"
+
+
+def test_externalmedia_drops_gated_audio_without_native_barge_in():
+    engine = _make_engine()
+    capabilities = types.SimpleNamespace(
+        requires_continuous_audio=True,
+        has_native_vad=True,
+        has_native_barge_in=False,
+    )
+
+    assert engine._externalmedia_continuous_input_mode(
+        "legacy_full_agent",
+        capabilities,
+        audio_capture_enabled=False,
+    ) == "drop"
