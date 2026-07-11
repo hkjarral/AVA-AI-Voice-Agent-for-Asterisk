@@ -11,6 +11,7 @@ on:
       - 'Dockerfile'
       - 'requirements.txt'
       - 'local_ai_server/Dockerfile'
+      - 'local_ai_server/Dockerfile.gpu'
       - 'local_ai_server/requirements*.txt'
       - '.github/workflows/trivy.yml'
   pull_request:
@@ -19,6 +20,7 @@ on:
       - 'Dockerfile'
       - 'requirements.txt'
       - 'local_ai_server/Dockerfile'
+      - 'local_ai_server/Dockerfile.gpu'
       - 'local_ai_server/requirements*.txt'
       - '.github/workflows/trivy.yml'
   schedule:

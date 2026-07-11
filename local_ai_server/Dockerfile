@@ -1,6 +1,6 @@
 # --- Stage 1: Builder (Dependencies) ---
 # Note: Using trixie (Debian 13) for glibc compatibility with Kroko binary
-FROM python:3.11-slim-trixie as builder
+FROM python:3.11-slim-trixie AS builder
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build Args - Conditionally include backends (AAVA-112)
@@ -63,7 +63,9 @@ RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
 
 RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
         echo "📦 Installing Faster-Whisper STT..." && \
-        pip install --no-cache-dir faster-whisper==1.0.3; \
+        FASTER_WHISPER_REQUIREMENT="$(grep -m 1 '^faster-whisper==' requirements.txt || true)"; \
+        if [ -z "$FASTER_WHISPER_REQUIREMENT" ]; then echo "❌ Missing faster-whisper pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
@@ -83,7 +85,9 @@ RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
 
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
         echo "📦 Installing Kokoro TTS..." && \
-        pip install --no-cache-dir "kokoro>=0.9.2"; \
+        KOKORO_REQUIREMENT="$(grep -m 1 '^kokoro==' requirements.txt || true)"; \
+        if [ -z "$KOKORO_REQUIREMENT" ]; then echo "❌ Missing kokoro pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$KOKORO_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
@@ -126,6 +130,7 @@ RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
             echo "❌ INCLUDE_LLAMA=true but requirements.txt has no llama-cpp-python entry" >&2; \
             exit 1; \
         fi; \
+        CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF" \
         pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
 

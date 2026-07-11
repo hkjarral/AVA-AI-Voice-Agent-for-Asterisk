@@ -179,6 +179,8 @@ def build_status_response(server) -> Dict[str, Any]:
                     "top_p": getattr(server, "llm_top_p", None),
                     "repeat_penalty": getattr(server, "llm_repeat_penalty", None),
                     "gpu_layers": getattr(server, "_llm_gpu_layers_effective", None),
+                    "gpu_layers_configured": getattr(server, "llm_gpu_layers", None),
+                    "gpu_layers_effective": getattr(server, "_llm_gpu_layers_effective", None),
                 },
                 "prompt_fit": {
                     "system_prompt_chars": system_prompt_chars,

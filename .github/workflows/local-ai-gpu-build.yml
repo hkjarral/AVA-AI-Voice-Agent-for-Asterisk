@@ -1,0 +1,51 @@
+name: Local AI GPU Image Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 8 * * 1"
+  pull_request:
+    paths:
+      - "local_ai_server/Dockerfile.gpu"
+      - "local_ai_server/requirements*.txt"
+      - ".github/workflows/local-ai-gpu-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-gpu-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          docker system prune --all --force
+
+      - name: Build CUDA Local AI image
+        run: |
+          docker build \
+            --file local_ai_server/Dockerfile.gpu \
+            --tag local-ai-server-gpu:${{ github.sha }} \
+            --build-arg INCLUDE_VOSK=false \
+            --build-arg INCLUDE_SHERPA=false \
+            --build-arg INCLUDE_FASTER_WHISPER=true \
+            --build-arg INCLUDE_WHISPER_CPP=false \
+            --build-arg INCLUDE_PIPER=false \
+            --build-arg INCLUDE_KOKORO=true \
+            --build-arg INCLUDE_MELOTTS=false \
+            --build-arg INCLUDE_SILERO=false \
+            --build-arg INCLUDE_LLAMA=true \
+            --build-arg INCLUDE_KROKO_EMBEDDED=false \
+            local_ai_server
+
+      - name: Verify packaged imports without requiring a GPU runner
+        run: |
+          docker run --rm local-ai-server-gpu:${{ github.sha }} \
+            python -c "import faster_whisper, kokoro, llama_cpp; print('GPU image dependencies import successfully')"

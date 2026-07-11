@@ -135,13 +135,8 @@ detect_gpu() {
       return
     fi
   fi
-  # Check AMD GPU
-  if command -v rocm-smi >/dev/null 2>&1; then
-    if rocm-smi >/dev/null 2>&1; then
-      echo 1
-      return
-    fi
-  fi
+  # AVA's GPU image is NVIDIA CUDA-only. Do not route AMD hosts into a GPU
+  # profile until a supported ROCm image and runtime implementation exist.
   echo 0
 }
 

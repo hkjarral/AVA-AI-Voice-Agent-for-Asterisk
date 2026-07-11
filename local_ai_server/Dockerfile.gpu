@@ -1,5 +1,5 @@
 # --- Stage 1: Builder (CUDA-enabled dependencies) ---
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 as builder
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder
 
 # Build args - keep parity with Dockerfile where possible
 ARG INCLUDE_VOSK=true
@@ -64,7 +64,9 @@ RUN if [ "$INCLUDE_SHERPA" = "true" ]; then \
     fi
 
 RUN if [ "$INCLUDE_FASTER_WHISPER" = "true" ]; then \
-        pip install --no-cache-dir faster-whisper==1.0.3; \
+        FASTER_WHISPER_REQUIREMENT="$(grep -m 1 '^faster-whisper==' requirements.txt || true)"; \
+        if [ -z "$FASTER_WHISPER_REQUIREMENT" ]; then echo "❌ Missing faster-whisper pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_WHISPER_CPP" = "true" ]; then \
@@ -80,7 +82,9 @@ RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
     fi
 
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
-        pip install --no-cache-dir "kokoro>=0.9.2"; \
+        KOKORO_REQUIREMENT="$(grep -m 1 '^kokoro==' requirements.txt || true)"; \
+        if [ -z "$KOKORO_REQUIREMENT" ]; then echo "❌ Missing kokoro pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$KOKORO_REQUIREMENT"; \
     fi
 
 RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
@@ -132,7 +136,7 @@ RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
     fi
 
 # --- Stage 2: Final Runtime Image (CUDA runtime) ---
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 # Build argument to optionally include Kroko embedded server
 ARG INCLUDE_KROKO_EMBEDDED=false
