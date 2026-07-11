@@ -14,6 +14,10 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 _BRACE_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_SENSITIVE_HEADER_PATTERN = re.compile(
+    r"(?:authorization|proxy-authorization|api[-_]?key|token|secret|cookie|password|credential)",
+    re.IGNORECASE,
+)
 
 
 def debug_enabled(logger: logging.Logger) -> bool:
@@ -35,6 +39,14 @@ def preview(value: Any, *, limit: int = 4096) -> str:
     if limit and len(s) > limit:
         return s[:limit] + "…"
     return s
+
+
+def redact_headers(headers: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return log-safe request headers without changing the real request."""
+    return {
+        str(name): "<redacted>" if _SENSITIVE_HEADER_PATTERN.search(str(name)) else value
+        for name, value in (headers or {}).items()
+    }
 
 
 def extract_used_env_vars(*templates: Optional[str]) -> list[str]:
@@ -73,6 +85,10 @@ def build_var_snapshot(
 
     envs: Dict[str, Any] = {}
     for name in used_env_vars:
-        envs[name] = env.get(name)
+        # Environment substitutions overwhelmingly represent credentials.  A
+        # trace only needs to show whether the variable resolved, never its
+        # plaintext value.
+        value = env.get(name)
+        envs[name] = "<set>" if value else None
 
     return {"vars": brace, "env": envs}

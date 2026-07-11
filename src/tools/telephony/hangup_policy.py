@@ -26,6 +26,7 @@ DEFAULT_HANGUP_MARKERS: Dict[str, List[str]] = {
     "assistant_farewell": [
         "goodbye",
         "bye",
+        "thanks for calling",
         "thank you for calling",
         "have a great day",
         "take care",

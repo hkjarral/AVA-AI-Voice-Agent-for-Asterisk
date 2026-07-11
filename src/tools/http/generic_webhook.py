@@ -50,6 +50,7 @@ from src.tools.http.debug_trace import (
     extract_used_brace_vars,
     extract_used_env_vars,
     preview,
+    redact_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,7 @@ class GenericWebhookTool(PostCallTool):
                     self.config.name,
                     self.config.method,
                     url,
-                    headers,
+                    redact_headers(headers),
                     preview(payload),
                     build_var_snapshot(
                         used_brace_vars=used_brace,

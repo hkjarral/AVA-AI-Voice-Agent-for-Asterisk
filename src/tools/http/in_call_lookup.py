@@ -25,6 +25,7 @@ from src.tools.http.debug_trace import (
     extract_used_brace_vars,
     extract_used_env_vars,
     preview,
+    redact_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ class InCallHTTPTool(Tool):
                     self.config.name,
                     self.config.method,
                     url,
-                    headers,
+                    redact_headers(headers),
                     query_params,
                     preview(body),
                     preview(json.dumps(json_body)) if json_body is not None else "",
