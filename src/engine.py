@@ -9104,10 +9104,12 @@ class Engine:
 
             # Stop/flush streaming playback first (prevents tail audio).
             # Mark end_reason so cleanup skips remainder flush (avoids oversized RTP packets).
+            playback_position_ms = 0
             try:
                 _sinfo = self.streaming_playback_manager.active_streams.get(call_id)
                 if _sinfo is not None:
                     _sinfo['end_reason'] = 'barge-in'
+                playback_position_ms = int(self.streaming_playback_manager.get_playback_position_ms(call_id))
             except Exception:
                 pass
             try:
@@ -9122,6 +9124,17 @@ class Engine:
                 self._provider_coalesce_buf.pop(call_id, None)
             except Exception:
                 logger.debug("Failed to clear provider stream buffers during barge-in", call_id=call_id, exc_info=True)
+
+            # Direct-WebSocket realtime providers can generate faster than the
+            # telephony pacer plays.  Give providers an optional hook to truncate
+            # their assistant item to the exact amount sent before the local flush.
+            try:
+                provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+                truncate_audio = getattr(provider, "truncate_assistant_audio", None)
+                if callable(truncate_audio) and playback_position_ms > 0:
+                    await truncate_audio(playback_position_ms)
+            except Exception:
+                logger.debug("Provider conversation truncation failed during barge-in", call_id=call_id, exc_info=True)
 
             # Stop any active ARI playbacks (file playback and edge cases).
             try:
@@ -9164,6 +9177,13 @@ class Engine:
                 try:
                     cfg = getattr(self.config, "barge_in", None)
                     suppress_ms = int(getattr(cfg, "provider_output_suppress_ms", 0)) if cfg else 0
+                    provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+                    provider_kind = str(getattr(provider, "provider_kind", "") or "").lower()
+                    # Grok server_vad automatically interrupts the old response.
+                    # Suppressing unlabelled AgentAudio here drops the beginning of
+                    # the *new* response when xAI generates it inside this window.
+                    if provider_kind == "grok":
+                        suppress_ms = 0
                     if suppress_ms > 0:
                         sup = session.vad_state.setdefault("output_suppression", {})
                         prev_until = float(sup.get("until_ts", 0.0) or 0.0)

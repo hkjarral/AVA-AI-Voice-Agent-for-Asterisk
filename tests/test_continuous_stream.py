@@ -69,6 +69,18 @@ def test_first_segment_requires_min_start_when_empty():
     assert mgr._startup_ready.get(call_id) is False
 
 
+def test_playback_position_uses_real_audio_not_filler_bytes():
+    mgr = make_manager()
+    mgr.active_streams["call-position"] = {
+        "target_format": "ulaw",
+        "target_sample_rate": 8000,
+        "real_tx_bytes": 62_720,
+        "tx_bytes": 70_720,
+    }
+
+    assert mgr.get_playback_position_ms("call-position") == 7_840
+
+
 def test_first_segment_releases_short_audio_after_producer_closes():
     mgr = make_manager()
     call_id = "test-call-short"

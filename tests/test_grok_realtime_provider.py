@@ -226,6 +226,63 @@ async def test_buffered_tail_notifies_engine_before_audio_done_cleanup(provider)
     assert provider._outbuf == bytearray()
 
 
+@pytest.mark.asyncio
+async def test_server_vad_barge_in_does_not_send_manual_response_cancel(provider):
+    """xAI owns cancellation in server_vad mode; AVA only flushes local egress."""
+    ws = _RecordingWebSocket()
+    provider.websocket = ws
+    provider._current_response_id = "resp-active"
+    provider._greeting_response_id = "resp-greeting"
+    provider._greeting_completed = True
+    provider._outbuf.extend(b"old-audio")
+    observed = []
+
+    async def on_event(event):
+        observed.append(event["type"])
+
+    async def emit_audio_done():
+        observed.append("AgentAudioDone")
+
+    provider.on_event = on_event
+    provider._emit_audio_done = emit_audio_done
+
+    await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+
+    assert observed == ["ProviderBargeIn", "AgentAudioDone"]
+    assert provider._outbuf == bytearray()
+    assert all(event["type"] != "response.cancel" for event in ws.parsed_events())
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_item_and_sends_playback_truncation(provider):
+    ws = _RecordingWebSocket()
+    provider.websocket = ws
+    provider._current_response_id = "resp-1"
+
+    await provider._handle_event(
+        {
+            "type": "response.output_item.added",
+            "response_id": "resp-1",
+            "item": {"id": "item-1", "type": "message", "role": "assistant"},
+        }
+    )
+    await provider._handle_event(
+        {
+            "type": "response.content_part.added",
+            "item_id": "item-1",
+            "content_index": 2,
+            "part": {"type": "audio"},
+        }
+    )
+
+    assert await provider.truncate_assistant_audio(7840) is True
+    event = ws.parsed_events()[-1]
+    assert event["type"] == "conversation.item.truncate"
+    assert event["item_id"] == "item-1"
+    assert event["content_index"] == 2
+    assert event["audio_end_ms"] == 7840
+
+
 # --------------------------------------------------------------------------- #
 # 3. provider_key propagation                                                  #
 # --------------------------------------------------------------------------- #
