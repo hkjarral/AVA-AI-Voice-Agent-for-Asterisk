@@ -23,12 +23,8 @@ class _WebSocket:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_cls,provider_name", [
-    (OpenAIRealtimeProvider, "OpenAI"),
-    (GrokProvider, "Grok"),
-])
-async def test_realtime_providers_create_tools_disabled_voice_response(provider_cls, provider_name):
-    provider = provider_cls.__new__(provider_cls)
+async def test_openai_realtime_creates_tools_disabled_voice_response():
+    provider = OpenAIRealtimeProvider.__new__(OpenAIRealtimeProvider)
     provider.websocket = _WebSocket()
     provider._call_id = "call-1"
     provider.config = SimpleNamespace(api_version="ga")
@@ -40,6 +36,25 @@ async def test_realtime_providers_create_tools_disabled_voice_response(provider_
     assert payload["type"] == "response.create"
     assert payload["response"]["tools"] == []
     assert "Are you still there?" in payload["response"]["instructions"]
+    assert provider._pending_response is True
+
+
+@pytest.mark.asyncio
+async def test_grok_uses_force_message_for_exact_no_input_announcement():
+    provider = GrokProvider.__new__(GrokProvider)
+    provider.websocket = _WebSocket()
+    provider._call_id = "call-grok"
+    provider._pending_response = False
+    provider._send_json = AsyncMock()
+
+    assert await provider.speak_text("Are you still there?") is True
+    payload = provider._send_json.await_args.args[0]
+    assert payload["type"] == "conversation.item.create"
+    assert payload["item"] == {
+        "type": "force_message",
+        "content": [{"type": "input_text", "text": "Are you still there?"}],
+        "interruptible": True,
+    }
     assert provider._pending_response is True
 
 

@@ -628,29 +628,34 @@ class GrokProvider(AIProviderInterface):
             logger.error("Failed to send audio to Grok", call_id=self._call_id, exc_info=True)
 
     async def speak_text(self, text: str) -> bool:
-        """Create a tools-disabled response in the active configured voice."""
+        """Speak an exact, interruptible platform message in the configured voice.
+
+        xAI's ``force_message`` item is designed for deterministic announcements
+        such as inactivity prompts.  It injects its own response lifecycle, so a
+        follow-up ``response.create`` must not be sent.  A bare response request
+        with per-response instructions can be ignored by server-VAD sessions when
+        no new conversation item has been committed.
+        """
         if not text or not self.websocket or self.websocket.state.name != "OPEN":
             return False
-        response: Dict[str, Any] = {
-            "instructions": (
-                "Speak exactly the sentence between <message> tags. Do not add, remove, "
-                f"or paraphrase words. Do not call tools. <message>{text}</message>"
-            ),
-            "tools": [],
-        }
-        if not self._is_ga:
-            response["modalities"] = self._response_modalities
-            response["input"] = []
         try:
             await self._send_json(
                 {
-                    "type": "response.create",
-                    "event_id": f"resp-no-input-{uuid.uuid4()}",
-                    "response": response,
+                    "type": "conversation.item.create",
+                    "event_id": f"force-no-input-{uuid.uuid4()}",
+                    "item": {
+                        "type": "force_message",
+                        "content": [{"type": "input_text", "text": text}],
+                        "interruptible": True,
+                    },
                 }
             )
             self._pending_response = True
-            logger.info("Sent no-input announcement to Grok", call_id=self._call_id, text_preview=text[:80])
+            logger.info(
+                "Sent no-input force_message to Grok",
+                call_id=self._call_id,
+                text_preview=text[:80],
+            )
             return True
         except Exception:
             logger.warning("Failed to send no-input announcement to Grok", call_id=self._call_id, exc_info=True)
