@@ -56,6 +56,7 @@ def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine.ari_client = MagicMock()
     engine.ari_client.play_sound = AsyncMock(return_value={"id": "pb-123"})
     engine.ari_client.hangup_channel = AsyncMock()
+    engine.ari_client.dialplan_target_exists = AsyncMock(return_value=True)
     engine.ari_client.continue_in_dialplan = AsyncMock(return_value=True)
     # Heavy collaborators stubbed: not under test here.
     engine._execute_pre_call_tools = AsyncMock(return_value=None)
@@ -147,6 +148,27 @@ async def test_provider_failure_can_redirect_to_dialplan_once():
     assert session.transfer_state == "provider_failure_redirect"
     engine.ari_client.play_sound.assert_not_awaited()
     engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_provider_failure_redirect_target_announces_and_hangs_up():
+    engine = _make_engine("dialplan_redirect")
+    engine.ari_client.dialplan_target_exists.return_value = False
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+
+    engine.ari_client.dialplan_target_exists.assert_awaited_once_with(
+        "chan-1",
+        context="aava-provider-failure",
+        extension="s",
+        priority=1,
+    )
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+    assert getattr(session, "transfer_active", False) is False
+    assert getattr(session, "transfer_state", None) is None
+    engine.ari_client.play_sound.assert_awaited_once()
+    engine.ari_client.hangup_channel.assert_awaited_once_with("chan-1")
 
 
 @pytest.mark.asyncio

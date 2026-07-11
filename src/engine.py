@@ -15344,50 +15344,76 @@ class Engine:
                 getattr(self.config, "provider_failure_redirect_priority", 1) or 1
             )
             if context:
-                session.transfer_active = True
-                session.transfer_state = "provider_failure_redirect"
-                session.transfer_target = f"{context},{extension},{priority}"
-                await self._save_session(session)
                 try:
-                    redirected = await self.ari_client.continue_in_dialplan(
+                    target_exists = await self.ari_client.dialplan_target_exists(
                         session.caller_channel_id,
                         context=context,
                         extension=extension,
                         priority=priority,
                     )
                 except Exception:
-                    redirected = False
+                    target_exists = False
                     logger.warning(
-                        "Provider-failure dialplan redirect raised",
+                        "Provider-failure dialplan target validation raised",
                         call_id=session.call_id,
                         context=context,
                         extension=extension,
                         priority=priority,
                         exc_info=True,
                     )
-                if redirected:
-                    logger.info(
-                        "Provider-failure dialplan redirect initiated",
+                if not target_exists:
+                    logger.error(
+                        "Provider-failure dialplan target does not exist; announcing and hanging up",
                         call_id=session.call_id,
                         context=context,
                         extension=extension,
                         priority=priority,
                     )
-                    return
+                else:
+                    session.transfer_active = True
+                    session.transfer_state = "provider_failure_redirect"
+                    session.transfer_target = f"{context},{extension},{priority}"
+                    await self._save_session(session)
+                    try:
+                        redirected = await self.ari_client.continue_in_dialplan(
+                            session.caller_channel_id,
+                            context=context,
+                            extension=extension,
+                            priority=priority,
+                        )
+                    except Exception:
+                        redirected = False
+                        logger.warning(
+                            "Provider-failure dialplan redirect raised",
+                            call_id=session.call_id,
+                            context=context,
+                            extension=extension,
+                            priority=priority,
+                            exc_info=True,
+                        )
+                    if redirected:
+                        logger.info(
+                            "Provider-failure dialplan redirect initiated",
+                            call_id=session.call_id,
+                            context=context,
+                            extension=extension,
+                            priority=priority,
+                        )
+                        return
 
-                # Continue failed: restore cleanup ownership before using the
-                # safe announcement/hangup fallback.
-                session.transfer_active = False
-                session.transfer_state = None
-                session.transfer_target = None
-                await self._save_session(session)
-                logger.error(
-                    "Provider-failure dialplan redirect failed; announcing and hanging up",
-                    call_id=session.call_id,
-                    context=context,
-                    extension=extension,
-                    priority=priority,
-                )
+                    # Continue failed: restore cleanup ownership before using the
+                    # safe announcement/hangup fallback.
+                    session.transfer_active = False
+                    session.transfer_state = None
+                    session.transfer_target = None
+                    await self._save_session(session)
+                    logger.error(
+                        "Provider-failure dialplan redirect failed; announcing and hanging up",
+                        call_id=session.call_id,
+                        context=context,
+                        extension=extension,
+                        priority=priority,
+                    )
             else:
                 logger.error(
                     "Provider-failure dialplan redirect has no context; announcing and hanging up",

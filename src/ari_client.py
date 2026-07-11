@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import time
 import uuid
 import audioop
@@ -26,6 +27,8 @@ from .config import AsteriskConfig
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
+
+_UNSAFE_DIALPLAN_TARGET_RE = re.compile(r"[,()\x00-\x1f\x7f]")
 
 class ARIClient:
     """A client for interacting with the Asterisk REST Interface (ARI)."""
@@ -423,6 +426,78 @@ class ARIClient:
         if status is not None and int(status) >= 400:
             return False
         return True
+
+    async def dialplan_target_exists(
+        self,
+        channel_id: str,
+        *,
+        context: str,
+        extension: str = "s",
+        priority: int = 1,
+    ) -> bool:
+        """Return whether a concrete dialplan destination exists for this channel.
+
+        ARI can accept ``continue`` before Asterisk resolves the destination.  An
+        invalid target therefore looks successful to the caller of
+        :meth:`continue_in_dialplan` but is immediately hung up by Asterisk.  Read
+        Asterisk's ``DIALPLAN_EXISTS`` function first so recovery code can retain
+        channel ownership and use its safe fallback instead.
+        """
+        context = str(context or "").strip()
+        extension = str(extension or "").strip()
+        try:
+            priority = int(priority)
+        except (TypeError, ValueError):
+            return False
+
+        # Function arguments are comma-separated. Reject delimiters/control bytes
+        # rather than allowing configuration to alter the function expression.
+        if (
+            not context
+            or not extension
+            or priority < 1
+            or _UNSAFE_DIALPLAN_TARGET_RE.search(context)
+            or _UNSAFE_DIALPLAN_TARGET_RE.search(extension)
+        ):
+            logger.error(
+                "Unsafe or invalid dialplan redirect target",
+                channel_id=channel_id,
+                context=context,
+                extension=extension,
+                priority=priority,
+            )
+            return False
+
+        variable = f"DIALPLAN_EXISTS({context},{extension},{priority})"
+        try:
+            resp = await self.send_command(
+                "GET",
+                f"channels/{channel_id}/variable",
+                params={"variable": variable},
+                tolerate_statuses=[404],
+            )
+        except Exception:
+            logger.warning(
+                "Failed to validate dialplan redirect target",
+                channel_id=channel_id,
+                context=context,
+                extension=extension,
+                priority=priority,
+                exc_info=True,
+            )
+            return False
+
+        if not isinstance(resp, dict):
+            return False
+        status = resp.get("status")
+        if status is not None and int(status) >= 400:
+            return False
+        return str(resp.get("value") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     async def answer_channel(self, channel_id: str):
         """Answer a channel."""
