@@ -47,9 +47,36 @@ class _StreamingStubSTT(STTComponent):
         self._keep_receiving.set()
 
 
+class _ResultStreamingStubSTT(_StreamingStubSTT):
+    def __init__(self):
+        super().__init__()
+        self.results = asyncio.Queue()
+
+    async def iter_results(self, call_id):
+        while True:
+            value = await self.results.get()
+            if value is None:
+                return
+            yield value
+
+    async def stop_stream(self, call_id):
+        self.results.put_nowait(None)
+
+
 class _StubLLM(LLMComponent):
     async def generate(self, call_id, transcript, context, options):
         return "hello"
+
+
+class _RecordingLLM(LLMComponent):
+    def __init__(self):
+        self.transcripts = []
+        self.called = asyncio.Event()
+
+    async def generate(self, call_id, transcript, context, options):
+        self.transcripts.append(transcript)
+        self.called.set()
+        return ""
 
 
 class _StubTTS(TTSComponent):
@@ -58,11 +85,11 @@ class _StubTTS(TTSComponent):
 
 
 class _StubResolution:
-    def __init__(self, stt_adapter=None, stt_options=None):
+    def __init__(self, stt_adapter=None, stt_options=None, llm_adapter=None):
         self.pipeline_name = "stub"
         self.stt_key = "stub_stt"
         self.stt_adapter = stt_adapter or _StubSTT()
-        self.llm_adapter = _StubLLM()
+        self.llm_adapter = llm_adapter or _StubLLM()
         self.tts_adapter = _StubTTS()
         self.stt_options = stt_options or {}
         self.llm_options = {}
@@ -165,4 +192,52 @@ async def test_pipeline_runner_uses_canonical_streaming_stt_audio_contract(monke
     assert stt.sent[0][1] == "pcm16_16k"
     assert len(stt.sent[0][0]) == 2560
 
+    await engine._cleanup_call(call_id)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_dialog_consumer_restarts_after_unexpected_exit(monkeypatch):
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {"host": "127.0.0.1", "port": 8088, "username": "u", "password": "p", "app_name": "ai-voice-agent"},
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"streaming": {}},
+        "active_pipeline": "streaming",
+        "audio_transport": "externalmedia",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    llm = _RecordingLLM()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=llm,
+    )
+    monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", lambda *args, **kwargs: resolution)
+
+    activity_calls = 0
+
+    async def fail_first_activity(*_args, **_kwargs):
+        nonlocal activity_calls
+        activity_calls += 1
+        if activity_calls == 1:
+            raise RuntimeError("transient dialog failure")
+
+    monkeypatch.setattr(engine, "_no_input_note_activity", fail_first_activity)
+
+    from src.core.models import CallSession
+    call_id = "call-dialog-restart"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "streaming"
+    await engine.session_store.upsert_call(session)
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+
+    await stt.results.put("first turn crashes consumer")
+    await stt.results.put("second turn survives")
+    await asyncio.wait_for(llm.called.wait(), timeout=2)
+
+    assert llm.transcripts == ["second turn survives"]
     await engine._cleanup_call(call_id)

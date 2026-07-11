@@ -756,3 +756,22 @@ class TransportOrchestrator:
         if not context_name:
             return None
         return self.contexts.get(context_name)
+
+    def yaml_context_shadowed_by_agent_db(
+        self, context_name: Optional[str], routing_method: Optional[str] = None
+    ) -> bool:
+        """Return whether YAML defines a context omitted/inactive in the authoritative DB.
+
+        This is diagnostic only: callers must not route through the YAML value,
+        because the missing DB row may represent an intentional delete/deactivate.
+        """
+        if not context_name or not self.agent_store.available():
+            return False
+        if self._yaml_context_config(context_name) is None:
+            return False
+        from src.core.agent_store import AgentStoreReadError
+        prefer = "display_name" if routing_method == "ai_context" else "slug"
+        try:
+            return self.agent_store.resolve(context_name, prefer=prefer) is None
+        except AgentStoreReadError:
+            return False

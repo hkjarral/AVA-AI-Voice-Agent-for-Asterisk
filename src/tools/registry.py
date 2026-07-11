@@ -410,7 +410,11 @@ class ToolRegistry:
                 "- When the user says goodbye, farewell, or wants to end the call, use hangup_call tool. Set farewell_message to the exact goodbye sentence you intend to say, then speak that exact sentence as your final response."
             )
         if "request_transcript" in available_tool_names:
-            important_rules.append("- When the user asks to email the transcript, use request_transcript tool")
+            important_rules.append(
+                "- Use request_transcript action=request only after a confirmed email address. "
+                "If the user withdraws consent or says not to send it, immediately use "
+                "request_transcript action=cancel before ending the call."
+            )
         if "live_agent_transfer" in available_tool_names:
             important_rules.append("- When the user asks for a human/live agent and live_agent_transfer is available, use live_agent_transfer")
         if "blind_transfer" in available_tool_names:
@@ -462,7 +466,11 @@ If the system prompt mentions other tools, they are NOT available. Do not call t
                 "- When the user says goodbye, farewell, or wants to end the call, use hangup_call tool. Set farewell_message to the exact goodbye sentence you intend to say, then speak that exact sentence as your final response."
             )
         if "request_transcript" in available_tool_names:
-            important_rules.append("- When the user asks to email the transcript, use request_transcript tool")
+            important_rules.append(
+                "- Use request_transcript action=request only after a confirmed email address. "
+                "If the user withdraws consent or says not to send it, immediately use "
+                "request_transcript action=cancel before ending the call."
+            )
         if "live_agent_transfer" in available_tool_names:
             important_rules.append("- When the user asks for a human/live agent and live_agent_transfer is available, use live_agent_transfer")
         if "blind_transfer" in available_tool_names:

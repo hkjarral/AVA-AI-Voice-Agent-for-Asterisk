@@ -39,11 +39,16 @@ class TestRequestTranscriptTool:
         assert definition.category.value == "business"
         
         # Check parameters
-        assert len(definition.parameters) == 1
+        assert len(definition.parameters) == 2
         
-        email_param = definition.parameters[0]
+        action_param = definition.parameters[0]
+        assert action_param.name == "action"
+        assert action_param.enum == ["request", "cancel"]
+        assert action_param.required is False
+
+        email_param = definition.parameters[1]
         assert email_param.name == "caller_email"
-        assert email_param.required is True
+        assert email_param.required is False
         assert email_param.type == "string"
     
     def test_definition_includes_confirmation_instructions(self, transcript_tool):
@@ -273,6 +278,47 @@ class TestRequestTranscriptTool:
                 assert result2["status"] in ["error", "duplicate", "success"]
     
     # ==================== Feature Toggle Tests ====================
+
+    @pytest.mark.asyncio
+    async def test_cancel_revokes_consent_and_clears_pending_recipient(
+        self, transcript_tool, tool_context, enabled_config, sample_call_session
+    ):
+        sample_call_session.transcript_emails = {"private@example.com"}
+        sample_call_session.transcript_consent_state = "granted"
+
+        result = await transcript_tool.execute(
+            parameters={"action": "cancel"},
+            context=tool_context,
+        )
+
+        assert result["status"] == "cancelled"
+        assert sample_call_session.transcript_emails == set()
+        assert sample_call_session.transcript_consent_state == "revoked"
+        assert not transcript_tool.is_delivery_authorized(
+            sample_call_session, "private@example.com"
+        )
+        tool_context.session_store.upsert_call.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_new_confirmed_request_after_cancel_restores_consent(
+        self, transcript_tool, tool_context, enabled_config, sample_call_session
+    ):
+        sample_call_session.transcript_emails = {"old@example.com"}
+        sample_call_session.transcript_consent_state = "granted"
+        await transcript_tool.execute({"action": "cancel"}, tool_context)
+
+        enabled_config["tools"]["request_transcript"]["validate_domain"] = False
+        result = await transcript_tool.execute(
+            {"action": "request", "caller_email": "new at example dot com"},
+            tool_context,
+        )
+
+        assert result["status"] == "success"
+        assert sample_call_session.transcript_emails == {"new@example.com"}
+        assert sample_call_session.transcript_consent_state == "granted"
+        assert transcript_tool.is_delivery_authorized(
+            sample_call_session, "new@example.com"
+        )
     
     @pytest.mark.asyncio
     async def test_tool_disabled(

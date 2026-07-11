@@ -3880,6 +3880,10 @@ class Engine:
             except Exception:
                 logger.debug("Audio profile resolution failed", call_id=caller_channel_id, exc_info=True)
 
+            if getattr(session, "context_resolution_error", None):
+                await self._handle_provider_start_failure(session)
+                return
+
             # Per-call override via Asterisk channel var AI_PROVIDER.
             # Values:
             #   - openai_realtime | deepgram → full agent override
@@ -6927,7 +6931,9 @@ class Engine:
                                     
                                     # Get fresh session data with complete conversation
                                     current_session = await self.session_store.get_by_call_id(call_id)
-                                    if current_session:
+                                    if current_session and transcript_tool.is_delivery_authorized(
+                                        current_session, email_address
+                                    ):
                                         # Prepare and send transcript email
                                         email_data = transcript_tool._prepare_email_data(
                                             email_address,
@@ -6944,6 +6950,12 @@ class Engine:
                                             "📧 Sent end-of-call transcript",
                                             call_id=call_id,
                                             email=email_address
+                                        )
+                                    elif current_session:
+                                        logger.info(
+                                            "Skipped end-of-call transcript because consent is not active",
+                                            call_id=call_id,
+                                            email=email_address,
                                         )
                                 except Exception as e:
                                     logger.warning(
@@ -12283,6 +12295,12 @@ class Engine:
                                 # Record time when a final transcript arrives
                                 self._last_transcript_ts[call_id] = time.time()
                                 transcript_queue.put_nowait(final)
+                                logger.info(
+                                    "Pipeline STT final enqueued for dialog",
+                                    call_id=call_id,
+                                    transcript_preview=str(final or "")[:80],
+                                    queue_depth=transcript_queue.qsize(),
+                                )
                             except asyncio.QueueFull:
                                 try:
                                     transcript_queue.get_nowait()
@@ -13308,8 +13326,34 @@ class Engine:
                             await schedule_flush()
                 except asyncio.CancelledError:
                     pass
+                except Exception:
+                    logger.error(
+                        "Pipeline dialog worker crashed while consuming transcript",
+                        call_id=call_id,
+                        pending_segments=len(pending_segments),
+                        exc_info=True,
+                    )
+                    raise
                 finally:
                     await cancel_flush()
+
+            async def dialog_supervisor() -> None:
+                restart_count = 0
+                while True:
+                    try:
+                        await dialog_worker()
+                        return
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        restart_count += 1
+                        logger.warning(
+                            "Restarting pipeline dialog consumer after unexpected exit",
+                            call_id=call_id,
+                            restart_count=restart_count,
+                        )
+                        # Yield so a persistent failure cannot spin the event loop.
+                        await asyncio.sleep(min(0.1 * restart_count, 1.0))
 
             ingest_task = asyncio.create_task(ingest_audio())
 
@@ -13328,7 +13372,7 @@ class Engine:
                     )
                     stt_send_task = asyncio.create_task(stt_sender())
                     stt_recv_task = asyncio.create_task(stt_receiver())
-                    dialog_task = asyncio.create_task(dialog_worker())
+                    dialog_task = asyncio.create_task(dialog_supervisor())
 
                     if stt_send_task:
                         await stt_send_task
@@ -13350,7 +13394,7 @@ class Engine:
                         await pipeline.stt_adapter.stop_stream(call_id)
             else:
                 stt_task = asyncio.create_task(stt_worker())
-                dialog_task = asyncio.create_task(dialog_worker())
+                dialog_task = asyncio.create_task(dialog_supervisor())
 
                 try:
                     await dialog_task
@@ -13596,6 +13640,30 @@ class Engine:
             context_name=session.context_name,
             routing_method=session.routing_method,
         )
+
+        # A YAML context omitted from an existing authoritative agents.db is not
+        # safe to run as a generic/default provider. It may be stale migration
+        # drift or an intentionally deleted/deactivated agent. Fail closed and
+        # direct the operator to the explicit reconciliation flow; never resurrect
+        # the YAML definition implicitly.
+        if resolved_context and self.transport_orchestrator.yaml_context_shadowed_by_agent_db(
+            resolved_context, session.routing_method
+        ):
+            message = (
+                f"context_resolution_failed: {resolved_context}: YAML context is not active "
+                "in authoritative agents.db; reconcile or restore it in the Agents UI"
+            )
+            session.context_resolution_error = message
+            session.error_message = message
+            await self._save_session(session)
+            logger.error(
+                "Requested YAML context is shadowed by authoritative agents.db",
+                call_id=session.call_id,
+                context_name=resolved_context,
+                routing_method=session.routing_method,
+                remediation="Use Agents > Migration Status > Reconcile YAML changes",
+            )
+            return
 
         # Resolve the engine-owned inactivity policy before provider/pipeline
         # selection can return early. This keeps agents.db and headless YAML calls

@@ -35,6 +35,20 @@ def test_inactive_or_unknown_slug_not_routable_when_db_present():
         assert orch.get_context_config("sales") is None
 
 
+def test_yaml_context_shadowed_by_authoritative_db_is_reported():
+    orch = _orch()
+    with patch.object(orch.agent_store, "available", return_value=True), \
+         patch.object(orch.agent_store, "resolve", return_value=None):
+        assert orch.yaml_context_shadowed_by_agent_db("sales", "ai_context") is True
+
+
+def test_unknown_context_not_in_yaml_is_not_reported_as_migration_drift():
+    orch = _orch()
+    with patch.object(orch.agent_store, "available", return_value=True), \
+         patch.object(orch.agent_store, "resolve", return_value=None):
+        assert orch.yaml_context_shadowed_by_agent_db("intentionally_missing", "ai_context") is False
+
+
 def test_corrupt_db_falls_back_to_yaml():
     # HIGH-9: DB present but unreadable (corrupt/locked) => resolve() raises
     # AgentStoreReadError and the orchestrator falls back to the legacy YAML context,

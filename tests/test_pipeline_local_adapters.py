@@ -59,7 +59,10 @@ class _MockWebSocket:
         self.sent.append(data)
 
     async def recv(self):
-        return await self._queue.get()
+        item = await self._queue.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def close(self):
         self.closed = True
@@ -149,6 +152,45 @@ async def test_local_stt_stream_accepts_linear16_alias(monkeypatch):
         assert base64.b64decode(audio_message["data"]) == audio_buffer
     finally:
         await adapter.close_call("call-linear16")
+
+
+@pytest.mark.asyncio
+async def test_local_stt_stream_recovers_receiver_without_ending_results(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = LocalProviderConfig(**app_config.providers["local"])
+    adapter = LocalSTTAdapter("local_stt", app_config, provider_config, {"mode": "stt"})
+    mock_ws = _MockWebSocket()
+    mock_ws.push(json.dumps({"type": "mode_ready", "mode": "stt", "call_id": "call-recover"}))
+
+    async def fake_connect(*_args, **_kwargs):
+        return mock_ws
+
+    monkeypatch.setattr("src.pipelines.local.websockets.connect", fake_connect)
+
+    await adapter.start_stream(
+        "call-recover",
+        {"mode": "stt"},
+        sample_rate_hz=16000,
+        fmt="linear16",
+    )
+    session = adapter._sessions["call-recover"]
+    first_receiver = session.receiver_task
+    mock_ws.push(RuntimeError("transient receive failure"))
+    await asyncio.wait_for(first_receiver, timeout=1)
+
+    result_task = asyncio.create_task(anext(adapter.iter_results("call-recover")))
+    await adapter.send_audio("call-recover", b"\x01\x02" * 160, fmt="linear16")
+    assert session.receiver_restart_count == 1
+    assert session.receiver_task is not first_receiver
+
+    mock_ws.push(json.dumps({
+        "type": "stt_result",
+        "text": "second turn survives",
+        "is_partial": False,
+        "is_final": True,
+    }))
+    assert await asyncio.wait_for(result_task, timeout=1) == "second turn survives"
+    await adapter.close_call("call-recover")
 
 
 @pytest.mark.asyncio
