@@ -4,6 +4,7 @@ import pytest
 from src.config import AppConfig
 from src.engine import Engine, _PipelinePlaybackInterrupted
 from src.pipelines.base import STTComponent, LLMComponent, TTSComponent
+from src.tools.telephony.hangup_policy import normalize_hangup_policy
 
 
 class _StubSTT(STTComponent):
@@ -139,6 +140,30 @@ async def test_pipeline_stream_put_allows_healthy_consumer():
         "call-healthy", "stream-1", queue, b"audio"
     )
     assert await queue.get() == b"audio"
+
+
+def test_pipeline_terminal_fallback_matches_first_live_farewell():
+    assert Engine._is_pipeline_farewell_without_tool(
+        "Okay, never mind. That's all. Thank you.",
+        "Thanks for calling! If you're in the US or Canada, you'll get a text with helpful links in just a moment. Have a great day!",
+        normalize_hangup_policy({}),
+    )
+
+
+def test_pipeline_terminal_fallback_rejects_casual_mid_call_thanks():
+    assert not Engine._is_pipeline_farewell_without_tool(
+        "Thanks, now explain Local Hybrid pricing.",
+        "You're welcome. Local Hybrid costs about two tenths of a cent per minute.",
+        normalize_hangup_policy({}),
+    )
+
+
+def test_pipeline_terminal_fallback_requires_assistant_farewell():
+    assert not Engine._is_pipeline_farewell_without_tool(
+        "That's all.",
+        "Is there anything else you'd like to know?",
+        normalize_hangup_policy({}),
+    )
 
 
 class _StubResolution:

@@ -75,6 +75,7 @@ from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
 from src.pipelines.base import LLMResponse
 from src.tools.telephony.hangup_policy import (
+    DEFAULT_HANGUP_MARKERS,
     resolve_hangup_policy,
     text_contains_end_call_intent,
     text_is_short_polite_closing,
@@ -5347,6 +5348,32 @@ class Engine:
                 # Re-check ownership/activity on every bounded wait. A healthy
                 # slow consumer keeps draining; a cancelled/replaced stream exits.
                 continue
+
+    @staticmethod
+    def _is_pipeline_farewell_without_tool(
+        user_text: str,
+        assistant_text: str,
+        hangup_policy: Dict[str, Any],
+    ) -> bool:
+        """Require explicit caller end intent plus a spoken assistant farewell."""
+        markers = hangup_policy.get("markers") if isinstance(hangup_policy, dict) else {}
+        markers = markers if isinstance(markers, dict) else {}
+        configured = normalize_marker_list(
+            markers.get("end_call"), DEFAULT_HANGUP_MARKERS["end_call"]
+        )
+        ambiguous = {"thanks", "thank you", "okay", "ok", "no thanks", "no thank you"}
+        explicit_markers = [marker for marker in configured if marker not in ambiguous]
+        has_user_end = (
+            text_contains_end_call_intent(user_text, explicit_markers)
+            or text_is_short_polite_closing(user_text)
+        )
+        farewell_markers = normalize_marker_list(
+            markers.get("assistant_farewell"),
+            DEFAULT_HANGUP_MARKERS["assistant_farewell"],
+        )
+        return has_user_end and text_contains_end_call_intent(
+            assistant_text, farewell_markers
+        )
 
     async def _local_ai_server_llm_request(
         self,
@@ -12626,6 +12653,22 @@ class Engine:
                                 # Jump to tool execution (reuse serial path's tool handling)
                                 # by setting response_text and tool_calls, then breaking out
                             else:
+                                tools_cfg = getattr(self.config, "tools", {}) or {}
+                                if self._is_pipeline_farewell_without_tool(
+                                    transcript_text,
+                                    response_text,
+                                    resolve_hangup_policy(tools_cfg),
+                                ):
+                                    logger.warning(
+                                        "Pipeline omitted hangup_call after farewell; applying terminal fallback",
+                                        call_id=call_id,
+                                        pipeline=pipeline_label,
+                                    )
+                                    await self._terminate_call_after_audio(
+                                        call_id,
+                                        reason="pipeline_farewell_without_tool",
+                                        call_outcome="agent_hangup",
+                                    )
                                 return
 
                             # Fall through to tool execution below if tool calls were found
@@ -12981,6 +13024,25 @@ class Engine:
                                         )
                                 except Exception:
                                     logger.error("Pipeline playback exception", call_id=call_id, exc_info=True)
+
+                    if response_text and not tool_calls:
+                        tools_cfg = getattr(self.config, "tools", {}) or {}
+                        if self._is_pipeline_farewell_without_tool(
+                            transcript_text,
+                            response_text,
+                            resolve_hangup_policy(tools_cfg),
+                        ):
+                            logger.warning(
+                                "Pipeline omitted hangup_call after farewell; applying terminal fallback",
+                                call_id=call_id,
+                                pipeline=pipeline_label,
+                            )
+                            await self._terminate_call_after_audio(
+                                call_id,
+                                reason="pipeline_farewell_without_tool",
+                                call_outcome="agent_hangup",
+                            )
+                            return
 
                     # 2. Execute Tools (if any)
                     if tool_calls:
