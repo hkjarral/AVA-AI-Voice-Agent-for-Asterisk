@@ -201,6 +201,31 @@ async def test_response_output_text_delta_still_handled(provider):
     assert captured == [("World", False)]
 
 
+@pytest.mark.asyncio
+async def test_buffered_tail_notifies_engine_before_audio_done_cleanup(provider):
+    """Caller speech must flush platform playback before drain-oriented cleanup."""
+    ordering: list[str] = []
+
+    async def on_event(event):
+        assert event["type"] == "ProviderBargeIn"
+        ordering.append("provider_barge_in")
+
+    async def emit_audio_done():
+        ordering.append("audio_done")
+
+    provider.on_event = on_event
+    provider._emit_audio_done = emit_audio_done
+    provider._current_response_id = None
+    provider._greeting_response_id = None
+    provider._greeting_completed = True
+    provider._outbuf.extend(b"buffered-tail")
+
+    await provider._handle_event({"type": "input_audio_buffer.speech_started"})
+
+    assert ordering == ["provider_barge_in", "audio_done"]
+    assert provider._outbuf == bytearray()
+
+
 # --------------------------------------------------------------------------- #
 # 3. provider_key propagation                                                  #
 # --------------------------------------------------------------------------- #

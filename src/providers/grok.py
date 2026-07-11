@@ -2084,16 +2084,20 @@ class GrokProvider(AIProviderInterface):
                                 self._outbuf.clear()
                         except Exception:
                             logger.debug("Failed to clear Grok egress buffer on barge-in", call_id=self._call_id, exc_info=True)
-                        try:
-                            await self._emit_audio_done()
-                        except Exception:
-                            logger.debug("Failed to stop Grok egress pacer on barge-in", call_id=self._call_id, exc_info=True)
                         logger.info(
                             "🎤 User speech started (no active response); requesting platform flush",
                             call_id=self._call_id,
                             event_type=event_type,
                         )
+                        # Notify the engine before provider audio-done cleanup.  The
+                        # cleanup path can await transport drain work; putting it first
+                        # makes buffered-tail interruptions feel sluggish even though
+                        # xAI detected caller speech promptly.
                         await self._emit_provider_barge_in(event_type=event_type)
+                        try:
+                            await self._emit_audio_done()
+                        except Exception:
+                            logger.debug("Failed to stop Grok egress pacer on barge-in", call_id=self._call_id, exc_info=True)
                 else:
                     logger.info("Grok input_audio_buffer ack", call_id=self._call_id, event_type=event_type)
             return
