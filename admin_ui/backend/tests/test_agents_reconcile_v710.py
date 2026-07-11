@@ -124,6 +124,31 @@ def test_reconcile_imports_pipeline_context(env):
     assert json.loads(got.json()["extra_json"])["pipeline"] == "deepgram_openai_elevenlabs"
 
 
+def test_reconcile_imports_context_defined_only_in_local_override(env):
+    client, yaml_path = env
+    _write_yaml(yaml_path, {
+        "Base": {"provider": "local", "prompt": "base"},
+    })
+    local_path = yaml_path.with_name("ai-agent.local.yaml")
+    _write_yaml(local_path, {
+        "Base": {"greeting": "overridden greeting"},
+        "Local Full": {
+            "provider": "local",
+            "prompt": "fully local project agent",
+            "tools": ["hangup_call"],
+        },
+    })
+
+    response = client.post("/api/agents-migration/reconcile")
+
+    assert response.status_code == 200, response.text
+    assert ["added", "local_full"] in response.json()["changed"]
+    assert client.get("/api/agents/base").json()["greeting"] == "overridden greeting"
+    local_agent = client.get("/api/agents/local_full").json()
+    assert local_agent["prompt"] == "fully local project agent"
+    assert json.loads(local_agent["tools_json"]) == ["hangup_call"]
+
+
 def test_reconcile_skips_invalid_email(env):
     # CodeRabbit Minor: reconcile writes email_recipient/email_from straight to the
     # store, bypassing the AgentIn/AgentPatch email validation (H3/MED-E1). An invalid
