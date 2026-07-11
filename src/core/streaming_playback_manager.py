@@ -3743,10 +3743,12 @@ class StreamingPlaybackManager:
         timestamp = int(time.time() * 1000)
         return f"stream:{playback_type}:{call_id}:{timestamp}"
     
-    def is_stream_active(self, call_id: str) -> bool:
-        """Return True if a streaming playback is active for the call."""
+    def is_stream_active(self, call_id: str, stream_id: Optional[str] = None) -> bool:
+        """Return True if the requested streaming playback is active."""
         info = self.active_streams.get(call_id)
         if not info:
+            return False
+        if stream_id is not None and info.get('stream_id') != stream_id:
             return False
         task = info.get('streaming_task')
         return task is not None and not task.done()

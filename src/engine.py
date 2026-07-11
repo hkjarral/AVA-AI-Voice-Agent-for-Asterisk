@@ -86,6 +86,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+class _PipelinePlaybackInterrupted(RuntimeError):
+    """The caller interrupted a pipeline stream while its producer was backpressured."""
+
 # Modular STT uses one canonical, headerless audio bus. Transport-specific
 # audio is converted to this format before it enters the pipeline queue.
 PIPELINE_STT_SAMPLE_RATE_HZ = 16000
@@ -5313,6 +5317,36 @@ class Engine:
                 pass
 
         return mode, timeout_sec
+
+    async def _put_pipeline_stream_chunk(
+        self,
+        call_id: str,
+        stream_id: str,
+        queue: asyncio.Queue,
+        chunk: Optional[bytes],
+        *,
+        wait_slice_sec: float = 0.25,
+    ) -> None:
+        """Put into a live pipeline stream without deadlocking after barge-in.
+
+        ElevenLabs can produce audio faster than telephony consumes it. If
+        barge-in cancels that playback while the queue is full, a bare
+        ``queue.put`` waits forever and prevents the dialog worker from reading
+        later STT finals. Bind each put to the exact stream that owns the queue.
+        """
+        timeout = max(0.05, float(wait_slice_sec))
+        while True:
+            if not self.streaming_playback_manager.is_stream_active(call_id, stream_id):
+                raise _PipelinePlaybackInterrupted(
+                    f"pipeline stream {stream_id} is no longer active"
+                )
+            try:
+                await asyncio.wait_for(queue.put(chunk), timeout=timeout)
+                return
+            except asyncio.TimeoutError:
+                # Re-check ownership/activity on every bounded wait. A healthy
+                # slow consumer keeps draining; a cancelled/replaced stream exits.
+                continue
 
     async def _local_ai_server_llm_request(
         self,
@@ -12509,7 +12543,9 @@ class Engine:
                                                             )
                                                     except Exception:
                                                         pass
-                                                await stream_q.put(tts_chunk)
+                                                await self._put_pipeline_stream_chunk(
+                                                    call_id, stream_id, stream_q, tts_chunk
+                                                )
 
                             # Flush remaining sentence buffer
                             remainder = sentence_buffer.strip()
@@ -12522,13 +12558,14 @@ class Engine:
                                             first_tts_ts = time.time()
                                             turn_latency_ms = (first_tts_ts - turn_start_time) * 1000
                                             session.turn_latencies_ms.append(turn_latency_ms)
-                                        await stream_q.put(tts_chunk)
+                                        await self._put_pipeline_stream_chunk(
+                                            call_id, stream_id, stream_q, tts_chunk
+                                        )
 
                             # End-of-segment sentinel
-                            try:
-                                stream_q.put_nowait(None)
-                            except asyncio.QueueFull:
-                                asyncio.create_task(stream_q.put(None))
+                            await self._put_pipeline_stream_chunk(
+                                call_id, stream_id, stream_q, None
+                            )
                             try:
                                 if t_start is not None:
                                     _TURN_RESPONSE_SECONDS.labels(pipeline_label, provider_label).observe(
@@ -12537,6 +12574,17 @@ class Engine:
                             except Exception:
                                 pass
 
+                        except _PipelinePlaybackInterrupted:
+                            logger.info(
+                                "Pipeline streaming turn interrupted; discarding remaining TTS",
+                                call_id=call_id,
+                                stream_id=stream_id,
+                            )
+                            try:
+                                await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                            except Exception:
+                                pass
+                            return
                         except Exception:
                             logger.error(
                                 "Pipeline streaming overlap failed; falling through to serial path",
@@ -12826,18 +12874,30 @@ class Engine:
                                                 _TURN_STT_TO_TTS.labels(pipeline_label, provider_label).observe(max(0.0, first_tts_ts - t_start))
                                         except Exception:
                                             pass
-                                    await stream_q.put(tts_chunk)
+                                    await self._put_pipeline_stream_chunk(
+                                        call_id, stream_id, stream_q, tts_chunk
+                                    )
 
                                 # End-of-segment sentinel
-                                try:
-                                    stream_q.put_nowait(None)
-                                except asyncio.QueueFull:
-                                    asyncio.create_task(stream_q.put(None))
+                                await self._put_pipeline_stream_chunk(
+                                    call_id, stream_id, stream_q, None
+                                )
                                 try:
                                     if playback_id and t_start is not None:
                                         _TURN_RESPONSE_SECONDS.labels(pipeline_label, provider_label).observe(max(0.0, time.time() - t_start))
                                 except Exception:
                                     pass
+                            except _PipelinePlaybackInterrupted:
+                                logger.info(
+                                    "Pipeline streaming turn interrupted; discarding remaining TTS",
+                                    call_id=call_id,
+                                    stream_id=stream_id,
+                                )
+                                try:
+                                    await self.streaming_playback_manager.stop_streaming_playback(call_id)
+                                except Exception:
+                                    pass
+                                return
                             except Exception:
                                 logger.error("Pipeline streaming playback failed; falling back to file playback", call_id=call_id, exc_info=True)
                                 try:
