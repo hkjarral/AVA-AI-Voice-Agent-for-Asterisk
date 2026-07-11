@@ -6468,13 +6468,41 @@ class Engine:
                 return
             call_id = session.call_id
 
+            # Asterisk can emit a trailing ChannelTalkingStarted a few milliseconds
+            # after streaming playback clears its gating token.  Treating that echo
+            # tail as sustained caller speech leaves the inactivity watchdog paused
+            # forever when Asterisk never follows it with ChannelTalkingFinished.
+            # The media receive paths already drop audio during this same configured
+            # guard window, so keep TALK_DETECT aligned with them.
+            cfg = getattr(self.config, "barge_in", None)
+            try:
+                post_guard_ms = int(getattr(cfg, "post_tts_end_protection_ms", 0)) if cfg else 0
+            except (TypeError, ValueError):
+                post_guard_ms = 0
+            tts_ended_ts = float(getattr(session, "tts_ended_ts", 0.0) or 0.0)
+            if (
+                post_guard_ms > 0
+                and tts_ended_ts > 0
+                and bool(getattr(session, "audio_capture_enabled", True))
+                and not bool(getattr(session, "tts_playing", False))
+            ):
+                elapsed_ms = max(0, int((time.time() - tts_ended_ts) * 1000))
+                if elapsed_ms < post_guard_ms:
+                    logger.info(
+                        "TalkDetect suppressed during post-TTS protection window",
+                        call_id=call_id,
+                        channel_id=channel_id,
+                        elapsed_ms=elapsed_ms,
+                        protection_ms=post_guard_ms,
+                    )
+                    return
+
             # While listening, TALK_DETECT is direct evidence that the caller is
             # present even though there is no playback to interrupt.
             if bool(getattr(session, "audio_capture_enabled", True)) and not bool(getattr(session, "tts_playing", False)):
                 await self._no_input_note_input_state(call_id, True, "asterisk:talk_detect")
                 return
 
-            cfg = getattr(self.config, "barge_in", None)
             if not cfg or not getattr(cfg, "enabled", True):
                 return
 

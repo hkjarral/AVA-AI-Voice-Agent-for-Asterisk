@@ -274,6 +274,58 @@ async def test_raw_audio_detector_ignores_audio_during_native_provider_output():
 
 
 @pytest.mark.asyncio
+async def test_talk_detect_echo_tail_does_not_pause_no_input_watchdog():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine.config = SimpleNamespace(
+        barge_in=SimpleNamespace(enabled=True, post_tts_end_protection_ms=600)
+    )
+    engine._no_input_note_input_state = AsyncMock()
+    session = CallSession(
+        call_id="call-post-tts-echo",
+        caller_channel_id="channel-post-tts-echo",
+    )
+    session.audio_capture_enabled = True
+    session.tts_playing = False
+    session.tts_ended_ts = time.time()
+    await engine.session_store.upsert_call(session)
+
+    await engine._handle_channel_talking_started(
+        {"channel": {"id": session.caller_channel_id}}
+    )
+
+    engine._no_input_note_input_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_talk_detect_after_post_tts_guard_pauses_no_input_watchdog():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine.config = SimpleNamespace(
+        barge_in=SimpleNamespace(enabled=True, post_tts_end_protection_ms=600)
+    )
+    engine._no_input_note_input_state = AsyncMock()
+    session = CallSession(
+        call_id="call-real-talking",
+        caller_channel_id="channel-real-talking",
+    )
+    session.audio_capture_enabled = True
+    session.tts_playing = False
+    session.tts_ended_ts = time.time() - 1.0
+    await engine.session_store.upsert_call(session)
+
+    await engine._handle_channel_talking_started(
+        {"channel": {"id": session.caller_channel_id}}
+    )
+
+    engine._no_input_note_input_state.assert_awaited_once_with(
+        session.call_id,
+        True,
+        "asterisk:talk_detect",
+    )
+
+
+@pytest.mark.asyncio
 async def test_no_input_provider_output_drains_without_resetting_policy_state():
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
