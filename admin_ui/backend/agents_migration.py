@@ -67,8 +67,22 @@ def merged_effective_contexts(yaml_path: str, contexts_dir: str) -> dict:
             local_doc = yaml.safe_load(open(local_yaml_path)) or {}
             local_inline = local_doc.get("contexts") or {} if isinstance(local_doc, dict) else {}
             if isinstance(local_inline, dict):
-                merged = _deep_merge_dicts(merged, local_inline)
-                for key in local_inline:
+                valid_local_inline = {
+                    key: value
+                    for key, value in local_inline.items()
+                    if value is None or isinstance(value, dict)
+                }
+                invalid_keys = sorted(
+                    str(key)
+                    for key in set(local_inline) - set(valid_local_inline)
+                )
+                if invalid_keys:
+                    logger.warning(
+                        "Skipping non-mapping local context overrides: %s",
+                        ", ".join(invalid_keys),
+                    )
+                merged = _deep_merge_dicts(merged, valid_local_inline)
+                for key in valid_local_inline:
                     if key in merged and isinstance(merged[key], dict):
                         merged[key]["_source_file"] = os.path.basename(local_yaml_path)
         except Exception:

@@ -83,3 +83,17 @@ def test_external_context_returns_after_local_override_deletes_inline_name(tmp_p
     assert merged["demo"]["provider"] == "local"
     assert merged["demo"]["prompt"] == "external"
     assert merged["demo"]["_source_file"] == "contexts/demo.yaml"
+
+
+def test_non_mapping_local_context_override_is_skipped_without_breaking_hash(tmp_path):
+    base = tmp_path / "ai-agent.yaml"
+    local = tmp_path / "ai-agent.local.yaml"
+    ext = tmp_path / "contexts"; ext.mkdir()
+    _write(base, "contexts:\n  demo: {provider: local, prompt: base}\n")
+    _write(local, "contexts:\n  demo: invalid-scalar\n  broken: [not, a, mapping]\n")
+
+    merged = merged_effective_contexts(str(base), str(ext))
+
+    assert merged["demo"]["prompt"] == "base"
+    assert "broken" not in merged
+    assert len(contexts_hash(merged)) == 64
