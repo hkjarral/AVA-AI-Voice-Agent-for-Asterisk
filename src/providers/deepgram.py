@@ -24,6 +24,11 @@ from .base import AIProviderInterface, ProviderCapabilities
 # Tool calling support
 from src.tools.registry import tool_registry
 from src.tools.adapters.deepgram import DeepgramToolAdapter
+from src.tools.telephony.hangup_policy import (
+    DEFAULT_HANGUP_MARKERS,
+    text_contains_end_call_intent,
+    text_is_short_polite_closing,
+)
 
 logger = get_logger(__name__)
 
@@ -138,6 +143,81 @@ _DEEPGRAM_SETTINGS_ACK_LATENCY_MS = Gauge(
 )
 
 class DeepgramProvider(AIProviderInterface):
+    _FALLBACK_END_MARKERS = [
+        marker
+        for marker in DEFAULT_HANGUP_MARKERS["end_call"]
+        if marker not in {"thanks", "thank you", "no thanks", "no thank you"}
+    ]
+
+    @classmethod
+    def next_farewell_fallback_state(
+        cls,
+        state: Optional[Dict[str, Any]],
+        *,
+        role: str,
+        text: str,
+    ) -> Dict[str, Any]:
+        """Advance missed-hangup state using ordered Deepgram lifecycle text."""
+        current = dict(state or {})
+        role = str(role or "").strip().lower()
+        text = str(text or "").strip()
+        if role not in ("user", "assistant") or not text:
+            return current
+
+        if role == "user":
+            has_end_intent = (
+                text_contains_end_call_intent(text, cls._FALLBACK_END_MARKERS)
+                or text_is_short_polite_closing(text)
+            )
+            if not has_end_intent:
+                return {}
+            return {
+                "pending": True,
+                "farewell_seen": False,
+                "user_text": text,
+            }
+
+        if current.get("pending") and text_contains_end_call_intent(
+            text,
+            DEFAULT_HANGUP_MARKERS["assistant_farewell"],
+        ):
+            current["farewell_seen"] = True
+            current["assistant_text"] = text
+        return current
+
+    def _track_farewell_fallback(self, *, role: str, text: str) -> None:
+        self._farewell_fallback_state = self.next_farewell_fallback_state(
+            self._farewell_fallback_state,
+            role=role,
+            text=text,
+        )
+
+    def _consume_farewell_fallback(self) -> bool:
+        state = self._farewell_fallback_state
+        should_hangup = bool(
+            state.get("pending")
+            and state.get("farewell_seen")
+            and not self._hangup_pending
+        )
+        if should_hangup:
+            self._farewell_fallback_state = {}
+        return should_hangup
+
+    async def _emit_farewell_fallback_if_needed(self) -> bool:
+        if not self.on_event or not self._consume_farewell_fallback():
+            return False
+        logger.warning(
+            "Deepgram omitted hangup_call after farewell; emitting HangupReady fallback",
+            call_id=self.call_id,
+        )
+        await self.on_event({
+            'type': 'HangupReady',
+            'call_id': self.call_id,
+            'reason': 'farewell_without_tool',
+            'had_audio': True,
+        })
+        return True
+
     @staticmethod
     def _canonicalize_encoding(value: Optional[str]) -> str:
         t = (value or '').strip().lower()
@@ -281,6 +361,9 @@ class DeepgramProvider(AIProviderInterface):
         self._hangup_audio_started: bool = False
         self._hangup_fallback_task: Optional[asyncio.Task] = None
         self._farewell_message: Optional[str] = None
+        # Provider-local because shared media/VAD state is mutated throughout
+        # a turn and is not a reliable lifecycle handoff boundary.
+        self._farewell_fallback_state: Dict[str, Any] = {}
         # Cache declared Deepgram input settings
         try:
             self._dg_input_rate = int(self._get_config_value('input_sample_rate_hz', 8000) or 8000)
@@ -449,6 +532,7 @@ class DeepgramProvider(AIProviderInterface):
 
             # Persist call context for downstream events
             self.call_id = call_id
+            self._farewell_fallback_state = {}
             # Per-call tool allowlist (contexts are the source of truth).
             # Missing/None is treated as [] for safety.
             if context and "tools" in context:
@@ -1094,6 +1178,7 @@ class DeepgramProvider(AIProviderInterface):
             self._receive_task = None
             self._clear_metrics(self.call_id)
             self.call_id = None
+            self._farewell_fallback_state = {}
             self._closing = False
 
     async def _keep_alive(self):
@@ -1421,6 +1506,7 @@ class DeepgramProvider(AIProviderInterface):
                                 try:
                                     role = event_data.get("role")
                                     text = event_data.get("text") or event_data.get("content")
+                                    self._track_farewell_fallback(role=role, text=text)
                                     logger.info(
                                         "Deepgram conversation text",
                                         call_id=self.call_id,
@@ -1522,7 +1608,9 @@ class DeepgramProvider(AIProviderInterface):
                                 'call_id': self.call_id
                             })
                             self._in_audio_burst = False
-                            
+
+                            await self._emit_farewell_fallback_if_needed()
+
                             # Check if farewell audio completed after hangup request
                             if self._hangup_pending and self._hangup_audio_started:
                                 logger.info(
@@ -1706,6 +1794,7 @@ class DeepgramProvider(AIProviderInterface):
                         'streaming_done': True,
                         'call_id': self.call_id
                     })
+                    await self._emit_farewell_fallback_if_needed()
                     
                     # Check if farewell audio completed after hangup request (socket closing)
                     if self._hangup_pending and self._hangup_audio_started:

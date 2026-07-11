@@ -75,7 +75,6 @@ from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
 from src.pipelines.base import LLMResponse
 from src.tools.telephony.hangup_policy import (
-    DEFAULT_HANGUP_MARKERS,
     resolve_hangup_policy,
     text_contains_end_call_intent,
     text_is_short_polite_closing,
@@ -5315,84 +5314,6 @@ class Engine:
 
         return mode, timeout_sec
 
-    @staticmethod
-    def _track_deepgram_farewell_fallback(
-        session: CallSession,
-        *,
-        role: str,
-        text: str,
-        hangup_policy: Dict[str, Any],
-    ) -> bool:
-        """Track a conservative server-side fallback for missed Deepgram hangup tools.
-
-        Deepgram can follow the spoken farewell instructions while omitting the
-        accompanying ``hangup_call`` function call.  Do not hang up on caller
-        intent alone: require both an explicit caller closing and a provider
-        farewell, then let ``AgentAudioDone`` own the final drain boundary.
-        """
-        role = str(role or "").strip().lower()
-        text = str(text or "").strip()
-        if role not in ("user", "assistant") or not text:
-            return False
-
-        state_key = "deepgram_farewell_fallback"
-        state = session.vad_state.get(state_key)
-        if not isinstance(state, dict):
-            state = {}
-
-        markers = hangup_policy.get("markers") if isinstance(hangup_policy, dict) else {}
-        markers = markers if isinstance(markers, dict) else {}
-
-        if role == "user":
-            # Avoid treating a casual mid-sentence "thanks" as terminal.  The
-            # short-closing helper still accepts concise "thank you" closings.
-            configured = normalize_marker_list(
-                markers.get("end_call"),
-                [],
-            )
-            ambiguous = {"thanks", "thank you", "okay", "ok", "no thanks", "no thank you"}
-            explicit_markers = [marker for marker in configured if marker not in ambiguous]
-            has_end_intent = (
-                text_contains_end_call_intent(text, explicit_markers)
-                or text_is_short_polite_closing(text)
-            )
-            if has_end_intent:
-                session.vad_state[state_key] = {
-                    "pending": True,
-                    "farewell_seen": False,
-                    "user_text": text,
-                }
-                return True
-            if state:
-                session.vad_state.pop(state_key, None)
-                return True
-            return False
-
-        if not state.get("pending"):
-            return False
-        farewell_markers = normalize_marker_list(
-            markers.get("assistant_farewell"),
-            DEFAULT_HANGUP_MARKERS["assistant_farewell"],
-        )
-        if text_contains_end_call_intent(text, farewell_markers):
-            state["farewell_seen"] = True
-            state["assistant_text"] = text
-            session.vad_state[state_key] = state
-            return True
-        return False
-
-    @staticmethod
-    def _consume_deepgram_farewell_fallback(session: CallSession) -> bool:
-        state = session.vad_state.get("deepgram_farewell_fallback")
-        should_hangup = bool(
-            isinstance(state, dict)
-            and state.get("pending")
-            and state.get("farewell_seen")
-        )
-        if should_hangup:
-            session.vad_state.pop("deepgram_farewell_fallback", None)
-        return should_hangup
-
     async def _local_ai_server_llm_request(
         self,
         *,
@@ -10127,23 +10048,6 @@ class Engine:
                 if str(event.get("text") or event.get("content") or "").strip():
                     await self._no_input_note_activity(call_id, "provider:conversation_text")
                     await self._no_input_note_processing(call_id, True)
-            if etype == "ConversationText" and self._get_provider_kind(session.provider_name) == "deepgram":
-                try:
-                    tools_cfg = getattr(self.config, "tools", {}) or {}
-                    changed = self._track_deepgram_farewell_fallback(
-                        session,
-                        role=str(event.get("role") or ""),
-                        text=str(event.get("text") or event.get("content") or ""),
-                        hangup_policy=resolve_hangup_policy(tools_cfg),
-                    )
-                    if changed:
-                        await self._save_session(session)
-                except Exception:
-                    logger.debug(
-                        "Failed tracking Deepgram farewell fallback",
-                        call_id=call_id,
-                        exc_info=True,
-                    )
 
             # Option 2: Provider-owned VAD/barge-in. Provider signals interruption; platform flushes local output only.
             # - OpenAI Realtime emits `ProviderBargeIn` on `input_audio_buffer.speech_started` cancellation.
@@ -10837,30 +10741,6 @@ class Engine:
                 # VAD/watchdog output state active until those buffers drain.
                 await self._note_provider_output_end(call_id, session)
 
-                # Deepgram occasionally speaks the configured farewell but
-                # omits hangup_call.  After explicit user end intent and a
-                # detected assistant farewell, AgentAudioDone is the safe
-                # boundary for draining and terminating the caller leg.
-                if self._get_provider_kind(session.provider_name) == "deepgram":
-                    try:
-                        if self._consume_deepgram_farewell_fallback(session):
-                            await self._save_session(session)
-                            logger.warning(
-                                "Deepgram omitted hangup_call after farewell; applying fallback",
-                                call_id=call_id,
-                            )
-                            await self._terminate_call_after_audio(
-                                call_id,
-                                reason="deepgram_farewell_without_tool",
-                                call_outcome="agent_hangup",
-                            )
-                    except Exception:
-                        logger.error(
-                            "Deepgram farewell fallback failed",
-                            call_id=call_id,
-                            exc_info=True,
-                        )
-                
                 # Signal farewell done event if we're waiting for hangup
                 farewell_key = f"farewell_done_{call_id}"
                 if hasattr(self, '_farewell_done_events') and farewell_key in self._farewell_done_events:
