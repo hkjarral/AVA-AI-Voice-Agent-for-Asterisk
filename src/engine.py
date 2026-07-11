@@ -9132,11 +9132,22 @@ class Engine:
             except Exception:
                 logger.debug("Failed to clear provider stream buffers during barge-in", call_id=call_id, exc_info=True)
 
+            provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+            # Provider-side egress may be several seconds ahead of telephony playback.
+            # A local VAD interruption must flush that buffer too, otherwise the old
+            # response immediately creates a new platform stream after the local stop.
+            if source in ("local_vad_fallback", "local_vad", "talkdetect"):
+                try:
+                    handle_local_barge = getattr(provider, "handle_local_barge_in", None)
+                    if callable(handle_local_barge):
+                        await handle_local_barge()
+                except Exception:
+                    logger.debug("Provider egress flush failed during local barge-in", call_id=call_id, exc_info=True)
+
             # Direct-WebSocket realtime providers can generate faster than the
             # telephony pacer plays.  Give providers an optional hook to truncate
             # their assistant item to the exact amount sent before the local flush.
             try:
-                provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
                 truncate_audio = getattr(provider, "truncate_assistant_audio", None)
                 if callable(truncate_audio) and playback_position_ms > 0:
                     await truncate_audio(playback_position_ms)

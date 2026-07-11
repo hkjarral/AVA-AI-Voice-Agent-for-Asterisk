@@ -283,6 +283,53 @@ async def test_tracks_audio_item_and_sends_playback_truncation(provider):
     assert event["audio_end_ms"] == 7840
 
 
+@pytest.mark.asyncio
+async def test_local_barge_flushes_provider_pacer_and_quarantines_old_audio(provider):
+    provider._current_response_id = None
+    provider._assistant_audio_response_id = "resp-old"
+    provider._outbuf.extend(b"old-response-audio")
+    provider._pacer_running = True
+    provider._pacer_task = asyncio.create_task(asyncio.sleep(30))
+
+    dropped = await provider.handle_local_barge_in()
+
+    assert dropped == len(b"old-response-audio")
+    assert provider._outbuf == bytearray()
+    assert provider._pacer_running is False
+    assert provider._pacer_task.cancelled() or provider._pacer_task.cancelling()
+    assert provider._drop_output_until_next_response is True
+
+
+@pytest.mark.asyncio
+async def test_local_barge_drops_old_deltas_until_replacement_response(provider):
+    provider._drop_output_until_next_response = True
+    provider._current_response_id = None
+    provider._assistant_audio_response_id = "resp-old"
+
+    await provider._handle_output_audio("b2xkLWF1ZGlv")
+    assert provider._outbuf == bytearray()
+
+    provider._greeting_completed = True
+    await provider._handle_event({"type": "response.created", "response": {"id": "resp-new"}})
+    assert provider._drop_output_until_next_response is False
+    assert provider._current_response_id == "resp-new"
+
+
+@pytest.mark.asyncio
+async def test_server_vad_pacer_start_preserves_input_buffer(provider):
+    ws = _RecordingWebSocket()
+    provider.websocket = ws
+    provider.on_event = lambda event: None
+    provider._pacer_loop = lambda: asyncio.sleep(30)
+
+    await provider._ensure_pacer_started()
+    try:
+        assert all(event["type"] != "input_audio_buffer.clear" for event in ws.parsed_events())
+    finally:
+        provider._pacer_running = False
+        provider._pacer_task.cancel()
+
+
 # --------------------------------------------------------------------------- #
 # 3. provider_key propagation                                                  #
 # --------------------------------------------------------------------------- #
