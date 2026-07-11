@@ -25,6 +25,16 @@ class SessionContext:
     last_final_at: float = 0.0
     llm_user_turns: List[str] = field(default_factory=list)
     llm_messages: List[Dict[str, str]] = field(default_factory=list)
+    # Per-call instructions. ``None`` means a legacy client did not send a
+    # session-scoped prompt, in which case the server-level default is used.
+    # An empty string is authoritative and intentionally clears instructions.
+    system_prompt: Optional[str] = None
+    prompt_context_call_id: Optional[str] = None
+    # Monotonic response generation used to quarantine output from work that
+    # completes after barge-in, a replacement turn, or connection teardown.
+    output_generation: int = 0
+    closed: bool = False
+    response_tasks: set[asyncio.Task] = field(default_factory=set)
     allowed_tools: List[str] = field(default_factory=list)
     tool_schemas: List[Dict[str, Any]] = field(default_factory=list)
     tool_policy: str = "auto"

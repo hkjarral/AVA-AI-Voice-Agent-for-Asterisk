@@ -14,6 +14,7 @@ re-applies the prompt (or the caller aborts).
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -93,11 +94,29 @@ async def test_digest_updated_on_switch_success():
         "digest must be set on confirmed success so we don't re-spam switch_model"
     )
 
-    # Same prompt again must short-circuit (no new frame) on the matching digest.
+    sent = json.loads(provider.websocket.sent[-1])
+    assert sent["scope"] == "session"
+    assert sent["call_id"] == "call-b"
+
+    # Same prompt and same call must short-circuit (no new frame).
     provider.websocket.sent.clear()
-    ok2 = await provider._apply_system_prompt("call B prompt", call_id="call-b-2")
+    ok2 = await provider._apply_system_prompt("call B prompt", call_id="call-b")
     assert ok2 is True
     assert not provider.websocket.sent, "unchanged prompt must not re-send switch_model"
+
+
+@pytest.mark.asyncio
+async def test_same_prompt_is_resent_for_new_call_to_reset_session_history():
+    provider = _make_provider()
+    driver = asyncio.create_task(_drive_switch_response(provider, "success"))
+    assert await provider._apply_system_prompt("shared prompt", call_id="call-one") is True
+    await driver
+
+    provider.websocket.sent.clear()
+    driver2 = asyncio.create_task(_drive_switch_response(provider, "success"))
+    assert await provider._apply_system_prompt("shared prompt", call_id="call-two") is True
+    await driver2
+    assert json.loads(provider.websocket.sent[-1])["call_id"] == "call-two"
 
 
 @pytest.mark.asyncio

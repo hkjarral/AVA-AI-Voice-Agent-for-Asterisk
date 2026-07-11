@@ -58,7 +58,7 @@ from optional_imports import VoskModel, KaldiRecognizer, Llama, PiperVoice
 
 
 from session import SessionContext
-from config import LocalAIConfig
+from config import LocalAIConfig, llama_chat_format_override
 from live_status_publisher import LiveStatusPublisher, live_status_component
 from model_manager import ModelManager
 from status_builder import build_status_response
@@ -760,6 +760,10 @@ class LocalAIServer:
         self._faster_whisper_lock = asyncio.Lock()
         # Lock to serialize Whisper.cpp inference (avoid concurrent model access).
         self._whisper_cpp_lock = asyncio.Lock()
+        # The active local TTS model is shared by every WebSocket session. Most
+        # ML TTS libraries are blocking and not documented as thread-safe, so
+        # execute them off the event loop while serializing model access.
+        self._tts_lock = asyncio.Lock()
         # Component -> last startup error (used for degraded mode status/logging)
         self.startup_errors: Dict[str, str] = {}
         # Track runtime fallbacks (e.g. CUDA -> CPU) for operator visibility.
@@ -1162,9 +1166,9 @@ class LocalAIServer:
         use_primary_tts = any([
             self.tts_model,          # Piper
             getattr(self, "melotts_backend", None),
-            getattr(self, "kokoro_pipeline", None),
-            getattr(self, "silero_model", None),
-            getattr(self, "matcha_model", None),
+            getattr(self, "kokoro_backend", None),
+            getattr(self, "silero_backend", None),
+            getattr(self, "matcha_backend", None),
         ])
 
         for phrase in self.config.filler_phrases:
@@ -1801,8 +1805,9 @@ class LocalAIServer:
                         use_mmap=True,
                         use_mlock=self.llm_use_mlock,
                     )
-                    if self.llm_chat_format:
-                        llama_kwargs["chat_format"] = self.llm_chat_format
+                    chat_format_override = llama_chat_format_override(self.llm_chat_format)
+                    if chat_format_override:
+                        llama_kwargs["chat_format"] = chat_format_override
                     self.llm_model = Llama(**llama_kwargs)
                     loaded = True
                     break
@@ -2917,9 +2922,14 @@ class LocalAIServer:
 
         return best, True
 
-    def _get_effective_system_prompt(self) -> str:
+    def _get_effective_system_prompt(self, session: Optional[SessionContext] = None) -> str:
         """Compose the effective system prompt by prepending voice preamble (if set)."""
-        system = (self.llm_system_prompt or "").strip()
+        session_prompt = getattr(session, "system_prompt", None) if session is not None else None
+        system = (
+            str(session_prompt).strip()
+            if session_prompt is not None
+            else (self.llm_system_prompt or "").strip()
+        )
         preamble = (self.llm_voice_preamble or "").strip()
         if preamble and system:
             return f"{preamble}\n\n{system}"
@@ -2946,7 +2956,7 @@ class LocalAIServer:
         if new_turn:
             candidate_messages.append({"role": "user", "content": new_turn})
 
-        effective_system = self._get_effective_system_prompt()
+        effective_system = self._get_effective_system_prompt(session)
 
         raw_prompt = self._build_phi_chat_prompt(candidate_messages, effective_system)
         raw_prompt = self._strip_leading_bos(raw_prompt)
@@ -3073,7 +3083,8 @@ class LocalAIServer:
             logging.debug("🔊 TTS INPUT - MeloTTS generating audio for: '%s'", text)
 
             # Get PCM16 audio at 44100Hz from MeloTTS
-            pcm16_data = self.melotts_backend.synthesize(text)
+            async with self._tts_lock:
+                pcm16_data = await asyncio.to_thread(self.melotts_backend.synthesize, text)
             
             if not pcm16_data:
                 logging.warning("⚠️ MeloTTS returned empty audio")
@@ -3100,32 +3111,8 @@ class LocalAIServer:
 
             logging.debug("🔊 TTS INPUT - Generating 22kHz audio for: '%s'", text)
 
-            # Collect PCM16 data in memory (no temp WAV file).
-            # Use an in-memory WAV as the synthesis target since Piper's API
-            # expects a wave.open()-compatible writer.
-            wav_buf = io.BytesIO()
-            with wave.open(wav_buf, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(22050)
-                try:
-                    # Newer Piper API: synthesize(text, wav_file)
-                    self.tts_model.synthesize(text, wav_file)
-                except TypeError:
-                    # Fallback: older API returns a generator of frames
-                    audio_generator = self.tts_model.synthesize(text)
-                    for chunk in audio_generator:
-                        if isinstance(chunk, (bytes, bytearray)):
-                            wav_file.writeframes(chunk)
-                        else:
-                            data = getattr(chunk, "audio_int16_bytes", None)
-                            if data:
-                                wav_file.writeframes(data)
-
-            # Extract raw PCM16 from the in-memory WAV and convert directly
-            wav_buf.seek(0)
-            with wave.open(wav_buf, "rb") as wf:
-                pcm16_data = wf.readframes(wf.getnframes())
+            async with self._tts_lock:
+                pcm16_data = await asyncio.to_thread(self._synthesize_piper_pcm16, text)
 
             ulaw_data = await asyncio.to_thread(
                 self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 22050
@@ -3137,6 +3124,29 @@ class LocalAIServer:
         except Exception as exc:
             logging.error("Piper TTS processing failed: %s", exc, exc_info=True)
             return b""
+
+    def _synthesize_piper_pcm16(self, text: str) -> bytes:
+        """Run the blocking Piper API and return its native PCM16 payload."""
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(22050)
+            try:
+                self.tts_model.synthesize(text, wav_file)
+            except TypeError:
+                audio_generator = self.tts_model.synthesize(text)
+                for chunk in audio_generator:
+                    if isinstance(chunk, (bytes, bytearray)):
+                        wav_file.writeframes(chunk)
+                    else:
+                        data = getattr(chunk, "audio_int16_bytes", None)
+                        if data:
+                            wav_file.writeframes(data)
+
+        wav_buf.seek(0)
+        with wave.open(wav_buf, "rb") as wf:
+            return wf.readframes(wf.getnframes())
 
     async def _process_tts_kokoro(self, text: str) -> bytes:
         """Process TTS using Kokoro backend (24kHz output)."""
@@ -3151,7 +3161,8 @@ class LocalAIServer:
             logging.debug("🔊 TTS INPUT - Generating 24kHz audio for: '%s'", text)
 
             # Get PCM16 audio at 24kHz from Kokoro
-            pcm16_data = self.kokoro_backend.synthesize(text)
+            async with self._tts_lock:
+                pcm16_data = await asyncio.to_thread(self.kokoro_backend.synthesize, text)
             
             if not pcm16_data:
                 logging.warning("⚠️ Kokoro returned empty audio")
@@ -3252,7 +3263,8 @@ class LocalAIServer:
             logging.debug("🔊 TTS INPUT - Silero generating %dHz audio for: '%s'", self.silero_sample_rate, text)
 
             # Get PCM16 audio at native sample rate from Silero
-            pcm16_data = await asyncio.to_thread(self.silero_backend.synthesize, text)
+            async with self._tts_lock:
+                pcm16_data = await asyncio.to_thread(self.silero_backend.synthesize, text)
 
             if not pcm16_data:
                 logging.warning("⚠️ Silero returned empty audio")
@@ -3312,9 +3324,8 @@ class LocalAIServer:
                 text[:50] if text else "",
             )
 
-            pcm16_data = await asyncio.to_thread(
-                self.matcha_backend.synthesize, text
-            )
+            async with self._tts_lock:
+                pcm16_data = await asyncio.to_thread(self.matcha_backend.synthesize, text)
 
             if not pcm16_data:
                 logging.error("Matcha TTS returned no audio")
@@ -4052,6 +4063,91 @@ class LocalAIServer:
             session.mode = data_mode
             return data_mode
         return session.mode
+
+    @staticmethod
+    def _start_output_generation(session: SessionContext) -> int:
+        session.output_generation += 1
+        return session.output_generation
+
+    def _cancel_session_response_tasks(self, session: SessionContext, *, reason: str) -> None:
+        session.output_generation += 1
+        cancelled = 0
+        for task in list(session.response_tasks):
+            if not task.done():
+                task.cancel()
+                cancelled += 1
+        if cancelled:
+            logging.info(
+                "🛑 SESSION OUTPUT CANCEL - call_id=%s reason=%s tasks=%d generation=%d",
+                session.call_id,
+                reason,
+                cancelled,
+                session.output_generation,
+            )
+
+    def _start_session_response_task(
+        self, session: SessionContext, coroutine, *, reason: str
+    ) -> asyncio.Task:
+        """Run long LLM/TTS work without blocking WebSocket control messages."""
+        self._cancel_session_response_tasks(session, reason=f"replace:{reason}")
+        task = asyncio.create_task(coroutine, name=f"local-ai-{reason}-{session.call_id}")
+        session.response_tasks.add(task)
+
+        def _done(completed: asyncio.Task) -> None:
+            session.response_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                exc = completed.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                logging.error(
+                    "Session response task failed call_id=%s reason=%s error=%s",
+                    session.call_id,
+                    reason,
+                    exc,
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        task.add_done_callback(_done)
+        return task
+
+    @staticmethod
+    def _output_generation_active(session: SessionContext, generation: Optional[int]) -> bool:
+        if session.closed:
+            return False
+        return generation is None or generation == session.output_generation
+
+    def _tool_gateway_blocks_streaming(
+        self, session: SessionContext, latest_user_text: str
+    ) -> bool:
+        """Return whether tools require the serial, server-gated LLM path.
+
+        A hangup-only agent does not need a structured tool-decision pass for
+        ordinary conversation. Explicit end-call turns remain serial so the
+        deterministic hangup gate runs before any audio is emitted.
+        """
+        if not bool(getattr(self, "tool_gateway_enabled", True)):
+            return False
+        allowed = {str(name).strip() for name in (session.allowed_tools or []) if str(name).strip()}
+        if not allowed:
+            return False
+        if allowed == {"hangup_call"} and not self._text_has_end_call_intent(latest_user_text):
+            return False
+        return True
+
+    def _log_stale_output_drop(
+        self, session: SessionContext, *, output_type: str, generation: Optional[int]
+    ) -> None:
+        logging.info(
+            "🛑 STALE OUTPUT DROPPED - call_id=%s type=%s generation=%s active_generation=%s closed=%s",
+            session.call_id,
+            output_type,
+            generation,
+            session.output_generation,
+            session.closed,
+        )
 
     async def _send_json(self, websocket, payload: Dict[str, Any]) -> bool:
         try:
@@ -4945,7 +5041,11 @@ class LocalAIServer:
         *,
         source_mode: str,
         extra: Optional[Dict[str, Any]] = None,
+        generation: Optional[int] = None,
     ) -> bool:
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="llm_response", generation=generation)
+            return False
         text = (llm_response or "").strip()
         if not text:
             logging.info(
@@ -4978,10 +5078,17 @@ class LocalAIServer:
         chunk_index: Optional[int] = None,
         is_final_chunk: Optional[bool] = None,
         is_streaming: bool = False,
+        generation: Optional[int] = None,
     ) -> None:
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="tts_audio", generation=generation)
+            return
         # Sherpa offline: flush any trailing speech before we suppress STT.
         await self._flush_sherpa_offline_trailing(websocket, session)
         await self._flush_tone_trailing(websocket, session)
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="tts_audio_flush", generation=generation)
+            return
         # Whisper echo-guard: when Local AI Server is emitting TTS audio, it can be
         # re-captured via telephony mixing/echo and immediately re-transcribed by
         # Whisper-family STT, causing talk-loops. We proactively suppress STT for
@@ -5241,6 +5348,8 @@ class LocalAIServer:
                 )
                 return
 
+        generation = self._start_output_generation(session)
+
         prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages = self._prepare_llm_prompt(
             session, clean_text
         )
@@ -5268,6 +5377,7 @@ class LocalAIServer:
             await self._emit_tts_audio(
                 websocket, filler_audio, session, request_id,
                 source_mode="filler",
+                generation=generation,
             )
 
         # ── Streaming pipeline: overlap LLM token generation with TTS ──
@@ -5277,7 +5387,7 @@ class LocalAIServer:
             and use_chat_path
             and self.config.llm_streaming_tts_overlap
             and self.llm_model is not None
-            and not (bool(getattr(self, "tool_gateway_enabled", True)) and bool(session.allowed_tools))
+            and not self._tool_gateway_blocks_streaming(session, clean_text)
         )
 
         if use_streaming_pipeline:
@@ -5286,7 +5396,7 @@ class LocalAIServer:
                 session.call_id, mode, prompt_text[:80],
             )
             await self._process_full_pipeline_streaming(
-                websocket, session, request_id, chat_messages, clean_text,
+                websocket, session, request_id, chat_messages, clean_text, generation,
             )
             return
 
@@ -5325,6 +5435,10 @@ class LocalAIServer:
             )
             llm_response = "I'm here to help you. Could you please repeat that?"
 
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="llm_result", generation=generation)
+            return
+
         # Guardrail: some local LLMs occasionally emit a hangup_call tool wrapper even when the user
         # hasn't indicated they want to end the call (e.g., "how to set up the project").
         # When this happens, retry once with an explicit "no tools" instruction.
@@ -5356,6 +5470,7 @@ class LocalAIServer:
                             session.call_id,
                             exc_info=True,
                         )
+
                 else:
                     retry_prompt = (
                         f"{prompt_text}\n\n"
@@ -5376,6 +5491,10 @@ class LocalAIServer:
                             exc_info=True,
                         )
 
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="llm_retry", generation=generation)
+            return
+
         tool_gateway_done = False
         if mode == "full" and bool(getattr(self, "tool_gateway_enabled", True)) and bool(session.allowed_tools):
             tool_payload = await self._build_llm_tool_response_payload(
@@ -5387,6 +5506,9 @@ class LocalAIServer:
                 tool_policy=session.tool_policy,
                 server_gated=True,
             )
+            if not self._output_generation_active(session, generation):
+                self._log_stale_output_drop(session, output_type="tool_decision", generation=generation)
+                return
             if tool_payload.get("finish_reason") == "tool_calls":
                 await self._send_json(websocket, tool_payload)
                 logging.info(
@@ -5414,6 +5536,7 @@ class LocalAIServer:
             request_id,
             source_mode=mode if mode != "full" else "llm",
             extra={"tool_gateway_done": True} if tool_gateway_done else None,
+            generation=generation,
         ):
             return
 
@@ -5430,6 +5553,7 @@ class LocalAIServer:
                 session,
                 request_id,
                 source_mode="full",
+                generation=generation,
             )
 
     async def _process_full_pipeline_streaming(
@@ -5439,6 +5563,7 @@ class LocalAIServer:
         request_id: Optional[str],
         chat_messages: list[dict[str, str]],
         clean_text: str,
+        generation: int,
     ) -> None:
         """Stream LLM tokens → split into sentences → synthesize + emit each chunk.
 
@@ -5470,6 +5595,9 @@ class LocalAIServer:
 
         try:
             async for token in self.process_llm_chat_streaming(chat_messages):
+                if not self._output_generation_active(session, generation):
+                    self._log_stale_output_drop(session, output_type="llm_stream", generation=generation)
+                    return
                 sentence_buffer += token
                 full_response += token
 
@@ -5493,6 +5621,7 @@ class LocalAIServer:
                                     chunk_index=chunk_index,
                                     is_final_chunk=False,
                                     is_streaming=True,
+                                    generation=generation,
                                 )
                                 chunk_index += 1
 
@@ -5510,6 +5639,7 @@ class LocalAIServer:
                             chunk_index=chunk_index,
                             is_final_chunk=True,
                             is_streaming=True,
+                            generation=generation,
                         )
                         chunk_index += 1
 
@@ -5523,6 +5653,7 @@ class LocalAIServer:
                     chunk_index=chunk_index,
                     is_final_chunk=True,
                     is_streaming=True,
+                    generation=generation,
                 )
 
             # If no chunks were emitted (e.g. very short response with no sentence boundary),
@@ -5535,6 +5666,7 @@ class LocalAIServer:
                         await self._emit_tts_audio(
                             websocket, audio, session, request_id,
                             source_mode="full",
+                            generation=generation,
                         )
 
         except Exception as exc:
@@ -5552,6 +5684,7 @@ class LocalAIServer:
                         await self._emit_tts_audio(
                             websocket, audio, session, request_id,
                             source_mode="full",
+                            generation=generation,
                         )
 
         # Record full response for history and emit llm_response event
@@ -5580,11 +5713,13 @@ class LocalAIServer:
             await self._emit_llm_response(
                 websocket, llm_response, session, request_id,
                 source_mode="llm",
+                generation=generation,
             )
         else:
             await self._emit_llm_response(
                 websocket, None, session, request_id,
                 source_mode="llm",
+                generation=generation,
             )
 
         logging.info(
@@ -5783,7 +5918,7 @@ class LocalAIServer:
 
                 if event.get("is_final"):
                     final_emitted = True
-                    await self._handle_final_transcript(
+                    final_coro = self._handle_final_transcript(
                         websocket,
                         session,
                         request_id,
@@ -5792,6 +5927,12 @@ class LocalAIServer:
                         confidence=confidence,
                         idle_promoted=False,
                     )
+                    if mode == "stt":
+                        await final_coro
+                    else:
+                        self._start_session_response_task(
+                            session, final_coro, reason="final-transcript"
+                        )
 
             if final_emitted:
                 return
@@ -5829,7 +5970,12 @@ class LocalAIServer:
         if call_id:
             session.call_id = call_id
 
+        generation = self._start_output_generation(session)
+
         audio_response = await self.process_tts(text)
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="tts_response", generation=generation)
+            return
         self._arm_whisper_stt_suppression(session, audio_response, source="tts_request")
         
         # Check if this is a direct TTS request (expects tts_response with base64)
@@ -5851,6 +5997,9 @@ class LocalAIServer:
             }
             if request_id:
                 response["request_id"] = request_id
+            if not self._output_generation_active(session, generation):
+                self._log_stale_output_drop(session, output_type="tts_response", generation=generation)
+                return
             await self._send_json(websocket, response)
             logging.info("📢 TTS response sent call_id=%s audio_bytes=%d", session.call_id, len(audio_response or b""))
         else:
@@ -5861,6 +6010,7 @@ class LocalAIServer:
                 session,
                 request_id,
                 source_mode=mode,
+                generation=generation,
             )
 
     async def _handle_llm_request(
@@ -5880,6 +6030,8 @@ class LocalAIServer:
         if call_id:
             session.call_id = call_id
 
+        generation = self._start_output_generation(session)
+
         logging.info(
             "🧠 LLM REQUEST - Received call_id=%s mode=%s preview=%s",
             session.call_id,
@@ -5896,7 +6048,7 @@ class LocalAIServer:
                 mode or "llm",
             )
             if use_chat_path:
-                effective_system = self._get_effective_system_prompt()
+                effective_system = self._get_effective_system_prompt(session)
                 chat_msgs: List[Dict[str, str]] = []
                 if effective_system:
                     chat_msgs.append({"role": "system", "content": effective_system})
@@ -5905,8 +6057,9 @@ class LocalAIServer:
                     asyncio.shield(self.process_llm_chat(chat_msgs)), timeout=infer_timeout
                 )
             else:
+                prompt_text, _, _, _, _ = self._prepare_llm_prompt(session, text)
                 llm_response = await asyncio.wait_for(
-                    asyncio.shield(self.process_llm(text)), timeout=infer_timeout
+                    asyncio.shield(self.process_llm(prompt_text)), timeout=infer_timeout
                 )
         except asyncio.TimeoutError:
             logging.warning(
@@ -5926,12 +6079,17 @@ class LocalAIServer:
             )
             llm_response = "I'm here to help you. Could you please repeat that?"
 
+        if not self._output_generation_active(session, generation):
+            self._log_stale_output_drop(session, output_type="llm_request", generation=generation)
+            return
+
         await self._emit_llm_response(
             websocket,
             llm_response,
             session,
             request_id,
             source_mode=mode or "llm",
+            generation=generation,
         )
 
     async def handler(self, websocket):

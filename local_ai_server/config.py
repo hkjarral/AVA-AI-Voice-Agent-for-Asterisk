@@ -34,6 +34,35 @@ def _parse_int(raw: Optional[str], default: int = 0) -> int:
         return default
 
 
+def llama_chat_format_override(raw: Optional[str]) -> Optional[str]:
+    """Return the explicit llama.cpp chat handler, if one was requested.
+
+    ``auto`` keeps AVA on its structured chat-completion path while allowing
+    llama.cpp to select the chat template embedded in the GGUF metadata.  An
+    empty value retains AVA's legacy raw-completion behavior for compatibility.
+    """
+    value = (raw or "").strip()
+    if value.lower() == "auto":
+        return None
+    return value or None
+
+
+def _env_with_legacy_alias(primary: str, legacy: str, default: str) -> str:
+    """Read a documented environment key while preserving an older alias.
+
+    The documented key always wins when both are present.  Keeping this helper
+    side-effect free makes configuration parsing deterministic and easy to test;
+    startup diagnostics can report legacy-key usage separately.
+    """
+    primary_value = os.getenv(primary)
+    if primary_value is not None:
+        return primary_value
+    legacy_value = os.getenv(legacy)
+    if legacy_value is not None:
+        return legacy_value
+    return default
+
+
 @dataclass(frozen=True)
 class LocalAIConfig:
     runtime_mode: str = "full"
@@ -325,7 +354,13 @@ class LocalAIConfig:
             filler_voice=os.getenv("LOCAL_FILLER_VOICE", "en"),
             filler_speed=_parse_int(os.getenv("LOCAL_FILLER_SPEED"), 160),
             llm_streaming_tts_overlap=_parse_bool(os.getenv("LOCAL_LLM_STREAMING_TTS_OVERLAP", "1"), default=True),
-            tts_phrase_cache_enabled=_parse_bool(os.getenv("LOCAL_TTS_PHRASE_CACHE", "0")),
+            tts_phrase_cache_enabled=_parse_bool(
+                _env_with_legacy_alias(
+                    "LOCAL_TTS_PHRASE_CACHE_ENABLED",
+                    "LOCAL_TTS_PHRASE_CACHE",
+                    "0",
+                )
+            ),
             tts_phrase_cache_max_text_len=_parse_int(os.getenv("LOCAL_TTS_PHRASE_CACHE_MAX_LEN"), 200),
             speculative_llm_enabled=_parse_bool(os.getenv("LOCAL_SPECULATIVE_LLM", "0")),
             speculative_llm_max_tokens=_parse_int(os.getenv("LOCAL_SPECULATIVE_LLM_MAX_TOKENS"), 32),

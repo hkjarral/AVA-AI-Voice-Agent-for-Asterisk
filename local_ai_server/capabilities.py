@@ -18,6 +18,7 @@ def detect_capabilities(config: LocalAIConfig) -> Dict[str, Any]:
         "kokoro": False,
         "melotts": False,
         "silero": False,
+        "matcha": False,
         "llama": False,
     }
 
@@ -76,14 +77,31 @@ def detect_capabilities(config: LocalAIConfig) -> Dict[str, Any]:
     except ImportError:
         pass
 
-    # Silero: detect by import availability instead of build-time env var
+    # Silero requires both torch and a prepared torch.hub cache.  Reporting it
+    # from the torch import alone makes minimal images look ready even though
+    # initialization would immediately fail offline.
     try:
         import torch  # noqa: F401
-        silero_available = True
+        silero_available = os.path.isdir(config.silero_model_path) and bool(
+            os.listdir(config.silero_model_path)
+        )
     except ImportError:
+        silero_available = False
+    except OSError:
         silero_available = False
     if silero_available:
         capabilities["silero"] = True
+
+    # Matcha uses sherpa-onnx at runtime and requires both the acoustic model
+    # and vocoder.  Keep this separate from generic Sherpa STT availability.
+    try:
+        import sherpa_onnx  # noqa: F401
+
+        capabilities["matcha"] = os.path.isfile(config.matcha_model_path) and os.path.isfile(
+            config.matcha_vocoder_path
+        )
+    except ImportError:
+        pass
 
     try:
         from llama_cpp import Llama  # noqa: F401

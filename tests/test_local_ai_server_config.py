@@ -40,6 +40,39 @@ def test_llm_context_respects_env_override(monkeypatch):
     assert cfg.llm_context == 1536
 
 
+def test_llama_chat_format_auto_uses_embedded_gguf_template():
+    config_mod = _load_local_ai_config_module()
+    assert config_mod.llama_chat_format_override("auto") is None
+    assert config_mod.llama_chat_format_override(" AUTO ") is None
+
+
+def test_llama_chat_format_preserves_explicit_and_legacy_modes():
+    config_mod = _load_local_ai_config_module()
+    assert config_mod.llama_chat_format_override(" chatml ") == "chatml"
+    assert config_mod.llama_chat_format_override("") is None
+
+
+def test_documented_tts_phrase_cache_key_is_respected(monkeypatch):
+    monkeypatch.setenv("LOCAL_TTS_PHRASE_CACHE_ENABLED", "true")
+    monkeypatch.delenv("LOCAL_TTS_PHRASE_CACHE", raising=False)
+    config_mod = _load_local_ai_config_module()
+    assert config_mod.LocalAIConfig.from_env().tts_phrase_cache_enabled is True
+
+
+def test_documented_tts_phrase_cache_key_wins_over_legacy_alias(monkeypatch):
+    monkeypatch.setenv("LOCAL_TTS_PHRASE_CACHE_ENABLED", "false")
+    monkeypatch.setenv("LOCAL_TTS_PHRASE_CACHE", "true")
+    config_mod = _load_local_ai_config_module()
+    assert config_mod.LocalAIConfig.from_env().tts_phrase_cache_enabled is False
+
+
+def test_legacy_tts_phrase_cache_key_remains_compatible(monkeypatch):
+    monkeypatch.delenv("LOCAL_TTS_PHRASE_CACHE_ENABLED", raising=False)
+    monkeypatch.setenv("LOCAL_TTS_PHRASE_CACHE", "true")
+    config_mod = _load_local_ai_config_module()
+    assert config_mod.LocalAIConfig.from_env().tts_phrase_cache_enabled is True
+
+
 def test_tool_gateway_enabled_defaults_true(monkeypatch):
     monkeypatch.delenv("LOCAL_TOOL_GATEWAY_ENABLED", raising=False)
     config_mod = _load_local_ai_config_module()

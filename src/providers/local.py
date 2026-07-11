@@ -1359,6 +1359,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 raise RuntimeError(
                     f"Failed to synchronize system prompt with Local AI Server (call_id={call_id})"
                 )
+        else:
+            # Empty is an authoritative per-call value. Send it so a reused
+            # WebSocket cannot retain the previous call's instructions.
+            prompt_ok = await self._apply_system_prompt("", call_id=call_id)
+            if not prompt_ok:
+                raise RuntimeError(
+                    f"Failed to clear Local AI Server system prompt (call_id={call_id})"
+                )
         # Fail-closed: tool_context state is per-WebSocket and we reuse the
         # connection across calls. If the sync fails, the server can keep the
         # previous call's allowlist/policy/schemas, leaking ACL state across
@@ -1380,8 +1388,6 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         CodeRabbit review of PR #384 comment 3214166440.
         """
         prompt = (prompt or "").strip()
-        if not prompt:
-            return True  # nothing to sync, not a failure
         if not self.websocket or self.websocket.state.name != "OPEN":
             logger.warning(
                 "Cannot send local system prompt: WebSocket not open",
@@ -1389,11 +1395,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 chars=len(prompt),
             )
             return False
-        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        # Include call_id so a reused WebSocket always starts a fresh server-side
+        # transcript even when consecutive agents share identical instructions.
+        digest = hashlib.sha256(f"{call_id}\0{prompt}".encode("utf-8")).hexdigest()
         if digest == self._last_system_prompt_digest:
             return True  # already in sync from a prior successful send
         payload = {
             "type": "switch_model",
+            "scope": "session",
+            "call_id": call_id,
             "dry_run": True,  # system prompt does not require reload_models()
             "llm_config": {
                 "system_prompt": prompt,
@@ -1441,7 +1451,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         if status in ("success", "no_change"):
             self._last_system_prompt_digest = digest
             logger.info(
-                "Applied Local AI Server system prompt (dry_run)",
+                "Applied Local AI Server session system prompt",
                 call_id=call_id,
                 chars=len(prompt),
                 status=status,

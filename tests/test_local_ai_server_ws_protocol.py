@@ -25,12 +25,17 @@ class _FakeServer:
         self.ws_auth_token = None
         self.sent_payloads = []
         self.clear_calls = []
+        self.cancel_calls = []
 
     async def _send_json(self, _websocket, payload):
         self.sent_payloads.append(payload)
 
     def _clear_whisper_stt_suppression(self, session, *, reason: str):
         self.clear_calls.append({"call_id": session.call_id, "reason": reason})
+
+    def _cancel_session_response_tasks(self, session, *, reason: str):
+        session.output_generation += 1
+        self.cancel_calls.append({"call_id": session.call_id, "reason": reason})
 
 
 @pytest.mark.asyncio

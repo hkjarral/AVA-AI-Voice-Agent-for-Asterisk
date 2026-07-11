@@ -332,8 +332,26 @@
         "type": {
           "const": "switch_model"
         },
+        "scope": {
+          "enum": [
+            "global",
+            "session"
+          ]
+        },
+        "call_id": {
+          "type": "string"
+        },
         "dry_run": {
           "type": "boolean"
+        },
+        "llm_config": {
+          "type": "object",
+          "properties": {
+            "system_prompt": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
         },
         "stt_backend": {
           "type": "string"
@@ -533,6 +551,15 @@
           "items": {
             "type": "string"
           }
+        },
+        "scope": {
+          "enum": [
+            "global",
+            "session"
+          ]
+        },
+        "call_id": {
+          "type": "string"
         }
       },
       "additionalProperties": true

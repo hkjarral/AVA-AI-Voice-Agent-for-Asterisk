@@ -167,7 +167,14 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
             "required": ["type"],
             "properties": {
                 "type": {"const": "switch_model"},
+                "scope": {"enum": ["global", "session"]},
+                "call_id": {"type": "string"},
                 "dry_run": {"type": "boolean"},
+                "llm_config": {
+                    "type": "object",
+                    "properties": {"system_prompt": {"type": "string"}},
+                    "additionalProperties": True,
+                },
                 "stt_backend": {"type": "string"},
                 "stt_model_path": {"type": "string"},
                 "sherpa_model_path": {"type": "string"},
@@ -234,6 +241,8 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "status": {"enum": ["success", "no_change", "error"]},
                 "message": {"type": "string"},
                 "changed": {"type": "array", "items": {"type": "string"}},
+                "scope": {"enum": ["global", "session"]},
+                "call_id": {"type": "string"},
             },
             "additionalProperties": True,
         },
