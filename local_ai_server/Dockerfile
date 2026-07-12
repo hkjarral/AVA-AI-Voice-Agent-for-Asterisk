@@ -86,7 +86,10 @@ RUN if [ "$INCLUDE_PIPER" = "true" ]; then \
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
         echo "📦 Installing Kokoro TTS..." && \
         KOKORO_REQUIREMENT="$(grep -m 1 '^kokoro==' requirements.txt || true)"; \
+        TORCH_REQUIREMENT="$(grep -m 1 '^torch==' requirements.txt || true)"; \
         if [ -z "$KOKORO_REQUIREMENT" ]; then echo "❌ Missing kokoro pin" >&2; exit 1; fi; \
+        if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
+        pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu && \
         pip install --no-cache-dir "$KOKORO_REQUIREMENT"; \
     fi
 
@@ -98,8 +101,11 @@ RUN if [ "$INCLUDE_MELOTTS" = "true" ]; then \
         python -c "from pathlib import Path; p=Path('/tmp/MeloTTS/setup.py'); s=p.read_text(); s=s.replace(\"from pip.req import parse_requirements\\n\", \"\"); s=s.replace(\"install_reqs = parse_requirements('requirements.txt')\\nreqs = [str(ir.req) for ir in install_reqs]\\n\", \"with open(os.path.join(cwd, 'requirements.txt'), encoding='utf-8') as _f:\\n    reqs = [ln.strip() for ln in _f if ln.strip() and not ln.startswith('#')]\\n\"); p.write_text(s); req=[]; ex=('torch','torchaudio','gradio'); [req.append(ln.strip()) for ln in Path('/tmp/MeloTTS/requirements.txt').read_text().splitlines() if ln.strip() and not ln.strip().startswith('#') and not ln.strip().lower().startswith(ex)]; Path('/tmp/MeloTTS/requirements.filtered.txt').write_text('\\n'.join(req)+'\\n'); print(f'MeloTTS filtered requirements prepared: {len(req)} packages')" && \
         pip install --no-cache-dir -r requirements.filtered.txt && \
         pip install --no-cache-dir "setuptools<81" && \
-        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir torch; fi && \
-        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torchaudio') else 1)"; then pip install --no-cache-dir torchaudio; fi && \
+        TORCH_REQUIREMENT="$(grep -m 1 '^torch==' /usr/src/app/requirements.txt || true)" && \
+        TORCHAUDIO_REQUIREMENT="$(grep -m 1 '^torchaudio==' /usr/src/app/requirements.txt || true)" && \
+        if [ -z "$TORCH_REQUIREMENT" ] || [ -z "$TORCHAUDIO_REQUIREMENT" ]; then echo "❌ Missing torch/torchaudio pins" >&2; exit 1; fi && \
+        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; fi && \
+        if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torchaudio') else 1)"; then pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; fi && \
         pip install --no-cache-dir --no-build-isolation --no-deps . && \
         cd / && rm -rf /tmp/MeloTTS && \
         python -m unidic download || true && \
@@ -114,8 +120,10 @@ RUN mkdir -p /opt/silero-cache
 
 RUN if [ "$INCLUDE_SILERO" = "true" ]; then \
         echo "📦 Installing Silero TTS dependencies..." && \
+        TORCH_REQUIREMENT="$(grep -m 1 '^torch==' requirements.txt || true)"; \
+        if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
         if ! python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('torch') else 1)"; then \
-            pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu; \
+            pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu; \
         fi && \
         pip install --no-cache-dir omegaconf && \
         echo "📦 Pre-caching Silero Russian model (best effort)..." && \

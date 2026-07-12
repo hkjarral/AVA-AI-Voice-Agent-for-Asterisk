@@ -6,6 +6,8 @@ numpy==1.26.4
 sherpa-onnx==1.13.4
 faster-whisper==1.0.3
 kokoro==0.9.4
+torch==2.5.1
+torchaudio==2.5.1
 # Note: numpy is used by both Piper TTS and Kroko/Sherpa STT (PCM16→float32 conversion)
 # sherpa-onnx provides local streaming ASR (Kroko is built on sherpa-onnx)
 # kokoro provides high-quality Kokoro TTS (requires espeak-ng system package)

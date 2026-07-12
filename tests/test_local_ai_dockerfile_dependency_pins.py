@@ -20,6 +20,8 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
     )
     assert re.search(r"^faster-whisper==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
     assert re.search(r"^kokoro==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
+    assert re.search(r"^torch==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
+    assert re.search(r"^torchaudio==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
 
     for dockerfile in DOCKERFILES:
         content = dockerfile.read_text(encoding="utf-8")
@@ -44,8 +46,17 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert 'pip install --no-cache-dir "$FASTER_WHISPER_REQUIREMENT"' in content, dockerfile
         assert "grep -m 1 '^kokoro==' requirements.txt" in content, dockerfile
         assert 'pip install --no-cache-dir "$KOKORO_REQUIREMENT"' in content, dockerfile
+        assert "grep -m 1 '^torch==' requirements.txt" in content, dockerfile
+        assert 'pip install --no-cache-dir "$TORCH_REQUIREMENT"' in content, dockerfile
         assert not re.search(r"pip install[^\n]*faster-whisper==", content), dockerfile
         assert not re.search(r"pip install[^\n]*kokoro(?:==|>=)", content), dockerfile
+        assert not re.search(r"pip install[^\n]*torch(?:==|>=)", content), dockerfile
+        assert not re.search(r"pip install[^\n]*torchaudio(?:==|>=)", content), dockerfile
+
+
+def test_cpu_image_uses_cpu_only_pytorch_wheels() -> None:
+    content = (LOCAL_AI_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert content.count("https://download.pytorch.org/whl/cpu") >= 3
 
 
 def test_gpu_image_includes_cudnn_for_faster_whisper() -> None:
