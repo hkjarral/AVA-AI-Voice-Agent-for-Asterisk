@@ -22,6 +22,8 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
     assert re.search(r"^kokoro==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
     assert re.search(r"^torch==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
     assert re.search(r"^torchaudio==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
+    assert re.search(r"^transformers==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
+    assert re.search(r"^huggingface-hub==\d+\.\d+\.\d+$", requirements, re.MULTILINE)
 
     for dockerfile in DOCKERFILES:
         content = dockerfile.read_text(encoding="utf-8")
@@ -48,6 +50,10 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert 'pip install --no-cache-dir "$KOKORO_REQUIREMENT"' in content, dockerfile
         assert "grep -m 1 '^torch==' requirements.txt" in content, dockerfile
         assert 'pip install --no-cache-dir "$TORCH_REQUIREMENT"' in content, dockerfile
+        assert "grep -m 1 '^transformers==' requirements.txt" in content, dockerfile
+        assert "grep -m 1 '^huggingface-hub==' requirements.txt" in content, dockerfile
+        assert '"$TRANSFORMERS_REQUIREMENT" "$HF_HUB_REQUIREMENT"' in content, dockerfile
+        assert "RUN pip check" in content, dockerfile
         assert not re.search(r"pip install[^\n]*faster-whisper==", content), dockerfile
         assert not re.search(r"pip install[^\n]*kokoro(?:==|>=)", content), dockerfile
         assert not re.search(r"pip install[^\n]*torch(?:==|>=)", content), dockerfile

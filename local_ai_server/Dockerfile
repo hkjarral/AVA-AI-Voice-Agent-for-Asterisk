@@ -87,9 +87,13 @@ RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
         echo "📦 Installing Kokoro TTS..." && \
         KOKORO_REQUIREMENT="$(grep -m 1 '^kokoro==' requirements.txt || true)"; \
         TORCH_REQUIREMENT="$(grep -m 1 '^torch==' requirements.txt || true)"; \
+        TRANSFORMERS_REQUIREMENT="$(grep -m 1 '^transformers==' requirements.txt || true)"; \
+        HF_HUB_REQUIREMENT="$(grep -m 1 '^huggingface-hub==' requirements.txt || true)"; \
         if [ -z "$KOKORO_REQUIREMENT" ]; then echo "❌ Missing kokoro pin" >&2; exit 1; fi; \
         if [ -z "$TORCH_REQUIREMENT" ]; then echo "❌ Missing torch pin" >&2; exit 1; fi; \
+        if [ -z "$TRANSFORMERS_REQUIREMENT" ] || [ -z "$HF_HUB_REQUIREMENT" ]; then echo "❌ Missing transformers/huggingface-hub pins" >&2; exit 1; fi; \
         pip install --no-cache-dir "$TORCH_REQUIREMENT" --index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir "$TRANSFORMERS_REQUIREMENT" "$HF_HUB_REQUIREMENT" && \
         pip install --no-cache-dir "$KOKORO_REQUIREMENT"; \
     fi
 
@@ -141,6 +145,9 @@ RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
         CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF" \
         pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
+
+# Fail the image build when optional backends leave an incompatible dependency set.
+RUN pip check
 
 # Pre-install spacy model for Kokoro TTS (only if Kokoro included)
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
