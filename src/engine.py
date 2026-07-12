@@ -8966,11 +8966,19 @@ class Engine:
                 except Exception:
                     vad_result = None
 
-            # Energy fallback
+            # Energy fallback.  Always measure the normalized PCM that is also
+            # sent to the provider.  The enhanced VAD may inspect the raw
+            # AudioSocket wire frame; format/endian uncertainty there must not
+            # hide strong caller speech that is obvious after normalization.
             try:
-                energy = int(vad_result.energy_level) if vad_result else int(audioop.rms(pcm16, 2) if pcm16 else 0)
+                pcm_energy = int(audioop.rms(pcm16, 2) if pcm16 else 0)
             except Exception:
-                energy = 0
+                pcm_energy = 0
+            try:
+                vad_energy = int(vad_result.energy_level) if vad_result else 0
+            except Exception:
+                vad_energy = 0
+            energy = max(pcm_energy, vad_energy)
 
             frame_ms = 20
             confidence = 0.0
@@ -9002,7 +9010,19 @@ class Engine:
                 session.barge_in_candidate_ms = 0
                 return
 
-            if criteria_met >= (2 if vad_result else 1):
+            # Local AI is the only provider whose full-agent barge-in is owned
+            # entirely by this fallback.  On caller-isolated media, sustained
+            # normalized energy is authoritative for Local AI; requiring a
+            # second enhanced-VAD vote caused real speech to be ignored until
+            # the response had already ended.  Keep the conservative two-vote
+            # rule unchanged for every hosted provider.
+            local_energy_authoritative = self._get_provider_kind(provider_name) == "local"
+            qualifies = bool(
+                local_energy_authoritative
+                or vad_result is None
+                or criteria_met >= 2
+            )
+            if qualifies:
                 if int(getattr(session, "barge_in_candidate_ms", 0) or 0) == 0:
                     session.barge_start_ts = now
                 session.barge_in_candidate_ms = int(getattr(session, "barge_in_candidate_ms", 0) or 0) + frame_ms
@@ -9166,6 +9186,32 @@ class Engine:
                 )
                 return
 
+            provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+            local_provider_notified = False
+            local_turn_interrupted = bool(
+                getattr(session, "tts_playing", False)
+                or call_id in (getattr(self, "_agent_output_active_calls", set()) or set())
+            )
+
+            # Notify Local AI before platform cleanup.  stop_streaming_playback
+            # can spend time draining/cancelling pacer tasks; delaying this
+            # control message kept Whisper suppressed and allowed the caller's
+            # replacement command to be fragmented or lost.  The rollback flag
+            # also removes the interrupted exchange from weak-model history.
+            if isinstance(provider, LocalProvider):
+                try:
+                    await provider.notify_barge_in(
+                        call_id,
+                        rollback_assistant=local_turn_interrupted,
+                    )
+                    local_provider_notified = True
+                except Exception:
+                    logger.debug(
+                        "Failed early Local AI barge-in notification",
+                        call_id=call_id,
+                        exc_info=True,
+                    )
+
             # Stop/flush streaming playback first (prevents tail audio).
             # Mark end_reason so cleanup skips remainder flush (avoids oversized RTP packets).
             playback_position_ms = 0
@@ -9189,7 +9235,6 @@ class Engine:
             except Exception:
                 logger.debug("Failed to clear provider stream buffers during barge-in", call_id=call_id, exc_info=True)
 
-            provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
             # Provider-side egress may be several seconds ahead of telephony playback.
             # A local VAD interruption must flush that buffer too, otherwise the old
             # response immediately creates a new platform stream after the local stop.
@@ -9279,8 +9324,11 @@ class Engine:
             # is captured without requiring a second attempt.
             try:
                 provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
-                if isinstance(provider, LocalProvider):
-                    await provider.notify_barge_in(call_id)
+                if isinstance(provider, LocalProvider) and not local_provider_notified:
+                    await provider.notify_barge_in(
+                        call_id,
+                        rollback_assistant=local_turn_interrupted,
+                    )
             except Exception:
                 logger.debug("Failed to notify local provider about barge-in", call_id=call_id, exc_info=True)
 

@@ -85,6 +85,46 @@ def test_new_generation_invalidates_previous_generation():
     assert instance._output_generation_active(session, new) is True
 
 
+def test_barge_in_rolls_back_only_latest_interrupted_exchange():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance = object.__new__(server_mod.LocalAIServer)
+    session = session_mod.SessionContext(
+        call_id="rollback-call",
+        llm_messages=[
+            {"role": "user", "content": "What is Ava?"},
+            {"role": "assistant", "content": "Ava is a voice agent."},
+            {"role": "user", "content": "Explain every provider."},
+            {"role": "assistant", "content": "The first provider is..."},
+        ],
+        llm_user_turns=["What is Ava?", "Explain every provider."],
+    )
+
+    instance._rollback_interrupted_exchange(session)
+
+    assert session.llm_messages == [
+        {"role": "user", "content": "What is Ava?"},
+        {"role": "assistant", "content": "Ava is a voice agent."},
+    ]
+    assert session.llm_user_turns == ["What is Ava?"]
+
+
+def test_barge_in_rollback_is_noop_without_latest_assistant():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance = object.__new__(server_mod.LocalAIServer)
+    session = session_mod.SessionContext(
+        call_id="no-assistant",
+        llm_messages=[{"role": "user", "content": "new question"}],
+        llm_user_turns=["new question"],
+    )
+
+    instance._rollback_interrupted_exchange(session)
+
+    assert session.llm_messages == [{"role": "user", "content": "new question"}]
+    assert session.llm_user_turns == ["new question"]
+
+
 @pytest.mark.asyncio
 async def test_session_response_task_can_be_cancelled_without_waiting_for_work():
     server_mod = _load("server")

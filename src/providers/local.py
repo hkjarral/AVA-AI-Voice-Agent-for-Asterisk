@@ -134,7 +134,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             value = ""
         self._initial_greeting = value or None
 
-    async def notify_barge_in(self, call_id: Optional[str]) -> None:
+    async def notify_barge_in(
+        self,
+        call_id: Optional[str],
+        *,
+        rollback_assistant: bool = False,
+    ) -> None:
         """Notify local_ai_server that engine barge-in occurred for this call.
 
         This allows the server to clear Whisper-family STT suppression timers
@@ -160,6 +165,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         "type": "barge_in",
                         "call_id": target_call_id,
                         "request_id": request_id,
+                        "rollback_assistant": bool(rollback_assistant),
                     }
                 )
             )

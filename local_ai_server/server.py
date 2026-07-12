@@ -4085,6 +4085,39 @@ class LocalAIServer:
                 session.output_generation,
             )
 
+    @staticmethod
+    def _rollback_interrupted_exchange(session: SessionContext) -> None:
+        """Remove the active user/assistant exchange after caller barge-in.
+
+        Serial Local AI records the assistant turn before TTS is emitted.  If
+        the caller interrupts that TTS, leaving the pair in history makes a
+        small model continue the abandoned request instead of honoring the
+        replacement utterance.  Preserve all earlier completed context while
+        dropping only the most recent interrupted exchange.
+        """
+        messages = list(session.llm_messages or [])
+        removed_roles: list[str] = []
+        if messages and (messages[-1].get("role") or "").strip().lower() == "assistant":
+            removed_roles.append("assistant")
+            messages.pop()
+            if messages and (messages[-1].get("role") or "").strip().lower() == "user":
+                removed_roles.append("user")
+                messages.pop()
+        if not removed_roles:
+            return
+        session.llm_messages = messages
+        session.llm_user_turns = [
+            m.get("content", "")
+            for m in messages
+            if (m.get("role") or "").strip().lower() == "user"
+        ]
+        logging.info(
+            "🛑 INTERRUPTED EXCHANGE ROLLED BACK - call_id=%s roles=%s remaining_messages=%d",
+            session.call_id,
+            removed_roles,
+            len(messages),
+        )
+
     def _start_session_response_task(
         self, session: SessionContext, coroutine, *, reason: str
     ) -> asyncio.Task:
@@ -4312,6 +4345,21 @@ class LocalAIServer:
         import re
         t = _normalize_text(text or "")
         if not t:
+            return False
+
+        # Do not turn quoted/metalinguistic uses of farewell words into an
+        # irreversible hangup.  Weak phone STT commonly produces phrases such
+        # as "reply with the word goodbye" while the caller is correcting the
+        # agent.  Explicit commands ("hang up", "end call") remain terminal.
+        explicit_commands = ("hang up", "end call")
+        if any(command in t for command in explicit_commands):
+            return True
+        meta_patterns = (
+            r"\b(?:say|saying|said|repeat|reply|respond|answer)\b.{0,32}\b(?:goodbye|bye|thanks|thank you)\b",
+            r"\b(?:goodbye|bye|thanks|thank you)\b.{0,24}\b(?:word|phrase|sentence|response|answer)\b",
+            r"\b(?:not|don't|do not|didn't|did not)\b.{0,24}\b(?:goodbye|bye|thanks|thank you)\b",
+        )
+        if any(re.search(pattern, t) for pattern in meta_patterns):
             return False
         for marker in _END_CALL_MARKERS:
             m = _normalize_text(marker)

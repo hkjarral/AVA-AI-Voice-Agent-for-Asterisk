@@ -32,6 +32,19 @@ def test_hangup_only_end_turn_remains_server_gated():
     assert server._tool_gateway_blocks_streaming(session, "Thank you, goodbye") is True
 
 
+def test_metalinguistic_goodbye_does_not_trigger_hangup():
+    server, _session = _server_and_session(["hangup_call"])
+    assert server._text_has_end_call_intent("Reply with the word goodbye") is False
+    assert server._text_has_end_call_intent("Goodbye with the only word") is False
+    assert server._text_has_end_call_intent("I did not say goodbye") is False
+
+
+def test_explicit_hangup_and_plain_goodbye_remain_terminal():
+    server, _session = _server_and_session(["hangup_call"])
+    assert server._text_has_end_call_intent("Please hang up now") is True
+    assert server._text_has_end_call_intent("That's all. Goodbye.") is True
+
+
 def test_other_tools_keep_serial_gateway_path():
     server, session = _server_and_session(["hangup_call", "transfer"])
     assert server._tool_gateway_blocks_streaming(session, "What are your hours?") is True

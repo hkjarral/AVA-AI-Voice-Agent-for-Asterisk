@@ -357,7 +357,9 @@ async def test_notify_barge_in_ack_roundtrip():
     provider._active_call_id = "call-barge-ack"
     provider.websocket = _BargeAckFakeWebSocket([])
 
-    await provider.notify_barge_in("call-barge-ack")
+    await provider.notify_barge_in(
+        "call-barge-ack", rollback_assistant=True
+    )
     await provider._receive_loop()
     await asyncio.sleep(0.05)
 
@@ -365,6 +367,7 @@ async def test_notify_barge_in_ack_roundtrip():
     barge_payloads = [payload for payload in sent_payloads if payload.get("type") == "barge_in"]
     assert len(barge_payloads) == 1
     assert barge_payloads[0].get("request_id")
+    assert barge_payloads[0]["rollback_assistant"] is True
     assert provider._pending_barge_in_acks == {}
 
 

@@ -26,6 +26,7 @@ class _FakeServer:
         self.sent_payloads = []
         self.clear_calls = []
         self.cancel_calls = []
+        self.rollback_calls = []
 
     async def _send_json(self, _websocket, payload):
         self.sent_payloads.append(payload)
@@ -36,6 +37,9 @@ class _FakeServer:
     def _cancel_session_response_tasks(self, session, *, reason: str):
         session.output_generation += 1
         self.cancel_calls.append({"call_id": session.call_id, "reason": reason})
+
+    def _rollback_interrupted_exchange(self, session):
+        self.rollback_calls.append(session.call_id)
 
 
 @pytest.mark.asyncio
@@ -98,6 +102,42 @@ async def test_ws_protocol_uses_stop_session_cancellation_reason():
         {"call_id": "call-stop", "reason": "engine_stop_session"}
     ]
     assert protocol._server.sent_payloads[-1]["type"] == "barge_in_ack"
+
+
+@pytest.mark.asyncio
+async def test_ws_protocol_rolls_back_interrupted_exchange_when_requested():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-rollback")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"barge_in","call_id":"call-rollback",'
+            '"request_id":"barge-rollback","rollback_assistant":true}'
+        ),
+    )
+
+    assert protocol._server.rollback_calls == ["call-rollback"]
+
+
+@pytest.mark.asyncio
+async def test_stop_session_never_rolls_back_conversation_history():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-stop")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"barge_in","call_id":"call-stop",'
+            '"reason":"stop_session","rollback_assistant":true}'
+        ),
+    )
+
+    assert protocol._server.rollback_calls == []
 
 
 # MED-R5: protocol-version handshake

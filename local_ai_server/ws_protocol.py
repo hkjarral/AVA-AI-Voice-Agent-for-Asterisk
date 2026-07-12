@@ -126,6 +126,8 @@ class WebSocketProtocol:
             cancel_reason = "stop_session" if stop_session else "barge_in"
             suppression_reason = "engine_stop_session" if stop_session else "engine_barge_in"
             self._server._cancel_session_response_tasks(session, reason=cancel_reason)
+            if not stop_session and bool(data.get("rollback_assistant", False)):
+                self._server._rollback_interrupted_exchange(session)
             self._server._clear_whisper_stt_suppression(
                 session, reason=suppression_reason
             )
