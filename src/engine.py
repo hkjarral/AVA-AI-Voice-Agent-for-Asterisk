@@ -5339,6 +5339,34 @@ class Engine:
 
         return mode, timeout_sec
 
+    def _should_send_provider_tool_result(
+        self,
+        *,
+        provider_name: str,
+        function_name: str,
+        result: Dict[str, Any],
+    ) -> bool:
+        """Return whether a provider needs the post-tool result turn.
+
+        An Asterisk-owned Local farewell is already synthesized and drained by
+        the engine. Sending the successful hangup result back to Local AI starts
+        a redundant LLM/TTS turn that can race the terminal ARI hangup. Local
+        TTS-owned farewells and all nonterminal tools still need their result.
+        """
+        if (
+            self._get_provider_kind(provider_name) != "local"
+            or function_name != "hangup_call"
+            or not bool((result or {}).get("will_hangup"))
+        ):
+            return True
+
+        providers_cfg = getattr(self.config, "providers", {}) or {}
+        local_config = (
+            providers_cfg.get("local") if isinstance(providers_cfg, dict) else None
+        )
+        farewell_mode, _timeout = self._resolve_local_farewell_settings(local_config)
+        return farewell_mode != "asterisk"
+
     async def _put_pipeline_stream_chunk(
         self,
         call_id: str,
@@ -8832,17 +8860,20 @@ class Engine:
 
         return result
 
-    async def _is_inbound_isolated_for_barge_in_fallback(self, session: CallSession) -> bool:
+    async def _is_inbound_isolated_for_barge_in_fallback(
+        self, session: CallSession, *, source: str
+    ) -> bool:
         """Best-effort check that inbound audio is caller-isolated (safe to run local VAD for barge-in)."""
         try:
             import time
 
             now = time.time()
             state = session.vad_state.setdefault("barge_in_fallback", {})
-            last_ts = float(state.get("iso_check_ts", 0.0) or 0.0)
+            cache_prefix = "audiosocket" if source == "audiosocket" else "default"
+            last_ts = float(state.get(f"{cache_prefix}_iso_check_ts", 0.0) or 0.0)
             # Cache for 200ms to avoid per-frame lock contention in SessionStore.
             if last_ts and (now - last_ts) < 0.2:
-                return bool(state.get("iso_ok", False))
+                return bool(state.get(f"{cache_prefix}_iso_ok", False))
 
             playback_ids = []
             try:
@@ -8858,11 +8889,22 @@ class Engine:
             except Exception:
                 has_bridge_moh = False
 
-            ok = (not has_playback) and (not has_bridge_moh)
-            state["iso_check_ts"] = now
-            state["iso_ok"] = ok
-            state["iso_has_playback"] = has_playback
-            state["iso_has_bridge_moh"] = has_bridge_moh
+            # In the normal two-party AudioSocket bridge, Asterisk passes media
+            # from each channel to the other participant. Audio written by AVA
+            # into the AudioSocket channel goes to the caller; inbound socket
+            # media is therefore caller-side audio even while AVA's stream is
+            # active. Treating AVA's own stream as an isolation failure made the
+            # fallback require an active stream and reject every frame until that
+            # same stream ended. A bridge-MOH channel remains ambiguous and keeps
+            # the conservative fail-closed behavior.
+            if source == "audiosocket":
+                ok = not has_bridge_moh
+            else:
+                ok = (not has_playback) and (not has_bridge_moh)
+            state[f"{cache_prefix}_iso_check_ts"] = now
+            state[f"{cache_prefix}_iso_ok"] = ok
+            state[f"{cache_prefix}_iso_has_playback"] = has_playback
+            state[f"{cache_prefix}_iso_has_bridge_moh"] = has_bridge_moh
             return ok
         except Exception:
             return False
@@ -8906,7 +8948,9 @@ class Engine:
             # (bridge mix excludes the ExternalMedia channel's own transmitted audio), so we skip
             # the playback/MOH isolation heuristic which would otherwise prevent barge-in during TTS.
             if source != "externalmedia":
-                if not await self._is_inbound_isolated_for_barge_in_fallback(session):
+                if not await self._is_inbound_isolated_for_barge_in_fallback(
+                    session, source=source
+                ):
                     return
 
             import time
@@ -16140,7 +16184,12 @@ class Engine:
         # if its provider-global "active call" state has rolled over to a
         # newer call by the time a slow tool returns. Per CodeRabbit review
         # of PR #384 comment 3214139216.
-        if provider and hasattr(provider, 'send_tool_result'):
+        send_provider_result = self._should_send_provider_tool_result(
+            provider_name=provider_name,
+            function_name=function_name,
+            result=result,
+        )
+        if provider and hasattr(provider, 'send_tool_result') and send_provider_result:
             try:
                 is_error = result.get("status") == "error"
                 # The local provider's send_tool_result accepts an optional
@@ -16186,6 +16235,12 @@ class Engine:
                     function_name=function_name,
                     error=str(e),
                 )
+        elif provider and hasattr(provider, 'send_tool_result'):
+            logger.info(
+                "Skipping redundant Local AI hangup result for Asterisk farewell",
+                call_id=call_id,
+                function_name=function_name,
+            )
         
         return result
 

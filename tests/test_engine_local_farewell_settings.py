@@ -5,6 +5,15 @@ import pytest
 from src.engine import Engine
 
 
+def _engine_with_local_farewell(mode: str) -> Engine:
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"local": "local"}
+    engine.config = types.SimpleNamespace(
+        providers={"local": {"farewell_mode": mode}}
+    )
+    return engine
+
+
 def test_resolve_local_farewell_settings_supports_dict_config():
     mode, timeout_sec = Engine._resolve_local_farewell_settings(
         {
@@ -60,3 +69,33 @@ def test_resolve_local_farewell_settings_defaults_when_missing():
 
     assert mode == "asterisk"
     assert timeout_sec == 30.0
+
+
+def test_asterisk_local_farewell_skips_redundant_hangup_result():
+    engine = _engine_with_local_farewell("asterisk")
+
+    assert not engine._should_send_provider_tool_result(
+        provider_name="local",
+        function_name="hangup_call",
+        result={"will_hangup": True},
+    )
+
+
+def test_local_tts_farewell_keeps_hangup_result_turn():
+    engine = _engine_with_local_farewell("tts")
+
+    assert engine._should_send_provider_tool_result(
+        provider_name="local",
+        function_name="hangup_call",
+        result={"will_hangup": True},
+    )
+
+
+def test_local_nonterminal_tool_keeps_result_turn():
+    engine = _engine_with_local_farewell("asterisk")
+
+    assert engine._should_send_provider_tool_result(
+        provider_name="local",
+        function_name="request_transcript",
+        result={"status": "success"},
+    )

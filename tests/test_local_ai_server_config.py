@@ -87,6 +87,14 @@ def test_tool_gateway_enabled_respects_env_false(monkeypatch):
     assert cfg.tool_gateway_enabled is False
 
 
+def test_default_voice_preamble_denies_unprovided_cross_call_memory(monkeypatch):
+    monkeypatch.delenv("LOCAL_LLM_VOICE_PREAMBLE", raising=False)
+    config_mod = _load_local_ai_config_module()
+    cfg = config_mod.LocalAIConfig.from_env()
+    assert "Treat each call as a new session" in cfg.llm_voice_preamble
+    assert "Do not claim to remember previous calls" in cfg.llm_voice_preamble
+
+
 def test_silero_config_defaults(monkeypatch):
     monkeypatch.delenv("SILERO_SPEAKER", raising=False)
     monkeypatch.delenv("SILERO_LANGUAGE", raising=False)

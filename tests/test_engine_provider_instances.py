@@ -51,6 +51,44 @@ def test_provider_fallback_allowlist_matches_named_instance_by_kind():
 
 
 @pytest.mark.asyncio
+async def test_audiosocket_barge_in_is_caller_isolated_during_ava_playback():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SimpleNamespace(
+        list_playbacks_for_call=lambda _call_id: _async_result(["stream-1"])
+    )
+    session = SimpleNamespace(
+        call_id="call-local",
+        music_snoop_channel_id=None,
+        vad_state={},
+    )
+
+    assert await engine._is_inbound_isolated_for_barge_in_fallback(
+        session, source="audiosocket"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audiosocket_barge_in_isolation_fails_closed_with_bridge_moh():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SimpleNamespace(
+        list_playbacks_for_call=lambda _call_id: _async_result(["stream-1"])
+    )
+    session = SimpleNamespace(
+        call_id="call-local",
+        music_snoop_channel_id="bridge-moh:call-local",
+        vad_state={},
+    )
+
+    assert not await engine._is_inbound_isolated_for_barge_in_fallback(
+        session, source="audiosocket"
+    )
+
+
+async def _async_result(value):
+    return value
+
+
+@pytest.mark.asyncio
 async def test_named_grok_instance_triggers_local_vad_fallback():
     engine = Engine.__new__(Engine)
     engine.provider_kinds = {"grok3": "grok"}

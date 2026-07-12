@@ -131,7 +131,9 @@ class LocalAIConfig:
         "You are a voice assistant on a phone call. "
         "Keep responses short and conversational. "
         "Do not use markdown, bullet points, numbered lists, or any visual formatting. "
-        "Speak naturally as if talking to someone on the phone."
+        "Speak naturally as if talking to someone on the phone. "
+        "Treat each call as a new session. Do not claim to remember previous calls "
+        "unless their details are explicitly included in the current prompt."
     )
     tool_gateway_enabled: bool = True
 
@@ -316,7 +318,9 @@ class LocalAIConfig:
                 "You are a voice assistant on a phone call. "
                 "Keep responses short and conversational. "
                 "Do not use markdown, bullet points, numbered lists, or any visual formatting. "
-                "Speak naturally as if talking to someone on the phone.",
+                "Speak naturally as if talking to someone on the phone. "
+                "Treat each call as a new session. Do not claim to remember previous calls "
+                "unless their details are explicitly included in the current prompt.",
             ),
             tool_gateway_enabled=_parse_bool(os.getenv("LOCAL_TOOL_GATEWAY_ENABLED", "1"), default=True),
             tts_backend=(os.getenv("LOCAL_TTS_BACKEND", "piper") or "piper").strip().lower(),
