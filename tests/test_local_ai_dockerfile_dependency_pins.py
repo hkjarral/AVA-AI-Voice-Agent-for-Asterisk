@@ -53,7 +53,9 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert "grep -m 1 '^transformers==' requirements.txt" in content, dockerfile
         assert "grep -m 1 '^huggingface-hub==' requirements.txt" in content, dockerfile
         assert '"$TRANSFORMERS_REQUIREMENT" "$HF_HUB_REQUIREMENT"' in content, dockerfile
-        assert "RUN pip check" in content, dockerfile
+        assert "pip check 2>&1" in content, dockerfile
+        assert "requires gradio, which is not installed" in content, dockerfile
+        assert "No unexpected broken requirements found." in content, dockerfile
         assert not re.search(r"pip install[^\n]*faster-whisper==", content), dockerfile
         assert not re.search(r"pip install[^\n]*kokoro(?:==|>=)", content), dockerfile
         assert not re.search(r"pip install[^\n]*torch(?:==|>=)", content), dockerfile

@@ -142,8 +142,12 @@ RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
         pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
 
-# Fail the image build when optional backends leave an incompatible dependency set.
-RUN pip check
+# MeloTTS declares Gradio for its standalone web demo; AVA does not ship that UI.
+# Fail for every other broken or incompatible dependency.
+RUN CHECK_OUTPUT="$(pip check 2>&1 || true)"; \
+    UNEXPECTED="$(printf '%s\n' "$CHECK_OUTPUT" | grep -v '^melotts .* requires gradio, which is not installed\.$' || true)"; \
+    if [ -n "$UNEXPECTED" ]; then printf '%s\n' "$UNEXPECTED" >&2; exit 1; fi; \
+    echo "No unexpected broken requirements found."
 
 # Pre-install spacy model for Kokoro TTS (only if Kokoro included)
 RUN if [ "$INCLUDE_KOKORO" = "true" ]; then \
