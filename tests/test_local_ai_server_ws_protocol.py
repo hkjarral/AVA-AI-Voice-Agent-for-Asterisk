@@ -76,6 +76,30 @@ async def test_ws_protocol_normalizes_hyphenated_barge_type():
     assert protocol._server.sent_payloads[-1]["request_id"] == "barge-2"
 
 
+@pytest.mark.asyncio
+async def test_ws_protocol_uses_stop_session_cancellation_reason():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-stop")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"barge_in","call_id":"call-stop",'
+            '"request_id":"stop-1","reason":"stop_session"}'
+        ),
+    )
+
+    assert protocol._server.cancel_calls == [
+        {"call_id": "call-stop", "reason": "stop_session"}
+    ]
+    assert protocol._server.clear_calls == [
+        {"call_id": "call-stop", "reason": "engine_stop_session"}
+    ]
+    assert protocol._server.sent_payloads[-1]["type"] == "barge_in_ack"
+
+
 # MED-R5: protocol-version handshake
 
 

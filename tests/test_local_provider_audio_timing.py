@@ -79,6 +79,21 @@ class _BargeAckFakeWebSocket(_FakeWebSocket):
 
 
 @pytest.mark.asyncio
+async def test_stop_session_cancels_server_work_on_persistent_websocket():
+    provider = LocalProvider(LocalProviderConfig(), on_event=None)
+    provider._active_call_id = "call-stop"
+    provider.websocket = _FakeWebSocket([])
+
+    await provider.stop_session()
+
+    payloads = [json.loads(message) for message in provider.websocket.sent]
+    cancel = next(payload for payload in payloads if payload.get("type") == "barge_in")
+    assert cancel["call_id"] == "call-stop"
+    assert cancel["reason"] == "stop_session"
+    assert cancel["request_id"].startswith("stop-")
+
+
+@pytest.mark.asyncio
 async def test_binary_audio_emits_metadata_and_delayed_done():
     events = []
 

@@ -1773,6 +1773,41 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         #     await self.websocket.close()
         #     logger.info("Disconnected from Local AI Server.")
         
+        # The WebSocket is intentionally persistent, so closing the call does not
+        # trigger the server's connection_closed cancellation path. Explicitly
+        # reuse the barge-in control message to cancel any shielded LLM/TTS work
+        # that outlived the caller (for example a post-hangup tool-result turn).
+        # Older Local AI Servers already understand this message, which keeps the
+        # engine/server rolling-upgrade fallback intact.
+        target_call_id = str(self._active_call_id or "").strip()
+        if (
+            target_call_id
+            and self.websocket
+            and self.websocket.state.name == "OPEN"
+        ):
+            try:
+                await self.websocket.send(
+                    json.dumps(
+                        {
+                            "type": "barge_in",
+                            "protocol_version": PROTOCOL_VERSION,
+                            "call_id": target_call_id,
+                            "request_id": f"stop-{uuid4().hex}",
+                            "reason": "stop_session",
+                        }
+                    )
+                )
+                logger.debug(
+                    "Sent Local AI response cancellation on stop_session",
+                    call_id=target_call_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to cancel Local AI response on stop_session",
+                    call_id=target_call_id,
+                    exc_info=True,
+                )
+
         # Safety guard: drain send queue and discard pending frames
         queue_size = self._send_queue.qsize()
         if queue_size > 0:

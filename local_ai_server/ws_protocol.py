@@ -122,8 +122,13 @@ class WebSocketProtocol:
             call_id = data.get("call_id")
             if call_id:
                 session.call_id = call_id
-            self._server._cancel_session_response_tasks(session, reason="barge_in")
-            self._server._clear_whisper_stt_suppression(session, reason="engine_barge_in")
+            stop_session = str(data.get("reason") or "").strip().lower() == "stop_session"
+            cancel_reason = "stop_session" if stop_session else "barge_in"
+            suppression_reason = "engine_stop_session" if stop_session else "engine_barge_in"
+            self._server._cancel_session_response_tasks(session, reason=cancel_reason)
+            self._server._clear_whisper_stt_suppression(
+                session, reason=suppression_reason
+            )
             await self._server._send_json(
                 websocket,
                 {

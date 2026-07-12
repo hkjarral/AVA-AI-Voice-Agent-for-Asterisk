@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Late Local AI output is quarantined after barge-in or disconnect** (`local_ai_server/session.py`, `local_ai_server/server.py`): per-session response generations prevent completed background LLM/TTS work from emitting stale audio, tool decisions, or response events after a newer caller turn or closed WebSocket.
+- **Persistent Local AI sessions cancel post-call inference** (`src/providers/local.py`, `local_ai_server/ws_protocol.py`): ending a call now sends a backward-compatible cancellation control message before retaining the reusable WebSocket. Shielded tool-result LLM/TTS work can finish internally but cannot emit late events after an Asterisk-owned farewell and hangup.
 - **Local AI configuration and capability drift** (`local_ai_server/config.py`, `local_ai_server/capabilities.py`, `local_ai_server/server.py`): the documented `LOCAL_TTS_PHRASE_CACHE_ENABLED` key now works while retaining the older alias, Kokoro/Silero/Matcha fillers use the active voice backend, Matcha is represented in capabilities, and Silero/Matcha readiness requires their runtime model assets instead of package imports alone.
 - **GGUF-native chat templates can be selected explicitly** (`LOCAL_LLM_CHAT_FORMAT=auto`): llama.cpp may use the template embedded in GGUF metadata while AVA retains structured chat-completion behavior. Existing explicit chat formats and the empty legacy raw-completion mode remain compatible.
 
