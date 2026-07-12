@@ -2932,8 +2932,17 @@ class LocalAIServer:
         )
         preamble = (self.llm_voice_preamble or "").strip()
         if preamble and system:
-            return f"{preamble}\n\n{system}"
-        return preamble or system
+            effective = f"{preamble}\n\n{system}"
+        else:
+            effective = preamble or system
+        if session is not None and bool(getattr(session, "interruption_pending", False)):
+            interruption_focus = (
+                "IMPORTANT: The caller interrupted the previous answer. Do not resume, "
+                "repeat, or continue the earlier topic. Respond only to the caller's newest "
+                "utterance. If that utterance is unclear, ask one short clarification question."
+            )
+            effective = f"{effective}\n\n{interruption_focus}".strip()
+        return effective
 
     def _prepare_llm_prompt(
         self, session: SessionContext, new_turn: str
@@ -4095,6 +4104,7 @@ class LocalAIServer:
         replacement utterance.  Preserve all earlier completed context while
         dropping only the most recent interrupted exchange.
         """
+        session.interruption_pending = True
         messages = list(session.llm_messages or [])
         removed_roles: list[str] = []
         if messages and (messages[-1].get("role") or "").strip().lower() == "assistant":
@@ -5054,6 +5064,7 @@ class LocalAIServer:
         assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
         if assistant_text:
             session.llm_messages.append({"role": "assistant", "content": assistant_text})
+            session.interruption_pending = False
             session.llm_user_turns = [
                 m.get("content", "")
                 for m in session.llm_messages
@@ -5571,6 +5582,7 @@ class LocalAIServer:
         assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
         if assistant_text:
             session.llm_messages.append({"role": "assistant", "content": assistant_text})
+            session.interruption_pending = False
             session.llm_user_turns = [
                 m.get("content", "")
                 for m in session.llm_messages
@@ -5752,6 +5764,7 @@ class LocalAIServer:
             assistant_text = self._strip_tool_calls_for_tts(llm_response).strip()
             if assistant_text:
                 session.llm_messages.append({"role": "assistant", "content": assistant_text})
+                session.interruption_pending = False
                 session.llm_user_turns = [
                     m.get("content", "")
                     for m in session.llm_messages

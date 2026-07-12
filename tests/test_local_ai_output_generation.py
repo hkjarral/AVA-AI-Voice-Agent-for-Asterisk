@@ -107,6 +107,7 @@ def test_barge_in_rolls_back_only_latest_interrupted_exchange():
         {"role": "assistant", "content": "Ava is a voice agent."},
     ]
     assert session.llm_user_turns == ["What is Ava?"]
+    assert session.interruption_pending is True
 
 
 def test_barge_in_rollback_is_noop_without_latest_assistant():
@@ -123,6 +124,32 @@ def test_barge_in_rollback_is_noop_without_latest_assistant():
 
     assert session.llm_messages == [{"role": "user", "content": "new question"}]
     assert session.llm_user_turns == ["new question"]
+    assert session.interruption_pending is True
+
+
+def test_interrupted_turn_adds_one_shot_latest_utterance_focus():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.llm_system_prompt = "Base prompt"
+    instance.llm_voice_preamble = "Voice rules"
+    session = session_mod.SessionContext(interruption_pending=True)
+
+    effective = instance._get_effective_system_prompt(session)
+
+    assert "Do not resume" in effective
+    assert "newest utterance" in effective
+
+
+def test_normal_turn_does_not_add_interruption_focus():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.llm_system_prompt = "Base prompt"
+    instance.llm_voice_preamble = "Voice rules"
+    session = session_mod.SessionContext(interruption_pending=False)
+
+    assert "Do not resume" not in instance._get_effective_system_prompt(session)
 
 
 @pytest.mark.asyncio

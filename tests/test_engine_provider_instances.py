@@ -143,7 +143,8 @@ async def test_local_fallback_uses_normalized_energy_when_enhanced_vad_disagrees
             provider_fallback_enabled=True,
             provider_fallback_providers=["local"],
             energy_threshold=1000,
-            min_ms=20,
+            min_ms=250,
+            pipeline_min_ms=120,
             cooldown_ms=500,
         ),
     )
@@ -173,6 +174,16 @@ async def test_local_fallback_uses_normalized_energy_when_enhanced_vad_disagrees
         barge_start_ts=0.0,
         last_barge_in_ts=0.0,
     )
+
+    for _ in range(5):
+        await engine._maybe_provider_barge_in_fallback(
+            session,
+            pcm16=b"\xff\x7f" * 160,
+            pcm_rate_hz=16000,
+            audiosocket_wire=None,
+            source="externalmedia",
+        )
+    assert applied == []
 
     await engine._maybe_provider_barge_in_fallback(
         session,

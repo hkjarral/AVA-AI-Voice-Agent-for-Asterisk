@@ -9047,6 +9047,17 @@ class Engine:
             in_cooldown = (now - last_barge_in_ts) * 1000 < cooldown_ms if last_barge_in_ts else False
 
             min_ms = int(getattr(cfg, "min_ms", 250))
+            if local_energy_authoritative:
+                # Local full-agent speech consists of short telephony syllable
+                # bursts separated by natural sub-threshold gaps.  Reuse the
+                # already-supported local/pipeline reaction threshold so a
+                # clear one-word interruption (for example, "stop") does not
+                # have to remain continuously above the global threshold for
+                # a full quarter second.
+                local_min_ms = int(
+                    getattr(cfg, "pipeline_min_ms", 0) or min_ms
+                )
+                min_ms = max(40, min(min_ms, local_min_ms))
             should_trigger = (not in_cooldown) and (int(getattr(session, "barge_in_candidate_ms", 0) or 0) >= min_ms)
             if not should_trigger:
                 return

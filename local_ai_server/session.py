@@ -25,6 +25,10 @@ class SessionContext:
     last_final_at: float = 0.0
     llm_user_turns: List[str] = field(default_factory=list)
     llm_messages: List[Dict[str, str]] = field(default_factory=list)
+    # Set when caller barge-in abandons the active exchange.  The next
+    # successful assistant turn receives a strong one-shot focus instruction
+    # so small models do not resume an older completed topic.
+    interruption_pending: bool = False
     # Per-call instructions. ``None`` means a legacy client did not send a
     # session-scoped prompt, in which case the server-level default is used.
     # An empty string is authoritative and intentionally clears instructions.
