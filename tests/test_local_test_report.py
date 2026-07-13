@@ -32,6 +32,8 @@ def test_parse_local_ai_logs_uses_exact_scoped_model_timing(monkeypatch):
 def test_parse_local_ai_logs_does_not_mix_interleaved_calls(monkeypatch):
     logs = "\n".join([
         "STT FINAL - Emitting transcript call_id=call-1 preview=hello",
+        "LLM RESULT (chat) - Completed in 999 ms tokens=8 call_id=call-10",
+        "TTS RESULT - Kokoro generated uLaw 8kHz audio: 99999 bytes call_id=call-10",
         "LLM RESULT (chat) - Completed in 900 ms tokens=8 call_id=call-2",
         "TTS RESULT - Kokoro generated uLaw 8kHz audio: 99000 bytes call_id=call-2",
         "LLM RESULT (chat) - Completed in 120 ms tokens=3 call_id=call-1",
@@ -47,7 +49,10 @@ def test_parse_local_ai_logs_does_not_mix_interleaved_calls(monkeypatch):
 
 
 def test_detect_transport_prefers_call_runtime_evidence(monkeypatch, tmp_path):
-    logs = "RCA_CALL_START call_id=call-1 audio_transport=audiosocket"
+    logs = "\n".join([
+        "RCA_CALL_START call_id=call-1 audio_transport=audiosocket",
+        "RCA_CALL_START call_id=call-10 audio_transport=externalmedia",
+    ])
     monkeypatch.setattr(REPORT.subprocess, "check_output", lambda *_args, **_kwargs: logs.encode())
 
     assert REPORT.detect_transport(tmp_path, {}, call_id="call-1") == "AudioSocket"

@@ -175,7 +175,7 @@ def detect_transport(
                 stderr=subprocess.STDOUT,
             ).decode("utf-8", errors="replace")
             for line in reversed(raw.splitlines()):
-                if call_id not in line:
+                if _extract_kv(line, "call_id") != call_id:
                     continue
                 transport = _extract_kv(line, "audio_transport").strip().lower()
                 if transport == "audiosocket":
@@ -357,7 +357,9 @@ def parse_local_ai_logs(lines: int = 2000, call_id: str = "") -> Dict[str, Any]:
         # prevents interleaved concurrent calls from borrowing each other's
         # latency and response counts.
         raw_lines = out.splitlines()
-        out = "\n".join(line for line in raw_lines if call_id in line)
+        out = "\n".join(
+            line for line in raw_lines if _extract_kv(line, "call_id") == call_id
+        )
         latency["call_id"] = call_id
         latency["source"] = "local_ai_server exact call_id markers"
 
