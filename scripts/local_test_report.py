@@ -154,13 +154,60 @@ def detect_pipeline(project_root: Path, env: Dict[str, str]) -> str:
     return env.get("AI_PROVIDER", "unknown")
 
 
-def detect_transport(env: Dict[str, str]) -> str:
+def detect_transport(
+    project_root: Path,
+    env: Dict[str, str],
+    call_id: str = "",
+    log_lines: int = 15000,
+) -> str:
+    """Resolve the transport used by the selected call.
+
+    Runtime evidence wins over current config because a deployment can change
+    transports after the persisted call. The previous implementation defaulted
+    missing ``AUDIO_TRANSPORT`` to ExternalMedia, which mislabeled ordinary
+    AudioSocket calls in Community Test Matrix submissions.
+    """
+    if call_id:
+        try:
+            raw = subprocess.check_output(
+                ["docker", "logs", "--tail", str(log_lines), "ai_engine"],
+                timeout=15,
+                stderr=subprocess.STDOUT,
+            ).decode("utf-8", errors="replace")
+            for line in reversed(raw.splitlines()):
+                if call_id not in line:
+                    continue
+                transport = _extract_kv(line, "audio_transport").strip().lower()
+                if transport == "audiosocket":
+                    return "AudioSocket"
+                if transport in {"externalmedia", "external_media", "rtp"}:
+                    return "ExternalMedia RTP"
+        except Exception:
+            pass
+
     t = env.get("AUDIO_TRANSPORT", "").lower()
     if "audiosocket" in t:
         return "AudioSocket"
     if "external" in t or "rtp" in t:
         return "ExternalMedia RTP"
-    return "ExternalMedia RTP"  # default
+
+    for yaml_path in (
+        project_root / "config" / "ai-agent.yaml",
+        project_root / "config" / "ai-agent.yml",
+    ):
+        try:
+            text = yaml_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        match = re.search(r"(?m)^audio_transport:\s*([^\s#]+)", text)
+        if match:
+            configured = match.group(1).strip().lower()
+            if "audiosocket" in configured:
+                return "AudioSocket"
+            if "external" in configured or "rtp" in configured:
+                return "ExternalMedia RTP"
+
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +353,17 @@ def parse_local_ai_logs(lines: int = 2000, call_id: str = "") -> Dict[str, Any]:
         return latency
 
     if call_id:
-        out = "\n".join(line for line in out.splitlines() if call_id in line)
+        # Model timing lines historically omitted call_id. Keep the contiguous
+        # log window bounded by call-scoped events so those LLM/TTS markers are
+        # retained instead of filtering them all out.
+        raw_lines = out.splitlines()
+        scoped_indexes = [i for i, line in enumerate(raw_lines) if call_id in line]
+        if scoped_indexes:
+            out = "\n".join(raw_lines[scoped_indexes[0]:scoped_indexes[-1] + 1])
+        else:
+            out = ""
         latency["call_id"] = call_id
-        latency["source"] = "local_ai_server logs filtered by call_id"
+        latency["source"] = "local_ai_server contiguous call window"
 
     # LLM latency: "🤖 LLM RESULT - Completed in <ms> ms"
     llm_matches = re.findall(r"LLM RESULT.*?Completed in (\d+(?:\.\d+)?) ms", out)
@@ -322,10 +377,9 @@ def parse_local_ai_logs(lines: int = 2000, call_id: str = "") -> Dict[str, Any]:
         latency["llm_startup_ms"] = float(startup_match[-1])
 
     # STT results count (proxy for call activity)
-    stt_matches = re.findall(
-        r"STT RESULT.*?(?:transcript\s*[:=]|text=)[\"']([^\"']*)[\"']",
-        out, re.IGNORECASE,
-    )
+    stt_matches = re.findall(r"STT FINAL.*?preview=(.*)$", out, re.IGNORECASE | re.MULTILINE)
+    if not stt_matches:
+        stt_matches = re.findall(r'STT RESULT.*?text="([^"]*)"', out, re.IGNORECASE)
     latency["stt_transcripts_count"] = len(stt_matches)
     if stt_matches:
         latency["stt_last_transcript"] = stt_matches[-1][:80]
@@ -513,7 +567,8 @@ p = os.environ.get("CALL_HISTORY_DB_PATH", "/app/data/call_history.db")
 c = sqlite3.connect(p); c.row_factory = sqlite3.Row
 r = c.execute("""SELECT call_id, provider_name, pipeline_name, context_name,
                         outcome, duration_seconds, total_turns,
-                        avg_turn_latency_ms, max_turn_latency_ms
+                        avg_turn_latency_ms, max_turn_latency_ms,
+                        tool_calls, post_call_tool_calls
                  FROM call_records
                  WHERE pipeline_name IS NOT NULL OR provider_name='local'
                  ORDER BY start_time DESC LIMIT 1""").fetchone()
@@ -528,6 +583,77 @@ print(json.dumps(dict(r) if r else {}))
     except Exception as exc:
         print(f"[WARN] Could not query last local call: {exc}", file=sys.stderr)
         return {}
+
+
+def tool_calls_from_history(last_call: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Recover tool evidence when the engine container was restarted post-call."""
+    recovered: List[Dict[str, Any]] = []
+    call_id = str(last_call.get("call_id") or "")
+    for field, source in (("tool_calls", "call_history"), ("post_call_tool_calls", "post_call")):
+        raw = last_call.get(field)
+        if not raw:
+            continue
+        try:
+            entries = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get("status") or entry.get("result") or "success").lower()
+            if status == "skipped":
+                continue
+            recovered.append({
+                "name": str(entry.get("name") or "unknown"),
+                "status": status,
+                "result": "success" if status in {"success", "ok"} else "failed",
+                "error": str(entry.get("error_message") or entry.get("error") or ""),
+                "source": source,
+                "call_id": call_id,
+            })
+    return recovered
+
+
+def reconcile_post_call_tool_calls(
+    log_calls: List[Dict[str, Any]],
+    last_call: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Use Call History as the canonical result for persisted post-call tools.
+
+    The engine's completion log describes task completion, not necessarily tool
+    execution: a disabled tool can log ``status=ok`` while Call History records
+    ``status=skipped``. Replace matching log evidence with the persisted record
+    and omit skipped tools from the public matrix report.
+    """
+    raw = last_call.get("post_call_tool_calls")
+    if not raw:
+        return log_calls
+    try:
+        entries = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return log_calls
+    if not isinstance(entries, list):
+        return log_calls
+
+    canonical_names = {
+        str(entry.get("name") or "unknown")
+        for entry in entries
+        if isinstance(entry, dict)
+    }
+    reconciled = [
+        call for call in log_calls
+        if not (
+            call.get("source") == "post_call"
+            and str(call.get("name") or "unknown") in canonical_names
+        )
+    ]
+    reconciled.extend(
+        call for call in tool_calls_from_history(last_call)
+        if call.get("source") == "post_call"
+    )
+    return reconciled
 
 
 def summarize_tool_calls(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -904,11 +1030,24 @@ async def async_main(args: argparse.Namespace) -> None:
             call for call in raw_tool_calls
             if call.get("call_id") == last_call["call_id"]
         ]
+    raw_tool_calls = reconcile_post_call_tool_calls(raw_tool_calls, last_call)
+    if not raw_tool_calls:
+        raw_tool_calls = tool_calls_from_history(last_call)
     tool_calls = summarize_tool_calls(raw_tool_calls)
 
     # Pipeline + transport
     pipeline = last_call.get("pipeline_name") or last_call.get("provider_name") or detect_pipeline(project_root, env)
-    transport = detect_transport(env)
+    transport = detect_transport(
+        project_root,
+        env,
+        call_id=str(last_call.get("call_id") or ""),
+        log_lines=max(args.log_lines, 15000),
+    )
+
+    # Raw serialized tool history is useful for fallback parsing but too noisy
+    # for the public JSON report's last_call summary.
+    last_call.pop("tool_calls", None)
+    last_call.pop("post_call_tool_calls", None)
 
     if args.json:
         print(format_json(hw, model, latency, pipeline, transport, tool_calls, last_call))
@@ -941,9 +1080,13 @@ def main() -> None:
         help="Number of docker log lines to parse (default: 2000)",
     )
     args = parser.parse_args()
-    # Python 3.6 compatibility for CentOS/RHEL 7 operator hosts.
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(async_main(args))
+    # asyncio.run avoids the Python 3.14 "no current event loop" warning;
+    # retain the legacy path for CentOS/RHEL 7 hosts on Python 3.6.
+    if sys.version_info >= (3, 7):
+        asyncio.run(async_main(args))
+    else:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(async_main(args))
 
 
 if __name__ == "__main__":

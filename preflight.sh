@@ -43,6 +43,7 @@ OS_FAMILY="unknown"
 ARCH=""
 ASTERISK_DIR=""
 ASTERISK_FOUND=false
+ASTERISK_BIN=""
 COMPOSE_CMD=""
 
 # Docs and platform config (best-effort; script still works without them)
@@ -1633,6 +1634,37 @@ _json_escape() {
     printf '%s' "$s"
 }
 
+resolve_asterisk_binary() {
+    if [ -n "$ASTERISK_BIN" ] && [ -x "$ASTERISK_BIN" ]; then
+        return 0
+    fi
+    ASTERISK_BIN="$(command -v asterisk 2>/dev/null || true)"
+    if [ -z "$ASTERISK_BIN" ]; then
+        local candidate
+        for candidate in /usr/sbin/asterisk /usr/local/sbin/asterisk; do
+            if [ -x "$candidate" ]; then
+                ASTERISK_BIN="$candidate"
+                break
+            fi
+        done
+    fi
+    [ -n "$ASTERISK_BIN" ]
+}
+
+asterisk_config_grep() {
+    local options="$1"
+    local pattern="$2"
+    local file="$3"
+    [ -f "$file" ] || return 1
+    if [ -r "$file" ]; then
+        grep "$options" -- "$pattern" "$file" 2>/dev/null
+    elif command -v sudo &>/dev/null && sudo -n test -r "$file" 2>/dev/null; then
+        sudo -n grep "$options" -- "$pattern" "$file" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
 check_asterisk() {
     ASTERISK_DIR=""
     ASTERISK_FOUND=false
@@ -1654,8 +1686,8 @@ check_asterisk() {
     done
     
     # Check if Asterisk binary exists
-    if command -v asterisk &>/dev/null; then
-        ASTERISK_VERSION=$(asterisk -V 2>/dev/null | head -1 || echo "unknown")
+    if resolve_asterisk_binary; then
+        ASTERISK_VERSION=$("$ASTERISK_BIN" -V 2>/dev/null | head -1 || echo "unknown")
         log_ok "Asterisk binary: $ASTERISK_VERSION"
     else
         log_info "Asterisk binary not found in PATH (may be containerized)"
@@ -1708,7 +1740,7 @@ check_asterisk() {
 # ============================================================================
 check_asterisk_uid_gid() {
     # Skip if Asterisk not found on host
-    if ! command -v asterisk &>/dev/null && [ ! -f /etc/asterisk/asterisk.conf ]; then
+    if ! resolve_asterisk_binary && [ ! -f /etc/asterisk/asterisk.conf ]; then
         log_info "Asterisk not on host - skipping UID/GID detection"
         return 0
     fi
@@ -1741,7 +1773,13 @@ check_asterisk_uid_gid() {
     # project lives under /root (0700), so Asterisk sees "file does not exist" for ai-generated sounds.
     local use_bind_mount=false
     if [ -d "/var/lib/asterisk/sounds" ] && id asterisk &>/dev/null; then
-        if ! sudo -u asterisk test -x "$MEDIA_DIR" 2>/dev/null; then
+        # Once a bind mount is active or persisted, keep using that mode. A
+        # previous fix may have made the source path traversable, but switching
+        # back to symlink mode would try to rename the active mountpoint.
+        if mountpoint -q "$ASTERISK_SOUNDS_LINK" 2>/dev/null || \
+                fstab_mountpoint_has_bind_option "$ASTERISK_SOUNDS_LINK"; then
+            use_bind_mount=true
+        elif ! sudo -u asterisk test -x "$MEDIA_DIR" 2>/dev/null; then
             use_bind_mount=true
             log_warn "Asterisk user cannot access media directory path; file playback via symlink may fail"
             log_info "  media_dir=$MEDIA_DIR"
@@ -2027,7 +2065,7 @@ check_asterisk_config() {
     local ari_enabled_detail="not found"
     # FreePBX splits config via #include; check both main and included files
     for f in "$ASTERISK_DIR/ari.conf" "$ASTERISK_DIR/ari_general_additional.conf" "$ASTERISK_DIR/ari_general_custom.conf"; do
-        if [ -f "$f" ] && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f" 2>/dev/null; then
+        if asterisk_config_grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f"; then
             ari_enabled_ok=true
             ari_enabled_detail="enabled=yes in $(basename "$f")"
             break
@@ -2047,7 +2085,7 @@ check_asterisk_config() {
     [ -z "$ARI_USERNAME" ] && ARI_USERNAME="$(grep -E '^ASTERISK_ARI_USERNAME=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '\r\n"'"'" || true)"
     [ -z "$ARI_USERNAME" ] && ARI_USERNAME="AIAgent"
     for f in "$ASTERISK_DIR/ari.conf" "$ASTERISK_DIR/ari_additional.conf" "$ASTERISK_DIR/ari_additional_custom.conf"; do
-        if [ -f "$f" ] && grep -qE "^\[$ARI_USERNAME\]" "$f" 2>/dev/null; then
+        if asterisk_config_grep -qE "^\[$ARI_USERNAME\]" "$f"; then
             ari_user_ok=true
             ari_user_detail="[$ARI_USERNAME] found in $(basename "$f")"
             break
@@ -2064,7 +2102,7 @@ check_asterisk_config() {
     local http_enabled_ok=false
     local http_enabled_detail="not found"
     for f in "$ASTERISK_DIR/http.conf" "$ASTERISK_DIR/http_additional.conf" "$ASTERISK_DIR/http_custom.conf"; do
-        if [ -f "$f" ] && grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f" 2>/dev/null; then
+        if asterisk_config_grep -qiE '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*yes' "$f"; then
             http_enabled_ok=true
             http_enabled_detail="enabled=yes in $(basename "$f")"
             break
@@ -2080,17 +2118,33 @@ check_asterisk_config() {
     # --- Dialplan context check ---
     local dialplan_ok=false
     local dialplan_detail="not found"
-    if [ -f "$ASTERISK_DIR/extensions_custom.conf" ]; then
-        if grep -qiE "Stasis\($APP_NAME\)" "$ASTERISK_DIR/extensions_custom.conf" 2>/dev/null; then
-            dialplan_ok=true
-            dialplan_detail="Stasis($APP_NAME) in extensions_custom.conf"
-        fi
+    local dialplan_files=()
+    if [ "$FREEPBX_DETECTED" = true ]; then
+        dialplan_files+=("$ASTERISK_DIR/extensions_custom.conf")
     fi
+    dialplan_files+=("$ASTERISK_DIR/extensions.conf")
+    if [ "$FREEPBX_DETECTED" != true ]; then
+        # Some generic Asterisk installs deliberately include a separate custom file.
+        dialplan_files+=("$ASTERISK_DIR/extensions_custom.conf")
+    fi
+    local dialplan_file
+    for dialplan_file in "${dialplan_files[@]}"; do
+        if asterisk_config_grep -qiE "Stasis\($APP_NAME\)" "$dialplan_file"; then
+            dialplan_ok=true
+            dialplan_detail="Stasis($APP_NAME) in $(basename "$dialplan_file")"
+            break
+        fi
+    done
     if [ "$dialplan_ok" = true ]; then
         log_ok "Dialplan context: $dialplan_detail"
     else
-        log_warn "No Stasis($APP_NAME) context found in extensions_custom.conf"
-        log_info "  Fix: add a context with 'Stasis($APP_NAME)' to extensions_custom.conf"
+        if [ "$FREEPBX_DETECTED" = true ]; then
+            log_warn "No Stasis($APP_NAME) route found in extensions_custom.conf or extensions.conf"
+            log_info "  Fix: add a context with 'Stasis($APP_NAME)' to extensions_custom.conf"
+        else
+            log_warn "No Stasis($APP_NAME) route found in extensions.conf or extensions_custom.conf"
+            log_info "  Fix: add a dialplan route with 'Stasis($APP_NAME)' to extensions.conf"
+        fi
     fi
 
     # --- Module checks (requires asterisk binary) ---
@@ -2099,7 +2153,7 @@ check_asterisk_config() {
     local mod_res_stasis_ok=false mod_res_stasis_detail="binary not available"
     local mod_chan_pjsip_ok=false mod_chan_pjsip_detail="binary not available"
 
-    if command -v asterisk &>/dev/null; then
+    if resolve_asterisk_binary; then
         _check_ast_module "app_audiosocket" && mod_audiosocket_ok=true && mod_audiosocket_detail="Running"
         [ "$mod_audiosocket_ok" = false ] && mod_audiosocket_detail="Not loaded"
 
@@ -2151,7 +2205,8 @@ JSONEOF
 _check_ast_module() {
     local mod_name="$1"
     local output
-    output=$(asterisk -rx "module show like $mod_name" 2>/dev/null || true)
+    resolve_asterisk_binary || return 1
+    output=$("$ASTERISK_BIN" -rx "module show like $mod_name" 2>/dev/null || true)
     echo "$output" | grep -qiE "$mod_name.*Running"
 }
 
@@ -2298,6 +2353,9 @@ check_gpu() {
     local gpu_marker="$SCRIPT_DIR/.gpu-passthrough-ok"
     if [ -f "$gpu_marker" ] && [ "$(find "$gpu_marker" -mmin -60 2>/dev/null)" ]; then
         log_ok "Docker GPU passthrough: verified (cached)"
+        # The marker caches only the expensive container probe. Environment
+        # seeding must still run (for example after .env is regenerated).
+        update_env_gpu "true"
     else
         log_info "Testing Docker GPU passthrough (may pull ~200MB image)..."
         local cuda_test_images=(
@@ -2348,19 +2406,15 @@ update_env_gpu() {
     local current_value
     current_value="$(grep -E '^GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
     
-    if [ "$current_value" = "$gpu_value" ]; then
-        return 0  # Already correct
-    fi
-    
-    # Update or add GPU_AVAILABLE
-    if grep -qE '^#?GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null; then
-        # Update existing line
-        sed -i.bak "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env" 2>/dev/null || \
-            sed -i '' "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env"
-        rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null
-    else
-        # Add new line in GPU section (after LOCAL_LLM_GPU_LAYERS or at end)
-        if grep -q "LOCAL_LLM_GPU_LAYERS" "$SCRIPT_DIR/.env" 2>/dev/null; then
+    if [ "$current_value" != "$gpu_value" ]; then
+        # Update or add GPU_AVAILABLE
+        if grep -qE '^#?GPU_AVAILABLE=' "$SCRIPT_DIR/.env" 2>/dev/null; then
+            # Update existing line
+            sed -i.bak "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env" 2>/dev/null || \
+                sed -i '' "s/^#*GPU_AVAILABLE=.*/GPU_AVAILABLE=$gpu_value/" "$SCRIPT_DIR/.env"
+            rm -f "$SCRIPT_DIR/.env.bak" 2>/dev/null
+        elif grep -q "LOCAL_LLM_GPU_LAYERS" "$SCRIPT_DIR/.env" 2>/dev/null; then
+            # Add new line in GPU section (after LOCAL_LLM_GPU_LAYERS or at end)
             sed -i.bak "/LOCAL_LLM_GPU_LAYERS/a\\
 GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env" 2>/dev/null || \
                 sed -i '' "/LOCAL_LLM_GPU_LAYERS/a\\
@@ -2378,7 +2432,10 @@ GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
         # Check for GPU layers footgun: GPU detected but layers=0 means CPU-only LLM inference.
         local current_layers
         current_layers="$(grep -E '^LOCAL_LLM_GPU_LAYERS=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
-        if [ "$current_layers" = "0" ]; then
+        if [ -z "$current_layers" ] && [ "$APPLY_FIXES" = true ]; then
+            echo "LOCAL_LLM_GPU_LAYERS=-1" >> "$SCRIPT_DIR/.env"
+            log_ok "Set LOCAL_LLM_GPU_LAYERS=-1 for automatic GPU offloading"
+        elif [ "$current_layers" = "0" ]; then
             log_warn "LOCAL_LLM_GPU_LAYERS=0 in .env — LLM will run on CPU despite GPU being available"
             log_info "  Suggestion: Set LOCAL_LLM_GPU_LAYERS=-1 in .env for automatic GPU offloading"
         fi
@@ -2391,27 +2448,35 @@ GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
 _check_port() {
     local port="$1"
     local label="$2"
+    local expected_container="${3:-}"
+    local in_use=false
     if command -v ss &>/dev/null; then
         if ss -tln | grep -q ":$port "; then
-            log_warn "Port $port already in use ($label)"
-        else
-            log_ok "Port $port available ($label)"
+            in_use=true
         fi
     elif command -v netstat &>/dev/null; then
         if netstat -tln | grep -q ":$port "; then
-            log_warn "Port $port already in use ($label)"
-        else
-            log_ok "Port $port available ($label)"
+            in_use=true
         fi
     else
         log_warn "Cannot check port $port - neither ss nor netstat found"
+        return
+    fi
+
+    if [ "$in_use" = false ]; then
+        log_ok "Port $port available ($label)"
+    elif [ -n "$expected_container" ] && \
+            docker inspect -f '{{.State.Running}}' "$expected_container" 2>/dev/null | grep -qx true; then
+        log_ok "Port $port in use by running AAVA service ($expected_container)"
+    else
+        log_warn "Port $port already in use ($label)"
     fi
 }
 
 check_ports() {
-    _check_port 3003  "Admin UI"
-    _check_port 8090  "AudioSocket"
-    _check_port 15000 "Health/Metrics"
+    _check_port 3003  "Admin UI"       "admin_ui"
+    _check_port 8090  "AudioSocket"    "ai_engine"
+    _check_port 15000 "Health/Metrics" "ai_engine"
     _check_port 18080 "ExternalMedia RTP"
 }
 
@@ -2422,7 +2487,7 @@ check_ports_local_server() {
         env_port="$(grep -E '^LOCAL_WS_PORT=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
         [ -n "$env_port" ] && port="$env_port"
     fi
-    _check_port "$port" "Local AI Server WS"
+    _check_port "$port" "Local AI Server WS" "local_ai_server"
 }
 
 # ============================================================================
@@ -2544,7 +2609,12 @@ apply_fixes() {
         FAILURES=()
         FIX_CMDS=()
         
-        # Re-run the checks silently first, then show summary
+        # Re-run the full applicable check set silently, then show summary. A
+        # partial recheck can otherwise print "All checks passed" while
+        # unresolved Asterisk, GPU, network, or port warnings still exist.
+        detect_os >/dev/null 2>&1
+        check_system_resources >/dev/null 2>&1
+        check_ipv6 >/dev/null 2>&1
         check_docker >/dev/null 2>&1
         check_compose >/dev/null 2>&1
         check_directories >/dev/null 2>&1
@@ -2553,7 +2623,19 @@ apply_fixes() {
         check_secrets_permissions >/dev/null 2>&1
         check_selinux >/dev/null 2>&1
         check_env >/dev/null 2>&1
-        check_docker_gid >/dev/null 2>&1
+        check_host_project_root >/dev/null 2>&1
+        check_network >/dev/null 2>&1
+        if [ "$LOCAL_SERVER_ONLY" = true ]; then
+            check_gpu >/dev/null 2>&1
+            check_ports_local_server >/dev/null 2>&1
+        else
+            check_docker_gid >/dev/null 2>&1
+            check_asterisk >/dev/null 2>&1
+            check_asterisk_uid_gid >/dev/null 2>&1
+            check_asterisk_config >/dev/null 2>&1
+            check_gpu >/dev/null 2>&1
+            check_ports >/dev/null 2>&1
+        fi
     fi
 }
 
@@ -2613,7 +2695,7 @@ print_summary() {
         echo "║  Admin UI binds to 0.0.0.0:3003 by default (accessible on network).       ║"
         echo "║                                                                           ║"
         echo "║  REQUIRED ACTIONS:                                                        ║"
-        echo "║    1. Change default password (admin/admin) on first login                ║"
+        echo "║    1. Use the one-time password and change it on first login             ║"
         echo "║    2. Restrict port 3003 via firewall, VPN, or reverse proxy              ║"
         echo "╚═══════════════════════════════════════════════════════════════════════════╝"
         echo ""
@@ -2674,7 +2756,7 @@ print_summary() {
         echo "║  Admin UI binds to 0.0.0.0:3003 by default (accessible on network).       ║"
         echo "║                                                                           ║"
         echo "║  REQUIRED ACTIONS:                                                        ║"
-        echo "║    1. Change default password (admin/admin) on first login                ║"
+        echo "║    1. Use the one-time password and change it on first login             ║"
         echo "║    2. Restrict port 3003 via firewall, VPN, or reverse proxy              ║"
         echo "╚═══════════════════════════════════════════════════════════════════════════╝"
         echo ""

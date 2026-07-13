@@ -486,6 +486,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         tool_path: str,
         parse_failures: int = 0,
         repair_attempts: int = 0,
+        emit_transcript: bool = True,
     ) -> None:
         response_text = self._sanitize_local_tool_chatter(
             ((clean_text if clean_text is not None else llm_text) or "").strip()
@@ -563,7 +564,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         ):
             should_emit_text = False
 
-        if should_emit_text and self.on_event:
+        if emit_transcript and should_emit_text and self.on_event:
             await self.on_event(
                 {
                     "type": "agent_transcript",
@@ -813,6 +814,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         payload = {
             "type": "tool_result",
             "protocol_version": PROTOCOL_VERSION,
+            "request_id": f"tool-result-{uuid4().hex}",
             "call_id": effective_call_id,
             "function_call_id": function_call_id,
             "tool_name": tool_name,
@@ -1705,7 +1707,15 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
 
         self._agent_audio_done_tasks[call_id] = asyncio.create_task(_emit_done())
 
-    async def _emit_agent_audio(self, call_id: str, audio_bytes: bytes, *, encoding: str, sample_rate: Optional[int]) -> None:
+    async def _emit_agent_audio(
+        self,
+        call_id: str,
+        audio_bytes: bytes,
+        *,
+        encoding: str,
+        sample_rate: Optional[int],
+        source_mode: Optional[str] = None,
+    ) -> None:
         if not audio_bytes or not self.on_event:
             return
 
@@ -1718,6 +1728,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "call_id": call_id,
             "encoding": normalized_encoding,
             "sample_rate": effective_rate,
+            "source_mode": source_mode,
         })
 
         # Hold TTS gating until the audio should be fully played out.
@@ -1897,6 +1908,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         message,
                         encoding=encoding,
                         sample_rate=sample_rate,
+                        source_mode=meta.get("mode"),
                     )
                 # Handle JSON messages (TTS responses, etc.)
                 elif isinstance(message, str):
@@ -1926,6 +1938,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                                     "encoding": self._normalize_audio_encoding(data.get("encoding")),
                                     "sample_rate": self._coerce_sample_rate(data.get("sample_rate_hz") or data.get("sample_rate")),
                                     "byte_length": data.get("byte_length"),
+                                    "mode": data.get("mode"),
+                                    "request_id": data.get("request_id"),
                                 }
                             continue
                         # Handle TTS responses
@@ -2062,6 +2076,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                                 or _extra.get("tool_gateway_done")
                                 or _extra.get("tool_result_final")
                             ):
+                                terminal_farewell = str(
+                                    data.get("tool_path")
+                                    or _extra.get("tool_path")
+                                    or ""
+                                ) == "terminal_farewell"
                                 await self._emit_local_llm_result(
                                     call_id=call_id,
                                     llm_text=llm_text,
@@ -2072,6 +2091,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                                         or _extra.get("tool_path")
                                         or "none"
                                     ),
+                                    # The original hangup tool response already
+                                    # recorded this exact farewell. The terminal
+                                    # tool-result response exists to synthesize
+                                    # audio, not to append a duplicate history
+                                    # turn.
+                                    emit_transcript=not terminal_farewell,
                                 )
                                 continue
 

@@ -4981,6 +4981,43 @@ class LocalAIServer:
         except Exception:
             result_json = str(result)
 
+        # A successful hangup is terminal: speak the exact farewell selected
+        # by the agent/tool instead of spending another LLM turn paraphrasing
+        # a JSON result. Besides reducing latency, this gives the engine a
+        # deterministic tool_result audio boundary before it hangs up.
+        if tool_name == "hangup_call" and not is_error:
+            farewell = str(
+                result.get("farewell_message")
+                or result.get("message")
+                or "Thank you for calling. Goodbye."
+            ).strip()
+            farewell = re.sub(r"\s+", " ", farewell)[:500].strip()
+            if not farewell:
+                farewell = "Thank you for calling. Goodbye."
+            session.llm_messages.append({"role": "assistant", "content": farewell})
+            session.interruption_pending = False
+            await self._emit_llm_response(
+                websocket,
+                farewell,
+                session,
+                request_id,
+                source_mode="tool_result",
+                extra={
+                    "tool_result_final": True,
+                    "tool_gateway_done": True,
+                    "tool_path": "terminal_farewell",
+                },
+            )
+            audio_response = await self.process_tts(farewell)
+            await self._emit_tts_audio(
+                websocket,
+                audio_response,
+                session,
+                request_id,
+                source_mode="tool_result",
+            )
+            return
+
         # Cap the serialized result so a verbose tool output (large calendar
         # event lists, dumped CRM records, etc.) cannot blow the prompt
         # budget. 4000 chars ~ 1000 tokens — comfortably below most local

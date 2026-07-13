@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time
 import pytest
 
 from src.core.streaming_playback_manager import StreamingPlaybackManager
@@ -153,3 +154,36 @@ async def test_start_segment_gating_baselines_actual_playback_position():
     assert (
         mgr.active_streams[call_id]['real_tx_bytes_segment_baseline'] == 8_000
     )
+
+
+def test_low_water_grace_does_not_rearm_after_expiry_without_audio():
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-partial-tail"
+    info = {
+        "startup_ready": True,
+        "low_water_deadline": time.time() - 0.01,
+    }
+
+    assert mgr._should_wait_for_low_water(call_id, info, 0, False) is False
+    assert info.get("low_water_expired") is True
+    assert "low_water_deadline" not in info
+
+    # A subsequent pacer tick must continue into adaptive backoff/partial-frame
+    # flushing instead of starting a fresh grace period.
+    assert mgr._should_wait_for_low_water(call_id, info, 0, False) is False
+    assert "low_water_deadline" not in info
+
+
+def test_low_water_expiry_resets_when_a_full_frame_arrives():
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-resumed-audio"
+    info = {
+        "startup_ready": True,
+        "low_water_expired": True,
+    }
+
+    assert mgr._should_wait_for_low_water(call_id, info, 1, False) is False
+    assert "low_water_expired" not in info
+
+    assert mgr._should_wait_for_low_water(call_id, info, 0, False) is True
+    assert "low_water_deadline" in info

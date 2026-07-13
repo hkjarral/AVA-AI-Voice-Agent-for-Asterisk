@@ -108,6 +108,8 @@ async def test_binary_audio_emits_metadata_and_delayed_done():
                 {
                     "type": "tts_audio",
                     "call_id": "call-1",
+                    "mode": "tool_result",
+                    "request_id": "tool-result-1",
                     "encoding": "mulaw",
                     "sample_rate_hz": 8000,
                     "byte_length": 800,
@@ -123,6 +125,7 @@ async def test_binary_audio_emits_metadata_and_delayed_done():
     done_events = [e for e in events if e.get("type") == "AgentAudioDone"]
     assert len(agent_events) == 1
     assert agent_events[0]["encoding"] == "mulaw"
+    assert agent_events[0]["source_mode"] == "tool_result"
     assert agent_events[0]["sample_rate"] == 8000
     assert done_events == []
 
@@ -130,6 +133,28 @@ async def test_binary_audio_emits_metadata_and_delayed_done():
     done_events = [e for e in events if e.get("type") == "AgentAudioDone"]
     assert len(done_events) == 1
     await provider.clear_active_call_id()
+
+
+@pytest.mark.asyncio
+async def test_send_tool_result_has_correlatable_audio_request_id():
+    provider = LocalProvider(LocalProviderConfig(), on_event=None)
+    provider._active_call_id = "call-tool-result"
+    provider.websocket = _FakeWebSocket([])
+
+    assert await provider.send_tool_result(
+        "local-hangup_call",
+        {
+            "status": "success",
+            "farewell_message": "Thanks for calling. Goodbye!",
+            "will_hangup": True,
+        },
+        call_id="call-tool-result",
+    )
+
+    payload = json.loads(provider.websocket.sent[-1])
+    assert payload["type"] == "tool_result"
+    assert payload["call_id"] == "call-tool-result"
+    assert payload["request_id"].startswith("tool-result-")
 
 
 @pytest.mark.asyncio
@@ -313,6 +338,32 @@ async def test_full_local_uses_structured_tool_gateway_for_tool_events():
     assert tool_events[0]["tool_calls"][0]["name"] == "hangup_call"
     transcript_events = [e for e in events if e.get("type") == "agent_transcript"]
     assert transcript_events
+
+
+@pytest.mark.asyncio
+async def test_terminal_tool_result_does_not_duplicate_farewell_transcript():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(LocalProviderConfig(), on_event=on_event)
+    provider._active_call_id = "call-terminal"
+    provider.websocket = _FakeWebSocket([
+        json.dumps({
+            "type": "llm_response",
+            "call_id": "call-terminal",
+            "text": "Goodbye.",
+            "request_id": "tool-result-1",
+            "tool_result_final": True,
+            "tool_gateway_done": True,
+            "tool_path": "terminal_farewell",
+        }),
+    ])
+
+    await provider._receive_loop()
+
+    assert [e for e in events if e.get("type") == "agent_transcript"] == []
 
 
 @pytest.mark.asyncio

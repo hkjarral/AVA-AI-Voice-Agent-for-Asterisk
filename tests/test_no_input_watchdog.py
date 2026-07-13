@@ -661,8 +661,14 @@ async def test_terminal_hangup_is_idempotent_and_uses_shared_drain():
     session = CallSession(call_id="terminal-call", caller_channel_id="channel-terminal")
     await engine.session_store.upsert_call(session)
 
-    assert await engine._terminate_call_after_audio("terminal-call", reason="test") is True
+    assert await engine._terminate_call_after_audio(
+        "terminal-call",
+        reason="test",
+        call_outcome="agent_hangup",
+    ) is True
     assert await engine._terminate_call_after_audio("terminal-call", reason="duplicate") is False
+    updated = await engine.session_store.get_by_call_id("terminal-call")
+    assert updated.call_outcome == "agent_hangup"
     engine._wait_for_call_audio_drain.assert_awaited_once()
     engine.ari_client.hangup_channel.assert_awaited_once_with("channel-terminal")
 

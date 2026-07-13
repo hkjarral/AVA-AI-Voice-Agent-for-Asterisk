@@ -12,6 +12,7 @@ ARG INCLUDE_KOKORO=true
 ARG INCLUDE_MELOTTS=false
 ARG INCLUDE_SILERO=false
 ARG INCLUDE_LLAMA=true
+ARG LLAMA_CUDA_ARCHITECTURES=""
 ARG MELOTTS_GIT_REF=209145371cff8fc3bd60d7be902ea69cbdb7965a
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -137,7 +138,12 @@ RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
             echo "❌ INCLUDE_LLAMA=true but requirements.txt has no llama-cpp-python entry" >&2; \
             exit 1; \
         fi; \
-        CMAKE_ARGS="-DGGML_CUDA=on -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF" \
+        CUDA_ARCH_ARG=""; \
+        if [ -n "$LLAMA_CUDA_ARCHITECTURES" ]; then \
+            CUDA_ARCH_ARG="-DCMAKE_CUDA_ARCHITECTURES=$LLAMA_CUDA_ARCHITECTURES"; \
+            echo "Building llama.cpp for CUDA architecture(s): $LLAMA_CUDA_ARCHITECTURES"; \
+        fi; \
+        CMAKE_ARGS="-DGGML_CUDA=on -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF $CUDA_ARCH_ARG" \
         FORCE_CMAKE=1 \
         pip install --no-cache-dir "$LLAMA_CPP_REQUIREMENT"; \
     fi
@@ -145,7 +151,9 @@ RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
 # MeloTTS declares Gradio for its standalone web demo; AVA does not ship that UI.
 # Fail for every other broken or incompatible dependency.
 RUN CHECK_OUTPUT="$(pip check 2>&1 || true)"; \
-    UNEXPECTED="$(printf '%s\n' "$CHECK_OUTPUT" | grep -v '^melotts .* requires gradio, which is not installed\.$' || true)"; \
+    UNEXPECTED="$(printf '%s\n' "$CHECK_OUTPUT" | \
+        grep -v -e '^No broken requirements found\.$' \
+                -e '^melotts .* requires gradio, which is not installed\.$' || true)"; \
     if [ -n "$UNEXPECTED" ]; then printf '%s\n' "$UNEXPECTED" >&2; exit 1; fi; \
     echo "No unexpected broken requirements found."
 

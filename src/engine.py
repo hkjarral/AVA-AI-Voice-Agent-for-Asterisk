@@ -496,6 +496,12 @@ class Engine:
         self._terminal_hangup_locks: Dict[str, asyncio.Lock] = {}
         self._terminal_hangup_started: Set[str] = set()
         self._terminal_fallback_tasks: Dict[str, asyncio.Task] = {}
+        # Local TTS farewells are a two-step exchange: execute hangup_call,
+        # then wait for Local AI Server to synthesize the tool's farewell.
+        # Keep that boundary separate from cleanup_after_tts so a stale
+        # AgentAudioDone from an interrupted response cannot end the call
+        # before the farewell audio has even arrived.
+        self._local_tts_farewell_pending: Set[str] = set()
         
         self.vad_manager: Optional[EnhancedVADManager] = None
         self.webrtc_vad = None
@@ -6833,6 +6839,7 @@ class Engine:
                     fallback.cancel()
                 self._terminal_hangup_locks.pop(call_id, None)
                 self._terminal_hangup_started.discard(call_id)
+                self._local_tts_farewell_pending.discard(call_id)
             except Exception:
                 logger.debug("Terminal lifecycle cleanup failed", call_id=call_id, exc_info=True)
             bg_tasks = self._call_bg_tasks.pop(call_id, set())
@@ -10497,6 +10504,31 @@ class Engine:
                 chunk: bytes = event.get("data") or b""
                 if not chunk:
                     return
+                source_mode = str(event.get("source_mode") or "").strip().lower()
+                local_farewell_pending = getattr(self, "_local_tts_farewell_pending", set())
+                is_local_farewell_audio = (
+                    source_mode == "tool_result" and call_id in local_farewell_pending
+                )
+                if is_local_farewell_audio:
+                    local_farewell_pending.discard(call_id)
+                    # Barge-in suppression belongs to the interrupted response,
+                    # not the terminal farewell that follows it.
+                    try:
+                        sup = session.vad_state.get("output_suppression") or {}
+                        sup["active"] = False
+                        sup["until_ts"] = 0.0
+                        session.vad_state["output_suppression"] = sup
+                    except Exception:
+                        logger.debug(
+                            "Failed clearing output suppression for Local TTS farewell",
+                            call_id=call_id,
+                            exc_info=True,
+                        )
+                    logger.info(
+                        "Local TTS farewell audio started",
+                        call_id=call_id,
+                        source_mode=source_mode,
+                    )
                 # If barge-in fired, suppress provider audio locally for a short window so streaming
                 # doesn't immediately restart with the remainder of the previous sentence.
                 try:
@@ -11148,11 +11180,20 @@ class Engine:
                             await self._commit_pending_deferred_transfer_for_call(call_id, session)
                             return
                         if session and getattr(session, 'cleanup_after_tts', False):
-                            logger.info("🔚 Cleanup after TTS requested - draining terminal audio", call_id=call_id)
-                            await self._terminate_call_after_audio(
-                                call_id,
-                                reason="cleanup_after_tts",
-                            )
+                            pending = getattr(self, "_local_tts_farewell_pending", set())
+                            if call_id in pending:
+                                logger.info(
+                                    "Ignoring pre-farewell AgentAudioDone",
+                                    call_id=call_id,
+                                    reason="local_tts_farewell_pending",
+                                )
+                            else:
+                                logger.info("🔚 Cleanup after TTS requested - draining terminal audio", call_id=call_id)
+                                await self._terminate_call_after_audio(
+                                    call_id,
+                                    reason="cleanup_after_tts",
+                                    call_outcome="agent_hangup",
+                                )
                     except Exception as e:
                         logger.debug("Error checking cleanup_after_tts flag", call_id=call_id, error=str(e))
             
@@ -16248,6 +16289,18 @@ class Engine:
             function_name=function_name,
             result=result,
         )
+        if (
+            send_provider_result
+            and self._get_provider_kind(provider_name) == "local"
+            and function_name == "hangup_call"
+            and bool((result or {}).get("will_hangup"))
+        ):
+            pending = getattr(self, "_local_tts_farewell_pending", None)
+            if pending is None:
+                pending = set()
+                self._local_tts_farewell_pending = pending
+            pending.add(call_id)
+            logger.info("Armed Local TTS farewell audio boundary", call_id=call_id)
         if provider and hasattr(provider, 'send_tool_result') and send_provider_result:
             try:
                 is_error = result.get("status") == "error"

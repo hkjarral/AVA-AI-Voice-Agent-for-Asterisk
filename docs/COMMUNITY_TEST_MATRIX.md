@@ -72,10 +72,66 @@ This auto-detects your hardware, queries the Local AI Server for model info, par
 | 2026-02-23 | @hkjarral | AMD EPYC 7443P, 66GB RAM | RTX 4090 24GB | faster_whisper | base | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 4096 | em | ~1.0s | 5 | Call `1771817082.317`: structured gateway + repair cleanly executed `hangup_call` on polite close (`Thank you.`), no tool-chatter leaked to spoken output, and post-call webhook executed successfully |
 | 2026-02-27 | @hkjarral | AMD EPYC 7713, 98GB RAM | RTX 4090 24GB | kroko | embedded (en-US) | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 2048 | em | ~1.2s | 5 | Call `1772234505.97`: end-to-end local + GPU offload; barge-in and `hangup_call` succeeded (tool gateway `tool_path=heuristic`) |
 | 2026-02-27 | @hkjarral | AMD EPYC 7713, 98GB RAM | RTX 4090 24GB | whisper_cpp | unknown | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 2048 | em | ~1.1s | 2 | Call `1772235703.109`: low coherence (telephony STT felt “not hearing”); transcripts arrived as short fragments; call ended without `hangup_call` |
+| 2026-07-13 | @hkjarral | Intel Xeon Gold 6226R, 43GB RAM | Tesla V100S 32GB | faster_whisper | base (en), CUDA float16 | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 2048 | as | ~640ms | 5 | Call `1783917838.10`: clean full-local GPU call; exact Kokoro terminal farewell played once, partial-frame drain completed in 619ms, and ARI recorded `agent_hangup` |
+| 2026-07-13 | @hkjarral | Intel Xeon Gold 6226R, 43GB RAM | Tesla V100S 32GB | faster_whisper | base (en), CUDA float16 | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 2048 | em | ~640ms | 5 | Call `1783918235.12`: clean and clear full-local RTP call; media RX, barge-in, one exact Kokoro farewell, 805ms terminal tail drain, and `agent_hangup` all passed |
 
 ---
 
 ### Detailed Submissions
+
+```
+**Date**: 2026-07-13
+**Hardware**: Intel(R) Xeon(R) Gold 6226R CPU @ 2.90GHz, 43GB RAM
+**GPU**: Tesla V100S-PCIE-32GB 32GB
+**OS**: Debian GNU/Linux 13 (trixie)
+**Docker**: 29.6.1
+**STT**: faster_whisper / Faster-Whisper (base, en)
+**STT Runtime**: device=cuda, compute=float16
+**TTS**: kokoro / Kokoro (af_heart, mode=local)
+**LLM**: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf / n_ctx=2048 / max_tokens=96
+**LLM GPU Layers**: 50
+**LLM Tool Capability**: strict
+**Transport**: AudioSocket
+**Pipeline**: local
+**Runtime Mode**: full
+**Runtime Flags**: filler_audio=false, llm_tts_overlap=true
+**E2E Latency**: ~640ms (local report estimate)
+**LLM Latency**: ~264ms avg (2 samples, last=240ms)
+**Call History Turn Latency**: 319ms avg, 345ms max
+**STT Transcripts (last session)**: 2
+**TTS Responses (last session)**: 4
+**Quality (1-5)**: 5
+**Notes**: Call `1783917838.10` was reported as working perfectly. The Local AI Server synthesized the exact `Goodbye.` tool result with Kokoro; only one farewell was stored and heard. An 80-byte partial AudioSocket frame drained in 619ms after the low-water re-arm fix, versus 6.257s before the fix. No Asterisk goodbye fallback or terminal timeout fired, and `RCA_CALL_END` recorded `agent_hangup`.
+**Tool Calls**:
+  ✅ hangup_call: 1 executed [local_llm]
+```
+
+```
+**Date**: 2026-07-13
+**Hardware**: Intel(R) Xeon(R) Gold 6226R CPU @ 2.90GHz, 43GB RAM
+**GPU**: Tesla V100S-PCIE-32GB 32GB
+**OS**: Debian GNU/Linux 13 (trixie)
+**Docker**: 29.6.1
+**STT**: faster_whisper / Faster-Whisper (base, en)
+**STT Runtime**: device=cuda, compute=float16
+**TTS**: kokoro / Kokoro (af_heart, mode=local)
+**LLM**: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf / n_ctx=2048 / max_tokens=96
+**LLM GPU Layers**: 50
+**LLM Tool Capability**: strict
+**Transport**: ExternalMedia RTP (mu-law, 8kHz)
+**Pipeline**: local
+**Runtime Mode**: full
+**Runtime Flags**: filler_audio=false, llm_tts_overlap=true
+**E2E Latency**: ~640ms (local report estimate)
+**LLM Latency**: ~427ms avg (5 samples, last=240ms)
+**Call History Turn Latency**: 376ms avg, 504ms max
+**STT Transcripts (last session)**: 5
+**TTS Responses (last session)**: 5
+**Quality (1-5)**: 5
+**Notes**: Call `1783918235.12` was reported as clean and clear. RTP was established bidirectionally, Local VAD and Asterisk TalkDetect corroborated barge-in, one exact `Goodbye.` farewell played, a 40-byte terminal remainder drained in 805ms, and `RCA_CALL_END` recorded `agent_hangup`. The host was restored to its AudioSocket baseline after validation.
+**Tool Calls**:
+  ✅ hangup_call: 1 executed [local_llm]
+```
 
 ```
 **Date**: 2026-02-22

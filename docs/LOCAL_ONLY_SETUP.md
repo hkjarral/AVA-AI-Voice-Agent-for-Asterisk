@@ -154,6 +154,12 @@ The GPU compose file (`docker-compose.gpu.yml`) builds a CUDA-enabled `local_ai_
 > not currently implemented by the Docker deployment path; those hosts must use
 > CPU mode unless they maintain a custom inference server.
 
+The default llama.cpp build remains portable across supported NVIDIA GPUs. If a
+source build fails or you deliberately want to target one GPU generation, set
+`LLAMA_CUDA_ARCHITECTURES` before building (for example `70` for Tesla
+V100/V100S). This is a build-time CMake value, not the number of LLM layers, and
+changing it requires rebuilding `local_ai_server`.
+
 ```bash
 docker compose -p asterisk-ai-voice-agent \
   -f docker-compose.yml -f docker-compose.gpu.yml \

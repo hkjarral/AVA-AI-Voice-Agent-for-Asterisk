@@ -1342,6 +1342,13 @@ class StreamingPlaybackManager:
         # If any frames exist, keep flowing to maintain continuous 20ms cadence.
         if available_frames > 0:
             stream_info.pop('low_water_deadline', None)
+            stream_info.pop('low_water_expired', None)
+            return False
+        # Once the grace window expires, allow the adaptive backoff below to
+        # flush a partial final frame. Re-arming the deadline on every pacer
+        # tick strands sub-frame remainders until an unrelated interruption or
+        # stream teardown occurs.
+        if bool(stream_info.get('low_water_expired', False)):
             return False
         # After startup, do not couple rebuild target to min_start; aim for low_water + 1.
         target_frames = low_watermark_chunks + 1
@@ -1376,6 +1383,7 @@ class StreamingPlaybackManager:
         if now < deadline and available_frames == 0:
             return True
         stream_info.pop('low_water_deadline', None)
+        stream_info['low_water_expired'] = True
         return False
 
     async def _emit_frame(
@@ -1452,6 +1460,7 @@ class StreamingPlaybackManager:
                 info = self.active_streams.get(call_id)
                 if info is not None and 'empty_backoff_ticks' in info:
                     info['empty_backoff_ticks'] = 0
+                    info.pop('low_water_expired', None)
             except Exception:
                 pass
         try:

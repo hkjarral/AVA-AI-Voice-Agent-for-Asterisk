@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.3.2-blue.svg)
+![Version](https://img.shields.io/badge/version-7.3.3-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,34 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.3.3 — Local AI stabilization 🧠</b></summary>
+
+v7.3.3 is a Local-AI-only stabilization release. It adds no providers and keeps
+the cloud-provider call paths unchanged.
+
+- **Calls are isolated by session** — agent prompts and conversation state no
+  longer mutate shared Local AI Server configuration or leak across reused
+  WebSocket connections. AI Engine and Local AI Server should be upgraded
+  together; the legacy unscoped switch remains temporarily compatible.
+- **Barge-in abandons interrupted output** — late LLM/TTS work is quarantined,
+  the interrupted exchange is removed from weak-model history, and the
+  replacement turn stays focused on what the caller just said.
+- **Farewells finish exactly once** — Local `hangup_call` speaks the selected
+  Kokoro/Piper/etc. farewell without a second LLM rewrite, drains partial
+  AudioSocket or RTP tails, records `agent_hangup`, and then disconnects.
+- **CPU/GPU deployment is safer** — dependency pins, CUDA/cuDNN validation,
+  optional llama.cpp architecture targeting, and idempotent preflight checks
+  reduce first-build and rerun failures.
+- **Community GPU evidence** — Tesla V100S testing passed Faster-Whisper CUDA
+  float16, Llama 3.1 8B Q4_K_M, Kokoro, AudioSocket, ExternalMedia, barge-in,
+  terminal hangup, concurrent session isolation, and restart recovery.
+
+See the [Local AI community test matrix](docs/COMMUNITY_TEST_MATRIX.md) and the
+[Unreleased changelog](CHANGELOG.md#unreleased) for the complete scope.
+
+</details>
+
+<details>
 <summary><b>v7.3.2 — stabilization release 🛡️</b></summary>
 
 v7.3.2 is a stabilization-only patch release built from the supervised
