@@ -30,6 +30,8 @@ jobs:
 
       - name: Build CUDA Local AI image
         run: |
+          # Keep the clean-runner smoke build bounded. Production builds remain
+          # portable unless LLAMA_CUDA_ARCHITECTURES is configured.
           docker build \
             --file local_ai_server/Dockerfile.gpu \
             --tag local-ai-server-gpu:${{ github.sha }} \
@@ -42,6 +44,7 @@ jobs:
             --build-arg INCLUDE_MELOTTS=false \
             --build-arg INCLUDE_SILERO=false \
             --build-arg INCLUDE_LLAMA=true \
+            --build-arg LLAMA_CUDA_ARCHITECTURES=70 \
             --build-arg INCLUDE_KROKO_EMBEDDED=false \
             local_ai_server
 

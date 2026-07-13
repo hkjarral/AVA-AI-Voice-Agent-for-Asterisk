@@ -81,3 +81,10 @@ def test_llama_builds_exclude_non_runtime_targets() -> None:
         assert "-DLLAMA_BUILD_TESTS=OFF" in content
         assert "-DLLAMA_BUILD_EXAMPLES=OFF" in content
         assert "-DLLAMA_BUILD_TOOLS=OFF" in content
+
+
+def test_gpu_ci_limits_llama_build_to_representative_architecture() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "local-ai-gpu-build.yml"
+    ).read_text(encoding="utf-8")
+    assert "--build-arg LLAMA_CUDA_ARCHITECTURES=70" in workflow
