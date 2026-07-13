@@ -1,9 +1,9 @@
 """MED-R4: prompt-digest sync must be gated on a confirmed switch_response.
 
 The Local AI Server WebSocket is reused across calls. `_apply_system_prompt`
-sends a `switch_model` (dry_run) request to push the per-call system prompt and
-records a sha256 digest so it doesn't re-send an unchanged prompt. Previously the
-digest was set the instant the send returned, without waiting for the server's
+sends a session-scoped `switch_model` request to push the per-call system prompt
+and records a sha256 digest so it doesn't re-send an unchanged prompt. Previously
+the digest was set the instant the send returned, without waiting for the server's
 `switch_response`. If the server-side apply failed on a reused socket, the digest
 was updated anyway, so the next call skipped the re-send and ran with the PREVIOUS
 call's prompt still live (cross-call prompt leak).
@@ -104,6 +104,7 @@ async def test_digest_updated_on_switch_success():
     assert sent["scope"] == "session"
     assert sent["call_id"] == "call-b"
     assert sent["request_id"].startswith("prompt-sync-")
+    assert sent["protocol_version"] == 2
 
     # Same prompt and same call must short-circuit (no new frame).
     provider.websocket.sent.clear()
@@ -137,6 +138,25 @@ async def test_digest_not_updated_on_switch_timeout():
     assert provider._last_system_prompt_digest is None, (
         "digest must NOT be set when the switch_response never arrives"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_switch_future_fails_closed_without_cancelling_waiter():
+    provider = _make_provider()
+    task = asyncio.create_task(
+        provider._apply_system_prompt("call D prompt", call_id="call-d")
+    )
+    for _ in range(200):
+        future = provider._pending_switch_future
+        if future is not None:
+            future.cancel()
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("provider never registered a pending switch future")
+
+    assert await task is False
+    assert task.cancelled() is False
 
 
 @pytest.mark.asyncio

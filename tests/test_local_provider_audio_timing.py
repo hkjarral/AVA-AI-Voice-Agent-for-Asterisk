@@ -131,6 +131,51 @@ async def test_close_releases_call_owned_websocket_and_background_tasks():
 
 
 @pytest.mark.asyncio
+async def test_close_releases_all_shared_future_waiters_without_cancelling_tasks():
+    provider = LocalProvider(
+        LocalProviderConfig(response_timeout_sec=10),
+        on_event=None,
+    )
+    provider._active_call_id = "call-close-waiters"
+    provider.websocket = _ClosableFakeWebSocket()
+
+    waiters = [
+        asyncio.create_task(provider._request_status(timeout_sec=10)),
+        asyncio.create_task(
+            provider._request_llm_text(
+                text="repair",
+                call_id="call-close-waiters",
+                timeout_sec=10,
+            )
+        ),
+        asyncio.create_task(
+            provider._apply_system_prompt(
+                "prompt",
+                call_id="call-close-waiters",
+            )
+        ),
+        asyncio.create_task(provider.text_to_speech("close waiter test")),
+    ]
+    for _ in range(200):
+        if (
+            provider._pending_status_future is not None
+            and provider._pending_switch_future is not None
+            and provider._pending_llm_responses
+            and provider._pending_tts_responses
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("provider did not register every shared-future waiter")
+
+    await provider.close()
+    results = await asyncio.gather(*waiters)
+
+    assert results == [None, None, False, None]
+    assert all(task.cancelled() is False for task in waiters)
+
+
+@pytest.mark.asyncio
 async def test_binary_audio_emits_metadata_and_delayed_done():
     events = []
 
@@ -482,6 +527,7 @@ async def test_notify_barge_in_ack_roundtrip():
     barge_payloads = [payload for payload in sent_payloads if payload.get("type") == "barge_in"]
     assert len(barge_payloads) == 1
     assert barge_payloads[0].get("request_id")
+    assert barge_payloads[0]["protocol_version"] == 2
     assert barge_payloads[0]["rollback_assistant"] is True
     assert provider._pending_barge_in_acks == {}
 

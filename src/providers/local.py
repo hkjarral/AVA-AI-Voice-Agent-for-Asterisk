@@ -170,6 +170,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 json.dumps(
                     {
                         "type": "barge_in",
+                        "protocol_version": PROTOCOL_VERSION,
                         "call_id": target_call_id,
                         "request_id": request_id,
                         "rollback_assistant": bool(rollback_assistant),
@@ -286,6 +287,13 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             await self.websocket.send(json.dumps(payload))
             result = await asyncio.wait_for(fut, timeout=max(0.5, float(timeout_sec)))
             return str(result or "")
+        except asyncio.CancelledError:
+            # close() cancels the shared response future to release this waiter.
+            # Preserve cancellation when the caller cancelled this task itself.
+            if asyncio.current_task() and asyncio.current_task().cancelling():
+                raise
+            logger.debug("LLM repair request cancelled during provider close", call_id=call_id)
+            return None
         except Exception:
             logger.debug("LLM repair request failed", call_id=call_id, exc_info=True)
             return None
@@ -889,6 +897,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             if self._pending_status_future and not self._pending_status_future.done():
                 try:
                     return await asyncio.wait_for(self._pending_status_future, timeout=timeout_sec)
+                except asyncio.CancelledError:
+                    if asyncio.current_task() and asyncio.current_task().cancelling():
+                        raise
+                    return None
                 except Exception:
                     return None
 
@@ -900,6 +912,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 data = await asyncio.wait_for(fut, timeout=timeout_sec)
                 if isinstance(data, dict):
                     return data
+                return None
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
                 return None
             except Exception:
                 return None
@@ -1400,11 +1416,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     async def _apply_system_prompt(self, prompt: str, *, call_id: str) -> bool:
         """Send system prompt to local_ai_server. Returns True on success.
 
-        Empty prompt or unchanged digest are treated as success (nothing to
-        sync). WebSocket-not-open and send-exception return False so the
-        caller can fail-closed and abort call setup instead of running with
-        the previous call's instructions on a reused connection. Per
-        CodeRabbit review of PR #384 comment 3214166440.
+        Only an unchanged digest for this exact call ID is a no-op success.
+        The call ID is included in the digest, so every new call sends the
+        prompt, including an empty prompt, and waits for confirmation. This
+        prevents a reused WebSocket from retaining another call's instructions.
+        WebSocket-not-open and send-exception return False so the caller can
+        fail closed. Per CodeRabbit review of PR #384 comment 3214166440.
         """
         prompt = (prompt or "").strip()
         if not self.websocket or self.websocket.state.name != "OPEN":
@@ -1425,6 +1442,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             "scope": "session",
             "call_id": call_id,
             "request_id": request_id,
+            "protocol_version": PROTOCOL_VERSION,
             "llm_config": {
                 "system_prompt": prompt,
             },
@@ -1453,6 +1471,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     call_id=call_id,
                     chars=len(prompt),
                     timeout_sec=timeout_sec,
+                )
+                return False
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                logger.debug(
+                    "System prompt synchronization cancelled during provider close",
+                    call_id=call_id,
                 )
                 return False
             except Exception:
@@ -2337,6 +2363,11 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     
             except asyncio.TimeoutError:
                 logger.error("TTS request timed out")
+                return None
+            except asyncio.CancelledError:
+                if asyncio.current_task() and asyncio.current_task().cancelling():
+                    raise
+                logger.debug("TTS request cancelled during provider close")
                 return None
             finally:
                 # Clean up the pending response
