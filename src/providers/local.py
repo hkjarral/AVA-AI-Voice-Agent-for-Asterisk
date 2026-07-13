@@ -1870,6 +1870,74 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # self._active_call_id = None
         logger.info("Provider session stopped, WebSocket connection and listener maintained. Call ID preserved for TTS processing.")
 
+    async def close(self) -> None:
+        """Permanently release a call-owned provider's WebSocket and tasks.
+
+        ``stop_session`` intentionally keeps a reusable provider connected.
+        Engine provider factories now create one LocalProvider per call, so the
+        discarded call-owned instance must use this terminal close path.
+        """
+        await self.stop_session()
+        self._was_connected = False
+
+        tasks = [
+            self._listener_task,
+            self._sender_task,
+            self._background_reconnect_task,
+            *self._agent_audio_done_tasks.values(),
+            *self._llm_tool_timeout_tasks.values(),
+            *self._barge_in_ack_tasks.values(),
+        ]
+        current = asyncio.current_task()
+        pending_tasks = [
+            task
+            for task in tasks
+            if task is not None and task is not current and not task.done()
+        ]
+        for task in pending_tasks:
+            task.cancel()
+
+        ws = self.websocket
+        self.websocket = None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("Failed closing Local AI WebSocket", exc_info=True)
+
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        futures = [
+            self._pending_status_future,
+            self._pending_switch_future,
+            *self._pending_tts_responses.values(),
+            *self._pending_llm_responses.values(),
+        ]
+        for future in futures:
+            if future is not None and not future.done():
+                future.cancel()
+
+        self._listener_task = None
+        self._sender_task = None
+        self._background_reconnect_task = None
+        self._pending_status_future = None
+        self._pending_switch_future = None
+        self._pending_switch_request_id = None
+        self._pending_switch_call_id = None
+        self._pending_tts_responses.clear()
+        self._pending_llm_responses.clear()
+        self._pending_llm_tool_responses.clear()
+        self._pending_barge_in_acks.clear()
+        self._agent_audio_done_tasks.clear()
+        self._llm_tool_timeout_tasks.clear()
+        self._barge_in_ack_tasks.clear()
+        self._tts_audio_meta_by_call.clear()
+        self._pending_tts_audio_meta.clear()
+        self._active_call_id = None
+        self._last_system_prompt_digest = None
+        logger.info("Local AI provider connection closed permanently")
+
     async def clear_active_call_id(self):
         """Clear the active call ID after TTS playback is complete."""
         old_call_id = self._active_call_id

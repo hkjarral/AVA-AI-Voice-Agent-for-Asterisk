@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.core.models import CallSession
 from src.engine import Engine
+from src.config import LocalProviderConfig
+from src.providers.local import LocalProvider
 
 
 @pytest.mark.asyncio
@@ -48,6 +51,19 @@ def test_provider_fallback_allowlist_matches_named_instance_by_kind():
     assert engine._provider_fallback_is_allowed("grok3", {"grok"}) is True
     assert engine._provider_fallback_is_allowed("grok3", {"deepgram"}) is False
     assert engine._provider_fallback_is_allowed("grok3", set()) is True
+
+
+@pytest.mark.asyncio
+async def test_call_owned_local_provider_uses_terminal_close():
+    engine = Engine.__new__(Engine)
+    provider = LocalProvider(LocalProviderConfig(), on_event=None)
+    provider.close = AsyncMock()
+    provider.stop_session = AsyncMock()
+
+    await engine._stop_call_provider_instance("call-local", provider, "local")
+
+    provider.close.assert_awaited_once_with()
+    provider.stop_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,16 @@ class _FakeWebSocket:
         self.sent.append(message)
 
 
+class _ClosableFakeWebSocket(_FakeWebSocket):
+    def __init__(self, messages=()):
+        super().__init__(messages)
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+        self.state = type("State", (), {"name": "CLOSED"})()
+
+
 class _GatewayFakeWebSocket(_FakeWebSocket):
     async def send(self, message):
         await super().send(message)
@@ -91,6 +101,33 @@ async def test_stop_session_cancels_server_work_on_persistent_websocket():
     assert cancel["call_id"] == "call-stop"
     assert cancel["reason"] == "stop_session"
     assert cancel["request_id"].startswith("stop-")
+
+
+@pytest.mark.asyncio
+async def test_close_releases_call_owned_websocket_and_background_tasks():
+    provider = LocalProvider(LocalProviderConfig(), on_event=None)
+    provider._active_call_id = "call-close"
+    websocket = _ClosableFakeWebSocket()
+    provider.websocket = websocket
+
+    async def _idle():
+        await asyncio.Event().wait()
+
+    listener = asyncio.create_task(_idle())
+    sender = asyncio.create_task(_idle())
+    reconnect = asyncio.create_task(_idle())
+    provider._listener_task = listener
+    provider._sender_task = sender
+    provider._background_reconnect_task = reconnect
+
+    await provider.close()
+
+    assert websocket.closed is True
+    assert provider.websocket is None
+    assert provider._active_call_id is None
+    assert listener.cancelled()
+    assert sender.cancelled()
+    assert reconnect.cancelled()
 
 
 @pytest.mark.asyncio

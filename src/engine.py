@@ -2697,6 +2697,25 @@ class Engine:
         self._set_provider_identity(provider, provider_key, provider_kind)
         return provider
 
+    async def _stop_call_provider_instance(
+        self,
+        call_id: str,
+        provider: Optional[AIProviderInterface],
+        provider_name: Optional[str] = None,
+    ) -> None:
+        """Stop a per-call provider and release call-owned persistent resources."""
+        if provider is None:
+            return
+        if isinstance(provider, LocalProvider):
+            await provider.close()
+        elif hasattr(provider, "stop_session"):
+            await provider.stop_session()
+        logger.info(
+            "AI provider session stopped",
+            call_id=call_id,
+            provider=provider_name,
+        )
+
     def _get_provider_kind(self, provider_name: Optional[str]) -> Optional[str]:
         if not provider_name:
             return None
@@ -4499,11 +4518,9 @@ class Engine:
         provider = self._call_providers.pop(session.call_id, None)
         if provider:
             try:
-                # Stop the provider's session for this call
-                if hasattr(provider, 'stop_session'):
-                    await provider.stop_session()
-                    logger.info("✅ AI provider session stopped",
-                               provider=session.provider_name)
+                await self._stop_call_provider_instance(
+                    session.call_id, provider, session.provider_name
+                )
             except Exception as e:
                 logger.warning(f"Failed to stop provider: {e}")
         
@@ -4750,7 +4767,7 @@ class Engine:
                         await self._save_session(latest)
                 except Exception:
                     logger.debug("Failed to clear predial action after bridge failure", call_id=call_id, exc_info=True)
-                if provider and hasattr(provider, "stop_session"):
+                if provider:
                     self._fire_and_forget(
                         self._stop_provider_after_predial_bridge(call_id, provider, getattr(session, "provider_name", None)),
                         name=f"predial-provider-stop-failed-{call_id}",
@@ -4778,7 +4795,7 @@ class Engine:
                 bridge_id=getattr(session, "bridge_id", None),
                 destination=getattr(session, "transfer_destination", None),
             )
-            if provider and hasattr(provider, "stop_session"):
+            if provider:
                 self._fire_and_forget(
                     self._stop_provider_after_predial_bridge(call_id, provider, getattr(session, "provider_name", None)),
                     name=f"predial-provider-stop-{call_id}",
@@ -4812,12 +4829,7 @@ class Engine:
 
     async def _stop_provider_after_predial_bridge(self, call_id: str, provider: Any, provider_name: Optional[str]) -> None:
         try:
-            await provider.stop_session()
-            logger.info(
-                "AI provider session stopped after predial bridge",
-                call_id=call_id,
-                provider=provider_name,
-            )
+            await self._stop_call_provider_instance(call_id, provider, provider_name)
         except Exception:
             logger.debug("Failed to stop provider after predial bridge", call_id=call_id, exc_info=True)
 
@@ -6126,9 +6138,11 @@ class Engine:
         except Exception:
             pass
         provider = self._call_providers.pop(call_id, None)
-        if provider and hasattr(provider, "stop_session"):
+        if provider:
             try:
-                await provider.stop_session()
+                await self._stop_call_provider_instance(
+                    call_id, provider, getattr(session, "provider_name", None)
+                )
             except Exception:
                 logger.debug("Failed to stop provider session during attended transfer", call_id=call_id, exc_info=True)
 
@@ -6858,8 +6872,10 @@ class Engine:
                 pass
             try:
                 provider = self._call_providers.pop(call_id, None)
-                if provider and hasattr(provider, "stop_session"):
-                    await provider.stop_session()
+                if provider:
+                    await self._stop_call_provider_instance(
+                        call_id, provider, getattr(session, "provider_name", None)
+                    )
             except Exception:
                 logger.debug("Provider stop_session failed during cleanup", call_id=call_id, exc_info=True)
 
@@ -15770,9 +15786,11 @@ class Engine:
                 self._call_providers.pop(call_id, None)
             except Exception:
                 pass
-            if provider and hasattr(provider, "stop_session"):
+            if provider:
                 try:
-                    await provider.stop_session()
+                    await self._stop_call_provider_instance(
+                        call_id, provider, provider_name
+                    )
                 except Exception:
                     pass
             # HIGH-1b: a session exists by the time provider start runs, so this call
