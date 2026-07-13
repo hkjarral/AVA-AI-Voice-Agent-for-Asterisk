@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -176,3 +179,68 @@ async def test_session_response_task_can_be_cancelled_without_waiting_for_work()
     await asyncio.wait_for(cancelled.wait(), timeout=0.2)
     assert task.cancelled()
     assert task not in session.response_tasks
+
+
+@pytest.mark.asyncio
+async def test_streaming_llm_lock_is_held_until_cancelled_worker_exits():
+    server_mod = _load("server")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance._llm_lock = asyncio.Lock()
+    instance.llm_max_tokens = 32
+    instance.llm_stop_tokens = []
+    instance.llm_temperature = 0.2
+    instance.llm_top_p = 0.9
+    instance.llm_repeat_penalty = 1.0
+    instance.config = SimpleNamespace(llm_infer_timeout_sec=2.0)
+    worker_blocked = threading.Event()
+    release_worker = threading.Event()
+
+    class _Model:
+        def create_chat_completion(self, **_kwargs):
+            yield {"choices": [{"delta": {"content": "first"}}]}
+            worker_blocked.set()
+            release_worker.wait(timeout=2.0)
+            yield {"choices": [{"delta": {"content": "late"}}]}
+
+    instance.llm_model = _Model()
+    stream = instance.process_llm_chat_streaming([{"role": "user", "content": "hello"}])
+    assert await anext(stream) == "first"
+    assert await asyncio.to_thread(worker_blocked.wait, 1.0)
+
+    close_task = asyncio.create_task(stream.aclose())
+    await asyncio.sleep(0.05)
+    assert instance._llm_lock.locked()
+    assert not close_task.done()
+
+    release_worker.set()
+    await asyncio.wait_for(close_task, timeout=1.0)
+    assert not instance._llm_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_raw_llm_request_preserves_assistant_turn_in_session_history():
+    server_mod = _load("server")
+    session_mod = _load("session")
+    instance = object.__new__(server_mod.LocalAIServer)
+    instance.config = SimpleNamespace(llm_infer_timeout_sec=1.0)
+    instance.llm_chat_format = ""
+    instance._emit_llm_response = AsyncMock(return_value=True)
+
+    def _prepare(session, text):
+        session.llm_messages.append({"role": "user", "content": text})
+        session.llm_user_turns = [text]
+        return "prompt", 1, False, 1, []
+
+    instance._prepare_llm_prompt = _prepare
+    instance.process_llm = AsyncMock(return_value="The answer. <tool>ignored</tool>")
+    session = session_mod.SessionContext(call_id="raw-history")
+
+    await instance._handle_llm_request(
+        websocket=object(),
+        session=session,
+        data={"type": "llm_request", "call_id": "raw-history", "text": "Question"},
+    )
+
+    assert session.llm_messages[0] == {"role": "user", "content": "Question"}
+    assert session.llm_messages[-1]["role"] == "assistant"
+    assert "The answer" in session.llm_messages[-1]["content"]

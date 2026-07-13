@@ -50,6 +50,8 @@ def test_optional_native_dependency_pins_have_one_source_of_truth() -> None:
         assert 'pip install --no-cache-dir "$KOKORO_REQUIREMENT"' in content, dockerfile
         assert "grep -m 1 '^torch==' requirements.txt" in content, dockerfile
         assert 'pip install --no-cache-dir "$TORCH_REQUIREMENT"' in content, dockerfile
+        assert "grep -m 1 '^torchaudio==' /usr/src/app/requirements.txt" in content, dockerfile
+        assert 'pip install --no-cache-dir "$TORCHAUDIO_REQUIREMENT"' in content, dockerfile
         assert "grep -m 1 '^transformers==' requirements.txt" in content, dockerfile
         assert "grep -m 1 '^huggingface-hub==' requirements.txt" in content, dockerfile
         assert '"$TRANSFORMERS_REQUIREMENT" "$HF_HUB_REQUIREMENT"' in content, dockerfile

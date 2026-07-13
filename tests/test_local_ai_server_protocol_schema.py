@@ -204,3 +204,17 @@ def test_oneOf_contains_tool_context_and_tool_result():
         "ToolResult must be in the protocol's top-level oneOf so a strict "
         "jsonschema validator accepts it."
     )
+
+
+@requires_jsonschema
+def test_session_switch_requires_call_id_and_system_prompt():
+    with pytest.raises(jsonschema.ValidationError):
+        validate_payload({"type": "switch_model", "scope": "session"})
+
+    validate_payload({
+        "type": "switch_model",
+        "scope": "session",
+        "call_id": "call-schema",
+        "request_id": "prompt-schema",
+        "llm_config": {"system_prompt": "You are Ava."},
+    })

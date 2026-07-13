@@ -149,7 +149,9 @@ RUN if [ "$INCLUDE_LLAMA" = "true" ]; then \
 # MeloTTS declares Gradio for its standalone web demo; AVA does not ship that UI.
 # Fail for every other broken or incompatible dependency.
 RUN CHECK_OUTPUT="$(pip check 2>&1 || true)"; \
-    UNEXPECTED="$(printf '%s\n' "$CHECK_OUTPUT" | grep -v '^melotts .* requires gradio, which is not installed\.$' || true)"; \
+    UNEXPECTED="$(printf '%s\n' "$CHECK_OUTPUT" | \
+        grep -v -e '^No broken requirements found\.$' \
+                -e '^melotts .* requires gradio, which is not installed\.$' || true)"; \
     if [ -n "$UNEXPECTED" ]; then printf '%s\n' "$UNEXPECTED" >&2; exit 1; fi; \
     echo "No unexpected broken requirements found."
 

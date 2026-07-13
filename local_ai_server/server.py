@@ -6,6 +6,7 @@ import asyncio
 import audioop
 import base64
 import contextlib
+import contextvars
 import io
 import json
 import logging
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import wave
 import urllib.request
 import urllib.error
@@ -63,6 +65,11 @@ from live_status_publisher import LiveStatusPublisher, live_status_component
 from model_manager import ModelManager
 from status_builder import build_status_response
 from ws_protocol import WebSocketProtocol
+
+
+_CALL_LOG_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "local_ai_call_id", default="unknown"
+)
 
 
 # Local LLM tool-call guardrails (server-side) to prevent accidental hangups.
@@ -2655,16 +2662,20 @@ class LocalAIServer:
 
                 choices = output.get("choices", []) if isinstance(output, dict) else []
                 if not choices:
-                    logging.warning("🤖 LLM RESULT (chat) - No choices returned, using fallback response")
+                    logging.warning(
+                        "🤖 LLM RESULT (chat) - No choices returned, using fallback response call_id=%s",
+                        _CALL_LOG_CONTEXT.get(),
+                    )
                     return "I'm here to help you. How can I assist you today?"
 
                 message = choices[0].get("message", {})
                 response = (message.get("content") or "").strip()
                 latency_ms = round((loop.time() - started) * 1000.0, 2)
                 logging.info(
-                    "🤖 LLM RESULT (chat) - Completed in %s ms tokens=%s",
+                    "🤖 LLM RESULT (chat) - Completed in %s ms tokens=%s call_id=%s",
                     latency_ms,
                     len(response.split()),
+                    _CALL_LOG_CONTEXT.get(),
                 )
                 return response
 
@@ -2693,8 +2704,10 @@ class LocalAIServer:
             # create_chat_completion with stream=True returns a generator.
             # We run the blocking generator in a thread and pull tokens via a queue.
             token_queue: asyncio.Queue[str | None] = asyncio.Queue()
+            stop_event = threading.Event()
 
             def _stream_worker():
+                gen = None
                 try:
                     gen = self.llm_model.create_chat_completion(
                         messages=messages,
@@ -2706,6 +2719,8 @@ class LocalAIServer:
                         stream=True,
                     )
                     for chunk in gen:
+                        if stop_event.is_set():
+                            break
                         choices = chunk.get("choices", [])
                         if choices:
                             delta = choices[0].get("delta", {})
@@ -2715,31 +2730,48 @@ class LocalAIServer:
                 except Exception as exc:
                     logging.error("LLM streaming failed: %s", exc, exc_info=True)
                 finally:
+                    if gen is not None:
+                        with contextlib.suppress(Exception):
+                            gen.close()
                     loop.call_soon_threadsafe(token_queue.put_nowait, None)
 
             thread_task = loop.run_in_executor(None, _stream_worker)
 
             token_count = 0
             idle_timeout = self.config.llm_infer_timeout_sec
-            while True:
-                try:
-                    token = await asyncio.wait_for(token_queue.get(), timeout=idle_timeout)
-                except asyncio.TimeoutError:
-                    logging.warning(
-                        "🧠 LLM STREAMING TIMEOUT - No token in %ss, aborting",
-                        idle_timeout,
-                    )
-                    break
-                if token is None:
-                    break
-                token_count += 1
-                yield token
-
-            await thread_task  # ensure thread cleanup
+            try:
+                while True:
+                    try:
+                        token = await asyncio.wait_for(token_queue.get(), timeout=idle_timeout)
+                    except asyncio.TimeoutError:
+                        logging.warning(
+                            "🧠 LLM STREAMING TIMEOUT - No token in %ss, aborting",
+                            idle_timeout,
+                        )
+                        break
+                    if token is None:
+                        break
+                    token_count += 1
+                    yield token
+            finally:
+                # A stale generation/barge-in closes this async generator early.
+                # Do not release _llm_lock until the blocking llama.cpp worker
+                # has observed cancellation, closed its generator, and exited.
+                stop_event.set()
+                cancelled_during_cleanup = False
+                while not thread_task.done():
+                    try:
+                        await asyncio.shield(thread_task)
+                    except asyncio.CancelledError:
+                        cancelled_during_cleanup = True
+                        continue
+                await thread_task
+                if cancelled_during_cleanup:
+                    raise asyncio.CancelledError
             latency_ms = round((loop.time() - started) * 1000.0, 2)
             logging.info(
-                "🤖 LLM RESULT (streaming) - Completed in %s ms tokens=%d",
-                latency_ms, token_count,
+                "🤖 LLM RESULT (streaming) - Completed in %s ms tokens=%d call_id=%s",
+                latency_ms, token_count, _CALL_LOG_CONTEXT.get(),
             )
 
     async def process_llm(self, prompt: str) -> str:
@@ -2793,15 +2825,19 @@ class LocalAIServer:
 
                 choices = output.get("choices", []) if isinstance(output, dict) else []
                 if not choices:
-                    logging.warning("🤖 LLM RESULT - No choices returned, using fallback response")
+                    logging.warning(
+                        "🤖 LLM RESULT - No choices returned, using fallback response call_id=%s",
+                        _CALL_LOG_CONTEXT.get(),
+                    )
                     return "I'm here to help you. How can I assist you today?"
 
                 response = choices[0].get("text", "").strip()
                 latency_ms = round((loop.time() - started) * 1000.0, 2)
                 logging.info(
-                    "🤖 LLM RESULT - Completed in %s ms tokens=%s",
+                    "🤖 LLM RESULT - Completed in %s ms tokens=%s call_id=%s",
                     latency_ms,
                     len(response.split()),
+                    _CALL_LOG_CONTEXT.get(),
                 )
                 return response
 
@@ -3104,7 +3140,7 @@ class LocalAIServer:
                 self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 44100
             )
 
-            logging.info("🔊 TTS RESULT - MeloTTS generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
+            logging.info("🔊 TTS RESULT - MeloTTS generated uLaw 8kHz audio: %s bytes call_id=%s", len(ulaw_data), _CALL_LOG_CONTEXT.get())
             return ulaw_data
 
         except Exception as exc:
@@ -3127,7 +3163,7 @@ class LocalAIServer:
                 self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 22050
             )
 
-            logging.info("🔊 TTS RESULT - Piper generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
+            logging.info("🔊 TTS RESULT - Piper generated uLaw 8kHz audio: %s bytes call_id=%s", len(ulaw_data), _CALL_LOG_CONTEXT.get())
             return ulaw_data
 
         except Exception as exc:
@@ -3182,7 +3218,7 @@ class LocalAIServer:
                 self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, 24000
             )
 
-            logging.info("🔊 TTS RESULT - Kokoro generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
+            logging.info("🔊 TTS RESULT - Kokoro generated uLaw 8kHz audio: %s bytes call_id=%s", len(ulaw_data), _CALL_LOG_CONTEXT.get())
             return ulaw_data
 
         except Exception as exc:
@@ -3254,8 +3290,8 @@ class LocalAIServer:
                 self.audio_processor.convert_to_ulaw_8k, wav_data, 24000
             )
             logging.info(
-                "🔊 TTS RESULT - Kokoro API generated uLaw 8kHz audio: %s bytes",
-                len(ulaw_data),
+                "🔊 TTS RESULT - Kokoro API generated uLaw 8kHz audio: %s bytes call_id=%s",
+                len(ulaw_data), _CALL_LOG_CONTEXT.get(),
             )
             return ulaw_data
         except Exception as exc:
@@ -3284,7 +3320,7 @@ class LocalAIServer:
                 self.audio_processor.pcm16_to_ulaw_8k, pcm16_data, self.silero_sample_rate
             )
 
-            logging.info("🔊 TTS RESULT - Silero generated uLaw 8kHz audio: %s bytes", len(ulaw_data))
+            logging.info("🔊 TTS RESULT - Silero generated uLaw 8kHz audio: %s bytes call_id=%s", len(ulaw_data), _CALL_LOG_CONTEXT.get())
             return ulaw_data
 
         except Exception as exc:
@@ -3347,8 +3383,8 @@ class LocalAIServer:
             )
 
             logging.info(
-                "🔊 TTS RESULT - Matcha generated uLaw 8kHz audio: %s bytes",
-                len(ulaw_data),
+                "🔊 TTS RESULT - Matcha generated uLaw 8kHz audio: %s bytes call_id=%s",
+                len(ulaw_data), _CALL_LOG_CONTEXT.get(),
             )
             return ulaw_data
 
@@ -4133,7 +4169,16 @@ class LocalAIServer:
     ) -> asyncio.Task:
         """Run long LLM/TTS work without blocking WebSocket control messages."""
         self._cancel_session_response_tasks(session, reason=f"replace:{reason}")
-        task = asyncio.create_task(coroutine, name=f"local-ai-{reason}-{session.call_id}")
+        async def _run_with_call_log_context():
+            token = _CALL_LOG_CONTEXT.set(str(session.call_id or "unknown"))
+            try:
+                return await coroutine
+            finally:
+                _CALL_LOG_CONTEXT.reset(token)
+
+        task = asyncio.create_task(
+            _run_with_call_log_context(), name=f"local-ai-{reason}-{session.call_id}"
+        )
         session.response_tasks.add(task)
 
         def _done(completed: asyncio.Task) -> None:
@@ -6180,6 +6225,18 @@ class LocalAIServer:
         if not self._output_generation_active(session, generation):
             self._log_stale_output_drop(session, output_type="llm_request", generation=generation)
             return
+
+        if not use_chat_path:
+            assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
+            if assistant_text:
+                session.llm_messages.append(
+                    {"role": "assistant", "content": assistant_text}
+                )
+                session.llm_user_turns = [
+                    message.get("content", "")
+                    for message in session.llm_messages
+                    if (message.get("role") or "").strip().lower() == "user"
+                ]
 
         await self._emit_llm_response(
             websocket,

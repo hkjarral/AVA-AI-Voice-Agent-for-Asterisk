@@ -11,11 +11,11 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(REPORT)
 
 
-def test_parse_local_ai_logs_preserves_unscoped_model_timing(monkeypatch):
+def test_parse_local_ai_logs_uses_exact_scoped_model_timing(monkeypatch):
     logs = "\n".join([
         "STT FINAL - Emitting transcript call_id=call-1 preview=That's all, goodbye.",
-        "LLM RESULT (chat) - Completed in 332.88 ms tokens=5",
-        "TTS RESULT - Kokoro generated uLaw 8kHz audio: 17000 bytes",
+        "LLM RESULT (chat) - Completed in 332.88 ms tokens=5 call_id=call-1",
+        "TTS RESULT - Kokoro generated uLaw 8kHz audio: 17000 bytes call_id=call-1",
         "WHISPER STT SUPPRESS - call_id=call-1 source=tool_result",
         "STT FINAL - Emitting transcript call_id=other preview=ignore me",
     ])
@@ -27,6 +27,23 @@ def test_parse_local_ai_logs_preserves_unscoped_model_timing(monkeypatch):
     assert result["tts_responses_count"] == 1
     assert result["stt_transcripts_count"] == 1
     assert result["stt_last_transcript"] == "That's all, goodbye."
+
+
+def test_parse_local_ai_logs_does_not_mix_interleaved_calls(monkeypatch):
+    logs = "\n".join([
+        "STT FINAL - Emitting transcript call_id=call-1 preview=hello",
+        "LLM RESULT (chat) - Completed in 900 ms tokens=8 call_id=call-2",
+        "TTS RESULT - Kokoro generated uLaw 8kHz audio: 99000 bytes call_id=call-2",
+        "LLM RESULT (chat) - Completed in 120 ms tokens=3 call_id=call-1",
+        "TTS RESULT - Kokoro generated uLaw 8kHz audio: 12000 bytes call_id=call-1",
+    ])
+    monkeypatch.setattr(REPORT.subprocess, "check_output", lambda *_args, **_kwargs: logs.encode())
+
+    result = REPORT.parse_local_ai_logs(call_id="call-1")
+
+    assert result["llm_all_ms"] == [120.0]
+    assert result["tts_responses_count"] == 1
+    assert result["tts_last_bytes"] == 12000
 
 
 def test_detect_transport_prefers_call_runtime_evidence(monkeypatch, tmp_path):

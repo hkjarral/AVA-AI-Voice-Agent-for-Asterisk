@@ -136,6 +136,35 @@ async def test_binary_audio_emits_metadata_and_delayed_done():
 
 
 @pytest.mark.asyncio
+async def test_late_binary_audio_is_not_reassigned_to_next_call():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = LocalProvider(LocalProviderConfig(), on_event=on_event)
+    provider._active_call_id = "call-new"
+    provider.websocket = _FakeWebSocket(
+        [
+            json.dumps({
+                "type": "tts_audio",
+                "call_id": "call-old",
+                "request_id": "old-audio",
+                "encoding": "mulaw",
+                "sample_rate_hz": 8000,
+            }),
+            b"\x00" * 160,
+        ]
+    )
+
+    await provider._receive_loop()
+
+    assert [event for event in events if event.get("type") == "AgentAudio"] == []
+
+    await provider.clear_active_call_id()
+
+
+@pytest.mark.asyncio
 async def test_send_tool_result_has_correlatable_audio_request_id():
     provider = LocalProvider(LocalProviderConfig(), on_event=None)
     provider._active_call_id = "call-tool-result"
@@ -195,7 +224,7 @@ async def test_tts_response_uses_payload_audio_format():
 
 
 @pytest.mark.asyncio
-async def test_binary_audio_defaults_to_mulaw_when_metadata_missing():
+async def test_binary_audio_without_metadata_is_dropped():
     events = []
 
     async def on_event(event):
@@ -210,10 +239,8 @@ async def test_binary_audio_defaults_to_mulaw_when_metadata_missing():
 
     agent_events = [e for e in events if e.get("type") == "AgentAudio"]
     done_events = [e for e in events if e.get("type") == "AgentAudioDone"]
-    assert len(agent_events) == 1
-    assert agent_events[0]["encoding"] == "mulaw"
-    assert agent_events[0]["sample_rate"] == 8000
-    assert len(done_events) == 1
+    assert agent_events == []
+    assert done_events == []
     await provider.clear_active_call_id()
 
 

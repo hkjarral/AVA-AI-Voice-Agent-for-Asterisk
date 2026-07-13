@@ -5367,9 +5367,11 @@ class Engine:
             return True
 
         providers_cfg = getattr(self.config, "providers", {}) or {}
-        local_config = (
-            providers_cfg.get("local") if isinstance(providers_cfg, dict) else None
-        )
+        local_config = None
+        if isinstance(providers_cfg, dict):
+            local_config = providers_cfg.get(provider_name)
+            if local_config is None:
+                local_config = providers_cfg.get("local")
         farewell_mode, _timeout = self._resolve_local_farewell_settings(local_config)
         return farewell_mode != "asterisk"
 
@@ -11360,7 +11362,11 @@ class Engine:
                             
                             # Get farewell mode from config
                             providers_cfg = getattr(self.config, "providers", {}) or {}
-                            local_config = providers_cfg.get("local") if isinstance(providers_cfg, dict) else None
+                            local_config = None
+                            if isinstance(providers_cfg, dict):
+                                local_config = providers_cfg.get(provider_name)
+                                if local_config is None:
+                                    local_config = providers_cfg.get("local")
                             farewell_mode, farewell_timeout = self._resolve_local_farewell_settings(local_config)
                             
                             logger.info(
@@ -11799,7 +11805,15 @@ class Engine:
                 )
                 return False
 
-    def _schedule_terminal_fallback(self, call_id: str, *, reason: str, timeout_sec: float = 15.0) -> None:
+    def _schedule_terminal_fallback(
+        self,
+        call_id: str,
+        *,
+        reason: str,
+        timeout_sec: float = 15.0,
+        call_outcome: Optional[str] = None,
+        clear_local_farewell_pending: bool = False,
+    ) -> None:
         """Bound a provider/tool terminal flow that never emits audio completion."""
         tasks = getattr(self, "_terminal_fallback_tasks", None)
         if tasks is None:
@@ -11820,9 +11834,12 @@ class Engine:
                         reason=reason,
                         timeout_sec=timeout_sec,
                     )
+                    if clear_local_farewell_pending:
+                        getattr(self, "_local_tts_farewell_pending", set()).discard(call_id)
                     await self._terminate_call_after_audio(
                         call_id,
                         reason=f"{reason}:fallback_timeout",
+                        call_outcome=call_outcome,
                     )
             except asyncio.CancelledError:
                 return
@@ -16301,6 +16318,20 @@ class Engine:
                 self._local_tts_farewell_pending = pending
             pending.add(call_id)
             logger.info("Armed Local TTS farewell audio boundary", call_id=call_id)
+            providers_cfg = getattr(self.config, "providers", {}) or {}
+            local_config = None
+            if isinstance(providers_cfg, dict):
+                local_config = providers_cfg.get(provider_name)
+                if local_config is None:
+                    local_config = providers_cfg.get("local")
+            _farewell_mode, farewell_timeout = self._resolve_local_farewell_settings(local_config)
+            self._schedule_terminal_fallback(
+                call_id,
+                reason=f"{provider_name}:local_tts_farewell_pending",
+                timeout_sec=farewell_timeout,
+                call_outcome="agent_hangup",
+                clear_local_farewell_pending=True,
+            )
         if provider and hasattr(provider, 'send_tool_result') and send_provider_result:
             try:
                 is_error = result.get("status") == "error"

@@ -1773,13 +1773,19 @@ check_asterisk_uid_gid() {
     # project lives under /root (0700), so Asterisk sees "file does not exist" for ai-generated sounds.
     local use_bind_mount=false
     if [ -d "/var/lib/asterisk/sounds" ] && id asterisk &>/dev/null; then
+        # MEDIA_DIR may not exist on a fresh install. Probe the closest existing
+        # ancestor so a missing leaf is not mistaken for an untraversable path.
+        local media_traversal_probe="$MEDIA_DIR"
+        while [ ! -e "$media_traversal_probe" ] && [ "$media_traversal_probe" != "/" ]; do
+            media_traversal_probe="$(dirname "$media_traversal_probe")"
+        done
         # Once a bind mount is active or persisted, keep using that mode. A
         # previous fix may have made the source path traversable, but switching
         # back to symlink mode would try to rename the active mountpoint.
         if mountpoint -q "$ASTERISK_SOUNDS_LINK" 2>/dev/null || \
                 fstab_mountpoint_has_bind_option "$ASTERISK_SOUNDS_LINK"; then
             use_bind_mount=true
-        elif ! sudo -u asterisk test -x "$MEDIA_DIR" 2>/dev/null; then
+        elif ! sudo -u asterisk test -x "$media_traversal_probe" 2>/dev/null; then
             use_bind_mount=true
             log_warn "Asterisk user cannot access media directory path; file playback via symlink may fail"
             log_info "  media_dir=$MEDIA_DIR"
@@ -2334,7 +2340,7 @@ check_gpu() {
                         ;;
                 esac
                 log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-                update_env_gpu "true"  # GPU exists, just toolkit missing
+                update_env_gpu "true" "false"  # Host GPU exists; passthrough is not verified
                 return 0
             fi
         else
@@ -2342,7 +2348,7 @@ check_gpu() {
             log_info "    Debian/Ubuntu: sudo apt-get install -y nvidia-container-toolkit"
             log_info "    RHEL/Rocky:    sudo yum install -y nvidia-container-toolkit"
             log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-            update_env_gpu "true"  # GPU exists, just toolkit missing
+            update_env_gpu "true" "false"  # Host GPU exists; passthrough is not verified
             return 0
         fi
     fi
@@ -2355,7 +2361,7 @@ check_gpu() {
         log_ok "Docker GPU passthrough: verified (cached)"
         # The marker caches only the expensive container probe. Environment
         # seeding must still run (for example after .env is regenerated).
-        update_env_gpu "true"
+        update_env_gpu "true" "true"
     else
         log_info "Testing Docker GPU passthrough (may pull ~200MB image)..."
         local cuda_test_images=(
@@ -2377,7 +2383,7 @@ check_gpu() {
         if [ "$passthrough_test_ok" = true ]; then
             log_ok "Docker GPU passthrough working"
             log_info "  Verified with image: $working_cuda_test_image"
-            update_env_gpu "true"
+            update_env_gpu "true" "true"
             touch "$gpu_marker" 2>/dev/null || true
 
             log_info ""
@@ -2391,7 +2397,7 @@ check_gpu() {
             log_warn "Docker GPU passthrough test failed"
             log_info "  GPU detected and toolkit installed, but Docker cannot access GPU"
             log_info "  Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-            update_env_gpu "true"  # GPU exists, passthrough just needs config
+            update_env_gpu "true" "false"  # Host GPU exists; passthrough failed
         fi
     fi
 }
@@ -2399,6 +2405,7 @@ check_gpu() {
 # Helper: Update GPU_AVAILABLE in .env
 update_env_gpu() {
     local gpu_value="$1"
+    local passthrough_verified="${2:-false}"
     
     [ ! -f "$SCRIPT_DIR/.env" ] && return 0
     
@@ -2432,9 +2439,11 @@ GPU_AVAILABLE=$gpu_value" "$SCRIPT_DIR/.env"
         # Check for GPU layers footgun: GPU detected but layers=0 means CPU-only LLM inference.
         local current_layers
         current_layers="$(grep -E '^LOCAL_LLM_GPU_LAYERS=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
-        if [ -z "$current_layers" ] && [ "$APPLY_FIXES" = true ]; then
+        if [ -z "$current_layers" ] && [ "$APPLY_FIXES" = true ] && [ "$passthrough_verified" = true ]; then
             echo "LOCAL_LLM_GPU_LAYERS=-1" >> "$SCRIPT_DIR/.env"
             log_ok "Set LOCAL_LLM_GPU_LAYERS=-1 for automatic GPU offloading"
+        elif [ -z "$current_layers" ] && [ "$APPLY_FIXES" = true ]; then
+            log_warn "Docker GPU passthrough is not verified; leaving LOCAL_LLM_GPU_LAYERS unset"
         elif [ "$current_layers" = "0" ]; then
             log_warn "LOCAL_LLM_GPU_LAYERS=0 in .env — LLM will run on CPU despite GPU being available"
             log_info "  Suggestion: Set LOCAL_LLM_GPU_LAYERS=-1 in .env for automatic GPU offloading"
@@ -2467,7 +2476,7 @@ _check_port() {
         log_ok "Port $port available ($label)"
     elif [ -n "$expected_container" ] && \
             docker inspect -f '{{.State.Running}}' "$expected_container" 2>/dev/null | grep -qx true; then
-        log_ok "Port $port in use by running AAVA service ($expected_container)"
+        log_warn "Port $port is in use and $expected_container is running, but listener ownership was not verified"
     else
         log_warn "Port $port already in use ($label)"
     fi

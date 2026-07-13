@@ -353,17 +353,13 @@ def parse_local_ai_logs(lines: int = 2000, call_id: str = "") -> Dict[str, Any]:
         return latency
 
     if call_id:
-        # Model timing lines historically omitted call_id. Keep the contiguous
-        # log window bounded by call-scoped events so those LLM/TTS markers are
-        # retained instead of filtering them all out.
+        # v7.3.3 emits call_id on every STT/LLM/TTS marker. Exact filtering
+        # prevents interleaved concurrent calls from borrowing each other's
+        # latency and response counts.
         raw_lines = out.splitlines()
-        scoped_indexes = [i for i, line in enumerate(raw_lines) if call_id in line]
-        if scoped_indexes:
-            out = "\n".join(raw_lines[scoped_indexes[0]:scoped_indexes[-1] + 1])
-        else:
-            out = ""
+        out = "\n".join(line for line in raw_lines if call_id in line)
         latency["call_id"] = call_id
-        latency["source"] = "local_ai_server contiguous call window"
+        latency["source"] = "local_ai_server exact call_id markers"
 
     # LLM latency: "🤖 LLM RESULT - Completed in <ms> ms"
     llm_matches = re.findall(r"LLM RESULT.*?Completed in (\d+(?:\.\d+)?) ms", out)

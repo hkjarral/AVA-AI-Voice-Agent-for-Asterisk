@@ -554,12 +554,17 @@ this during call setup:
   "type": "switch_model",
   "scope": "session",
   "call_id": "1712345678.42",
-  "dry_run": true,
+  "request_id": "prompt-sync-1712345678.42",
   "llm_config": {
     "system_prompt": "You are the sales agent for Example Company."
   }
 }
 ```
+
+The server echoes `request_id` in `switch_response`; clients must ignore stale
+or mismatched acknowledgements. `dry_run` is intentionally omitted because a
+session-scoped switch always updates that WebSocket's session state even though
+it never reloads global models.
 
 Do not use a global prompt switch for per-call agent instructions. Unscoped
 requests remain available as a temporary compatibility path for older clients.

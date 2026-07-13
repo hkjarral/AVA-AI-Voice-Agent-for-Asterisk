@@ -341,6 +341,9 @@
         "call_id": {
           "type": "string"
         },
+        "request_id": {
+          "type": "string"
+        },
         "dry_run": {
           "type": "boolean"
         },
@@ -523,6 +526,33 @@
           "type": "string"
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "session"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "call_id",
+              "llm_config"
+            ],
+            "properties": {
+              "llm_config": {
+                "required": [
+                  "system_prompt"
+                ]
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": true
     },
     "SwitchResponse": {
@@ -560,6 +590,12 @@
         },
         "call_id": {
           "type": "string"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": true

@@ -212,6 +212,7 @@ class WebSocketProtocol:
             logging.info("🔄 MODEL SWITCH REQUEST - Switching model configuration...")
             if str(data.get("scope") or "").strip().lower() == "session":
                 call_id = str(data.get("call_id") or session.call_id or "unknown").strip()
+                request_id = data.get("request_id")
                 llm_config = data.get("llm_config") if isinstance(data.get("llm_config"), dict) else {}
                 if "system_prompt" not in llm_config:
                     response = {
@@ -220,6 +221,7 @@ class WebSocketProtocol:
                         "message": "session-scoped switch requires llm_config.system_prompt",
                         "scope": "session",
                         "call_id": call_id,
+                        "request_id": request_id,
                     }
                 else:
                     if session.prompt_context_call_id != call_id:
@@ -234,6 +236,7 @@ class WebSocketProtocol:
                         "message": "Session system prompt synchronized",
                         "scope": "session",
                         "call_id": call_id,
+                        "request_id": request_id,
                         "changed": ["system_prompt"],
                     }
                     logging.info(
@@ -248,6 +251,8 @@ class WebSocketProtocol:
             except Exception as exc:
                 logging.error("❌ Model switch failed: %s", exc)
                 response = {"type": "switch_response", "status": "error", "message": str(exc)}
+            if isinstance(response, dict):
+                response.setdefault("request_id", data.get("request_id"))
             await self._server._send_json(websocket, response)
             return
 

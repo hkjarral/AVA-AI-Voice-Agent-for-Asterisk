@@ -3,6 +3,7 @@ import base64
 import json
 import hashlib
 import re
+from collections import deque
 from uuid import uuid4
 from typing import Callable, Optional, List, Dict, Any
 import websockets
@@ -46,6 +47,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         self.input_mode: str = 'mulaw8k'  # or 'pcm16_8k' or 'pcm16_16k'
         self._pending_tts_responses: Dict[str, asyncio.Future] = {}  # Track pending TTS responses
         self._tts_audio_meta_by_call: Dict[str, Dict[str, Any]] = {}
+        # WebSocket ordering guarantees each tts_audio JSON header arrives
+        # before its binary payload. Keep that header with the next frame so a
+        # late payload from an old call cannot be attributed to a newer call.
+        self._pending_tts_audio_meta = deque()
         self._agent_audio_done_tasks: Dict[str, asyncio.Task] = {}
         # Initial greeting text provided by engine/config (optional)
         self._initial_greeting: Optional[str] = None
@@ -77,6 +82,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Pending switch_model confirmation. The digest is recorded only after
         # the server acks with a successful switch_response (MED-R4 fail-closed).
         self._pending_switch_future: Optional[asyncio.Future] = None
+        self._pending_switch_request_id: Optional[str] = None
+        self._pending_switch_call_id: Optional[str] = None
         self._switch_lock: asyncio.Lock = asyncio.Lock()
         # Per-call tool allowlist (from context.tools). Used to drop hallucinated tool calls.
         self._allowed_tools: set[str] = set()
@@ -998,6 +1005,10 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     )
                 
                 self.websocket = await self._connect_ws()
+                # Session prompt state and binary-frame headers belong to the
+                # old WebSocket. A replacement socket must always re-sync.
+                self._last_system_prompt_digest = None
+                self._pending_tts_audio_meta.clear()
                 self._was_connected = True  # Mark that we successfully connected
                 logger.info("✅ Connected to Local AI Server", elapsed=f"{total_elapsed}s")
 
@@ -1408,11 +1419,12 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         digest = hashlib.sha256(f"{call_id}\0{prompt}".encode("utf-8")).hexdigest()
         if digest == self._last_system_prompt_digest:
             return True  # already in sync from a prior successful send
+        request_id = f"prompt-sync-{uuid4().hex}"
         payload = {
             "type": "switch_model",
             "scope": "session",
             "call_id": call_id,
-            "dry_run": True,  # system prompt does not require reload_models()
+            "request_id": request_id,
             "llm_config": {
                 "system_prompt": prompt,
             },
@@ -1430,6 +1442,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             loop = asyncio.get_running_loop()
             fut: asyncio.Future = loop.create_future()
             self._pending_switch_future = fut
+            self._pending_switch_request_id = request_id
+            self._pending_switch_call_id = call_id
             try:
                 await self.websocket.send(json.dumps(payload))
                 response = await asyncio.wait_for(fut, timeout=timeout_sec)
@@ -1452,6 +1466,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             finally:
                 if self._pending_switch_future is fut:
                     self._pending_switch_future = None
+                    self._pending_switch_request_id = None
+                    self._pending_switch_call_id = None
 
         status = str((response or {}).get("status") or "").lower()
         # "success" and "no_change" both mean the server's prompt now matches
@@ -1894,13 +1910,24 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             async for message in self.websocket:
                 # Handle binary messages (raw audio)
                 if isinstance(message, bytes):
-                    # Safety guard: drop AgentAudio if no active call
-                    if self._active_call_id is None:
-                        logger.debug("Dropping AgentAudio - no active call", message_size=len(message))
+                    if not self._pending_tts_audio_meta:
+                        logger.warning(
+                            "Dropping Local AgentAudio without a preceding tts_audio header",
+                            active_call_id=self._active_call_id,
+                            message_size=len(message),
+                        )
                         continue
-
-                    call_id = self._active_call_id
-                    meta = self._tts_audio_meta_by_call.get(call_id, {})
+                    meta = self._pending_tts_audio_meta.popleft()
+                    call_id = str(meta.get("call_id") or "")
+                    if not call_id or call_id != self._active_call_id:
+                        logger.warning(
+                            "Dropping stale Local AgentAudio",
+                            frame_call_id=call_id or None,
+                            active_call_id=self._active_call_id,
+                            request_id=meta.get("request_id"),
+                            message_size=len(message),
+                        )
+                        continue
                     encoding = self._normalize_audio_encoding(meta.get("encoding"))
                     sample_rate = self._coerce_sample_rate(meta.get("sample_rate") or meta.get("sample_rate_hz"))
                     await self._emit_agent_audio(
@@ -1928,19 +1955,49 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                             # switch_model. Resolve the waiter so the digest is
                             # recorded only on confirmed success (MED-R4).
                             fut = self._pending_switch_future
-                            if fut and not fut.done():
+                            response_request_id = str(data.get("request_id") or "")
+                            response_call_id = str(data.get("call_id") or "")
+                            request_matches = (
+                                response_request_id == self._pending_switch_request_id
+                                or (
+                                    not response_request_id
+                                    and response_call_id == self._pending_switch_call_id
+                                )
+                            )
+                            if (
+                                fut
+                                and not fut.done()
+                                and request_matches
+                                and response_call_id == self._pending_switch_call_id
+                            ):
+                                if not response_request_id:
+                                    logger.info(
+                                        "Accepted legacy Local AI switch_response correlated by call_id",
+                                        call_id=response_call_id,
+                                    )
                                 fut.set_result(data)
+                            else:
+                                logger.warning(
+                                    "Dropping stale or uncorrelated Local AI switch_response",
+                                    response_request_id=response_request_id or None,
+                                    response_call_id=response_call_id or None,
+                                    pending_request_id=self._pending_switch_request_id,
+                                    pending_call_id=self._pending_switch_call_id,
+                                )
                             continue
                         if data.get("type") == "tts_audio":
                             meta_call_id = data.get("call_id") or self._active_call_id
                             if meta_call_id:
-                                self._tts_audio_meta_by_call[meta_call_id] = {
+                                meta = {
+                                    "call_id": str(meta_call_id),
                                     "encoding": self._normalize_audio_encoding(data.get("encoding")),
                                     "sample_rate": self._coerce_sample_rate(data.get("sample_rate_hz") or data.get("sample_rate")),
                                     "byte_length": data.get("byte_length"),
                                     "mode": data.get("mode"),
                                     "request_id": data.get("request_id"),
                                 }
+                                self._tts_audio_meta_by_call[str(meta_call_id)] = meta
+                                self._pending_tts_audio_meta.append(meta)
                             continue
                         # Handle TTS responses
                         if data.get("type") == "tts_response":

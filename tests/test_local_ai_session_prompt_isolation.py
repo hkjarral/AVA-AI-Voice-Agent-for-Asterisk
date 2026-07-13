@@ -50,6 +50,7 @@ async def test_session_scoped_prompts_are_isolated_and_reset_history():
             "type": "switch_model",
             "scope": "session",
             "call_id": "call-a",
+            "request_id": "prompt-a",
             "llm_config": {"system_prompt": "You are agent A"},
         }),
     )
@@ -68,6 +69,7 @@ async def test_session_scoped_prompts_are_isolated_and_reset_history():
     assert session_b.system_prompt == "You are agent B"
     assert session_a.llm_messages == []
     assert ws_a.sent[-1]["status"] == ws_b.sent[-1]["status"] == "success"
+    assert ws_a.sent[-1]["request_id"] == "prompt-a"
 
 
 @pytest.mark.asyncio
