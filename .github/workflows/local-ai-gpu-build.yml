@@ -48,7 +48,14 @@ jobs:
             --build-arg INCLUDE_KROKO_EMBEDDED=false \
             local_ai_server
 
-      - name: Verify packaged imports without requiring a GPU runner
+      - name: Verify packaged dependencies without requiring a GPU runner
         run: |
           docker run --rm local-ai-server-gpu:${{ github.sha }} \
-            python -c "import faster_whisper, kokoro, llama_cpp; print('GPU image dependencies import successfully')"
+            bash -ec '
+              python -c "import faster_whisper, kokoro, importlib.util; assert importlib.util.find_spec(\"llama_cpp\"); print(\"GPU-independent imports succeed and llama_cpp is packaged\")"
+              LLAMA_LIB="$(find /opt/venv/lib/python3.10/site-packages/llama_cpp/lib -name "libllama.so" -print -quit)"
+              test -n "$LLAMA_LIB"
+              ldd "$LLAMA_LIB" | tee /tmp/llama-ldd.txt
+              grep -q "libcuda.so.1" /tmp/llama-ldd.txt
+              echo "llama_cpp shared library is packaged with CUDA linkage"
+            '

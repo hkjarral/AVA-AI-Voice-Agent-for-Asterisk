@@ -88,3 +88,7 @@ def test_gpu_ci_limits_llama_build_to_representative_architecture() -> None:
         REPO_ROOT / ".github" / "workflows" / "local-ai-gpu-build.yml"
     ).read_text(encoding="utf-8")
     assert "--build-arg LLAMA_CUDA_ARCHITECTURES=70" in workflow
+    assert "import faster_whisper, kokoro, importlib.util" in workflow
+    assert "find_spec(\\\"llama_cpp\\\")" in workflow
+    assert 'find /opt/venv/lib/python3.10/site-packages/llama_cpp/lib' in workflow
+    assert 'grep -q "libcuda.so.1"' in workflow
