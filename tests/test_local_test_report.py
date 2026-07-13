@@ -62,6 +62,22 @@ def test_detect_transport_does_not_invent_externalmedia(tmp_path):
     assert REPORT.detect_transport(tmp_path, {}) == "unknown"
 
 
+def test_detect_transport_does_not_use_current_config_for_historical_call(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        REPORT.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: b"RCA_CALL_START call_id=another-call audio_transport=audiosocket",
+    )
+
+    assert REPORT.detect_transport(
+        tmp_path,
+        {"AUDIO_TRANSPORT": "externalmedia"},
+        call_id="historical-call",
+    ) == "unknown"
+
+
 def test_tool_calls_fall_back_to_call_history():
     calls = REPORT.tool_calls_from_history({
         "call_id": "call-1",

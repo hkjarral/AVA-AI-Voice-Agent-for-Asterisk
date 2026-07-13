@@ -184,6 +184,10 @@ def detect_transport(
                     return "ExternalMedia RTP"
         except Exception:
             pass
+        # A call-scoped report must use persisted/runtime evidence. Falling
+        # back to today's config can mislabel a historical call after a
+        # transport change.
+        return "unknown"
 
     t = env.get("AUDIO_TRANSPORT", "").lower()
     if "audiosocket" in t:
