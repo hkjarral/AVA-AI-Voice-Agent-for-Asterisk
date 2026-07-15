@@ -76,6 +76,7 @@ class ContextConfig:
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
     background_music: Optional[str] = None  # MOH class name for background music during calls
+    connection_audio: Optional[str] = None  # Caller-only ARI media while provider/pipeline connects
     
     # Phase tool configuration (Milestone 24)
     pre_call_tools: Optional[List[str]] = None  # Tool names to run after answer, before AI speaks
@@ -270,6 +271,7 @@ class TransportOrchestrator:
                     pipeline=context_dict.get('pipeline'),  # Modular pipeline name (e.g., local_hybrid)
                     tools=context_dict.get('tools'),  # In-call tools for function calling
                     background_music=context_dict.get('background_music'),  # MOH class for background music
+                    connection_audio=context_dict.get('connection_audio'),  # Caller-only setup/ringback media
                     # Phase tool configuration (Milestone 24)
                     pre_call_tools=context_dict.get('pre_call_tools'),
                     post_call_tools=context_dict.get('post_call_tools'),

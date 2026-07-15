@@ -5,6 +5,7 @@ An **agent** is the v1a evolution of a "context": a named configuration bundle t
 - **Provider** — which AI backend handles the call (e.g. `deepgram`, `openai_realtime`, `local_hybrid`)
 - **Prompt** — the system-level instructions and persona
 - **Greeting** — the first thing the agent says when it picks up
+- **Connection audio** — optional caller-only ringback/comfort media while the provider or pipeline initializes
 - **Voice** — per-agent voice override (v7.3.0+): pick a voice for this agent, or leave empty to use the provider's default voice. Multiple agents can share one provider, each with its own voice. See [Voice Selection](VOICE_SELECTION.md)
 - **Audio profile** — telephony format / sample-rate profile (e.g. `telephony_ulaw_8k`)
 - **Tools** — optional callable tools (calendar, HTTP, MCP, etc.)

@@ -6833,6 +6833,11 @@ class Engine:
             except Exception:
                 logger.debug("Attended transfer screening cleanup failed", call_id=call_id, exc_info=True)
 
+            try:
+                await self._stop_connection_audio(session, reason="call-cleanup")
+            except Exception:
+                logger.debug("Connection audio stop failed during cleanup", call_id=call_id, exc_info=True)
+
             # Stop background music if playing (AAVA-89)
             try:
                 await self._stop_background_music(session)
@@ -10481,6 +10486,7 @@ class Engine:
                     code=code,
                     reason=reason,
                 )
+                await self._stop_connection_audio(session, reason="provider-disconnected")
                 try:
                     session.provider_session_active = False
                     await self._save_session(session)
@@ -10593,6 +10599,9 @@ class Engine:
                         )
                 except Exception:
                     logger.debug("Output suppression check failed", call_id=call_id, exc_info=True)
+                # This chunk is accepted and is about to enter the caller-facing
+                # playback path, so the setup tone can hand off without overlap.
+                await self._stop_connection_audio(session, reason="first-provider-audio")
                 # This is real audio that will enter the caller-facing playback
                 # path.  Track it independently from echo/AEC gating state.
                 await self._note_provider_output_start(call_id)
@@ -12398,6 +12407,10 @@ class Engine:
                             async for chunk in pipeline.tts_adapter.synthesize(call_id, greeting, pipeline.tts_options):
                                 if not chunk:
                                     continue
+                                if not any_audio:
+                                    await self._stop_connection_audio(
+                                        session, reason="first-pipeline-greeting-audio"
+                                    )
                                 any_audio = True
                                 await q.put(chunk)
                             try:
@@ -12430,6 +12443,9 @@ class Engine:
                                     attempt=attempt,
                                 )
                             else:
+                                await self._stop_connection_audio(
+                                    session, reason="pipeline-greeting-file-ready"
+                                )
                                 await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts-greeting")
                                 
                                 # AAVA-85: Persist greeting to session history so it appears in email summary
@@ -12476,6 +12492,10 @@ class Engine:
                             exc_info=True,
                         )
                         break
+
+            # No greeting (or a TTS failure that produced no frames) must not
+            # leave an indefinite tone playing after the pipeline is ready.
+            await self._stop_connection_audio(session, reason="pipeline-ready")
 
             # The pipeline and its greeting path are now initialized. If greeting
             # playback is still active, the coordinator keeps the timer paused and
@@ -14108,6 +14128,13 @@ class Engine:
         # Engine._resolve_audio_profile directly do not need to grow this helper.
         await Engine._configure_no_input_watchdog(self, session, no_input_context)
 
+        # GitHub #527: start caller-only connection audio before provider/pipeline
+        # selection can return early. This covers monolithic providers, modular
+        # pipelines, and pre-call tools through one engine-owned lifecycle.
+        connection_audio = getattr(no_input_context, "connection_audio", None) if no_input_context else None
+        if connection_audio:
+            await Engine._start_connection_audio(self, session, connection_audio)
+
         # Thread per-agent post-call email overrides onto the session (H5) here,
         # before any provider early-return. The monolithic path below also resolves
         # these from transport.context, but pipeline providers are not in
@@ -14362,6 +14389,112 @@ class Engine:
                 exc_info=True,
             )
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # Connection Audio (GitHub #527)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_connection_audio_uri(media_uri: Any) -> Optional[str]:
+        """Return a safe ARI media URI, treating bare values as Asterisk sounds."""
+        value = str(media_uri or "").strip()
+        if not value:
+            return None
+        # Connection media is operator-managed Asterisk-local content. Reject
+        # nested network URLs so this setting cannot become an ARI-side fetch.
+        if "://" in value:
+            logger.warning("Remote connection audio URI is not allowed", media_uri=value)
+            return None
+        allowed_prefixes = ("tone:", "sound:", "recording:")
+        if value.startswith(allowed_prefixes):
+            return value
+        # Keep the YAML/UI shorthand friendly while restricting playback to
+        # documented ARI media types. For example, custom/please-wait becomes
+        # sound:custom/please-wait.
+        if ":" not in value:
+            return f"sound:{value}"
+        logger.warning("Unsupported connection audio URI", media_uri=value)
+        return None
+
+    async def _start_connection_audio(self, session: CallSession, media_uri: Any) -> None:
+        """Play setup/ringback media only to the caller while the AI initializes."""
+        if getattr(session, "connection_audio_playback_id", None):
+            return
+        channel_id = getattr(session, "caller_channel_id", None)
+        normalized_uri = Engine._normalize_connection_audio_uri(media_uri)
+        if not channel_id or not normalized_uri:
+            return
+
+        playback_id = f"connection-audio-{uuid.uuid4().hex}"
+        try:
+            started = await self.ari_client.play_media_on_channel_with_id(
+                channel_id, normalized_uri, playback_id
+            )
+            if not started:
+                logger.warning(
+                    "Connection audio failed to start",
+                    call_id=session.call_id,
+                    channel_id=channel_id,
+                    media_uri=normalized_uri,
+                )
+                return
+            session.connection_audio_playback_id = playback_id
+            session.connection_audio_media_uri = normalized_uri
+            session.connection_audio_started_ts = time.time()
+            await self._save_session(session)
+            logger.info(
+                "Connection audio started",
+                call_id=session.call_id,
+                channel_id=channel_id,
+                media_uri=normalized_uri,
+                playback_id=playback_id,
+            )
+        except Exception:
+            logger.warning(
+                "Connection audio failed to start",
+                call_id=getattr(session, "call_id", None),
+                channel_id=channel_id,
+                media_uri=normalized_uri,
+                exc_info=True,
+            )
+
+    async def _stop_connection_audio(self, session: CallSession, *, reason: str) -> None:
+        """Stop connection audio once caller-facing AI audio can take over."""
+        playback_id = getattr(session, "connection_audio_playback_id", None)
+        if not playback_id:
+            return
+
+        # Clear first so concurrent first-audio events remain idempotent even while
+        # the ARI DELETE request is in flight.
+        media_uri = getattr(session, "connection_audio_media_uri", None)
+        started_ts = float(getattr(session, "connection_audio_started_ts", 0.0) or 0.0)
+        session.connection_audio_playback_id = None
+        session.connection_audio_media_uri = None
+        session.connection_audio_started_ts = 0.0
+        try:
+            await self._save_session(session)
+        except Exception:
+            logger.debug("Failed to persist connection audio stop", call_id=session.call_id, exc_info=True)
+
+        try:
+            await self.ari_client.stop_playback(playback_id)
+        except Exception:
+            # The channel or a finite custom sound may already have ended.
+            logger.debug(
+                "Connection audio playback already stopped",
+                call_id=session.call_id,
+                playback_id=playback_id,
+                exc_info=True,
+            )
+        elapsed_ms = int(max(0.0, time.time() - started_ts) * 1000) if started_ts else None
+        logger.info(
+            "Connection audio stopped",
+            call_id=session.call_id,
+            media_uri=media_uri,
+            playback_id=playback_id,
+            reason=reason,
+            elapsed_ms=elapsed_ms,
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Background Music (AAVA-89)
     # ─────────────────────────────────────────────────────────────────────────
@@ -15761,6 +15894,20 @@ class Engine:
                     await provider.play_initial_greeting(call_id)
             except Exception:
                 logger.debug("Provider initial greeting failed or unsupported", exc_info=True)
+            # Providers with no configured greeting will never emit a first
+            # AgentAudio event, so hand off as soon as their session is ready.
+            cfg = getattr(provider, "config", None)
+            if isinstance(cfg, dict):
+                configured_greeting = cfg.get("greeting") or cfg.get("initial_greeting")
+            else:
+                configured_greeting = (
+                    getattr(cfg, "greeting", None)
+                    or getattr(cfg, "initial_greeting", None)
+                    or getattr(provider, "_initial_greeting", None)
+                )
+            configured_greeting = provider_context.get("greeting") or configured_greeting
+            if not str(configured_greeting or "").strip():
+                await self._stop_connection_audio(session, reason="provider-ready-no-greeting")
             session.provider_session_active = True
             # Ensure upstream capture is enabled for real-time providers when not gated
             try:
@@ -15822,6 +15969,7 @@ class Engine:
 
         session.provider_failure_action_started = True
         await self._save_session(session)
+        await self._stop_connection_audio(session, reason="provider-start-failed")
         on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
 
         if on_failure == "leave_open":

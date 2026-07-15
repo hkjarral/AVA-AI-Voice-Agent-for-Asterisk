@@ -18,13 +18,14 @@ export interface AgentToolState {
     disableGlobalInCall: string[];    // extra.disable_global_in_call_tools
     disableGlobalPostCall: string[];  // extra.disable_global_post_call_tools
     backgroundMusic: string;          // extra.background_music
+    connectionAudio: string;          // extra.connection_audio (Asterisk media URI)
     noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
 }
 
 const OWNED_EXTRA_KEYS = [
-    'pipeline', 'background_music', 'pre_call_tools', 'post_call_tools',
+    'pipeline', 'background_music', 'connection_audio', 'pre_call_tools', 'post_call_tools',
     'in_call_http_tools', 'disable_global_pre_call_tools',
     'disable_global_in_call_tools', 'disable_global_post_call_tools',
     'no_input',
@@ -118,6 +119,7 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         disableGlobalInCall: asStrArray(extra['disable_global_in_call_tools']),
         disableGlobalPostCall: asStrArray(extra['disable_global_post_call_tools']),
         backgroundMusic: asString(extra['background_music']),
+        connectionAudio: asString(extra['connection_audio']),
         noInput: asObject(extra['no_input']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
@@ -139,6 +141,7 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
 
     setStr('pipeline', state.pipeline);
     setStr('background_music', state.backgroundMusic);
+    setStr('connection_audio', state.connectionAudio);
     setArr('pre_call_tools', state.preCallTools);
     setArr('post_call_tools', state.postCallTools);
     if (!state.inCallHttpToolsIsObject) setArr('in_call_http_tools', state.inCallHttpTools);

@@ -545,6 +545,47 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     />
                 </div>
 
+                <div className="mb-4 border border-border rounded-lg bg-card/50 p-3">
+                    <div className="flex items-center justify-between gap-4">
+                        <div>
+                            <div className="flex items-center gap-1.5">
+                                <label htmlFor="agent-connection-audio-enabled" className="text-sm font-medium">
+                                    Play ringback while connecting
+                                </label>
+                                <HelpTooltip content="Plays caller-only audio after answer while the selected provider or pipeline initializes, then stops it when the greeting audio is ready. It is not sent to the AI audio leg." />
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-1">
+                                Avoids silent wait time during provider and pipeline startup.
+                            </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                                id="agent-connection-audio-enabled"
+                                type="checkbox"
+                                className="sr-only peer"
+                                checked={Boolean(toolState.connectionAudio)}
+                                onChange={(e) => setToolState((s) => ({
+                                    ...s,
+                                    connectionAudio: e.target.checked ? (s.connectionAudio || 'tone:ring') : '',
+                                }))}
+                            />
+                            <div className="w-9 h-5 bg-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-background after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                        </label>
+                    </div>
+                    {toolState.connectionAudio && (
+                        <div className="mt-3">
+                            <FormInput
+                                id="agent-connection-audio-uri"
+                                label="Connection audio URI"
+                                value={toolState.connectionAudio}
+                                onChange={(e) => setToolState((s) => ({ ...s, connectionAudio: e.target.value }))}
+                                placeholder="tone:ring"
+                                tooltip="Asterisk ARI media URI. tone:ring repeats until the greeting starts. You can also use a local sound such as sound:custom/please-wait or add a tone zone, for example tone:ring;tonezone=fr."
+                            />
+                        </div>
+                    )}
+                </div>
+
                 <div className="mb-4">
                     <FormLabel htmlFor="agent-prompt" tooltip="System prompt passed to the LLM. Use {company} as a placeholder for the business name.">
                         Prompt

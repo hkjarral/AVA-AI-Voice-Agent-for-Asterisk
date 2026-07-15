@@ -14,7 +14,7 @@ def db(tmp_path):
     c.execute("""INSERT INTO agents (id,slug,display_name,provider,prompt,greeting,audio_profile,
                  tools_json,extra_json,is_active,is_default,is_operator_managed,created_at,updated_at)
                  VALUES ('1','sales','Sales','openai_realtime','sys prompt','hi','ulaw8k',
-                 '["transfer"]','{"pipeline":"local_hybrid","pre_call_tools":["enrich"]}',1,1,1,'t','t')""")
+                 '["transfer"]','{"pipeline":"local_hybrid","connection_audio":"tone:ring","pre_call_tools":["enrich"]}',1,1,1,'t','t')""")
     c.commit(); c.close()
     return str(p)
 
@@ -24,6 +24,7 @@ def test_resolve_builds_context_config(db):
     assert cc.prompt == "sys prompt" and cc.provider == "openai_realtime"
     assert cc.profile == "ulaw8k" and cc.tools == ["transfer"]
     assert cc.pipeline == "local_hybrid" and cc.pre_call_tools == ["enrich"]
+    assert cc.connection_audio == "tone:ring"
 
 def test_resolve_unknown_returns_none(db):
     assert EngineAgentStore(db_path=db).resolve("nope") is None
