@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -33,11 +34,21 @@ const (
 	rebuildAll  rebuildMode = "all"
 )
 
+type localChangesPolicy string
+
+const (
+	localChangesAsk       localChangesPolicy = "ask"
+	localChangesRetain    localChangesPolicy = "retain"
+	localChangesOverwrite localChangesPolicy = "overwrite"
+	localChangesAbort     localChangesPolicy = "abort"
+)
+
 var (
 	updateRemote         string
 	updateRef            string
 	updateNoStash        bool
 	updateStashUntracked bool
+	updateLocalChanges   string
 	updateRebuild        string
 	updateForceRecreate  bool
 	updateSkipCheck      bool
@@ -93,6 +104,7 @@ func init() {
 	updateCmd.Flags().StringVar(&updateRef, "ref", "main", "git ref to update to (branch like main, or tag like v6.2.0)")
 	updateCmd.Flags().BoolVar(&updateNoStash, "no-stash", false, "abort if repo has local changes instead of stashing")
 	updateCmd.Flags().BoolVar(&updateStashUntracked, "stash-untracked", false, "include untracked files when stashing (does not include ignored files)")
+	updateCmd.Flags().StringVar(&updateLocalChanges, "local-changes", string(localChangesAsk), "how to handle tracked local changes: ask|retain|overwrite|abort")
 	updateCmd.Flags().StringVar(&updateRebuild, "rebuild", string(rebuildAuto), "rebuild mode: auto|none|all")
 	updateCmd.Flags().BoolVar(&updateForceRecreate, "force-recreate", false, "force recreate containers during docker compose up")
 	updateCmd.Flags().BoolVar(&updateSkipCheck, "skip-check", false, "skip running agent check after update")
@@ -138,7 +150,9 @@ type updatePlanReport struct {
 	Dirty            bool              `json:"dirty"`
 	NoStash          bool              `json:"no_stash"`
 	StashUntracked   bool              `json:"stash_untracked"`
+	LocalChanges     string            `json:"local_changes"`
 	WouldStash       bool              `json:"would_stash"`
+	WouldOverwrite   bool              `json:"would_overwrite"`
 	WouldAbort       bool              `json:"would_abort"`
 	RebuildMode      string            `json:"rebuild_mode"`
 	ComposeChanged   bool              `json:"compose_changed"`
@@ -148,6 +162,9 @@ type updatePlanReport struct {
 	ChangedFileCount int               `json:"changed_file_count"`
 	ChangedFiles     []string          `json:"changed_files,omitempty"`
 	FilesTruncated   bool              `json:"changed_files_truncated,omitempty"`
+	LocalFileCount   int               `json:"local_file_count"`
+	LocalFiles       []string          `json:"local_files,omitempty"`
+	LocalFilesTrunc  bool              `json:"local_files_truncated,omitempty"`
 	Warnings         []string          `json:"warnings,omitempty"`
 }
 
@@ -291,19 +308,35 @@ func runUpdate() (retErr error) {
 	}
 
 	printUpdateStep("Checking working tree")
-	dirty, err := gitIsDirty(updateStashUntracked)
+	localFiles, err := gitDirtyFiles(updateStashUntracked)
+	if err != nil {
+		return err
+	}
+	dirty := len(localFiles) > 0
+	localPolicy, err := resolveLocalChangesPolicy(dirty, localFiles)
 	if err != nil {
 		return err
 	}
 	if dirty {
-		if updateNoStash {
-			return errors.New("working tree has local changes; re-run without --no-stash or commit your changes first")
-		}
-		printUpdateInfo("Working tree is dirty; stashing changes")
-		if err := gitStash(ctx, updateStashUntracked); err != nil {
-			return err
+		switch localPolicy {
+		case localChangesAbort:
+			return errors.New("working tree has local changes; update aborted by local-change policy")
+		case localChangesOverwrite:
+			printUpdateInfo("Working tree is dirty; discarding tracked local code changes after backing up operator config")
+			if err := gitDiscardTrackedChanges(); err != nil {
+				return err
+			}
+		case localChangesRetain:
+			printUpdateInfo("Working tree is dirty; stashing local changes for restore after update")
+			if err := gitStash(ctx, updateStashUntracked); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("invalid local-change policy %q", localPolicy)
 		}
 	}
+
+	restoreOperatorConfigAfterMerge := dirty && localPolicy == localChangesOverwrite
 
 	if branchMismatch {
 		printUpdateStep(fmt.Sprintf("Checking out %s", updateRef))
@@ -328,10 +361,17 @@ func runUpdate() (retErr error) {
 		}
 	}
 
+	if restoreOperatorConfigAfterMerge {
+		printUpdateStep("Restoring operator config")
+		if err := restoreOperatorConfigFromBackup(ctx); err != nil {
+			return err
+		}
+	}
+
 	if ctx.stashed {
 		printUpdateStep("Restoring stashed changes")
 		if err := gitStashPop(ctx); err != nil {
-			printUpdateInfo("WARN: stash pop failed; recovering operator config from update backup: %v", err)
+			printUpdateInfo("WARN: stash pop failed; preserving local code changes in git stash and recovering operator config from update backup: %v", err)
 			if recoverErr := recoverFromStashConflict(ctx); recoverErr != nil {
 				return fmt.Errorf("stash pop failed and automatic recovery failed; local changes are preserved in git stash and require manual resolution: %w", recoverErr)
 			}
@@ -393,9 +433,17 @@ func acquireUpdateLock(repoRoot string) (func(), error) {
 }
 
 func runUpdatePlan(ctx *updateContext) error {
-	dirty, err := gitIsDirty(updateStashUntracked)
+	localFiles, err := gitDirtyFiles(updateStashUntracked)
 	if err != nil {
 		return err
+	}
+	dirty := len(localFiles) > 0
+	localPolicy, err := requestedLocalChangesPolicy()
+	if err != nil {
+		return err
+	}
+	if updateNoStash && localPolicy == localChangesAsk {
+		localPolicy = localChangesAbort
 	}
 
 	currentBranch, _ := gitCurrentBranch()
@@ -443,8 +491,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		ctx.changedFiles = nil
 	}
 
-	wouldStash := dirty && !updateNoStash
-	wouldAbort := dirty && updateNoStash
+	wouldStash := dirty && localPolicy == localChangesRetain
+	wouldOverwrite := dirty && localPolicy == localChangesOverwrite
+	wouldAbort := dirty && localPolicy == localChangesAbort
 
 	relation := "equal"
 	if codeChanged {
@@ -465,6 +514,12 @@ func runUpdatePlan(ctx *updateContext) error {
 		files = files[:limit]
 		truncated = true
 	}
+	localPreview := localFiles
+	localTruncated := false
+	if len(localPreview) > limit {
+		localPreview = localPreview[:limit]
+		localTruncated = true
+	}
 
 	rep := &updatePlanReport{
 		RepoRoot:         ctx.repoRoot,
@@ -482,7 +537,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		Dirty:            dirty,
 		NoStash:          updateNoStash,
 		StashUntracked:   updateStashUntracked,
+		LocalChanges:     string(localPolicy),
 		WouldStash:       wouldStash,
+		WouldOverwrite:   wouldOverwrite,
 		WouldAbort:       wouldAbort,
 		RebuildMode:      strings.ToLower(strings.TrimSpace(updateRebuild)),
 		ComposeChanged:   ctx.composeChanged,
@@ -492,6 +549,9 @@ func runUpdatePlan(ctx *updateContext) error {
 		ChangedFileCount: len(ctx.changedFiles),
 		ChangedFiles:     files,
 		FilesTruncated:   truncated,
+		LocalFileCount:   len(localFiles),
+		LocalFiles:       localPreview,
+		LocalFilesTrunc:  localTruncated,
 	}
 	if len(ctx.skippedServices) > 0 {
 		rep.SkippedServices = ctx.skippedServices
@@ -1111,6 +1171,14 @@ func gitRevParse(ref string) (string, error) {
 }
 
 func gitIsDirty(includeUntracked bool) (bool, error) {
+	files, err := gitDirtyFiles(includeUntracked)
+	if err != nil {
+		return false, err
+	}
+	return len(files) > 0, nil
+}
+
+func gitDirtyFiles(includeUntracked bool) ([]string, error) {
 	args := []string{"status", "--porcelain"}
 	// Default behavior: ignore untracked files so operator backup artifacts (e.g., *.bak, .preflight-ok)
 	// don't force a stash attempt on every update run. Use --stash-untracked to include them.
@@ -1121,9 +1189,100 @@ func gitIsDirty(includeUntracked bool) (bool, error) {
 	}
 	out, err := runGitCmd(args...)
 	if err != nil {
-		return false, fmt.Errorf("git status failed: %w", err)
+		return nil, fmt.Errorf("git status failed: %w", err)
 	}
-	return strings.TrimSpace(out) != "", nil
+	lines := []string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 3 {
+			lines = append(lines, strings.TrimSpace(line[3:]))
+		} else {
+			lines = append(lines, line)
+		}
+	}
+	sort.Strings(lines)
+	return lines, nil
+}
+
+func requestedLocalChangesPolicy() (localChangesPolicy, error) {
+	p := strings.ToLower(strings.TrimSpace(updateLocalChanges))
+	if p == "" {
+		p = string(localChangesAsk)
+	}
+	switch localChangesPolicy(p) {
+	case localChangesAsk, localChangesRetain, localChangesOverwrite, localChangesAbort:
+		return localChangesPolicy(p), nil
+	default:
+		return "", fmt.Errorf("invalid --local-changes value %q (expected ask, retain, overwrite, or abort)", updateLocalChanges)
+	}
+}
+
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func resolveLocalChangesPolicy(dirty bool, localFiles []string) (localChangesPolicy, error) {
+	policy, err := requestedLocalChangesPolicy()
+	if err != nil {
+		return "", err
+	}
+	if updateNoStash {
+		if policy != localChangesAsk && policy != localChangesAbort {
+			return "", errors.New("--no-stash cannot be combined with --local-changes=retain or --local-changes=overwrite")
+		}
+		return localChangesAbort, nil
+	}
+	if !dirty || policy != localChangesAsk {
+		return policy, nil
+	}
+	if !stdinIsTerminal() {
+		return "", errors.New("working tree has local changes; re-run with --local-changes=retain, --local-changes=overwrite, or --local-changes=abort")
+	}
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Local tracked changes were found before updating:")
+	limit := 20
+	for i, f := range localFiles {
+		if i >= limit {
+			fmt.Fprintf(os.Stderr, "  ... and %d more\n", len(localFiles)-limit)
+			break
+		}
+		fmt.Fprintf(os.Stderr, "  %s\n", f)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Choose how to handle these changes:")
+	fmt.Fprintln(os.Stderr, "  r) retain    stash and reapply them after the update (may conflict)")
+	fmt.Fprintln(os.Stderr, "  o) overwrite discard tracked local code edits; restore operator config from backup")
+	fmt.Fprintln(os.Stderr, "  a) abort     stop before changing the checkout")
+	fmt.Fprint(os.Stderr, "Selection [a]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	switch answer {
+	case "r", "retain":
+		return localChangesRetain, nil
+	case "o", "overwrite":
+		return localChangesOverwrite, nil
+	case "", "a", "abort":
+		return localChangesAbort, nil
+	default:
+		return "", fmt.Errorf("unrecognized local-change selection %q", answer)
+	}
+}
+
+func gitDiscardTrackedChanges() error {
+	if _, err := runGitCmd("reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("git reset --hard HEAD failed while discarding tracked local changes: %w", err)
+	}
+	return nil
 }
 
 func gitStash(ctx *updateContext, includeUntracked bool) error {
@@ -1164,22 +1323,23 @@ func gitStashPop(ctx *updateContext) error {
 }
 
 // recoverFromStashConflict handles a failed git stash pop by resetting the conflicted
-// working tree, dropping the failed stash, and restoring operator-owned config files
-// from the pre-update backup so the update can continue.
+// working tree and restoring operator-owned config files from the pre-update backup.
+// The failed stash entry is intentionally kept so local code edits are not lost.
 func recoverFromStashConflict(ctx *updateContext) error {
 	// 1. Reset the conflicted working tree to the (already merged) HEAD.
-	if _, err := runGitCmd("checkout", "--", "."); err != nil {
-		return fmt.Errorf("git checkout -- . failed: %w", err)
+	if err := gitDiscardTrackedChanges(); err != nil {
+		return err
 	}
 
-	// 2. Drop the stash entry that caused the conflict.
-	//    After a failed `stash pop`, the stash entry is preserved at stash@{0}.
-	if _, err := runGitCmd("stash", "drop"); err != nil {
-		// Non-fatal: the stash may have been consumed on some git versions.
-		printUpdateInfo("Note: could not drop stash (may already be consumed): %v", err)
+	// 2. Restore operator config from the backup created earlier in this run.
+	if err := restoreOperatorConfigFromBackup(ctx); err != nil {
+		return err
 	}
+	printUpdateInfo("Local code changes remain in git stash; inspect with `git stash list`")
+	return nil
+}
 
-	// 3. Restore operator config from the backup created earlier in this run.
+func restoreOperatorConfigFromBackup(ctx *updateContext) error {
 	if ctx.backupDir == "" {
 		return errors.New("no backup directory available for recovery")
 	}

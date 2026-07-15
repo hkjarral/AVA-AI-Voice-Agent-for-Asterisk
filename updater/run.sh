@@ -8,6 +8,7 @@ INCLUDE_UI="${AAVA_UPDATE_INCLUDE_UI:-false}" # true|false
 REMOTE="${AAVA_UPDATE_REMOTE:-origin}"
 REF="${AAVA_UPDATE_REF:-main}"
 CHECKOUT="${AAVA_UPDATE_CHECKOUT:-false}" # true|false
+LOCAL_CHANGES="${AAVA_UPDATE_LOCAL_CHANGES:-ask}" # ask|retain|overwrite|abort
 ROLLBACK_FROM_JOB="${AAVA_UPDATE_ROLLBACK_FROM_JOB:-}"
 FORCE_ACTIVE_CALLS="${AAVA_UPDATE_FORCE_ACTIVE_CALLS:-false}" # true|false
 UPDATE_CLI_HOST="${AAVA_UPDATE_UPDATE_CLI_HOST:-true}" # true|false
@@ -382,9 +383,9 @@ run_plan() {
   install_agent_if_needed
 
   if [ -x "${BUILTIN_AGENT}" ]; then
-    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}"
+    exec "${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}"
   fi
-  exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}"
+  exec "${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}"
 }
 
 run_update() {
@@ -412,9 +413,9 @@ run_update() {
   # Capture a plan snapshot for history/summary (best-effort).
   plan_json=""
   if [ -x "${BUILTIN_AGENT}" ]; then
-    plan_json="$("${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>/dev/null || true)"
+    plan_json="$("${BUILTIN_AGENT}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>/dev/null || true)"
   else
-    plan_json="$("${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" 2>/dev/null || true)"
+    plan_json="$("${AGENT_BIN}" update --self-update=false --plan --plan-json --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>/dev/null || true)"
   fi
 
   # Merge metadata into job state so the UI can show an actionable summary even if logs are pruned.
@@ -424,6 +425,7 @@ run_update() {
     --arg remote "${REMOTE}" \
     --arg repo_root "${PROJECT_ROOT}" \
     --arg checkout "${CHECKOUT}" \
+    --arg local_changes "${LOCAL_CHANGES}" \
     --arg backup_dir_rel "${BACKUP_DIR_REL}" \
     --arg pre_update_branch "${pre_update_branch}" \
     --arg pre_update_sha "${pre_sha}" \
@@ -435,6 +437,7 @@ run_update() {
       ref: $ref,
       remote: $remote,
       checkout: ($checkout == "true"),
+      local_changes: $local_changes,
       backup_dir_rel: $backup_dir_rel,
       pre_update_branch: $pre_update_branch,
       pre_update_sha: (if ($pre_update_sha|length) == 0 then null else $pre_update_sha end),
@@ -455,9 +458,9 @@ run_update() {
 
   set +e
   if [ -x "${BUILTIN_AGENT}" ]; then
-    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${BUILTIN_AGENT}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>&1 | tee "${JOB_LOG_PATH}"
   else
-    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" 2>&1 | tee "${JOB_LOG_PATH}"
+    "${AGENT_BIN}" update -v --self-update=false --remote="${REMOTE}" --ref="${REF}" --checkout="${CHECKOUT}" --backup-id="${JOB_ID}" --include-ui="${INCLUDE_UI}" --local-changes="${LOCAL_CHANGES}" 2>&1 | tee "${JOB_LOG_PATH}"
   fi
   code="${PIPESTATUS[0]}"
   set -e

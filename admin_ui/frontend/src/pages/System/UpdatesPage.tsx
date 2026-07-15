@@ -31,7 +31,9 @@ interface UpdatePlan {
   dirty: boolean;
   no_stash: boolean;
   stash_untracked: boolean;
+  local_changes?: 'ask' | 'retain' | 'overwrite' | 'abort' | string;
   would_stash: boolean;
+  would_overwrite?: boolean;
   would_abort: boolean;
   rebuild_mode: string;
   compose_changed: boolean;
@@ -41,6 +43,9 @@ interface UpdatePlan {
   changed_file_count: number;
   changed_files?: string[];
   changed_files_truncated?: boolean;
+  local_file_count?: number;
+  local_files?: string[];
+  local_files_truncated?: boolean;
   warnings?: string[];
   active_calls?: number | null;
   active_calls_reachable?: boolean;
@@ -109,6 +114,7 @@ const UpdatesPage = () => {
   const [fullLogLoading, setFullLogLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [localChangesPolicy, setLocalChangesPolicy] = useState<'retain' | 'overwrite' | 'abort' | ''>('');
   const [updaterImageStatus, setUpdaterImageStatus] = useState<UpdaterImageStatus | null>(null);
 
   const [history, setHistory] = useState<any[]>([]);
@@ -137,6 +143,7 @@ const UpdatesPage = () => {
   const planHasActiveCalls = typeof plan?.active_calls === 'number' && plan.active_calls > 0;
   const activeCallCheckUnavailable = plan?.active_calls_reachable === false;
   const activeCallOverrideRequired = planHasActiveCalls || activeCallCheckUnavailable;
+  const localChangeChoiceRequired = Boolean(plan?.dirty && (!localChangesPolicy || localChangesPolicy === 'abort'));
   const updaterImageVisible =
     !!updaterImageStatus &&
     updaterImageStatus.status !== 'idle' &&
@@ -165,6 +172,7 @@ const UpdatesPage = () => {
     setRunError(null);
     setStatusError(null);
     setBranchesError(null);
+    setLocalChangesPolicy('');
 
     setStatusLoading(true);
     try {
@@ -303,9 +311,12 @@ const UpdatesPage = () => {
     setPlanError(null);
     try {
       const res = await axios.get('/api/system/updates/plan', {
-        params: { ref: ref || targetRef, include_ui: includeUI, checkout: targetCheckout },
+        params: { ref: ref || targetRef, include_ui: includeUI, checkout: targetCheckout, local_changes: localChangesPolicy || 'ask' },
       });
       setPlan(res.data.plan);
+      if (!res.data.plan?.dirty) {
+        setLocalChangesPolicy('retain');
+      }
     } catch (err: any) {
       setPlanError(err.response?.data?.detail || err.message || 'Failed to compute update plan');
     } finally {
@@ -350,6 +361,14 @@ const UpdatesPage = () => {
       setRunError('Wait for the preview to load, then proceed.');
       return;
     }
+    if (plan.dirty && !localChangesPolicy) {
+      setRunError('Choose how to handle local code changes before starting the update.');
+      return;
+    }
+    if (plan.dirty && localChangesPolicy === 'abort') {
+      setRunError('Update not started. Local code changes are still present.');
+      return;
+    }
 
     const rebuild = plan.services_rebuild?.length ? plan.services_rebuild.join(', ') : 'none';
     const restart = plan.services_restart?.length ? plan.services_restart.join(', ') : 'none';
@@ -360,9 +379,18 @@ const UpdatesPage = () => {
             .join(', ')
         : 'none';
 
+    const localChangeText =
+      plan.dirty
+        ? localChangesPolicy === 'retain'
+          ? 'retain local tracked changes (stash and reapply; may conflict)'
+          : localChangesPolicy === 'overwrite'
+            ? 'overwrite local tracked code changes and restore operator config from backup'
+            : 'abort if local tracked changes are still present'
+        : 'none detected';
+
     const ok = await confirm({
       title: 'Proceed with Update?',
-      description: `Target: ${targetRef || 'unknown'}\nMode: ${targetMode === 'stable' ? 'stable release' : targetMode === 'main' ? 'main hotfixes' : 'advanced branch'}\nUpdate UI: ${includeUI ? 'yes' : 'no'}\nUpdate CLI: ${updateCliHost ? 'yes' : 'no'}\nWill rebuild: ${rebuild}\nWill restart: ${restart}\nSkipped services: ${skipped}\nFiles changed: ${plan.changed_file_count ?? 'unknown'}\nActive calls: ${typeof plan.active_calls === 'number' ? plan.active_calls : 'unknown'}${forceActiveCalls ? ' (override enabled)' : ''}\n\nThe updater will stash local changes first. Services may restart during update.`,
+      description: `Target: ${targetRef || 'unknown'}\nMode: ${targetMode === 'stable' ? 'stable release' : targetMode === 'main' ? 'main hotfixes' : 'advanced branch'}\nUpdate UI: ${includeUI ? 'yes' : 'no'}\nUpdate CLI: ${updateCliHost ? 'yes' : 'no'}\nLocal changes: ${localChangeText}\nWill rebuild: ${rebuild}\nWill restart: ${restart}\nSkipped services: ${skipped}\nFiles changed: ${plan.changed_file_count ?? 'unknown'}\nActive calls: ${typeof plan.active_calls === 'number' ? plan.active_calls : 'unknown'}${forceActiveCalls ? ' (override enabled)' : ''}\n\nServices may restart during update.`,
       confirmText: 'Start Update',
       variant: 'default'
     });
@@ -373,6 +401,7 @@ const UpdatesPage = () => {
         include_ui: includeUI,
         ref: targetRef,
         checkout: targetCheckout,
+        local_changes: localChangesPolicy || 'abort',
         update_cli_host: updateCliHost,
         cli_install_path: cliInstallPath.trim() || null,
         force_active_calls: forceActiveCalls,
@@ -391,7 +420,7 @@ const UpdatesPage = () => {
     if (!targetRef) return;
     fetchPlan(targetRef);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialized, includeUI, targetRef, targetCheckout]);
+  }, [initialized, includeUI, targetRef, targetCheckout, localChangesPolicy]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -748,6 +777,62 @@ const UpdatesPage = () => {
                 </div>
               ) : null}
 
+              {plan.dirty ? (
+                <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
+                  <div className="font-medium">Local code changes detected</div>
+                  <div className="mt-1 text-muted-foreground">
+                    Choose whether the updater should keep tracked local edits or replace them with the release code. Operator config is backed up before either path.
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="aava-local-changes"
+                        checked={localChangesPolicy === 'retain'}
+                        onChange={() => setLocalChangesPolicy('retain')}
+                        className="mt-0.5 rounded border-border"
+                      />
+                      <span>
+                        <span className="font-medium">Retain local changes</span>
+                        <span className="block text-muted-foreground">Stash and reapply tracked edits after the update. This can still conflict if the release changed the same code.</span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="aava-local-changes"
+                        checked={localChangesPolicy === 'overwrite'}
+                        onChange={() => setLocalChangesPolicy('overwrite')}
+                        className="mt-0.5 rounded border-border"
+                      />
+                      <span>
+                        <span className="font-medium">Overwrite local code changes</span>
+                        <span className="block text-muted-foreground">Discard tracked source-code edits and restore operator config from the pre-update backup.</span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="aava-local-changes"
+                        checked={localChangesPolicy === 'abort'}
+                        onChange={() => setLocalChangesPolicy('abort')}
+                        className="mt-0.5 rounded border-border"
+                      />
+                      <span>
+                        <span className="font-medium">Abort update</span>
+                        <span className="block text-muted-foreground">Stop before changing the checkout so the local edits can be reviewed manually.</span>
+                      </span>
+                    </label>
+                  </div>
+                  {plan.local_files?.length ? (
+                    <pre className="mt-3 max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/70 p-2 font-mono">
+                      {plan.local_files.join('\n')}
+                      {plan.local_files_truncated ? '\n...(truncated)' : ''}
+                    </pre>
+                  ) : null}
+                </div>
+              ) : null}
+
               {activeCallOverrideRequired ? (
                 <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-700 dark:text-yellow-300">
                   <div className="font-medium">
@@ -804,7 +889,7 @@ const UpdatesPage = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={runUpdate}
-              disabled={running || !initialized || !plan || (activeCallOverrideRequired && !forceActiveCalls)}
+              disabled={running || !initialized || !plan || localChangeChoiceRequired || (activeCallOverrideRequired && !forceActiveCalls)}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               title="Proceed"
             >

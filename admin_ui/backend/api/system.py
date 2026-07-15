@@ -3479,6 +3479,16 @@ def _validate_cli_install_path(path: Optional[str]) -> Optional[str]:
     return p
 
 
+def _validate_update_local_changes(value: Optional[str]) -> str:
+    mode = (value or "ask").strip().lower()
+    if mode not in {"ask", "retain", "overwrite", "abort"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid local changes policy. Use ask, retain, overwrite, or abort.",
+        )
+    return mode
+
+
 def _updates_jobs_dir() -> str:
     project_root = os.getenv("PROJECT_ROOT", "/app/project")
     return os.path.join(project_root, ".agent", "updates", "jobs")
@@ -4934,13 +4944,19 @@ async def updates_branches(build_updater: bool = False):
 
 
 @router.get("/updates/plan", response_model=UpdatePlanResponse)
-async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bool = True):
+async def updates_plan(
+    ref: str = "main",
+    include_ui: bool = False,
+    checkout: bool = True,
+    local_changes: str = "ask",
+):
     """
     Return a pre-update plan from `agent update --plan --plan-json`.
     """
     host_root = _project_host_root_from_admin_ui_container()
 
     ref = _validate_git_ref(ref)
+    local_changes = _validate_update_local_changes(local_changes)
     env = {
         "PROJECT_ROOT": host_root,
         "AAVA_UPDATE_MODE": "plan",
@@ -4948,6 +4964,7 @@ async def updates_plan(ref: str = "main", include_ui: bool = False, checkout: bo
         "AAVA_UPDATE_REMOTE": "origin",
         "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if checkout else "false",
+        "AAVA_UPDATE_LOCAL_CHANGES": local_changes,
     }
     # Capture stdout only so JSON output isn't polluted by installer/self-update hints on stderr.
     code, out = await asyncio.to_thread(
@@ -4981,6 +4998,7 @@ class UpdateRunRequest(BaseModel):
     include_ui: bool = False
     ref: str = "main"
     checkout: bool = True
+    local_changes: str = "ask"
     update_cli_host: bool = True
     cli_install_path: Optional[str] = None
     force_active_calls: bool = False
@@ -5036,6 +5054,7 @@ async def updates_run(body: UpdateRunRequest):
     sha = _current_project_head_sha()
     tag = _updater_image_tag_for_sha(sha)
     ref = _validate_git_ref(body.ref or "main")
+    local_changes = _validate_update_local_changes(body.local_changes)
     cli_path = _validate_cli_install_path(body.cli_install_path)
     job_id = uuid.uuid4().hex
 
@@ -5060,6 +5079,7 @@ async def updates_run(body: UpdateRunRequest):
                 "log_path": log_path,
                 "ref": ref,
                 "checkout": bool(body.checkout),
+                "local_changes": local_changes,
                 "update_cli_host": bool(body.update_cli_host),
                 "cli_install_path": cli_path,
                 "repo_root": host_root,
@@ -5105,6 +5125,7 @@ async def updates_run(body: UpdateRunRequest):
         "AAVA_UPDATE_REMOTE": "origin",
         "AAVA_UPDATE_REF": ref,
         "AAVA_UPDATE_CHECKOUT": "true" if body.checkout else "false",
+        "AAVA_UPDATE_LOCAL_CHANGES": local_changes,
         "AAVA_UPDATE_UPDATE_CLI_HOST": "true" if body.update_cli_host else "false",
         "AAVA_UPDATE_BUILD_CLI_FROM_SOURCE": "true",
         "AAVA_UPDATE_FORCE_ACTIVE_CALLS": "true" if body.force_active_calls else "false",

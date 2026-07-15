@@ -25,6 +25,16 @@ def test_cli_install_path_validation_accepts_simple_absolute_path() -> None:
     assert system._validate_cli_install_path("") is None
 
 
+@pytest.mark.parametrize("mode", ["ask", "retain", "overwrite", "abort", " RETAIN "])
+def test_update_local_changes_validation_accepts_supported_modes(mode: str) -> None:
+    assert system._validate_update_local_changes(mode) == mode.strip().lower()
+
+
+def test_update_local_changes_validation_rejects_unknown_mode() -> None:
+    with pytest.raises(HTTPException):
+        system._validate_update_local_changes("surprise-me")
+
+
 @pytest.mark.parametrize(
     ("ref", "expected"),
     [
