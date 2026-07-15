@@ -98,7 +98,7 @@ PIPELINE_STT_STREAM_FORMAT = "pcm16_16k"
 PIPELINE_STT_ENCODING = "linear16"
 PIPELINE_STT_CHANNELS = 1
 PIPELINE_STT_BYTES_PER_SAMPLE = 2
-CONNECTION_AUDIO_GREETING_TIMEOUT_SECONDS = 10.0
+CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS = 10.0
 
 # -----------------------------------------------------------------------------
 # Environment variable resolution helper
@@ -14540,17 +14540,17 @@ class Engine:
             elapsed_ms=elapsed_ms,
         )
 
-    async def _stop_connection_audio_after_greeting_timeout(
+    async def _stop_connection_audio_after_handoff_timeout(
         self,
         session: CallSession,
         playback_id: str,
     ) -> None:
-        """Stop setup audio if an accepted explicit greeting never emits audio."""
+        """Stop setup audio if a ready provider never emits caller-facing audio."""
         timeout_seconds = float(
             getattr(
                 self,
-                "_connection_audio_greeting_timeout_seconds",
-                CONNECTION_AUDIO_GREETING_TIMEOUT_SECONDS,
+                "_connection_audio_handoff_timeout_seconds",
+                CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS,
             )
         )
         await asyncio.sleep(max(0.0, timeout_seconds))
@@ -14558,26 +14558,26 @@ class Engine:
             return
 
         logger.warning(
-            "Provider greeting produced no audio before connection audio timeout",
+            "Provider produced no audio before connection audio timeout",
             call_id=session.call_id,
             playback_id=playback_id,
             timeout_seconds=timeout_seconds,
         )
         await self._stop_connection_audio(
             session,
-            reason="provider-initial-greeting-timeout",
+            reason="provider-first-audio-timeout",
         )
 
-    def _schedule_connection_audio_greeting_timeout(self, session: CallSession) -> None:
-        """Arm the non-blocking explicit-greeting handoff watchdog for a call."""
+    def _schedule_connection_audio_handoff_timeout(self, session: CallSession) -> None:
+        """Arm the non-blocking provider-audio handoff watchdog for a call."""
         playback_id = getattr(session, "connection_audio_playback_id", None)
         if not playback_id:
             return
 
         self._fire_and_forget_for_call(
             session.call_id,
-            self._stop_connection_audio_after_greeting_timeout(session, playback_id),
-            name=f"connection-audio-greeting-timeout-{session.call_id}",
+            self._stop_connection_audio_after_handoff_timeout(session, playback_id),
+            name=f"connection-audio-handoff-timeout-{session.call_id}",
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -15978,26 +15978,12 @@ class Engine:
             logger.info("Provider session started", call_id=call_id, provider=provider_name)
             # If provider supports an explicit greeting (e.g., LocalProvider), trigger it now
             explicit_greeting_failed = False
-            explicit_greeting_requested = False
             try:
                 if hasattr(provider, 'play_initial_greeting'):
-                    explicit_greeting_requested = True
                     await provider.play_initial_greeting(call_id)
             except Exception:
                 explicit_greeting_failed = True
                 logger.debug("Provider initial greeting failed or unsupported", exc_info=True)
-            # Providers with no configured greeting will never emit a first
-            # AgentAudio event, so hand off as soon as their session is ready.
-            cfg = getattr(provider, "config", None)
-            if isinstance(cfg, dict):
-                configured_greeting = cfg.get("greeting") or cfg.get("initial_greeting")
-            else:
-                configured_greeting = (
-                    getattr(cfg, "greeting", None)
-                    or getattr(cfg, "initial_greeting", None)
-                    or getattr(provider, "_initial_greeting", None)
-                )
-            configured_greeting = provider_context.get("greeting") or configured_greeting
             if explicit_greeting_failed:
                 # An explicit greeting provider can remain otherwise healthy after
                 # synthesis/playback fails. Do not leave its caller hearing setup
@@ -16005,13 +15991,12 @@ class Engine:
                 await self._stop_connection_audio(
                     session, reason="provider-initial-greeting-failed"
                 )
-            elif not str(configured_greeting or "").strip():
-                await self._stop_connection_audio(session, reason="provider-ready-no-greeting")
-            elif explicit_greeting_requested:
-                # Do not block normal session activation while waiting for Local
-                # TTS. If the accepted request never emits AgentAudio, stop setup
-                # ringback after a bounded grace period instead of ringing forever.
-                self._schedule_connection_audio_greeting_timeout(session)
+            else:
+                # Provider-owned greetings (for example an ElevenLabs dashboard
+                # first message) may emit audio even when AVA has no greeting in
+                # its config. Keep ringback until the first AgentAudio event, but
+                # bound the wait so a silent provider cannot ring forever.
+                self._schedule_connection_audio_handoff_timeout(session)
             session.provider_session_active = True
             # Ensure upstream capture is enabled for real-time providers when not gated
             try:

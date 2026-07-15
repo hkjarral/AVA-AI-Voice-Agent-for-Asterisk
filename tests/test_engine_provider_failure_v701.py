@@ -69,6 +69,20 @@ class _GreetingAcceptedProvider:
         return None
 
 
+class _ProviderOwnedGreetingProvider:
+    """Provider whose first message is configured outside AVA."""
+
+    config = SimpleNamespace(greeting=None)
+
+    async def start_session(self, call_id, context=None):
+        """Represent a ready provider that may later emit dashboard-owned audio."""
+        return None
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
 def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
@@ -171,7 +185,7 @@ async def test_explicit_greeting_without_audio_stops_connection_audio_after_time
     """An accepted greeting cannot leave setup ringback playing indefinitely."""
     engine = _make_engine("leave_open")
     engine.provider_factories = {"local": _GreetingAcceptedProvider}
-    engine._connection_audio_greeting_timeout_seconds = 0.05
+    engine._connection_audio_handoff_timeout_seconds = 0.05
     engine._stop_connection_audio = AsyncMock()
     engine._no_input_mark_ready = AsyncMock()
     session = await _register_session(engine)
@@ -183,7 +197,30 @@ async def test_explicit_greeting_without_audio_stops_connection_audio_after_time
     await watchdogs[0]
 
     engine._stop_connection_audio.assert_awaited_once_with(
-        session, reason="provider-initial-greeting-timeout"
+        session, reason="provider-first-audio-timeout"
+    )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_provider_owned_greeting_keeps_ringback_until_bounded_timeout():
+    """A blank AVA greeting does not preempt a provider-owned first message."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _ProviderOwnedGreetingProvider}
+    engine._connection_audio_handoff_timeout_seconds = 0.05
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+    engine._stop_connection_audio.assert_not_awaited()
+    watchdogs = list(engine._call_bg_tasks.get("call-1", set()))
+    assert len(watchdogs) == 1
+    await watchdogs[0]
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-first-audio-timeout"
     )
     assert session.provider_session_active is True
 

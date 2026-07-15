@@ -59,6 +59,7 @@ async def test_connection_audio_stop_failure_retains_state_for_cleanup_retry():
     session = CallSession(call_id="call-stop-failed", caller_channel_id="caller-stop-failed")
     session.connection_audio_playback_id = "connection-audio-stop-failed"
     session.connection_audio_media_uri = "tone:ring"
+    session.connection_audio_started_ts = 123.0
 
     with patch("src.engine.logger.warning") as warning:
         await engine._stop_connection_audio(session, reason="test-stop-failure")
@@ -66,12 +67,16 @@ async def test_connection_audio_stop_failure_retains_state_for_cleanup_retry():
     warning.assert_called_once()
     assert warning.call_args.args[0] == "Connection audio stop was not confirmed"
     assert session.connection_audio_playback_id == "connection-audio-stop-failed"
+    assert session.connection_audio_media_uri == "tone:ring"
+    assert session.connection_audio_started_ts == 123.0
     engine._save_session.assert_not_awaited()
 
     await engine._stop_connection_audio(session, reason="call-cleanup-retry")
 
     assert engine.ari_client.stop_playback.await_count == 2
     assert session.connection_audio_playback_id is None
+    assert session.connection_audio_media_uri is None
+    assert session.connection_audio_started_ts == 0.0
     engine._save_session.assert_awaited_once_with(session)
 
 
