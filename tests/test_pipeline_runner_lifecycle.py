@@ -1,4 +1,6 @@
 import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.config import AppConfig
@@ -85,6 +87,19 @@ class _StubTTS(TTSComponent):
         yield b"ulaw-bytes"
 
 
+class _HangingTTS(TTSComponent):
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def synthesize(self, call_id, text, options):
+        """Hold synthesis open without yielding caller-facing audio."""
+        self.started.set()
+        await self.release.wait()
+        if False:
+            yield b""
+
+
 class _StreamOwnershipStub:
     def __init__(self, stream_id="stream-1"):
         self.stream_id = stream_id
@@ -167,12 +182,12 @@ def test_pipeline_terminal_fallback_requires_assistant_farewell():
 
 
 class _StubResolution:
-    def __init__(self, stt_adapter=None, stt_options=None, llm_adapter=None):
+    def __init__(self, stt_adapter=None, stt_options=None, llm_adapter=None, tts_adapter=None):
         self.pipeline_name = "stub"
         self.stt_key = "stub_stt"
         self.stt_adapter = stt_adapter or _StubSTT()
         self.llm_adapter = llm_adapter or _StubLLM()
-        self.tts_adapter = _StubTTS()
+        self.tts_adapter = tts_adapter or _StubTTS()
         self.stt_options = stt_options or {}
         self.llm_options = {}
         self.tts_options = {}
@@ -180,6 +195,60 @@ class _StubResolution:
 
     def component_summary(self):
         return {"stt": "stub", "llm": "stub", "tts": "stub"}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_hanging_greeting_stops_connection_audio_after_timeout(monkeypatch):
+    """A pipeline TTS generator that never yields cannot ring indefinitely."""
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "hi", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"hanging": {}},
+        "active_pipeline": "hanging",
+        "audio_transport": "externalmedia",
+        "downstream_mode": "file",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    engine._connection_audio_handoff_timeout_seconds = 0.05
+    engine.ari_client.stop_playback = AsyncMock(return_value=True)
+    hanging_tts = _HangingTTS()
+    resolution = _StubResolution(tts_adapter=hanging_tts)
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+
+    from src.core.models import CallSession
+
+    call_id = "call-hanging-greeting"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "hanging"
+    session.connection_audio_playback_id = "connection-audio-hanging"
+    session.connection_audio_media_uri = "tone:ring"
+    await engine.session_store.upsert_call(session)
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(hanging_tts.started.wait(), timeout=2)
+    for _ in range(20):
+        if session.connection_audio_playback_id is None:
+            break
+        await asyncio.sleep(0.01)
+
+    engine.ari_client.stop_playback.assert_awaited_once_with(
+        "connection-audio-hanging"
+    )
+    assert session.connection_audio_playback_id is None
+    await engine._cleanup_call(call_id)
 
 
 @pytest.mark.asyncio

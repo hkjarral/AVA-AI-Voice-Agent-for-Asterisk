@@ -582,8 +582,6 @@ class Engine:
         self._enqueued_bytes: Dict[str, int] = {}
         # Transport observability
         self._transport_card_logged: Set[str] = set()
-        # Audio Profile Resolution card one-shot tracker
-        self._profile_card_logged: Set[str] = set()
         # Experimental coalescing: per-call buffer for provider TTS chunks
         self._provider_coalesce_buf: Dict[str, bytearray] = {}
         # Active playbacks are now managed by SessionStore
@@ -596,6 +594,9 @@ class Engine:
         self._pipeline_transcript_queues: Dict[str, asyncio.Queue] = {}
         # Per-call background tasks (fire-and-forget) that should be cancelled on cleanup
         self._call_bg_tasks: Dict[str, Set[asyncio.Task]] = {}
+        # First-audio handoff watchdogs are tracked separately so a confirmed
+        # connection-audio stop can cancel the pending timeout immediately.
+        self._connection_audio_handoff_tasks: Dict[str, asyncio.Task] = {}
         # Track calls where a pipeline was explicitly requested via AI_PROVIDER
         self._pipeline_forced: Dict[str, bool] = {}
         # Cache for called_number variables (DIALED_NUMBER, __FROM_DID) from ChannelVarSet events
@@ -3535,6 +3536,7 @@ class Engine:
 
     async def _handle_external_media_stasis_start(self, external_media_id: str, channel: dict):
         """Handle ExternalMedia channel entering Stasis."""
+        session = None
         try:
             if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
                 if await self._attach_attended_transfer_helper_external_media(external_media_id):
@@ -3609,6 +3611,11 @@ class Engine:
                         external_media_id=external_media_id, 
                         error=str(e), 
                         exc_info=True)
+            if session:
+                await self._stop_connection_audio(
+                    session,
+                    reason="external-media-attach-failed",
+                )
 
     async def _kick_rtp_flow(self, bridge_id: str, caller_channel_id: str) -> None:
         """
@@ -7449,189 +7456,6 @@ class Engine:
             logger.debug("Call history module not available", call_id=call_id)
         except Exception as e:
             logger.debug("Failed to persist call history", call_id=call_id, error=str(e))
-
-    async def _resolve_audio_profile(self, session: CallSession, channel_id: str) -> None:
-        """Resolve TransportProfile and provider prefs from profiles/contexts.
-
-        Precedence (provider): AI_PROVIDER (later) > contexts.*.provider > default_provider.
-        """
-        call_id = session.call_id
-        # Read channel vars
-        ai_profile = None
-        ai_context = None
-        try:
-            resp = await self.ari_client.send_command(
-                "GET",
-                f"channels/{channel_id}/variable",
-                params={"variable": "AI_AUDIO_PROFILE"},
-            )
-            if isinstance(resp, dict):
-                ai_profile = (resp.get("value") or "").strip()
-        except Exception:
-            pass
-        try:
-            resp = await self.ari_client.send_command(
-                "GET",
-                f"channels/{channel_id}/variable",
-                params={"variable": "AI_CONTEXT"},
-            )
-            if isinstance(resp, dict):
-                ai_context = (resp.get("value") or "").strip()
-        except Exception:
-            pass
-
-        cfg_profiles = getattr(self.config, "profiles", {}) or {}
-        cfg_contexts = getattr(self.config, "contexts", {}) or {}
-        # Extract default profile name
-        default_profile_name = None
-        try:
-            dp = cfg_profiles.get("default")
-            if isinstance(dp, str) and dp:
-                default_profile_name = dp
-        except Exception:
-            default_profile_name = None
-        # Build profile map excluding the 'default' selector key
-        profile_map = {k: v for (k, v) in cfg_profiles.items() if isinstance(v, dict)}
-
-        # Resolve profile name from channel var, then context mapping, else default
-        context_block = cfg_contexts.get(ai_context) if ai_context else None
-        ctx_profile = None
-        try:
-            if isinstance(context_block, dict):
-                ctx_profile = context_block.get("profile")
-        except Exception:
-            ctx_profile = None
-        selected_profile_name = ai_profile or ctx_profile or default_profile_name
-        profile_obj = profile_map.get(selected_profile_name) if selected_profile_name else None
-        if profile_obj is None and default_profile_name:
-            profile_obj = profile_map.get(default_profile_name)
-
-        # Extract transport_out and provider prefs
-        transport_out = (profile_obj or {}).get("transport_out", {}) if isinstance(profile_obj, dict) else {}
-        prov_pref = (profile_obj or {}).get("provider_pref", {}) if isinstance(profile_obj, dict) else {}
-        chunk_ms = None
-        idle_cutoff_ms = None
-        try:
-            v = prov_pref.get("preferred_chunk_ms")
-            if v is not None:
-                chunk_ms = int(v)
-        except Exception:
-            pass
-        try:
-            v = (profile_obj or {}).get("idle_cutoff_ms")
-            if v is not None:
-                idle_cutoff_ms = int(v)
-        except Exception:
-            pass
-
-        # Determine transport encoding/rate from profile (fallback to existing)
-        enc = self._canonicalize_encoding(transport_out.get("encoding")) or session.transport_profile.format
-        try:
-            rate = int(transport_out.get("sample_rate_hz") or 0)
-        except Exception:
-            rate = 0
-        if rate <= 0:
-            rate = session.transport_profile.sample_rate
-
-        # Apply transport settings with 'config' source (won't override dialplan/detected)
-        try:
-            await self._update_transport_profile(session, fmt=enc, sample_rate=rate, source="config")
-        except Exception:
-            logger.debug("Transport profile update from profile failed", call_id=call_id, exc_info=True)
-
-        # Apply context-level provider override (Option A), lower precedence than AI_PROVIDER.
-        provider_origin = None
-        try:
-            ctx_provider = None
-            if isinstance(context_block, dict):
-                ctx_provider = (context_block.get("provider") or "").strip()
-            if ctx_provider:
-                resolved = ctx_provider
-                if resolved in self.providers and session.provider_name != resolved:
-                    prev = session.provider_name
-                    self._assign_session_provider(session, resolved)
-                    await self._save_session(session)
-                    provider_origin = "context"
-                    logger.info("Context provider override applied", call_id=call_id, context=ai_context, previous_provider=prev, provider=resolved)
-        except Exception:
-            logger.debug("Context provider override failed", call_id=call_id, exc_info=True)
-
-        # Wire streaming manager parameters (global fields; per-call override is a future improvement)
-        spm = getattr(self, "streaming_playback_manager", None)
-        if spm is not None:
-            # CRITICAL: Do NOT override audiosocket_format from transport profile.
-            # AudioSocket wire format must always match config.audiosocket.format (set at engine init),
-            # NOT the caller's SIP codec. Caller codec applies only to provider transcoding.
-            # Bug fix: removed lines that set spm.audiosocket_format = enc
-            try:
-                if rate and rate > 0:
-                    spm.sample_rate = int(rate)
-            except Exception:
-                pass
-            try:
-                if chunk_ms and int(chunk_ms) > 0:
-                    spm.chunk_size_ms = int(chunk_ms)
-            except Exception:
-                pass
-            try:
-                if idle_cutoff_ms and int(idle_cutoff_ms) > 0:
-                    spm.idle_cutoff_ms = int(idle_cutoff_ms)
-            except Exception:
-                pass
-
-        # Emit one-shot profile resolution card
-        try:
-            self._emit_profile_resolution_card(
-                session.call_id,
-                session,
-                profile_name=selected_profile_name,
-                context_name=ai_context,
-                transport_encoding=enc,
-                transport_sample_rate=rate,
-                chunk_ms=chunk_ms,
-                idle_cutoff_ms=idle_cutoff_ms,
-                provider_origin=provider_origin or ("profile" if ai_profile else ("context" if ai_context else None)),
-            )
-        except Exception:
-            logger.debug("Audio Profile Resolution card logging failed", call_id=call_id, exc_info=True)
-
-    def _emit_profile_resolution_card(
-        self,
-        call_id: Optional[str],
-        session: Optional[CallSession],
-        *,
-        profile_name: Optional[str],
-        context_name: Optional[str],
-        transport_encoding: Optional[Any],
-        transport_sample_rate: Optional[Any],
-        chunk_ms: Optional[Any],
-        idle_cutoff_ms: Optional[Any],
-        provider_origin: Optional[str],
-    ) -> None:
-        if not call_id or call_id in self._profile_card_logged:
-            return
-        def _ir(v):
-            try:
-                return int(v) if v is not None else None
-            except Exception:
-                return None
-        payload = {
-            "call_id": call_id,
-            "log_event": "Audio Profile Resolution",
-            "profile": profile_name,
-            "context": context_name,
-            "provider": getattr(session, "provider_name", None) if session else None,
-            "provider_origin": provider_origin,
-            "transport_encoding": self._canonicalize_encoding(transport_encoding) or None,
-            "transport_sample_rate_hz": _ir(transport_sample_rate),
-            "chunk_size_ms": _ir(chunk_ms),
-            "idle_cutoff_ms": _ir(idle_cutoff_ms),
-        }
-        try:
-            logger.info("AudioProfileResolution", **{k: v for k, v in payload.items() if v is not None})
-            self._profile_card_logged.add(call_id)
-        except Exception:
-            logger.debug("Profile resolution card logging failed", call_id=call_id, exc_info=True)
 
     async def _audiosocket_handle_uuid(self, conn_id: str, uuid_str: str) -> bool:
         """Bind inbound AudioSocket connection to the caller channel via UUID."""
@@ -12405,6 +12229,11 @@ class Engine:
             # Final pass: ensure greeting can safely reference template variables.
             if greeting:
                 greeting = self._apply_prompt_template_substitution(greeting, session)
+
+            # Bound pipeline greeting handoff just like monolithic providers.
+            # This background watchdog still fires if a TTS async generator hangs
+            # before yielding its first caller-facing audio chunk.
+            self._schedule_connection_audio_handoff_timeout(session)
             
             if greeting:
                 max_attempts = 2
@@ -14530,6 +14359,15 @@ class Engine:
                     call_id=session.call_id,
                     exc_info=True,
                 )
+        handoff_tasks = getattr(self, "_connection_audio_handoff_tasks", None)
+        if handoff_tasks is not None:
+            handoff_task = handoff_tasks.pop(session.call_id, None)
+            if (
+                handoff_task
+                and handoff_task is not asyncio.current_task()
+                and not handoff_task.done()
+            ):
+                handoff_task.cancel()
         elapsed_ms = int(max(0.0, time.time() - started_ts) * 1000) if started_ts else None
         logger.info(
             "Connection audio stopped",
@@ -14568,17 +14406,36 @@ class Engine:
             reason="provider-first-audio-timeout",
         )
 
-    def _schedule_connection_audio_handoff_timeout(self, session: CallSession) -> None:
+    def _schedule_connection_audio_handoff_timeout(
+        self,
+        session: CallSession,
+    ) -> Optional[asyncio.Task]:
         """Arm the non-blocking provider-audio handoff watchdog for a call."""
         playback_id = getattr(session, "connection_audio_playback_id", None)
         if not playback_id:
-            return
+            return None
 
-        self._fire_and_forget_for_call(
+        handoff_tasks = getattr(self, "_connection_audio_handoff_tasks", None)
+        if handoff_tasks is None:
+            handoff_tasks = {}
+            self._connection_audio_handoff_tasks = handoff_tasks
+        previous = handoff_tasks.get(session.call_id)
+        if previous and not previous.done():
+            previous.cancel()
+
+        task = self._fire_and_forget_for_call(
             session.call_id,
             self._stop_connection_audio_after_handoff_timeout(session, playback_id),
             name=f"connection-audio-handoff-timeout-{session.call_id}",
         )
+        handoff_tasks[session.call_id] = task
+
+        def _discard_handoff_task(done_task: asyncio.Task) -> None:
+            if handoff_tasks.get(session.call_id) is done_task:
+                handoff_tasks.pop(session.call_id, None)
+
+        task.add_done_callback(_discard_handoff_task)
+        return task
 
     # ─────────────────────────────────────────────────────────────────────────
     # Background Music (AAVA-89)

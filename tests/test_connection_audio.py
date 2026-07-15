@@ -172,7 +172,7 @@ async def test_external_media_attach_failure_stops_connection_audio():
         get_by_channel_id=AsyncMock(return_value=session),
     )
     engine.ari_client = SimpleNamespace(
-        add_channel_to_bridge=AsyncMock(return_value=False),
+        add_channel_to_bridge=AsyncMock(side_effect=RuntimeError("ARI unavailable")),
     )
     engine._stop_connection_audio = AsyncMock()
 
