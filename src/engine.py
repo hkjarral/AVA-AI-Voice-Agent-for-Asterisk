@@ -14476,15 +14476,33 @@ class Engine:
             logger.debug("Failed to persist connection audio stop", call_id=session.call_id, exc_info=True)
 
         try:
-            await self.ari_client.stop_playback(playback_id)
-        except Exception:
-            # The channel or a finite custom sound may already have ended.
-            logger.debug(
-                "Connection audio playback already stopped",
-                call_id=session.call_id,
-                playback_id=playback_id,
-                exc_info=True,
-            )
+            stopped = await self.ari_client.stop_playback(playback_id)
+            if stopped is False:
+                logger.warning(
+                    "Connection audio stop was not confirmed",
+                    call_id=session.call_id,
+                    playback_id=playback_id,
+                    media_uri=media_uri,
+                )
+        except Exception as exc:
+            # Alternate ARI clients may raise a typed 404 instead of returning a
+            # status. That remains benign because the desired state is already
+            # true; transport/auth/backend failures must remain visible.
+            if getattr(exc, "status", None) == 404:
+                logger.debug(
+                    "Connection audio playback already stopped",
+                    call_id=session.call_id,
+                    playback_id=playback_id,
+                )
+            else:
+                logger.warning(
+                    "Connection audio stop failed",
+                    call_id=session.call_id,
+                    playback_id=playback_id,
+                    media_uri=media_uri,
+                    error=str(exc),
+                    exc_info=True,
+                )
         elapsed_ms = int(max(0.0, time.time() - started_ts) * 1000) if started_ts else None
         logger.info(
             "Connection audio stopped",
@@ -15632,6 +15650,9 @@ class Engine:
                         call_id=call_id,
                         requested_provider=provider_name,
                         fallback_provider=fallback_name,
+                    )
+                    await self._stop_connection_audio(
+                        session, reason="provider-unavailable"
                     )
                     return
 

@@ -1,8 +1,9 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.ari_client import ARIClient
 from src.core.models import CallSession
 from src.core.session_store import SessionStore
 from src.engine import Engine
@@ -45,6 +46,40 @@ async def test_connection_audio_starts_on_caller_channel_and_stops_idempotently(
     engine.ari_client.stop_playback.assert_awaited_once_with(playback_id)
     assert session.connection_audio_playback_id is None
     assert session.connection_audio_media_uri is None
+
+
+@pytest.mark.asyncio
+async def test_connection_audio_stop_warns_when_ari_does_not_confirm():
+    """Unexpected ARI stop failures remain observable after local state clears."""
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(stop_playback=AsyncMock(return_value=False))
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="call-stop-failed", caller_channel_id="caller-stop-failed")
+    session.connection_audio_playback_id = "connection-audio-stop-failed"
+    session.connection_audio_media_uri = "tone:ring"
+
+    with patch("src.engine.logger.warning") as warning:
+        await engine._stop_connection_audio(session, reason="test-stop-failure")
+
+    warning.assert_called_once()
+    assert warning.call_args.args[0] == "Connection audio stop was not confirmed"
+    assert session.connection_audio_playback_id is None
+
+
+@pytest.mark.asyncio
+async def test_ari_stop_playback_treats_missing_playback_as_success():
+    """ARI 404 is a benign idempotent stop while other statuses remain failures."""
+    client = ARIClient.__new__(ARIClient)
+    client.send_command = AsyncMock(return_value={"status": 404, "reason": "not found"})
+
+    assert await client.stop_playback("already-gone") is True
+    client.send_command.assert_awaited_once_with(
+        "DELETE", "playbacks/already-gone", tolerate_statuses=[404]
+    )
+
+    client.send_command.reset_mock()
+    client.send_command.return_value = {"status": 503, "reason": "backend unavailable"}
+    assert await client.stop_playback("still-running") is False
 
 
 @pytest.mark.asyncio

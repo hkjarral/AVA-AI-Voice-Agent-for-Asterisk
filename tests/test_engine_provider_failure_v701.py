@@ -148,6 +148,21 @@ async def test_explicit_greeting_failure_stops_connection_audio():
 
 
 @pytest.mark.asyncio
+async def test_missing_provider_stops_connection_audio_before_returning():
+    """No-provider startup cannot strand a caller with perpetual ringback."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {}
+    engine._stop_connection_audio = AsyncMock()
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-unavailable"
+    )
+
+
+@pytest.mark.asyncio
 async def test_explicit_missing_pipeline_never_falls_back_to_default_provider():
     engine = _make_engine("announce_hangup")
     fallback_factory = MagicMock(side_effect=AssertionError("default provider must not start"))
