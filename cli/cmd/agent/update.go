@@ -322,8 +322,8 @@ func runUpdate() (retErr error) {
 		case localChangesAbort:
 			return errors.New("working tree has local changes; update aborted by local-change policy")
 		case localChangesOverwrite:
-			printUpdateInfo("Working tree is dirty; discarding tracked local code changes after backing up operator config")
-			if err := gitDiscardTrackedChanges(); err != nil {
+			printUpdateInfo("Working tree is dirty; discarding local code changes after backing up operator config")
+			if err := gitDiscardLocalChanges(updateStashUntracked); err != nil {
 				return err
 			}
 		case localChangesRetain:
@@ -1278,9 +1278,14 @@ func resolveLocalChangesPolicy(dirty bool, localFiles []string) (localChangesPol
 	}
 }
 
-func gitDiscardTrackedChanges() error {
+func gitDiscardLocalChanges(includeUntracked bool) error {
 	if _, err := runGitCmd("reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("git reset --hard HEAD failed while discarding tracked local changes: %w", err)
+	}
+	if includeUntracked {
+		if _, err := runGitCmd("clean", "-fd"); err != nil {
+			return fmt.Errorf("git clean -fd failed while discarding untracked local changes: %w", err)
+		}
 	}
 	return nil
 }
@@ -1327,7 +1332,7 @@ func gitStashPop(ctx *updateContext) error {
 // The failed stash entry is intentionally kept so local code edits are not lost.
 func recoverFromStashConflict(ctx *updateContext) error {
 	// 1. Reset the conflicted working tree to the (already merged) HEAD.
-	if err := gitDiscardTrackedChanges(); err != nil {
+	if err := gitDiscardLocalChanges(updateStashUntracked); err != nil {
 		return err
 	}
 
