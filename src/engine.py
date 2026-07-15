@@ -16779,6 +16779,13 @@ class Engine:
                     async def play_hold_audio():
                         await asyncio.sleep(hold_threshold_ms / 1000.0)
                         try:
+                            # Connection ringback and the tool's hold prompt both
+                            # target the caller channel. Hand off cleanly before
+                            # starting the configured pre-call hold audio.
+                            await self._stop_connection_audio(
+                                session,
+                                reason="pre-call-hold-audio",
+                            )
                             # Play the configured hold audio file via ARI
                             await self.ari_client.play_sound(session.caller_channel_id, hold_file)
                             logger.debug("Playing hold audio for pre-call tool",

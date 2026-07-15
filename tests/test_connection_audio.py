@@ -265,3 +265,66 @@ async def test_pending_audiosocket_destroyed_stops_connection_audio():
     assert "audiosocket-pending" not in engine.pending_audiosocket_channels
     assert session.audiosocket_uuid not in engine.uuidext_to_channel
     engine._cleanup_call.assert_awaited_once_with("audiosocket-pending")
+
+
+@pytest.mark.asyncio
+async def test_pre_call_hold_audio_stops_connection_audio_first(monkeypatch):
+    """A pre-call hold prompt must replace ringback, not overlap with it."""
+    import asyncio
+
+    from src.tools.registry import tool_registry
+
+    events = []
+    engine = Engine.__new__(Engine)
+    session = CallSession(call_id="call-hold", caller_channel_id="caller-hold")
+    session.context_name = "support"
+    engine.config = SimpleNamespace()
+    engine.transport_orchestrator = SimpleNamespace(
+        get_context_config=lambda *_args: SimpleNamespace(
+            pre_call_tools=["slow-lookup"],
+            disable_global_pre_call_tools=[],
+        )
+    )
+
+    async def execute_tool(_context):
+        await asyncio.sleep(0.03)
+        return {"customer": "ready"}
+
+    tool = SimpleNamespace(
+        definition=SimpleNamespace(
+            name="slow-lookup",
+            timeout_ms=1000,
+            hold_audio_file="custom/please-wait",
+            hold_audio_threshold_ms=1,
+            output_variables=["customer"],
+        ),
+        execute=execute_tool,
+    )
+    monkeypatch.setattr(
+        tool_registry,
+        "get_tools_for_context",
+        lambda **_kwargs: [tool],
+    )
+
+    async def stop_connection_audio(*_args, **_kwargs):
+        events.append("stop-ringback")
+
+    async def play_sound(*_args, **_kwargs):
+        events.append("play-hold")
+
+    engine._stop_connection_audio = AsyncMock(side_effect=stop_connection_audio)
+    engine.ari_client = SimpleNamespace(
+        play_sound=AsyncMock(side_effect=play_sound),
+    )
+    engine._save_session = AsyncMock()
+
+    results = await engine._execute_pre_call_tools(session.call_id, session)
+
+    assert results == {"customer": "ready"}
+    assert events == ["stop-ringback", "play-hold"]
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="pre-call-hold-audio"
+    )
+    engine.ari_client.play_sound.assert_awaited_once_with(
+        session.caller_channel_id, "custom/please-wait"
+    )
