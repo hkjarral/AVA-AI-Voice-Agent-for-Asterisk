@@ -236,3 +236,32 @@ async def test_audiosocket_attach_failure_stops_connection_audio():
     engine._stop_connection_audio.assert_awaited_once_with(
         session, reason="audiosocket-attach-failed"
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_audiosocket_destroyed_stops_connection_audio():
+    """A media leg that dies before Stasis cannot strand setup ringback."""
+    engine = Engine.__new__(Engine)
+    session = CallSession(call_id="call-as", caller_channel_id="caller-as")
+    session.audiosocket_uuid = "uuid-as"
+    engine._pre_stasis_channels = {"audiosocket-pending"}
+    engine.pending_audiosocket_channels = {
+        "audiosocket-pending": session.call_id,
+    }
+    engine.uuidext_to_channel = {session.audiosocket_uuid: session.call_id}
+    engine.session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+    )
+    engine._stop_connection_audio = AsyncMock()
+    engine._handle_outbound_channel_destroyed = AsyncMock()
+    engine._cleanup_call = AsyncMock()
+
+    event = {"channel": {"id": "audiosocket-pending"}}
+    await engine._handle_channel_destroyed(event)
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="audiosocket-destroyed-before-stasis"
+    )
+    assert "audiosocket-pending" not in engine.pending_audiosocket_channels
+    assert session.audiosocket_uuid not in engine.uuidext_to_channel
+    engine._cleanup_call.assert_awaited_once_with("audiosocket-pending")

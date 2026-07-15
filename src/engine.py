@@ -6390,6 +6390,25 @@ class Engine:
                 return
             # Remove from pre-stasis tracking if present
             self._pre_stasis_channels.discard(channel_id)
+            # An originated AudioSocket leg can fail before StasisStart attaches
+            # it to the session. At that point the pending map is the only link
+            # back to the caller, so consume it here and end setup ringback.
+            pending_audiosocket_call_id = self.pending_audiosocket_channels.pop(
+                channel_id, None
+            )
+            if pending_audiosocket_call_id:
+                pending_session = await self.session_store.get_by_call_id(
+                    pending_audiosocket_call_id
+                )
+                if pending_session:
+                    if pending_session.audiosocket_uuid:
+                        self.uuidext_to_channel.pop(
+                            pending_session.audiosocket_uuid, None
+                        )
+                    await self._stop_connection_audio(
+                        pending_session,
+                        reason="audiosocket-destroyed-before-stasis",
+                    )
             await self._handle_outbound_channel_destroyed(event)
             logger.info("Channel destroyed", channel_id=channel_id)
             await self._cleanup_call(channel_id)
