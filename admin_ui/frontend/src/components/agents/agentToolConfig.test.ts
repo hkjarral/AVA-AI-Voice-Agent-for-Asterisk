@@ -68,3 +68,30 @@ describe('per-agent no-input configuration', () => {
         expect((Object.prototype as { polluted?: boolean }).polluted).toBeUndefined();
     });
 });
+
+describe('per-agent connection audio configuration', () => {
+    it('round-trips the caller-only media URI through extra_json', () => {
+        const state = parseAgentConfig({
+            provider: 'google_live',
+            extra_json: JSON.stringify({
+                connection_audio: 'tone:ring;tonezone=fr',
+                customer_metadata: { region: 'west' },
+            }),
+        });
+
+        expect(state.connectionAudio).toBe('tone:ring;tonezone=fr');
+
+        const serialized = serializeAgentConfig(state);
+        const extra = JSON.parse(serialized.extra_json || '{}');
+        expect(extra.connection_audio).toBe('tone:ring;tonezone=fr');
+        expect(extra.customer_metadata).toEqual({ region: 'west' });
+    });
+
+    it('omits connection_audio when ringback is disabled', () => {
+        const state = parseAgentConfig({ provider: 'openai_realtime' });
+        state.connectionAudio = '';
+
+        const serialized = serializeAgentConfig(state);
+        expect(serialized.extra_json).toBeNull();
+    });
+});

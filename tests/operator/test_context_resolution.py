@@ -25,6 +25,21 @@ def test_yaml_fallback_when_db_absent():
         assert cc is not None and cc.prompt == "from-yaml"
 
 
+def test_yaml_context_loads_connection_audio():
+    """YAML contexts expose the optional connection-audio URI at runtime."""
+    orch = TransportOrchestrator({
+        "contexts": {
+            "sales": {
+                "provider": "p",
+                "prompt": "from-yaml",
+                "connection_audio": "tone:ring;tonezone=fr",
+            },
+        },
+    })
+    with patch.object(orch.agent_store, "available", return_value=False):
+        assert orch.get_context_config("sales").connection_audio == "tone:ring;tonezone=fr"
+
+
 def test_inactive_or_unknown_slug_not_routable_when_db_present():
     # DB present but slug is inactive/unknown (resolve() returns None): the resolver
     # must NOT fall through to the same-named legacy YAML context — a deactivated or

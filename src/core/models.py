@@ -129,6 +129,11 @@ class CallSession:
     
     # Background music (AAVA-89)
     music_snoop_channel_id: Optional[str] = None  # Snoop channel for background music playback
+    # Caller-only connection audio (GitHub #527). A tone URI keeps playing until
+    # the first greeting audio is ready, without leaking into the AI media leg.
+    connection_audio_playback_id: Optional[str] = None
+    connection_audio_media_uri: Optional[str] = None
+    connection_audio_started_ts: float = 0.0
     created_at: float = field(default_factory=time.time)
     agent_audio_buffer: bytearray = field(default_factory=bytearray)
     last_agent_audio_ts: float = 0.0

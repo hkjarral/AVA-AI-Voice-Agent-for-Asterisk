@@ -33,6 +33,89 @@ class _FailingProvider:
         return None
 
 
+class _GreetingFailingProvider:
+    """Provider that starts successfully but cannot emit its explicit greeting."""
+
+    config = SimpleNamespace(greeting="Hello from the agent")
+
+    async def start_session(self, call_id, context=None):
+        """Represent a provider connection that succeeds normally."""
+        return None
+
+    async def play_initial_greeting(self, call_id):
+        """Fail at the explicit greeting boundary under review."""
+        raise RuntimeError("greeting synthesis failed")
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
+class _GreetingAcceptedProvider:
+    """Provider that accepts an explicit greeting request without emitting audio."""
+
+    config = SimpleNamespace(greeting="Hello from the agent")
+
+    async def start_session(self, call_id, context=None):
+        """Represent a provider connection that succeeds normally."""
+        return None
+
+    async def play_initial_greeting(self, call_id):
+        """Accept the request while intentionally producing no AgentAudio."""
+        return None
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
+class _GreetingSkippedProvider:
+    """Explicit-greeting provider with no configured greeting to queue."""
+
+    config = SimpleNamespace(greeting=None)
+
+    async def start_session(self, call_id, context=None):
+        """Represent a provider connection that succeeds normally."""
+        return None
+
+    async def play_initial_greeting(self, call_id):
+        """Report that the blank greeting intentionally queued no audio."""
+        return False
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
+class _ProviderOwnedGreetingProvider:
+    """Provider whose first message is configured outside AVA."""
+
+    config = SimpleNamespace(greeting=None)
+    provider_owned_initial_greeting = True
+
+    async def start_session(self, call_id, context=None):
+        """Represent a ready provider that may later emit dashboard-owned audio."""
+        return None
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
+class _NoGreetingProvider:
+    """Ready provider with neither a local nor provider-owned first message."""
+
+    config = SimpleNamespace(greeting=None)
+
+    async def start_session(self, call_id, context=None):
+        """Represent a ready provider that immediately starts listening."""
+        return None
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
 def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
@@ -63,6 +146,7 @@ def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine._apply_provider_overrides = MagicMock()
     engine._save_session = AsyncMock()
     engine._wait_for_ari_playback = AsyncMock(return_value=True)
+    engine._call_bg_tasks = {}
     return engine
 
 
@@ -110,6 +194,121 @@ async def test_leave_open_preserves_legacy_no_hangup():
     # HIGH-1b still holds.
     assert session.error_message
     assert "provider_start_failed" in session.error_message
+
+
+@pytest.mark.asyncio
+async def test_explicit_greeting_failure_stops_connection_audio():
+    """A failed explicit greeting must not leave setup ringback playing forever."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _GreetingFailingProvider}
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-initial-greeting-failed"
+    )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_explicit_greeting_without_audio_stops_connection_audio_after_timeout():
+    """An accepted greeting cannot leave setup ringback playing indefinitely."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _GreetingAcceptedProvider}
+    engine._connection_audio_handoff_timeout_seconds = 0.05
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+    watchdogs = list(engine._call_bg_tasks.get("call-1", set()))
+    assert len(watchdogs) == 1
+    await watchdogs[0]
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-first-audio-timeout"
+    )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_blank_explicit_greeting_stops_connection_audio_immediately():
+    """A ready explicit-greeting provider must not ring through a blank greeting."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _GreetingSkippedProvider}
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-initial-greeting-skipped"
+    )
+    assert not engine._call_bg_tasks.get("call-1")
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_provider_owned_greeting_keeps_ringback_until_bounded_timeout():
+    """A blank AVA greeting does not preempt a provider-owned first message."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _ProviderOwnedGreetingProvider}
+    engine._connection_audio_handoff_timeout_seconds = 0.05
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+    engine._stop_connection_audio.assert_not_awaited()
+    watchdogs = list(engine._call_bg_tasks.get("call-1", set()))
+    assert len(watchdogs) == 1
+    await watchdogs[0]
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-first-audio-timeout"
+    )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_provider_without_greeting_stops_connection_audio_immediately():
+    """A ready, listening provider must not retain ringback without first audio."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _NoGreetingProvider}
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-no-initial-greeting"
+    )
+    assert not engine._call_bg_tasks.get("call-1")
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_missing_provider_stops_connection_audio_before_returning():
+    """No-provider startup cannot strand a caller with perpetual ringback."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {}
+    engine._stop_connection_audio = AsyncMock()
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-unavailable"
+    )
 
 
 @pytest.mark.asyncio

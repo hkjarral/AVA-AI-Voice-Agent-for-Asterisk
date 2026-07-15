@@ -144,6 +144,9 @@ _DEEPGRAM_SETTINGS_ACK_LATENCY_MS = Gauge(
 )
 
 class DeepgramProvider(AIProviderInterface):
+    # Deepgram owns the initial agent greeting and supplies a safe default even
+    # when AVA's provider greeting setting is blank.
+    provider_owned_initial_greeting = True
     _FALLBACK_END_MARKERS = tuple(
         marker
         for marker in DEFAULT_HANGUP_MARKERS["end_call"]

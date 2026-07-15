@@ -6,7 +6,7 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.3.3-blue.svg)
+![Version](https://img.shields.io/badge/version-7.3.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
@@ -167,6 +167,28 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.3.5 — Caller connection ringback 📞</b></summary>
+
+**Callers no longer wait through silent provider or pipeline startup.**
+
+- **Per-agent ringback control** — enable **Play ringback while connecting** in
+  the Agents UI; `tone:ring` is supplied as the default repeating Asterisk tone.
+- **One implementation for every call path** — full-agent providers and modular
+  pipelines share the same caller-only lifecycle, without sending setup audio to
+  the AI provider.
+- **Clean audio handoff** — ringback stops on the first provider or pipeline
+  greeting audio and is also cleared on no-greeting readiness, startup failure,
+  disconnect, or call cleanup.
+- **Safe and opt-in** — existing agents remain unchanged until the setting is
+  enabled. YAML/API users may configure an Asterisk-local `tone:`, `sound:`, or
+  `recording:` media URI.
+
+See [Connection Audio / Ringback](docs/Configuration-Reference.md#connection-audio--ringback)
+and the [v7.3.5 changelog](CHANGELOG.md#735---2026-07-15).
+
+</details>
+
+<details>
 <summary><b>v7.3.3 — Local AI stabilization 🧠</b></summary>
 
 v7.3.3 is a Local-AI-only stabilization release. It adds no providers and keeps

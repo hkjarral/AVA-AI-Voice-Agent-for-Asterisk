@@ -640,9 +640,18 @@ class ARIClient:
     async def stop_playback(self, playback_id: str) -> bool:
         """Stop an active playback by its playbackId."""
         try:
-            response = await self.send_command("DELETE", f"playbacks/{playback_id}")
+            response = await self.send_command(
+                "DELETE",
+                f"playbacks/{playback_id}",
+                tolerate_statuses=[404],
+            )
             status = response.get("status") if isinstance(response, dict) else None
             if status is not None:
+                if int(status) == 404:
+                    # Idempotent cleanup: finite media or channel teardown may
+                    # already have removed the playback.
+                    logger.debug("Playback already absent", playback_id=playback_id)
+                    return True
                 if 200 <= int(status) < 300:
                     logger.info("Playback stopped", playback_id=playback_id, status=status)
                     return True

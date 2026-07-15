@@ -98,6 +98,7 @@ PIPELINE_STT_STREAM_FORMAT = "pcm16_16k"
 PIPELINE_STT_ENCODING = "linear16"
 PIPELINE_STT_CHANNELS = 1
 PIPELINE_STT_BYTES_PER_SAMPLE = 2
+CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS = 10.0
 
 # -----------------------------------------------------------------------------
 # Environment variable resolution helper
@@ -581,8 +582,6 @@ class Engine:
         self._enqueued_bytes: Dict[str, int] = {}
         # Transport observability
         self._transport_card_logged: Set[str] = set()
-        # Audio Profile Resolution card one-shot tracker
-        self._profile_card_logged: Set[str] = set()
         # Experimental coalescing: per-call buffer for provider TTS chunks
         self._provider_coalesce_buf: Dict[str, bytearray] = {}
         # Active playbacks are now managed by SessionStore
@@ -595,6 +594,9 @@ class Engine:
         self._pipeline_transcript_queues: Dict[str, asyncio.Queue] = {}
         # Per-call background tasks (fire-and-forget) that should be cancelled on cleanup
         self._call_bg_tasks: Dict[str, Set[asyncio.Task]] = {}
+        # First-audio handoff watchdogs are tracked separately so a confirmed
+        # connection-audio stop can cancel the pending timeout immediately.
+        self._connection_audio_handoff_tasks: Dict[str, asyncio.Task] = {}
         # Track calls where a pipeline was explicitly requested via AI_PROVIDER
         self._pipeline_forced: Dict[str, bool] = {}
         # Cache for called_number variables (DIALED_NUMBER, __FROM_DID) from ChannelVarSet events
@@ -3534,6 +3536,7 @@ class Engine:
 
     async def _handle_external_media_stasis_start(self, external_media_id: str, channel: dict):
         """Handle ExternalMedia channel entering Stasis."""
+        session = None
         try:
             if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
                 if await self._attach_attended_transfer_helper_external_media(external_media_id):
@@ -3590,16 +3593,29 @@ class Engine:
                     logger.error("🎯 EXTERNAL MEDIA - Failed to add ExternalMedia channel to bridge", 
                                external_media_id=external_media_id,
                                bridge_id=bridge_id)
+                    await self._stop_connection_audio(
+                        session,
+                        reason="external-media-attach-failed",
+                    )
             else:
                 logger.error("ExternalMedia channel entered Stasis but no bridge found", 
                            external_media_id=external_media_id,
                            caller_channel_id=caller_channel_id)
+                await self._stop_connection_audio(
+                    session,
+                    reason="external-media-bridge-missing",
+                )
                 
         except Exception as e:
             logger.error("Error handling ExternalMedia StasisStart", 
                         external_media_id=external_media_id, 
                         error=str(e), 
                         exc_info=True)
+            if session:
+                await self._stop_connection_audio(
+                    session,
+                    reason="external-media-attach-failed",
+                )
 
     async def _kick_rtp_flow(self, bridge_id: str, caller_channel_id: str) -> None:
         """
@@ -3661,6 +3677,7 @@ class Engine:
         Mitigates an ARI event-order race where the ExternalMedia channel's StasisStart
         can arrive before the call session has been updated with external_media_id.
         """
+        session = None
         for attempt in range(1, max(1, attempts) + 1):
             try:
                 if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
@@ -3713,6 +3730,11 @@ class Engine:
             external_media_id=external_media_id,
             attempts=attempts,
         )
+        if session:
+            await self._stop_connection_audio(
+                session,
+                reason="external-media-attach-retry-exhausted",
+            )
 
     async def _handle_caller_stasis_start_hybrid(self, caller_channel_id: str, channel: dict):
         """Handle caller channel entering Stasis - Hybrid ARI approach."""
@@ -4169,8 +4191,16 @@ class Engine:
                                 bridge_id=session.bridge_id,
                                 caller_channel_id=caller_channel_id,
                             )
+                            await self._stop_connection_audio(
+                                session,
+                                reason="external-media-attach-failed",
+                            )
                 else:
                     logger.error("🎯 EXTERNAL MEDIA - Failed to create ExternalMedia channel", channel_id=caller_channel_id)
+                    await self._stop_connection_audio(
+                        session,
+                        reason="external-media-start-failed",
+                    )
             else:
                 logger.info("🎯 HYBRID ARI - Step 5: Originating AudioSocket channel", channel_id=caller_channel_id)
                 await self._originate_audiosocket_channel_hybrid(caller_channel_id)
@@ -4232,11 +4262,19 @@ class Engine:
                 logger.error("🎯 HYBRID ARI - Failed to add Local channel to bridge", 
                            local_channel_id=local_channel_id,
                            bridge_id=bridge_id)
+                await self._stop_connection_audio(
+                    session,
+                    reason="local-media-attach-failed",
+                )
                 await self.ari_client.hangup_channel(local_channel_id)
         except Exception as e:
             logger.error("🎯 HYBRID ARI - Failed to handle Local channel StasisStart", 
                         local_channel_id=local_channel_id,
                         error=str(e), exc_info=True)
+            await self._stop_connection_audio(
+                session,
+                reason="local-media-attach-failed",
+            )
             await self.ari_client.hangup_channel(local_channel_id)
 
     async def _handle_audiosocket_channel_stasis_start(self, audiosocket_channel_id: str, channel: dict):
@@ -4313,6 +4351,10 @@ class Engine:
                 audiosocket_channel_id=audiosocket_channel_id,
                 caller_channel_id=caller_channel_id,
             )
+            await self._stop_connection_audio(
+                session,
+                reason="audiosocket-bridge-missing",
+            )
             await self.ari_client.hangup_channel(audiosocket_channel_id)
             return
 
@@ -4386,6 +4428,10 @@ class Engine:
                 caller_channel_id=caller_channel_id,
                 error=str(exc),
                 exc_info=True,
+            )
+            await self._stop_connection_audio(
+                session,
+                reason="audiosocket-attach-failed",
             )
             await self.ari_client.hangup_channel(audiosocket_channel_id)
 
@@ -6344,6 +6390,25 @@ class Engine:
                 return
             # Remove from pre-stasis tracking if present
             self._pre_stasis_channels.discard(channel_id)
+            # An originated AudioSocket leg can fail before StasisStart attaches
+            # it to the session. At that point the pending map is the only link
+            # back to the caller, so consume it here and end setup ringback.
+            pending_audiosocket_call_id = self.pending_audiosocket_channels.pop(
+                channel_id, None
+            )
+            if pending_audiosocket_call_id:
+                pending_session = await self.session_store.get_by_call_id(
+                    pending_audiosocket_call_id
+                )
+                if pending_session:
+                    if pending_session.audiosocket_uuid:
+                        self.uuidext_to_channel.pop(
+                            pending_session.audiosocket_uuid, None
+                        )
+                    await self._stop_connection_audio(
+                        pending_session,
+                        reason="audiosocket-destroyed-before-stasis",
+                    )
             await self._handle_outbound_channel_destroyed(event)
             logger.info("Channel destroyed", channel_id=channel_id)
             await self._cleanup_call(channel_id)
@@ -6832,6 +6897,11 @@ class Engine:
                 self._cancel_attended_transfer_screening(call_id, reason="call-cleanup")
             except Exception:
                 logger.debug("Attended transfer screening cleanup failed", call_id=call_id, exc_info=True)
+
+            try:
+                await self._stop_connection_audio(session, reason="call-cleanup")
+            except Exception:
+                logger.debug("Connection audio stop failed during cleanup", call_id=call_id, exc_info=True)
 
             # Stop background music if playing (AAVA-89)
             try:
@@ -7405,189 +7475,6 @@ class Engine:
             logger.debug("Call history module not available", call_id=call_id)
         except Exception as e:
             logger.debug("Failed to persist call history", call_id=call_id, error=str(e))
-
-    async def _resolve_audio_profile(self, session: CallSession, channel_id: str) -> None:
-        """Resolve TransportProfile and provider prefs from profiles/contexts.
-
-        Precedence (provider): AI_PROVIDER (later) > contexts.*.provider > default_provider.
-        """
-        call_id = session.call_id
-        # Read channel vars
-        ai_profile = None
-        ai_context = None
-        try:
-            resp = await self.ari_client.send_command(
-                "GET",
-                f"channels/{channel_id}/variable",
-                params={"variable": "AI_AUDIO_PROFILE"},
-            )
-            if isinstance(resp, dict):
-                ai_profile = (resp.get("value") or "").strip()
-        except Exception:
-            pass
-        try:
-            resp = await self.ari_client.send_command(
-                "GET",
-                f"channels/{channel_id}/variable",
-                params={"variable": "AI_CONTEXT"},
-            )
-            if isinstance(resp, dict):
-                ai_context = (resp.get("value") or "").strip()
-        except Exception:
-            pass
-
-        cfg_profiles = getattr(self.config, "profiles", {}) or {}
-        cfg_contexts = getattr(self.config, "contexts", {}) or {}
-        # Extract default profile name
-        default_profile_name = None
-        try:
-            dp = cfg_profiles.get("default")
-            if isinstance(dp, str) and dp:
-                default_profile_name = dp
-        except Exception:
-            default_profile_name = None
-        # Build profile map excluding the 'default' selector key
-        profile_map = {k: v for (k, v) in cfg_profiles.items() if isinstance(v, dict)}
-
-        # Resolve profile name from channel var, then context mapping, else default
-        context_block = cfg_contexts.get(ai_context) if ai_context else None
-        ctx_profile = None
-        try:
-            if isinstance(context_block, dict):
-                ctx_profile = context_block.get("profile")
-        except Exception:
-            ctx_profile = None
-        selected_profile_name = ai_profile or ctx_profile or default_profile_name
-        profile_obj = profile_map.get(selected_profile_name) if selected_profile_name else None
-        if profile_obj is None and default_profile_name:
-            profile_obj = profile_map.get(default_profile_name)
-
-        # Extract transport_out and provider prefs
-        transport_out = (profile_obj or {}).get("transport_out", {}) if isinstance(profile_obj, dict) else {}
-        prov_pref = (profile_obj or {}).get("provider_pref", {}) if isinstance(profile_obj, dict) else {}
-        chunk_ms = None
-        idle_cutoff_ms = None
-        try:
-            v = prov_pref.get("preferred_chunk_ms")
-            if v is not None:
-                chunk_ms = int(v)
-        except Exception:
-            pass
-        try:
-            v = (profile_obj or {}).get("idle_cutoff_ms")
-            if v is not None:
-                idle_cutoff_ms = int(v)
-        except Exception:
-            pass
-
-        # Determine transport encoding/rate from profile (fallback to existing)
-        enc = self._canonicalize_encoding(transport_out.get("encoding")) or session.transport_profile.format
-        try:
-            rate = int(transport_out.get("sample_rate_hz") or 0)
-        except Exception:
-            rate = 0
-        if rate <= 0:
-            rate = session.transport_profile.sample_rate
-
-        # Apply transport settings with 'config' source (won't override dialplan/detected)
-        try:
-            await self._update_transport_profile(session, fmt=enc, sample_rate=rate, source="config")
-        except Exception:
-            logger.debug("Transport profile update from profile failed", call_id=call_id, exc_info=True)
-
-        # Apply context-level provider override (Option A), lower precedence than AI_PROVIDER.
-        provider_origin = None
-        try:
-            ctx_provider = None
-            if isinstance(context_block, dict):
-                ctx_provider = (context_block.get("provider") or "").strip()
-            if ctx_provider:
-                resolved = ctx_provider
-                if resolved in self.providers and session.provider_name != resolved:
-                    prev = session.provider_name
-                    self._assign_session_provider(session, resolved)
-                    await self._save_session(session)
-                    provider_origin = "context"
-                    logger.info("Context provider override applied", call_id=call_id, context=ai_context, previous_provider=prev, provider=resolved)
-        except Exception:
-            logger.debug("Context provider override failed", call_id=call_id, exc_info=True)
-
-        # Wire streaming manager parameters (global fields; per-call override is a future improvement)
-        spm = getattr(self, "streaming_playback_manager", None)
-        if spm is not None:
-            # CRITICAL: Do NOT override audiosocket_format from transport profile.
-            # AudioSocket wire format must always match config.audiosocket.format (set at engine init),
-            # NOT the caller's SIP codec. Caller codec applies only to provider transcoding.
-            # Bug fix: removed lines that set spm.audiosocket_format = enc
-            try:
-                if rate and rate > 0:
-                    spm.sample_rate = int(rate)
-            except Exception:
-                pass
-            try:
-                if chunk_ms and int(chunk_ms) > 0:
-                    spm.chunk_size_ms = int(chunk_ms)
-            except Exception:
-                pass
-            try:
-                if idle_cutoff_ms and int(idle_cutoff_ms) > 0:
-                    spm.idle_cutoff_ms = int(idle_cutoff_ms)
-            except Exception:
-                pass
-
-        # Emit one-shot profile resolution card
-        try:
-            self._emit_profile_resolution_card(
-                session.call_id,
-                session,
-                profile_name=selected_profile_name,
-                context_name=ai_context,
-                transport_encoding=enc,
-                transport_sample_rate=rate,
-                chunk_ms=chunk_ms,
-                idle_cutoff_ms=idle_cutoff_ms,
-                provider_origin=provider_origin or ("profile" if ai_profile else ("context" if ai_context else None)),
-            )
-        except Exception:
-            logger.debug("Audio Profile Resolution card logging failed", call_id=call_id, exc_info=True)
-
-    def _emit_profile_resolution_card(
-        self,
-        call_id: Optional[str],
-        session: Optional[CallSession],
-        *,
-        profile_name: Optional[str],
-        context_name: Optional[str],
-        transport_encoding: Optional[Any],
-        transport_sample_rate: Optional[Any],
-        chunk_ms: Optional[Any],
-        idle_cutoff_ms: Optional[Any],
-        provider_origin: Optional[str],
-    ) -> None:
-        if not call_id or call_id in self._profile_card_logged:
-            return
-        def _ir(v):
-            try:
-                return int(v) if v is not None else None
-            except Exception:
-                return None
-        payload = {
-            "call_id": call_id,
-            "log_event": "Audio Profile Resolution",
-            "profile": profile_name,
-            "context": context_name,
-            "provider": getattr(session, "provider_name", None) if session else None,
-            "provider_origin": provider_origin,
-            "transport_encoding": self._canonicalize_encoding(transport_encoding) or None,
-            "transport_sample_rate_hz": _ir(transport_sample_rate),
-            "chunk_size_ms": _ir(chunk_ms),
-            "idle_cutoff_ms": _ir(idle_cutoff_ms),
-        }
-        try:
-            logger.info("AudioProfileResolution", **{k: v for k, v in payload.items() if v is not None})
-            self._profile_card_logged.add(call_id)
-        except Exception:
-            logger.debug("Profile resolution card logging failed", call_id=call_id, exc_info=True)
 
     async def _audiosocket_handle_uuid(self, conn_id: str, uuid_str: str) -> bool:
         """Bind inbound AudioSocket connection to the caller channel via UUID."""
@@ -10481,6 +10368,7 @@ class Engine:
                     code=code,
                     reason=reason,
                 )
+                await self._stop_connection_audio(session, reason="provider-disconnected")
                 try:
                     session.provider_session_active = False
                     await self._save_session(session)
@@ -10593,6 +10481,9 @@ class Engine:
                         )
                 except Exception:
                     logger.debug("Output suppression check failed", call_id=call_id, exc_info=True)
+                # This chunk is accepted and is about to enter the caller-facing
+                # playback path, so the setup tone can hand off without overlap.
+                await self._stop_connection_audio(session, reason="first-provider-audio")
                 # This is real audio that will enter the caller-facing playback
                 # path.  Track it independently from echo/AEC gating state.
                 await self._note_provider_output_start(call_id)
@@ -12357,6 +12248,11 @@ class Engine:
             # Final pass: ensure greeting can safely reference template variables.
             if greeting:
                 greeting = self._apply_prompt_template_substitution(greeting, session)
+
+            # Bound pipeline greeting handoff just like monolithic providers.
+            # This background watchdog still fires if a TTS async generator hangs
+            # before yielding its first caller-facing audio chunk.
+            self._schedule_connection_audio_handoff_timeout(session)
             
             if greeting:
                 max_attempts = 2
@@ -12398,6 +12294,10 @@ class Engine:
                             async for chunk in pipeline.tts_adapter.synthesize(call_id, greeting, pipeline.tts_options):
                                 if not chunk:
                                     continue
+                                if not any_audio:
+                                    await self._stop_connection_audio(
+                                        session, reason="first-pipeline-greeting-audio"
+                                    )
                                 any_audio = True
                                 await q.put(chunk)
                             try:
@@ -12430,6 +12330,9 @@ class Engine:
                                     attempt=attempt,
                                 )
                             else:
+                                await self._stop_connection_audio(
+                                    session, reason="pipeline-greeting-file-ready"
+                                )
                                 await self.playback_manager.play_audio(call_id, bytes(tts_bytes), "pipeline-tts-greeting")
                                 
                                 # AAVA-85: Persist greeting to session history so it appears in email summary
@@ -12476,6 +12379,10 @@ class Engine:
                             exc_info=True,
                         )
                         break
+
+            # No greeting (or a TTS failure that produced no frames) must not
+            # leave an indefinite tone playing after the pipeline is ready.
+            await self._stop_connection_audio(session, reason="pipeline-ready")
 
             # The pipeline and its greeting path are now initialized. If greeting
             # playback is still active, the coordinator keeps the timer paused and
@@ -14108,6 +14015,13 @@ class Engine:
         # Engine._resolve_audio_profile directly do not need to grow this helper.
         await Engine._configure_no_input_watchdog(self, session, no_input_context)
 
+        # GitHub #527: start caller-only connection audio before provider/pipeline
+        # selection can return early. This covers monolithic providers, modular
+        # pipelines, and pre-call tools through one engine-owned lifecycle.
+        connection_audio = getattr(no_input_context, "connection_audio", None) if no_input_context else None
+        if connection_audio:
+            await Engine._start_connection_audio(self, session, connection_audio)
+
         # Thread per-agent post-call email overrides onto the session (H5) here,
         # before any provider early-return. The monolithic path below also resolves
         # these from transport.context, but pipeline providers are not in
@@ -14362,6 +14276,186 @@ class Engine:
                 exc_info=True,
             )
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # Connection Audio (GitHub #527)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_connection_audio_uri(media_uri: Any) -> Optional[str]:
+        """Return a safe ARI media URI, treating bare values as Asterisk sounds."""
+        value = str(media_uri or "").strip()
+        if not value:
+            return None
+        # Connection media is operator-managed Asterisk-local content. Reject
+        # nested network URLs so this setting cannot become an ARI-side fetch.
+        if "://" in value:
+            logger.warning("Remote connection audio URI is not allowed", media_uri=value)
+            return None
+        allowed_prefixes = ("tone:", "sound:", "recording:")
+        if value.startswith(allowed_prefixes):
+            return value
+        # Keep the YAML/UI shorthand friendly while restricting playback to
+        # documented ARI media types. For example, custom/please-wait becomes
+        # sound:custom/please-wait.
+        if ":" not in value:
+            return f"sound:{value}"
+        logger.warning("Unsupported connection audio URI", media_uri=value)
+        return None
+
+    async def _start_connection_audio(self, session: CallSession, media_uri: Any) -> None:
+        """Play setup/ringback media only to the caller while the AI initializes."""
+        if getattr(session, "connection_audio_playback_id", None):
+            return
+        channel_id = getattr(session, "caller_channel_id", None)
+        normalized_uri = Engine._normalize_connection_audio_uri(media_uri)
+        if not channel_id or not normalized_uri:
+            return
+
+        playback_id = f"connection-audio-{uuid.uuid4().hex}"
+        try:
+            started = await self.ari_client.play_media_on_channel_with_id(
+                channel_id, normalized_uri, playback_id
+            )
+            if not started:
+                logger.warning(
+                    "Connection audio failed to start",
+                    call_id=session.call_id,
+                    channel_id=channel_id,
+                    media_uri=normalized_uri,
+                )
+                return
+            session.connection_audio_playback_id = playback_id
+            session.connection_audio_media_uri = normalized_uri
+            session.connection_audio_started_ts = time.time()
+            await self._save_session(session)
+            logger.info(
+                "Connection audio started",
+                call_id=session.call_id,
+                channel_id=channel_id,
+                media_uri=normalized_uri,
+                playback_id=playback_id,
+            )
+        except Exception:
+            logger.warning(
+                "Connection audio failed to start",
+                call_id=getattr(session, "call_id", None),
+                channel_id=channel_id,
+                media_uri=normalized_uri,
+                exc_info=True,
+            )
+
+    async def _stop_connection_audio(self, session: CallSession, *, reason: str) -> None:
+        """Stop connection audio once caller-facing AI audio can take over."""
+        playback_id = getattr(session, "connection_audio_playback_id", None)
+        if not playback_id:
+            return
+
+        media_uri = getattr(session, "connection_audio_media_uri", None)
+        started_ts = float(getattr(session, "connection_audio_started_ts", 0.0) or 0.0)
+        stopped = await self.ari_client.stop_playback(playback_id)
+        if stopped is False:
+            logger.warning(
+                "Connection audio stop was not confirmed",
+                call_id=session.call_id,
+                playback_id=playback_id,
+                media_uri=media_uri,
+                retry_retained=True,
+            )
+            return
+
+        # Retain the playback id until ARI confirms success (including an
+        # already-absent 404) so call cleanup can retry transient failures.
+        # A concurrent successful stop may already have cleared this playback.
+        if getattr(session, "connection_audio_playback_id", None) == playback_id:
+            session.connection_audio_playback_id = None
+            session.connection_audio_media_uri = None
+            session.connection_audio_started_ts = 0.0
+            try:
+                await self._save_session(session)
+            except Exception:
+                logger.debug(
+                    "Failed to persist connection audio stop",
+                    call_id=session.call_id,
+                    exc_info=True,
+                )
+        handoff_tasks = getattr(self, "_connection_audio_handoff_tasks", None)
+        if handoff_tasks is not None:
+            handoff_task = handoff_tasks.pop(session.call_id, None)
+            if (
+                handoff_task
+                and handoff_task is not asyncio.current_task()
+                and not handoff_task.done()
+            ):
+                handoff_task.cancel()
+        elapsed_ms = int(max(0.0, time.time() - started_ts) * 1000) if started_ts else None
+        logger.info(
+            "Connection audio stopped",
+            call_id=session.call_id,
+            media_uri=media_uri,
+            playback_id=playback_id,
+            reason=reason,
+            elapsed_ms=elapsed_ms,
+        )
+
+    async def _stop_connection_audio_after_handoff_timeout(
+        self,
+        session: CallSession,
+        playback_id: str,
+    ) -> None:
+        """Stop setup audio if a ready provider never emits caller-facing audio."""
+        timeout_seconds = float(
+            getattr(
+                self,
+                "_connection_audio_handoff_timeout_seconds",
+                CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS,
+            )
+        )
+        await asyncio.sleep(max(0.0, timeout_seconds))
+        if getattr(session, "connection_audio_playback_id", None) != playback_id:
+            return
+
+        logger.warning(
+            "Provider produced no audio before connection audio timeout",
+            call_id=session.call_id,
+            playback_id=playback_id,
+            timeout_seconds=timeout_seconds,
+        )
+        await self._stop_connection_audio(
+            session,
+            reason="provider-first-audio-timeout",
+        )
+
+    def _schedule_connection_audio_handoff_timeout(
+        self,
+        session: CallSession,
+    ) -> Optional[asyncio.Task]:
+        """Arm the non-blocking provider-audio handoff watchdog for a call."""
+        playback_id = getattr(session, "connection_audio_playback_id", None)
+        if not playback_id:
+            return None
+
+        handoff_tasks = getattr(self, "_connection_audio_handoff_tasks", None)
+        if handoff_tasks is None:
+            handoff_tasks = {}
+            self._connection_audio_handoff_tasks = handoff_tasks
+        previous = handoff_tasks.get(session.call_id)
+        if previous and not previous.done():
+            previous.cancel()
+
+        task = self._fire_and_forget_for_call(
+            session.call_id,
+            self._stop_connection_audio_after_handoff_timeout(session, playback_id),
+            name=f"connection-audio-handoff-timeout-{session.call_id}",
+        )
+        handoff_tasks[session.call_id] = task
+
+        def _discard_handoff_task(done_task: asyncio.Task) -> None:
+            if handoff_tasks.get(session.call_id) is done_task:
+                handoff_tasks.pop(session.call_id, None)
+
+        task.add_done_callback(_discard_handoff_task)
+        return task
+
     # ─────────────────────────────────────────────────────────────────────────
     # Background Music (AAVA-89)
     # ─────────────────────────────────────────────────────────────────────────
@@ -15500,6 +15594,9 @@ class Engine:
                         requested_provider=provider_name,
                         fallback_provider=fallback_name,
                     )
+                    await self._stop_connection_audio(
+                        session, reason="provider-unavailable"
+                    )
                     return
 
             # Create a per-call provider instance (providers are NOT concurrency-safe across calls).
@@ -15756,11 +15853,50 @@ class Engine:
             await provider.start_session(call_id, context=provider_context if provider_context else None)
             logger.info("Provider session started", call_id=call_id, provider=provider_name)
             # If provider supports an explicit greeting (e.g., LocalProvider), trigger it now
+            explicit_greeting_failed = False
+            explicit_greeting_queued = None
+            has_explicit_greeting = callable(
+                getattr(provider, "play_initial_greeting", None)
+            )
             try:
-                if hasattr(provider, 'play_initial_greeting'):
-                    await provider.play_initial_greeting(call_id)
+                if has_explicit_greeting:
+                    explicit_greeting_queued = await provider.play_initial_greeting(call_id)
             except Exception:
+                explicit_greeting_failed = True
                 logger.debug("Provider initial greeting failed or unsupported", exc_info=True)
+            if explicit_greeting_failed:
+                # An explicit greeting provider can remain otherwise healthy after
+                # synthesis/playback fails. Do not leave its caller hearing setup
+                # ringback indefinitely while the session waits for later audio.
+                await self._stop_connection_audio(
+                    session, reason="provider-initial-greeting-failed"
+                )
+            elif explicit_greeting_queued is False:
+                # Explicit-greeting providers can report that a blank greeting
+                # intentionally queued no audio. The session is already ready to
+                # listen, so setup ringback should end immediately.
+                await self._stop_connection_audio(
+                    session, reason="provider-initial-greeting-skipped"
+                )
+            elif not has_explicit_greeting and not (
+                str(
+                    getattr(getattr(provider, "config", None), "greeting", "")
+                    or ""
+                ).strip()
+                or bool(getattr(provider, "provider_owned_initial_greeting", False))
+            ):
+                # Providers such as OpenAI/Google are already listening when no
+                # configured greeting exists. Only retain ringback when a greeting
+                # is configured or the provider can own its first message remotely.
+                await self._stop_connection_audio(
+                    session, reason="provider-no-initial-greeting"
+                )
+            else:
+                # Provider-owned greetings (for example an ElevenLabs dashboard
+                # first message) may emit audio even when AVA has no greeting in
+                # its config. Keep ringback until the first AgentAudio event, but
+                # bound the wait so a silent provider cannot ring forever.
+                self._schedule_connection_audio_handoff_timeout(session)
             session.provider_session_active = True
             # Ensure upstream capture is enabled for real-time providers when not gated
             try:
@@ -15822,6 +15958,7 @@ class Engine:
 
         session.provider_failure_action_started = True
         await self._save_session(session)
+        await self._stop_connection_audio(session, reason="provider-start-failed")
         on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
 
         if on_failure == "leave_open":
@@ -16658,6 +16795,13 @@ class Engine:
                     async def play_hold_audio():
                         await asyncio.sleep(hold_threshold_ms / 1000.0)
                         try:
+                            # Connection ringback and the tool's hold prompt both
+                            # target the caller channel. Hand off cleanly before
+                            # starting the configured pre-call hold audio.
+                            await self._stop_connection_audio(
+                                session,
+                                reason="pre-call-hold-audio",
+                            )
                             # Play the configured hold audio file via ARI
                             await self.ari_client.play_sound(session.caller_channel_id, hold_file)
                             logger.debug("Playing hold audio for pre-call tool",

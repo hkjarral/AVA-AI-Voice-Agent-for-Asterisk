@@ -554,7 +554,27 @@ Each context supports the following fields:
 - `disable_global_pre_call_tools`: Disable specific global pre-call tools for this context.
 - `disable_global_in_call_tools`: Disable specific global in-call tools for this context.
 - `disable_global_post_call_tools`: Disable specific global post-call tools for this context.
+- `connection_audio`: Optional caller-only Asterisk ARI media URI played after answer while the provider or pipeline initializes. `tone:ring` repeats until stopped; omit or leave empty to disable it.
 - `background_music`: Music On Hold class name for ambient music during calls (see below).
+
+### Connection Audio / Ringback
+
+Connection audio removes silent wait time between answer and the initial greeting without injecting audio into the provider, STT, or VAD path. The engine targets the caller channel and stops playback immediately before the first provider or pipeline greeting audio. Cleanup and provider-start failures also stop it.
+
+- Recommended value: `tone:ring` (continuous local ringback until the greeting is ready).
+- Optional locale: `tone:ring;tonezone=fr` (replace `fr` with an installed Asterisk tone zone).
+- Local prompt: `sound:custom/please-wait` (plays once; the sound must exist on Asterisk).
+- Remote URLs and `file:` URIs are rejected. Leave the field empty to disable connection audio.
+
+In the Admin UI, edit an agent and enable **Play ringback while connecting**. The value is stored in the agent's `extra_json`, exported as `connection_audio`, and works identically for full-agent providers and modular pipelines.
+
+```yaml
+contexts:
+  support:
+    greeting: "Hello, how can I help?"
+    prompt: "You are a helpful support agent."
+    connection_audio: "tone:ring"
+```
 
 ### HTTP Tools (Phase Tools)
 
