@@ -154,3 +154,80 @@ async def test_first_provider_audio_stops_connection_audio_before_playback_work(
     engine._stop_connection_audio.assert_awaited_once_with(
         session, reason="first-provider-audio"
     )
+
+
+@pytest.mark.asyncio
+async def test_external_media_attach_failure_stops_connection_audio():
+    """A failed ExternalMedia bridge attachment cannot leave ringback running."""
+    engine = Engine.__new__(Engine)
+    session = CallSession(call_id="call-external", caller_channel_id="caller-external")
+    session.bridge_id = "bridge-external"
+    engine._attended_transfer_helper_external_media_to_agent_channel = {}
+    engine.session_store = SimpleNamespace(
+        get_by_channel_id=AsyncMock(return_value=session),
+    )
+    engine.ari_client = SimpleNamespace(
+        add_channel_to_bridge=AsyncMock(return_value=False),
+    )
+    engine._stop_connection_audio = AsyncMock()
+
+    await engine._handle_external_media_stasis_start(
+        "external-media-failed",
+        {"id": "external-media-failed"},
+    )
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="external-media-attach-failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_media_attach_failure_stops_connection_audio():
+    """A failed Local media-leg attachment cannot leave ringback running."""
+    engine = Engine.__new__(Engine)
+    session = CallSession(call_id="call-local", caller_channel_id="caller-local")
+    session.bridge_id = "bridge-local"
+    engine._find_caller_for_local = AsyncMock(return_value=session.call_id)
+    engine.session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+    )
+    engine.ari_client = SimpleNamespace(
+        add_channel_to_bridge=AsyncMock(return_value=False),
+        hangup_channel=AsyncMock(),
+    )
+    engine._stop_connection_audio = AsyncMock()
+
+    await engine._handle_local_stasis_start_hybrid(
+        "local-media-failed",
+        {"id": "local-media-failed"},
+    )
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="local-media-attach-failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audiosocket_attach_failure_stops_connection_audio():
+    """A failed AudioSocket bridge attachment cannot leave ringback running."""
+    engine = Engine.__new__(Engine)
+    session = CallSession(call_id="call-as", caller_channel_id="caller-as")
+    session.bridge_id = "bridge-as"
+    engine.pending_audiosocket_channels = {"audiosocket-failed": session.call_id}
+    engine.session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=session),
+    )
+    engine.ari_client = SimpleNamespace(
+        add_channel_to_bridge=AsyncMock(return_value=False),
+        hangup_channel=AsyncMock(),
+    )
+    engine._stop_connection_audio = AsyncMock()
+
+    await engine._handle_audiosocket_channel_stasis_start(
+        "audiosocket-failed",
+        {"id": "audiosocket-failed", "name": "AudioSocket/test"},
+    )
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="audiosocket-attach-failed"
+    )

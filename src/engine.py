@@ -3591,10 +3591,18 @@ class Engine:
                     logger.error("🎯 EXTERNAL MEDIA - Failed to add ExternalMedia channel to bridge", 
                                external_media_id=external_media_id,
                                bridge_id=bridge_id)
+                    await self._stop_connection_audio(
+                        session,
+                        reason="external-media-attach-failed",
+                    )
             else:
                 logger.error("ExternalMedia channel entered Stasis but no bridge found", 
                            external_media_id=external_media_id,
                            caller_channel_id=caller_channel_id)
+                await self._stop_connection_audio(
+                    session,
+                    reason="external-media-bridge-missing",
+                )
                 
         except Exception as e:
             logger.error("Error handling ExternalMedia StasisStart", 
@@ -3662,6 +3670,7 @@ class Engine:
         Mitigates an ARI event-order race where the ExternalMedia channel's StasisStart
         can arrive before the call session has been updated with external_media_id.
         """
+        session = None
         for attempt in range(1, max(1, attempts) + 1):
             try:
                 if external_media_id in self._attended_transfer_helper_external_media_to_agent_channel:
@@ -3714,6 +3723,11 @@ class Engine:
             external_media_id=external_media_id,
             attempts=attempts,
         )
+        if session:
+            await self._stop_connection_audio(
+                session,
+                reason="external-media-attach-retry-exhausted",
+            )
 
     async def _handle_caller_stasis_start_hybrid(self, caller_channel_id: str, channel: dict):
         """Handle caller channel entering Stasis - Hybrid ARI approach."""
@@ -4170,6 +4184,10 @@ class Engine:
                                 bridge_id=session.bridge_id,
                                 caller_channel_id=caller_channel_id,
                             )
+                            await self._stop_connection_audio(
+                                session,
+                                reason="external-media-attach-failed",
+                            )
                 else:
                     logger.error("🎯 EXTERNAL MEDIA - Failed to create ExternalMedia channel", channel_id=caller_channel_id)
                     await self._stop_connection_audio(
@@ -4237,11 +4255,19 @@ class Engine:
                 logger.error("🎯 HYBRID ARI - Failed to add Local channel to bridge", 
                            local_channel_id=local_channel_id,
                            bridge_id=bridge_id)
+                await self._stop_connection_audio(
+                    session,
+                    reason="local-media-attach-failed",
+                )
                 await self.ari_client.hangup_channel(local_channel_id)
         except Exception as e:
             logger.error("🎯 HYBRID ARI - Failed to handle Local channel StasisStart", 
                         local_channel_id=local_channel_id,
                         error=str(e), exc_info=True)
+            await self._stop_connection_audio(
+                session,
+                reason="local-media-attach-failed",
+            )
             await self.ari_client.hangup_channel(local_channel_id)
 
     async def _handle_audiosocket_channel_stasis_start(self, audiosocket_channel_id: str, channel: dict):
@@ -4318,6 +4344,10 @@ class Engine:
                 audiosocket_channel_id=audiosocket_channel_id,
                 caller_channel_id=caller_channel_id,
             )
+            await self._stop_connection_audio(
+                session,
+                reason="audiosocket-bridge-missing",
+            )
             await self.ari_client.hangup_channel(audiosocket_channel_id)
             return
 
@@ -4391,6 +4421,10 @@ class Engine:
                 caller_channel_id=caller_channel_id,
                 error=str(exc),
                 exc_info=True,
+            )
+            await self._stop_connection_audio(
+                session,
+                reason="audiosocket-attach-failed",
             )
             await self.ari_client.hangup_channel(audiosocket_channel_id)
 
