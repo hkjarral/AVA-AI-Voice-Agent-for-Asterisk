@@ -69,6 +69,24 @@ class _GreetingAcceptedProvider:
         return None
 
 
+class _GreetingSkippedProvider:
+    """Explicit-greeting provider with no configured greeting to queue."""
+
+    config = SimpleNamespace(greeting=None)
+
+    async def start_session(self, call_id, context=None):
+        """Represent a provider connection that succeeds normally."""
+        return None
+
+    async def play_initial_greeting(self, call_id):
+        """Report that the blank greeting intentionally queued no audio."""
+        return False
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
 class _ProviderOwnedGreetingProvider:
     """Provider whose first message is configured outside AVA."""
 
@@ -199,6 +217,25 @@ async def test_explicit_greeting_without_audio_stops_connection_audio_after_time
     engine._stop_connection_audio.assert_awaited_once_with(
         session, reason="provider-first-audio-timeout"
     )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_blank_explicit_greeting_stops_connection_audio_immediately():
+    """A ready explicit-greeting provider must not ring through a blank greeting."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _GreetingSkippedProvider}
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-initial-greeting-skipped"
+    )
+    assert not engine._call_bg_tasks.get("call-1")
     assert session.provider_session_active is True
 
 

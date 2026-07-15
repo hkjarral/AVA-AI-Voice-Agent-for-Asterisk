@@ -1781,8 +1781,8 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # mode: 'mulaw8k' or 'pcm16_8k'
         self.input_mode = mode
 
-    async def play_initial_greeting(self, call_id: str):
-        """Play an initial greeting message to the caller."""
+    async def play_initial_greeting(self, call_id: str) -> bool:
+        """Queue an initial greeting and report whether audio was requested."""
         try:
             # Ensure websocket connection exists
             if not self.is_connected():
@@ -1797,7 +1797,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             greeting_text = self._initial_greeting or ""
             if not greeting_text.strip():
                 logger.info("No initial greeting configured; skipping greeting playback", call_id=call_id)
-                return
+                return False
 
             # Send a TTS request that the local AI server understands; it will
             # reply with metadata (tts_audio) and then a binary payload, which
@@ -1819,6 +1819,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                     "text": greeting_text,
                 })
                 logger.debug("Recorded greeting in conversation history", call_id=call_id)
+            return True
         except Exception as e:
             logger.error("Failed to send greeting message", call_id=call_id, error=str(e), exc_info=True)
             raise

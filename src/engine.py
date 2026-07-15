@@ -15835,9 +15835,10 @@ class Engine:
             logger.info("Provider session started", call_id=call_id, provider=provider_name)
             # If provider supports an explicit greeting (e.g., LocalProvider), trigger it now
             explicit_greeting_failed = False
+            explicit_greeting_queued = None
             try:
                 if hasattr(provider, 'play_initial_greeting'):
-                    await provider.play_initial_greeting(call_id)
+                    explicit_greeting_queued = await provider.play_initial_greeting(call_id)
             except Exception:
                 explicit_greeting_failed = True
                 logger.debug("Provider initial greeting failed or unsupported", exc_info=True)
@@ -15847,6 +15848,13 @@ class Engine:
                 # ringback indefinitely while the session waits for later audio.
                 await self._stop_connection_audio(
                     session, reason="provider-initial-greeting-failed"
+                )
+            elif explicit_greeting_queued is False:
+                # Explicit-greeting providers can report that a blank greeting
+                # intentionally queued no audio. The session is already ready to
+                # listen, so setup ringback should end immediately.
+                await self._stop_connection_audio(
+                    session, reason="provider-initial-greeting-skipped"
                 )
             else:
                 # Provider-owned greetings (for example an ElevenLabs dashboard
