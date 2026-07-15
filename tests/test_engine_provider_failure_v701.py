@@ -91,9 +91,24 @@ class _ProviderOwnedGreetingProvider:
     """Provider whose first message is configured outside AVA."""
 
     config = SimpleNamespace(greeting=None)
+    provider_owned_initial_greeting = True
 
     async def start_session(self, call_id, context=None):
         """Represent a ready provider that may later emit dashboard-owned audio."""
+        return None
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
+class _NoGreetingProvider:
+    """Ready provider with neither a local nor provider-owned first message."""
+
+    config = SimpleNamespace(greeting=None)
+
+    async def start_session(self, call_id, context=None):
+        """Represent a ready provider that immediately starts listening."""
         return None
 
     async def stop_session(self):
@@ -259,6 +274,25 @@ async def test_provider_owned_greeting_keeps_ringback_until_bounded_timeout():
     engine._stop_connection_audio.assert_awaited_once_with(
         session, reason="provider-first-audio-timeout"
     )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_provider_without_greeting_stops_connection_audio_immediately():
+    """A ready, listening provider must not retain ringback without first audio."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _NoGreetingProvider}
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-no-initial-greeting"
+    )
+    assert not engine._call_bg_tasks.get("call-1")
     assert session.provider_session_active is True
 
 

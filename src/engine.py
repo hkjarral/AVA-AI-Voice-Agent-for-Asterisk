@@ -15855,8 +15855,11 @@ class Engine:
             # If provider supports an explicit greeting (e.g., LocalProvider), trigger it now
             explicit_greeting_failed = False
             explicit_greeting_queued = None
+            has_explicit_greeting = callable(
+                getattr(provider, "play_initial_greeting", None)
+            )
             try:
-                if hasattr(provider, 'play_initial_greeting'):
+                if has_explicit_greeting:
                     explicit_greeting_queued = await provider.play_initial_greeting(call_id)
             except Exception:
                 explicit_greeting_failed = True
@@ -15874,6 +15877,19 @@ class Engine:
                 # listen, so setup ringback should end immediately.
                 await self._stop_connection_audio(
                     session, reason="provider-initial-greeting-skipped"
+                )
+            elif not has_explicit_greeting and not (
+                str(
+                    getattr(getattr(provider, "config", None), "greeting", "")
+                    or ""
+                ).strip()
+                or bool(getattr(provider, "provider_owned_initial_greeting", False))
+            ):
+                # Providers such as OpenAI/Google are already listening when no
+                # configured greeting exists. Only retain ringback when a greeting
+                # is configured or the provider can own its first message remotely.
+                await self._stop_connection_audio(
+                    session, reason="provider-no-initial-greeting"
                 )
             else:
                 # Provider-owned greetings (for example an ElevenLabs dashboard

@@ -65,6 +65,10 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
     Provides STT + LLM + TTS in a single WebSocket connection,
     similar to Deepgram Voice Agent and OpenAI Realtime providers.
     """
+
+    # The ElevenLabs dashboard may define the first message independently of
+    # AVA's per-agent greeting override.
+    provider_owned_initial_greeting = True
     
     # ElevenLabs WebSocket endpoint
     CONVAI_WS_URL = "wss://api.elevenlabs.io/v1/convai/conversation"
