@@ -42,6 +42,55 @@ func TestRequestedLocalChangesPolicyRejectsUnknownValue(t *testing.T) {
 	}
 }
 
+func TestResolveLocalChangesPolicyRejectsNoStashWithRetainOrOverwrite(t *testing.T) {
+	oldLocalChanges := updateLocalChanges
+	oldNoStash := updateNoStash
+	t.Cleanup(func() {
+		updateLocalChanges = oldLocalChanges
+		updateNoStash = oldNoStash
+	})
+
+	updateNoStash = true
+	for _, policy := range []string{"retain", "overwrite"} {
+		updateLocalChanges = policy
+		if _, err := resolveLocalChangesPolicy(true, []string{"src/engine.py"}); err == nil {
+			t.Fatalf("expected --no-stash with --local-changes=%s to fail", policy)
+		}
+	}
+
+	updateLocalChanges = "ask"
+	got, err := resolveLocalChangesPolicy(true, []string{"src/engine.py"})
+	if err != nil {
+		t.Fatalf("ask policy with --no-stash should become abort without error: %v", err)
+	}
+	if got != localChangesAbort {
+		t.Fatalf("ask policy with --no-stash = %q, want %q", got, localChangesAbort)
+	}
+}
+
+func TestResolveLocalChangesPolicyNonInteractiveRequiresExplicitPolicy(t *testing.T) {
+	oldLocalChanges := updateLocalChanges
+	oldNoStash := updateNoStash
+	oldStdin := os.Stdin
+	t.Cleanup(func() {
+		updateLocalChanges = oldLocalChanges
+		updateNoStash = oldNoStash
+		os.Stdin = oldStdin
+	})
+
+	updateLocalChanges = "ask"
+	updateNoStash = false
+	stdin, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	defer stdin.Close()
+	os.Stdin = stdin
+	if _, err := resolveLocalChangesPolicy(true, []string{"src/engine.py"}); err == nil {
+		t.Fatal("expected dirty non-interactive ask policy to require an explicit policy")
+	}
+}
+
 func TestGitDiscardLocalChangesKeepsUntrackedByDefault(t *testing.T) {
 	initDiscardLocalChangesRepo(t)
 

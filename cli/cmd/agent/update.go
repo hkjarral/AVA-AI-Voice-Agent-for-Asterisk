@@ -442,7 +442,10 @@ func runUpdatePlan(ctx *updateContext) error {
 	if err != nil {
 		return err
 	}
-	if updateNoStash && localPolicy == localChangesAsk {
+	if updateNoStash {
+		if localPolicy != localChangesAsk && localPolicy != localChangesAbort {
+			return errors.New("--no-stash cannot be combined with --local-changes=retain or --local-changes=overwrite")
+		}
 		localPolicy = localChangesAbort
 	}
 

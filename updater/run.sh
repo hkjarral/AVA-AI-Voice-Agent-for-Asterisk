@@ -486,6 +486,9 @@ run_update() {
     elif grep -qi "stash pop failed" "${JOB_LOG_PATH}" 2>/dev/null; then
       failure_stage="stash_conflict"
       failure_reason="local changes require manual stash conflict resolution"
+    elif grep -qi "local-change policy\\|local changes.*--local-changes\\|re-run with --local-changes" "${JOB_LOG_PATH}" 2>/dev/null; then
+      failure_stage="local_changes_decision_required"
+      failure_reason="update stopped because local code changes need an explicit retain, overwrite, or abort decision"
     elif grep -qi "failed to parse.*ai-agent.*yaml\\|parse existing config/ai-agent.local.yaml" "${JOB_LOG_PATH}" 2>/dev/null; then
       failure_stage="config_parse_error"
       failure_reason="configuration YAML could not be parsed during migration"

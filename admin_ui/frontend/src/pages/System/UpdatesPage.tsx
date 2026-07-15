@@ -314,9 +314,6 @@ const UpdatesPage = () => {
         params: { ref: ref || targetRef, include_ui: includeUI, checkout: targetCheckout, local_changes: localChangesPolicy || 'ask' },
       });
       setPlan(res.data.plan);
-      if (!res.data.plan?.dirty) {
-        setLocalChangesPolicy('retain');
-      }
     } catch (err: any) {
       setPlanError(err.response?.data?.detail || err.message || 'Failed to compute update plan');
     } finally {
