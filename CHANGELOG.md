@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Local release reports use persisted call evidence instead of current-state guesses** (`scripts/local_test_report.py`): transport is recovered from the selected call before configuration fallback, model timing is retained from the contiguous call log window, apostrophes in STT transcripts no longer truncate parsing, tool results fall back to Call History after container restarts, and disabled/skipped post-call hooks are not reported as successes.
 - **Tesla V100S release-candidate coverage is recorded for both transports** (`docs/COMMUNITY_TEST_MATRIX.md`): Faster-Whisper CUDA float16, Llama 3.1 8B Q4_K_M, and Kokoro passed supervised AudioSocket and ExternalMedia calls plus a four-session LLM/TTS isolation soak and restart recovery.
 
+## [7.3.5] - 2026-07-15
+
+### Added
+
+- **Per-agent caller connection ringback** (`src/engine.py`, `src/core/models.py`, `src/core/transport_orchestrator.py`, `src/core/agent_store.py`, Admin UI Agents form): operators can enable caller-only setup audio while a full-agent provider or modular pipeline initializes. The UI defaults enabled agents to Asterisk's repeating `tone:ring`, while YAML/API configurations may use an Asterisk-local `tone:`, `sound:`, or `recording:` URI. The feature is disabled by default and never plays into the provider media path.
+- **Shared provider/pipeline handoff lifecycle** (`src/engine.py`): ringback starts after the agent context resolves and stops idempotently on the first caller-facing provider audio, first pipeline greeting audio, ready-without-greeting state, provider disconnect/start failure, explicit-greeting failure, or call cleanup. This avoids provider-specific implementations and prevents leaked playback.
+
+### Documentation
+
+- Added connection-audio configuration and Admin UI guidance to `README.md`, `docs/AGENTS.md`, and `docs/Configuration-Reference.md`. Automated engine/store/context and frontend round-trip tests cover the feature, and supervised AudioSocket calls validated Grok, Google Live, Deepgram, OpenAI Realtime, Local Hybrid, ElevenLabs Agent, and Fully Local handoffs.
+
 ## [7.3.2] - 2026-07-11
 
 ### Added

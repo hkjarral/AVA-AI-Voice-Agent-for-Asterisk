@@ -15889,10 +15889,12 @@ class Engine:
             await provider.start_session(call_id, context=provider_context if provider_context else None)
             logger.info("Provider session started", call_id=call_id, provider=provider_name)
             # If provider supports an explicit greeting (e.g., LocalProvider), trigger it now
+            explicit_greeting_failed = False
             try:
                 if hasattr(provider, 'play_initial_greeting'):
                     await provider.play_initial_greeting(call_id)
             except Exception:
+                explicit_greeting_failed = True
                 logger.debug("Provider initial greeting failed or unsupported", exc_info=True)
             # Providers with no configured greeting will never emit a first
             # AgentAudio event, so hand off as soon as their session is ready.
@@ -15906,7 +15908,14 @@ class Engine:
                     or getattr(provider, "_initial_greeting", None)
                 )
             configured_greeting = provider_context.get("greeting") or configured_greeting
-            if not str(configured_greeting or "").strip():
+            if explicit_greeting_failed:
+                # An explicit greeting provider can remain otherwise healthy after
+                # synthesis/playback fails. Do not leave its caller hearing setup
+                # ringback indefinitely while the session waits for later audio.
+                await self._stop_connection_audio(
+                    session, reason="provider-initial-greeting-failed"
+                )
+            elif not str(configured_greeting or "").strip():
                 await self._stop_connection_audio(session, reason="provider-ready-no-greeting")
             session.provider_session_active = True
             # Ensure upstream capture is enabled for real-time providers when not gated

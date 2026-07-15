@@ -9,6 +9,7 @@ from src.engine import Engine
 
 
 def test_connection_audio_uri_normalization():
+    """Only supported Asterisk-local connection media URIs are accepted."""
     assert Engine._normalize_connection_audio_uri("tone:ring") == "tone:ring"
     assert Engine._normalize_connection_audio_uri("tone:ring;tonezone=fr") == "tone:ring;tonezone=fr"
     assert Engine._normalize_connection_audio_uri("custom/please-wait") == "sound:custom/please-wait"
@@ -19,6 +20,7 @@ def test_connection_audio_uri_normalization():
 
 @pytest.mark.asyncio
 async def test_connection_audio_starts_on_caller_channel_and_stops_idempotently():
+    """Connection audio targets only the caller and duplicate stops are harmless."""
     engine = Engine.__new__(Engine)
     engine.ari_client = SimpleNamespace(
         play_media_on_channel_with_id=AsyncMock(return_value=True),
@@ -47,6 +49,7 @@ async def test_connection_audio_starts_on_caller_channel_and_stops_idempotently(
 
 @pytest.mark.asyncio
 async def test_pipeline_context_starts_connection_audio_before_provider_lookup_returns():
+    """Pipeline calls start ringback before monolithic provider lookup can return."""
     context = SimpleNamespace(
         provider="local_hybrid",
         connection_audio="tone:ring",
@@ -60,12 +63,14 @@ async def test_pipeline_context_starts_connection_audio_before_provider_lookup_r
         agent_store = SimpleNamespace(default_slug=lambda: None)
 
         def get_context_config(self, name, routing_method=None):
+            """Resolve the one agent context used by this isolated lifecycle test."""
             return context if name == "sales" else None
 
     class ARI:
         play_media_on_channel_with_id = AsyncMock(return_value=True)
 
         async def send_command(self, method, path, params=None, tolerate_statuses=None):
+            """Return the dialplan agent selector without requiring a live ARI server."""
             if params and params.get("variable") == "AI_AGENT":
                 return {"value": "sales"}
             return {"value": ""}
@@ -88,6 +93,7 @@ async def test_pipeline_context_starts_connection_audio_before_provider_lookup_r
 
 @pytest.mark.asyncio
 async def test_first_provider_audio_stops_connection_audio_before_playback_work():
+    """The first accepted provider chunk stops ringback before playback begins."""
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
     engine._stop_connection_audio = AsyncMock()

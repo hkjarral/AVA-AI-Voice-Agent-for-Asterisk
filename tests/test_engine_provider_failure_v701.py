@@ -33,6 +33,24 @@ class _FailingProvider:
         return None
 
 
+class _GreetingFailingProvider:
+    """Provider that starts successfully but cannot emit its explicit greeting."""
+
+    config = SimpleNamespace(greeting="Hello from the agent")
+
+    async def start_session(self, call_id, context=None):
+        """Represent a provider connection that succeeds normally."""
+        return None
+
+    async def play_initial_greeting(self, call_id):
+        """Fail at the explicit greeting boundary under review."""
+        raise RuntimeError("greeting synthesis failed")
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
 def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
@@ -110,6 +128,23 @@ async def test_leave_open_preserves_legacy_no_hangup():
     # HIGH-1b still holds.
     assert session.error_message
     assert "provider_start_failed" in session.error_message
+
+
+@pytest.mark.asyncio
+async def test_explicit_greeting_failure_stops_connection_audio():
+    """A failed explicit greeting must not leave setup ringback playing forever."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _GreetingFailingProvider}
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+
+    await engine._start_provider_session("call-1")
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-initial-greeting-failed"
+    )
+    assert session.provider_session_active is True
 
 
 @pytest.mark.asyncio

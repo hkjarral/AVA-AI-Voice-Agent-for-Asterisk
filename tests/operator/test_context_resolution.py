@@ -26,6 +26,7 @@ def test_yaml_fallback_when_db_absent():
 
 
 def test_yaml_context_loads_connection_audio():
+    """YAML contexts expose the optional connection-audio URI at runtime."""
     orch = TransportOrchestrator({
         "contexts": {
             "sales": {
