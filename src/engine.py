@@ -4172,6 +4172,10 @@ class Engine:
                             )
                 else:
                     logger.error("🎯 EXTERNAL MEDIA - Failed to create ExternalMedia channel", channel_id=caller_channel_id)
+                    await self._stop_connection_audio(
+                        session,
+                        reason="external-media-start-failed",
+                    )
             else:
                 logger.info("🎯 HYBRID ARI - Step 5: Originating AudioSocket channel", channel_id=caller_channel_id)
                 await self._originate_audiosocket_channel_hybrid(caller_channel_id)
@@ -14464,18 +14468,8 @@ class Engine:
         if not playback_id:
             return
 
-        # Clear first so concurrent first-audio events remain idempotent even while
-        # the ARI DELETE request is in flight.
         media_uri = getattr(session, "connection_audio_media_uri", None)
         started_ts = float(getattr(session, "connection_audio_started_ts", 0.0) or 0.0)
-        session.connection_audio_playback_id = None
-        session.connection_audio_media_uri = None
-        session.connection_audio_started_ts = 0.0
-        try:
-            await self._save_session(session)
-        except Exception:
-            logger.debug("Failed to persist connection audio stop", call_id=session.call_id, exc_info=True)
-
         stopped = await self.ari_client.stop_playback(playback_id)
         if stopped is False:
             logger.warning(
@@ -14483,7 +14477,25 @@ class Engine:
                 call_id=session.call_id,
                 playback_id=playback_id,
                 media_uri=media_uri,
+                retry_retained=True,
             )
+            return
+
+        # Retain the playback id until ARI confirms success (including an
+        # already-absent 404) so call cleanup can retry transient failures.
+        # A concurrent successful stop may already have cleared this playback.
+        if getattr(session, "connection_audio_playback_id", None) == playback_id:
+            session.connection_audio_playback_id = None
+            session.connection_audio_media_uri = None
+            session.connection_audio_started_ts = 0.0
+            try:
+                await self._save_session(session)
+            except Exception:
+                logger.debug(
+                    "Failed to persist connection audio stop",
+                    call_id=session.call_id,
+                    exc_info=True,
+                )
         elapsed_ms = int(max(0.0, time.time() - started_ts) * 1000) if started_ts else None
         logger.info(
             "Connection audio stopped",

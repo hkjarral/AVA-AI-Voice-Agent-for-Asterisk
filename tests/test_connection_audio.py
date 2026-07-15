@@ -49,10 +49,12 @@ async def test_connection_audio_starts_on_caller_channel_and_stops_idempotently(
 
 
 @pytest.mark.asyncio
-async def test_connection_audio_stop_warns_when_ari_does_not_confirm():
-    """Unexpected ARI stop failures remain observable after local state clears."""
+async def test_connection_audio_stop_failure_retains_state_for_cleanup_retry():
+    """An unconfirmed ARI stop retains playback state until a retry succeeds."""
     engine = Engine.__new__(Engine)
-    engine.ari_client = SimpleNamespace(stop_playback=AsyncMock(return_value=False))
+    engine.ari_client = SimpleNamespace(
+        stop_playback=AsyncMock(side_effect=[False, True])
+    )
     engine._save_session = AsyncMock()
     session = CallSession(call_id="call-stop-failed", caller_channel_id="caller-stop-failed")
     session.connection_audio_playback_id = "connection-audio-stop-failed"
@@ -63,7 +65,14 @@ async def test_connection_audio_stop_warns_when_ari_does_not_confirm():
 
     warning.assert_called_once()
     assert warning.call_args.args[0] == "Connection audio stop was not confirmed"
+    assert session.connection_audio_playback_id == "connection-audio-stop-failed"
+    engine._save_session.assert_not_awaited()
+
+    await engine._stop_connection_audio(session, reason="call-cleanup-retry")
+
+    assert engine.ari_client.stop_playback.await_count == 2
     assert session.connection_audio_playback_id is None
+    engine._save_session.assert_awaited_once_with(session)
 
 
 @pytest.mark.asyncio

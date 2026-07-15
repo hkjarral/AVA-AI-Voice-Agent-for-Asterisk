@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Per-agent caller connection ringback** (`src/engine.py`, `src/core/models.py`, `src/core/transport_orchestrator.py`, `src/core/agent_store.py`, Admin UI Agents form): operators can enable caller-only setup audio while a full-agent provider or modular pipeline initializes. The UI defaults enabled agents to Asterisk's repeating `tone:ring`, while YAML/API configurations may use an Asterisk-local `tone:`, `sound:`, or `recording:` URI. The feature is disabled by default and never plays into the provider media path.
-- **Shared provider/pipeline handoff lifecycle** (`src/engine.py`): ringback starts after the agent context resolves and stops idempotently on the first caller-facing provider audio, first pipeline greeting audio, ready-without-greeting state, provider disconnect/start failure, explicit-greeting failure, an accepted explicit greeting that produces no audio within the bounded grace window, or call cleanup. This avoids provider-specific implementations and prevents leaked playback.
+- **Shared provider/pipeline handoff lifecycle** (`src/engine.py`): ringback starts after the agent context resolves and stops idempotently on the first caller-facing provider audio, first pipeline greeting audio, ready-without-greeting state, transport/provider startup failure, provider disconnect, explicit-greeting failure, an accepted explicit greeting that produces no audio within the bounded grace window, or call cleanup. Unconfirmed ARI stops retain the playback ID for a cleanup retry. This avoids provider-specific implementations and prevents leaked playback.
 
 ### Documentation
 
