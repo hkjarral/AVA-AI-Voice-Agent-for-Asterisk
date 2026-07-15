@@ -98,6 +98,7 @@ PIPELINE_STT_STREAM_FORMAT = "pcm16_16k"
 PIPELINE_STT_ENCODING = "linear16"
 PIPELINE_STT_CHANNELS = 1
 PIPELINE_STT_BYTES_PER_SAMPLE = 2
+CONNECTION_AUDIO_GREETING_TIMEOUT_SECONDS = 10.0
 
 # -----------------------------------------------------------------------------
 # Environment variable resolution helper
@@ -14475,34 +14476,14 @@ class Engine:
         except Exception:
             logger.debug("Failed to persist connection audio stop", call_id=session.call_id, exc_info=True)
 
-        try:
-            stopped = await self.ari_client.stop_playback(playback_id)
-            if stopped is False:
-                logger.warning(
-                    "Connection audio stop was not confirmed",
-                    call_id=session.call_id,
-                    playback_id=playback_id,
-                    media_uri=media_uri,
-                )
-        except Exception as exc:
-            # Alternate ARI clients may raise a typed 404 instead of returning a
-            # status. That remains benign because the desired state is already
-            # true; transport/auth/backend failures must remain visible.
-            if getattr(exc, "status", None) == 404:
-                logger.debug(
-                    "Connection audio playback already stopped",
-                    call_id=session.call_id,
-                    playback_id=playback_id,
-                )
-            else:
-                logger.warning(
-                    "Connection audio stop failed",
-                    call_id=session.call_id,
-                    playback_id=playback_id,
-                    media_uri=media_uri,
-                    error=str(exc),
-                    exc_info=True,
-                )
+        stopped = await self.ari_client.stop_playback(playback_id)
+        if stopped is False:
+            logger.warning(
+                "Connection audio stop was not confirmed",
+                call_id=session.call_id,
+                playback_id=playback_id,
+                media_uri=media_uri,
+            )
         elapsed_ms = int(max(0.0, time.time() - started_ts) * 1000) if started_ts else None
         logger.info(
             "Connection audio stopped",
@@ -14511,6 +14492,46 @@ class Engine:
             playback_id=playback_id,
             reason=reason,
             elapsed_ms=elapsed_ms,
+        )
+
+    async def _stop_connection_audio_after_greeting_timeout(
+        self,
+        session: CallSession,
+        playback_id: str,
+    ) -> None:
+        """Stop setup audio if an accepted explicit greeting never emits audio."""
+        timeout_seconds = float(
+            getattr(
+                self,
+                "_connection_audio_greeting_timeout_seconds",
+                CONNECTION_AUDIO_GREETING_TIMEOUT_SECONDS,
+            )
+        )
+        await asyncio.sleep(max(0.0, timeout_seconds))
+        if getattr(session, "connection_audio_playback_id", None) != playback_id:
+            return
+
+        logger.warning(
+            "Provider greeting produced no audio before connection audio timeout",
+            call_id=session.call_id,
+            playback_id=playback_id,
+            timeout_seconds=timeout_seconds,
+        )
+        await self._stop_connection_audio(
+            session,
+            reason="provider-initial-greeting-timeout",
+        )
+
+    def _schedule_connection_audio_greeting_timeout(self, session: CallSession) -> None:
+        """Arm the non-blocking explicit-greeting handoff watchdog for a call."""
+        playback_id = getattr(session, "connection_audio_playback_id", None)
+        if not playback_id:
+            return
+
+        self._fire_and_forget_for_call(
+            session.call_id,
+            self._stop_connection_audio_after_greeting_timeout(session, playback_id),
+            name=f"connection-audio-greeting-timeout-{session.call_id}",
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -15911,8 +15932,10 @@ class Engine:
             logger.info("Provider session started", call_id=call_id, provider=provider_name)
             # If provider supports an explicit greeting (e.g., LocalProvider), trigger it now
             explicit_greeting_failed = False
+            explicit_greeting_requested = False
             try:
                 if hasattr(provider, 'play_initial_greeting'):
+                    explicit_greeting_requested = True
                     await provider.play_initial_greeting(call_id)
             except Exception:
                 explicit_greeting_failed = True
@@ -15938,6 +15961,11 @@ class Engine:
                 )
             elif not str(configured_greeting or "").strip():
                 await self._stop_connection_audio(session, reason="provider-ready-no-greeting")
+            elif explicit_greeting_requested:
+                # Do not block normal session activation while waiting for Local
+                # TTS. If the accepted request never emits AgentAudio, stop setup
+                # ringback after a bounded grace period instead of ringing forever.
+                self._schedule_connection_audio_greeting_timeout(session)
             session.provider_session_active = True
             # Ensure upstream capture is enabled for real-time providers when not gated
             try:

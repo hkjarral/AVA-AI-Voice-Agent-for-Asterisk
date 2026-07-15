@@ -51,6 +51,24 @@ class _GreetingFailingProvider:
         return None
 
 
+class _GreetingAcceptedProvider:
+    """Provider that accepts an explicit greeting request without emitting audio."""
+
+    config = SimpleNamespace(greeting="Hello from the agent")
+
+    async def start_session(self, call_id, context=None):
+        """Represent a provider connection that succeeds normally."""
+        return None
+
+    async def play_initial_greeting(self, call_id):
+        """Accept the request while intentionally producing no AgentAudio."""
+        return None
+
+    async def stop_session(self):
+        """Allow best-effort cleanup if the surrounding test fails."""
+        return None
+
+
 def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine = Engine.__new__(Engine)
     engine.session_store = SessionStore()
@@ -81,6 +99,7 @@ def _make_engine(on_provider_failure: str, prompt: str = "custom/oops"):
     engine._apply_provider_overrides = MagicMock()
     engine._save_session = AsyncMock()
     engine._wait_for_ari_playback = AsyncMock(return_value=True)
+    engine._call_bg_tasks = {}
     return engine
 
 
@@ -143,6 +162,28 @@ async def test_explicit_greeting_failure_stops_connection_audio():
 
     engine._stop_connection_audio.assert_awaited_once_with(
         session, reason="provider-initial-greeting-failed"
+    )
+    assert session.provider_session_active is True
+
+
+@pytest.mark.asyncio
+async def test_explicit_greeting_without_audio_stops_connection_audio_after_timeout():
+    """An accepted greeting cannot leave setup ringback playing indefinitely."""
+    engine = _make_engine("leave_open")
+    engine.provider_factories = {"local": _GreetingAcceptedProvider}
+    engine._connection_audio_greeting_timeout_seconds = 0.05
+    engine._stop_connection_audio = AsyncMock()
+    engine._no_input_mark_ready = AsyncMock()
+    session = await _register_session(engine)
+    session.connection_audio_playback_id = "connection-audio-call-1"
+
+    await engine._start_provider_session("call-1")
+    watchdogs = list(engine._call_bg_tasks.get("call-1", set()))
+    assert len(watchdogs) == 1
+    await watchdogs[0]
+
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-initial-greeting-timeout"
     )
     assert session.provider_session_active is True
 
