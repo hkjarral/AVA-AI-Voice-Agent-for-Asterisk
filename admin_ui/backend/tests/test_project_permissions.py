@@ -90,7 +90,7 @@ def test_shared_yaml_persistence_covers_every_tools_page_family(tmp_path, monkey
             "hangup_call": {"enabled": True},
             "leave_voicemail": {
                 "enabled": True,
-                "default_mailbox": "sales",
+                "default_mailbox_key": "sales",
                 "mailboxes": {"sales": {"extension": "2000"}},
             },
             "google_calendar": {"enabled": True, "calendars": {"work": {"calendar_id": "work@example.com"}}},
