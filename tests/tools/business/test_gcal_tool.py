@@ -56,6 +56,21 @@ class TestGCalendarToolExecution:
     def gcal_tool(self):
         return GCalendarTool()
 
+    def test_agent_scoped_config_ignores_stale_context_overlay(self, gcal_tool, tool_context):
+        tool_context.context_name = "sales"
+        tool_context.get_config_value = Mock(side_effect=lambda path, default=None: (
+            {
+                "enabled": True,
+                "selected_calendars": ["agent-calendar"],
+                "_agent_scope_resolved": True,
+            }
+            if path == "tools.google_calendar"
+            else {"selected_calendars": ["stale-context-calendar"]}
+        ))
+        config = gcal_tool._get_config(tool_context)
+        assert config["selected_calendars"] == ["agent-calendar"]
+        assert "_agent_scope_resolved" not in config
+
     @pytest.fixture
     def gcal_enabled_context(self, tool_context):
         """Context with google_calendar enabled."""

@@ -20,6 +20,7 @@ from src.utils.email_validator import EmailValidator
 from src.tools.runtime_config import (
     ToolConfigPolicyError,
     dump_agent_tool_configs,
+    merge_legacy_tool_overrides,
 )
 
 
@@ -517,7 +518,7 @@ def migration_ack():
 _RECONCILE_FIRST_CLASS = {
     "provider", "prompt", "voice", "greeting", "extension", "role_label", "notes",
     "email_recipient", "email_from", "email_enabled", "tools", "audio_profile",
-    "profile", "tool_configs",
+    "profile", "tool_configs", "tool_overrides",
 }
 
 
@@ -539,7 +540,11 @@ def _context_to_agent_fields(ctx: dict) -> dict:
         "email_from": ctx.get("email_from"),
         "email_enabled": ctx.get("email_enabled"),
         "tools_json": json.dumps(ctx["tools"]) if ctx.get("tools") else None,
-        "tool_configs_json": dump_agent_tool_configs(ctx.get("tool_configs")),
+        "tool_configs_json": dump_agent_tool_configs(
+            merge_legacy_tool_overrides(
+                ctx.get("tool_configs"), ctx.get("tool_overrides")
+            )
+        ),
         "audio_profile": ctx.get("profile") or ctx.get("audio_profile"),
         "extra_json": json.dumps(extra) if extra else None,
     }

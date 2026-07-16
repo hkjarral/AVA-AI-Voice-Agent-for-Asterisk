@@ -37,6 +37,28 @@ def test_extra_fields_preserved_in_extra_json(tmp_path):
     assert extra["pipeline"] == "local_hybrid"
     assert extra["pre_call_tools"] == ["enrich"]
 
+
+def test_legacy_calendar_bindings_migrate_to_agent_tool_policies(tmp_path):
+    store, y, c = _setup(tmp_path, {"appointments": {
+        "provider": "a",
+        "prompt": "p",
+        "tool_overrides": {
+            "google_calendar": {"selected_calendars": ["sales"]},
+            "microsoft_calendar": {"selected_accounts": []},
+        },
+    }})
+    run_migration(store, y, c)
+    import json
+    row = store.get_by_slug("appointments")
+    policies = json.loads(row["tool_configs_json"])
+    assert policies["google_calendar"] == {
+        "calendar_policy": "selected", "calendar_keys": ["sales"],
+    }
+    assert policies["microsoft_calendar"] == {
+        "account_policy": "none", "account_keys": [],
+    }
+    assert row["extra_json"] is None
+
 def test_migration_idempotent(tmp_path):
     store, y, c = _setup(tmp_path, {"d": {"provider": "a", "prompt": "p"}})
     assert run_migration(store, y, c)["imported"] == 1

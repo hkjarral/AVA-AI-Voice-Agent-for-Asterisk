@@ -43,6 +43,46 @@ class VoicemailTool(Tool):
     Uses ARI continue() to transfer to FreePBX ext-local context
     with vmu{extension} pattern for voicemail.
     """
+
+    @staticmethod
+    def _resolve_mailbox(config: Dict[str, Any]) -> tuple[str, str]:
+        """Return ``(mailbox_key, extension)`` with legacy compatibility.
+
+        Agent-scoped runtime resolution writes ``selected_mailbox_key`` and an
+        effective root extension. Global configurations may instead provide a
+        default mailbox. A multi-mailbox inventory without an explicit default
+        fails closed rather than routing to dictionary insertion order.
+        """
+        mailboxes = config.get("mailboxes") or {}
+        if not isinstance(mailboxes, dict):
+            mailboxes = {}
+
+        selected_key = str(config.get("selected_mailbox_key") or "").strip()
+        if selected_key:
+            selected = mailboxes.get(selected_key) or {}
+            if isinstance(selected, dict):
+                extension = str(selected.get("extension") or "").strip()
+                if extension:
+                    return selected_key, extension
+
+        legacy_extension = str(config.get("extension") or "").strip()
+        if legacy_extension:
+            return "default", legacy_extension
+
+        default_key = str(config.get("default_mailbox_key") or "").strip()
+        if default_key:
+            default_mailbox = mailboxes.get(default_key) or {}
+            if isinstance(default_mailbox, dict):
+                extension = str(default_mailbox.get("extension") or "").strip()
+                if extension:
+                    return default_key, extension
+
+        valid = [
+            (str(key), str(value.get("extension") or "").strip())
+            for key, value in mailboxes.items()
+            if isinstance(value, dict) and str(value.get("extension") or "").strip()
+        ]
+        return valid[0] if len(valid) == 1 else ("", "")
     
     @property
     def definition(self) -> ToolDefinition:
@@ -80,9 +120,12 @@ class VoicemailTool(Tool):
                 "message": "Voicemail is not available",
             }
         
-        extension = config.get('extension')
+        mailbox_key, extension = self._resolve_mailbox(config)
         if not extension:
-            logger.error("Voicemail extension not configured", call_id=context.call_id)
+            logger.error(
+                "Voicemail mailbox not configured or is ambiguous",
+                call_id=context.call_id,
+            )
             return {
                 "status": "failed",
                 "message": "Voicemail is not configured properly"
@@ -91,6 +134,7 @@ class VoicemailTool(Tool):
         logger.info(
             "Voicemail transfer requested",
             call_id=context.call_id,
+            mailbox_key=mailbox_key,
             extension=extension
         )
         

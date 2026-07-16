@@ -5,6 +5,30 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_agent_resource_tools_keep_canonical_call_history_names(tmp_path, monkeypatch):
+    """Resource assignment changes config, not the existing audit/event schema."""
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "resource_tools.db"))
+    now = datetime.now(timezone.utc)
+    expected = ["google_calendar", "microsoft_calendar", "leave_voicemail"]
+    record = CallRecord(
+        call_id="resource-tools",
+        start_time=now,
+        end_time=now + timedelta(seconds=5),
+        tool_calls=[
+            {"name": name, "params": {}, "result": "success"}
+            for name in expected
+        ],
+    )
+    assert await store.save(record) is True
+    fetched = await store.get_by_call_id("resource-tools")
+    assert fetched is not None
+    assert [entry["name"] for entry in fetched.tool_calls] == expected
+
+
+@pytest.mark.asyncio
 async def test_call_history_list_count_filter_parity(tmp_path, monkeypatch):
     monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
     db_path = str(tmp_path / "call_history.db")
@@ -193,5 +217,4 @@ async def test_store_warmup_initializes_off_loop(tmp_path, monkeypatch):
     # Initialized off-loop: subsequent persist sees a ready store, no sync init.
     assert store._initialized is True
     assert ch.get_call_history_store() is store
-
 

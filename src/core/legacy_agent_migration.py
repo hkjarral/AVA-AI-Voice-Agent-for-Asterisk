@@ -19,7 +19,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
 
-from src.tools.runtime_config import normalize_agent_tool_configs
+from src.tools.runtime_config import (
+    merge_legacy_tool_overrides,
+    normalize_agent_tool_configs,
+)
 
 
 DB_DEFAULT = "/app/data/operator/agents.db"
@@ -27,7 +30,7 @@ MIGRATION_VERSION = 1
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 _FIRST_CLASS = {
     "provider", "voice", "greeting", "prompt", "audio_profile", "profile",
-    "tools", "tool_configs", "email_recipient", "email_from", "email_enabled",
+    "tools", "tool_configs", "tool_overrides", "email_recipient", "email_from", "email_enabled",
     "extension", "role_label",
 }
 
@@ -107,6 +110,56 @@ def _existing_agent_count(db_path: str) -> Optional[int]:
         raise LegacyAgentMigrationError(f"existing agents.db is unreadable: {exc}") from exc
 
 
+def _upgrade_existing_resource_policies(db_path: str) -> int:
+    """Promote calendar bindings left in extra_json by early v7.4 builds.
+
+    This is an additive, idempotent bridge for databases populated before
+    calendar resource policies became first-class. It intentionally preserves
+    the legacy extra_json payload for lossless export/debugging.
+    """
+    try:
+        connection = sqlite3.connect(db_path, timeout=5.0)
+        connection.row_factory = sqlite3.Row
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(agents)")
+        }
+        if not {"tool_configs_json", "extra_json"} <= columns:
+            connection.close()
+            return 0
+        changed = 0
+        with connection:
+            rows = connection.execute(
+                "SELECT id, tool_configs_json, extra_json FROM agents"
+            ).fetchall()
+            for row in rows:
+                try:
+                    current = (
+                        json.loads(row["tool_configs_json"])
+                        if row["tool_configs_json"] else None
+                    )
+                    normalized_current = normalize_agent_tool_configs(current)
+                    extra = json.loads(row["extra_json"]) if row["extra_json"] else {}
+                    legacy = extra.get("tool_overrides") if isinstance(extra, dict) else None
+                    merged = merge_legacy_tool_overrides(current, legacy)
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    raise LegacyAgentMigrationError(
+                        f"existing Agent tool policy migration failed for {row['id']}: {exc}"
+                    ) from exc
+                if merged != normalized_current:
+                    serialized = json.dumps(merged, sort_keys=True) if merged else None
+                    connection.execute(
+                        "UPDATE agents SET tool_configs_json=? WHERE id=?",
+                        (serialized, row["id"]),
+                    )
+                    changed += 1
+        connection.close()
+        return changed
+    except sqlite3.Error as exc:
+        raise LegacyAgentMigrationError(
+            f"existing agents.db resource policy upgrade failed: {exc}"
+        ) from exc
+
+
 def ensure_legacy_contexts_imported(
     contexts: Any,
     *,
@@ -120,16 +173,26 @@ def ensure_legacy_contexts_imported(
     continuing with partial or ambiguous routing.
     """
     context_map = _mapping(contexts or {})
-    if not context_map:
-        return {"imported": 0, "already_configured": False}
     target = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
+    # Fresh headless/test environments with no legacy Contexts have nothing to
+    # migrate and must not require the production /app volume to be writable.
+    # An existing DB still proceeds so early-v7.4 calendar policies can upgrade.
+    if not context_map and not os.path.exists(target):
+        return {"imported": 0, "already_configured": False}
     parent = os.path.dirname(target) or "."
     os.makedirs(parent, exist_ok=True)
 
     with _migration_lock(target):
         count = _existing_agent_count(target)
         if count:
-            return {"imported": 0, "already_configured": True}
+            upgraded = _upgrade_existing_resource_policies(target)
+            return {
+                "imported": 0,
+                "already_configured": True,
+                "resource_policies_upgraded": upgraded,
+            }
+        if not context_map:
+            return {"imported": 0, "already_configured": False}
         rows = []
         errors = []
         seen = set()
@@ -145,7 +208,9 @@ def ensure_legacy_contexts_imported(
                 errors.append(f"{original_name}: prompt must be a string")
                 continue
             try:
-                tool_configs = normalize_agent_tool_configs(context.get("tool_configs"))
+                tool_configs = merge_legacy_tool_overrides(
+                    context.get("tool_configs"), context.get("tool_overrides")
+                )
             except ValueError as exc:
                 errors.append(f"{original_name}: {exc}")
                 continue

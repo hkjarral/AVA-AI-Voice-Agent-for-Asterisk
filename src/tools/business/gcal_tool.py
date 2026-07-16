@@ -320,7 +320,9 @@ class GCalendarTool(Tool):
         if context and getattr(context, "get_config_value", None):
             base = context.get_config_value("tools.google_calendar", {}) or {}
             ctx_name = getattr(context, "context_name", None)
-            if ctx_name:
+            # v7.4 resolves Agent resource access into the immutable per-call base.
+            # Do not let a stale legacy Context overlay broaden or replace it.
+            if ctx_name and not base.get("_agent_scope_resolved"):
                 # Per-context override under contexts.<name>.tool_overrides.google_calendar
                 # Only catch KeyError/TypeError (path not found); other errors must surface
                 try:
@@ -329,6 +331,7 @@ class GCalendarTool(Tool):
                     overlay = {}
         # Merge (overlay wins)
         out = dict(base or {})
+        out.pop("_agent_scope_resolved", None)
         for k, v in (overlay or {}).items():
             out[k] = v
         return out or self._load_config()
@@ -1732,4 +1735,3 @@ class GCalendarTool(Tool):
             out = {"status": "error", "message": "An unexpected calendar error occurred."}
             logger.info("Tool response to AI", call_id=call_id, action=action or "?", status=out.get("status"))
             return out
-

@@ -14733,13 +14733,28 @@ class Engine:
             "requested_destination_keys": list(effective.requested_destination_keys),
             "effective_destination_keys": list(effective.effective_destination_keys),
             "stale_destination_keys": list(effective.stale_destination_keys),
+            "resource_policies": dict(effective.policies),
+            "effective_resource_keys": {
+                scope: list(keys)
+                for scope, keys in effective.effective_resource_keys.items()
+            },
+            "stale_resource_keys": {
+                scope: list(keys)
+                for scope, keys in effective.stale_resource_keys.items()
+                if keys
+            },
         }
-        if effective.stale_destination_keys:
+        stale_resource_keys = {
+            scope: list(keys)
+            for scope, keys in effective.stale_resource_keys.items()
+            if keys
+        }
+        if stale_resource_keys:
             logger.warning(
-                "Agent tool policy contains stale transfer destinations",
+                "Agent tool policy contains stale resource assignments",
                 call_id=session.call_id,
                 context_name=session.context_name,
-                stale_destination_keys=list(effective.stale_destination_keys),
+                stale_resource_keys=stale_resource_keys,
                 generation_id=generation.generation_id,
             )
         logger.info(
@@ -14748,8 +14763,11 @@ class Engine:
             context_name=session.context_name,
             generation_id=generation.generation_id,
             config_hash=generation.config_hash,
-            transfer_policy=effective.policy,
-            transfer_destinations=list(effective.effective_destination_keys),
+            resource_policies=effective.policies,
+            effective_resource_keys={
+                scope: list(keys)
+                for scope, keys in effective.effective_resource_keys.items()
+            },
         )
 
     def _compute_config_state(self) -> dict:

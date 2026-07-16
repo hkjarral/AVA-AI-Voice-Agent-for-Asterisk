@@ -8,7 +8,7 @@ An **agent** is the v1a evolution of a "context": a named configuration bundle t
 - **Connection audio** — optional caller-only ringback/comfort media while the provider or pipeline initializes
 - **Voice** — per-agent voice override (v7.3.0+): pick a voice for this agent, or leave empty to use the provider's default voice. Multiple agents can share one provider, each with its own voice. See [Voice Selection](VOICE_SELECTION.md)
 - **Audio profile** — telephony format / sample-rate profile (e.g. `telephony_ulaw_8k`)
-- **Tools** — optional callable tools plus a per-agent transfer-destination policy. Global configuration owns inventory and hard disables; an agent can only narrow it.
+- **Tools** — optional callable tools plus per-agent resource policies for transfer destinations, Google calendars, Microsoft calendar accounts, and voicemail mailboxes. Global configuration owns inventory and hard disables; an agent can only narrow it.
 
 Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.4 removes Contexts from navigation and runtime routing. Visiting the old `/contexts` URL shows a one-time migration notice and then opens Agents.
 
@@ -91,13 +91,22 @@ Templates are a starting point; edit the prompt and greeting to match your use c
 
 ## Per-agent tool access and reloads
 
-The Tools page remains the global inventory. Under **Agents → Edit Agent → Tools → blind_transfer**, choose one transfer scope:
+The Tools page remains the global inventory. Under **Agents → Edit Agent → Tools**, enabling a resource-backed tool reveals its Agent access policy:
+
+- **Transfer family** — inherit all destinations, select destination keys, or deny all destinations. The shared policy governs blind/attended/live-agent transfer and extension-status checks.
+- **Google Calendar** — inherit configured calendars, select calendar keys, or deny calendar access.
+- **Microsoft Calendar** — inherit configured account/calendar bindings, select account keys, or deny calendar access.
+- **Leave Voicemail** — inherit the global default mailbox, select one mailbox, or deny voicemail access.
+
+Each policy supports:
 
 - **Inherit** — use every globally configured destination (the backward-compatible default).
 - **Selected** — expose only checked destination keys. Empty or stale selections fail closed.
 - **None** — expose no transfer destinations.
 
-The same effective snapshot governs provider schemas, prompt guidance, execution, deferred transfer, and audit metadata. The transfer scope is shared by blind/attended/live-agent transfer and extension-status checks. A global disabled tool always wins.
+Empty or stale selections fail closed. Existing single-calendar/account installations continue as the `default` resource. Existing `tools.leave_voicemail.extension` configuration remains the `default` mailbox; adding multiple mailboxes on the Tools page creates a named inventory and requires a global default for inheriting Agents.
+
+The same effective snapshot governs provider schemas, prompt guidance, execution, deferred transfer, and audit metadata. A global disabled tool always wins. Tool names and Call History records remain unchanged (`google_calendar`, `microsoft_calendar`, and `leave_voicemail`), so existing tool-usage filters and aggregation remain compatible.
 
 **Tools → Save & Apply** builds an isolated generation for built-ins and managed HTTP tools. New calls capture the new generation; active calls keep their previous registry and configuration until they end. Build/validation failure leaves the previous generation running. Python code, environment/credential changes, provider/VAD changes, and MCP process configuration still require an engine restart.
 

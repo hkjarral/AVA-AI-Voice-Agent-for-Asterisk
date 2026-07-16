@@ -8,6 +8,7 @@ import HelpTooltip from '../ui/HelpTooltip';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import AgentToolPicker from './AgentToolPicker';
 import type { TransferDestination } from './TransferAccessEditor';
+import type { AgentResourceOption } from './ResourceAccessEditor';
 import {
     ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig, phaseOf, isToolChecked,
 } from './agentToolConfig';
@@ -84,6 +85,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [catalogError, setCatalogError] = useState(false);
     const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
     const [transferDestinations, setTransferDestinations] = useState<TransferDestination[]>([]);
+    const [googleCalendars, setGoogleCalendars] = useState<AgentResourceOption[]>([]);
+    const [microsoftAccounts, setMicrosoftAccounts] = useState<AgentResourceOption[]>([]);
+    const [voicemailMailboxes, setVoicemailMailboxes] = useState<AgentResourceOption[]>([]);
     // Tool-reference highlighting for the prompt: detect every catalog tool name,
     // colour-code by in-call status for this agent.
     const knownToolNames = useMemo(() => catalog.map((t) => t.name), [catalog]);
@@ -195,6 +199,53 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     liveAgent: destination.live_agent === true,
                 };
             }));
+
+            const asRecord = (value: unknown): Record<string, unknown> =>
+                value && typeof value === 'object' && !Array.isArray(value)
+                    ? value as Record<string, unknown> : {};
+            const resourceOptions = (
+                inventory: Record<string, unknown>,
+                detailFields: string[],
+            ): AgentResourceOption[] => Object.entries(inventory).map(([key, raw]) => {
+                const item = asRecord(raw);
+                const detail = detailFields
+                    .map(field => String(item[field] || '').trim())
+                    .filter(Boolean)
+                    .join(' · ');
+                return {
+                    key,
+                    label: String(item.name || item.label || key),
+                    detail,
+                };
+            });
+
+            const google = asRecord(toolsBlock.google_calendar);
+            const googleInventory = asRecord(google.calendars);
+            setGoogleCalendars(Object.keys(googleInventory).length
+                ? resourceOptions(googleInventory, ['calendar_id', 'timezone'])
+                : (google.calendar_id || google.credentials_path
+                    ? [{ key: 'default', label: 'Default', detail: String(google.calendar_id || '') }]
+                    : []));
+
+            const microsoft = asRecord(toolsBlock.microsoft_calendar);
+            const microsoftInventory = asRecord(microsoft.accounts);
+            setMicrosoftAccounts(Object.keys(microsoftInventory).length
+                ? resourceOptions(microsoftInventory, ['user_principal_name', 'calendar_id', 'timezone'])
+                : (microsoft.calendar_id || microsoft.user_principal_name || microsoft.token_cache_path
+                    ? [{
+                        key: 'default',
+                        label: 'Default',
+                        detail: String(microsoft.user_principal_name || microsoft.calendar_id || ''),
+                    }]
+                    : []));
+
+            const voicemail = asRecord(toolsBlock.leave_voicemail);
+            const mailboxInventory = asRecord(voicemail.mailboxes);
+            setVoicemailMailboxes(Object.keys(mailboxInventory).length
+                ? resourceOptions(mailboxInventory, ['extension'])
+                : (voicemail.extension
+                    ? [{ key: 'default', label: 'Default', detail: String(voicemail.extension) }]
+                    : []));
 
             // Tools disabled in YAML (e.g. tools.google_calendar.enabled: false) are
             // rejected at runtime even if an agent lists them — mark them unavailable.
@@ -791,6 +842,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     state={toolState}
                     onChange={setToolState}
                     transferDestinations={transferDestinations}
+                    googleCalendars={googleCalendars}
+                    microsoftAccounts={microsoftAccounts}
+                    voicemailMailboxes={voicemailMailboxes}
                 />
             </div>
         </Modal>

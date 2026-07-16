@@ -113,7 +113,9 @@ class MicrosoftCalendarTool(Tool):
         if context and getattr(context, "get_config_value", None):
             base = context.get_config_value("tools.microsoft_calendar", {}) or {}
             ctx_name = getattr(context, "context_name", None)
-            if ctx_name:
+            # v7.4 resolves Agent resource access into the immutable per-call base.
+            # Do not let a stale legacy Context overlay broaden or replace it.
+            if ctx_name and not base.get("_agent_scope_resolved"):
                 try:
                     overlay = context.get_config_value(
                         f"contexts.{ctx_name}.tool_overrides.microsoft_calendar", {}
@@ -121,6 +123,7 @@ class MicrosoftCalendarTool(Tool):
                 except (KeyError, TypeError, AttributeError):
                     overlay = {}
         merged = dict(base or {})
+        merged.pop("_agent_scope_resolved", None)
         for key, value in (overlay or {}).items():
             merged[key] = value
         return merged or self._load_config()

@@ -273,20 +273,43 @@ const AgentsPage = () => {
         }
     };
 
-    const transferPolicyLabel = (agent: Agent): string | null => {
+    const toolPolicyLabels = (agent: Agent): string[] => {
         try {
             const parsed = JSON.parse(agent.tool_configs_json || '{}');
+            const labels: string[] = [];
             const policy = parsed?.transfer?.destination_policy;
             if (policy === 'selected') {
                 const count = Array.isArray(parsed?.transfer?.destination_keys)
                     ? parsed.transfer.destination_keys.length : 0;
-                return `Transfer: ${count} selected`;
+                labels.push(`Transfer: ${count} selected`);
             }
-            if (policy === 'none') return 'Transfer: none';
+            if (policy === 'none') labels.push('Transfer: none');
+
+            const googlePolicy = parsed?.google_calendar?.calendar_policy;
+            if (googlePolicy === 'selected') {
+                const count = Array.isArray(parsed?.google_calendar?.calendar_keys)
+                    ? parsed.google_calendar.calendar_keys.length : 0;
+                labels.push(`Google Calendar: ${count} selected`);
+            }
+            if (googlePolicy === 'none') labels.push('Google Calendar: none');
+
+            const microsoftPolicy = parsed?.microsoft_calendar?.account_policy;
+            if (microsoftPolicy === 'selected') {
+                const count = Array.isArray(parsed?.microsoft_calendar?.account_keys)
+                    ? parsed.microsoft_calendar.account_keys.length : 0;
+                labels.push(`Microsoft Calendar: ${count} selected`);
+            }
+            if (microsoftPolicy === 'none') labels.push('Microsoft Calendar: none');
+
+            const voicemailPolicy = parsed?.voicemail?.mailbox_policy;
+            if (voicemailPolicy === 'selected') {
+                labels.push(`Voicemail: ${parsed?.voicemail?.mailbox_key || 'missing'}`);
+            }
+            if (voicemailPolicy === 'none') labels.push('Voicemail: none');
+            return labels;
         } catch {
-            return 'Transfer policy invalid';
+            return ['Tool policy invalid'];
         }
-        return null;
     };
 
     // ── Routing-source bar rows (omit "unknown" if zero) ──────────────────────
@@ -462,11 +485,11 @@ const AgentsPage = () => {
                                                         Inactive
                                                     </span>
                                                 )}
-                                                {transferPolicyLabel(agent) && (
-                                                    <span className="inline-flex items-center rounded-full border border-violet-500/30 px-2.5 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300 bg-violet-500/10">
-                                                        {transferPolicyLabel(agent)}
+                                                {toolPolicyLabels(agent).map(label => (
+                                                    <span key={label} className="inline-flex items-center rounded-full border border-violet-500/30 px-2.5 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300 bg-violet-500/10">
+                                                        {label}
                                                     </span>
-                                                )}
+                                                ))}
                                             </div>
                                         </div>
 

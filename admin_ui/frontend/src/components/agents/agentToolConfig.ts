@@ -24,6 +24,12 @@ export interface AgentToolState {
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
     transferDestinationPolicy: 'inherit' | 'selected' | 'none';
     transferDestinationKeys: string[];
+    googleCalendarPolicy: 'inherit' | 'selected' | 'none';
+    googleCalendarKeys: string[];
+    microsoftCalendarPolicy: 'inherit' | 'selected' | 'none';
+    microsoftAccountKeys: string[];
+    voicemailMailboxPolicy: 'inherit' | 'selected' | 'none';
+    voicemailMailboxKey: string;
 }
 
 const OWNED_EXTRA_KEYS = [
@@ -99,6 +105,18 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
     const rawTransferPolicy = asString(transferConfig['destination_policy']);
     const transferDestinationPolicy = rawTransferPolicy === 'selected' || rawTransferPolicy === 'none'
         ? rawTransferPolicy : 'inherit';
+    const googleConfig = asObject(toolConfigs['google_calendar']);
+    const rawGooglePolicy = asString(googleConfig['calendar_policy']);
+    const googleCalendarPolicy = rawGooglePolicy === 'selected' || rawGooglePolicy === 'none'
+        ? rawGooglePolicy : 'inherit';
+    const microsoftConfig = asObject(toolConfigs['microsoft_calendar']);
+    const rawMicrosoftPolicy = asString(microsoftConfig['account_policy']);
+    const microsoftCalendarPolicy = rawMicrosoftPolicy === 'selected' || rawMicrosoftPolicy === 'none'
+        ? rawMicrosoftPolicy : 'inherit';
+    const voicemailConfig = asObject(toolConfigs['voicemail']);
+    const rawVoicemailPolicy = asString(voicemailConfig['mailbox_policy']);
+    const voicemailMailboxPolicy = rawVoicemailPolicy === 'selected' || rawVoicemailPolicy === 'none'
+        ? rawVoicemailPolicy : 'inherit';
 
     const ichRaw = extra['in_call_http_tools'];
     const ichIsObject = !!ichRaw && typeof ichRaw === 'object' && !Array.isArray(ichRaw);
@@ -134,6 +152,15 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         transferDestinationPolicy,
         transferDestinationKeys: transferDestinationPolicy === 'selected'
             ? asStrArray(transferConfig['destination_keys']) : [],
+        googleCalendarPolicy,
+        googleCalendarKeys: googleCalendarPolicy === 'selected'
+            ? asStrArray(googleConfig['calendar_keys']) : [],
+        microsoftCalendarPolicy,
+        microsoftAccountKeys: microsoftCalendarPolicy === 'selected'
+            ? asStrArray(microsoftConfig['account_keys']) : [],
+        voicemailMailboxPolicy,
+        voicemailMailboxKey: voicemailMailboxPolicy === 'selected'
+            ? asString(voicemailConfig['mailbox_key']) : '',
     };
 }
 
@@ -164,19 +191,45 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     if (Object.keys(noInput).length) extra['no_input'] = noInput;
     else delete extra['no_input'];
 
+    const toolConfigs: Record<string, unknown> = {};
+    if (state.transferDestinationPolicy !== 'inherit') {
+        toolConfigs.transfer = {
+            destination_policy: state.transferDestinationPolicy,
+            destination_keys: state.transferDestinationPolicy === 'selected'
+                ? [...new Set(state.transferDestinationKeys.map((key) => key.trim()).filter(Boolean))]
+                : [],
+        };
+    }
+    if (state.googleCalendarPolicy !== 'inherit') {
+        toolConfigs.google_calendar = {
+            calendar_policy: state.googleCalendarPolicy,
+            calendar_keys: state.googleCalendarPolicy === 'selected'
+                ? [...new Set(state.googleCalendarKeys.map((key) => key.trim()).filter(Boolean))]
+                : [],
+        };
+    }
+    if (state.microsoftCalendarPolicy !== 'inherit') {
+        toolConfigs.microsoft_calendar = {
+            account_policy: state.microsoftCalendarPolicy,
+            account_keys: state.microsoftCalendarPolicy === 'selected'
+                ? [...new Set(state.microsoftAccountKeys.map((key) => key.trim()).filter(Boolean))]
+                : [],
+        };
+    }
+    if (state.voicemailMailboxPolicy !== 'inherit') {
+        toolConfigs.voicemail = {
+            mailbox_policy: state.voicemailMailboxPolicy,
+            mailbox_key: state.voicemailMailboxPolicy === 'selected'
+                ? (state.voicemailMailboxKey.trim() || null) : null,
+        };
+    }
+
     return {
         provider: state.pipeline ? '' : state.provider,
         tools_json: state.inCallTools.length ? JSON.stringify(state.inCallTools) : null,
         mcp_json: state.mcpJsonRaw.trim() || null,
         extra_json: Object.keys(extra).length ? JSON.stringify(extra) : null,
-        tool_configs_json: state.transferDestinationPolicy === 'inherit' ? null : JSON.stringify({
-            transfer: {
-                destination_policy: state.transferDestinationPolicy,
-                destination_keys: state.transferDestinationPolicy === 'selected'
-                    ? [...new Set(state.transferDestinationKeys.map((key) => key.trim()).filter(Boolean))]
-                    : [],
-            },
-        }),
+        tool_configs_json: Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : null,
     };
 }
 

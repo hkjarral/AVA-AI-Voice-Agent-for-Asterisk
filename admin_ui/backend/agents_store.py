@@ -1,7 +1,7 @@
 """Agents store — source of truth for agent (context) configuration.
 Write path lives here (admin_ui). The engine reads this DB via src/core/agent_store.py.
 Spec: archived/AVAOperatorVersion.md §3 + 2026-05-23-v1-implementation-spec.md §5."""
-import os, re, sqlite3, uuid
+import json, os, re, sqlite3, uuid
 from datetime import datetime, timezone
 
 DB_DEFAULT = "/app/data/operator/agents.db"
@@ -72,6 +72,7 @@ class AgentsStore:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         self._ensure_schema_sync()
+        self._upgrade_legacy_resource_policies()
         try: os.chmod(db_path, 0o600)
         except OSError: pass
 
@@ -94,6 +95,52 @@ class AgentsStore:
                 if "tool_configs_json" not in existing:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN tool_configs_json TEXT")
         except sqlite3.Error:
+            pass
+
+    def _upgrade_legacy_resource_policies(self):
+        """Idempotently promote legacy calendar selections into tool_configs_json.
+
+        Early v7.4 development databases stored Context ``tool_overrides`` in
+        extra_json while the Agent runtime only read transfer policies. Keep the
+        original extra payload intact, but make Google/Microsoft bindings visible
+        and enforceable as first-class Agent policies.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT id, tool_configs_json, extra_json FROM agents"
+            ).fetchall()
+            with self.conn:
+                for row in rows:
+                    current = json.loads(row["tool_configs_json"]) if row["tool_configs_json"] else {}
+                    extra = json.loads(row["extra_json"]) if row["extra_json"] else {}
+                    overrides = extra.get("tool_overrides") if isinstance(extra, dict) else None
+                    if not isinstance(current, dict) or not isinstance(overrides, dict):
+                        continue
+                    merged = dict(current)
+                    google = overrides.get("google_calendar") or {}
+                    selected = google.get("selected_calendars") if isinstance(google, dict) else None
+                    if "google_calendar" not in merged and isinstance(selected, list):
+                        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
+                        merged["google_calendar"] = {
+                            "calendar_policy": "selected" if keys else "none",
+                            "calendar_keys": keys,
+                        }
+                    microsoft = overrides.get("microsoft_calendar") or {}
+                    selected = microsoft.get("selected_accounts") if isinstance(microsoft, dict) else None
+                    if "microsoft_calendar" not in merged and isinstance(selected, list):
+                        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
+                        merged["microsoft_calendar"] = {
+                            "account_policy": "selected" if keys else "none",
+                            "account_keys": keys,
+                        }
+                    if merged != current:
+                        self.conn.execute(
+                            "UPDATE agents SET tool_configs_json=? WHERE id=?",
+                            (json.dumps(merged, sort_keys=True), row["id"]),
+                        )
+        except (sqlite3.Error, json.JSONDecodeError, TypeError):
+            # Preserve the established best-effort schema-upgrade behavior. The
+            # API/runtime validators will surface malformed rows explicitly.
             pass
 
     def close(self):

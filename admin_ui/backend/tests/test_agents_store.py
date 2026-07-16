@@ -46,6 +46,26 @@ def test_tool_configs_roundtrip(store):
     updated = store.update("scoped", tool_configs_json=None)
     assert updated["tool_configs_json"] is None
 
+
+def test_existing_extra_calendar_bindings_are_promoted(tmp_path):
+    db = tmp_path / "agents.db"
+    first = AgentsStore(db_path=str(db))
+    first.create(
+        display_name="Legacy Calendar",
+        provider="x",
+        prompt="p",
+        extra_json='{"tool_overrides":{"google_calendar":{"selected_calendars":["sales"]}}}',
+    )
+    first.close()
+
+    reopened = AgentsStore(db_path=str(db))
+    row = reopened.get_by_slug("legacy_calendar")
+    import json
+    assert json.loads(row["tool_configs_json"])["google_calendar"] == {
+        "calendar_policy": "selected",
+        "calendar_keys": ["sales"],
+    }
+
 def test_first_agent_becomes_default(store):
     a = store.create(display_name="A", provider="x", prompt="p")
     assert store.get_default()["slug"] == a["slug"]

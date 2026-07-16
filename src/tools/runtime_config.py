@@ -10,13 +10,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 
 TRANSFER_SCOPE = "transfer"
-TRANSFER_POLICIES = frozenset({"inherit", "selected", "none"})
+GOOGLE_CALENDAR_SCOPE = "google_calendar"
+MICROSOFT_CALENDAR_SCOPE = "microsoft_calendar"
+VOICEMAIL_SCOPE = "voicemail"
+RESOURCE_POLICIES = frozenset({"inherit", "selected", "none"})
+TRANSFER_POLICIES = RESOURCE_POLICIES
 TRANSFER_TOOL_NAMES = frozenset(
     {
         "blind_transfer",
@@ -31,6 +35,85 @@ class ToolConfigPolicyError(ValueError):
     """Raised when an agent tool policy is malformed or unsupported."""
 
 
+def _normalize_string_list(raw: Any, field_name: str) -> list[str]:
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise ToolConfigPolicyError(f"{field_name} must be an array")
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_key in raw:
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise ToolConfigPolicyError(
+                f"{field_name} entries must be non-empty strings"
+            )
+        key = raw_key.strip()
+        if key not in seen:
+            result.append(key)
+            seen.add(key)
+    return result
+
+
+def _normalize_multi_resource_scope(
+    raw: Any,
+    *,
+    scope: str,
+    policy_field: str,
+    keys_field: str,
+) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ToolConfigPolicyError(f"{scope} tool configuration must be an object")
+    unknown_keys = sorted(set(raw) - {policy_field, keys_field})
+    if unknown_keys:
+        raise ToolConfigPolicyError(
+            f"unsupported {scope} policy field(s): {', '.join(unknown_keys)}"
+        )
+    policy = str(raw.get(policy_field) or "inherit").strip().lower()
+    if policy not in RESOURCE_POLICIES:
+        raise ToolConfigPolicyError(
+            f"{scope}.{policy_field} must be inherit, selected, or none"
+        )
+    keys = _normalize_string_list(raw.get(keys_field, []), f"{scope}.{keys_field}")
+    if policy != "selected" and keys:
+        raise ToolConfigPolicyError(
+            f"{scope}.{keys_field} may only be set when {policy_field} is selected"
+        )
+    return {
+        policy_field: policy,
+        keys_field: keys if policy == "selected" else [],
+    }
+
+
+def _normalize_voicemail_scope(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ToolConfigPolicyError("voicemail tool configuration must be an object")
+    unknown_keys = sorted(set(raw) - {"mailbox_policy", "mailbox_key"})
+    if unknown_keys:
+        raise ToolConfigPolicyError(
+            f"unsupported voicemail policy field(s): {', '.join(unknown_keys)}"
+        )
+    policy = str(raw.get("mailbox_policy") or "inherit").strip().lower()
+    if policy not in RESOURCE_POLICIES:
+        raise ToolConfigPolicyError(
+            "voicemail.mailbox_policy must be inherit, selected, or none"
+        )
+    mailbox_key = raw.get("mailbox_key")
+    if mailbox_key is not None:
+        if not isinstance(mailbox_key, str) or not mailbox_key.strip():
+            raise ToolConfigPolicyError(
+                "voicemail.mailbox_key must be a non-empty string when set"
+            )
+        mailbox_key = mailbox_key.strip()
+    if policy != "selected" and mailbox_key:
+        raise ToolConfigPolicyError(
+            "voicemail.mailbox_key may only be set when mailbox_policy is selected"
+        )
+    return {
+        "mailbox_policy": policy,
+        "mailbox_key": mailbox_key if policy == "selected" else None,
+    }
+
+
 def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
     """Validate and canonicalize the v7.4 per-agent tool policy document."""
     if value in (None, ""):
@@ -43,7 +126,13 @@ def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ToolConfigPolicyError("tool configuration must be a JSON object")
 
-    unknown_scopes = sorted(set(value) - {TRANSFER_SCOPE})
+    supported_scopes = {
+        TRANSFER_SCOPE,
+        GOOGLE_CALENDAR_SCOPE,
+        MICROSOFT_CALENDAR_SCOPE,
+        VOICEMAIL_SCOPE,
+    }
+    unknown_scopes = sorted(set(value) - supported_scopes)
     if unknown_scopes:
         raise ToolConfigPolicyError(
             f"unsupported tool configuration scope(s): {', '.join(unknown_scopes)}"
@@ -51,49 +140,35 @@ def normalize_agent_tool_configs(value: Any) -> Dict[str, Any]:
 
     result: Dict[str, Any] = {}
     raw_transfer = value.get(TRANSFER_SCOPE)
-    if raw_transfer is None:
-        return result
-    if not isinstance(raw_transfer, dict):
-        raise ToolConfigPolicyError("transfer tool configuration must be an object")
-
-    unknown_keys = sorted(set(raw_transfer) - {"destination_policy", "destination_keys"})
-    if unknown_keys:
-        raise ToolConfigPolicyError(
-            f"unsupported transfer policy field(s): {', '.join(unknown_keys)}"
+    if raw_transfer is not None:
+        result[TRANSFER_SCOPE] = _normalize_multi_resource_scope(
+            raw_transfer,
+            scope=TRANSFER_SCOPE,
+            policy_field="destination_policy",
+            keys_field="destination_keys",
         )
 
-    policy = str(raw_transfer.get("destination_policy") or "inherit").strip().lower()
-    if policy not in TRANSFER_POLICIES:
-        raise ToolConfigPolicyError(
-            "transfer.destination_policy must be inherit, selected, or none"
+    raw_google = value.get(GOOGLE_CALENDAR_SCOPE)
+    if raw_google is not None:
+        result[GOOGLE_CALENDAR_SCOPE] = _normalize_multi_resource_scope(
+            raw_google,
+            scope=GOOGLE_CALENDAR_SCOPE,
+            policy_field="calendar_policy",
+            keys_field="calendar_keys",
         )
 
-    raw_keys = raw_transfer.get("destination_keys", [])
-    if raw_keys is None:
-        raw_keys = []
-    if not isinstance(raw_keys, list):
-        raise ToolConfigPolicyError("transfer.destination_keys must be an array")
-    destination_keys = []
-    seen = set()
-    for raw_key in raw_keys:
-        if not isinstance(raw_key, str) or not raw_key.strip():
-            raise ToolConfigPolicyError(
-                "transfer.destination_keys entries must be non-empty strings"
-            )
-        key = raw_key.strip()
-        if key not in seen:
-            destination_keys.append(key)
-            seen.add(key)
-
-    if policy != "selected" and destination_keys:
-        raise ToolConfigPolicyError(
-            "transfer.destination_keys may only be set when destination_policy is selected"
+    raw_microsoft = value.get(MICROSOFT_CALENDAR_SCOPE)
+    if raw_microsoft is not None:
+        result[MICROSOFT_CALENDAR_SCOPE] = _normalize_multi_resource_scope(
+            raw_microsoft,
+            scope=MICROSOFT_CALENDAR_SCOPE,
+            policy_field="account_policy",
+            keys_field="account_keys",
         )
 
-    result[TRANSFER_SCOPE] = {
-        "destination_policy": policy,
-        "destination_keys": destination_keys if policy == "selected" else [],
-    }
+    raw_voicemail = value.get(VOICEMAIL_SCOPE)
+    if raw_voicemail is not None:
+        result[VOICEMAIL_SCOPE] = _normalize_voicemail_scope(raw_voicemail)
     return result
 
 
@@ -102,10 +177,56 @@ def dump_agent_tool_configs(value: Any) -> Optional[str]:
     normalized = normalize_agent_tool_configs(value)
     if not normalized:
         return None
-    transfer = normalized.get(TRANSFER_SCOPE) or {}
-    if transfer.get("destination_policy") == "inherit":
+    inherited_policy_fields = {
+        TRANSFER_SCOPE: "destination_policy",
+        GOOGLE_CALENDAR_SCOPE: "calendar_policy",
+        MICROSOFT_CALENDAR_SCOPE: "account_policy",
+        VOICEMAIL_SCOPE: "mailbox_policy",
+    }
+    stored = {
+        scope: config
+        for scope, config in normalized.items()
+        if config.get(inherited_policy_fields[scope]) != "inherit"
+    }
+    if not stored:
         return None
-    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return json.dumps(stored, sort_keys=True, separators=(",", ":"))
+
+
+def merge_legacy_tool_overrides(
+    agent_tool_configs: Any,
+    legacy_tool_overrides: Any,
+) -> Dict[str, Any]:
+    """Convert legacy Context calendar bindings into v7.4 Agent policies.
+
+    Explicit ``tool_configs`` always wins. Missing legacy selections preserve
+    inheritance; an explicitly empty legacy list becomes ``none`` so migration
+    retains the old fail-closed behavior.
+    """
+    merged = normalize_agent_tool_configs(agent_tool_configs)
+    if not isinstance(legacy_tool_overrides, Mapping):
+        return merged
+
+    google = legacy_tool_overrides.get(GOOGLE_CALENDAR_SCOPE)
+    if GOOGLE_CALENDAR_SCOPE not in merged and isinstance(google, Mapping):
+        selected = google.get("selected_calendars")
+        if isinstance(selected, (list, tuple)):
+            keys = [str(key).strip() for key in selected if str(key).strip()]
+            merged[GOOGLE_CALENDAR_SCOPE] = {
+                "calendar_policy": "selected" if keys else "none",
+                "calendar_keys": list(dict.fromkeys(keys)),
+            }
+
+    microsoft = legacy_tool_overrides.get(MICROSOFT_CALENDAR_SCOPE)
+    if MICROSOFT_CALENDAR_SCOPE not in merged and isinstance(microsoft, Mapping):
+        selected = microsoft.get("selected_accounts")
+        if isinstance(selected, (list, tuple)):
+            keys = [str(key).strip() for key in selected if str(key).strip()]
+            merged[MICROSOFT_CALENDAR_SCOPE] = {
+                "account_policy": "selected" if keys else "none",
+                "account_keys": list(dict.fromkeys(keys)),
+            }
+    return normalize_agent_tool_configs(merged)
 
 
 @dataclass(frozen=True)
@@ -115,6 +236,111 @@ class EffectiveToolConfig:
     requested_destination_keys: tuple[str, ...]
     effective_destination_keys: tuple[str, ...]
     stale_destination_keys: tuple[str, ...]
+    policies: Dict[str, str] = field(default_factory=dict)
+    effective_resource_keys: Dict[str, tuple[str, ...]] = field(default_factory=dict)
+    stale_resource_keys: Dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+def _inventory_keys(config: Mapping[str, Any], inventory_field: str) -> tuple[str, ...]:
+    inventory = config.get(inventory_field) or {}
+    if isinstance(inventory, Mapping) and inventory:
+        return tuple(
+            str(key) for key, value in inventory.items() if isinstance(value, Mapping)
+        )
+    return ("default",) if config else ()
+
+
+def _apply_multi_resource_policy(
+    tools: Dict[str, Any],
+    policies: Mapping[str, Any],
+    *,
+    scope: str,
+    tool_name: str,
+    policy_field: str,
+    keys_field: str,
+    inventory_field: str,
+    selection_field: str,
+) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    policy_config = policies.get(scope) or {policy_field: "inherit", keys_field: []}
+    policy = policy_config[policy_field]
+    tool_config = tools.setdefault(tool_name, {})
+    if not isinstance(tool_config, dict):
+        tool_config = {}
+        tools[tool_name] = tool_config
+    inventory = _inventory_keys(tool_config, inventory_field)
+    requested = tuple(policy_config.get(keys_field) or ())
+    stale = tuple(key for key in requested if key not in inventory)
+    if policy == "inherit":
+        effective = inventory
+    elif policy == "none":
+        effective = ()
+        tool_config[selection_field] = []
+    else:
+        effective = tuple(key for key in requested if key in inventory)
+        tool_config[selection_field] = list(effective)
+    # Calendar tools previously looked up Context overlays after their base
+    # config. Mark the immutable Agent resolution so stale YAML Context data
+    # cannot override this per-call policy.
+    tool_config["_agent_scope_resolved"] = True
+    return policy, requested, effective, stale
+
+
+def _voicemail_inventory(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    mailboxes = config.get("mailboxes") or {}
+    if isinstance(mailboxes, Mapping) and mailboxes:
+        return {
+            str(key): dict(value)
+            for key, value in mailboxes.items()
+            if isinstance(value, Mapping)
+        }
+    extension = str(config.get("extension") or "").strip()
+    return {"default": {"name": "Default", "extension": extension}} if extension else {}
+
+
+def _apply_voicemail_policy(
+    tools: Dict[str, Any], policies: Mapping[str, Any]
+) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    policy_config = policies.get(VOICEMAIL_SCOPE) or {
+        "mailbox_policy": "inherit",
+        "mailbox_key": None,
+    }
+    policy = policy_config["mailbox_policy"]
+    tool_config = tools.setdefault("leave_voicemail", {})
+    if not isinstance(tool_config, dict):
+        tool_config = {}
+        tools["leave_voicemail"] = tool_config
+    inventory = _voicemail_inventory(tool_config)
+    requested = (
+        (str(policy_config["mailbox_key"]),)
+        if policy == "selected" and policy_config.get("mailbox_key")
+        else ()
+    )
+    stale = tuple(key for key in requested if key not in inventory)
+    if policy == "inherit":
+        effective = tuple(inventory)
+    elif policy == "none":
+        effective = ()
+        tool_config.pop("extension", None)
+        tool_config["mailboxes"] = {}
+        tool_config.pop("selected_mailbox_key", None)
+    else:
+        effective = tuple(key for key in requested if key in inventory)
+        if effective:
+            selected_key = effective[0]
+            selected = dict(inventory[selected_key])
+            tool_config["mailboxes"] = {selected_key: selected}
+            tool_config["selected_mailbox_key"] = selected_key
+            extension = str(selected.get("extension") or "").strip()
+            if extension:
+                tool_config["extension"] = extension
+            else:
+                tool_config.pop("extension", None)
+        else:
+            tool_config.pop("extension", None)
+            tool_config["mailboxes"] = {}
+            tool_config.pop("selected_mailbox_key", None)
+    tool_config["_agent_scope_resolved"] = True
+    return policy, requested, effective, stale
 
 
 def resolve_agent_tool_config(
@@ -180,12 +406,46 @@ def resolve_agent_tool_config(
         if configured_live_key and configured_live_key not in effective:
             transfer.pop("live_agent_destination_key", None)
 
+    resource_results = {
+        GOOGLE_CALENDAR_SCOPE: _apply_multi_resource_policy(
+            tools,
+            policies,
+            scope=GOOGLE_CALENDAR_SCOPE,
+            tool_name=GOOGLE_CALENDAR_SCOPE,
+            policy_field="calendar_policy",
+            keys_field="calendar_keys",
+            inventory_field="calendars",
+            selection_field="selected_calendars",
+        ),
+        MICROSOFT_CALENDAR_SCOPE: _apply_multi_resource_policy(
+            tools,
+            policies,
+            scope=MICROSOFT_CALENDAR_SCOPE,
+            tool_name=MICROSOFT_CALENDAR_SCOPE,
+            policy_field="account_policy",
+            keys_field="account_keys",
+            inventory_field="accounts",
+            selection_field="selected_accounts",
+        ),
+        VOICEMAIL_SCOPE: _apply_voicemail_policy(tools, policies),
+    }
+    all_policies = {TRANSFER_SCOPE: policy}
+    effective_resources = {TRANSFER_SCOPE: tuple(effective)}
+    stale_resources = {TRANSFER_SCOPE: stale}
+    for scope, (scope_policy, _requested, scope_effective, scope_stale) in resource_results.items():
+        all_policies[scope] = scope_policy
+        effective_resources[scope] = scope_effective
+        stale_resources[scope] = scope_stale
+
     return EffectiveToolConfig(
         config=config,
         policy=policy,
         requested_destination_keys=requested,
         effective_destination_keys=tuple(effective),
         stale_destination_keys=stale,
+        policies=all_policies,
+        effective_resource_keys=effective_resources,
+        stale_resource_keys=stale_resources,
     )
 
 

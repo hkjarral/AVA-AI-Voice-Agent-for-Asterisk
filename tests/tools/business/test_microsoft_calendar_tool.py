@@ -77,6 +77,23 @@ def test_definition_name_and_category():
     assert "get_free_slots" in definition.input_schema["properties"]["action"]["enum"]
 
 
+def test_agent_scoped_config_ignores_stale_context_overlay(tool_context):
+    tool = MicrosoftCalendarTool()
+    tool_context.context_name = "sales"
+    tool_context.get_config_value = Mock(side_effect=lambda path, default=None: (
+        {
+            "enabled": True,
+            "selected_accounts": ["agent-account"],
+            "_agent_scope_resolved": True,
+        }
+        if path == "tools.microsoft_calendar"
+        else {"selected_accounts": ["stale-context-account"]}
+    ))
+    config = tool._get_config(tool_context)
+    assert config["selected_accounts"] == ["agent-account"]
+    assert "_agent_scope_resolved" not in config
+
+
 def test_empty_calendar_id_is_not_rewritten_to_google_primary_alias():
     tool = MicrosoftCalendarTool()
     account = tool._account_config({

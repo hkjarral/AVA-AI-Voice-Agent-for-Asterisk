@@ -30,7 +30,19 @@ def test_tool_configs_are_validated_and_canonicalized(client):
         "transfer": {
             "destination_policy": "selected",
             "destination_keys": ["sales", "support", "sales"],
-        }
+        },
+        "google_calendar": {
+            "calendar_policy": "selected",
+            "calendar_keys": ["sales", "sales"],
+        },
+        "microsoft_calendar": {
+            "account_policy": "selected",
+            "account_keys": ["dispatch"],
+        },
+        "voicemail": {
+            "mailbox_policy": "selected",
+            "mailbox_key": "support",
+        },
     }
     response = client.post(
         "/api/agents",
@@ -47,6 +59,9 @@ def test_tool_configs_are_validated_and_canonicalized(client):
         "destination_policy": "selected",
         "destination_keys": ["sales", "support"],
     }
+    assert stored["google_calendar"]["calendar_keys"] == ["sales"]
+    assert stored["microsoft_calendar"]["account_keys"] == ["dispatch"]
+    assert stored["voicemail"]["mailbox_key"] == "support"
 
 
 @pytest.mark.parametrize(
@@ -57,6 +72,9 @@ def test_tool_configs_are_validated_and_canonicalized(client):
         '{"calendar":{"policy":"none"}}',
         '{"transfer":{"destination_policy":"all"}}',
         '{"transfer":{"destination_policy":"none","destination_keys":["sales"]}}',
+        '{"google_calendar":{"calendar_policy":"all","calendar_keys":[]}}',
+        '{"microsoft_calendar":{"account_policy":"none","account_keys":["dispatch"]}}',
+        '{"voicemail":{"mailbox_policy":"none","mailbox_key":"support"}}',
     ],
 )
 def test_invalid_tool_configs_rejected(client, raw):

@@ -155,21 +155,20 @@ A panel appears with a **device code** (e.g. `ABCD-EFGH`) and a
 
 ---
 
-## Step 3 — Wire it into a context
+## Step 3 — Assign it to an Agent
 
-By default no demo context has `microsoft_calendar` enabled, so you have
-to add it manually.
+Calendar credentials/accounts remain global; each Agent receives only the
+account/calendar bindings it is allowed to use.
 
-1. Admin UI → **Contexts** page → open the context you want to test
-   (e.g. `demo_deepgram` or `demo_openai`).
+1. Admin UI → **Agents** page → open the Agent you want to test.
 2. Under **Tools**, **uncheck `google_calendar`** (if it's enabled). You
    *can* leave both enabled — the SCHEDULING prompt now picks
    `microsoft_calendar` first when both are present — but it's cleaner
    to test one tool at a time.
 3. Check `microsoft_calendar`.
-4. A new **Microsoft Calendar (Per-Context)** section appears below.
-   Tick the `default` account.
-5. **Save** the context.
+4. The **Microsoft Calendar access** section appears below. Choose inherit,
+   selected accounts, or no access. For a single-account setup, select `default`.
+5. **Save** the Agent.
 
 ---
 
@@ -224,14 +223,9 @@ tools:
         calendar_id: AAMk...                          # filled by Connect / picker
         timezone: America/New_York
 
-contexts:
-  demo_deepgram:
-    tools:
-      - microsoft_calendar
-    tool_overrides:
-      microsoft_calendar:
-        selected_accounts:
-          - default
+# Agent assignments are stored in agents.db. Legacy Context
+# tool_overrides.microsoft_calendar.selected_accounts values are migrated
+# automatically to Agent resource policies in v7.4.
 ```
 
 ---
