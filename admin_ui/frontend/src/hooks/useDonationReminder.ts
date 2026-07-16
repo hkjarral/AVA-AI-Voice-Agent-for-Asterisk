@@ -4,10 +4,11 @@ import {
   STORAGE_KEYS,
   SESSION_KEY,
   SNOOZE_LATER_MS,
+  SNOOZE_DONATE_MS,
   SNOOZE_DONATED_MS,
   SNOOZE_MONTH_MS,
 } from '../config/donation';
-import { ReminderState, isEligible } from '../utils/donationReminder';
+import { ReminderState, isEligible, milestoneForCallCount } from '../utils/donationReminder';
 
 export interface UseDonationReminder {
   show: boolean;
@@ -22,15 +23,13 @@ export interface UseDonationReminder {
 /** Reads all state; returns null if storage is unavailable (fail closed). Pure — no writes. */
 function readState(): ReminderState | null {
   try {
-    const now = Date.now();
-    const stored = Number(localStorage.getItem(STORAGE_KEYS.firstSeenAt));
-    const firstSeenAt = !stored || Number.isNaN(stored) ? now : stored;
     const snooze = Number(localStorage.getItem(STORAGE_KEYS.snoozeUntil));
+    const milestone = Number(localStorage.getItem(STORAGE_KEYS.lastMilestoneShown));
     return {
-      firstSeenAt,
       snoozeUntil: Number.isNaN(snooze) ? 0 : snooze,
       dismissedForever: localStorage.getItem(STORAGE_KEYS.dismissedForever) === 'true',
       shownThisSession: sessionStorage.getItem(SESSION_KEY) === 'true',
+      lastMilestoneShown: Number.isNaN(milestone) ? 0 : milestone,
     };
   } catch {
     return null;
@@ -46,29 +45,19 @@ export function useDonationReminder(): UseDonationReminder {
     stateRef.current = readState();
   }
 
-  // Persist firstSeenAt out of render (readState stays pure).
-  useEffect(() => {
-    const state = stateRef.current;
-    if (!state) return;
-    try {
-      if (!localStorage.getItem(STORAGE_KEYS.firstSeenAt)) {
-        localStorage.setItem(STORAGE_KEYS.firstSeenAt, String(state.firstSeenAt));
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   // One-shot call-count fetch (NOT the dashboard poll).
   useEffect(() => {
     let active = true;
     axios
       .get('/api/calls/stats')
       .then((r) => {
-        if (active) setCallCount(r.data?.total_calls);
+        if (active) {
+          const completedCalls = r.data?.outcomes?.completed;
+          setCallCount(typeof completedCalls === 'number' ? completedCalls : 0);
+        }
       })
       .catch(() => {
-        /* leave undefined → aged-in fallback still applies */
+        /* leave undefined → fail closed */
       })
       .finally(() => {
         if (active) setCountResolved(true);
@@ -87,6 +76,10 @@ export function useDonationReminder(): UseDonationReminder {
       setShow(true);
       try {
         sessionStorage.setItem(SESSION_KEY, 'true');
+        const milestone = milestoneForCallCount(callCount);
+        localStorage.setItem(STORAGE_KEYS.lastMilestoneShown, String(milestone));
+        state.lastMilestoneShown = milestone;
+        state.shownThisSession = true;
       } catch {
         /* ignore */
       }
@@ -106,7 +99,7 @@ export function useDonationReminder(): UseDonationReminder {
     show,
     callCount,
     onLater: () => snooze(SNOOZE_LATER_MS),
-    onDonate: () => snooze(SNOOZE_LATER_MS),
+    onDonate: () => snooze(SNOOZE_DONATE_MS),
     onAlreadyDonated: () => snooze(SNOOZE_DONATED_MS),
     onKeepReminders: () => snooze(SNOOZE_MONTH_MS),
     onDismiss: () => {

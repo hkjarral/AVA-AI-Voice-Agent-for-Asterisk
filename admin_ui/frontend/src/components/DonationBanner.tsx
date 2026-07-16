@@ -35,9 +35,8 @@ export default function DonationBanner({
     return (
       <div data-testid="donation-banner" className={CONTAINER}>
         <p className="leading-relaxed">
-          <span aria-hidden="true">🙁</span>{' '}
-          <span className="font-medium text-foreground">Really?</span> AVA&apos;s
-          development runs on these contributions.
+          <span className="font-medium text-foreground">Hide donation reminders?</span>{' '}
+          You can still support AVA at any time from the links in the sidebar.
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -51,24 +50,21 @@ export default function DonationBanner({
             Keep reminders
           </button>
           <button type="button" className={SECONDARY_BTN} onClick={onDismiss}>
-            Yes, hide for good
+            Hide reminders
           </button>
         </div>
       </div>
     );
   }
 
-  const lead =
-    callCount !== undefined && callCount > 0
-      ? `AVA has handled ${callCount.toLocaleString()} calls for you.`
-      : 'Thanks for running AVA.';
-
   return (
     <div data-testid="donation-banner" className={CONTAINER}>
       <p className="leading-relaxed">
-        <span className="font-medium text-foreground">{lead}</span>{' '}
-        It&apos;s free and self-hosted — if it&apos;s saving you time, supporting
-        development helps keep it going.
+        <span className="font-medium text-foreground">
+          AVA has completed {callCount?.toLocaleString()} calls on this system.
+        </span>{' '}
+        It is independently maintained. A $5 contribution helps fund PBX and provider
+        compatibility testing, release infrastructure, and fixes.
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <a
@@ -76,27 +72,27 @@ export default function DonationBanner({
           target="_blank"
           rel="noopener noreferrer"
           onClick={onDonate}
-          aria-label="Support AVA on Ko-fi"
+          aria-label="Contribute $5 to AVA on Ko-fi"
           className={PRIMARY_BTN}
         >
-          <Coffee className={ICON} aria-hidden="true" /> Support on Ko-fi
+          <Coffee className={ICON} aria-hidden="true" /> Contribute $5
         </a>
         <a
           href={SPONSORS_URL}
           target="_blank"
           rel="noopener noreferrer"
           onClick={onDonate}
-          aria-label="Sponsor AVA on GitHub"
+          aria-label="Sponsor AVA as a business on GitHub"
           className={OUTLINE_BTN}
         >
-          <Heart className={ICON} aria-hidden="true" /> Sponsor
+          <Heart className={ICON} aria-hidden="true" /> Sponsor AVA as a business
         </a>
         <span
           aria-hidden="true"
           className="mx-1 hidden h-5 w-px shrink-0 bg-border sm:inline-block"
         />
         <button type="button" className={SECONDARY_BTN} onClick={onAlreadyDonated}>
-          I already donated
+          I already support AVA
         </button>
         <button type="button" className={SECONDARY_BTN} onClick={onLater}>
           Maybe later

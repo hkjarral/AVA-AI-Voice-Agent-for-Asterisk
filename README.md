@@ -953,7 +953,10 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## 💖 Support This Project
 
-Asterisk AI Voice Agent is **free and open source**. If it's saving you money, consider supporting development:
+Asterisk AI Voice Agent is **free, open source, and independently maintained**. If AVA is
+handling real calls for you, a **$5 contribution** helps pay for PBX and provider compatibility
+testing, release infrastructure, and fixes. Organizations that rely on AVA can sponsor its
+continued maintenance through GitHub Sponsors.
 
 <p align="center">
   <a href="https://github.com/sponsors/hkjarral">
@@ -968,9 +971,9 @@ Asterisk AI Voice Agent is **free and open source**. If it's saving you money, c
 </p>
 
 Your support funds:
-- 🐛 Faster bug fixes and issue responses  
-- ✨ New provider integrations and features  
-- 📚 Better documentation and tutorials
+- 🧪 PBX, provider, upgrade, and regression testing
+- 🐛 Bug fixes, issue investigation, and release infrastructure
+- ✨ Provider integrations, operator features, and documentation
 
 If you find this project useful, please also give it a ⭐️!
 
