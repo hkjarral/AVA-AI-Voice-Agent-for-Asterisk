@@ -587,8 +587,10 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
         pass
 
     # Validate using the same loader pipeline as ai-engine (env injection + defaults + normalization).
-    dir_path = os.path.dirname(settings.CONFIG_PATH)
-    with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, suffix=".validate.yaml") as f:
+    # Validation is read-only and does not need to stage beside the live config.
+    # Use the process temp directory so a read-only/project-owned checkout cannot
+    # fail before the actual persistence path reports or repairs write access.
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".validate.yaml") as f:
         f.write(content)
         tmp_path = f.name
 
