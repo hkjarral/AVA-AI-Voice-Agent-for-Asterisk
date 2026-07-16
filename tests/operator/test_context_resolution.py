@@ -17,16 +17,14 @@ def test_db_agent_wins_over_yaml():
         assert orch.get_context_config("sales").prompt == "from-db"
 
 
-def test_yaml_fallback_when_db_absent():
+def test_agent_routing_fails_closed_when_db_absent():
     orch = _orch()
-    # DB absent => fall back to the legacy YAML context (headless / pre-migration).
+    # v7.4 startup imports Contexts before calls; runtime never uses YAML directly.
     with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("sales")
-        assert cc is not None and cc.prompt == "from-yaml"
+        assert orch.get_context_config("sales") is None
 
 
-def test_yaml_context_loads_connection_audio():
-    """YAML contexts expose the optional connection-audio URI at runtime."""
+def test_legacy_context_loader_preserves_connection_audio_for_migration_diagnostics():
     orch = TransportOrchestrator({
         "contexts": {
             "sales": {
@@ -36,8 +34,7 @@ def test_yaml_context_loads_connection_audio():
             },
         },
     })
-    with patch.object(orch.agent_store, "available", return_value=False):
-        assert orch.get_context_config("sales").connection_audio == "tone:ring;tonezone=fr"
+    assert orch._yaml_context_config("sales").connection_audio == "tone:ring;tonezone=fr"
 
 
 def test_inactive_or_unknown_slug_not_routable_when_db_present():
@@ -64,15 +61,11 @@ def test_unknown_context_not_in_yaml_is_not_reported_as_migration_drift():
         assert orch.yaml_context_shadowed_by_agent_db("intentionally_missing", "ai_context") is False
 
 
-def test_corrupt_db_falls_back_to_yaml():
-    # HIGH-9: DB present but unreadable (corrupt/locked) => resolve() raises
-    # AgentStoreReadError and the orchestrator falls back to the legacy YAML context,
-    # so a corrupted agents.db doesn't take routing down entirely.
+def test_corrupt_db_fails_closed():
     orch = _orch()
     with patch.object(orch.agent_store, "available", return_value=True), \
          patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("corrupt")):
-        cc = orch.get_context_config("sales")
-        assert cc is not None and cc.prompt == "from-yaml"
+        assert orch.get_context_config("sales") is None
 
 
 def test_none_context_returns_none():

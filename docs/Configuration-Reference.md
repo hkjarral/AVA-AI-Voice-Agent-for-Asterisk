@@ -87,17 +87,17 @@ See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for detailed configuration.
 
 ---
 
-## Call Selection & Precedence (Provider / Pipeline / Context)
+## Call Selection & Precedence (Provider / Pipeline / Agent)
 
 On each call, the engine selects:
-- a **context** (greeting/prompt/tools/profile)
+- an **agent** (greeting/prompt/tools/profile)
 - a **provider mode** (full agent provider vs pipeline)
 
 This selection is intentionally flexible so you can keep safe defaults while still overriding behavior per extension.
 
-### Context / agent selection
+### Agent selection
 
-> **v7+ resolution is agents.db-first.** After the one-time YAML → `agents.db`
+> **v7.4 resolution is Agent-only.** After the one-time YAML → `agents.db`
 > migration (see [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md)), the engine resolves
 > the agent for a call from `agents.db`, **not** from `ai-agent.yaml` at runtime. Editing
 > a context directly in `ai-agent.yaml` or `config/contexts/*.yaml` after migration has
@@ -107,14 +107,14 @@ This selection is intentionally flexible so you can keep safe defaults while sti
 Resolution order on each call:
 
 1. `AI_AGENT` channel var (preferred) → agent looked up by slug in `agents.db`.
-2. `AI_CONTEXT` channel var (legacy — equivalent to `AI_AGENT`) → agent looked up by slug.
+2. `AI_CONTEXT` channel var (deprecated compatibility alias) → agent looked up display-name-first.
 3. Otherwise, the default agent in `agents.db`.
 
 `AI_AGENT` wins if both `AI_AGENT` and `AI_CONTEXT` are set on the channel.
 
-If `agents.db` is absent (pre-migration, or after a YAML-fallback rollback), the engine
-reads `ai-agent.yaml` + `config/contexts/` directly and `AI_CONTEXT`/`AI_AGENT` select a
-context by name, falling back to the `default` context.
+Before accepting calls, v7.4 atomically imports legacy YAML Contexts when `agents.db` is
+empty. Runtime routing then reads Agents only and fails closed if the database is absent
+or unreadable. There is no live YAML persona fallback in v7.4.
 
 ### Audio profile selection
 

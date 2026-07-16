@@ -95,3 +95,33 @@ describe('per-agent connection audio configuration', () => {
         expect(serialized.extra_json).toBeNull();
     });
 });
+
+describe('per-agent transfer destination policy', () => {
+    it('round-trips selected destination keys through the first-class column', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            tool_configs_json: JSON.stringify({
+                transfer: { destination_policy: 'selected', destination_keys: ['sales', 'support'] },
+            }),
+        });
+        expect(state.transferDestinationPolicy).toBe('selected');
+        expect(state.transferDestinationKeys).toEqual(['sales', 'support']);
+        expect(JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}')).toEqual({
+            transfer: { destination_policy: 'selected', destination_keys: ['sales', 'support'] },
+        });
+    });
+
+    it('omits inherited policy for backward compatibility', () => {
+        const state = parseAgentConfig({ provider: 'deepgram' });
+        expect(state.transferDestinationPolicy).toBe('inherit');
+        expect(serializeAgentConfig(state).tool_configs_json).toBeNull();
+    });
+
+    it('stores selected-with-empty as an explicit fail-closed policy', () => {
+        const state = parseAgentConfig({ provider: 'deepgram' });
+        state.transferDestinationPolicy = 'selected';
+        state.transferDestinationKeys = [];
+        const stored = JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}');
+        expect(stored.transfer).toEqual({ destination_policy: 'selected', destination_keys: [] });
+    });
+});

@@ -127,7 +127,7 @@ const AgentsPage = () => {
     const [systemOk, setSystemOk] = useState<boolean | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [driftBanner, setDriftBanner] = useState(false);
+    const [creatingStarters, setCreatingStarters] = useState(false);
     const [editingAgent, setEditingAgent] = useState<Agent | null | undefined>(undefined);
     const [manualDialplan, setManualDialplan] = useState<{ slug: string; dialplan: string } | null>(null);
     // undefined = form closed, null = new agent, Agent = edit
@@ -160,7 +160,6 @@ const AgentsPage = () => {
             setAgents(agentList);
 
             if (migRes) {
-                if (migRes.data.drift) setDriftBanner(true);
                 if (migRes.data.last_default_promotion) {
                     toast.info(`Default agent was auto-promoted: ${migRes.data.last_default_promotion}`);
                 }
@@ -258,6 +257,38 @@ const AgentsPage = () => {
         }
     };
 
+    const handleCreateStarters = async () => {
+        setCreatingStarters(true);
+        try {
+            const response = await axios.post('/api/agents/starter-set', {});
+            const created = response.data?.created || [];
+            if (created.length) toast.success('Receptionist, Sales, and Support created');
+            else toast.info('Agents are already configured');
+            await loadAll();
+        } catch (e: unknown) {
+            const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+            toast.error(detail ?? 'Failed to create starter agents');
+        } finally {
+            setCreatingStarters(false);
+        }
+    };
+
+    const transferPolicyLabel = (agent: Agent): string | null => {
+        try {
+            const parsed = JSON.parse(agent.tool_configs_json || '{}');
+            const policy = parsed?.transfer?.destination_policy;
+            if (policy === 'selected') {
+                const count = Array.isArray(parsed?.transfer?.destination_keys)
+                    ? parsed.transfer.destination_keys.length : 0;
+                return `Transfer: ${count} selected`;
+            }
+            if (policy === 'none') return 'Transfer: none';
+        } catch {
+            return 'Transfer policy invalid';
+        }
+        return null;
+    };
+
     // ── Routing-source bar rows (omit "unknown" if zero) ──────────────────────
     const routingRows = routingMethods
         ? [
@@ -284,22 +315,6 @@ const AgentsPage = () => {
 
     return (
         <div className="space-y-6">
-            {/* Drift banner */}
-            {driftBanner && (
-                <div className="bg-orange-500/15 border border-orange-500/30 text-yellow-700 dark:text-yellow-400 p-4 rounded-md flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                        <span>
-                            Your <code className="text-xs bg-orange-500/20 px-1 rounded">ai-agent.yaml</code> context entries have changed
-                            since the last migration. YAML contexts no longer take effect — agents.db is active.{' '}
-                            <Link to="/agents/migration" className="underline font-medium">
-                                View migration status
-                            </Link>
-                        </span>
-                    </div>
-                </div>
-            )}
-
             {/* Error banner */}
             {error && (
                 <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
@@ -386,7 +401,25 @@ const AgentsPage = () => {
                     {agents.length === 0 ? (
                         <div className="col-span-full p-8 border border-dashed rounded-lg text-center text-muted-foreground">
                             <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                            <p>No agents configured. Click &ldquo;New Agent&rdquo; to create one.</p>
+                            <p className="font-medium text-foreground">No agents configured</p>
+                            <p className="mt-1 text-sm">Start with three general-purpose agents or create one manually.</p>
+                            <div className="mt-4 flex flex-wrap justify-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={handleCreateStarters}
+                                    disabled={creatingStarters}
+                                    className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                                >
+                                    {creatingStarters ? 'Creating…' : 'Create starter agents'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setEditingAgent(null)}
+                                    className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium"
+                                >
+                                    Create one agent
+                                </button>
+                            </div>
                         </div>
                     ) : (
                         agents.map((agent) => {
@@ -427,6 +460,11 @@ const AgentsPage = () => {
                                                 {isInactive && (
                                                     <span className="inline-flex items-center rounded-full border border-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground bg-muted/40">
                                                         Inactive
+                                                    </span>
+                                                )}
+                                                {transferPolicyLabel(agent) && (
+                                                    <span className="inline-flex items-center rounded-full border border-violet-500/30 px-2.5 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300 bg-violet-500/10">
+                                                        {transferPolicyLabel(agent)}
                                                     </span>
                                                 )}
                                             </div>
@@ -508,6 +546,14 @@ const AgentsPage = () => {
                     )}
                 </div>
             </ConfigSection>
+
+            <div className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">Advanced:</span>{' '}
+                upgrading from a Context-based configuration? Review and import legacy YAML from the{' '}
+                <Link to="/agents/migration" className="font-medium text-primary hover:underline">
+                    legacy Context import report
+                </Link>.
+            </div>
 
             {/* Analytics panels */}
             <div className="flex flex-col gap-4 sm:flex-row">

@@ -36,6 +36,9 @@ def export_yaml(store: AgentsStore) -> str:
         tools = _safe_json(a["tools_json"])
         if tools is not None:
             ctx["tools"] = tools
+        tool_configs = _safe_json(a.get("tool_configs_json"))
+        if tool_configs is not None:
+            ctx["tool_configs"] = tool_configs
         extra = _safe_json(a["extra_json"])
         if extra is not None:
             ctx.update(extra)

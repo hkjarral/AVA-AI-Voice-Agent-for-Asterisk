@@ -71,28 +71,28 @@ The output file can be merged back into `ai-agent.yaml` or used as a standalone 
 
 ## Rollback (if migration misbehaves)
 
-> **Two different rollback operations exist — pick the one that matches your problem.**
-> The procedure below is the **YAML-fallback rollback**: it deletes `agents.db` so the
-> engine reverts to reading `ai-agent.yaml` + `config/contexts/` directly. It does **not**
-> touch your code or config files. Use it when the *migration itself* misbehaves and you
-> want to go back to plain YAML mode.
+> **v7.4 has no live YAML runtime fallback.** Deleting `agents.db` while legacy Contexts
+> remain causes the startup bridge to import them again. Back up `agents.db` before an
+> upgrade. To restore v7.4 Agent data, stop the services, restore that database (including
+> correct ownership/permissions), and restart. To return to YAML runtime routing, roll
+> the application code back to a pre-v7.4 release as well as restoring its configuration.
 >
 > The separate **update rollback** (Admin UI → System → Updates → "Rollback", backed by
 > `updater/run.sh`) restores pre-update *code* + `.env` + `ai-agent.yaml` /
 > `ai-agent.local.yaml` / `users.json` / `config/contexts/` from a backup, but does **not**
 > restore or delete `agents.db`. Use it when a *code update* went wrong. If you need to
-> undo both an update and the migration, run the update rollback first, then this
-> YAML-fallback rollback.
+> undo both an update and the migration, use the update rollback and restore the matching
+> pre-v7.4 configuration backup.
 
 1. `docker compose stop ai_engine admin_ui`
-2. `rm ./data/operator/agents.db ./data/operator/agents.db-wal ./data/operator/agents.db-shm` (host path, relative to repo root — the compose bind is `./data` → `/app/data`)
-3. `docker compose start ai_engine admin_ui` — the engine falls back to reading
-   `ai-agent.yaml` + `config/contexts/` directly (pre-migration behavior).
-4. Please file a GitHub issue with the admin_ui startup log attached.
+2. Copy the failed database aside for diagnosis; do not delete your only copy.
+3. Restore the backed-up `./data/operator/agents.db` and its ownership/permissions.
+4. `docker compose start ai_engine admin_ui` and verify the Agents list before testing calls.
+5. Please file a GitHub issue with the Admin UI and AI engine startup logs attached.
 
 ---
 
 ## Related
 
-- [AGENTS.md](AGENTS.md) — agent overview, channel variables, headless/YAML mode, stats.
+- [AGENTS.md](AGENTS.md) — agent overview, channel variables, headless import, stats.
 - [Configuration-Reference.md](Configuration-Reference.md) — full YAML context schema.

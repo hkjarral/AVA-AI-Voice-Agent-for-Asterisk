@@ -22,6 +22,8 @@ export interface AgentToolState {
     noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
+    transferDestinationPolicy: 'inherit' | 'selected' | 'none';
+    transferDestinationKeys: string[];
 }
 
 const OWNED_EXTRA_KEYS = [
@@ -87,10 +89,16 @@ export interface AgentLike {
     tools_json?: string;
     mcp_json?: string;
     extra_json?: string;
+    tool_configs_json?: string;
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {
     const extra = safeParseObject(agent?.extra_json);
+    const toolConfigs = safeParseObject(agent?.tool_configs_json);
+    const transferConfig = asObject(toolConfigs['transfer']);
+    const rawTransferPolicy = asString(transferConfig['destination_policy']);
+    const transferDestinationPolicy = rawTransferPolicy === 'selected' || rawTransferPolicy === 'none'
+        ? rawTransferPolicy : 'inherit';
 
     const ichRaw = extra['in_call_http_tools'];
     const ichIsObject = !!ichRaw && typeof ichRaw === 'object' && !Array.isArray(ichRaw);
@@ -123,6 +131,9 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         noInput: asObject(extra['no_input']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
+        transferDestinationPolicy,
+        transferDestinationKeys: transferDestinationPolicy === 'selected'
+            ? asStrArray(transferConfig['destination_keys']) : [],
     };
 }
 
@@ -131,6 +142,7 @@ export interface SerializedAgentConfig {
     tools_json: string | null;
     mcp_json: string | null;
     extra_json: string | null;
+    tool_configs_json: string | null;
 }
 
 export function serializeAgentConfig(state: AgentToolState): SerializedAgentConfig {
@@ -157,6 +169,14 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
         tools_json: state.inCallTools.length ? JSON.stringify(state.inCallTools) : null,
         mcp_json: state.mcpJsonRaw.trim() || null,
         extra_json: Object.keys(extra).length ? JSON.stringify(extra) : null,
+        tool_configs_json: state.transferDestinationPolicy === 'inherit' ? null : JSON.stringify({
+            transfer: {
+                destination_policy: state.transferDestinationPolicy,
+                destination_keys: state.transferDestinationPolicy === 'selected'
+                    ? [...new Set(state.transferDestinationKeys.map((key) => key.trim()).filter(Boolean))]
+                    : [],
+            },
+        }),
     };
 }
 

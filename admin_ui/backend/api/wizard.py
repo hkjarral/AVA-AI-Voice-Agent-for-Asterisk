@@ -3387,16 +3387,9 @@ async def save_setup_config(config: SetupConfig):
                     "tts": "local_tts"
                 }
 
-            # C6 Fix: Create default context
-            default_context = {
-                "greeting": config.greeting,
-                "prompt": f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise.",
-                "provider": config.provider if config.provider != "local_hybrid" else "local",
-                "profile": "telephony_ulaw_8k"
-            }
-            if config.provider == "local_hybrid":
-                default_context["pipeline"] = pipeline_name
-            yaml_config.setdefault("contexts", {})["default"] = default_context
+            # v7.4: Agents are the only active persona/configuration model. Do not
+            # create a new YAML Context; existing legacy Contexts are left untouched
+            # so the one-time migration bridge can import them safely.
 
             # Canonical: ARI application name is YAML-owned (asterisk.app_name).
             asterisk_block = yaml_config.get("asterisk")
@@ -3439,9 +3432,29 @@ async def save_setup_config(config: SetupConfig):
                 yaml.dump(local_override, default_flow_style=False, sort_keys=False),
                 mode_from_existing=True,
             )
+
+            # Seed exactly three starter agents only for a genuinely empty store.
+            # If legacy Contexts were migrated, the store is non-empty and this is
+            # intentionally a no-op.
+            from agents_store import AgentsStore
+            from starter_agents import seed_starter_agents
+            starter_pipeline = pipeline_name if config.provider == "local_hybrid" else None
+            with AgentsStore() as agent_store:
+                starter_result = seed_starter_agents(
+                    agent_store,
+                    provider=config.provider,
+                    pipeline=starter_pipeline,
+                    assistant_name=config.ai_name,
+                    assistant_role=config.ai_role,
+                    receptionist_greeting=config.greeting,
+                )
         
         # Config saved - engine start will be handled by completion step UI
-        return {"status": "success", "provider": config.provider}
+        return {
+            "status": "success",
+            "provider": config.provider,
+            "starter_agents": locals().get("starter_result", {"created": []}),
+        }
     except HTTPException:
         raise
     except Exception as e:

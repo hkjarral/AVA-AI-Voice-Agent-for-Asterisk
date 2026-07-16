@@ -1684,7 +1684,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Hangup Call"
-                        description="Allow the agent to end the call gracefully. Call ending behavior is controlled via context prompts."
+                        description="Allow the agent to end the call gracefully. Call ending behavior is controlled via agent prompts."
                         checked={config.hangup_call?.enabled ?? true}
                         onChange={(e) => updateNestedConfig('hangup_call', 'enabled', e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -1752,8 +1752,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             </div>
                             <p className="text-sm text-muted-foreground">
                                 <strong>Note:</strong> Call ending behavior (transcript offers, confirmation flows) is now controlled
-                                via context prompts rather than code guardrails. Configure the CALL ENDING PROTOCOL section in your
-                                context's system prompt to customize behavior.
+                                via agent prompts rather than code guardrails. Configure the CALL ENDING PROTOCOL section in each
+                                agent's system prompt to customize behavior.
                             </p>
                             <div className="border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
                                 <FormSwitch

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS agents (
     greeting TEXT,
     prompt TEXT NOT NULL,
     tools_json TEXT,
+    tool_configs_json TEXT,             -- v7.4: structured per-agent tool-scope policies
     mcp_json TEXT,                    -- NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     audio_profile TEXT,
     extra_json TEXT,                 -- D3: pipeline, background_music, phase tools, disable flags, anything else
@@ -52,7 +53,7 @@ def _now() -> str:
 
 class AgentsStore:
     COLUMNS = ["id","slug","display_name","extension","role_label","provider","voice",
-               "greeting","prompt","tools_json","mcp_json","audio_profile","extra_json",
+               "greeting","prompt","tools_json","tool_configs_json","mcp_json","audio_profile","extra_json",
                "is_operator_managed","is_active","is_default","source_file",
                "created_at","updated_at","notes",
                "email_recipient","email_from","email_enabled"]
@@ -90,6 +91,8 @@ class AgentsStore:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN email_from TEXT")
                 if "email_enabled" not in existing:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN email_enabled INTEGER")
+                if "tool_configs_json" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN tool_configs_json TEXT")
         except sqlite3.Error:
             pass
 
@@ -130,7 +133,7 @@ class AgentsStore:
     # -- writes ------------------------------------------------------------
     def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
                role_label=None, voice=None, greeting=None, tools_json=None,
-               mcp_json=None, audio_profile=None, extra_json=None,
+               tool_configs_json=None, mcp_json=None, audio_profile=None, extra_json=None,
                is_operator_managed=1, source_file=None, notes=None,
                email_recipient=None, email_from=None, email_enabled=None) -> dict:
         slug = slug or slugify(display_name)
@@ -143,12 +146,12 @@ class AgentsStore:
         with self.conn:
             self.conn.execute(
                 """INSERT INTO agents (id,slug,display_name,extension,role_label,provider,
-                   voice,greeting,prompt,tools_json,mcp_json,audio_profile,extra_json,
+                   voice,greeting,prompt,tools_json,tool_configs_json,mcp_json,audio_profile,extra_json,
                    is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes,
                    email_recipient,email_from,email_enabled)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), slug, display_name, extension, role_label, provider,
-                 voice, greeting, prompt, tools_json, mcp_json, audio_profile, extra_json,
+                 voice, greeting, prompt, tools_json, tool_configs_json, mcp_json, audio_profile, extra_json,
                  is_operator_managed, source_file, now, now, notes,
                  email_recipient, email_from, email_enabled))
         self._ensure_default_invariant()

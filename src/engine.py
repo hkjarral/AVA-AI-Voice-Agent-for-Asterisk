@@ -251,6 +251,10 @@ class Engine:
 
     def __init__(self, config: AppConfig):
         self.config = config
+        self._legacy_context_warning_emitted = False
+        self._tool_reload_lock = asyncio.Lock()
+        self._tool_generation = None
+        self._next_tool_generation_id = 1
         self._start_time = time.time()  # Track engine start time for uptime
         self._config_hash = self._compute_config_hash()
         self._config_loaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -423,12 +427,13 @@ class Engine:
         # Modular pipeline orchestrator coordinates per-call STT/LLM/TTS adapters.
         self.pipeline_orchestrator = PipelineOrchestrator(config)
         
+        config_mapping = config.dict() if hasattr(config, 'dict') else config.__dict__
         # P1: Transport orchestrator for multi-provider audio format negotiation
-        self.transport_orchestrator = TransportOrchestrator(config.dict() if hasattr(config, 'dict') else config.__dict__)
+        self.transport_orchestrator = TransportOrchestrator(config_mapping)
         logger.info(
             "TransportOrchestrator initialized",
             profiles=list(self.transport_orchestrator.profiles.keys()),
-            contexts=list(self.transport_orchestrator.contexts.keys()),
+            legacy_context_diagnostics=list(self.transport_orchestrator.contexts.keys()),
             default=self.transport_orchestrator.default_profile_name,
         )
         
@@ -726,12 +731,30 @@ class Engine:
 
     async def start(self):
         """Start the engine and ARI reconnect supervisor."""
+        # v7.4 removes Contexts as a runtime persona source. Import them before
+        # any call can be accepted. Keeping this at service start (rather than
+        # object construction) also makes configuration inspection side-effect free.
+        config_mapping = self.config.dict() if hasattr(self.config, "dict") else self.config.__dict__
+        from .core.legacy_agent_migration import ensure_legacy_contexts_imported
+        legacy_import = ensure_legacy_contexts_imported(config_mapping.get("contexts") or {})
+        if legacy_import.get("imported"):
+            logger.warning(
+                "Legacy YAML Contexts imported into Agents for v7.4",
+                imported=legacy_import["imported"],
+                default_slug=legacy_import.get("default_slug"),
+            )
+
+        if not hasattr(self, "_next_tool_generation_id"):
+            self._next_tool_generation_id = 1
+        if not hasattr(self, "_tool_generation"):
+            self._tool_generation = None
         # 1) Load providers first (low risk)
         await self._load_providers()
         
         # Initialize tool calling system
         try:
             from src.tools.registry import tool_registry
+            tool_registry.clear()
             tool_registry.initialize_default_tools()
             # Initialize HTTP tools from config (Milestone 24)
             tools_config = getattr(self.config, 'tools', None)
@@ -757,6 +780,31 @@ class Engine:
                 logger.info("✅ MCP tools initialized")
         except Exception as e:
             logger.warning("Failed to initialize MCP tools", error=str(e), exc_info=True)
+
+        # Publish generation 1 after optional MCP discovery so every new call
+        # captures a complete, isolated registry and matching config snapshot.
+        try:
+            from src.tools.runtime_config import ToolRuntimeGeneration
+            from src.tools.registry import tool_registry
+
+            config_dict = self.config.dict() if hasattr(self.config, "dict") else self.config.__dict__
+            generation = ToolRuntimeGeneration.build(
+                generation_id=self._next_tool_generation_id,
+                config=config_dict,
+                preserved_tools=tool_registry.get_all(),
+            )
+            self._tool_generation = generation
+            self._next_tool_generation_id += 1
+            tool_registry.replace_with(generation.registry)
+            logger.info(
+                "Tool runtime generation published",
+                generation_id=generation.generation_id,
+                config_hash=generation.config_hash,
+                tool_count=len(generation.registry.list_tools()),
+            )
+        except Exception as e:
+            logger.error("Failed to build initial tool runtime generation", error=str(e), exc_info=True)
+            raise
 
         # Start modular pipeline orchestrator to prepare per-call component lookups.
         # Note: Full agent providers (deepgram, google_live, openai_realtime, elevenlabs_agent, local)
@@ -3807,6 +3855,8 @@ class Engine:
                 status="connected",
                 start_time=datetime.now(timezone.utc)  # Track call start time (UTC for consistent storage)
             )
+            session.tool_runtime_generation = getattr(self, "_tool_generation", None)
+            self._resolve_session_tool_runtime(session)
             session.is_outbound = bool(is_outbound)
             # Per-provider VAD decision: local VAD active only when appropriate for this provider
             use_local = self._should_use_local_vad(session.provider_name)
@@ -7092,9 +7142,10 @@ class Engine:
                 # skip even when global is on, None inherits global. Shared decision helper
                 # keeps this gate in agreement with the tool's own _should_send.
                 from src.tools.business.email_summary import should_send_email_summary
-                email_tool_config = self.config.tools.get('send_email_summary', {})
+                call_tool_config = self._tool_config_for_session(session)
+                email_tool_config = (call_tool_config.get("tools") or {}).get('send_email_summary', {})
                 if should_send_email_summary(session, email_tool_config):
-                    from src.tools.registry import tool_registry
+                    tool_registry = self._tool_registry_for_session(session)
                     email_tool = tool_registry.get('send_email_summary')
                     if email_tool:
                         # Verify session still exists (race condition with multiple cleanup calls)
@@ -7117,7 +7168,8 @@ class Engine:
                                 context_name=getattr(session, 'context_name', None),
                                 session_store=self.session_store,
                                 ari_client=self.ari_client,
-                                config=self.config.dict()
+                                config=call_tool_config,
+                                tool_registry=tool_registry,
                             )
                             # Execute synchronously to ensure session is available
                             # Email sending itself is still async (non-blocking)
@@ -7138,9 +7190,10 @@ class Engine:
             # Send transcript emails if requested during call (complete conversation)
             try:
                 if hasattr(session, 'transcript_emails') and session.transcript_emails:
-                    transcript_tool_config = self.config.tools.get('request_transcript', {})
+                    call_tool_config = self._tool_config_for_session(session)
+                    transcript_tool_config = (call_tool_config.get("tools") or {}).get('request_transcript', {})
                     if transcript_tool_config.get('enabled', False):
-                        from src.tools.registry import tool_registry
+                        tool_registry = self._tool_registry_for_session(session)
                         transcript_tool = tool_registry.get('request_transcript')
                         if transcript_tool:
                             # Send transcript to each requested email
@@ -7158,7 +7211,8 @@ class Engine:
                                         context_name=getattr(session, 'context_name', None),
                                         session_store=self.session_store,
                                         ari_client=self.ari_client,
-                                        config=self.config.dict()
+                                        config=call_tool_config,
+                                        tool_registry=tool_registry,
                                     )
                                     
                                     # Get fresh session data with complete conversation
@@ -12043,14 +12097,13 @@ class Engine:
             # enabled by default and selectively disabled per context (Milestone 24).
             try:
                 context_name = getattr(session, "context_name", None)
+                tool_registry = self._tool_registry_for_session(session)
                 allowed_tools: List[str] = []
                 if context_name:
                     context_config = self.transport_orchestrator.get_context_config(
                         context_name, getattr(session, "routing_method", None))
                     if context_config:
                         from src.tools.base import ToolPhase
-                        from src.tools.registry import tool_registry
-
                         context_tools = list(getattr(context_config, "tools") or [])
                         disabled_global = list(getattr(context_config, "disable_global_in_call_tools") or [])
                         tools = tool_registry.get_tools_for_context(
@@ -12063,8 +12116,6 @@ class Engine:
                 if allowed_tools:
                     try:
                         from src.tools.base import ToolPhase
-                        from src.tools.registry import tool_registry
-
                         filtered: List[str] = []
                         for name in allowed_tools:
                             t = tool_registry.get(name) if tool_registry else None
@@ -12921,7 +12972,7 @@ class Engine:
                     allowed_tools: set[str] = set()
                     allowed_tools_canonical: set[str] = set()
                     try:
-                        from src.tools.registry import tool_registry
+                        tool_registry = self._tool_registry_for_session(session)
                         allowed_tools = set((llm_options or {}).get("tools") or [])
                         allowed_tools_canonical = {
                             tool_registry.canonicalize_tool_name(name) for name in allowed_tools
@@ -13266,7 +13317,7 @@ class Engine:
                                 pass
 
                         from src.tools.context import ToolExecutionContext
-                        from src.tools.registry import tool_registry
+                        tool_registry = self._tool_registry_for_session(session)
                         
                         # Create execution context
                         tool_ctx = ToolExecutionContext(
@@ -13279,7 +13330,8 @@ class Engine:
                             context_name=getattr(session, "context_name", None),
                             session_store=self.session_store,
                             ari_client=self.ari_client,
-                            config=self.config.dict(),
+                            config=self._tool_config_for_session(session),
+                            tool_registry=tool_registry,
                             provider_name="pipeline"
                         )
 
@@ -13955,6 +14007,12 @@ class Engine:
             session.routing_method = 'ai_agent'
         elif channel_vars.get('AI_CONTEXT'):
             session.routing_method = 'ai_context'
+            if not getattr(self, "_legacy_context_warning_emitted", False):
+                self._legacy_context_warning_emitted = True
+                logger.warning(
+                    "AI_CONTEXT is deprecated; use AI_AGENT with the Agent slug",
+                    compatibility="display-name-first Agent lookup remains available in v7.4",
+                )
         elif resolved_context:
             session.routing_method = 'default'   # neither var set; used agents.db default agent
         else:
@@ -14011,6 +14069,11 @@ class Engine:
                     context_name=resolved_context,
                     exc_info=True,
                 )
+        # Resolve agent-scoped tools from the generation captured when the call
+        # entered Stasis. A reload racing with routing cannot move this call to
+        # the newly published generation.
+        Engine._resolve_session_tool_runtime(self, session, no_input_context)
+        await self._save_session(session)
         # Call through the class so lightweight compatibility stubs that invoke
         # Engine._resolve_audio_profile directly do not need to grow this helper.
         await Engine._configure_no_input_watchdog(self, session, no_input_context)
@@ -14585,6 +14648,110 @@ class Engine:
             logger.debug(f"Failed to compute config hash: {e}")
             return "unknown"
 
+    def _mcp_tools_for_generation(self) -> List[Any]:
+        """Return only current MCP wrappers for preservation during a tool reload."""
+        generation = getattr(self, "_tool_generation", None)
+        manager = getattr(self, "mcp_manager", None)
+        if not generation or not manager:
+            return []
+        try:
+            routes = (manager.get_status() or {}).get("tool_routes") or {}
+            return [
+                tool
+                for name in routes
+                for tool in [generation.registry.get(name)]
+                if tool is not None
+            ]
+        except Exception:
+            logger.debug("Failed to enumerate MCP tools for generation", exc_info=True)
+            return []
+
+    def _build_tool_generation(self, config: Any):
+        from src.tools.runtime_config import ToolRuntimeGeneration
+
+        config_dict = config.dict() if hasattr(config, "dict") else dict(config or {})
+        return ToolRuntimeGeneration.build(
+            generation_id=self._next_tool_generation_id,
+            config=config_dict,
+            preserved_tools=self._mcp_tools_for_generation(),
+        )
+
+    def _tool_registry_for_session(self, session: Optional[CallSession]):
+        registry = getattr(session, "tool_runtime_registry", None) if session else None
+        if registry is not None:
+            return registry
+        generation = getattr(session, "tool_runtime_generation", None) if session else None
+        if generation is not None:
+            return generation.registry
+        current = getattr(self, "_tool_generation", None)
+        if current is not None:
+            return current.registry
+        from src.tools.registry import tool_registry
+        return tool_registry
+
+    def _tool_config_for_session(self, session: Optional[CallSession]) -> Dict[str, Any]:
+        effective = getattr(session, "tool_runtime_config", None) if session else None
+        if isinstance(effective, dict) and effective:
+            return effective
+        generation = getattr(session, "tool_runtime_generation", None) if session else None
+        if generation is not None:
+            return generation.config
+        current = getattr(self, "_tool_generation", None)
+        if current is not None:
+            return current.config
+        return self.config.dict() if hasattr(self.config, "dict") else {}
+
+    def _resolve_session_tool_runtime(
+        self,
+        session: CallSession,
+        context_config: Optional[Any] = None,
+    ) -> None:
+        """Bind one generation + one agent policy to a call exactly once."""
+        generation = getattr(session, "tool_runtime_generation", None)
+        if generation is None:
+            generation = getattr(self, "_tool_generation", None)
+            session.tool_runtime_generation = generation
+        if generation is None:
+            return
+
+        agent_policy = getattr(context_config, "tool_configs", None) if context_config else None
+        effective = generation.for_agent(agent_policy)
+        registry = generation.registry
+        inline_http = getattr(context_config, "in_call_http_tools", None) if context_config else None
+        if isinstance(inline_http, dict) and inline_http:
+            registry = generation.registry.clone()
+            registry.initialize_in_call_http_tools_from_config(
+                inline_http,
+                cache_key=f"agent:{session.context_name or session.call_id}",
+            )
+        session.tool_runtime_registry = registry
+        session.tool_runtime_config = effective.config
+        session.tool_generation_id = generation.generation_id
+        session.tool_config_hash = generation.config_hash
+        session.tool_policy = {
+            "transfer": effective.policy,
+            "requested_destination_keys": list(effective.requested_destination_keys),
+            "effective_destination_keys": list(effective.effective_destination_keys),
+            "stale_destination_keys": list(effective.stale_destination_keys),
+        }
+        if effective.stale_destination_keys:
+            logger.warning(
+                "Agent tool policy contains stale transfer destinations",
+                call_id=session.call_id,
+                context_name=session.context_name,
+                stale_destination_keys=list(effective.stale_destination_keys),
+                generation_id=generation.generation_id,
+            )
+        logger.info(
+            "Call tool runtime resolved",
+            call_id=session.call_id,
+            context_name=session.context_name,
+            generation_id=generation.generation_id,
+            config_hash=generation.config_hash,
+            transfer_policy=effective.policy,
+            transfer_destinations=list(effective.effective_destination_keys),
+        )
+
     def _compute_config_state(self) -> dict:
         """Compare the running (loaded) config against what's on disk.
 
@@ -14610,6 +14777,8 @@ class Engine:
             "disk_config_hash": disk_hash,
             "restart_required": running_hash != disk_hash,
             "disk_config_valid": True,
+            "tool_generation": getattr(getattr(self, "_tool_generation", None), "generation_id", None),
+            "tool_config_hash": getattr(getattr(self, "_tool_generation", None), "config_hash", None),
         }
     
     @staticmethod
@@ -15680,21 +15849,7 @@ class Engine:
                         allowed_in_call_http_tool_names: list[str] = []
 
                         if isinstance(in_call_http_tools_cfg, dict) and in_call_http_tools_cfg:
-                            try:
-                                from src.tools.registry import tool_registry
-                                tool_registry.initialize_in_call_http_tools_from_config(
-                                    in_call_http_tools_cfg,
-                                    cache_key=f"context:{session.context_name}",
-                                )
-                                logger.debug(
-                                    "Registered per-context in-call HTTP tools",
-                                    call_id=call_id,
-                                    context=session.context_name,
-                                    tool_count=len(in_call_http_tools_cfg),
-                                )
-                                allowed_in_call_http_tool_names = list(in_call_http_tools_cfg.keys())
-                            except Exception as e:
-                                logger.warning(f"Failed to register context in-call HTTP tools: {e}", call_id=call_id)
+                            allowed_in_call_http_tool_names = list(in_call_http_tools_cfg.keys())
                         elif isinstance(in_call_http_tools_cfg, (list, tuple)) and in_call_http_tools_cfg:
                             allowed_in_call_http_tool_names = [str(x) for x in in_call_http_tools_cfg if str(x).strip()]
                         
@@ -15708,7 +15863,7 @@ class Engine:
                         allowed = list(explicit_context_tools)
                         try:
                             from src.tools.base import ToolPhase
-                            from src.tools.registry import tool_registry
+                            tool_registry = self._tool_registry_for_session(session)
 
                             disabled_global = list(getattr(context_config, "disable_global_in_call_tools") or [])
                             tools = tool_registry.get_tools_for_context(
@@ -15764,7 +15919,7 @@ class Engine:
                             from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
 
                             runtime_tool_guidance = build_in_call_tool_runtime_guidance(
-                                self.config.dict(),
+                                self._tool_config_for_session(session),
                                 provider_context.get("tools") or [],
                             )
                             if runtime_tool_guidance:
@@ -15829,10 +15984,15 @@ class Engine:
             # Always pass these with defaults - ElevenLabs requires them if used in first message
             provider_context["caller_name"] = session.caller_name or "there"
             provider_context["caller_id"] = session.caller_number or ""
+            # Keep the per-call registry on the provider object, not in the context
+            # payload. Some providers serialize context values as remote dynamic
+            # variables, and a Python registry object must never cross that boundary.
+            provider._call_tool_registry = self._tool_registry_for_session(session)
             
             # Inject tool execution context into provider if it supports tools (Deepgram, Google Live)
             if hasattr(provider, 'tool_adapter') or hasattr(provider, '_tool_adapter'):
                 try:
+                    call_tool_registry = self._tool_registry_for_session(session)
                     provider._caller_channel_id = session.caller_channel_id
                     provider._bridge_id = session.bridge_id
                     provider._caller_number = getattr(session, 'caller_number', None)
@@ -15841,7 +16001,10 @@ class Engine:
                     provider._context_name = getattr(session, 'context_name', None)
                     provider._session_store = self.session_store
                     provider._ari_client = self.ari_client
-                    provider._full_config = self.config.dict()  # Convert Pydantic model to dict
+                    provider._full_config = self._tool_config_for_session(session)
+                    adapter = getattr(provider, "tool_adapter", None) or getattr(provider, "_tool_adapter", None)
+                    if adapter is not None and hasattr(adapter, "registry"):
+                        adapter.registry = call_tool_registry
                     logger.debug(
                         "Injected tool execution context into provider",
                         call_id=call_id,
@@ -16282,7 +16445,7 @@ class Engine:
                 {"ok": False, "error": "Forbidden: requires localhost or valid HEALTH_API_TOKEN"},
                 status=403
             )
-        
+
         try:
             server_id = request.match_info.get("server_id")
             if not server_id:
@@ -16317,7 +16480,7 @@ class Engine:
             Tool execution result
         """
         from src.tools.context import ToolExecutionContext
-        from src.tools.registry import tool_registry
+        tool_registry = self._tool_registry_for_session(session)
         
         provider_name = getattr(session, 'provider_name', None) or self.config.default_provider
         provider = self._call_providers.get(call_id)
@@ -16377,11 +16540,12 @@ class Engine:
                     context_name=getattr(session, 'context_name', None),
                     session_store=self.session_store,
                     ari_client=self.ari_client,
-                    config=self.config.dict() if hasattr(self.config, 'dict') else {},
+                    config=self._tool_config_for_session(session),
+                    tool_registry=tool_registry,
                     provider_name=provider_name,
                 )
 
-                # Execute tool via registry (tool_registry is a module-level singleton)
+                # Execute through the registry captured by this call's generation.
                 blocked_result = await context.get_tool_block_response(function_name)
                 tool = None if blocked_result else (tool_registry.get(function_name) if tool_registry else None)
                 if blocked_result:
@@ -16571,7 +16735,8 @@ class Engine:
             context_name=getattr(session, "context_name", None),
             session_store=self.session_store,
             ari_client=self.ari_client,
-            config=self.config.dict() if hasattr(self.config, "dict") else {},
+            config=self._tool_config_for_session(session),
+            tool_registry=self._tool_registry_for_session(session),
             provider_name=provider_name,
         )
         result = await commit_pending_deferred_transfer(context)
@@ -16584,8 +16749,8 @@ class Engine:
             )
         return result
 
-    def _deferred_transfer_local_handoff_providers(self) -> set[str]:
-        tools_cfg = getattr(self.config, "tools", {}) or {}
+    def _deferred_transfer_local_handoff_providers(self, session: Optional[CallSession] = None) -> set[str]:
+        tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
         transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
         if not isinstance(transfer_cfg, dict):
             transfer_cfg = {}
@@ -16604,7 +16769,7 @@ class Engine:
     async def _play_deferred_transfer_local_handoff(self, call_id: str, session: "CallSession") -> bool:
         provider_name = str(getattr(session, "provider_name", None) or getattr(self.config, "default_provider", "") or "").strip()
         provider_key = (self._get_provider_kind(provider_name) or provider_name).strip().lower()
-        if provider_key not in self._deferred_transfer_local_handoff_providers():
+        if provider_key not in self._deferred_transfer_local_handoff_providers(session):
             return False
 
         action = getattr(session, "pending_deferred_transfer", None)
@@ -16615,7 +16780,7 @@ class Engine:
         if not description:
             description = "your destination"
 
-        tools_cfg = getattr(self.config, "tools", {}) or {}
+        tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
         transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
         if not isinstance(transfer_cfg, dict):
             transfer_cfg = {}
@@ -16679,7 +16844,8 @@ class Engine:
 
     async def _wait_for_deferred_transfer_audio_drain(self, call_id: str) -> bool:
         """Wait briefly for caller-facing transfer audio to leave the streaming path."""
-        tools_cfg = getattr(self.config, "tools", {}) or {}
+        session = await self.session_store.get_by_call_id(call_id)
+        tools_cfg = (self._tool_config_for_session(session).get("tools") or {})
         transfer_cfg = tools_cfg.get("transfer", {}) if isinstance(tools_cfg, dict) else {}
         if not isinstance(transfer_cfg, dict):
             transfer_cfg = {}
@@ -16719,7 +16885,7 @@ class Engine:
         """
         from src.tools.base import ToolPhase
         from src.tools.context import PreCallContext
-        from src.tools.registry import tool_registry
+        tool_registry = self._tool_registry_for_session(session)
         
         results: Dict[str, str] = {}
         
@@ -16765,7 +16931,7 @@ class Engine:
                 call_direction="outbound" if getattr(session, 'is_outbound', False) else "inbound",
                 campaign_id=getattr(session, 'outbound_campaign_id', None),
                 lead_id=getattr(session, 'outbound_lead_id', None),
-                config=self.config.dict() if hasattr(self.config, 'dict') else {},
+                config=self._tool_config_for_session(session),
                 ari_client=self.ari_client,
             )
             
@@ -16943,7 +17109,7 @@ class Engine:
         """
         from src.tools.base import ToolPhase
         from src.tools.context import PostCallContext
-        from src.tools.registry import tool_registry
+        tool_registry = self._tool_registry_for_session(session)
         
         try:
             # Get context config for this call
@@ -16993,7 +17159,7 @@ class Engine:
                 pre_call_results=dict(getattr(session, 'pre_call_results', {}) or {}),
                 campaign_id=getattr(session, 'outbound_campaign_id', None),
                 lead_id=getattr(session, 'outbound_lead_id', None),
-                config=self.config.dict() if hasattr(self.config, 'dict') else {},
+                config=self._tool_config_for_session(session),
             )
             
             # Capture execution metadata in call_records.post_call_tool_calls
@@ -17543,6 +17709,15 @@ class Engine:
                 {"success": False, "error": "Forbidden: requires localhost or valid HEALTH_API_TOKEN"},
                 status=403
             )
+
+        if not hasattr(self, "_tool_reload_lock"):
+            self._tool_reload_lock = asyncio.Lock()
+        if self._tool_reload_lock.locked():
+            return web.json_response(
+                {"success": False, "error": "A configuration reload is already in progress"},
+                status=409,
+            )
+        await self._tool_reload_lock.acquire()
         
         try:
             logger.info("🔄 Configuration reload requested")
@@ -17562,6 +17737,27 @@ class Engine:
                     "message": "Failed to reload configuration",
                     "errors": errors
                 }, status=500)
+
+            # Build every new-call runtime object off-side. Nothing running is
+            # mutated unless both tool construction and orchestration validation
+            # succeed completely.
+            try:
+                new_tool_generation = self._build_tool_generation(new_config)
+                cfg_dict = new_config.dict() if hasattr(new_config, "dict") else new_config.__dict__
+                new_transport_orchestrator = TransportOrchestrator(cfg_dict)
+            except Exception as e:
+                logger.warning("Reload validation failed; keeping current generation", error=str(e), exc_info=True)
+                return web.json_response(
+                    {
+                        "success": False,
+                        "message": "Configuration saved but could not be applied",
+                        "errors": [str(e)],
+                        "running_tool_generation": getattr(
+                            getattr(self, "_tool_generation", None), "generation_id", None
+                        ),
+                    },
+                    status=500,
+                )
             
             # Step 2: Compare and update provider configurations
             old_providers = set(self.providers.keys()) if self.providers else set()
@@ -17569,20 +17765,23 @@ class Engine:
             # Update config reference
             old_config = self.config
             self.config = new_config
+            self.transport_orchestrator = new_transport_orchestrator
+            self._tool_generation = new_tool_generation
+            self._next_tool_generation_id += 1
+            from src.tools.registry import tool_registry
+            tool_registry.replace_with(new_tool_generation.registry)
             # Recompute config hash after reload so health endpoint shows current state
             self._config_hash = self._compute_config_hash()
             self._config_loaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             changes.append("Configuration updated")
+            changes.append(
+                f"Tool runtime generation {new_tool_generation.generation_id} applied "
+                f"({len(new_tool_generation.registry.list_tools())} tools)"
+            )
 
-            # Step 2b: Rebuild TransportOrchestrator so contexts/profiles changes apply to new calls.
-            # The orchestrator is created once at startup and otherwise holds stale copies of profiles/contexts.
-            try:
-                cfg_dict = new_config.dict() if hasattr(new_config, "dict") else new_config.__dict__
-                self.transport_orchestrator = TransportOrchestrator(cfg_dict)
-                changes.append("TransportOrchestrator rebuilt (profiles/contexts refreshed)")
-            except Exception as e:
-                logger.debug("Error rebuilding TransportOrchestrator", error=str(e), exc_info=True)
-                errors.append("Error rebuilding TransportOrchestrator (see server logs)")
+            # Step 2b: Rebuild TransportOrchestrator so Agent/profile changes apply to new calls.
+            # It also refreshes legacy Context data retained strictly for migration diagnostics.
+            changes.append("TransportOrchestrator rebuilt (profiles/agents refreshed)")
             
             # Step 3: Reinitialize providers that have changed
             try:
@@ -17610,54 +17809,10 @@ class Engine:
             except Exception as e:
                 errors.append(f"Error updating providers: {str(e)}")
             
-            # Step 4: Update contexts
-            try:
-                if hasattr(new_config, 'contexts') and new_config.contexts:
-                    self.contexts = new_config.contexts
-                    changes.append(f"Contexts updated ({len(new_config.contexts)} contexts)")
-            except Exception as e:
-                errors.append(f"Error updating contexts: {str(e)}")
-
-            # Step 4b: Reload MCP tools (best-effort; applies to new calls)
-            try:
-                old_mcp = getattr(old_config, "mcp", None)
-                new_mcp = getattr(new_config, "mcp", None)
-                mcp_changed = old_mcp != new_mcp
-                if mcp_changed:
-                    active_calls = []
-                    try:
-                        active_calls = await self.session_store.list_active_calls()
-                    except Exception:
-                        active_calls = []
-
-                    if active_calls:
-                        changes.append(f"MCP config changed (reload deferred; {len(active_calls)} active call(s))")
-                    else:
-                        from src.tools.registry import tool_registry
-                        # Stop/unregister old manager (if any)
-                        if self.mcp_manager:
-                            try:
-                                removed = self.mcp_manager.unregister_tools(tool_registry)
-                                changes.append(f"MCP tools unregistered ({removed})")
-                            except Exception:
-                                logger.debug("Failed unregistering MCP tools on reload", exc_info=True)
-                            try:
-                                await self.mcp_manager.stop()
-                            except Exception:
-                                logger.debug("Failed stopping MCP manager on reload", exc_info=True)
-                            self.mcp_manager = None
-
-                        # Start/register new manager if enabled
-                        if new_mcp and getattr(new_mcp, "enabled", False):
-                            from src.mcp.manager import MCPClientManager
-                            self.mcp_manager = MCPClientManager(new_mcp)
-                            await self.mcp_manager.start()
-                            registered = self.mcp_manager.register_tools(tool_registry)
-                            changes.append(f"MCP tools reloaded ({len(registered)})")
-                        else:
-                            changes.append("MCP tools disabled")
-            except Exception as e:
-                errors.append(f"Error reloading MCP tools: {str(e)}")
+            # MCP process/credential replacement is intentionally outside the
+            # v7.4 new-call tool-generation contract.
+            if getattr(old_config, "mcp", None) != getattr(new_config, "mcp", None):
+                changes.append("MCP configuration changed (engine restart required)")
             
             # Step 5: Update prompts
             try:
@@ -17674,7 +17829,9 @@ class Engine:
                 "message": "Configuration reloaded" if not errors else "Reload completed with errors",
                 "changes": changes,
                 "errors": errors,
-                "note": "Changes apply to new calls. Active calls use previous config."
+                "note": "Changes apply to new calls. Active calls use their captured generation.",
+                "tool_generation": new_tool_generation.generation_id,
+                "tool_config_hash": new_tool_generation.config_hash,
             })
             
         except Exception as exc:
@@ -17684,6 +17841,8 @@ class Engine:
                 "message": f"Reload failed: {str(exc)}",
                 "errors": [str(exc)]
             }, status=500)
+        finally:
+            self._tool_reload_lock.release()
 
 
 async def main():

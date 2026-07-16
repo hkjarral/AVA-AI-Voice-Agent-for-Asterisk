@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
+import TransferAccessEditor, { type TransferDestination } from './TransferAccessEditor';
 import {
     ToolDef, AgentToolState, phaseOf, isToolChecked, isToolLocked, toggleTool,
 } from './agentToolConfig';
@@ -11,6 +12,7 @@ interface Props {
     catalogError: boolean;
     state: AgentToolState;
     onChange: (next: AgentToolState) => void;
+    transferDestinations: TransferDestination[];
 }
 
 const PHASES: { key: 'pre_call' | 'in_call' | 'post_call'; label: string; hint: string }[] = [
@@ -25,7 +27,7 @@ const SOURCE_BADGE: Record<string, string> = {
     mcp: 'bg-amber-100 text-amber-700',
 };
 
-const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChange }) => {
+const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChange, transferDestinations }) => {
     const [open, setOpen] = useState<Record<string, boolean>>(
         { pre_call: false, in_call: true, post_call: false });
 
@@ -71,8 +73,8 @@ const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChan
                                     const locked = isToolLocked(state, tool);
                                     const checked = isToolChecked(state, tool);
                                     return (
+                                        <React.Fragment key={tool.name}>
                                         <label
-                                            key={tool.name}
                                             className={`flex items-center gap-3 px-4 py-2.5 ${locked ? 'bg-amber-50/40' : 'cursor-pointer hover:bg-accent/40'}`}
                                         >
                                             <input
@@ -98,6 +100,14 @@ const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChan
                                                 <span className="text-[11px] text-muted-foreground ml-auto">on by default</span>
                                             ) : null}
                                         </label>
+                                        {tool.name === 'blind_transfer' && checked && (
+                                            <TransferAccessEditor
+                                                destinations={transferDestinations}
+                                                state={state}
+                                                onChange={onChange}
+                                            />
+                                        )}
+                                        </React.Fragment>
                                     );
                                 })}
                             </div>

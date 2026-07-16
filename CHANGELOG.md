@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-scoped transfer destination access for v7.4** (`tool_configs_json`, Agents editor, immutable call snapshots): each Agent may inherit the global transfer inventory, allow selected destination keys, or deny all destinations. Empty/stale selections fail closed; global hard disables win. The same effective configuration drives schemas, prompt guidance, execution, deferred transfer, and audit metadata.
+- **Restart-free tool generations** (AI engine reload API, Tools **Save & Apply**): built-in and managed HTTP tool changes are validated and built off-side, then published atomically to new calls. Active calls retain their captured generation, failed builds leave the previous generation running, concurrent reloads return a conflict, and diagnostics expose generation/hash. Python code, environment/credentials, provider/VAD, and MCP process changes remain restart-required.
+- **Three-Agent first-run experience** (setup wizard and Agents empty state): genuinely empty installations create Receptionist (default), Sales, and Support with conservative general prompts and no fabricated transfer routes. Existing installations are never reseeded or overwritten.
+
 ### Changed
+
+- **Contexts are removed as a v7.4 product/runtime model**: navigation and editing now converge on Agents; `/contexts` provides a one-time notice; the shipped base config no longer includes demo Context personas. A locked, validated, atomic startup bridge imports legacy YAML Contexts into an empty `agents.db`, after which routing is Agent-only and fails closed. `AI_CONTEXT` remains a deprecated display-name-first compatibility selector for existing dialplans.
 
 - **Local AI call state is session-scoped** (`src/providers/local.py`, `local_ai_server/session.py`, `local_ai_server/ws_protocol.py`): AI Engine now synchronizes each agent prompt into its WebSocket session instead of mutating the Local AI Server's global model configuration. Reused connections reset conversation history even when consecutive calls use identical prompts. Unscoped `switch_model` requests remain supported temporarily for older clients.
 - **Local TTS no longer blocks the WebSocket event loop** (`local_ai_server/server.py`): Piper, Kokoro, MeloTTS, Silero, and Matcha synthesis run in a bounded worker while access to the active model remains serialized. Health/status traffic, barge-in control messages, and other sessions remain responsive during synthesis.

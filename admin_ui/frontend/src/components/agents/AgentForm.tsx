@@ -7,6 +7,7 @@ import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import AgentToolPicker from './AgentToolPicker';
+import type { TransferDestination } from './TransferAccessEditor';
 import {
     ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig, phaseOf, isToolChecked,
 } from './agentToolConfig';
@@ -31,6 +32,7 @@ export interface Agent {
     tools_json?: string;
     mcp_json?: string;
     extra_json?: string;
+    tool_configs_json?: string;
     notes?: string;
     email_recipient?: string;
     email_from?: string;
@@ -81,6 +83,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [catalog, setCatalog] = useState<ToolDef[]>([]);
     const [catalogError, setCatalogError] = useState(false);
     const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
+    const [transferDestinations, setTransferDestinations] = useState<TransferDestination[]>([]);
     // Tool-reference highlighting for the prompt: detect every catalog tool name,
     // colour-code by in-call status for this agent.
     const knownToolNames = useMemo(() => catalog.map((t) => t.name), [catalog]);
@@ -176,6 +179,22 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 .map(([k]) => k)
                 .sort();
             setAvailableProfiles(profileNames);
+
+            const toolsBlock = (parsed.tools as Record<string, unknown>) || {};
+            const transferBlock = (toolsBlock.transfer as Record<string, unknown>) || {};
+            const destinationsBlock = (transferBlock.destinations as Record<string, unknown>) || {};
+            setTransferDestinations(Object.entries(destinationsBlock).map(([key, raw]) => {
+                const destination = raw && typeof raw === 'object'
+                    ? raw as Record<string, unknown> : {};
+                return {
+                    key,
+                    type: String(destination.type || ''),
+                    target: String(destination.target || destination.extension || ''),
+                    description: String(destination.description || destination.name || ''),
+                    attendedAllowed: destination.attended_allowed === true,
+                    liveAgent: destination.live_agent === true,
+                };
+            }));
 
             // Tools disabled in YAML (e.g. tools.google_calendar.enabled: false) are
             // rejected at runtime even if an agent lists them — mark them unavailable.
@@ -281,6 +300,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 tools_json: cfg.tools_json,
                 mcp_json: cfg.mcp_json,
                 extra_json: cfg.extra_json,
+                tool_configs_json: cfg.tool_configs_json,
                 email_recipient: emailRecipient || null,
                 email_from: emailFrom || null,
                 // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
@@ -497,7 +517,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                             )}
                             {vc.unrecognized && (
                                 <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
-                                    This voice is not in the provider's catalog — calls will fall back to the provider's default voice until you pick a valid one.
+                                    This voice is not in the provider catalog — calls will fall back to its default voice until you pick a valid one.
                                 </p>
                             )}
                         </div>
@@ -770,6 +790,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     catalogError={catalogError}
                     state={toolState}
                     onChange={setToolState}
+                    transferDestinations={transferDestinations}
                 />
             </div>
         </Modal>

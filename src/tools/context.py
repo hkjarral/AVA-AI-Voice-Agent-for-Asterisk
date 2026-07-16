@@ -36,6 +36,7 @@ class ToolExecutionContext:
     session_store: Any = None  # SessionStore instance
     ari_client: Any = None      # ARIClient instance
     config: Any = None           # Config dict
+    tool_registry: Any = None    # Per-call immutable-generation registry
     
     # Provider information
     provider_name: str = None  # "deepgram", "openai_realtime", "custom_pipeline"

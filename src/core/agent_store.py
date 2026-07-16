@@ -1,7 +1,9 @@
-"""Read-only per-call agent resolver (decision D1/D4).
-The engine NEVER writes agents.db; admin_ui owns the write path and migration.
-If the DB is absent the caller falls back to the YAML contexts path unchanged —
-headless installs keep the YAML workflow forever."""
+"""Read-only per-call Agent resolver.
+
+The normal write path belongs to the Admin UI. At v7.4 startup, a separate
+atomic compatibility bridge may create ``agents.db`` from legacy YAML Contexts;
+after that, this reader is the sole runtime persona source.
+"""
 import json, logging, os, re, sqlite3
 from contextlib import closing
 from typing import Optional
@@ -28,9 +30,7 @@ def _slugify(name: str) -> str:
 class AgentStoreReadError(Exception):
     """agents.db exists but could not be read (corrupt / locked / bad JSON).
 
-    Distinct from a clean not-found/inactive result (which is ``None``): the
-    orchestrator falls back to YAML ONLY on this error, never for a deleted or
-    deactivated agent (HIGH-9)."""
+    Distinct from a clean not-found/inactive result (which is ``None``)."""
 
 class EngineAgentStore:
     def __init__(self, db_path: Optional[str] = None):
@@ -72,8 +72,7 @@ class EngineAgentStore:
         (CRIT-1). An unknown ``prefer`` falls back to slug-first (safest canonical).
 
         Returns ``None`` for a clean not-found/inactive result. Raises
-        ``AgentStoreReadError`` if the DB is present but unreadable, so the caller
-        can fall back to YAML without resurrecting deleted agents (HIGH-9)."""
+        ``AgentStoreReadError`` if the DB is present but unreadable."""
         if not self.available():
             return None
         slug_first = (
@@ -100,17 +99,23 @@ class EngineAgentStore:
                     if r is not None:
                         break
         except sqlite3.Error as e:
-            logger.warning("agents.db read failed (%s); caller will fall back to YAML", e)
+            logger.error("agents.db read failed (%s); Agent routing will fail closed", e)
             raise AgentStoreReadError(str(e)) from e
         if r is None:
             return None
         try:
             extra = json.loads(r["extra_json"]) if r["extra_json"] else {}
             tools = json.loads(r["tools_json"]) if r["tools_json"] else None
+            cols = r.keys()
+            tool_configs = (
+                json.loads(r["tool_configs_json"])
+                if "tool_configs_json" in cols and r["tool_configs_json"]
+                else None
+            )
         except (json.JSONDecodeError, TypeError) as e:
             # Corrupt/invalid JSON (manual edit, bad backup) is a read error, not a
-            # not-found — surface it so the caller falls back to YAML (HIGH-9).
-            logger.warning("agents.db JSON parse failed for name=%s (%s); caller will fall back to YAML",
+            # not-found — surface it so Agent routing fails closed.
+            logger.error("agents.db JSON parse failed for name=%s (%s); Agent routing will fail closed",
                            name, e)
             raise AgentStoreReadError(str(e)) from e
         kwargs = {k: extra[k] for k in _EXTRA_FIELDS if k in extra}
@@ -118,7 +123,6 @@ class EngineAgentStore:
         # migration), not extra_json. Guard column presence so a pre-migration DB
         # resolves cleanly instead of raising. email_enabled is stored as int (0/1)
         # or NULL; coerce to tri-state bool/None.
-        cols = r.keys()
         email_recipient = r["email_recipient"] if "email_recipient" in cols else None
         email_from = r["email_from"] if "email_from" in cols else None
         email_enabled_raw = r["email_enabled"] if "email_enabled" in cols else None
@@ -128,6 +132,7 @@ class EngineAgentStore:
             provider=r["provider"],
             voice=r["voice"] if "voice" in cols else None,
             tools=tools,
+            tool_configs=tool_configs,
             email_recipient=email_recipient,
             email_from=email_from,
             email_enabled=email_enabled,

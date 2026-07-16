@@ -3,6 +3,7 @@ import json, os, sqlite3, sys
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from agents_store import AgentsStore, slugify
+from starter_agents import seed_starter_agents
 from agents_migration import current_drift, acknowledge_drift, run_migration, \
     merged_effective_contexts, disambiguate_slug
 import settings  # for YAML paths
@@ -16,6 +17,10 @@ router = APIRouter()
 if settings.PROJECT_ROOT not in sys.path:
     sys.path.insert(0, settings.PROJECT_ROOT)
 from src.utils.email_validator import EmailValidator
+from src.tools.runtime_config import (
+    ToolConfigPolicyError,
+    dump_agent_tool_configs,
+)
 
 
 def _validate_optional_email(v):
@@ -54,6 +59,7 @@ class AgentIn(BaseModel):
     greeting: str | None = None
     audio_profile: str | None = None
     tools_json: str | None = None
+    tool_configs_json: str | None = None
     # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
@@ -64,6 +70,14 @@ class AgentIn(BaseModel):
 
     _check_emails = field_validator("email_recipient", "email_from")(
         _validate_optional_email)
+
+    @field_validator("tool_configs_json")
+    @classmethod
+    def _check_tool_configs(cls, value):
+        try:
+            return dump_agent_tool_configs(value)
+        except ToolConfigPolicyError as exc:
+            raise ValueError(str(exc)) from exc
 
 class AgentPatch(BaseModel):
     display_name: str | None = None
@@ -75,6 +89,7 @@ class AgentPatch(BaseModel):
     greeting: str | None = None
     audio_profile: str | None = None
     tools_json: str | None = None
+    tool_configs_json: str | None = None
     # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     extra_json: str | None = None
@@ -86,6 +101,14 @@ class AgentPatch(BaseModel):
 
     _check_emails = field_validator("email_recipient", "email_from")(
         _validate_optional_email)
+
+    @field_validator("tool_configs_json")
+    @classmethod
+    def _check_tool_configs(cls, value):
+        try:
+            return dump_agent_tool_configs(value)
+        except ToolConfigPolicyError as exc:
+            raise ValueError(str(exc)) from exc
 
 class AgentOut(BaseModel):
     """Full agent row as stored in agents.db. Declares every column so attaching this
@@ -102,6 +125,7 @@ class AgentOut(BaseModel):
     greeting: str | None = None
     prompt: str
     tools_json: str | None = None
+    tool_configs_json: str | None = None
     # NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     mcp_json: str | None = None
     audio_profile: str | None = None
@@ -149,6 +173,14 @@ class DialplanResponse(BaseModel):
     extension: str
     stasis_app: str
 
+
+class StarterSetIn(BaseModel):
+    provider: str | None = None
+    pipeline: str | None = None
+    assistant_name: str = "AVA"
+    assistant_role: str = "voice assistant"
+    receptionist_greeting: str | None = None
+
 @router.get("/agents", response_model=list[AgentOut])
 def list_agents():
     return _store().list_all()
@@ -157,6 +189,37 @@ def list_agents():
 def templates():
     with open(TEMPLATES_PATH) as f:
         return json.load(f)
+
+
+@router.post("/agents/starter-set")
+def create_starter_set(body: StarterSetIn):
+    provider = (body.provider or "").strip()
+    pipeline = (body.pipeline or "").strip() or None
+    if not provider and not pipeline:
+        try:
+            from api.config import _read_merged_config_dict
+            config = _read_merged_config_dict() or {}
+        except Exception:
+            config = {}
+        active_pipeline = str(config.get("active_pipeline") or "").strip()
+        pipelines = config.get("pipelines") or {}
+        default_target = str(config.get("default_provider") or "").strip()
+        if active_pipeline and active_pipeline in pipelines:
+            pipeline = active_pipeline
+        elif default_target in pipelines and default_target not in (config.get("providers") or {}):
+            pipeline = default_target
+        else:
+            provider = default_target
+    if not provider and not pipeline:
+        raise HTTPException(422, "configure a provider or pipeline before creating starter agents")
+    return seed_starter_agents(
+        _store(),
+        provider=provider,
+        pipeline=pipeline,
+        assistant_name=body.assistant_name,
+        assistant_role=body.assistant_role,
+        receptionist_greeting=body.receptionist_greeting,
+    )
 
 @router.get("/agents/summary", response_model=AgentSummaryResponse)
 async def summary():
@@ -430,7 +493,7 @@ def dialplan(slug: str):
         f" same => n,Set(AI_AGENT={slug})\n"
         f" same => n,Stasis({STASIS_APP})\n"
         f" same => n,Hangup()\n"
-        f"; AI_CONTEXT={slug} also works (legacy variable, still supported)\n")
+        f"; AI_CONTEXT={slug} is a deprecated compatibility alias; use AI_AGENT\n")
     return {"dialplan": text, "extension": ext, "stasis_app": STASIS_APP}
 
 @router.get("/agents-migration/status")
@@ -454,7 +517,7 @@ def migration_ack():
 _RECONCILE_FIRST_CLASS = {
     "provider", "prompt", "voice", "greeting", "extension", "role_label", "notes",
     "email_recipient", "email_from", "email_enabled", "tools", "audio_profile",
-    "profile",
+    "profile", "tool_configs",
 }
 
 
@@ -476,6 +539,7 @@ def _context_to_agent_fields(ctx: dict) -> dict:
         "email_from": ctx.get("email_from"),
         "email_enabled": ctx.get("email_enabled"),
         "tools_json": json.dumps(ctx["tools"]) if ctx.get("tools") else None,
+        "tool_configs_json": dump_agent_tool_configs(ctx.get("tool_configs")),
         "audio_profile": ctx.get("profile") or ctx.get("audio_profile"),
         "extra_json": json.dumps(extra) if extra else None,
     }

@@ -92,6 +92,14 @@ class CallSession:
     # already-running conversation.
     no_input_policy: Dict[str, Any] = field(default_factory=dict)
     no_input_state: Dict[str, Any] = field(default_factory=dict)
+    # v7.4 tool runtime captured at call start. These are in-memory references;
+    # active calls retain them when a newer generation is atomically applied.
+    tool_runtime_generation: Any = None
+    tool_runtime_registry: Any = None
+    tool_runtime_config: Dict[str, Any] = field(default_factory=dict)
+    tool_generation_id: Optional[int] = None
+    tool_config_hash: Optional[str] = None
+    tool_policy: Dict[str, Any] = field(default_factory=dict)
     
     # Conversation tracking for email tools
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)

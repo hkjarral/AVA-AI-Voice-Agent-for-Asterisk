@@ -40,7 +40,7 @@ The wizard writes to `config/ai-agent.local.yaml` (operator overrides), so upstr
 ### Configuration
 
 #### Agents
-Create and edit operator-managed agents, select their provider or pipeline, configure prompts/tools/voice, and copy a ready-to-use dialplan snippet. Under **Caller Inactivity Overrides**, an agent can partially override the global watchdog timing/messages. Inbound agents inherit the global policy; outbound agents must explicitly enable it here.
+Create and edit operator-managed agents, select their provider or pipeline, configure prompts/tools/voice, and copy a ready-to-use dialplan snippet. Transfer destination access can inherit the global inventory, allow selected routes, or deny all routes. Under **Caller Inactivity Overrides**, an agent can partially override the global watchdog timing/messages. Inbound agents inherit the global policy; outbound agents must explicitly enable it here.
 
 #### Providers
 Configure full-agent providers and their settings (model, voice, API version, etc.). Each provider card shows its current status.
@@ -48,14 +48,11 @@ Configure full-agent providers and their settings (model, voice, API version, et
 #### Pipelines
 Configure modular STT/LLM/TTS pipelines for mix-and-match provider combinations.
 
-#### Contexts
-Named personas with custom greetings, system prompts, and audio profiles. Use contexts to create different agent personalities for different phone numbers or departments.
-
 #### Audio Profiles
 Transport and codec settings per context. Profiles like `telephony_ulaw_8k`, `openai_realtime_24k`, and `wideband_pcm_16k` control how audio is encoded and transmitted.
 
 #### Tools
-Enable/disable AI-powered actions (transfers, hangup, email, voicemail) and configure tool-specific settings.
+Enable/disable AI-powered actions (transfers, hangup, email, voicemail) and configure the global inventory. **Save & Apply** publishes built-in and managed HTTP tool changes to new calls without restarting the engine; active calls retain their captured generation.
 
 #### Advanced Settings → Voice Activity Detection
 The **Caller Inactivity** card controls the engine-level no-input watchdog. v7.3.1 defaults to a 30-second idle window, one “Are you still there?” check-in, and a 15-second reply grace period before the configured final message and hangup. The clock pauses while the agent is greeting, speaking, processing, or transferring. Changes are hot-reloaded for new calls; active calls keep the policy captured when they started.

@@ -24,6 +24,53 @@ def test_crud_roundtrip(client):
     assert r.json()["role_label"] == "Vendas"
     assert client.delete("/api/agents/maria_vendas").status_code == 204
 
+
+def test_tool_configs_are_validated_and_canonicalized(client):
+    raw = {
+        "transfer": {
+            "destination_policy": "selected",
+            "destination_keys": ["sales", "support", "sales"],
+        }
+    }
+    response = client.post(
+        "/api/agents",
+        json={
+            "display_name": "Scoped",
+            "provider": "x",
+            "prompt": "p",
+            "tool_configs_json": __import__("json").dumps(raw),
+        },
+    )
+    assert response.status_code == 201, response.text
+    stored = __import__("json").loads(response.json()["tool_configs_json"])
+    assert stored["transfer"] == {
+        "destination_policy": "selected",
+        "destination_keys": ["sales", "support"],
+    }
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not-json",
+        "[]",
+        '{"calendar":{"policy":"none"}}',
+        '{"transfer":{"destination_policy":"all"}}',
+        '{"transfer":{"destination_policy":"none","destination_keys":["sales"]}}',
+    ],
+)
+def test_invalid_tool_configs_rejected(client, raw):
+    response = client.post(
+        "/api/agents",
+        json={
+            "display_name": "Bad Policy",
+            "provider": "x",
+            "prompt": "p",
+            "tool_configs_json": raw,
+        },
+    )
+    assert response.status_code == 422
+
 def test_delete_default_with_others_promotes(client):
     client.post("/api/agents", json={"display_name": "A", "provider": "x", "prompt": "p"})
     client.post("/api/agents", json={"display_name": "B", "provider": "x", "prompt": "p"})
@@ -40,6 +87,25 @@ def test_dialplan_snippet(client):
 def test_templates_listed(client):
     names = {t["id"] for t in client.get("/api/agents/templates").json()}
     assert {"receptionist", "after_hours", "appointment_booker"} <= names
+
+
+def test_starter_set_creates_exactly_three_agents_once(client):
+    response = client.post(
+        "/api/agents/starter-set",
+        json={"provider": "openai_realtime", "assistant_name": "Ava"},
+    )
+    assert response.status_code == 200
+    assert response.json()["created"] == ["receptionist", "sales", "support"]
+    agents = client.get("/api/agents").json()
+    assert {agent["slug"] for agent in agents} == {"receptionist", "sales", "support"}
+    assert next(agent for agent in agents if agent["slug"] == "receptionist")["is_default"] == 1
+    assert all(__import__("json").loads(agent["tools_json"]) == ["hangup_call"] for agent in agents)
+
+    second = client.post(
+        "/api/agents/starter-set", json={"provider": "openai_realtime"}
+    )
+    assert second.json()["already_configured"] is True
+    assert len(client.get("/api/agents").json()) == 3
 
 
 def test_templates_are_packaged_outside_runtime_data_volume():
@@ -332,13 +398,15 @@ def test_patch_null_clears_json_columns(client):
         "tools_json": '["transfer"]', "extra_json": '{"pipeline": "local_hybrid"}'})
     # Switch to a monolithic provider and clear the JSON columns (the UI sends null).
     r = client.patch("/api/agents/switcher", json={
-        "provider": "openai_realtime", "tools_json": None, "extra_json": None})
+        "provider": "openai_realtime", "tools_json": None,
+        "tool_configs_json": None, "extra_json": None})
     assert r.status_code == 200
     row = r.json()
     # The stale pipeline/tools must actually be gone — not silently retained.
     assert row["provider"] == "openai_realtime"
     assert row["extra_json"] in (None, "")
     assert row["tools_json"] in (None, "")
+    assert row["tool_configs_json"] in (None, "")
 
 def test_reconcile_adds_new_yaml_context(client, tmp_path, monkeypatch):
     import yaml as _yaml
@@ -410,7 +478,7 @@ def _load_backend_main():
 def test_main_app_openapi_version_and_tag():
     """version literal + agents tag description live in admin_ui/backend/main.py."""
     main = _load_backend_main()
-    assert main.app.version == "7.1.1"
+    assert main.app.version == "7.4.0"
     spec = main.app.openapi()
     tags = {t["name"]: t.get("description", "") for t in spec.get("tags", [])}
     assert tags.get("agents")  # present with a non-empty description

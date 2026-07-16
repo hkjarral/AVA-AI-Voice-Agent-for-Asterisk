@@ -41,6 +41,7 @@ const ToolsPage = () => {
     const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
     const [saving, setSaving] = useState(false);
+    const [applyStatus, setApplyStatus] = useState<string | null>(null);
     const { restartRequired, refetch } = useRestartRequired();
     const [restartingEngine, setRestartingEngine] = useState(false);
     const [activePhase, setActivePhase] = useState<ToolPhase>('in_call');
@@ -146,7 +147,37 @@ const ToolsPage = () => {
     };
 
     const handleSave = async () => {
-        await persistConfigNow(configRef.current, 'Tools configuration saved');
+        setSaving(true);
+        setApplyStatus(null);
+        let configSaved = false;
+        try {
+            const sanitized = sanitizeConfigForSave(configRef.current);
+            const saved = await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) }, {
+                headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
+            });
+            configSaved = true;
+            if (saved.data?.recommended_apply_method === 'hot_reload') {
+                const applied = await axios.post('/api/system/containers/ai_engine/reload', {}, {
+                    headers: { Authorization: `Bearer ${token}` }, timeout: 30000,
+                });
+                const generation = applied.data?.tool_generation;
+                const message = `Applied${generation ? ` as tool generation ${generation}` : ''}. New calls use it; active calls remain unchanged.`;
+                setApplyStatus(message);
+                toast.success('Tools saved and applied', { description: message });
+            } else {
+                setApplyStatus('Saved. A restart is required for these changes.');
+                toast.success('Tools configuration saved');
+            }
+            await refetch();
+        } catch (err: any) {
+            const detail = err.response?.data?.detail || err.message || 'Unknown error';
+            setApplyStatus(configSaved
+                ? 'Saved changes could not be applied; the previous tool generation remains active.'
+                : 'Tools were not saved.');
+            toast.error('Failed to save or apply tools', { description: detail });
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleRestartAIEngine = async (force: boolean = false) => {
@@ -279,7 +310,7 @@ const ToolsPage = () => {
                 <div className="bg-orange-500/15 border-orange-500/30 border text-yellow-800 dark:text-yellow-500 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
                         <AlertCircle className="w-5 h-5 mr-2" />
-                        Tool configuration changes require an AI Engine restart to take effect.
+                        Some saved configuration changes require an AI Engine restart to take effect.
                     </div>
                     <button
                         onClick={() => handleRestartAIEngine(false)}
@@ -295,6 +326,11 @@ const ToolsPage = () => {
                     </button>
                 </div>
             )}
+            {applyStatus && (
+                <div className="rounded-md border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+                    {applyStatus}
+                </div>
+            )}
             <div className="flex justify-between items-center">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">Tools & Capabilities</h1>
@@ -308,7 +344,7 @@ const ToolsPage = () => {
                     className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
                 >
                     <Save className="w-4 h-4 mr-2" />
-                    {saving ? 'Saving...' : 'Save Changes'}
+                    {saving ? 'Saving...' : 'Save & Apply'}
                 </button>
             </div>
 
