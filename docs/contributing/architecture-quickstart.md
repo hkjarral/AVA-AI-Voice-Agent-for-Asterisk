@@ -156,7 +156,7 @@ contexts:
 
 **Lookup Order**:
 1. Dialplan override: `AI_PROVIDER` (if set)
-2. Context override: `contexts.<name>.provider` (if set for the selected context)
+2. Agent override: provider stored on the selected Agent in `agents.db`
 3. Global default: `default_provider`
 
 If the selected provider path is a pipeline-based configuration, the engine uses `active_pipeline`.

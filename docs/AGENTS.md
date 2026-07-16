@@ -21,7 +21,7 @@ Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.
 | Inside container | `/app/data/operator/agents.db` |
 | Host (relative to repo root) | `./data/operator/agents.db` |
 
-`agents.db` is a WAL-mode SQLite database. The Admin UI owns the write path (CRUD, migration, reconcile). The engine reads it per-call at the moment a call enters Stasis — no restart needed after editing an agent.
+`agents.db` is a WAL-mode SQLite database. The Admin UI owns normal CRUD and optional legacy reconcile actions. The AI Engine owns the one-time startup import safety gate and reads the selected Agent per call — no restart is needed after editing an Agent.
 
 On v7.4 startup, a headless-safe compatibility bridge atomically imports legacy YAML Contexts into `agents.db` when the store is empty. A populated Agent store is never overwritten. After startup, runtime routing reads Agents only and fails closed if the database is absent or unreadable.
 
@@ -65,7 +65,7 @@ If both `AI_AGENT` and `AI_CONTEXT` are present on the same channel, `AI_AGENT` 
 
 `AI_PROVIDER` overrides which provider/pipeline handles the call; `AI_AGENT` selects the greeting, prompt, tools, and (v7.3.0+) the agent's voice. If `AI_PROVIDER` is not set, the engine uses the provider field stored on the agent itself (or `default_provider` from `ai-agent.yaml` as the final fallback).
 
-> **Note:** Some docs in this repository may still show `AI_CONTEXT` in dialplan examples — that is the legacy, still-supported variable and works identically to `AI_AGENT`.
+Historical release evidence may still show `AI_CONTEXT`; current operator examples use `AI_AGENT`.
 
 ---
 
@@ -131,6 +131,6 @@ Both figures come from `call_records.context_name` in `call_history.db` joined o
 
 ## Related
 
-- [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md) — one-time YAML→agents.db migration, drift warnings, reconcile/acknowledge, and rollback.
+- [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md) — one-time YAML→agents.db migration, recovery, and rollback boundaries.
 - [Configuration-Reference.md](Configuration-Reference.md) — legacy YAML schema and current global configuration.
 - [FreePBX-Integration-Guide.md](FreePBX-Integration-Guide.md) — dialplan setup and channel variable reference.

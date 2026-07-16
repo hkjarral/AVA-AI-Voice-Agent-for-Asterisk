@@ -44,7 +44,8 @@ providers:
     voice: "rex"
 ```
 
-Route calls via the channel variable `AI_PROVIDER=acme_grok` or set `contexts.<name>.provider: acme_grok`. See [Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md) for routing details.
+Route calls via `AI_PROVIDER=acme_grok`, or select `acme_grok` on an Agent and route
+with `AI_AGENT=<slug>`. See [Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md) for routing details.
 
 ## Supported voices
 

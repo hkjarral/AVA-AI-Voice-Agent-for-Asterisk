@@ -199,7 +199,7 @@ This is common for production: a small VPS runs Asterisk/ai_engine, and a beefy 
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # --local-server skips Asterisk/Admin UI checks (not needed on GPU-only box)
 sudo ./preflight.sh --apply-fixes --local-server
@@ -236,7 +236,7 @@ docker compose -p asterisk-ai-voice-agent \
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 sudo ./preflight.sh --apply-fixes
 ```
 

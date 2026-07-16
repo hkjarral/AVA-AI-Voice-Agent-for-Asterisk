@@ -55,18 +55,20 @@ tools:
     enabled: true
 ```
 
-### 6. Add to Your Context
+### 6. Assign Calendar Access to an Agent
 
-Make sure `google_calendar` is in the tools list for the context(s) that should have calendar access:
+Calendar credentials and inventory are global; each Agent can inherit all configured
+calendars, use selected calendar keys, or have no Google Calendar access.
 
-```yaml
-contexts:
-  my_context:
-    tools:
-      - google_calendar
-      - hangup_call
-      # ... other tools
-```
+1. Open **Agents**, edit the Agent, and enable `google_calendar`.
+2. In **Google Calendar access**, choose **Inherit**, **Selected**, or **None**.
+3. For **Selected**, check at least one current calendar key. Empty or stale selections
+   fail closed.
+4. Save the Agent. Agent changes apply to new calls without restarting AI Engine.
+
+Legacy single-calendar configuration is exposed as the compatible `default` calendar.
+Legacy Context `tool_overrides` are promoted during the one-time v7.4 Agent migration;
+YAML Contexts are not a live assignment mechanism after migration.
 
 ## Implementation
 
@@ -346,7 +348,8 @@ Clicking it opens a file picker; choose your service-account JSON and:
    key, and written to a stable path under `secrets/` keyed off a hash of
    the SA's `client_email`. The same SA always gets the same filename, so
    re-uploading after a private-key rotation overwrites the existing file
-   and any references to it (in YAML, Contexts page, etc.) keep working.
+   and global calendar inventory references remain stable. Agent access uses
+   the calendar key, so assignments keep working across credential rotation.
 
 2. The backend then authenticates as the SA and calls Google's
    `calendarList.list()` API to discover which calendars the SA has access

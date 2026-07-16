@@ -40,7 +40,7 @@ These notes cover:
 
 - ViciDial installation with **Asterisk 18+** (tested with Asterisk 18.26.4-vici)
 - Docker and Docker Compose installed on the ViciDial server (or a co-located host)
-- Repository cloned (e.g., `/root/Asterisk-AI-Voice-Agent`)
+- Repository cloned (e.g., `/opt/AVA-AI-Voice-Agent-for-Asterisk`)
 - ARI enabled in Asterisk (`/etc/asterisk/ari.conf`)
 - HTTP server enabled (`/etc/asterisk/http.conf`)
 - Port **8090/TCP** accessible for AudioSocket connections
@@ -111,7 +111,7 @@ This context routes inbound calls to the AAVA Stasis application. Point your DID
 ```ini
 [from-ai-agent]
 exten => s,1,NoOp(AI Agent Call)
- same => n,Set(AI_CONTEXT=default)
+ same => n,Set(AI_AGENT=default)
  same => n,Set(AI_PROVIDER=local_hybrid)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
@@ -119,7 +119,7 @@ exten => s,1,NoOp(AI Agent Call)
 
 **Customization**:
 
-- `AI_CONTEXT`: Set to the name of an AI context defined in `config/ai-agent.yaml` (e.g., `default`, `sales`, `support`). See [Configuration-Reference.md](Configuration-Reference.md).
+- `AI_AGENT`: Set to the Agent slug stored in `agents.db` (e.g., `default`, `sales`, `support`). See [Configuration-Reference.md](Configuration-Reference.md). `AI_CONTEXT` remains a deprecated compatibility alias for old campaigns.
 - `AI_PROVIDER`: Set to the provider or pipeline to use (e.g., `deepgram`, `local_hybrid`, `openai_realtime`).
 
 ### 3.2 Outbound AMD Context: `[aava-outbound-amd]`
@@ -270,7 +270,7 @@ In the experimental ARI-originated path, when AAVA's outbound scheduler fires a 
    - AAVA_OUTBOUND=1
    - AAVA_CAMPAIGN_ID, AAVA_LEAD_ID, AAVA_ATTEMPT_ID
    - CALLERID(num), CALLERID(name)
-   - AI_CONTEXT (from campaign settings)
+   - AI_AGENT (from campaign settings; legacy campaigns may still send AI_CONTEXT)
 4. Asterisk routes through [default] context:
    - Matches _913. pattern in [vicidial-auto-external]
    - Dials SIP/carrier_trunk/<carrier_prefix><phone>
@@ -305,7 +305,7 @@ In the experimental ARI-originated path, when AAVA's outbound scheduler fires a 
 
 ```bash
 # Clone or update the repository
-cd /root/Asterisk-AI-Voice-Agent
+cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git checkout main
 git pull origin main
 

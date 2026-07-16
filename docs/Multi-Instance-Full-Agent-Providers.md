@@ -67,7 +67,7 @@ Set Asterisk channel variables before `Stasis(asterisk-ai-voice-agent)`.
 Precedence is:
 
 1. `AI_PROVIDER`
-2. `contexts.<name>.provider`
+2. provider selected on the Agent addressed by `AI_AGENT`
 3. `default_provider`
 
 Short aliases are removed. Use exact provider instance keys or exact pipeline names.
@@ -79,31 +79,28 @@ Short aliases are removed. Use exact provider instance keys or exact pipeline na
 exten => s,1,NoOp(ACME inbound -> Google Live)
  same => n,Answer()
  same => n,Set(AI_PROVIDER=acme_google_live)
- same => n,Set(AI_CONTEXT=acme_support)
+ same => n,Set(AI_AGENT=acme_support)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 
 Use this when the dialplan should decide the customer/provider directly.
 
-### Context-Based Routing
+### Agent-Based Routing
 
-```yaml
-contexts:
-  acme_support:
-    provider: acme_google_live
-  globex_sales:
-    provider: globex_openai_realtime
-```
+In **Admin UI → Agents**, set the `acme_support` Agent provider to
+`acme_google_live` and the `globex_sales` Agent provider to
+`globex_openai_realtime`.
 
 ```asterisk
 exten => s,1,Answer()
- same => n,Set(AI_CONTEXT=acme_support)
+ same => n,Set(AI_AGENT=acme_support)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 
-This is preferred for stable customer routing because changing a customer to a different provider is a config change, not a dialplan change.
+This is preferred for stable customer routing because changing a customer's provider
+is an Agent edit, not a dialplan change.
 
 ### DID-Based Dispatch
 
@@ -112,9 +109,9 @@ Use `Gosub` rather than `Macro` for new dialplans:
 ```asterisk
 [ava-route]
 exten => s,1,NoOp(Routing DID=${ARG1})
- same => n,Set(AI_CONTEXT=default)
- same => n,ExecIf($["${ARG1}" = "18002221111"]?Set(AI_CONTEXT=acme_support))
- same => n,ExecIf($["${ARG1}" = "18002223333"]?Set(AI_CONTEXT=globex_sales))
+ same => n,Set(AI_AGENT=default)
+ same => n,ExecIf($["${ARG1}" = "18002221111"]?Set(AI_AGENT=acme_support))
+ same => n,ExecIf($["${ARG1}" = "18002223333"]?Set(AI_AGENT=globex_sales))
  same => n,Return()
 
 [from-pstn]

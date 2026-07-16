@@ -68,7 +68,7 @@ pipelines:
 Dialplan selection (force per-extension pipeline):
 ```ini
 Set(AI_PROVIDER=telnyx_hybrid)
-Set(AI_CONTEXT=demo_telnyx)
+Set(AI_AGENT=demo_telnyx)
 ```
 
 ## Implementation Plan (Engine)

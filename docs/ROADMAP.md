@@ -18,6 +18,16 @@ Active and upcoming work. Pick something up and [get involved](#how-to-contribut
 
 Outbound dialer shipped as Alpha in v5.0.0 — core scheduling, AMD, voicemail drop, consent gate, and Admin UI are working. Current focus: DNC, retry automation, outcome classification, and resilience hardening (see Phases 6-8 in spec).
 
+### v7.4.0 — Agents and Agent-Scoped Tools
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Agent-scoped resources** | Per-Agent access to transfer destinations, Google calendars, Microsoft accounts/calendars, and voicemail destinations while Tools retains the global inventory. | ✅ Implemented |
+| **Restart-free tool reload** | Validated immutable generations apply built-in and managed HTTP tool changes to new calls while active calls retain their captured generation. | ✅ Implemented |
+| **Contexts retired** | Atomic one-time import into `agents.db`, Agent-only runtime routing, one-time UI notice, and deprecated `AI_CONTEXT` dialplan compatibility. | ✅ Implemented |
+| **Simpler first run** | Receptionist, Sales, and Support replace the larger demo Context set on genuinely empty systems; existing Agent stores are untouched. | ✅ Implemented |
+| **Upgrade recovery** | Explicit retain/overwrite/abort updater policy and documented v7.3.0–v7.3.3 bootstrap recovery path. | ✅ Implemented |
+
 ### v7.3.2 — Stabilization Release (Shipped July 2026)
 
 | Feature | Description | Status |
@@ -43,8 +53,8 @@ revision-pinned evidence and explicitly recorded follow-up validation debt.
 
 | Milestone | Version | Details |
 |-----------|---------|---------|
-| Microsoft Calendar V1 | ✅ v6.4.2 | Outlook / Microsoft 365 calendar integration via device-code OAuth, Graph free/busy, per-context account binding, Tools UI Connect/Verify/Disconnect |
-| Google Calendar — major overhaul | ✅ v6.4.2 | Multi-account / per-context binding (#338), JSON upload + auto-discover, Domain-Wide Delegation support, Tools UI Verify with distinct error codes, native free/busy mode |
+| Microsoft Calendar V1 | ✅ v6.4.2 | Outlook / Microsoft 365 calendar integration via device-code OAuth, Graph free/busy, legacy per-Context binding (migrated to per-Agent access in v7.4), Tools UI Connect/Verify/Disconnect |
+| Google Calendar — major overhaul | ✅ v6.4.2 | Multi-account / legacy per-Context binding (#338; migrated to per-Agent access in v7.4), JSON upload + auto-discover, Domain-Wide Delegation support, Tools UI Verify, native free/busy mode |
 | Reschedule reliability | ✅ v6.4.2 | Server-side `event_id` resolution + 400/404 fallback eliminates LLM-id-hallucination duplicate bookings; validated across Google Live, Deepgram, OpenAI Realtime, ElevenLabs |
 | Date/time prompt placeholders | ✅ v6.4.2 | `{today}`, `{current_date}`, `{current_weekday}`, `{current_time}`, `{current_datetime_iso}` injected per-call so models stop reasoning with stale years |
 | Google Live 30-voice catalog | ✅ v6.4.2 | Voice picker expanded from 8 hardcoded voices to full 30-voice catalog with Google's official tone descriptors (#349) |
@@ -90,7 +100,7 @@ revision-pinned evidence and explicitly recorded follow-up validation debt.
 | Feature | Description | Status |
 |---------|-------------|--------|
 | **xAI Grok Voice Agent realtime provider (PR #394)** | Fifth full-agent realtime provider, structurally parallel to OpenAI Realtime and Google Live. μ-law @ 8 kHz caller input, observed PCM16 @ 24 kHz output converted for Asterisk, five named voices + custom voice ID, custom function-tools identical to OpenAI Realtime, and a YAML escape hatch for xAI-native tools (`web_search`, `x_search`, `file_search`, `mcp`). AAVA retains a conservative 28-minute warning from the provider's earlier session limit; xAI's current model page lists a 120-minute maximum. Multi-instance from day one. Setup: [Provider-Grok-Setup.md](Provider-Grok-Setup.md). | ✅ Shipped |
-| **Multi-instance full-agent providers** | Multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live`). Provider instance keys are immutable call-routing identities; YAML `type` selects the kind. Per-instance credentials at `/app/project/secrets/providers/<provider_key>/`. Routing via `AI_PROVIDER`, `contexts.<name>.provider`, or DID-based dispatch. Setup: [docs/Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). | ✅ Shipped |
+| **Multi-instance full-agent providers** | Multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live`). Provider instance keys are immutable call-routing identities; YAML `type` selects the kind. Per-instance credentials at `/app/project/secrets/providers/<provider_key>/`. Routing via `AI_PROVIDER`, an Agent provider selection with `AI_AGENT`, or DID-based dispatch. Setup: [docs/Multi-Instance-Full-Agent-Providers.md](Multi-Instance-Full-Agent-Providers.md). | ✅ Shipped |
 | **Uniform per-instance credentials UX (PR #395)** | Shared `ProviderCredentialsCard` paste-style uploader wired into Grok, OpenAI Realtime, Deepgram, Google Live, and ElevenLabs Agent forms. EnvPage adds a "Per-Instance Provider Credentials" status section so operators can audit credentials without SSH. | ✅ Shipped |
 | **Dashboard System Topology overhaul** | Tri-state per-component health (`null` / `true` / `false`) with 2-strike debounce so transient probe blips don't flip dots red. Backend probe timeouts bumped (ai_engine 1.5 s → 5 s; local_ai_server 2.5 s → 5 s). Layout rebuilt as explicit CSS grid with responsive provider grid, Models 3-col grid, and Asterisk + AI Engine cards stretched to match Providers height. Provider cards grouped by type. | ✅ Shipped |
 | **HelpTooltip backfill (~260 tooltips)** | Inline help across provider forms, Setup Wizard, LLM/MCP/Profiles/Models pages. New `HelpTooltip` is viewport-aware: measures the trigger via `getBoundingClientRect` and flips placement to keep the popover visible inside scrolled modals. | ✅ Shipped |
@@ -195,4 +205,4 @@ Longer-term goals that will shape the project's direction:
 
 ---
 
-**Last Updated**: July 2026 | **Latest Stable**: v7.3.2
+**Last Updated**: July 2026 | **Latest Stable**: v7.3.5 | **Next**: v7.4.0

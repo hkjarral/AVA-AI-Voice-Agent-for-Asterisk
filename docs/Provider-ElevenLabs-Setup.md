@@ -12,8 +12,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -114,17 +114,17 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 ```ini
 [from-ai-agent-elevenlabs]
 exten => s,1,NoOp(AI Voice Agent - ElevenLabs)
-exten => s,n,Set(AI_CONTEXT=demo_elevenlabs)
+exten => s,n,Set(AI_AGENT=demo_elevenlabs)
 exten => s,n,Set(AI_PROVIDER=elevenlabs_agent)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
 ```
 
-**Recommended**: Set `AI_CONTEXT` and `AI_PROVIDER` when you want an explicit per-extension override:
-- `AI_CONTEXT` selects the context (profile, tools)
+**Recommended**: Set `AI_AGENT` and `AI_PROVIDER` when you want an explicit per-extension override:
+- `AI_AGENT` selects the Agent (profile, tools)
 - `AI_PROVIDER=elevenlabs_agent` forces this provider for the call
 
-If you omit these, the engine will select a context/provider using the precedence rules in `docs/Configuration-Reference.md`.
+If you omit these, the engine selects the default Agent/provider using the precedence rules in `docs/Configuration-Reference.md`.
 
 ### 7. Reload Asterisk
 
@@ -346,9 +346,11 @@ ElevenLabs uses **Client Tools** - tools defined in the dashboard but executed b
 }
 ```
 
-## Context Configuration
+## Agent Configuration
 
-Define your context in `config/ai-agent.yaml`:
+Define this behavior in **Admin UI → Agents**. The legacy-shaped example below is
+provided only for preparing one-time migration input; `contexts:` YAML is not a live
+v7.4 Agent configuration surface:
 
 ```yaml
 contexts:
@@ -387,7 +389,7 @@ You **MUST** enable these toggles in ElevenLabs Dashboard → Agent → **Securi
 | **First message** | `greeting` | Context greeting overrides dashboard first message |
 | **System prompt** | `prompt` | Context prompt overrides dashboard system prompt |
 
-> **Without enabling these toggles**, the dashboard values will be used and your context settings will be ignored.
+> **Without enabling these toggles**, the ElevenLabs dashboard values are used and the Agent's greeting/prompt overrides are ignored.
 
 ### Available Dynamic Variables
 
@@ -400,15 +402,8 @@ The following variables are automatically passed and can be used in your greetin
 
 ### Usage Example
 
-```yaml
-contexts:
-  personalized_support:
-    provider: elevenlabs_agent
-    greeting: "Hi {caller_name}, thank you for calling! How can I help?"
-    prompt: |
-      You are speaking with {caller_name} (phone: {caller_id}).
-      Personalize responses using their name.
-```
+In **Admin UI → Agents**, set provider `elevenlabs_agent`, then place the dynamic
+variables directly in the Agent greeting and prompt fields.
 
 ### How It Works
 
@@ -425,12 +420,13 @@ With overrides enabled, ElevenLabs now works like other full providers in this p
 
 | Component | Deepgram/OpenAI Realtime | ElevenLabs |
 |-----------|--------------------------|------------|
-| **Greeting** | Context YAML → API | Context YAML → Override |
-| **System Prompt** | Context YAML → API | Context YAML → Override |
-| **Tools** | Context YAML → API | **Dashboard only** |
+| **Greeting** | Agent snapshot → API | Agent snapshot → Override |
+| **System Prompt** | Agent snapshot → API | Agent snapshot → Override |
+| **Tools** | Agent allowlist → API | **Dashboard only** |
 | **Voice/Model** | API or Dashboard | Dashboard only |
 
-This means you can use the same context configuration across providers - just switch the `provider:` field and your greeting/prompt will work consistently.
+This means you can reuse the same Agent behavior across providers: switch the Agent's
+provider and the greeting/prompt remain consistent.
 
 ### System Prompt Best Practice
 
@@ -595,14 +591,9 @@ pipelines:
 
 The recommended audio profile for ElevenLabs TTS pipelines is **`telephony_ulaw_8k`**:
 
-```yaml
-contexts:
-  demo_hybrid:
-    pipeline: local_hybrid
-    profile: telephony_ulaw_8k    # Required for ElevenLabs TTS
-    greeting: "Hi, I'm Ava. How can I help you today?"
-    prompt: "You are a helpful AI assistant."
-```
+In the Agent editor, select pipeline `local_hybrid`, audio profile
+`telephony_ulaw_8k`, and the required greeting/prompt. The profile is required for
+ElevenLabs TTS in this pipeline.
 
 ### Transport Compatibility
 

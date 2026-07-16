@@ -10,8 +10,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -95,17 +95,17 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 ```ini
 [from-ai-agent-deepgram]
 exten => s,1,NoOp(AI Voice Agent - Deepgram)
-exten => s,n,Set(AI_CONTEXT=demo_deepgram)
+exten => s,n,Set(AI_AGENT=demo_deepgram)
 exten => s,n,Set(AI_PROVIDER=deepgram)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
 ```
 
-**Recommended**: Set `AI_CONTEXT` and `AI_PROVIDER` when you want an explicit per-extension override:
-- `AI_CONTEXT` selects the context (greeting, prompt, profile, tools)
+**Recommended**: Set `AI_AGENT` and `AI_PROVIDER` when you want an explicit per-extension override:
+- `AI_AGENT` selects the Agent (greeting, prompt, profile, tools)
 - `AI_PROVIDER=deepgram` forces this provider for the call
 
-If you omit these, the engine will select a context/provider using the precedence rules in `docs/Configuration-Reference.md`.
+If you omit these, the engine selects the default Agent/provider using the precedence rules in `docs/Configuration-Reference.md`.
 
 ### 5. Reload Asterisk
 
@@ -133,9 +133,11 @@ Route a test call to the custom destination and verify:
 - ✅ With no caller speech, the 30-second check-in and 15-second final warning play completely before hangup
 - ✅ A normal `hangup_call` farewell finishes before the caller channel disconnects
 
-## Context Configuration
+## Agent Configuration
 
-Define your AI's behavior in `config/ai-agent.yaml`:
+Define this behavior in **Admin UI → Agents**. The legacy-shaped example below is
+provided only for preparing one-time migration input; `contexts:` YAML is not a live
+v7.4 Agent configuration surface:
 
 ```yaml
 contexts:

@@ -24,7 +24,7 @@ Transport selection is configuration-driven (see `Transport-Mode-Compatibility.m
 **For co-located deployment** (recommended for beginners):
 - FreePBX installation with Asterisk 18+ (or FreePBX 15+) and ARI enabled
 - Docker and Docker Compose installed on the **same host** as FreePBX
-- Repository cloned (e.g., `/root/Asterisk-AI-Voice-Agent`)
+- Repository cloned (e.g., `/opt/AVA-AI-Voice-Agent-for-Asterisk`)
 - Port **8090/TCP** accessible for AudioSocket connections
 - Port **18080/UDP** accessible for ExternalMedia RTP (if using RTP transport)
 - Valid `.env` containing ARI credentials and provider API keys
@@ -257,7 +257,7 @@ You can customize agent behavior per-call using Asterisk channel variables:
 |----------|-------------|----------------|-----------|
 | `AI_PROVIDER` | Override which provider/pipeline to use | `google_live`, `deepgram`, `openai_realtime`, `local_hybrid` | No (uses `default_provider` from config) |
 | `AI_AGENT` | Select an agent by slug (preferred) | `sales`, `support`, `after_hours` | No (uses default agent or `default` context) |
-| `AI_CONTEXT` | Select an agent by slug (legacy — equivalent to `AI_AGENT`) | `sales-agent`, `demo_google_live`, `sales`, `support` | No (uses default agent or `default` context) |
+| `AI_CONTEXT` | Deprecated compatibility selector (display-name-first, then slug) | `Sales`, `demo_google_live` | No (uses the default Agent) |
 | `AI_AUDIO_PROFILE` | Override which audio profile to use (format/sample rate/pacing) | `telephony_ulaw_8k`, `wideband_pcm_16k` | No (uses agent profile or `profiles.default`) |
 | `AI_GREETING` | (Not read by the engine — no effect; set the greeting on the agent instead) | — | No (use AI_AGENT) |
 | `AI_PERSONA` | (Not read by the engine — no effect; set the prompt on the agent instead) | — | No (use AI_AGENT) |
@@ -311,13 +311,13 @@ exten => s,1,NoOp(Asterisk AI Voice Agent)
 
 **What happens:**
 - Uses `default_provider: local_hybrid` (privacy-focused pipeline)
-- Uses `default` context (generic assistant persona)
+- Uses the default Agent from `agents.db`
 - No variables required!
 
 **How it works:**
 
 - The dialplan always routes the call to `Stasis(asterisk-ai-voice-agent)`.
-- Optionally set `AI_PROVIDER`, `AI_CONTEXT`, and/or `AI_AUDIO_PROFILE` before `Stasis()` to override behavior per extension.
+- Optionally set `AI_PROVIDER`, `AI_AGENT`, and/or `AI_AUDIO_PROFILE` before `Stasis()` to override behavior per extension. `AI_CONTEXT` is accepted only for legacy dialplans.
 - Audio transport (AudioSocket vs ExternalMedia RTP) is determined by your config and should match a validated combination in `Transport-Mode-Compatibility.md`.
 
 No `AudioSocket()` or `ExternalMedia()` needed in dialplan.
@@ -394,7 +394,9 @@ exten => s,1,NoOp(AI Agent - Premium Customer)
  same => n,Hangup()
 ```
 
-**Note:** Agents are managed in the Admin UI Agents tab. For headless / YAML-only installs, define contexts in `config/ai-agent.yaml` under `contexts:` with custom `greeting:` and `prompt:` fields — see [AGENTS.md](AGENTS.md).
+**Note:** Agents are managed in the Admin UI Agents tab or API. On a headless upgrade,
+legacy YAML Contexts are one-time atomic import input only; provision and back up
+`agents.db` for ongoing v7.4 operation. See [AGENTS.md](AGENTS.md).
 
 ### 3.5 Advanced: After-Hours with Custom Greeting
 

@@ -2,6 +2,72 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.3.x to v7.4.0
+
+v7.4 removes Contexts as a product and runtime model. Agents in
+`data/operator/agents.db` are the only persona/routing source after startup.
+
+### Before upgrading
+
+1. Follow the [v7.4 upgrade procedure](INSTALLATION.md#upgrade-to-v740-existing-checkout),
+   including the documented v7.3.0–v7.3.3 updater recovery path.
+2. Back up `data/operator/agents.db`, `data/call_history.db`, `.env`, operator YAML,
+   `config/users.json`, and any legacy `config/contexts/` files.
+3. Record intentional tracked source changes and choose `retain`, `overwrite`, or
+   `abort`; v7.4 will not choose silently.
+
+### Contexts become Agents
+
+- On first AI Engine startup, a lock-protected compatibility bridge reads the merged
+  legacy Context configuration, validates the entire import, builds a temporary
+  database, performs an integrity check, and atomically installs it only when the
+  Agent store is empty.
+- A populated `agents.db` is never reseeded or overwritten. Invalid legacy data blocks
+  startup instead of producing a partial Agent set.
+- `/contexts` shows a one-time retirement notice and redirects operators to **Agents**.
+- `AI_CONTEXT` remains a deprecated display-name-first compatibility selector for old
+  dialplans. Change new and maintained dialplans to `AI_AGENT=<agent-slug>`.
+- Fresh installations receive Receptionist, Sales, and Support. Existing installations
+  are not replaced with those defaults.
+
+See [Operator Migration](OPERATOR_MIGRATION.md) for import, recovery, and rollback details.
+
+### Tool inventory and Agent access
+
+Transfer destinations, Google calendars, Microsoft accounts/calendars, and voicemail
+destinations are configured globally under **Tools**. Access is then set on each Agent:
+
+- **Inherit** exposes the applicable global inventory.
+- **Allow selected** exposes only the selected resource keys.
+- **Deny** exposes none of that tool family.
+
+Legacy single-calendar/account and `tools.leave_voicemail.extension` configurations are
+materialized as a compatible `default` resource. Review every Agent after migration,
+especially Agents that previously used Context `tool_overrides`. A stale or empty allow
+list fails closed; a globally disabled tool cannot be enabled by an Agent.
+
+Tool names and Call History records are unchanged (`transfer_call`, calendar operations,
+and `leave_voicemail`), so existing Call History filters and reports remain compatible.
+
+### Save & Apply without restarting AI Engine
+
+**Tools → Save & Apply** validates and publishes a new immutable tool generation for new
+calls. Calls already in progress continue on their captured generation. If validation or
+generation construction fails, the last good generation keeps running.
+
+Provider, pipeline, VAD, streaming, environment/credential, Python-code, and MCP process
+changes still require the restart/reload action shown by their own page. Tool inventory
+reload does not imply those domains are hot-reloadable.
+
+### Required post-upgrade checks
+
+1. Confirm all expected Agents, prompts, providers/pipelines, and the default Agent.
+2. Review Agent access for the four scoped tool families.
+3. Save & Apply one harmless Tools edit and confirm the tool generation advances.
+4. Place a test call for at least one hosted provider and verify allowed tool execution.
+5. Confirm the call and canonical tool name appear in Call History.
+6. Run `agent check` and inspect recent `ai_engine` and `admin_ui` logs.
+
 ## v7.3.1 to v7.3.2
 
 v7.3.2 is a stabilization-only patch with no required schema migration and no

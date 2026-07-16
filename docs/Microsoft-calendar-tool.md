@@ -174,7 +174,7 @@ account/calendar bindings it is allowed to use.
 
 ## Step 4 — Test with a phone call
 
-Place a call against the context you just configured. Try a flow like:
+Place a call against the Agent you just configured. Try a flow like:
 
 > *"I'd like to schedule a meeting with the author."*
 >

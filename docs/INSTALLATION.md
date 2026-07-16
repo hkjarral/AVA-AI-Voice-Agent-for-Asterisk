@@ -1,18 +1,18 @@
-# Asterisk AI Voice Agent - Installation Guide (v7.3.x)
+# Asterisk AI Voice Agent - Installation and Upgrade Guide (v7.4)
 
-This guide covers the supported v7.3 release train. The latest published tag is
-v7.3.2.
+This guide covers fresh installations and the supported upgrade path to v7.4.0.
+For release-specific behavior changes, also read the [v7.4 migration notes](MIGRATION.md#v73x-to-v740).
 
 ## Three Setup Paths
 
 Choose the path that best fits your experience level:
 
-## Upgrade within v7.3.x (Existing Checkout)
+## Upgrade to v7.4.0 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
 > ### ⚠️ Upgrading from 6.x? v7.0.0 introduced breaking changes — read first
-> (v7.3.x includes them; if you are already on 7.x this is an in-place upgrade.)
+> (v7.4 includes them; if you are already on 7.x this is an in-place upgrade.)
 > Before upgrading from 6.x, review the **Upgrade Notes** at the top of the
 > [v7.0.0 CHANGELOG entry](../CHANGELOG.md) and the
 > [Agents migration guide](OPERATOR_MIGRATION.md). In short:
@@ -22,74 +22,103 @@ This section is for operators upgrading an existing repo checkout (not a fresh i
 >   change at first login. **If you already changed the admin password, nothing changes — your existing
 >   login keeps working** and no new password is printed.
 > - **`/api/config/export` no longer bundles `.env`** by default (pass `include_secrets=true`).
-> - **Your contexts auto-migrate into `agents.db`** on first start; the **Contexts** page becomes
->   read-only (manage agents in the new **Agents** tab). Existing dialplans keep working
->   (`AI_CONTEXT` still supported; `AI_AGENT` is preferred). Rollback = delete
->   `./data/operator/agents.db*` and restart.
+> - **Your contexts migrate into `agents.db`** on first v7.4 AI Engine start. Contexts are
+>   removed from runtime and navigation; manage personas in **Agents**. Existing dialplans
+>   keep working through the deprecated `AI_CONTEXT` compatibility selector, but new
+>   dialplans must use `AI_AGENT`. Do not delete `agents.db` as a rollback method; see the
+>   [operator migration rollback boundaries](OPERATOR_MIGRATION.md#rollback-boundaries).
 
-### 0) Backup (recommended)
+### 0) Record local changes and take a backup
 
-- Backup `.env`
-- Backup `config/ai-agent.yaml`
-- Backup `config/ai-agent.local.yaml` (if it exists — contains your operator overrides)
-- If you rely on Call History persistence, backup `./data` as well (this now also holds
-  `./data/operator/agents.db`, your migrated agent configuration)
-
-### 1) Pull the new release
-
-To upgrade to the latest published `v7.3.2` tag:
+Run these commands from your actual checkout path. Do not assume it is `/root/...`:
 
 ```bash
-git fetch --tags
-git checkout v7.3.2
+cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
+git status --short
+git diff > ../aava-pre-v740-working-tree.patch
+git diff --cached > ../aava-pre-v740-staged.patch
 ```
 
-Use unreleased branches only on a development server. Do not point a production
-updater at an untagged branch unless you have backups and a tested rollback path.
+Back up at least:
 
-If you track branches instead of tags:
+- `.env`, `config/ai-agent.yaml`, `config/ai-agent.local.yaml`, and `config/users.json`;
+- custom files under `config/contexts/` while upgrading from a Context-based release;
+- `data/operator/agents.db` and `data/call_history.db` when present; and
+- any custom secrets, certificates, recordings, or media stored outside those paths.
+
+The v7.4 updater also creates a per-job backup under `.agent/update-backups/` and
+uses SQLite's online backup API for `agents.db` and `call_history.db`. An independent
+off-host backup is still recommended.
+
+### 1) Choose how to handle tracked source changes
+
+v7.4 never silently decides what to do with edits to tracked project files:
+
+| Choice | Use it when | Result |
+|---|---|---|
+| `retain` | You intentionally modified project source and want to reapply it | Changes are stashed and reapplied; a conflict stops safely and leaves the stash for recovery |
+| `overwrite` | The changes are accidental, generated, or already preserved elsewhere | Tracked source edits are discarded after the updater backup; operator configuration and databases are restored |
+| `abort` | You want to inspect or commit changes first | No update is applied |
+
+Untracked files are not overwritten by default. Review `git status --short` before
+choosing. If in doubt, choose `abort` and preserve the changes outside the checkout.
+
+### 2) Update using the v7.4 updater
+
+Preferred CLI path:
 
 ```bash
-git checkout main
-git pull
-```
-
-If you have the CLI installed, this is equivalent (and safer for common operator workflows):
-
-```bash
-agent update
-```
-
-From **v5.2.1+**, most operators can also update directly from the Admin UI:
-
-- **Admin UI → System → Updates** (preview changes, then proceed)
-
-#### If you’re on an older agent CLI (recommended troubleshooting)
-
-If `agent update` says “Already up to date” but GitHub has newer commits/tags, your local `origin/main` may be stale.
-This can happen on older installations and older agent CLI versions.
-
-Run a manual fetch/prune and retry:
-
-```bash
-REPO=/root/Asterisk-AI-Voice-Agent
-cd "$REPO"
-
-# If you see "detected dubious ownership", run this once:
-git config --global --add safe.directory "$REPO"
-
 git fetch origin --prune --tags
-agent update
+agent update --ref v7.4.0 --include-ui --local-changes=retain
 ```
 
-If `agent` itself is very old (or missing), reinstall the CLI and retry:
+Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
+terminal, the default `ask` policy presents the same choices. Non-interactive runs must
+specify a policy.
+
+The Admin UI path is **System → Updates**. Preview the plan, select **Retain local
+changes**, **Overwrite local changes**, or **Abort**, then proceed. Use a published tag
+for production; untagged branches belong on development systems only.
+
+#### Required recovery path for v7.3.0–v7.3.3 ([#518](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/518))
+
+Some older installations can show only `Failed to compute update plan`. The common
+causes are a stale cached updater image, older updater ownership, or tracked local edits
+that the old UI did not surface. Bootstrap the *target release CLI* first so planning and
+execution use the fixed updater:
 
 ```bash
-cd /root/Asterisk-AI-Voice-Agent
-INSTALL_DIR=/usr/local/bin bash scripts/install-cli.sh
+curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+  | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
+
 agent version
-agent update
+git fetch origin --prune --tags
+agent update --ref v7.4.0 --include-ui --local-changes=retain
 ```
+
+Use `overwrite` only after the patch/backup step above confirms you do not need the
+tracked edits. If Git reports dubious ownership, add only this checkout as safe using
+the path printed by Git:
+
+```bash
+git config --global --add safe.directory "$(pwd)"
+```
+
+#### If an earlier update left a merge or stash conflict
+
+Do not delete the repository, `agents.db`, or the stash. First capture the state:
+
+```bash
+git status
+git stash list
+git diff > ../aava-update-conflict.patch
+```
+
+Resolve and commit the conflict if the changes are wanted. If you intentionally choose
+to abandon the interrupted merge, `git merge --abort` is the first recovery action.
+When Git says no merge is active but the index is still conflicted, preserve the patch
+and stash before using `git reset --merge HEAD`. Then rerun the v7.4 updater with an
+explicit policy. Never use `git reset --hard` as generic upgrade advice.
 
 #### If the update fails with “No such image: ...local-ai-server:latest”
 
@@ -99,7 +128,7 @@ Older `agent update` versions could still try to recreate `local_ai_server` when
 To recover without enabling `local_ai_server`, bring up only the services you actually run:
 
 ```bash
-cd /root/Asterisk-AI-Voice-Agent
+cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 
 # If the update planned to rebuild admin_ui, recreate it (safe even if not needed):
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui
@@ -111,12 +140,12 @@ agent check
 If you *do* want `local_ai_server`, build it and then re-run compose:
 
 ```bash
-cd /root/Asterisk-AI-Voice-Agent
+cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 docker compose -p asterisk-ai-voice-agent build local_ai_server
 docker compose -p asterisk-ai-voice-agent up -d --remove-orphans --no-build
 ```
 
-### 2) Re-run preflight (recommended)
+### 3) Re-run preflight
 
 ```bash
 sudo ./preflight.sh --apply-fixes
@@ -182,18 +211,9 @@ If preflight reports warnings or failures, resolve them first, then re-run prefl
 - Re-run: `sudo ./preflight.sh --apply-fixes`
 - Verify: `agent check`
 
-### 3) Legacy upgrade notes (4.x → 4.6)
-
-- `.env`:
-  - Review ARI settings: `ASTERISK_ARI_PORT`, `ASTERISK_ARI_SCHEME`, `ASTERISK_ARI_SSL_VERIFY`
-  - If using rootless Docker/Podman, set a persistent `DOCKER_SOCK=...` in `.env` (not only `export ...`)
-  - Reference: `docs/ENVIRONMENT_VARIABLES.md`
-- Admin UI “save vs apply”:
-  - `.env` edits from the UI may normalize quoting and remove duplicate keys; this is expected in 4.6+
-- OpenAI Realtime:
-  - Baseline includes a small audio output tweak; validate your call quality if you customized encoding/sample-rate
-
 ### 4) Rebuild and recreate containers
+
+The updater normally performs this step. If you are recovering manually:
 
 ```bash
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate admin_ui ai_engine
@@ -205,7 +225,7 @@ If your configuration requires local inference:
 docker compose -p asterisk-ai-voice-agent up -d --build --force-recreate local_ai_server
 ```
 
-### 5) Verify
+### 5) Verify the upgrade
 
 ```bash
 curl -sS http://localhost:15000/health
@@ -216,6 +236,25 @@ agent check --local
 # Or for a remote GPU server:
 # agent check --remote <gpu-ip>
 ```
+
+Then verify in the Admin UI:
+
+1. **Agents** contains all expected migrated agents and exactly one default.
+2. Each Agent's transfer, Google Calendar, Microsoft Calendar, and voicemail access is correct.
+3. **Tools → Save & Apply** increments the tool generation without restarting AI Engine.
+4. A test call reaches the expected Agent, can use an allowed tool, and appears in Call History.
+5. `docker compose -p asterisk-ai-voice-agent logs --since=10m ai_engine admin_ui` has no repeated errors.
+
+### Appendix: Legacy upgrade notes (4.x → 4.6)
+
+- `.env`:
+  - Review ARI settings: `ASTERISK_ARI_PORT`, `ASTERISK_ARI_SCHEME`, `ASTERISK_ARI_SSL_VERIFY`
+  - If using rootless Docker/Podman, set a persistent `DOCKER_SOCK=...` in `.env` (not only `export ...`)
+  - Reference: `docs/ENVIRONMENT_VARIABLES.md`
+- Admin UI “save vs apply”:
+  - `.env` edits from the UI may normalize quoting and remove duplicate keys; this is expected in 4.6+
+- OpenAI Realtime:
+  - Baseline includes a small audio output tweak; validate your call quality if you customized encoding/sample-rate
 
 > ⚠️ **Operator note (production hardening):** `ai_engine` exposes a health/metrics server on port `15000`.
 > In the default compose, it binds to `0.0.0.0` so `admin_ui` can reach it reliably on best-effort hosts.
@@ -229,7 +268,7 @@ agent check --local
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 # Run preflight (REQUIRED - creates .env, generates JWT_SECRET)
 sudo ./preflight.sh --apply-fixes
@@ -294,7 +333,8 @@ The Setup Wizard will:
 4. ✅ Configure contexts and greeting
 5. ✅ Start containers automatically
 
-**Default Login:** `admin` / `admin` (must be changed on first login)
+**First login:** retrieve the one-time password from
+`docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password`, then change it.
 
 **Best for:** First-time users, production deployments, visual configuration
 
@@ -308,7 +348,7 @@ See [Admin UI Setup Guide](../admin_ui/UI_Setup_Guide.md) for detailed instructi
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 
 ./install.sh
 agent setup
@@ -326,7 +366,7 @@ agent setup
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 ./install.sh
 ```
 
@@ -458,7 +498,7 @@ First, clone the project repository to a directory on your server.
 
 ```bash
 git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-cd Asterisk-AI-Voice-Agent
+cd AVA-AI-Voice-Agent-for-Asterisk
 ```
 
 ### Step 2.2: Run the Installation Script
@@ -633,7 +673,7 @@ exten => s,1,NoOp(Asterisk AI Voice Agent)
 [from-ai-agent-support]
 exten => s,1,NoOp(AI Agent - Customer Support)
  same => n,Set(AI_PROVIDER=deepgram)
- same => n,Set(AI_CONTEXT=support)
+ same => n,Set(AI_AGENT=support)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
@@ -711,7 +751,7 @@ asterisk -rx "dialplan reload"
   **Fix**: Pin NumPy to version 1.x (compatible with older CPUs):
 
   ```bash
-  cd /root/Asterisk-AI-Voice-Agent
+  cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 
   # Fix ai_engine requirements
   sed -i 's/numpy>=1.24.0/numpy>=1.24.0,<2.0/g' requirements.txt

@@ -248,7 +248,7 @@ const OpenAIRealtimeProviderForm: React.FC<OpenAIRealtimeProviderFormProps> = ({
                 {isSunsetPreviewModel(config.model) && (
                     <div className="mb-3 p-3 rounded border border-yellow-500/40 bg-yellow-500/10 text-sm">
                         <strong className="text-yellow-700 dark:text-yellow-300">⚠ Legacy preview model pinned.</strong>
-                        {' '}This provider's <code>model</code> field is set to <code>{config.model}</code>, which OpenAI removed on 2026-05-07. Calls using this configuration will fail with <code>model_not_found</code>. Select a current GA model from the dropdown below to migrate. See <a href="https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/main/docs/MIGRATION.md" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">MIGRATION.md</a> for context.
+                        {' '}This provider's <code>model</code> field is set to <code>{config.model}</code>, which OpenAI removed on 2026-05-07. Calls using this configuration will fail with <code>model_not_found</code>. Select a current GA model from the dropdown below to migrate. See <a href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/main/docs/MIGRATION.md" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">MIGRATION.md</a> for context.
                     </div>
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -15,7 +15,7 @@ It is self-contained: everything an external contributor's assistant needs is ei
 this file or in the committed docs it links to. If this file ever contradicts the code or
 the docs, trust the code, then the docs — and please open an issue so we can fix it here.
 
-> Last verified against: **v7.3.2** (2026-07). Freshness is
+> Last verified against: **v7.4.0 candidate** (2026-07). Freshness is
 > checked as part of the release checklist (`docs/RELEASE_CHECKLIST.md`).
 
 ## What This Project Is
@@ -61,15 +61,16 @@ Use these terms consistently and tie every change back to them:
 - **Audio profiles & negotiation**: codec/sample-rate decisions belong in
   `TransportOrchestrator` (`src/core/transport_orchestrator.py`) and YAML `profiles` —
   never hard-coded in providers.
-- **Agents (v7.0+)**: the primary way operators define who answers a call. Agents live in
+- **Agents (v7.4 source of truth)**: the only runtime persona/routing model. Agents live in
   `agents.db` (managed via the Admin UI Agents page, CRUD in
   `admin_ui/backend/agents_store.py`), carry prompt, greeting, provider/pipeline
   selection, tools, audio profile, and per-agent email settings. At call time the engine
   resolves the agent via `src/core/agent_store.py` into a `ContextConfig`
-  (`src/core/transport_orchestrator.py`). Legacy YAML `contexts` remain as the headless
-  fallback (used when `agents.db` is absent or unreadable). See `docs/AGENTS.md`.
-- **ContextConfig**: the single runtime contract between config sources (agents.db or
-  YAML) and providers — prompt, greeting, provider/pipeline, tools, audio profile, email
+  (`src/core/transport_orchestrator.py`). Legacy YAML `contexts` are validated and
+  atomically imported only when the Agent store is empty; there is no live YAML persona
+  fallback. See `docs/AGENTS.md`.
+- **ContextConfig**: the legacy-named runtime contract between `agents.db` and providers —
+  prompt, greeting, provider/pipeline, tools, audio profile, email
   overrides. Extending per-agent behavior means extending ContextConfig and threading the
   field through `provider_context` in `src/engine.py` (the per-agent email fields are the
   reference example of this pattern).
@@ -92,8 +93,8 @@ Use these terms consistently and tie every change back to them:
   - **Modular pipelines** — separate STT/LLM/TTS adapters resolved by
     `PipelineOrchestrator` (`src/pipelines/orchestrator.py`): OpenAI, Deepgram (+ Flux),
     Google, Azure, ElevenLabs, Groq, Ollama, Telnyx (LLM), MiniMax (LLM), CambAI, Local.
-- **Voice selection (v7.3.0+)**: voice belongs to agents. Precedence: per-call override >
-  agent voice (agents.db / YAML context `voice:` key) > provider default. Resolution lives
+- **Voice selection (v7.3.0+)**: voice belongs to Agents. Precedence: per-call override >
+  Agent voice in `agents.db` > provider default. Resolution lives
   in `resolve_effective_voice()`/`apply_context_voice()` (`src/core/transport_orchestrator.py`);
   per-provider catalogs and metadata in `src/utils/voice_catalog.py` (single source shared
   by the engine's soft validation and `GET /api/config/providers/meta`). OpenAI Realtime,
@@ -108,7 +109,10 @@ Use these terms consistently and tie every change back to them:
   `src/tools/adapters/` (OpenAI, Deepgram, Google, Grok, ElevenLabs). Schema formats vary
   per provider — see `docs/contributing/schema-reference.md` and
   `docs/contributing/COMMON_PITFALLS.md`. Tools run in three phases: pre-call, in-call,
-  post-call, all dispatched by the engine.
+  post-call, all dispatched by the engine. In v7.4, Tools owns global inventory while
+  Agents can narrow transfer destinations, Google calendars, Microsoft accounts/calendars,
+  and voicemail mailboxes. New calls capture an immutable tool generation; **Save & Apply**
+  publishes a validated generation without disturbing active calls or the last good build.
 - **Per-call overrides**: channel variables `AI_AGENT` (preferred — routes by agent slug,
   slug-first lookup), `AI_PROVIDER`, and `AI_AUDIO_PROFILE` override defaults per call.
   `AI_CONTEXT` is the legacy equivalent of `AI_AGENT` (display-name lookup) and keeps
