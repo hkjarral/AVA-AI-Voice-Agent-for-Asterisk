@@ -21,6 +21,12 @@ interface Props {
     single?: boolean;
 }
 
+const pluralize = (value: string): string => {
+    if (/(s|x|z|ch|sh)$/i.test(value)) return `${value}es`;
+    if (/[^aeiou]y$/i.test(value)) return `${value.slice(0, -1)}ies`;
+    return `${value}s`;
+};
+
 const ResourceAccessEditor: React.FC<Props> = ({
     title,
     description,
@@ -34,6 +40,7 @@ const ResourceAccessEditor: React.FC<Props> = ({
 }) => {
     const knownKeys = useMemo(() => new Set(options.map(option => option.key)), [options]);
     const staleKeys = selectedKeys.filter(key => !knownKeys.has(key));
+    const pluralResourceName = pluralize(resourceName);
 
     const setPolicy = (next: ResourcePolicy) => {
         onPolicyChange(next);
@@ -63,8 +70,8 @@ const ResourceAccessEditor: React.FC<Props> = ({
                 onChange={event => setPolicy(event.target.value as ResourcePolicy)}
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
             >
-                <option value="inherit">Inherit globally configured {resourceName}s</option>
-                <option value="selected">Selected {resourceName}{single ? '' : 's'} only</option>
+                <option value="inherit">Inherit globally configured {pluralResourceName}</option>
+                <option value="selected">Selected {single ? resourceName : pluralResourceName} only</option>
                 <option value="none">No {resourceName} access</option>
             </select>
 
@@ -72,7 +79,7 @@ const ResourceAccessEditor: React.FC<Props> = ({
                 <div className="space-y-2">
                     {options.length === 0 ? (
                         <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
-                            No global {resourceName}s exist. Configure them on the Tools page first.
+                            No global {pluralResourceName} exist. Configure them on the Tools page first.
                         </p>
                     ) : (
                         <div className="max-h-48 overflow-y-auto rounded-md border border-border bg-background divide-y divide-border">
@@ -106,7 +113,7 @@ const ResourceAccessEditor: React.FC<Props> = ({
                     {staleKeys.length > 0 && (
                         <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
                             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                            Missing global {resourceName}s: {staleKeys.join(', ')}. They remain denied
+                            Missing global {pluralResourceName}: {staleKeys.join(', ')}. They remain denied
                             until recreated or removed here.
                         </p>
                     )}
