@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -138,6 +138,71 @@ async def test_pipeline_context_starts_connection_audio_before_provider_lookup_r
     engine.ari_client.play_media_on_channel_with_id.assert_awaited_once()
     assert session.connection_audio_media_uri == "tone:ring"
     assert session.connection_audio_playback_id
+
+
+@pytest.mark.asyncio
+async def test_pipeline_agent_resolves_audio_profile_without_monolithic_provider():
+    """A pipeline-only Agent still applies its selected per-Agent audio profile."""
+    context = SimpleNamespace(
+        provider="",
+        pipeline="local_hybrid",
+        profile="telephony_ulaw_8k",
+        connection_audio=None,
+        no_input=None,
+        email_recipient=None,
+        email_from=None,
+        email_enabled=None,
+        greeting=None,
+        prompt=None,
+        background_music=None,
+    )
+    transport = SimpleNamespace(
+        profile_name="telephony_ulaw_8k",
+        wire_encoding="ulaw",
+        wire_sample_rate=8000,
+        chunk_ms=20,
+        idle_cutoff_ms=1200,
+        context="sales",
+    )
+
+    class Orchestrator:
+        agent_store = SimpleNamespace(default_slug=lambda: None)
+
+        def __init__(self):
+            self.resolve_transport = MagicMock(return_value=transport)
+
+        def get_context_config(self, name, routing_method=None):
+            return context if name == "sales" else None
+
+    class ARI:
+        async def send_command(self, method, path, params=None, tolerate_statuses=None):
+            if params and params.get("variable") == "AI_AGENT":
+                return {"value": "sales"}
+            return {"value": ""}
+
+    engine = Engine.__new__(Engine)
+    engine.ari_client = ARI()
+    engine.transport_orchestrator = Orchestrator()
+    engine.providers = {}
+    engine.config = SimpleNamespace(default_provider="local_hybrid")
+    engine.streaming_playback_manager = SimpleNamespace()
+    engine.no_input_watchdog = None
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="call-pipeline-profile", caller_channel_id="caller")
+
+    await Engine._resolve_audio_profile(engine, session, session.caller_channel_id)
+
+    assert session.transport_profile is transport
+    engine.transport_orchestrator.resolve_transport.assert_called_once_with(
+        provider_name="local_hybrid",
+        provider_caps=None,
+        channel_vars={"AI_AGENT": "sales"},
+        provider_config=None,
+        resolved_context="sales",
+        routing_method="ai_agent",
+    )
+    assert session.provider_overrides["target_encoding"] == "ulaw"
+    assert session.provider_overrides["target_sample_rate_hz"] == 8000
 
 
 @pytest.mark.asyncio

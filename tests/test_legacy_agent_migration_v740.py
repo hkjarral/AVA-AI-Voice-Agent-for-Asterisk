@@ -262,3 +262,22 @@ def test_empty_contexts_leave_store_for_starter_setup(tmp_path):
     database = tmp_path / "agents.db"
     assert ensure_legacy_contexts_imported({}, db_path=str(database))["imported"] == 0
     assert not database.exists()
+
+
+def test_bundled_project_demo_does_not_suppress_fresh_starter_setup(tmp_path):
+    database = tmp_path / "agents.db"
+    result = ensure_legacy_contexts_imported(
+        {
+            "demo_project_expert": {
+                "description": (
+                    "AI agent that answers questions about the Asterisk AI Voice Agent project"
+                ),
+                "provider": "local",
+                "system_prompt": "Bundled project demo",
+            }
+        },
+        db_path=str(database),
+    )
+
+    assert result == {"imported": 0, "already_configured": False}
+    assert not database.exists()

@@ -29,6 +29,9 @@ v7.4 removes Contexts as a product and runtime model. Agents in
   dialplans. Change new and maintained dialplans to `AI_AGENT=<agent-slug>`.
 - Fresh installations receive Receptionist, Sales, and Support. Existing installations
   are not replaced with those defaults.
+- The retired bundled `demo_project_expert` sample is excluded from migration so it
+  cannot become a fresh installation's default Agent. Rename an intentionally customized
+  copy before upgrading if it should be treated as operator configuration.
 
 See [Operator Migration](OPERATOR_MIGRATION.md) for import, recovery, and rollback details.
 

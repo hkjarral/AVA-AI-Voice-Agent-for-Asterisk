@@ -17,6 +17,19 @@ from agents_store import AgentsStore, slugify, _now
 
 
 logger = logging.getLogger(__name__)
+_BUNDLED_DEMO_NAME = "demo_project_expert"
+_BUNDLED_DEMO_DESCRIPTION = (
+    "AI agent that answers questions about the Asterisk AI Voice Agent project"
+)
+
+
+def _is_bundled_demo_context(name: object, value: object) -> bool:
+    """Identify the retired repository demo without filtering operator Contexts."""
+    return (
+        str(name or "").strip() == _BUNDLED_DEMO_NAME
+        and isinstance(value, dict)
+        and str(value.get("description") or "").strip() == _BUNDLED_DEMO_DESCRIPTION
+    )
 
 
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
@@ -128,7 +141,15 @@ def merged_effective_contexts(yaml_path: str, contexts_dir: str) -> dict:
             )
             merged[name] = ext
 
-    return merged
+    # v7.3 and older shipped this demo in the tracked repository. Updaters can
+    # restore it with operator Context backups, so filtering must remain even
+    # after the tracked sample file is removed in v7.4. It was never operator
+    # configuration and must not suppress the three-Agent first-run seed.
+    return {
+        name: value
+        for name, value in merged.items()
+        if not _is_bundled_demo_context(name, value)
+    }
 
 
 def contexts_hash(merged: dict) -> str:

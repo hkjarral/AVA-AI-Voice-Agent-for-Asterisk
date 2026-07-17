@@ -370,7 +370,13 @@ def resolve_agent_tool_config(
 
     requested = tuple(transfer_policy.get("destination_keys") or ())
     if policy == "inherit":
-        effective = dict(destinations)
+        # Shipped/example YAML may contain null placeholders. Inheritance means
+        # all executable routes, not every raw catalog key.
+        effective = {
+            key: value
+            for key, value in destinations.items()
+            if isinstance(value, Mapping)
+        }
         stale: tuple[str, ...] = ()
     elif policy == "none":
         effective = {}

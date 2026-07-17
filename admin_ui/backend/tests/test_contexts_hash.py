@@ -16,6 +16,23 @@ def test_system_prompt_maps_to_prompt(tmp_path):
     merged = merged_effective_contexts(str(tmp_path / "ai-agent.yaml"), str(ext))
     assert merged["expert"]["prompt"] == "hello"
 
+
+def test_bundled_project_demo_is_not_pending_operator_migration(tmp_path):
+    _write(tmp_path / "ai-agent.yaml", "contexts: {}\n")
+    ext = tmp_path / "contexts"; ext.mkdir()
+    _write(
+        ext / "demo-project-expert.yaml",
+        """name: demo_project_expert
+description: AI agent that answers questions about the Asterisk AI Voice Agent project
+provider: local
+system_prompt: bundled demo
+""",
+    )
+
+    merged = merged_effective_contexts(str(tmp_path / "ai-agent.yaml"), str(ext))
+
+    assert merged == {}
+
 def test_hash_ignores_non_context_sections(tmp_path):
     y1 = "providers:\n  a: {x: 1}\ncontexts:\n  d: {provider: a, prompt: p}\n"
     y2 = "providers:\n  a: {x: 2}\ncontexts:\n  d: {provider: a, prompt: p}\n"

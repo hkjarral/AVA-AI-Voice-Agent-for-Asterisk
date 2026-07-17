@@ -64,6 +64,27 @@ def test_inherit_preserves_global_inventory_without_mutation():
     assert set(GLOBAL["tools"]["transfer"]["destinations"]) == {"sales", "support"}
 
 
+def test_inherit_filters_placeholder_transfer_destinations():
+    effective = resolve_agent_tool_config(
+        {
+            "tools": {
+                "transfer": {
+                    "destinations": {
+                        "sales": {"type": "extension", "target": "6001"},
+                        "support_queue": None,
+                    }
+                }
+            }
+        },
+        None,
+    )
+
+    assert effective.config["tools"]["transfer"]["destinations"] == {
+        "sales": {"type": "extension", "target": "6001"}
+    }
+    assert effective.effective_destination_keys == ("sales",)
+
+
 def test_selected_filters_destinations_and_related_extensions():
     effective = resolve_agent_tool_config(
         GLOBAL,

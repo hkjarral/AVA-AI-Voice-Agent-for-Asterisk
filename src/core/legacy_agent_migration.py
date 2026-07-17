@@ -28,6 +28,10 @@ from src.tools.runtime_config import (
 
 DB_DEFAULT = "/app/data/operator/agents.db"
 MIGRATION_VERSION = 1
+_BUNDLED_DEMO_NAME = "demo_project_expert"
+_BUNDLED_DEMO_DESCRIPTION = (
+    "AI agent that answers questions about the Asterisk AI Voice Agent project"
+)
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
 _FIRST_CLASS = {
     "provider", "voice", "greeting", "prompt", "audio_profile", "profile",
@@ -72,6 +76,17 @@ def _mapping(value: Any) -> Dict[str, Any]:
     if hasattr(value, "dict"):
         return dict(value.dict(exclude_none=True))
     raise TypeError(f"expected mapping, got {type(value).__name__}")
+
+
+def _is_bundled_demo_context(name: Any, value: Any) -> bool:
+    """Identify the pre-v7.4 repository demo, never operator migration data."""
+    if str(name or "").strip() != _BUNDLED_DEMO_NAME:
+        return False
+    try:
+        context = _mapping(value)
+    except TypeError:
+        return False
+    return str(context.get("description") or "").strip() == _BUNDLED_DEMO_DESCRIPTION
 
 
 def contexts_hash(contexts: Mapping[str, Any]) -> str:
@@ -287,7 +302,11 @@ def ensure_legacy_contexts_imported(
     Admin API. Any malformed legacy Context blocks fail startup instead of
     continuing with partial or ambiguous routing.
     """
-    context_map = _mapping(contexts or {})
+    context_map = {
+        name: value
+        for name, value in _mapping(contexts or {}).items()
+        if not _is_bundled_demo_context(name, value)
+    }
     target = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
     # Fresh headless/test environments with no legacy Contexts have nothing to
     # migrate and must not require the production /app volume to be writable.

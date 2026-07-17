@@ -14184,17 +14184,46 @@ class Engine:
                 exc_info=True,
             )
         
-        # Get provider instance
-        provider = getattr(self, "_call_providers", {}).get(session.call_id) or self.providers.get(provider_name)
-        if not provider:
+        context_pipeline = str(
+            getattr(no_input_context, "pipeline", None) or ""
+        ).strip()
+        pipeline_profile_only = bool(
+            context_pipeline
+            and not str(getattr(no_input_context, "provider", None) or "").strip()
+            and not channel_vars.get("AI_PROVIDER")
+        )
+        # A manually configured pipeline Agent has no monolithic provider by
+        # design. Do not let CallSession's compatibility default accidentally
+        # select one; use the pipeline identity and profile preferences directly.
+        if pipeline_profile_only:
+            provider_name = context_pipeline
+            provider = None
+        else:
+            provider = (
+                getattr(self, "_call_providers", {}).get(session.call_id)
+                or self.providers.get(provider_name)
+            )
+        if not provider and not context_pipeline:
             logger.warning(
-                "Provider not found for audio profile resolution (pipeline mode will use context_name)",
+                "Provider not found for audio profile resolution",
                 call_id=session.call_id,
                 provider=provider_name,
                 available=list(self.providers.keys()),
                 context_name=session.context_name,
             )
             return
+        if not provider:
+            # Pipeline-only Agents intentionally have no monolithic provider.
+            # Resolve their per-Agent profile from its declared preferences;
+            # pipeline adapters own their component formats and therefore do not
+            # need monolithic provider capabilities/config at this stage.
+            logger.info(
+                "Resolving pipeline Agent audio profile without monolithic provider",
+                call_id=session.call_id,
+                pipeline=context_pipeline,
+                profile=getattr(no_input_context, "profile", None),
+                context_name=session.context_name,
+            )
         
         # Get provider capabilities
         provider_caps = None

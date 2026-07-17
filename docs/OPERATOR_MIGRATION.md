@@ -42,6 +42,12 @@ with that name, the first imported Agent becomes default. Fresh systems with no 
 Contexts are seeded through the setup flow with Receptionist, Sales, and Support;
 existing systems are not given those defaults.
 
+The tracked `demo_project_expert` Context shipped by older releases was sample data,
+not operator configuration. v7.4 removes it and ignores an unchanged copy restored
+from an upgrade backup so it cannot become the default Agent or suppress the starter
+set. If you intentionally customized and use that demo, rename it before upgrading;
+the renamed Context migrates normally.
+
 ## Tool policy conversion
 
 Legacy Context `tool_overrides` are normalized into the Agent's resource policy. After
