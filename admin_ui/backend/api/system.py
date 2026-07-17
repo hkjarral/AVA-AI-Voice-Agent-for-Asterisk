@@ -4699,6 +4699,12 @@ def _update_plan_failure_detail(
         "fi\n"
         'AAVA_SETPRIV="$(command -v setpriv)" || { '
         'echo "setpriv is required; install util-linux and retry" >&2; exit 2; }\n'
+        'AAVA_HOME="$(getent passwd "$AAVA_UID" 2>/dev/null | cut -d: -f6 '
+        '| head -n 1 || true)"\n'
+        'if [ -z "$AAVA_HOME" ] || ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" '
+        '--regid="$AAVA_GID" --clear-groups test -x "$AAVA_HOME" 2>/dev/null; then\n'
+        '  AAVA_HOME=/tmp\n'
+        'fi\n'
         'AAVA_GROUPS="$(sudo -u "#$AAVA_UID" -g "#$AAVA_GID" id -G 2>/dev/null '
         '| tr \' \' \',\')" || AAVA_GROUPS="$AAVA_GID"\n'
         'AAVA_GROUPS="${AAVA_GROUPS:-$AAVA_GID}"\n'
@@ -4737,7 +4743,7 @@ def _update_plan_failure_detail(
         '    AAVA_PARENT="$(dirname "$AAVA_PARENT")"\n'
         "  done\n"
         f"  sudo \"$AAVA_SETPRIV\" --reuid=\"$AAVA_UID\" --regid=\"$AAVA_GID\" "
-        f"--groups=\"$AAVA_GROUPS\" /bin/sh -c "
+        f"--groups=\"$AAVA_GROUPS\" /usr/bin/env HOME=\"$AAVA_HOME\" /bin/sh -c "
         f"'cd \"$1\" && shift && exec \"$@\"' sh \"$AAVA_REPO\" "
         f"/usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "

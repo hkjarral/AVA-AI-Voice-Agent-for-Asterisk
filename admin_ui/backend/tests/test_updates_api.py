@@ -183,12 +183,15 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
-        '--groups="$AAVA_GROUPS" /bin/sh -c '
+        '--groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" /bin/sh -c '
         '\'cd "$1" && shift && exec "$@"\' sh "$AAVA_REPO" '
         "/usr/local/bin/agent update "
         "--ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain --self-update=false"
     ) in detail
+    assert 'AAVA_HOME="$(getent passwd "$AAVA_UID"' in detail
+    assert '--clear-groups test -x "$AAVA_HOME"' in detail
+    assert "AAVA_HOME=/tmp" in detail
     assert "--self-update=true" not in detail
 
 
@@ -410,7 +413,7 @@ def test_update_plan_recovery_adds_docker_socket_gid_to_target_groups(tmp_path) 
     append_socket_gid = 'AAVA_GROUPS="${AAVA_GROUPS},${AAVA_DOCKER_GID}"'
     update = (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
-        '--groups="$AAVA_GROUPS" /bin/sh -c '
+        '--groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" /bin/sh -c '
         '\'cd "$1" && shift && exec "$@"\' sh "$AAVA_REPO" '
         "/usr/local/bin/agent update"
     )

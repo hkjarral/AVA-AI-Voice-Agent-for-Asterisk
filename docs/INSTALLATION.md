@@ -213,6 +213,11 @@ AAVA_SETPRIV="$(command -v setpriv)" || {
   echo "setpriv is required; install util-linux and retry" >&2
   exit 2
 }
+AAVA_HOME="$(getent passwd "$AAVA_UID" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
+if [ -z "$AAVA_HOME" ] || ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" \
+  --regid="$AAVA_GID" --clear-groups test -x "$AAVA_HOME" 2>/dev/null; then
+  AAVA_HOME=/tmp
+fi
 AAVA_GROUPS="$(sudo -u "#$AAVA_UID" -g "#$AAVA_GID" id -G 2>/dev/null | tr ' ' ',')" \
   || AAVA_GROUPS="$AAVA_GID"
 AAVA_GROUPS="${AAVA_GROUPS:-$AAVA_GID}"
@@ -250,7 +255,8 @@ fi
     AAVA_PARENT="$(dirname "$AAVA_PARENT")"
   done
   sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-    --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
+    --groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" \
+    /bin/sh -c 'cd "$1" && shift && exec "$@"' \
     sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
     --local-changes=retain --self-update=false
 )
@@ -260,7 +266,10 @@ Do not recursively `chown` the checkout: production checkouts can legitimately c
 runtime files owned by Asterisk or another service account. The recovery above repairs
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
-so Docker access does not depend on which sudoer pasted the recovery. Patch capture
+so Docker access does not depend on which sudoer pasted the recovery. It also resets
+`HOME` to the checkout owner's traversable passwd home (or `/tmp` as a fallback), which
+keeps system-wide Docker CLI plugins such as Compose discoverable after the identity
+drop. Patch capture
 and CLI bootstrap fail closed before any repair or update if Git cannot inspect the
 checkout or read either diff, the filesystem cannot write the preservation file, the
 checkout owner cannot be determined, or the requested CLI cannot be downloaded,
@@ -315,7 +324,8 @@ guarded subshell above with this equivalent pipeline:
 AAVA_RECOVERY_LOG="$(dirname "$AAVA_REPO")/aava-update-recovery.log"
 set -o pipefail
 sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-  --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
+  --groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" \
+  /bin/sh -c 'cd "$1" && shift && exec "$@"' \
   sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
   --local-changes=retain --self-update=false 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
 ```
