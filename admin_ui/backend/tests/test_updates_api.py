@@ -118,7 +118,28 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert "mkdir: cannot create directory '/root': Permission denied" in detail
     assert f"AAVA_REPO={tmp_path}" in detail
     assert "AGENT_VERSION=v7.4.0" in detail
-    assert "agent update --ref v7.4.0 --include-ui --local-changes=retain" in detail
+    assert (
+        "agent update --ref v7.4.0 --checkout=false --include-ui=true "
+        "--local-changes=retain"
+    ) in detail
+
+
+def test_update_plan_failure_preserves_long_stderr_and_explicit_flags(tmp_path) -> None:
+    updater_output = "root cause before long diagnostic\n" + ("x" * 5000) + "\nfinal error"
+
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path),
+        ref="main",
+        include_ui=False,
+        checkout=True,
+        updater_output=updater_output,
+    )
+
+    assert updater_output in detail
+    assert (
+        "agent update --ref main --checkout=true --include-ui=false "
+        "--local-changes=retain"
+    ) in detail
 
 
 def test_ai_engine_sessions_stats_urls_use_configured_health_port(monkeypatch, tmp_path) -> None:

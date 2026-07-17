@@ -96,9 +96,9 @@ planner container:
 curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
   | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
 
-agent version
+/usr/local/bin/agent version
 git fetch origin --prune --tags
-agent update --ref v7.4.0 --include-ui --local-changes=retain
+/usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain
 ```
 
 Use `overwrite` only after the patch/backup step above confirms you do not need the

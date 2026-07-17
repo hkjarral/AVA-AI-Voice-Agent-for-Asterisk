@@ -4572,18 +4572,18 @@ def _update_plan_failure_detail(
     host_root: str,
     ref: str,
     include_ui: bool,
+    checkout: bool,
     updater_output: str,
 ) -> str:
     """Build an actionable plan error without polluting successful plan JSON."""
     import shlex
 
     output = (updater_output or "Updater exited without an error message").strip()
-    # Keep the useful tail when a tool emits a large preamble before the actual failure.
-    output = output[-4000:]
     quoted_root = shlex.quote(host_root)
     quoted_ref = shlex.quote(ref)
     version_env = f"AGENT_VERSION={quoted_ref} " if _is_semver_tag(ref) else ""
-    include_ui_flag = " --include-ui" if include_ui else ""
+    checkout_flag = "true" if checkout else "false"
+    include_ui_flag = "true" if include_ui else "false"
 
     return (
         "Failed to compute update plan.\n\n"
@@ -4598,7 +4598,8 @@ def _update_plan_failure_detail(
         f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
         "sudo /usr/local/bin/agent version\n"
         'sudo git -C "$AAVA_REPO" fetch origin --prune --tags\n'
-        f"sudo /usr/local/bin/agent update --ref {quoted_ref}{include_ui_flag} --local-changes=retain\n\n"
+        f"sudo /usr/local/bin/agent update --ref {quoted_ref} --checkout={checkout_flag} "
+        f"--include-ui={include_ui_flag} --local-changes=retain\n\n"
         "Use --local-changes=overwrite only after preserving any local source edits. "
         "Do not recursively chown the checkout based only on this error."
     )
@@ -5032,6 +5033,7 @@ async def updates_plan(
                 host_root=host_root,
                 ref=ref,
                 include_ui=include_ui,
+                checkout=checkout,
                 updater_output=out,
             ),
         )
