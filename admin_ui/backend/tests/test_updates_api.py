@@ -129,7 +129,7 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
         'diff | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
-    assert detail.count("set -o pipefail") == 2
+    assert detail.count("set -o pipefail") == 3
     assert (
         ') || { echo "Failed to preserve staged tracked edits; update not attempted" '
         ">&2; exit 2; }"
@@ -137,6 +137,14 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert (
         ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
         ">&2; exit 2; }"
+    ) in detail
+    assert (
+        ') || { echo "Failed to install requested agent CLI; update not attempted" '
+        ">&2; exit 2; }"
+    ) in detail
+    assert (
+        'sudo /usr/local/bin/agent version || { echo "Installed agent CLI is not '
+        'runnable; update not attempted" >&2; exit 2; }'
     ) in detail
     assert 'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"' in detail
     assert 'cd "$AAVA_REPO"' not in detail
@@ -185,6 +193,28 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
     assert detail.index(staged_failure) < detail.index(unstaged_capture)
     assert detail.index(unstaged_capture) < detail.index(unstaged_failure)
     assert detail.index(unstaged_failure) < detail.index(installer) < detail.index(update)
+
+
+def test_update_plan_recovery_stops_before_repair_if_cli_bootstrap_fails(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    bootstrap = "curl -sSL https://raw.githubusercontent.com/"
+    bootstrap_failure = "Failed to install requested agent CLI; update not attempted"
+    version = "sudo /usr/local/bin/agent version"
+    version_failure = "Installed agent CLI is not runnable; update not attempted"
+    repair = 'AAVA_UID="$(sudo stat'
+    update = "/usr/local/bin/agent update --ref main"
+
+    assert detail.index(bootstrap) < detail.index(bootstrap_failure)
+    assert detail.index(bootstrap_failure) < detail.index(version)
+    assert detail.index(version) < detail.index(version_failure)
+    assert detail.index(version_failure) < detail.index(repair) < detail.index(update)
 
 
 def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> None:

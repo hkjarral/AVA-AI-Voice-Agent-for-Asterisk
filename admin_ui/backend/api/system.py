@@ -4610,9 +4610,14 @@ def _update_plan_failure_detail(
         '| sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
         ">&2; exit 2; }\n"
-        "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
-        f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
-        "sudo /usr/local/bin/agent version\n"
+        "(\n"
+        "  set -o pipefail\n"
+        "  curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
+        f"    | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
+        ') || { echo "Failed to install requested agent CLI; update not attempted" '
+        ">&2; exit 2; }\n"
+        'sudo /usr/local/bin/agent version || { echo "Installed agent CLI is not '
+        'runnable; update not attempted" >&2; exit 2; }\n'
         'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"\n'
         'AAVA_GID="$(sudo stat -c \'%g\' "$AAVA_REPO")"\n'
         'AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '

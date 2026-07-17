@@ -131,10 +131,16 @@ sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short
     | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null
 ) || { echo "Failed to preserve unstaged tracked edits; update not attempted" >&2; exit 2; }
 
-curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
-  | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
+(
+  set -o pipefail
+  curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+    | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
+) || { echo "Failed to install requested agent CLI; update not attempted" >&2; exit 2; }
 
-sudo /usr/local/bin/agent version
+sudo /usr/local/bin/agent version || {
+  echo "Installed agent CLI is not runnable; update not attempted" >&2
+  exit 2
+}
 AAVA_UID="$(sudo stat -c '%u' "$AAVA_REPO")"
 AAVA_GID="$(sudo stat -c '%g' "$AAVA_REPO")"
 AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --absolute-git-dir)"
@@ -199,8 +205,9 @@ runtime files owned by Asterisk or another service account. The recovery above r
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
 so Docker access does not depend on which sudoer pasted the recovery. Patch capture
-fails closed before any repair or update if Git cannot read either diff or the
-filesystem cannot write the preservation file. Repository
+and CLI bootstrap fail closed before any repair or update if Git cannot read either
+diff, the filesystem cannot write the preservation file, or the requested CLI cannot
+be downloaded, installed, and executed. Repository
 ancestors that the checkout owner cannot traverse receive execute-only access inside a
 guarded subshell; the owner-level command enters `AAVA_REPO` only after that repair, and
 the exact original modes are restored on success, failure, or interruption. The early
