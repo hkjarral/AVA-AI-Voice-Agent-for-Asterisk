@@ -245,6 +245,8 @@ fi
   trap 'exit 143' TERM
   AAVA_HOME="$(getent passwd "$AAVA_UID" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
   if [ -z "$AAVA_HOME" ] || ! sudo test -d "$AAVA_HOME" || \
+    [ "$(sudo stat -c '%u' "$AAVA_HOME" 2>/dev/null || true)" != "$AAVA_UID" ] || \
+    [ -n "$(sudo find "$AAVA_HOME" -maxdepth 0 -perm /022 -print -quit 2>/dev/null)" ] || \
     ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
       --clear-groups test -x "$AAVA_HOME" 2>/dev/null; then
     AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2
@@ -275,7 +277,8 @@ runtime files owned by Asterisk or another service account. The recovery above r
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
 so Docker access does not depend on which sudoer pasted the recovery. It also resets
-`HOME` to the checkout owner's traversable passwd home. If that is unavailable, recovery
+`HOME` only to a traversable passwd home that is owned by the checkout UID and has no
+group/world write bits. If that is unavailable or points to a shared directory, recovery
 creates a random mode-700, target-owned temporary home and removes it on exit; it never
 uses shared `/tmp` itself as `HOME`, where an untrusted Docker plugin could shadow a
 system plugin. This keeps system-wide Docker CLI plugins such as Compose discoverable
