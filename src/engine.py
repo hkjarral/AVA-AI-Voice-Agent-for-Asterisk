@@ -737,7 +737,12 @@ class Engine:
         config_mapping = self.config.dict() if hasattr(self.config, "dict") else self.config.__dict__
         from .core.legacy_agent_migration import ensure_legacy_contexts_imported
         try:
-            legacy_import = ensure_legacy_contexts_imported(config_mapping.get("contexts") or {})
+            legacy_import = ensure_legacy_contexts_imported(
+                config_mapping.get("contexts") or {},
+                contexts_for_hash=getattr(
+                    self.config, "_legacy_contexts_for_hash", None
+                ),
+            )
         except Exception as exc:
             logger.error(
                 "Legacy Context migration failed; refusing to start",

@@ -6,7 +6,9 @@ import pytest
 
 from src.core.legacy_agent_migration import (
     LegacyAgentMigrationError,
+    contexts_hash,
     ensure_legacy_contexts_imported,
+    merged_raw_legacy_contexts,
 )
 
 
@@ -84,6 +86,39 @@ def test_engine_import_records_admin_compatible_context_hash(tmp_path):
             "SELECT contexts_hash FROM schema_migrations WHERE version=1"
         ).fetchone()[0]
     assert stored == expected
+
+
+def test_engine_import_hashes_raw_placeholders_but_imports_expanded_values(
+    tmp_path, monkeypatch
+):
+    database = tmp_path / "agents.db"
+    config_path = tmp_path / "ai-agent.yaml"
+    contexts_dir = tmp_path / "contexts"
+    contexts_dir.mkdir()
+    config_path.write_text(
+        "contexts:\n  sales:\n    provider: local\n    prompt: Call ${BUSINESS_NAME}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BUSINESS_NAME", "Acme")
+    raw_contexts = merged_raw_legacy_contexts(
+        str(config_path), str(contexts_dir)
+    )
+
+    ensure_legacy_contexts_imported(
+        {"sales": {"provider": "local", "prompt": "Call Acme"}},
+        db_path=str(database),
+        contexts_for_hash=raw_contexts,
+    )
+
+    with sqlite3.connect(database) as connection:
+        stored_hash = connection.execute(
+            "SELECT contexts_hash FROM schema_migrations WHERE version=1"
+        ).fetchone()[0]
+        stored_prompt = connection.execute(
+            "SELECT prompt FROM agents WHERE slug='sales'"
+        ).fetchone()[0]
+    assert stored_hash == contexts_hash(raw_contexts)
+    assert stored_prompt == "Call Acme"
 
 
 def test_completed_migration_backfills_only_a_missing_context_hash(tmp_path):

@@ -9,6 +9,7 @@ After the import, Agents are the only runtime source of persona configuration.
 from __future__ import annotations
 
 import fcntl
+import glob
 import hashlib
 import json
 import os
@@ -19,6 +20,8 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
+
+import yaml
 
 from src.tools.runtime_config import (
     merge_legacy_tool_overrides,
@@ -87,6 +90,105 @@ def _is_bundled_demo_context(name: Any, value: Any) -> bool:
     except TypeError:
         return False
     return str(context.get("description") or "").strip() == _BUNDLED_DEMO_DESCRIPTION
+
+
+def _deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Mirror the legacy Admin drift loader's local-override semantics."""
+    merged = dict(base)
+    for key, override_value in override.items():
+        if override_value is None:
+            merged.pop(key, None)
+            continue
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(override_value, dict):
+            merged[key] = _deep_merge_dicts(base_value, override_value)
+        else:
+            merged[key] = override_value
+    return merged
+
+
+def merged_raw_legacy_contexts(yaml_path: str, contexts_dir: str) -> Dict[str, Any]:
+    """Load unexpanded legacy Context YAML for an Admin-compatible drift hash.
+
+    Runtime configuration expands environment placeholders before validation, but
+    the retained YAML drift baseline must remain environment-independent. This
+    deliberately mirrors ``admin_ui/backend/agents_migration.py`` without making
+    the engine image depend on Admin UI modules.
+    """
+    inline: Dict[str, Any] = {}
+    if os.path.exists(yaml_path):
+        with open(yaml_path, "r", encoding="utf-8") as config_file:
+            document = yaml.safe_load(config_file) or {}
+        if isinstance(document, dict):
+            candidate = document.get("contexts") or {}
+            if isinstance(candidate, dict):
+                inline = candidate
+
+    merged: Dict[str, Any] = {}
+    for key, value in inline.items():
+        if not isinstance(value, dict):
+            merged[key] = value
+            continue
+        context = dict(value)
+        context["_source_file"] = "ai-agent.yaml"
+        merged[key] = context
+
+    stem, extension = os.path.splitext(yaml_path)
+    local_yaml_path = f"{stem}.local{extension}"
+    if os.path.exists(local_yaml_path):
+        try:
+            with open(local_yaml_path, "r", encoding="utf-8") as local_file:
+                local_document = yaml.safe_load(local_file) or {}
+            local_inline = (
+                local_document.get("contexts") or {}
+                if isinstance(local_document, dict)
+                else {}
+            )
+            if isinstance(local_inline, dict):
+                valid_local_inline = {
+                    key: value
+                    for key, value in local_inline.items()
+                    if value is None or isinstance(value, dict)
+                }
+                merged = _deep_merge_dicts(merged, valid_local_inline)
+                for key in valid_local_inline:
+                    if key in merged and isinstance(merged[key], dict):
+                        merged[key]["_source_file"] = os.path.basename(local_yaml_path)
+        except Exception:
+            # Match the existing Admin/runtime behavior for an optional override:
+            # keep the valid base configuration and continue.
+            pass
+
+    files = sorted(
+        glob.glob(os.path.join(contexts_dir, "*.yaml"))
+        + glob.glob(os.path.join(contexts_dir, "*.yml"))
+    )
+    for context_path in files:
+        try:
+            with open(context_path, "r", encoding="utf-8") as context_file:
+                external = yaml.safe_load(context_file) or {}
+        except Exception:
+            continue
+        if not isinstance(external, dict):
+            continue
+        external = dict(external)
+        name = external.pop("name", None)
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        if "prompt" not in external and "system_prompt" in external:
+            external["prompt"] = external.pop("system_prompt")
+        if name not in merged:
+            external["_source_file"] = os.path.relpath(
+                context_path, os.path.dirname(os.path.dirname(context_path))
+            )
+            merged[name] = external
+
+    return {
+        name: value
+        for name, value in merged.items()
+        if not _is_bundled_demo_context(name, value)
+    }
 
 
 def contexts_hash(contexts: Mapping[str, Any]) -> str:
@@ -294,6 +396,7 @@ def ensure_legacy_contexts_imported(
     contexts: Any,
     *,
     db_path: Optional[str] = None,
+    contexts_for_hash: Any = None,
 ) -> Dict[str, Any]:
     """Atomically import Contexts only when no Agent rows exist.
 
@@ -307,6 +410,13 @@ def ensure_legacy_contexts_imported(
         for name, value in _mapping(contexts or {}).items()
         if not _is_bundled_demo_context(name, value)
     }
+    hash_context_map = context_map
+    if contexts_for_hash is not None:
+        hash_context_map = {
+            name: value
+            for name, value in _mapping(contexts_for_hash or {}).items()
+            if not _is_bundled_demo_context(name, value)
+        }
     target = db_path or os.getenv("AGENTS_DB_PATH", DB_DEFAULT)
     # Fresh headless/test environments with no legacy Contexts have nothing to
     # migrate and must not require the production /app volume to be writable.
@@ -325,7 +435,7 @@ def ensure_legacy_contexts_imported(
             # drift baseline once, without ever replacing a non-NULL historical
             # digest that Admin drift detection already relies on.
             _record_migration_completed(
-                target, _optional_contexts_hash(context_map)
+                target, _optional_contexts_hash(hash_context_map)
             )
             upgraded = _upgrade_existing_resource_policies(target)
             return {
@@ -340,7 +450,7 @@ def ensure_legacy_contexts_imported(
             # migration marker. Record that it is authoritative so deleting its
             # final Agent later cannot make retained legacy YAML import again.
             _record_migration_completed(
-                target, _optional_contexts_hash(context_map)
+                target, _optional_contexts_hash(hash_context_map)
             )
             return {
                 "imported": 0,
@@ -352,7 +462,6 @@ def ensure_legacy_contexts_imported(
         rows = []
         errors = []
         seen = set()
-        normalized_contexts: Dict[str, Dict[str, Any]] = {}
         now = datetime.now(timezone.utc).isoformat()
         for original_name, raw_context in context_map.items():
             try:
@@ -360,7 +469,6 @@ def ensure_legacy_contexts_imported(
             except TypeError as exc:
                 errors.append(f"{original_name}: {exc}")
                 continue
-            normalized_contexts[original_name] = context
             prompt = context.get("prompt") or context.get("system_prompt") or ""
             if not isinstance(prompt, str):
                 errors.append(f"{original_name}: prompt must be a string")
@@ -396,7 +504,7 @@ def ensure_legacy_contexts_imported(
             raise LegacyAgentMigrationError(
                 "legacy Context import validation failed: " + "; ".join(errors)
             )
-        digest = contexts_hash(normalized_contexts)
+        digest = contexts_hash(hash_context_map)
 
         fd, temp_path = tempfile.mkstemp(prefix=".agents-v740-", suffix=".db", dir=parent)
         os.close(fd)

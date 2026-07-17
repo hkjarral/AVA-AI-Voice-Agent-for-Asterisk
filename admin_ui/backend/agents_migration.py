@@ -10,10 +10,24 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import uuid
 
 import yaml
 from agents_store import AgentsStore, slugify, _now
+
+
+_PROJECT_ROOT = (
+    os.environ.get("PROJECT_ROOT")
+    or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+from src.tools.runtime_config import (
+    ToolConfigPolicyError,
+    dump_agent_tool_configs,
+    merge_legacy_tool_overrides,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -198,35 +212,10 @@ _FIRST_CLASS = {
 
 
 def _migrated_tool_configs(ctx: dict) -> dict:
-    """Mirror the v7.4 calendar portion of merge_legacy_tool_overrides.
-
-    The Admin migration intentionally remains independent from engine imports.
-    Explicit tool_configs wins; legacy empty selections retain fail-closed
-    semantics by becoming a ``none`` policy.
-    """
-    configs = dict(ctx.get("tool_configs") or {})
-    overrides = ctx.get("tool_overrides") or {}
-    if not isinstance(overrides, dict):
-        return configs
-
-    google = overrides.get("google_calendar") or {}
-    selected = google.get("selected_calendars") if isinstance(google, dict) else None
-    if "google_calendar" not in configs and isinstance(selected, list):
-        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
-        configs["google_calendar"] = {
-            "calendar_policy": "selected" if keys else "none",
-            "calendar_keys": keys,
-        }
-
-    microsoft = overrides.get("microsoft_calendar") or {}
-    selected = microsoft.get("selected_accounts") if isinstance(microsoft, dict) else None
-    if "microsoft_calendar" not in configs and isinstance(selected, list):
-        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
-        configs["microsoft_calendar"] = {
-            "account_policy": "selected" if keys else "none",
-            "account_keys": keys,
-        }
-    return configs
+    """Validate and normalize Context policies with the runtime source of truth."""
+    return merge_legacy_tool_overrides(
+        ctx.get("tool_configs"), ctx.get("tool_overrides")
+    )
 
 
 def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict:
@@ -283,7 +272,13 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             skipped.append((key, "missing prompt"))
             continue
         provider = ctx.get("provider") or ""
-        tool_configs = _migrated_tool_configs(ctx)
+        try:
+            tool_configs_json = dump_agent_tool_configs(
+                _migrated_tool_configs(ctx)
+            )
+        except ToolConfigPolicyError as exc:
+            skipped.append((key, f"invalid tool configuration: {exc}"))
+            continue
         extra = {k: v for k, v in ctx.items() if k not in _FIRST_CLASS}
         now = _now()
         # CRIT-3: two context names can slugify to the same value
@@ -318,7 +313,7 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             ctx.get("greeting"),
             prompt,
             json.dumps(ctx["tools"]) if ctx.get("tools") else None,
-            json.dumps(tool_configs, sort_keys=True, separators=(",", ":")) if tool_configs else None,
+            tool_configs_json,
             ctx.get("profile") or ctx.get("audio_profile"),
             json.dumps(extra) if extra else None,
             1 if key == "default" else 0,  # is_default

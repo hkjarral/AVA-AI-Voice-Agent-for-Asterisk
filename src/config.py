@@ -7,7 +7,14 @@ using Pydantic v2 for validation and type safety.
 
 import os
 import yaml
-from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 from typing import Dict, Any, Literal, Optional, List
 import re
 import structlog
@@ -1006,6 +1013,8 @@ def _normalize_pipelines(config_data: Dict[str, Any]) -> None:
 
 
 class AppConfig(BaseModel):
+    _legacy_contexts_for_hash: Optional[Dict[str, Any]] = PrivateAttr(default=None)
+
     # Config schema marker used by migration tooling and release docs.
     config_version: int = Field(default=6, ge=1)
     default_provider: str
@@ -1125,6 +1134,11 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
     """
     # Phase 1: Load YAML file with environment variable expansion and local overrides
     path = resolve_config_path(path)
+    from src.core.legacy_agent_migration import merged_raw_legacy_contexts
+
+    raw_legacy_contexts = merged_raw_legacy_contexts(
+        path, os.path.join(os.path.dirname(path), "contexts")
+    )
     config_data = load_yaml_with_local_override(path)
     if isinstance(config_data, dict):
         config_data.setdefault("config_version", 6)
@@ -1178,7 +1192,9 @@ def load_config(path: str = "config/ai-agent.yaml") -> AppConfig:
         raise
     
     # Phase 5: Validate and return
-    return AppConfig(**config_data)
+    config = AppConfig(**config_data)
+    config._legacy_contexts_for_hash = raw_legacy_contexts
+    return config
 
 
 def _merge_external_contexts(config_data: Dict[str, Any]) -> None:
