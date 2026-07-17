@@ -155,6 +155,27 @@ def test_starter_set_waits_for_pending_legacy_context_migration(
     assert client.get("/api/agents").json() == []
 
 
+def test_manual_agent_create_waits_for_pending_legacy_context_migration(
+    client, tmp_path
+):
+    (tmp_path / "ai-agent.yaml").write_text(
+        "contexts:\n  legacy_support:\n    provider: openai_realtime\n    prompt: legacy\n"
+    )
+
+    response = client.post(
+        "/api/agents",
+        json={
+            "display_name": "Manual Agent",
+            "provider": "openai_realtime",
+            "prompt": "manual",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "Legacy Context import is pending" in response.json()["detail"]
+    assert client.get("/api/agents").json() == []
+
+
 def test_starter_target_prefers_default_full_agent_over_stale_active_pipeline():
     provider, pipeline = agents_api._starter_target_from_config(
         {

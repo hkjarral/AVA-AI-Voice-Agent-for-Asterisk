@@ -24,6 +24,8 @@ from agents_store import AgentsStore
 def client(tmp_path, monkeypatch):
     db = str(tmp_path / "agents.db")
     monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+    monkeypatch.setattr(agents_api, "_yaml_path", lambda: str(tmp_path / "ai-agent.yaml"))
+    monkeypatch.setattr(agents_api, "_contexts_dir", lambda: str(tmp_path / "contexts"))
     app = FastAPI()
     app.include_router(agents_api.router, prefix="/api")
     return TestClient(app)

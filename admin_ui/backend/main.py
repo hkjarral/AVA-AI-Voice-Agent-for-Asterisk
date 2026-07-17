@@ -201,7 +201,8 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
 # the same empty store with different validation and promotion semantics. For an
 # existing store only, run the additive schema initializer and the explicit,
 # one-time legacy resource-policy promotion before the first authenticated API
-# visit. Ordinary API store construction never scans or mutates Agent rows.
+# visit. Ordinary API store construction never scans or mutates Agent rows, and
+# Agent CRUD returns 409 while legacy Contexts exist but the store is still empty.
 app.state.agents_migration_result = None
 _existing_agents_db = os.path.abspath(
     os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")

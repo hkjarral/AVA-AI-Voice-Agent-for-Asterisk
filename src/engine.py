@@ -12041,6 +12041,12 @@ class Engine:
             if not pipeline:
                 logger.debug("Pipeline runner: no pipeline resolved", call_id=call_id)
                 return
+            # Pipeline adapters are per-call instances. Bind schema generation to
+            # the same immutable registry used for execution so a global reload
+            # cannot change tools advertised by an already-active call.
+            pipeline.llm_adapter.bind_tool_registry(
+                self._tool_registry_for_session(session)
+            )
             # Inject context prompt into LLM options with fallback chain
             # Fallback chain: AI_CONTEXT → pipeline default → global llm_config
             llm_options = pipeline.llm_options or {}

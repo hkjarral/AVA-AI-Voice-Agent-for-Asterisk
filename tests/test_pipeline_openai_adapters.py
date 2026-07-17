@@ -3,6 +3,7 @@ import base64
 import json
 import wave
 from io import BytesIO
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,6 +11,7 @@ from src.audio.resampler import convert_pcm16le_to_target_format
 from src.config import AppConfig, OpenAIProviderConfig
 from src.pipelines.openai import OpenAISTTAdapter, OpenAILLMAdapter, OpenAITTSAdapter
 from src.pipelines.orchestrator import PipelineOrchestrator
+from src.tools.base import ToolPhase
 
 
 def _build_app_config() -> AppConfig:
@@ -182,6 +184,49 @@ async def test_openai_llm_adapter_chat_completion(monkeypatch):
     request = fake_session.requests[0]
     assert request["json"]["model"] == "gpt-4o-mini"
     assert request["json"]["messages"][-1] == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_openai_llm_uses_captured_registry_for_tool_schemas(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = OpenAIProviderConfig(**app_config.providers["openai"])
+    body = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+    fake_session = _FakeSession(body)
+    adapter = OpenAILLMAdapter(
+        "openai_llm",
+        app_config,
+        provider_config,
+        {"use_realtime": False},
+        session_factory=lambda: fake_session,
+    )
+    definition = MagicMock()
+    definition.phase = ToolPhase.IN_CALL
+    definition.to_openai_schema.return_value = {
+        "type": "function",
+        "function": {
+            "name": "captured_tool",
+            "description": "Captured generation tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    captured_tool = MagicMock(definition=definition)
+    captured_registry = MagicMock()
+    captured_registry.get.return_value = captured_tool
+    live_registry = MagicMock()
+    live_registry.get.return_value = None
+    adapter.bind_tool_registry(captured_registry)
+    monkeypatch.setattr("src.pipelines.openai.tool_registry", live_registry)
+
+    await adapter.start()
+    await adapter.generate(
+        "call-1", "hello", {}, {"tools": ["captured_tool"]}
+    )
+
+    assert fake_session.requests[0]["json"]["tools"] == [
+        definition.to_openai_schema.return_value
+    ]
+    captured_registry.get.assert_called_once_with("captured_tool")
+    live_registry.get.assert_not_called()
 
 
 @pytest.mark.asyncio

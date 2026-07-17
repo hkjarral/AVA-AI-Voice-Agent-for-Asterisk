@@ -269,8 +269,10 @@ async def test_pipeline_runner_lifecycle(monkeypatch):
     engine.pipeline_orchestrator._started = True
 
     # Stub orchestrator to return a fake resolution with in-memory adapters
+    resolution = _StubResolution()
+
     def fake_get_pipeline(call_id, pipeline_name=None):
-        return _StubResolution()
+        return resolution
 
     monkeypatch.setattr(engine.pipeline_orchestrator, "get_pipeline", fake_get_pipeline)
 
@@ -279,6 +281,8 @@ async def test_pipeline_runner_lifecycle(monkeypatch):
     call_id = "call-abc"
     session = CallSession(call_id=call_id, caller_channel_id=call_id)
     session.pipeline_name = "local_only"
+    captured_registry = object()
+    session.tool_runtime_registry = captured_registry
     await engine.session_store.upsert_call(session)
 
     # Start pipeline runner explicitly
@@ -286,6 +290,11 @@ async def test_pipeline_runner_lifecycle(monkeypatch):
 
     assert call_id in engine._pipeline_tasks
     assert call_id in engine._pipeline_queues
+    for _ in range(20):
+        if getattr(resolution.llm_adapter, "_call_tool_registry", None) is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert resolution.llm_adapter.tool_registry_or(None) is captured_registry
 
     # Feed some audio and then cleanup
     q = engine._pipeline_queues[call_id]

@@ -49,6 +49,18 @@ def _yaml_path() -> str:
 def _contexts_dir() -> str:
     return os.path.join(os.path.dirname(settings.CONFIG_PATH), "contexts")
 
+
+def _store_for_agent_write() -> AgentsStore:
+    """Reject writes that could shadow a pending atomic Context import."""
+    store = _store()
+    if not store.list_all() and merged_effective_contexts(_yaml_path(), _contexts_dir()):
+        raise HTTPException(
+            409,
+            "Legacy Context import is pending. Start the AI Engine to complete the "
+            "one-time Agent migration before changing Agents.",
+        )
+    return store
+
 class AgentIn(BaseModel):
     display_name: str
     provider: str | None = None
@@ -404,13 +416,13 @@ def create_agent(body: AgentIn, request: Request):
         raise HTTPException(422, "agent must have a provider or a pipeline")
     data["provider"] = (data.get("provider") or "").strip()
     try:
-        return _store().create(**data)
+        return _store_for_agent_write().create(**data)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
 
 @router.patch("/agents/{slug}", response_model=AgentOut)
 def patch_agent(slug: str, body: AgentPatch):
-    store = _store()
+    store = _store_for_agent_write()
     existing = store.get_by_slug(slug)
     if not existing:
         raise HTTPException(404, "agent not found")
@@ -434,7 +446,7 @@ def patch_agent(slug: str, body: AgentPatch):
 
 @router.post("/agents/{slug}/default", response_model=AgentOut)
 def set_default(slug: str):
-    store = _store()
+    store = _store_for_agent_write()
     if not store.get_by_slug(slug):
         raise HTTPException(404)
     store.set_default(slug)
@@ -442,7 +454,7 @@ def set_default(slug: str):
 
 @router.delete("/agents/{slug}", status_code=204)
 def delete_agent(slug: str, request: Request):
-    store = _store()
+    store = _store_for_agent_write()
     row = store.get_by_slug(slug)
     if not row:
         raise HTTPException(404)
@@ -572,6 +584,9 @@ def migration_reconcile():
     context — neither provider nor pipeline — is skipped, not silently created) and
     imports the full field set, not just prompt. Upsert keeps the slug stable, so an
     update is never a destructive recreate."""
+    # This endpoint is the explicit operator-controlled import path and imports
+    # the complete merged Context set; unlike ordinary CRUD it cannot shadow a
+    # pending migration with an unrelated manual Agent.
     store = _store()
     merged = merged_effective_contexts(_yaml_path(), _contexts_dir())
     changed = []

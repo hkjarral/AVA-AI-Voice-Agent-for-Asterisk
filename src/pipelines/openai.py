@@ -459,9 +459,10 @@ class OpenAILLMAdapter(LLMComponent):
         # Do not gate tools by provider-level flags; contexts are the source of truth for tool availability.
         tools_list = merged.get("tools")
         tool_schemas = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
-                tool = tool_registry.get(tool_name)
+                tool = call_tool_registry.get(tool_name)
                 if tool:
                     try:
                         from src.tools.base import ToolPhase
@@ -679,10 +680,10 @@ class OpenAILLMAdapter(LLMComponent):
         # Include tools in streaming request so the LLM can return tool calls
         tools_list = merged.get("tools")
         tool_schemas = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         if tools_list and isinstance(tools_list, list):
-            from src.tools.registry import tool_registry
             for tool_name in tools_list:
-                tool = tool_registry.get(tool_name)
+                tool = call_tool_registry.get(tool_name)
                 if tool:
                     tool_schemas.append(tool.definition.to_openai_schema())
         if tool_schemas:

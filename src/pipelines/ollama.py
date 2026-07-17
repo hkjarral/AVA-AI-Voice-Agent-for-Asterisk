@@ -184,8 +184,9 @@ class OllamaLLMAdapter(LLMComponent):
     def _build_tools_schema(self, tool_names: List[str]) -> List[Dict[str, Any]]:
         """Build Ollama-compatible tool schemas from tool registry."""
         tools = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         for name in tool_names:
-            tool = tool_registry.get(name)
+            tool = call_tool_registry.get(name)
             if tool:
                 # Ollama uses same format as OpenAI for tools
                 tools.append({
