@@ -7,7 +7,10 @@ import { FormInput, FormSelect, FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import AgentToolPicker from './AgentToolPicker';
-import type { TransferDestination } from './TransferAccessEditor';
+import {
+    transferDestinationsFromConfig,
+    type TransferDestination,
+} from './agentToolInventory';
 import type { AgentResourceOption } from './ResourceAccessEditor';
 import {
     ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig, phaseOf, isToolChecked,
@@ -190,19 +193,9 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
 
             const toolsBlock = (parsed.tools as Record<string, unknown>) || {};
             const transferBlock = (toolsBlock.transfer as Record<string, unknown>) || {};
-            const destinationsBlock = (transferBlock.destinations as Record<string, unknown>) || {};
-            setTransferDestinations(Object.entries(destinationsBlock).map(([key, raw]) => {
-                const destination = raw && typeof raw === 'object'
-                    ? raw as Record<string, unknown> : {};
-                return {
-                    key,
-                    type: String(destination.type || ''),
-                    target: String(destination.target || destination.extension || ''),
-                    description: String(destination.description || destination.name || ''),
-                    attendedAllowed: destination.attended_allowed === true,
-                    liveAgent: destination.live_agent === true,
-                };
-            }));
+            setTransferDestinations(
+                transferDestinationsFromConfig(transferBlock.destinations)
+            );
 
             const asRecord = (value: unknown): Record<string, unknown> =>
                 value && typeof value === 'object' && !Array.isArray(value)

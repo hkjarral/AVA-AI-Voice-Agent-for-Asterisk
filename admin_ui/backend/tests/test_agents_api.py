@@ -225,6 +225,53 @@ def test_manual_agent_create_waits_for_pending_legacy_context_migration(
     assert client.get("/api/agents").json() == []
 
 
+def test_completed_migration_allows_replacement_agent_after_store_is_emptied(
+    client, tmp_path
+):
+    (tmp_path / "ai-agent.yaml").write_text(
+        "contexts:\n  legacy_support:\n    provider: openai_realtime\n    prompt: retained\n"
+    )
+    with agents_api._store() as store:
+        with store.conn:
+            store.conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at, contexts_hash) "
+                "VALUES (1, '2026-07-17T00:00:00Z', 'retained')"
+            )
+
+    response = client.post(
+        "/api/agents",
+        json={
+            "display_name": "Replacement Agent",
+            "provider": "openai_realtime",
+            "prompt": "replacement",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["slug"] == "replacement_agent"
+
+
+def test_completed_migration_allows_starter_reseed_after_store_is_emptied(
+    client, tmp_path
+):
+    (tmp_path / "ai-agent.yaml").write_text(
+        "contexts:\n  legacy_support:\n    provider: openai_realtime\n    prompt: retained\n"
+    )
+    with agents_api._store() as store:
+        with store.conn:
+            store.conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at, contexts_hash) "
+                "VALUES (1, '2026-07-17T00:00:00Z', 'retained')"
+            )
+
+    response = client.post(
+        "/api/agents/starter-set", json={"provider": "openai_realtime"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == ["receptionist", "sales", "support"]
+
+
 def test_starter_target_prefers_default_full_agent_over_stale_active_pipeline():
     provider, pipeline = agents_api._starter_target_from_config(
         {

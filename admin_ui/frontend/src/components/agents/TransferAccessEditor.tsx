@@ -2,15 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { AlertTriangle, Search } from 'lucide-react';
 
 import type { AgentToolState } from './agentToolConfig';
-
-export interface TransferDestination {
-    key: string;
-    type: string;
-    target: string;
-    description: string;
-    attendedAllowed?: boolean;
-    liveAgent?: boolean;
-}
+import type { TransferDestination } from './agentToolInventory';
 
 interface Props {
     destinations: TransferDestination[];

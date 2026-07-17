@@ -21,7 +21,7 @@ def seed_starter_agents(
     """Create Receptionist, Sales, Support exactly once when the store is empty."""
     if store.list_all():
         return {"created": [], "already_configured": True}
-    if legacy_contexts:
+    if legacy_contexts and not store.has_schema_migration(1):
         return {
             "created": [],
             "already_configured": False,

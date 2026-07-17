@@ -179,6 +179,12 @@ class AgentsStore:
             q += " AND is_operator_managed=1"
         return self.conn.execute(q).fetchone()[0]
 
+    def has_schema_migration(self, version: int) -> bool:
+        """Return whether a durable one-time migration marker exists."""
+        return self.conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (version,)
+        ).fetchone() is not None
+
     # -- writes ------------------------------------------------------------
     def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
                role_label=None, voice=None, greeting=None, tools_json=None,

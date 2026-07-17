@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
-import TransferAccessEditor, { type TransferDestination } from './TransferAccessEditor';
+import TransferAccessEditor from './TransferAccessEditor';
+import type { TransferDestination } from './agentToolInventory';
 import ResourceAccessEditor, { type AgentResourceOption, type ResourcePolicy } from './ResourceAccessEditor';
 import {
     ToolDef, AgentToolState, phaseOf, isToolChecked, isToolLocked, toggleTool,

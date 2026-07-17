@@ -53,7 +53,11 @@ def _contexts_dir() -> str:
 def _store_for_agent_write() -> AgentsStore:
     """Reject writes that could shadow a pending atomic Context import."""
     store = _store()
-    if not store.list_all() and merged_effective_contexts(_yaml_path(), _contexts_dir()):
+    if (
+        not store.list_all()
+        and not store.has_schema_migration(1)
+        and merged_effective_contexts(_yaml_path(), _contexts_dir())
+    ):
         raise HTTPException(
             409,
             "Legacy Context import is pending. Start the AI Engine to complete the "
