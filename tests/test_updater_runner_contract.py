@@ -24,7 +24,16 @@ def test_updater_drops_to_the_project_owner_before_writing() -> None:
     dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
 
     assert 'project_uid="$(stat -c \'%u\' "${PROJECT_ROOT}")"' in runner
-    assert 'exec gosu "${user_name}" "$0" "$@"' in runner
+    assert (
+        'exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"'
+        in runner
+    )
+    assert 'user_home="$(getent passwd "${project_uid}"' not in runner
+    assert 'find "${user_home}"' not in runner
+    assert 'mktemp -d /tmp/aava-updater-home.XXXXXXXXXX' in runner
+    assert 'chown "${project_uid}:${project_gid}" "${user_home}"' in runner
+    assert 'chmod 0700 "${user_home}"' in runner
+    assert "user_home=/tmp" not in runner
     assert 'getent group "${project_gid}" 2>/dev/null' in runner
     assert "|| true" in runner
     assert "gosu" in dockerfile
@@ -34,7 +43,7 @@ def test_updater_refuses_privileged_legacy_state_repair() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     drop_body = _drop_to_project_owner_body(runner)
 
-    reexec = 'exec gosu "${user_name}" "$0" "$@"'
+    reexec = 'exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"'
     ownership_scan = (
         'find "${PROJECT_ROOT}/.agent" ! -uid "${project_uid}" -print -quit'
     )
@@ -46,6 +55,7 @@ def test_updater_refuses_privileged_legacy_state_repair() -> None:
     assert ownership_scan in drop_body
     assert "use host CLI recovery" in drop_body
     assert drop_body.index(ownership_scan) < drop_body.index(reexec)
+    assert drop_body.index("mktemp -d /tmp/aava-updater-home") < drop_body.index(reexec)
     assert '[ -L "${PROJECT_ROOT}/.agent" ]' in drop_body
 
 
@@ -71,7 +81,9 @@ def test_updater_fails_closed_when_any_git_metadata_owner_differs() -> None:
     assert "updater will remain root" not in drop_body
     assert drop_body.index(symlink_guard) < drop_body.index(root_owner_return)
     assert drop_body.index(symlink_guard) < mixed_owner_start
-    assert mixed_owner_end < drop_body.index('exec gosu "${user_name}" "$0" "$@"')
+    assert mixed_owner_end < drop_body.index(
+        'exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"'
+    )
 
 
 def test_updater_resolves_worktree_gitdirs_before_scanning_ownership() -> None:
@@ -100,7 +112,7 @@ def test_updater_makes_container_mount_parents_traversable_before_drop() -> None
     drop_body = _drop_to_project_owner_body(runner)
 
     traversal = 'chmod a+x "${parent_dir}"'
-    reexec = 'exec gosu "${user_name}" "$0" "$@"'
+    reexec = 'exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"'
     loop_start = drop_body.index('while [ "${parent_dir}" != "/" ]; do')
     loop_end = drop_body.index("\n  done", loop_start)
     traversal_loop = drop_body[loop_start:loop_end]

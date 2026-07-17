@@ -31,7 +31,7 @@ drop_to_project_owner() {
   local project_uid project_gid git_dir git_common_dir
   local git_metadata_root git_metadata_path git_metadata_uid
   local agent_metadata_path agent_metadata_uid
-  local socket_gid user_name primary_group socket_group parent_dir
+  local socket_gid user_name user_home primary_group socket_group parent_dir
   local -a git_metadata_roots=()
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
   project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
@@ -109,6 +109,9 @@ drop_to_project_owner() {
     user_name="aava-updater-${project_uid}"
     useradd --no-create-home -u "${project_uid}" -g "${project_gid}" -s /bin/bash "${user_name}"
   fi
+  user_home="$(mktemp -d /tmp/aava-updater-home.XXXXXXXXXX)"
+  chown "${project_uid}:${project_gid}" "${user_home}"
+  chmod 0700 "${user_home}"
 
   if [ -S /var/run/docker.sock ]; then
     socket_gid="$(stat -c '%g' /var/run/docker.sock)"
@@ -137,7 +140,7 @@ drop_to_project_owner() {
     parent_dir="$(dirname "${parent_dir}")"
   done
 
-  exec gosu "${user_name}" "$0" "$@"
+  exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"
 }
 
 drop_to_project_owner "$@"

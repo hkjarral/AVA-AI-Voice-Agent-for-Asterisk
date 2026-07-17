@@ -225,6 +225,7 @@ if sudo test -S /var/run/docker.sock; then
 fi
 (
   AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2
+  AAVA_TEMP_HOME=
   aava_restore_traversal() {
     AAVA_RESTORE_STATUS=0
     while IFS="$(printf '\t')" read -r AAVA_MODE AAVA_PARENT; do
@@ -232,6 +233,9 @@ fi
         sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2
       fi
     done < "$AAVA_TRAVERSAL_STATE"
+    if [ -n "$AAVA_TEMP_HOME" ]; then
+      sudo rm -rf -- "$AAVA_TEMP_HOME" || AAVA_RESTORE_STATUS=2
+    fi
     rm -f -- "$AAVA_TRAVERSAL_STATE"
     return "$AAVA_RESTORE_STATUS"
   }
@@ -239,6 +243,10 @@ fi
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  AAVA_TEMP_HOME="$(sudo mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2
+  sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2
+  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2
+  AAVA_HOME="$AAVA_TEMP_HOME"
   AAVA_PARENT="$(dirname "$AAVA_REPO")"
   while [ "$AAVA_PARENT" != "/" ]; do
     if ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
@@ -250,7 +258,8 @@ fi
     AAVA_PARENT="$(dirname "$AAVA_PARENT")"
   done
   sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-    --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
+    --groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" \
+    /bin/sh -c 'cd "$1" && shift && exec "$@"' \
     sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
     --local-changes=retain --self-update=false
 )
@@ -260,7 +269,12 @@ Do not recursively `chown` the checkout: production checkouts can legitimately c
 runtime files owned by Asterisk or another service account. The recovery above repairs
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
-so Docker access does not depend on which sudoer pasted the recovery. Patch capture
+so Docker access does not depend on which sudoer pasted the recovery. It also resets
+`HOME` to a newly created random, mode-700, target-owned temporary directory and removes
+it on exit. Recovery never trusts a passwd home, its ancestors, or user-level Docker
+configuration/plugins, and never uses shared `/tmp` itself as `HOME`; this prevents an
+untrusted plugin from shadowing a system plugin while keeping system-wide Docker CLI
+plugins such as Compose discoverable after the identity drop. Patch capture
 and CLI bootstrap fail closed before any repair or update if Git cannot inspect the
 checkout or read either diff, the filesystem cannot write the preservation file, the
 checkout owner cannot be determined, or the requested CLI cannot be downloaded,
@@ -315,7 +329,8 @@ guarded subshell above with this equivalent pipeline:
 AAVA_RECOVERY_LOG="$(dirname "$AAVA_REPO")/aava-update-recovery.log"
 set -o pipefail
 sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-  --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
+  --groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" \
+  /bin/sh -c 'cd "$1" && shift && exec "$@"' \
   sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
   --local-changes=retain --self-update=false 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
 ```

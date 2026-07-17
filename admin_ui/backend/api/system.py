@@ -4711,6 +4711,7 @@ def _update_plan_failure_detail(
         "fi\n"
         "(\n"
         '  AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2\n'
+        '  AAVA_TEMP_HOME=\n'
         "  aava_restore_traversal() {\n"
         "    AAVA_RESTORE_STATUS=0\n"
         '    while IFS="$(printf \'\\t\')" read -r AAVA_MODE AAVA_PARENT; do\n'
@@ -4718,6 +4719,9 @@ def _update_plan_failure_detail(
         '        sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2\n'
         "      fi\n"
         '    done < "$AAVA_TRAVERSAL_STATE"\n'
+        '    if [ -n "$AAVA_TEMP_HOME" ]; then\n'
+        '      sudo rm -rf -- "$AAVA_TEMP_HOME" || AAVA_RESTORE_STATUS=2\n'
+        '    fi\n'
         '    rm -f -- "$AAVA_TRAVERSAL_STATE"\n'
         '    return "$AAVA_RESTORE_STATUS"\n'
         "  }\n"
@@ -4725,6 +4729,10 @@ def _update_plan_failure_detail(
         "  trap 'exit 129' HUP\n"
         "  trap 'exit 130' INT\n"
         "  trap 'exit 143' TERM\n"
+        '  AAVA_TEMP_HOME="$(sudo mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2\n'
+        '  sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2\n'
+        '  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2\n'
+        '  AAVA_HOME="$AAVA_TEMP_HOME"\n'
         '  AAVA_PARENT="$(dirname "$AAVA_REPO")"\n'
         '  while [ "$AAVA_PARENT" != "/" ]; do\n'
         '    if ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
@@ -4737,7 +4745,7 @@ def _update_plan_failure_detail(
         '    AAVA_PARENT="$(dirname "$AAVA_PARENT")"\n'
         "  done\n"
         f"  sudo \"$AAVA_SETPRIV\" --reuid=\"$AAVA_UID\" --regid=\"$AAVA_GID\" "
-        f"--groups=\"$AAVA_GROUPS\" /bin/sh -c "
+        f"--groups=\"$AAVA_GROUPS\" /usr/bin/env HOME=\"$AAVA_HOME\" /bin/sh -c "
         f"'cd \"$1\" && shift && exec \"$@\"' sh \"$AAVA_REPO\" "
         f"/usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "
