@@ -298,7 +298,12 @@ def test_update_plan_branch_recovery_builds_cli_from_exact_selected_ref(tmp_path
     )
 
     assert "AAVA_CLI_REF=codex/upgrade-improvements" in detail
+    assert (
+        'AAVA_CLI_REMOTE="$(sudo git -c safe.directory="$AAVA_REPO" '
+        '-C "$AAVA_REPO" remote get-url origin)"'
+    ) in detail
     assert '--branch "$AAVA_CLI_REF"' in detail
+    assert '-- "$AAVA_CLI_REMOTE" "$AAVA_CLI_SRC/repo"' in detail
     assert '-e AAVA_CLI_VERSION="$AAVA_CLI_REF" golang:1.22-bookworm' in detail
     assert '-o /out/agent ./cmd/agent' in detail
     assert 'sudo install -m 0755 "$AAVA_CLI_SRC/out/agent" /usr/local/bin/agent' in detail
@@ -307,6 +312,8 @@ def test_update_plan_branch_recovery_builds_cli_from_exact_selected_ref(tmp_path
     assert "Failed to install selected-ref CLI; update not attempted" in detail
     assert "AGENT_VERSION=latest" not in detail
     assert "scripts/install-cli.sh" not in detail
+    assert "https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git" not in detail
+    assert detail.index("remote get-url origin") < detail.index("git clone --quiet")
 
 
 def test_update_plan_recovery_fails_closed_on_owner_or_agent_repair_errors(tmp_path) -> None:

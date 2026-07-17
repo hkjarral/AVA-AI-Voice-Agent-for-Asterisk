@@ -4603,8 +4603,11 @@ def _update_plan_failure_detail(
             "trap 'exit 129' HUP\n"
             "trap 'exit 130' INT\n"
             "trap 'exit 143' TERM\n"
+            'AAVA_CLI_REMOTE="$(sudo git -c safe.directory="$AAVA_REPO" '
+            '-C "$AAVA_REPO" remote get-url origin)" || { echo "Failed to resolve '
+            'checkout origin for CLI source; update not attempted" >&2; exit 2; }\n'
             'git clone --quiet --depth 1 --single-branch --branch "$AAVA_CLI_REF" '
-            'https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git '
+            '-- "$AAVA_CLI_REMOTE" '
             '"$AAVA_CLI_SRC/repo" || { echo "Failed to fetch selected CLI source; '
             'update not attempted" >&2; exit 2; }\n'
             'mkdir -p "$AAVA_CLI_SRC/out" || exit 2\n'
