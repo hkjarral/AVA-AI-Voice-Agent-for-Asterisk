@@ -587,8 +587,10 @@ def _validate_ai_agent_config(content: str) -> Dict[str, Any]:
         pass
 
     # Validate using the same loader pipeline as ai-engine (env injection + defaults + normalization).
-    dir_path = os.path.dirname(settings.CONFIG_PATH)
-    with tempfile.NamedTemporaryFile("w", dir=dir_path, delete=False, suffix=".validate.yaml") as f:
+    # Validation is read-only and does not need to stage beside the live config.
+    # Use the process temp directory so a read-only/project-owned checkout cannot
+    # fail before the actual persistence path reports or repairs write access.
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".validate.yaml") as f:
         f.write(content)
         tmp_path = f.name
 
@@ -682,7 +684,15 @@ def persist_config_content(content: str) -> dict:
             # no_input is resolved into an immutable per-call policy when a new
             # session starts, so it is safe to hot-reload without changing calls
             # already in progress.
-            hot_reload_keys = {'contexts', 'profiles', 'mcp', 'barge_in', 'no_input'}
+            hot_reload_keys = {
+                'contexts', 'profiles', 'barge_in', 'no_input',
+                # v7.4 immutable tool generations: these apply atomically to new calls.
+                'tools', 'in_call_tools', 'farewell_hangup_delay_sec',
+                'on_provider_failure', 'provider_failure_prompt',
+                'provider_failure_redirect_context',
+                'provider_failure_redirect_extension',
+                'provider_failure_redirect_priority',
+            }
 
             # Check if only hot-reloadable keys changed
             all_keys = set(old_merged.keys()) | set(new_parsed.keys())

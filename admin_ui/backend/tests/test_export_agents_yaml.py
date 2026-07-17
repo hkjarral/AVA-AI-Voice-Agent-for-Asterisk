@@ -5,11 +5,13 @@ from export_agents_yaml import export_yaml
 def test_roundtrip(tmp_path):
     store = AgentsStore(db_path=str(tmp_path / "agents.db"))
     store.create(display_name="Sales", provider="p", prompt="sys", greeting="hi",
-                 extra_json='{"pipeline":"local_hybrid"}')
+                 extra_json='{"pipeline":"local_hybrid"}',
+                 tool_configs_json='{"transfer":{"destination_policy":"none","destination_keys":[]}}')
     out = export_yaml(store)
     doc = yaml.safe_load(out)
     assert doc["contexts"]["sales"]["prompt"] == "sys"
     assert doc["contexts"]["sales"]["pipeline"] == "local_hybrid"
+    assert doc["contexts"]["sales"]["tool_configs"]["transfer"]["destination_policy"] == "none"
 
 
 def test_malformed_json_fields_skipped_not_crashed(tmp_path):
@@ -25,3 +27,20 @@ def test_malformed_json_fields_skipped_not_crashed(tmp_path):
     assert "bad" in doc["contexts"]
     # Malformed fields are simply absent (skipped), not raised
     assert "tools" not in doc["contexts"]["bad"]
+
+
+def test_canonical_tool_configs_win_over_stale_extra_payload(tmp_path):
+    store = AgentsStore(db_path=str(tmp_path / "agents.db"))
+    store.create(
+        display_name="Scoped",
+        provider="p",
+        prompt="sys",
+        tool_configs_json='{"voicemail":{"mailbox_policy":"selected","mailbox_key":"sales"}}',
+        extra_json='{"tool_configs":{"voicemail":{"mailbox_policy":"none","mailbox_key":null}}}',
+    )
+
+    doc = yaml.safe_load(export_yaml(store))
+
+    assert doc["contexts"]["scoped"]["tool_configs"] == {
+        "voicemail": {"mailbox_policy": "selected", "mailbox_key": "sales"}
+    }

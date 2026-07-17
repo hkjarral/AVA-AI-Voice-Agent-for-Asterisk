@@ -17,7 +17,9 @@ def _safe_json(raw):
 def export_yaml(store: AgentsStore) -> str:
     contexts = {}
     for a in store.list_all():
-        ctx = {"provider": a["provider"], "prompt": a["prompt"]}
+        extra = _safe_json(a["extra_json"])
+        ctx = dict(extra) if isinstance(extra, dict) else {}
+        ctx.update({"provider": a["provider"], "prompt": a["prompt"]})
         for k in ("voice", "greeting"):
             if a[k]:
                 ctx[k] = a[k]
@@ -36,9 +38,9 @@ def export_yaml(store: AgentsStore) -> str:
         tools = _safe_json(a["tools_json"])
         if tools is not None:
             ctx["tools"] = tools
-        extra = _safe_json(a["extra_json"])
-        if extra is not None:
-            ctx.update(extra)
+        tool_configs = _safe_json(a.get("tool_configs_json"))
+        if tool_configs is not None:
+            ctx["tool_configs"] = tool_configs
         contexts[a["slug"]] = ctx
     return yaml.safe_dump({"contexts": contexts}, sort_keys=True)
 

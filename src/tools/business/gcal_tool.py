@@ -21,7 +21,7 @@ from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
 from src.tools.base import Tool, ToolDefinition, ToolCategory
-from src.tools.context import ToolExecutionContext
+from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
@@ -315,23 +315,9 @@ class GCalendarTool(Tool):
         """
         Get google_calendar config: base from tools.google_calendar, with per-context overlay if present.
         """
-        base: Dict[str, Any] = {}
-        overlay: Dict[str, Any] = {}
-        if context and getattr(context, "get_config_value", None):
-            base = context.get_config_value("tools.google_calendar", {}) or {}
-            ctx_name = getattr(context, "context_name", None)
-            if ctx_name:
-                # Per-context override under contexts.<name>.tool_overrides.google_calendar
-                # Only catch KeyError/TypeError (path not found); other errors must surface
-                try:
-                    overlay = context.get_config_value(f"contexts.{ctx_name}.tool_overrides.google_calendar", {}) or {}
-                except (KeyError, TypeError, AttributeError):
-                    overlay = {}
-        # Merge (overlay wins)
-        out = dict(base or {})
-        for k, v in (overlay or {}).items():
-            out[k] = v
-        return out or self._load_config()
+        return resolve_scoped_tool_config(
+            context, "google_calendar", self._load_config
+        )
 
     async def execute(
         self,
@@ -428,6 +414,17 @@ class GCalendarTool(Tool):
                 return {"status": "error", "message": msg}
             return None
 
+        # An explicit empty/stale Agent selection must fail closed before the
+        # legacy single-calendar branch. That branch materializes a synthetic
+        # ``default`` calendar from root credentials and must never override a
+        # resolved ``selected_calendars: []`` policy.
+        if not selected_keys:
+            logger.error("No calendars selected or configured", call_id=call_id)
+            return {
+                "status": "error",
+                "message": "No Google Calendars are selected or configured for this Agent.",
+            }
+
         # Backward-compat single-calendar guard
         if legacy_single:
             cal = self._get_cal(config)
@@ -437,9 +434,6 @@ class GCalendarTool(Tool):
                 return {"status": "error", "message": "Google Calendar is not configured or unavailable."}
         else:
             # For multi-cal, ensure at least one selected calendar resolves
-            if not selected_keys:
-                logger.error("No calendars selected or configured", call_id=call_id)
-                return {"status": "error", "message": "No Google Calendars are selected or configured for this context."}
             # Validate services exist (best-effort; skip broken ones at runtime)
             at_least_one_ready = False
             for k in selected_keys:
@@ -1732,4 +1726,3 @@ class GCalendarTool(Tool):
             out = {"status": "error", "message": "An unexpected calendar error occurred."}
             logger.info("Tool response to AI", call_id=call_id, action=action or "?", status=out.get("status"))
             return out
-

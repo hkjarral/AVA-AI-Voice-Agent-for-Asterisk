@@ -493,7 +493,7 @@ exten => s,1,NoOp(Asterisk AI Voice Agent v4.0)
 [from-ai-agent-support]
 exten => s,1,NoOp(AI Agent - Customer Support)
  same => n,Set(AI_PROVIDER=deepgram)  ; Optional override
- same => n,Set(AI_CONTEXT=support)    ; Custom context
+ same => n,Set(AI_AGENT=support)      ; Agent slug
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```

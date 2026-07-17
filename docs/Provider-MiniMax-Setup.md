@@ -16,8 +16,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -104,7 +104,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 ```ini
 [from-ai-agent-minimax]
 exten => s,1,NoOp(AI Voice Agent - MiniMax LLM)
-exten => s,n,Set(AI_CONTEXT=demo_minimax)
+exten => s,n,Set(AI_AGENT=demo_minimax)
 exten => s,n,Set(AI_PROVIDER=minimax_hybrid)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()

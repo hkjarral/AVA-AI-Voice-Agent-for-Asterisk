@@ -3,19 +3,20 @@
 ## User Documentation
 
 - **[Quick Start Guide](../README.md)** - Get started in 10 minutes
-- **[Installation Guide](INSTALLATION.md)** - Complete setup instructions
+- **[Installation and Upgrade Guide](INSTALLATION.md)** - Fresh setup plus the v7.3.0–v7.3.3 updater recovery path
 - **[Admin UI Guide](ADMIN_UI_GUIDE.md)** - Web interface for configuration and monitoring
 - **[FreePBX Integration Guide](FreePBX-Integration-Guide.md)** - Dialplan and queue configuration
 - **[Outbound Calling (Alpha)](OUTBOUND_CALLING.md)** - Scheduled outbound campaigns, voicemail drop, consent gate
 - **[Configuration Reference](Configuration-Reference.md)** - All settings explained
 - **[Caller Inactivity Watchdog](Configuration-Reference.md#caller-inactivity-no_input)** - 30-second inbound silence protection, per-agent overrides, and safe terminal playback (v7.3.1+)
-- **[v7.3.2 Stabilization Matrix](baselines/golden/v7.3.2-validation-matrix.md)** - revision-pinned AudioSocket, ExternalMedia, updater, and failure-recovery release evidence
+- **[Agents](AGENTS.md)** - v7.4 Agent routing, dialplan selection, and per-Agent tool access
+- **[v7.4 Validation Matrix](baselines/golden/v7.4.0-validation-matrix.md)** - automated and supervised release evidence
 - **[Voice Selection](VOICE_SELECTION.md)** - Per-agent voices (v7.3.0+): precedence, per-provider behavior, troubleshooting
 - **[Tool Calling Guide](TOOL_CALLING_GUIDE.md)** - Using telephony and business tools
 - **[MCP Tool Integration](MCP_INTEGRATION.md)** - Experimental MCP tools (design + branch guide)
 - **[Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md)** - Common issues and solutions
 - **[Migration Guide](MIGRATION.md)** - Upgrading between major versions
-- **[Operator Migration Guide](OPERATOR_MIGRATION.md)** - Contexts → Agents migration for operators upgrading to v7.x
+- **[Operator Migration Guide](OPERATOR_MIGRATION.md)** - Contexts → Agents import, recovery, and rollback boundaries for v7.4
 
 ## Provider Setup Guides
 

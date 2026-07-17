@@ -50,6 +50,28 @@ Run at least one successful call for each baseline you intend to claim as suppor
   `docs/Transport-Mode-Compatibility.md` and the provider setup guides. A
   historical pass is not sufficient for a new release candidate.
 
+## v7.4.0 Agent Tools Gate
+
+- Use `docs/baselines/golden/v7.4.0-validation-matrix.md`; retain exact call IDs,
+  provider/Agent, tool generation, Call History evidence, cleanup, and post-call health.
+- Verify upgrade from an actual v7.3.0–v7.3.3 checkout using the documented target-CLI
+  bootstrap and each relevant local-change policy. Confirm the Admin UI planner no longer
+  fails opaquely and updater backups contain both SQLite stores.
+- Verify the atomic Context import with valid, invalid, empty, and already-populated Agent
+  stores. Confirm `/contexts` shows its one-time notice and current navigation is Agent-only.
+- Verify a genuinely empty setup creates only Receptionist, Sales, and Support, while an
+  existing Agent store is never seeded or overwritten.
+- Exercise allowed and denied/stale policies for transfer, Google Calendar, Microsoft
+  Calendar, and voicemail. Confirm schema exposure, execution, audit metadata, and Call
+  History agree on the effective Agent snapshot.
+- Reload Tools during an active call. The active call must retain its captured generation,
+  the next call must use the new generation, and invalid reload must preserve the last good
+  generation without restarting AI Engine.
+- Reproduce Tools Save & Apply from the deployed Admin UI container to prove temporary-file
+  validation and atomic replacement permissions work on the supported checkout layout.
+- Run provider/transport smoke calls after the tool work to exclude greeting, barge-in,
+  farewell, transfer, cleanup, and post-call-hook regressions.
+
 ## v7.3.2 Stabilization Gate
 
 - Use `docs/baselines/golden/v7.3.2-validation-matrix.md`; every required row
@@ -93,12 +115,12 @@ remains visible in the validation matrix rather than being rewritten as a pass.
 - Ensure `docs/baselines/golden/` matches current known-good behavior
 - Update `docs/SUPPORTED_PLATFORMS.md` if new Tier-2 platforms were verified
 
-## Documentation Checklist
+## Documentation Checklist (current release)
 
-- [x] `docs/INSTALLATION.md` identifies v7.3.2 as the latest stable tag
-- [x] `SECURITY.md` supported versions table reflects the supported 7.3.x / 7.2.x trains
-- [x] `docs/ROADMAP.md` records v7.3.2 as shipped
-- [x] `docs/README.md` links verified (no broken links to renamed/deleted files)
-- [x] `docs/contributing/README.md` identifies v7.3.2 as latest stable
-- [x] `README.md` version badge updated for v7.3.2
-- [x] `AVA.mdc` reviewed for drift (provider roster, architecture vocabulary, guardrails, "Last verified" stamp)
+- [ ] `docs/INSTALLATION.md` contains the target release and prior-release recovery path
+- [ ] `SECURITY.md` supported-version table is updated when v7.4.0 is tagged
+- [ ] `docs/ROADMAP.md` records v7.4.0 accurately
+- [ ] `docs/README.md` links verify with no broken renamed/deleted files
+- [ ] README and CHANGELOG describe the same v7.4 scope and compatibility boundaries
+- [ ] Provider, PBX, tool, and architecture examples use `AI_AGENT`; `AI_CONTEXT` remains only where deprecation/legacy behavior is being explained
+- [ ] `AVA.mdc` is reviewed for Agent-only routing, tool generations, provider roster, guardrails, and its verification stamp

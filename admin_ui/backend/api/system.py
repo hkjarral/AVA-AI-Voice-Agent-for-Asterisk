@@ -1036,7 +1036,7 @@ async def reload_ai_engine():
                 
             # Check if any change requires a restart (new providers, removed providers, deferred reload)
             restart_required = any(
-                any(marker in str(c).lower() for marker in ("restart needed", "reload deferred"))
+                any(marker in str(c).lower() for marker in ("restart needed", "restart required", "reload deferred"))
                 for c in changes
             )
                 
@@ -1045,14 +1045,18 @@ async def reload_ai_engine():
                     "status": "partial",
                     "message": "Config updated but some changes require a restart to fully apply",
                     "changes": changes,
-                    "restart_required": True
+                    "restart_required": True,
+                    "tool_generation": data.get("tool_generation"),
+                    "tool_config_hash": data.get("tool_config_hash"),
                 }
                 
             return {
                 "status": "success",
                 "message": data.get("message", "Configuration reloaded"),
                 "changes": changes,
-                "restart_required": False
+                "restart_required": False,
+                "tool_generation": data.get("tool_generation"),
+                "tool_config_hash": data.get("tool_config_hash"),
             }
         
         raise HTTPException(

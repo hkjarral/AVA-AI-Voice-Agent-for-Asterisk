@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import settings
 from dotenv import load_dotenv
-import fcntl
 import os
 import logging
 import secrets
@@ -118,7 +117,6 @@ if _is_remote_bind and _raw_jwt_secret in _placeholder_secrets:
 from api import config, system, live_status, wizard, logs, local_ai, ollama, mcp, calls, outbound, tools, docs, custom_models, agents, support  # noqa: E402
 import auth  # noqa: E402
 from agents_store import AgentsStore  # noqa: E402
-from agents_migration import migrate_if_needed, current_drift  # noqa: E402
 
 # Allow disabling API docs in production for security hardening
 _enable_api_docs = os.getenv("ENABLE_API_DOCS", "true").lower() in ("1", "true", "yes")
@@ -154,7 +152,7 @@ Most endpoints require JWT authentication. Obtain a token via `POST /api/auth/lo
 |---------|-----------|
 | **AI Engine Health Server** (port 15000) | `/health`, `/metrics`, `/live`, `/ready`, `/reload` |
 """,
-    version="7.1.1",
+    version="7.4.0",
     docs_url="/docs" if _enable_api_docs else None,
     redoc_url="/redoc" if _enable_api_docs else None,
     openapi_url="/openapi.json" if _enable_api_docs else None,
@@ -198,50 +196,31 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
         "Set JWT_SECRET in .env for production (recommended: openssl rand -hex 32)."
     )
 
-# One-time YAML→agents.db migration (D2: headless/permission-constrained installs
-# must keep working on YAML — this block must never crash admin_ui startup).
+# The engine owns the one-time, atomic legacy Context import in v7.4.0. Keeping
+# Context import out of Admin UI startup avoids a race where two services import
+# the same empty store with different validation and promotion semantics. For an
+# existing store only, run the additive schema initializer and the explicit,
+# one-time legacy resource-policy promotion before the first authenticated API
+# visit. Ordinary API store construction never scans or mutates Agent rows, and
+# Agent CRUD returns 409 while legacy Contexts exist but the store is still empty.
 app.state.agents_migration_result = None
-try:
-    # Honor AGENTS_DB_PATH (MED-C2) so the migration seeds the SAME path the agent
-    # stores read; otherwise a relocated DB is seeded at the default while the engine
-    # reads the env path and falls back to YAML (half-wired knob = footgun).
-    # abspath() so a bare filename (e.g. AGENTS_DB_PATH=agents.db) resolves to a
-    # real directory instead of "" — makedirs("") would raise.
-    _agents_db = os.path.abspath(os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db"))
-    _op_dir = os.path.dirname(_agents_db)
-    _db_filename = os.path.basename(_agents_db)
-    os.makedirs(_op_dir, exist_ok=True)
-    with open(os.path.join(_op_dir, ".migration.lock"), "w") as _lk:
-        fcntl.flock(_lk, fcntl.LOCK_EX)
-        _yaml_path = settings.CONFIG_PATH
-        _contexts_dir = os.path.join(os.path.dirname(settings.CONFIG_PATH), "contexts")
-        # Atomic: migrate into a temp DB and only promote on success, so a
-        # collision/empty import never leaves an authoritative empty DB (CRIT-3).
-        _result = migrate_if_needed(_op_dir, _yaml_path, _contexts_dir, _db_filename)
-        app.state.agents_migration_result = _result
-        if _result.get("imported"):
-            logging.getLogger(__name__).info(
-                "agents migration: imported %d (skipped: %s); default agent = %s",
-                _result["imported"], _result["skipped"], _result.get("default_slug"),
-            )
-        _final_db = _agents_db
-        if os.path.exists(_final_db):
-            _store = AgentsStore(db_path=_final_db)
-            try:
-                _drift = current_drift(_store, _yaml_path, _contexts_dir)
-            finally:
-                _store.close()
-            if _drift:
-                logging.getLogger(__name__).warning(
-                    "YAML contexts changed since agents.db migration "
-                    "(stored=%s current=%s). Edits do NOT apply at runtime — "
-                    "use the Agents tab or Migration Status page.",
-                    _drift["stored_hash"][:12], _drift["current_hash"][:12],
-                )
-except Exception as _e:
-    logging.getLogger(__name__).warning(
-        "agents migration FAILED (%s) — keeping YAML routing", _e,
-    )
+_existing_agents_db = os.path.abspath(
+    os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+)
+if os.path.exists(_existing_agents_db):
+    try:
+        _schema_store = AgentsStore(db_path=_existing_agents_db)
+        _resource_rows_upgraded = _schema_store.upgrade_legacy_resource_policies()
+        _schema_store.close()
+        logging.getLogger(__name__).info(
+            "Existing Agent store schema is current: %s (resource policies upgraded: %s)",
+            _existing_agents_db,
+            _resource_rows_upgraded,
+        )
+    except Exception as _schema_error:
+        logging.getLogger(__name__).error(
+            "Existing Agent store schema upgrade failed: %s", _schema_error
+        )
 
 # Configure CORS
 def _parse_cors_origins() -> list[str]:

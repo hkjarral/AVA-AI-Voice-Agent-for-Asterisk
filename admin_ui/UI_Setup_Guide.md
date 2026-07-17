@@ -365,10 +365,17 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 ### Migration Steps
 
-1. **Backup your configuration** (recommended):
+1. **Follow the supported upgrade and backup procedure**:
+
+   Read the [Installation and Upgrade Guide](../docs/INSTALLATION.md#upgrade-to-v740-existing-checkout),
+   especially when upgrading from v7.3.0–v7.3.3 or when the updater reports
+   `Failed to compute update plan`. At minimum, preserve:
+
    ```bash
-   cp config/ai-agent.yaml config/ai-agent.yaml.backup
-   cp .env .env.backup
+   cp config/ai-agent.yaml ../ai-agent.yaml.backup
+   cp .env ../aava.env.backup
+   cp data/operator/agents.db ../agents.db.backup 2>/dev/null || true
+   cp data/call_history.db ../call_history.db.backup 2>/dev/null || true
    ```
 
 2. **Start the Admin UI**:
@@ -382,7 +389,8 @@ If you've been using `install.sh` and the Agent CLI, the Admin UI works alongsid
 
 4. **Verify configuration**:
    - Check Providers page matches your setup
-   - Check Contexts page
+   - Check the Agents page and verify the default Agent
+   - Review transfer, Google Calendar, Microsoft Calendar, and voicemail access per Agent
    - Review any warnings
 
 ### CLI Tools Still Work
@@ -431,20 +439,20 @@ The main dashboard shows:
 - Configure pipeline-specific options
 - Enable tool calling
 
-**Contexts**:
+**Agents**:
 - Define AI personalities
 - Set greetings and prompts
-- Override providers per context
+- Select a provider or pipeline per Agent
 - Configure audio profiles
-- Enable background music (see below)
+- Enable background music and Agent-scoped tool access
 
 #### Background Music Configuration
 
 Enable ambient music during AI conversations. Music plays to the caller while they talk with the AI agent.
 
 **How to Enable**:
-1. Go to **Configuration → Contexts**
-2. Edit a context (or create new)
+1. Go to **Configuration → Agents**
+2. Edit an Agent (or create one)
 3. Scroll to **Background Music** section
 4. Toggle **Enable Background Music**
 5. Enter MOH class name (default: `default`)
@@ -469,13 +477,8 @@ Enable ambient music during AI conversations. Music plays to the caller while th
 - Music is heard by the AI (affects VAD) - low volume helps accuracy
 - Test with a real call before production use
 
-**YAML Configuration** (manual):
-```yaml
-contexts:
-  my_context:
-    greeting: "Hello!"
-    background_music: "ambient"  # MOH class name
-```
+The Agent editor stores background music with the Agent in `agents.db`. Legacy
+`contexts:` YAML is migration input only in v7.4 and must not be used for live edits.
 
 **Audio Profiles**:
 - Edit encoding settings

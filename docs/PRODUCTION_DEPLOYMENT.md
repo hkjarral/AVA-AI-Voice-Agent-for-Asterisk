@@ -607,7 +607,7 @@ find "$BACKUP_DIR" -type d -mtime +7 -exec rm -rf {} +
 **Schedule with cron**:
 ```bash
 # Daily backup at 2 AM
-0 2 * * * /root/Asterisk-AI-Voice-Agent/backup.sh >> /var/log/ai-voice-backup.log 2>&1
+0 2 * * * /path/to/AVA-AI-Voice-Agent-for-Asterisk/backup.sh >> /var/log/ai-voice-backup.log 2>&1
 ```
 
 #### Strategy 2: Remote Backup
@@ -670,7 +670,7 @@ aws s3 sync /backups/ai-voice-agent/ "$BUCKET/" \
 3. **Clone repository**:
    ```bash
    git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
-   cd Asterisk-AI-Voice-Agent
+   cd AVA-AI-Voice-Agent-for-Asterisk
    ```
 
 4. **Restore configuration**:

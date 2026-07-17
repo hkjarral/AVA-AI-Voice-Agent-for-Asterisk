@@ -29,7 +29,7 @@ from src.tools.business.ms_graph_client import (
     MicrosoftGraphApiError,
     MicrosoftGraphClient,
 )
-from src.tools.context import ToolExecutionContext
+from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
 logger = structlog.get_logger(__name__)
 
@@ -108,22 +108,9 @@ class MicrosoftCalendarTool(Tool):
         )
 
     def _get_config(self, context: ToolExecutionContext) -> Dict[str, Any]:
-        base: Dict[str, Any] = {}
-        overlay: Dict[str, Any] = {}
-        if context and getattr(context, "get_config_value", None):
-            base = context.get_config_value("tools.microsoft_calendar", {}) or {}
-            ctx_name = getattr(context, "context_name", None)
-            if ctx_name:
-                try:
-                    overlay = context.get_config_value(
-                        f"contexts.{ctx_name}.tool_overrides.microsoft_calendar", {}
-                    ) or {}
-                except (KeyError, TypeError, AttributeError):
-                    overlay = {}
-        merged = dict(base or {})
-        for key, value in (overlay or {}).items():
-            merged[key] = value
-        return merged or self._load_config()
+        return resolve_scoped_tool_config(
+            context, "microsoft_calendar", self._load_config
+        )
 
     def _resolve_accounts(self, config: Dict[str, Any]) -> dict[str, dict[str, str]]:
         accounts: dict[str, dict[str, str]] = {}

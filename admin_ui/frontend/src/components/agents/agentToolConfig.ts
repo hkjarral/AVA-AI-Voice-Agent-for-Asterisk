@@ -1,3 +1,5 @@
+import type { ResourcePolicy } from './ResourceAccessEditor';
+
 export interface ToolDef {
     name: string;
     description?: string;
@@ -22,6 +24,14 @@ export interface AgentToolState {
     noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
+    transferDestinationPolicy: ResourcePolicy;
+    transferDestinationKeys: string[];
+    googleCalendarPolicy: ResourcePolicy;
+    googleCalendarKeys: string[];
+    microsoftCalendarPolicy: ResourcePolicy;
+    microsoftAccountKeys: string[];
+    voicemailMailboxPolicy: ResourcePolicy;
+    voicemailMailboxKey: string;
 }
 
 const OWNED_EXTRA_KEYS = [
@@ -35,6 +45,9 @@ const asStrArray = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+const parsePolicy = (value: unknown): ResourcePolicy => asString(value) || 'inherit';
+const isKnownPolicy = (value: ResourcePolicy): boolean =>
+    value === 'inherit' || value === 'selected' || value === 'none';
 const asObject = (v: unknown): Record<string, unknown> =>
     v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
 
@@ -87,10 +100,24 @@ export interface AgentLike {
     tools_json?: string;
     mcp_json?: string;
     extra_json?: string;
+    tool_configs_json?: string;
 }
 
 export function parseAgentConfig(agent: AgentLike | null | undefined): AgentToolState {
     const extra = safeParseObject(agent?.extra_json);
+    const toolConfigs = safeParseObject(agent?.tool_configs_json);
+    const transferConfig = asObject(toolConfigs['transfer']);
+    const rawTransferPolicy = asString(transferConfig['destination_policy']);
+    const transferDestinationPolicy = parsePolicy(rawTransferPolicy);
+    const googleConfig = asObject(toolConfigs['google_calendar']);
+    const rawGooglePolicy = asString(googleConfig['calendar_policy']);
+    const googleCalendarPolicy = parsePolicy(rawGooglePolicy);
+    const microsoftConfig = asObject(toolConfigs['microsoft_calendar']);
+    const rawMicrosoftPolicy = asString(microsoftConfig['account_policy']);
+    const microsoftCalendarPolicy = parsePolicy(rawMicrosoftPolicy);
+    const voicemailConfig = asObject(toolConfigs['voicemail']);
+    const rawVoicemailPolicy = asString(voicemailConfig['mailbox_policy']);
+    const voicemailMailboxPolicy = parsePolicy(rawVoicemailPolicy);
 
     const ichRaw = extra['in_call_http_tools'];
     const ichIsObject = !!ichRaw && typeof ichRaw === 'object' && !Array.isArray(ichRaw);
@@ -123,6 +150,18 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         noInput: asObject(extra['no_input']),
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
+        transferDestinationPolicy,
+        transferDestinationKeys: transferDestinationPolicy === 'selected' || !isKnownPolicy(transferDestinationPolicy)
+            ? asStrArray(transferConfig['destination_keys']) : [],
+        googleCalendarPolicy,
+        googleCalendarKeys: googleCalendarPolicy === 'selected' || !isKnownPolicy(googleCalendarPolicy)
+            ? asStrArray(googleConfig['calendar_keys']) : [],
+        microsoftCalendarPolicy,
+        microsoftAccountKeys: microsoftCalendarPolicy === 'selected' || !isKnownPolicy(microsoftCalendarPolicy)
+            ? asStrArray(microsoftConfig['account_keys']) : [],
+        voicemailMailboxPolicy,
+        voicemailMailboxKey: voicemailMailboxPolicy === 'selected' || !isKnownPolicy(voicemailMailboxPolicy)
+            ? asString(voicemailConfig['mailbox_key']) : '',
     };
 }
 
@@ -131,6 +170,7 @@ export interface SerializedAgentConfig {
     tools_json: string | null;
     mcp_json: string | null;
     extra_json: string | null;
+    tool_configs_json: string | null;
 }
 
 export function serializeAgentConfig(state: AgentToolState): SerializedAgentConfig {
@@ -152,11 +192,45 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     if (Object.keys(noInput).length) extra['no_input'] = noInput;
     else delete extra['no_input'];
 
+    const toolConfigs: Record<string, unknown> = {};
+    if (state.transferDestinationPolicy !== 'inherit') {
+        toolConfigs.transfer = {
+            destination_policy: state.transferDestinationPolicy,
+            destination_keys: state.transferDestinationPolicy === 'selected' || !isKnownPolicy(state.transferDestinationPolicy)
+                ? [...new Set(state.transferDestinationKeys.map((key) => key.trim()).filter(Boolean))]
+                : [],
+        };
+    }
+    if (state.googleCalendarPolicy !== 'inherit') {
+        toolConfigs.google_calendar = {
+            calendar_policy: state.googleCalendarPolicy,
+            calendar_keys: state.googleCalendarPolicy === 'selected' || !isKnownPolicy(state.googleCalendarPolicy)
+                ? [...new Set(state.googleCalendarKeys.map((key) => key.trim()).filter(Boolean))]
+                : [],
+        };
+    }
+    if (state.microsoftCalendarPolicy !== 'inherit') {
+        toolConfigs.microsoft_calendar = {
+            account_policy: state.microsoftCalendarPolicy,
+            account_keys: state.microsoftCalendarPolicy === 'selected' || !isKnownPolicy(state.microsoftCalendarPolicy)
+                ? [...new Set(state.microsoftAccountKeys.map((key) => key.trim()).filter(Boolean))]
+                : [],
+        };
+    }
+    if (state.voicemailMailboxPolicy !== 'inherit') {
+        toolConfigs.voicemail = {
+            mailbox_policy: state.voicemailMailboxPolicy,
+            mailbox_key: state.voicemailMailboxPolicy === 'selected' || !isKnownPolicy(state.voicemailMailboxPolicy)
+                ? (state.voicemailMailboxKey.trim() || null) : null,
+        };
+    }
+
     return {
         provider: state.pipeline ? '' : state.provider,
         tools_json: state.inCallTools.length ? JSON.stringify(state.inCallTools) : null,
         mcp_json: state.mcpJsonRaw.trim() || null,
         extra_json: Object.keys(extra).length ? JSON.stringify(extra) : null,
+        tool_configs_json: Object.keys(toolConfigs).length ? JSON.stringify(toolConfigs) : null,
     };
 }
 

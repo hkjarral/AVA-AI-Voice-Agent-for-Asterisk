@@ -8,6 +8,11 @@ import HelpTooltip from '../ui/HelpTooltip';
 import { isFullAgentProvider } from '../../utils/providerNaming';
 import AgentToolPicker from './AgentToolPicker';
 import {
+    transferDestinationsFromConfig,
+    type TransferDestination,
+} from './agentToolInventory';
+import type { AgentResourceOption } from './ResourceAccessEditor';
+import {
     ToolDef, AgentToolState, parseAgentConfig, serializeAgentConfig, phaseOf, isToolChecked,
 } from './agentToolConfig';
 import { PromptToolHighlight } from '../ui/PromptToolHighlight';
@@ -31,6 +36,7 @@ export interface Agent {
     tools_json?: string;
     mcp_json?: string;
     extra_json?: string;
+    tool_configs_json?: string;
     notes?: string;
     email_recipient?: string;
     email_from?: string;
@@ -81,6 +87,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     const [catalog, setCatalog] = useState<ToolDef[]>([]);
     const [catalogError, setCatalogError] = useState(false);
     const [disabledTools, setDisabledTools] = useState<Set<string>>(new Set());
+    const [transferDestinations, setTransferDestinations] = useState<TransferDestination[]>([]);
+    const [googleCalendars, setGoogleCalendars] = useState<AgentResourceOption[]>([]);
+    const [microsoftAccounts, setMicrosoftAccounts] = useState<AgentResourceOption[]>([]);
+    const [voicemailMailboxes, setVoicemailMailboxes] = useState<AgentResourceOption[]>([]);
     // Tool-reference highlighting for the prompt: detect every catalog tool name,
     // colour-code by in-call status for this agent.
     const knownToolNames = useMemo(() => catalog.map((t) => t.name), [catalog]);
@@ -160,6 +170,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     }, [isOpen, agent]);
 
     const loadConfig = async () => {
+        setTransferDestinations([]);
+        setGoogleCalendars([]);
+        setMicrosoftAccounts([]);
+        setVoicemailMailboxes([]);
         try {
             const res = await axios.get('/api/config/yaml');
             if (res.data.yaml_error) return;
@@ -176,6 +190,59 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 .map(([k]) => k)
                 .sort();
             setAvailableProfiles(profileNames);
+
+            const toolsBlock = (parsed.tools as Record<string, unknown>) || {};
+            const transferBlock = (toolsBlock.transfer as Record<string, unknown>) || {};
+            setTransferDestinations(
+                transferDestinationsFromConfig(transferBlock.destinations)
+            );
+
+            const asRecord = (value: unknown): Record<string, unknown> =>
+                value && typeof value === 'object' && !Array.isArray(value)
+                    ? value as Record<string, unknown> : {};
+            const resourceOptions = (
+                inventory: Record<string, unknown>,
+                detailFields: string[],
+            ): AgentResourceOption[] => Object.entries(inventory).map(([key, raw]) => {
+                const item = asRecord(raw);
+                const detail = detailFields
+                    .map(field => String(item[field] || '').trim())
+                    .filter(Boolean)
+                    .join(' · ');
+                return {
+                    key,
+                    label: String(item.name || item.label || key),
+                    detail,
+                };
+            });
+
+            const google = asRecord(toolsBlock.google_calendar);
+            const googleInventory = asRecord(google.calendars);
+            setGoogleCalendars(Object.keys(googleInventory).length
+                ? resourceOptions(googleInventory, ['calendar_id', 'timezone'])
+                : (google.calendar_id || google.credentials_path
+                    ? [{ key: 'default', label: 'Default', detail: String(google.calendar_id || '') }]
+                    : []));
+
+            const microsoft = asRecord(toolsBlock.microsoft_calendar);
+            const microsoftInventory = asRecord(microsoft.accounts);
+            setMicrosoftAccounts(Object.keys(microsoftInventory).length
+                ? resourceOptions(microsoftInventory, ['user_principal_name', 'calendar_id', 'timezone'])
+                : (microsoft.calendar_id || microsoft.user_principal_name || microsoft.token_cache_path
+                    ? [{
+                        key: 'default',
+                        label: 'Default',
+                        detail: String(microsoft.user_principal_name || microsoft.calendar_id || ''),
+                    }]
+                    : []));
+
+            const voicemail = asRecord(toolsBlock.leave_voicemail);
+            const mailboxInventory = asRecord(voicemail.mailboxes);
+            setVoicemailMailboxes(Object.keys(mailboxInventory).length
+                ? resourceOptions(mailboxInventory, ['extension'])
+                : (voicemail.extension
+                    ? [{ key: 'default', label: 'Default', detail: String(voicemail.extension) }]
+                    : []));
 
             // Tools disabled in YAML (e.g. tools.google_calendar.enabled: false) are
             // rejected at runtime even if an agent lists them — mark them unavailable.
@@ -281,6 +348,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                 tools_json: cfg.tools_json,
                 mcp_json: cfg.mcp_json,
                 extra_json: cfg.extra_json,
+                tool_configs_json: cfg.tool_configs_json,
                 email_recipient: emailRecipient || null,
                 email_from: emailFrom || null,
                 // Tri-state: '' means inherit — send explicit null (PATCH clears the column),
@@ -497,7 +565,7 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                             )}
                             {vc.unrecognized && (
                                 <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
-                                    This voice is not in the provider's catalog — calls will fall back to the provider's default voice until you pick a valid one.
+                                    This voice is not in the provider catalog — calls will fall back to its default voice until you pick a valid one.
                                 </p>
                             )}
                         </div>
@@ -770,6 +838,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
                     catalogError={catalogError}
                     state={toolState}
                     onChange={setToolState}
+                    transferDestinations={transferDestinations}
+                    googleCalendars={googleCalendars}
+                    microsoftAccounts={microsoftAccounts}
+                    voicemailMailboxes={voicemailMailboxes}
                 />
             </div>
         </Modal>

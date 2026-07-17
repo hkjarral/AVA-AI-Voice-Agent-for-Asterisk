@@ -1758,7 +1758,7 @@ const Wizard = () => {
                                                     <strong>Note:</strong> Groq does not support function/tool calling reliably.
                                                 </p>
                                                 <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                                                    Tools are allowlisted per Context. If you use Groq as the LLM, keep context tools empty.
+                                                    Tools are allowlisted per Agent. If you use Groq as the LLM, keep agent tools empty.
                                                 </p>
                                             </div>
                                         )}
@@ -2999,11 +2999,11 @@ const Wizard = () => {
                         </div>
                         <div className="border-t border-border my-4 pt-4">
                             <div className="flex items-center gap-2 mb-3">
-                                <span className="text-sm font-semibold">Default Context Settings</span>
+                                <span className="text-sm font-semibold">Starter Agent Settings</span>
                                 <div className="group relative">
                                     <Info className="w-4 h-4 text-muted-foreground cursor-help" />
                                     <div className="absolute left-0 bottom-full mb-2 w-72 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg border border-border opacity-0 group-hover:opacity-100 transition-opacity z-50 pointer-events-none">
-                                        These settings become the default when no <code className="bg-muted px-1 rounded">AI_AGENT</code> variable is passed from the Asterisk dialplan (the legacy <code className="bg-muted px-1 rounded">AI_CONTEXT</code> variable is still accepted). You can create additional contexts with different personas in the Contexts page.
+                                        A fresh installation creates Receptionist, Sales, and Support agents. Receptionist is the default when no <code className="bg-muted px-1 rounded">AI_AGENT</code> variable is passed. The legacy <code className="bg-muted px-1 rounded">AI_CONTEXT</code> selector remains a temporary compatibility alias in v7.4.
                                     </div>
                                 </div>
                             </div>
@@ -3024,7 +3024,7 @@ const Wizard = () => {
                                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
                                                 <li>Used in greetings and self-references</li>
                                                 <li>Pick something short and pronounceable by TTS</li>
-                                                <li>Can be overridden per Context</li>
+                                                <li>Can be customized per Agent</li>
                                             </ul>
                                         </>
                                     }

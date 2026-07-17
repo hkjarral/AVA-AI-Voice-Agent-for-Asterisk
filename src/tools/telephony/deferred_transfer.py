@@ -100,9 +100,10 @@ async def commit_deferred_transfer_action(
     action: Dict[str, Any],
     context: ToolExecutionContext,
 ) -> Dict[str, Any]:
-    from src.tools.registry import tool_registry
+    from src.tools.registry import tool_registry as global_tool_registry
 
     commit_tool = str(action.get("commit_tool") or "").strip()
+    tool_registry = context.tool_registry or global_tool_registry
     tool = tool_registry.get(commit_tool) if commit_tool else None
     if not tool or not hasattr(tool, "commit_deferred_action"):
         message = f"Deferred transfer commit tool unavailable: {commit_tool or 'unknown'}"

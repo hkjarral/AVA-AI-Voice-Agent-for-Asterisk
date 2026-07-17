@@ -258,13 +258,15 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
     if "leave_voicemail" in allowed:
         tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}
         voicemail_cfg = (tools_cfg or {}).get("leave_voicemail") or {}
-        extension = str((voicemail_cfg or {}).get("extension") or "").strip()
+        from src.tools.telephony.voicemail import VoicemailTool
+
+        mailbox_key, extension = VoicemailTool.resolve_mailbox(voicemail_cfg or {})
         if extension:
             sections.append(
                 "\n".join(
                     [
                         "Configured voicemail target:",
-                        f"- `leave_voicemail` routes to voicemail box `{extension}`.",
+                        f"- `leave_voicemail` routes to voicemail box `{extension}` (mailbox `{mailbox_key}`).",
                     ]
                 )
             )

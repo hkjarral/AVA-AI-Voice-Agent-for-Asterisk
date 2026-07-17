@@ -37,6 +37,73 @@ def test_extra_fields_preserved_in_extra_json(tmp_path):
     assert extra["pipeline"] == "local_hybrid"
     assert extra["pre_call_tools"] == ["enrich"]
 
+
+def test_legacy_calendar_bindings_migrate_to_agent_tool_policies(tmp_path):
+    store, y, c = _setup(tmp_path, {"appointments": {
+        "provider": "a",
+        "prompt": "p",
+        "tool_overrides": {
+            "google_calendar": {"selected_calendars": ["sales"]},
+            "microsoft_calendar": {"selected_accounts": []},
+        },
+    }})
+    run_migration(store, y, c)
+    import json
+    row = store.get_by_slug("appointments")
+    policies = json.loads(row["tool_configs_json"])
+    assert row["tool_configs_json"] == json.dumps(
+        policies, sort_keys=True, separators=(",", ":")
+    )
+    assert policies["google_calendar"] == {
+        "calendar_policy": "selected", "calendar_keys": ["sales"],
+    }
+    assert policies["microsoft_calendar"] == {
+        "account_policy": "none", "account_keys": [],
+    }
+    assert row["extra_json"] is None
+
+
+def test_migration_normalizes_valid_policies_and_skips_invalid_ones(tmp_path):
+    store, y, c = _setup(tmp_path, {
+        "good": {
+            "provider": "a",
+            "prompt": "p",
+            "tool_configs": {
+                "google_calendar": {
+                    "calendar_policy": "selected",
+                    "calendar_keys": [" sales ", "sales"],
+                }
+            },
+        },
+        "bad": {
+            "provider": "a",
+            "prompt": "p",
+            "tool_configs": {
+                "google_calendar": {
+                    "calendar_policy": "inherit",
+                    "calendar_keys": ["sales"],
+                }
+            },
+        },
+    })
+
+    result = run_migration(store, y, c)
+
+    import json
+    assert result["imported"] == 1
+    assert result["skipped"] == [(
+        "bad",
+        "invalid tool configuration: google_calendar.calendar_keys may only be set "
+        "when calendar_policy is selected",
+    )]
+    assert json.loads(store.get_by_slug("good")["tool_configs_json"]) == {
+        "google_calendar": {
+            "calendar_policy": "selected",
+            "calendar_keys": ["sales"],
+        }
+    }
+    assert store.get_by_slug("bad") is None
+
 def test_migration_idempotent(tmp_path):
     store, y, c = _setup(tmp_path, {"d": {"provider": "a", "prompt": "p"}})
     assert run_migration(store, y, c)["imported"] == 1

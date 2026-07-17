@@ -1,7 +1,7 @@
 """Agents store — source of truth for agent (context) configuration.
 Write path lives here (admin_ui). The engine reads this DB via src/core/agent_store.py.
 Spec: archived/AVAOperatorVersion.md §3 + 2026-05-23-v1-implementation-spec.md §5."""
-import os, re, sqlite3, uuid
+import json, os, re, sqlite3, uuid
 from datetime import datetime, timezone
 
 DB_DEFAULT = "/app/data/operator/agents.db"
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS agents (
     greeting TEXT,
     prompt TEXT NOT NULL,
     tools_json TEXT,
+    tool_configs_json TEXT,             -- v7.4: structured per-agent tool-scope policies
     mcp_json TEXT,                    -- NOTE: not read at runtime — MCP is configured globally, not per-agent (audit LOW-T2). Stored/round-tripped only.
     audio_profile TEXT,
     extra_json TEXT,                 -- D3: pipeline, background_music, phase tools, disable flags, anything else
@@ -52,7 +53,7 @@ def _now() -> str:
 
 class AgentsStore:
     COLUMNS = ["id","slug","display_name","extension","role_label","provider","voice",
-               "greeting","prompt","tools_json","mcp_json","audio_profile","extra_json",
+               "greeting","prompt","tools_json","tool_configs_json","mcp_json","audio_profile","extra_json",
                "is_operator_managed","is_active","is_default","source_file",
                "created_at","updated_at","notes",
                "email_recipient","email_from","email_enabled"]
@@ -90,8 +91,59 @@ class AgentsStore:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN email_from TEXT")
                 if "email_enabled" not in existing:
                     self.conn.execute("ALTER TABLE agents ADD COLUMN email_enabled INTEGER")
+                if "tool_configs_json" not in existing:
+                    self.conn.execute("ALTER TABLE agents ADD COLUMN tool_configs_json TEXT")
         except sqlite3.Error:
             pass
+
+    def upgrade_legacy_resource_policies(self) -> int:
+        """Idempotently promote legacy calendar selections into tool_configs_json.
+
+        Early v7.4 development databases stored Context ``tool_overrides`` in
+        extra_json while the Agent runtime only read transfer policies. Keep the
+        original extra payload intact, but make Google/Microsoft bindings visible
+        and enforceable as first-class Agent policies.
+        """
+        changed = 0
+        try:
+            rows = self.conn.execute(
+                "SELECT id, tool_configs_json, extra_json FROM agents"
+            ).fetchall()
+            with self.conn:
+                for row in rows:
+                    current = json.loads(row["tool_configs_json"]) if row["tool_configs_json"] else {}
+                    extra = json.loads(row["extra_json"]) if row["extra_json"] else {}
+                    overrides = extra.get("tool_overrides") if isinstance(extra, dict) else None
+                    if not isinstance(current, dict) or not isinstance(overrides, dict):
+                        continue
+                    merged = dict(current)
+                    google = overrides.get("google_calendar") or {}
+                    selected = google.get("selected_calendars") if isinstance(google, dict) else None
+                    if "google_calendar" not in merged and isinstance(selected, list):
+                        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
+                        merged["google_calendar"] = {
+                            "calendar_policy": "selected" if keys else "none",
+                            "calendar_keys": keys,
+                        }
+                    microsoft = overrides.get("microsoft_calendar") or {}
+                    selected = microsoft.get("selected_accounts") if isinstance(microsoft, dict) else None
+                    if "microsoft_calendar" not in merged and isinstance(selected, list):
+                        keys = list(dict.fromkeys(str(key).strip() for key in selected if str(key).strip()))
+                        merged["microsoft_calendar"] = {
+                            "account_policy": "selected" if keys else "none",
+                            "account_keys": keys,
+                        }
+                    if merged != current:
+                        self.conn.execute(
+                            "UPDATE agents SET tool_configs_json=? WHERE id=?",
+                            (json.dumps(merged, sort_keys=True), row["id"]),
+                        )
+                        changed += 1
+        except (sqlite3.Error, json.JSONDecodeError, TypeError):
+            # Preserve the established best-effort schema-upgrade behavior. The
+            # API/runtime validators will surface malformed rows explicitly.
+            pass
+        return changed
 
     def close(self):
         """Close the underlying sqlite connection. Safe to call more than once."""
@@ -127,10 +179,16 @@ class AgentsStore:
             q += " AND is_operator_managed=1"
         return self.conn.execute(q).fetchone()[0]
 
+    def has_schema_migration(self, version: int) -> bool:
+        """Return whether a durable one-time migration marker exists."""
+        return self.conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=?", (version,)
+        ).fetchone() is not None
+
     # -- writes ------------------------------------------------------------
     def create(self, *, display_name, provider=None, prompt, slug=None, extension=None,
                role_label=None, voice=None, greeting=None, tools_json=None,
-               mcp_json=None, audio_profile=None, extra_json=None,
+               tool_configs_json=None, mcp_json=None, audio_profile=None, extra_json=None,
                is_operator_managed=1, source_file=None, notes=None,
                email_recipient=None, email_from=None, email_enabled=None) -> dict:
         slug = slug or slugify(display_name)
@@ -143,12 +201,12 @@ class AgentsStore:
         with self.conn:
             self.conn.execute(
                 """INSERT INTO agents (id,slug,display_name,extension,role_label,provider,
-                   voice,greeting,prompt,tools_json,mcp_json,audio_profile,extra_json,
+                   voice,greeting,prompt,tools_json,tool_configs_json,mcp_json,audio_profile,extra_json,
                    is_operator_managed,is_active,is_default,source_file,created_at,updated_at,notes,
                    email_recipient,email_from,email_enabled)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), slug, display_name, extension, role_label, provider,
-                 voice, greeting, prompt, tools_json, mcp_json, audio_profile, extra_json,
+                 voice, greeting, prompt, tools_json, tool_configs_json, mcp_json, audio_profile, extra_json,
                  is_operator_managed, source_file, now, now, notes,
                  email_recipient, email_from, email_enabled))
         self._ensure_default_invariant()

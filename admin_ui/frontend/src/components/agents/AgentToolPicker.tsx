@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { FormLabel } from '../ui/FormComponents';
 import HelpTooltip from '../ui/HelpTooltip';
+import TransferAccessEditor from './TransferAccessEditor';
+import type { TransferDestination } from './agentToolInventory';
+import ResourceAccessEditor, { type AgentResourceOption, type ResourcePolicy } from './ResourceAccessEditor';
 import {
     ToolDef, AgentToolState, phaseOf, isToolChecked, isToolLocked, toggleTool,
 } from './agentToolConfig';
@@ -11,6 +14,10 @@ interface Props {
     catalogError: boolean;
     state: AgentToolState;
     onChange: (next: AgentToolState) => void;
+    transferDestinations: TransferDestination[];
+    googleCalendars: AgentResourceOption[];
+    microsoftAccounts: AgentResourceOption[];
+    voicemailMailboxes: AgentResourceOption[];
 }
 
 const PHASES: { key: 'pre_call' | 'in_call' | 'post_call'; label: string; hint: string }[] = [
@@ -25,9 +32,24 @@ const SOURCE_BADGE: Record<string, string> = {
     mcp: 'bg-amber-100 text-amber-700',
 };
 
-const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChange }) => {
+const AgentToolPicker: React.FC<Props> = ({
+    catalog,
+    catalogError,
+    state,
+    onChange,
+    transferDestinations,
+    googleCalendars,
+    microsoftAccounts,
+    voicemailMailboxes,
+}) => {
     const [open, setOpen] = useState<Record<string, boolean>>(
         { pre_call: false, in_call: true, post_call: false });
+    const transferFamily = new Set([
+        'blind_transfer', 'attended_transfer', 'live_agent_transfer', 'check_extension_status',
+    ]);
+    const transferEditorToolName = catalog
+        .filter(tool => transferFamily.has(tool.name) && isToolChecked(state, tool))
+        .sort((a, b) => a.name.localeCompare(b.name))[0]?.name;
 
     if (catalogError) {
         return (
@@ -71,8 +93,8 @@ const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChan
                                     const locked = isToolLocked(state, tool);
                                     const checked = isToolChecked(state, tool);
                                     return (
+                                        <React.Fragment key={tool.name}>
                                         <label
-                                            key={tool.name}
                                             className={`flex items-center gap-3 px-4 py-2.5 ${locked ? 'bg-amber-50/40' : 'cursor-pointer hover:bg-accent/40'}`}
                                         >
                                             <input
@@ -98,6 +120,70 @@ const AgentToolPicker: React.FC<Props> = ({ catalog, catalogError, state, onChan
                                                 <span className="text-[11px] text-muted-foreground ml-auto">on by default</span>
                                             ) : null}
                                         </label>
+                                        {tool.name === transferEditorToolName && checked && (
+                                            <TransferAccessEditor
+                                                destinations={transferDestinations}
+                                                state={state}
+                                                onChange={onChange}
+                                            />
+                                        )}
+                                        {tool.name === 'google_calendar' && checked && (
+                                            <ResourceAccessEditor
+                                                title="Google Calendar access"
+                                                description="Choose which globally configured calendars this Agent can read or update."
+                                                resourceName="calendar"
+                                                options={googleCalendars}
+                                                policy={state.googleCalendarPolicy}
+                                                selectedKeys={state.googleCalendarKeys}
+                                                onPolicyChange={(policy: ResourcePolicy) => onChange({
+                                                    ...state,
+                                                    googleCalendarPolicy: policy,
+                                                    googleCalendarKeys: policy === 'selected'
+                                                        ? state.googleCalendarKeys : [],
+                                                })}
+                                                onSelectedKeysChange={keys => onChange({ ...state, googleCalendarKeys: keys })}
+                                            />
+                                        )}
+                                        {tool.name === 'microsoft_calendar' && checked && (
+                                            <ResourceAccessEditor
+                                                title="Microsoft Calendar access"
+                                                description="Choose which globally configured Microsoft account/calendar bindings this Agent can use."
+                                                resourceName="account"
+                                                options={microsoftAccounts}
+                                                policy={state.microsoftCalendarPolicy}
+                                                selectedKeys={state.microsoftAccountKeys}
+                                                onPolicyChange={(policy: ResourcePolicy) => onChange({
+                                                    ...state,
+                                                    microsoftCalendarPolicy: policy,
+                                                    microsoftAccountKeys: policy === 'selected'
+                                                        ? state.microsoftAccountKeys : [],
+                                                })}
+                                                onSelectedKeysChange={keys => onChange({ ...state, microsoftAccountKeys: keys })}
+                                            />
+                                        )}
+                                        {tool.name === 'leave_voicemail' && checked && (
+                                            <ResourceAccessEditor
+                                                title="Voicemail mailbox access"
+                                                description="Assign the one mailbox this Agent uses when sending a caller to voicemail."
+                                                resourceName="mailbox"
+                                                options={voicemailMailboxes}
+                                                policy={state.voicemailMailboxPolicy}
+                                                selectedKeys={state.voicemailMailboxKey ? [state.voicemailMailboxKey] : []}
+                                                single
+                                                onPolicyChange={(policy: ResourcePolicy) => onChange({
+                                                    ...state,
+                                                    voicemailMailboxPolicy: policy,
+                                                    voicemailMailboxKey: policy === 'selected'
+                                                        ? (state.voicemailMailboxKey || voicemailMailboxes[0]?.key || '')
+                                                        : '',
+                                                })}
+                                                onSelectedKeysChange={keys => onChange({
+                                                    ...state,
+                                                    voicemailMailboxKey: keys[0] || '',
+                                                })}
+                                            />
+                                        )}
+                                        </React.Fragment>
                                     );
                                 })}
                             </div>

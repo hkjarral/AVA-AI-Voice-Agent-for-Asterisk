@@ -2103,13 +2103,14 @@ class GoogleLiveProvider(AIProviderInterface):
                     session_store=getattr(self, '_session_store', None),
                     ari_client=getattr(self, '_ari_client', None),
                     config=getattr(self, '_full_config', None),
+                    tool_registry=self._tool_adapter.registry,
                     provider_name=self.provider_event_name(),
                 )
 
                 block_result = await tool_context.get_tool_block_response(func_name)
                 if block_result:
                     result = block_result
-                elif not self._allowed_tools or not tool_registry.is_tool_allowed(func_name, self._allowed_tools):
+                elif not self._allowed_tools or not self._tool_adapter.registry.is_tool_allowed(func_name, self._allowed_tools):
                     result = {
                         "status": "error",
                         "message": f"Tool '{func_name}' not allowed for this call",

@@ -42,6 +42,33 @@ class ToolRegistry:
             cls._instance._initialized = False
             cls._instance._in_call_http_init_cache: Set[str] = set()
         return cls._instance
+
+    @classmethod
+    def isolated(cls) -> "ToolRegistry":
+        """Create a non-singleton registry for an immutable runtime generation."""
+        instance = object.__new__(cls)
+        instance._tools = {}
+        instance._initialized = False
+        instance._in_call_http_init_cache = set()
+        return instance
+
+    def replace_with(self, other: "ToolRegistry") -> None:
+        """Atomically publish another registry's completed tool map.
+
+        Existing calls retain their isolated registry object; the process-global
+        registry is only the discovery/catalog default for calls not yet started.
+        """
+        self._tools = dict(other._tools)
+        self._initialized = bool(other._initialized)
+        self._in_call_http_init_cache = set(other._in_call_http_init_cache)
+
+    def clone(self) -> "ToolRegistry":
+        """Create a call-local shallow clone; tool instances are configuration-immutable."""
+        cloned = self.isolated()
+        cloned._tools = dict(self._tools)
+        cloned._initialized = self._initialized
+        cloned._in_call_http_init_cache = set(self._in_call_http_init_cache)
+        return cloned
     
     def register(self, tool_class: Type[Tool]) -> None:
         """

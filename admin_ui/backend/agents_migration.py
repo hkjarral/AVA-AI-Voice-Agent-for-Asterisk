@@ -10,13 +10,40 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import uuid
 
 import yaml
 from agents_store import AgentsStore, slugify, _now
 
 
+_PROJECT_ROOT = (
+    os.environ.get("PROJECT_ROOT")
+    or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+from src.tools.runtime_config import (
+    ToolConfigPolicyError,
+    dump_agent_tool_configs,
+    merge_legacy_tool_overrides,
+)
+
+
 logger = logging.getLogger(__name__)
+_BUNDLED_DEMO_NAME = "demo_project_expert"
+_BUNDLED_DEMO_DESCRIPTION = (
+    "AI agent that answers questions about the Asterisk AI Voice Agent project"
+)
+
+
+def _is_bundled_demo_context(name: object, value: object) -> bool:
+    """Identify the retired repository demo without filtering operator Contexts."""
+    return (
+        str(name or "").strip() == _BUNDLED_DEMO_NAME
+        and isinstance(value, dict)
+        and str(value.get("description") or "").strip() == _BUNDLED_DEMO_DESCRIPTION
+    )
 
 
 def _deep_merge_dicts(base: dict, override: dict) -> dict:
@@ -128,7 +155,15 @@ def merged_effective_contexts(yaml_path: str, contexts_dir: str) -> dict:
             )
             merged[name] = ext
 
-    return merged
+    # v7.3 and older shipped this demo in the tracked repository. Updaters can
+    # restore it with operator Context backups, so filtering must remain even
+    # after the tracked sample file is removed in v7.4. It was never operator
+    # configuration and must not suppress the three-Agent first-run seed.
+    return {
+        name: value
+        for name, value in merged.items()
+        if not _is_bundled_demo_context(name, value)
+    }
 
 
 def contexts_hash(merged: dict) -> str:
@@ -172,8 +207,15 @@ MIGRATION_VERSION = 1
 # into extra_json (which EngineAgentStore does NOT read for email dispatch).
 _FIRST_CLASS = {
     "provider", "voice", "greeting", "prompt", "audio_profile", "profile", "tools",
-    "email_recipient", "email_from", "email_enabled",
+    "tool_configs", "tool_overrides", "email_recipient", "email_from", "email_enabled",
 }
+
+
+def _migrated_tool_configs(ctx: dict) -> dict:
+    """Validate and normalize Context policies with the runtime source of truth."""
+    return merge_legacy_tool_overrides(
+        ctx.get("tool_configs"), ctx.get("tool_overrides")
+    )
 
 
 def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict:
@@ -230,6 +272,13 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             skipped.append((key, "missing prompt"))
             continue
         provider = ctx.get("provider") or ""
+        try:
+            tool_configs_json = dump_agent_tool_configs(
+                _migrated_tool_configs(ctx)
+            )
+        except ToolConfigPolicyError as exc:
+            skipped.append((key, f"invalid tool configuration: {exc}"))
+            continue
         extra = {k: v for k, v in ctx.items() if k not in _FIRST_CLASS}
         now = _now()
         # CRIT-3: two context names can slugify to the same value
@@ -264,6 +313,7 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             ctx.get("greeting"),
             prompt,
             json.dumps(ctx["tools"]) if ctx.get("tools") else None,
+            tool_configs_json,
             ctx.get("profile") or ctx.get("audio_profile"),
             json.dumps(extra) if extra else None,
             1 if key == "default" else 0,  # is_default
@@ -279,10 +329,10 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
         for r in rows:
             store.conn.execute(
                 """INSERT INTO agents (id, slug, display_name, provider, voice, greeting,
-                   prompt, tools_json, audio_profile, extra_json, is_operator_managed,
+                   prompt, tools_json, tool_configs_json, audio_profile, extra_json, is_operator_managed,
                    is_active, is_default, source_file, created_at, updated_at,
                    email_recipient, email_from, email_enabled)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,0,1,?,?,?,?,?,?,?)""",
                 r,
             )
         store.conn.execute(

@@ -8,9 +8,9 @@ An **agent** is the v1a evolution of a "context": a named configuration bundle t
 - **Connection audio** — optional caller-only ringback/comfort media while the provider or pipeline initializes
 - **Voice** — per-agent voice override (v7.3.0+): pick a voice for this agent, or leave empty to use the provider's default voice. Multiple agents can share one provider, each with its own voice. See [Voice Selection](VOICE_SELECTION.md)
 - **Audio profile** — telephony format / sample-rate profile (e.g. `telephony_ulaw_8k`)
-- **Tools** — optional callable tools (calendar, HTTP, MCP, etc.)
+- **Tools** — optional callable tools plus per-agent resource policies for transfer destinations, Google calendars, Microsoft calendar accounts, and voicemail mailboxes. Global configuration owns inventory and hard disables; an agent can only narrow it.
 
-Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. The legacy **Contexts** tab is now read-only; use the Agents tab for all create/edit/delete operations.
+Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. v7.4 removes Contexts from navigation and runtime routing. Visiting the old `/contexts` URL shows a one-time migration notice and then opens Agents.
 
 ---
 
@@ -21,9 +21,9 @@ Agents are managed in the Admin UI **Agents** tab and stored in `agents.db`. The
 | Inside container | `/app/data/operator/agents.db` |
 | Host (relative to repo root) | `./data/operator/agents.db` |
 
-`agents.db` is a WAL-mode SQLite database. The Admin UI owns the write path (CRUD, migration, reconcile). The engine reads it per-call at the moment a call enters Stasis — no restart needed after editing an agent.
+`agents.db` is a WAL-mode SQLite database. The Admin UI owns normal CRUD and optional legacy reconcile actions. The AI Engine owns the one-time startup import safety gate and reads the selected Agent per call — no restart is needed after editing an Agent.
 
-If `agents.db` is absent (headless or YAML-only installs), the engine falls back to reading `ai-agent.yaml` + `config/contexts/*.yaml` and all existing behavior is preserved unchanged. See [Headless / YAML-only mode](#headless--yaml-only-mode) below.
+On v7.4 startup, a headless-safe compatibility bridge atomically imports legacy YAML Contexts into `agents.db` when the store is empty. A populated Agent store is never overwritten. After startup, runtime routing reads Agents only and fails closed if the database is absent or unreadable.
 
 ---
 
@@ -41,9 +41,9 @@ exten => s,1,NoOp(AI Agent - Sales)
 
 Set `AI_AGENT` to the agent's **slug** (the identifier shown on each agent card in the Admin UI). The engine resolves the full configuration from `agents.db` and uses it for the call.
 
-### AI_CONTEXT (legacy — still supported)
+### AI_CONTEXT (deprecated compatibility alias)
 
-`AI_CONTEXT` continues to work and is fully equivalent to `AI_AGENT`. Existing dialplans do not need to be updated.
+`AI_CONTEXT` continues to resolve migrated Agents display-name-first in v7.4, so existing dialplans keep working while operators move to `AI_AGENT`. The engine emits one deprecation warning per process. New dialplans must use `AI_AGENT`.
 
 ```asterisk
  same => n,Set(AI_CONTEXT=sales)   ; legacy form, still accepted
@@ -65,11 +65,15 @@ If both `AI_AGENT` and `AI_CONTEXT` are present on the same channel, `AI_AGENT` 
 
 `AI_PROVIDER` overrides which provider/pipeline handles the call; `AI_AGENT` selects the greeting, prompt, tools, and (v7.3.0+) the agent's voice. If `AI_PROVIDER` is not set, the engine uses the provider field stored on the agent itself (or `default_provider` from `ai-agent.yaml` as the final fallback).
 
-> **Note:** Some docs in this repository may still show `AI_CONTEXT` in dialplan examples — that is the legacy, still-supported variable and works identically to `AI_AGENT`.
+Historical release evidence may still show `AI_CONTEXT`; current operator examples use `AI_AGENT`.
 
 ---
 
-## Starter templates
+## Fresh-install starter set
+
+Completing the setup wizard on a genuinely empty installation creates exactly three general-purpose Agents: **Receptionist** (default), **Sales**, and **Support**. They include conservative prompts and `hangup_call`, but no invented transfer routes. Existing installations and populated Agent stores are unchanged.
+
+## Add-Agent templates
 
 When you click **Add Agent** in the Admin UI, you can pick one of five starter templates. Each pre-fills the prompt and greeting:
 
@@ -85,13 +89,32 @@ Templates are a starting point; edit the prompt and greeting to match your use c
 
 ---
 
-## Headless / YAML-only mode
+## Per-agent tool access and reloads
 
-Installs that run only `ai_engine` (no Admin UI) never write `agents.db` and never need to. The engine's `EngineAgentStore.available()` returns `False` when the database file is absent, and the call path falls back to the existing YAML context resolution (`ai-agent.yaml` + `config/contexts/*.yaml`) exactly as it always has.
+The Tools page remains the global inventory. Under **Agents → Edit Agent → Tools**, enabling a resource-backed tool reveals its Agent access policy:
 
-This is a supported, permanent operating mode — not a deprecated fallback. Small or privacy-sensitive deployments that prefer flat-file config can keep using YAML indefinitely.
+- **Transfer family** — inherit all destinations, select destination keys, or deny all destinations. The shared policy governs blind/attended/live-agent transfer and extension-status checks.
+- **Google Calendar** — inherit configured calendars, select calendar keys, or deny calendar access.
+- **Microsoft Calendar** — inherit configured account/calendar bindings, select account keys, or deny calendar access.
+- **Leave Voicemail** — inherit the global default mailbox, select one mailbox, or deny voicemail access.
 
-See [Configuration-Reference.md](Configuration-Reference.md) for the YAML context schema.
+Each policy supports:
+
+- **Inherit** — use every globally configured destination (the backward-compatible default).
+- **Selected** — expose only checked destination keys. Empty or stale selections fail closed.
+- **None** — expose no transfer destinations.
+
+Empty or stale selections fail closed. Existing single-calendar/account installations continue as the `default` resource. Existing `tools.leave_voicemail.extension` configuration remains the `default` mailbox; adding multiple mailboxes on the Tools page creates a named inventory and requires a global default for inheriting Agents.
+
+The same effective snapshot governs provider schemas, prompt guidance, execution, deferred transfer, and audit metadata. A global disabled tool always wins. Tool names and Call History records remain unchanged (`google_calendar`, `microsoft_calendar`, and `leave_voicemail`), so existing tool-usage filters and aggregation remain compatible.
+
+**Tools → Save & Apply** builds an isolated generation for built-ins and managed HTTP tools. New calls capture the new generation; active calls keep their previous registry and configuration until they end. Build/validation failure leaves the previous generation running. Python code, environment/credential changes, provider/VAD changes, and MCP process configuration still require an engine restart.
+
+---
+
+## Headless compatibility import
+
+An engine-only installation may still upgrade from legacy `ai-agent.yaml` or `config/contexts/*.yaml`. Before accepting calls, the engine validates all merged Contexts and creates `agents.db` through a same-directory temporary database, integrity check, file lock, and atomic replace. Invalid legacy data blocks startup rather than partially importing. Once imported, edit Agents through the API/Admin UI or provision `agents.db`; YAML is no longer a live runtime persona source.
 
 ---
 
@@ -106,14 +129,8 @@ Both figures come from `call_records.context_name` in `call_history.db` joined o
 
 ---
 
-## Admin UI — Contexts tab
-
-The **Contexts** tab is now **read-only**. It remains available for reference (viewing YAML-sourced context names and their current values), but all create, edit, clone, and delete actions have been removed. Use the **Agents** tab to manage agents going forward.
-
----
-
 ## Related
 
-- [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md) — one-time YAML→agents.db migration, drift warnings, reconcile/acknowledge, and rollback.
-- [Configuration-Reference.md](Configuration-Reference.md) — full YAML context schema (headless / YAML-only path).
+- [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md) — one-time YAML→agents.db migration, recovery, and rollback boundaries.
+- [Configuration-Reference.md](Configuration-Reference.md) — legacy YAML schema and current global configuration.
 - [FreePBX-Integration-Guide.md](FreePBX-Integration-Guide.md) — dialplan setup and channel variable reference.

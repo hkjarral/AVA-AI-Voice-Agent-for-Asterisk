@@ -16,8 +16,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -141,7 +141,7 @@ Add to `/etc/asterisk/extensions_custom.conf`:
 ```ini
 [from-ai-agent-telnyx]
 exten => s,1,NoOp(AI Voice Agent - Telnyx AI Inference)
-exten => s,n,Set(AI_CONTEXT=demo_telnyx)
+exten => s,n,Set(AI_AGENT=demo_telnyx)
 exten => s,n,Set(AI_PROVIDER=telnyx_hybrid)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
@@ -170,9 +170,11 @@ Route a test call to the custom destination and verify:
 - Tool execution works if configured
 - Check logs for any API errors
 
-## Context Configuration
+## Agent Configuration
 
-Define your AI's behavior in `config/ai-agent.yaml`:
+Define this behavior in **Admin UI → Agents**. The legacy-shaped example below is
+provided only for preparing one-time migration input; `contexts:` YAML is not a live
+v7.4 Agent configuration surface:
 
 ```yaml
 contexts:

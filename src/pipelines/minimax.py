@@ -303,9 +303,10 @@ class MiniMaxLLMAdapter(LLMComponent):
         # Build tool schemas if tools are requested.
         tools_list = merged.get("tools")
         tool_schemas = []
+        call_tool_registry = self.tool_registry_or(tool_registry)
         if tools_list and isinstance(tools_list, list):
             for tool_name in tools_list:
-                tool = tool_registry.get(tool_name)
+                tool = call_tool_registry.get(tool_name)
                 if tool:
                     try:
                         from ..tools.base import ToolPhase

@@ -302,6 +302,15 @@ class LLMComponent(Component):
     # the streaming overlap pipeline or the serial path.
     supports_streaming: bool = False
 
+    def bind_tool_registry(self, registry: Any) -> None:
+        """Bind the immutable tool registry captured for this pipeline call."""
+        self._call_tool_registry = registry
+
+    def tool_registry_or(self, fallback: Any) -> Any:
+        """Return the per-call registry, or a compatibility fallback if unbound."""
+        registry = getattr(self, "_call_tool_registry", None)
+        return registry if registry is not None else fallback
+
     @abstractmethod
     async def generate(
         self,

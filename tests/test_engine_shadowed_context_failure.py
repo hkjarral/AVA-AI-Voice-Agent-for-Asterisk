@@ -7,6 +7,7 @@ import pytest
 
 from src.core.models import CallSession
 from src.engine import Engine
+from src.tools.runtime_config import ToolConfigPolicyError
 
 
 @pytest.mark.asyncio
@@ -42,3 +43,84 @@ async def test_shadowed_yaml_context_records_failure_before_provider_resolution(
     assert "authoritative agents.db" in session.context_resolution_error
     assert session.error_message == session.context_resolution_error
     engine.transport_orchestrator.resolve_transport.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unknown_ai_agent_records_failure_before_default_provider_resolution():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(default_provider="local")
+    engine.providers = {"local": object()}
+    engine.transport_orchestrator = MagicMock()
+    engine.transport_orchestrator.agent_store.default_slug.return_value = None
+    engine.transport_orchestrator.yaml_context_shadowed_by_agent_db.return_value = False
+    engine.transport_orchestrator.get_context_config.return_value = None
+    engine._save_session = AsyncMock()
+    engine._configure_no_input_watchdog = AsyncMock()
+    engine.ari_client = MagicMock()
+
+    values = {
+        "AI_CONTEXT": "",
+        "AI_AGENT": "missing-agent",
+        "AI_PROVIDER": "",
+        "AI_AUDIO_PROFILE": "",
+    }
+
+    async def send_command(_method, _resource, **kwargs):
+        variable = (kwargs.get("params") or {}).get("variable")
+        return {"value": values.get(variable, "")}
+
+    engine.ari_client.send_command = AsyncMock(side_effect=send_command)
+    session = CallSession(call_id="call-missing-agent", caller_channel_id="chan-missing-agent")
+
+    await Engine._resolve_audio_profile(engine, session, "chan-missing-agent")
+
+    assert session.context_name == "missing-agent"
+    assert session.routing_method == "ai_agent"
+    assert "could not resolve an active Agent" in session.context_resolution_error
+    assert session.error_message == session.context_resolution_error
+    engine.transport_orchestrator.resolve_transport.assert_not_called()
+    engine._configure_no_input_watchdog.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_agent_tool_policy_records_failure_before_provider_resolution():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(default_provider="local")
+    engine.providers = {"local": object()}
+    engine.transport_orchestrator = MagicMock()
+    engine.transport_orchestrator.agent_store.default_slug.return_value = None
+    engine.transport_orchestrator.yaml_context_shadowed_by_agent_db.return_value = False
+    context_config = SimpleNamespace(tool_configs={"unsupported_scope": {}})
+    engine.transport_orchestrator.get_context_config.return_value = context_config
+    engine._tool_generation = SimpleNamespace(
+        for_agent=MagicMock(
+            side_effect=ToolConfigPolicyError(
+                "unsupported tool configuration scope(s): unsupported_scope"
+            )
+        )
+    )
+    engine._save_session = AsyncMock()
+    engine._configure_no_input_watchdog = AsyncMock()
+    engine.ari_client = MagicMock()
+
+    values = {
+        "AI_CONTEXT": "",
+        "AI_AGENT": "bad-policy",
+        "AI_PROVIDER": "",
+        "AI_AUDIO_PROFILE": "",
+    }
+
+    async def send_command(_method, _resource, **kwargs):
+        variable = (kwargs.get("params") or {}).get("variable")
+        return {"value": values.get(variable, "")}
+
+    engine.ari_client.send_command = AsyncMock(side_effect=send_command)
+    session = CallSession(call_id="call-bad-policy", caller_channel_id="chan-bad-policy")
+
+    await Engine._resolve_audio_profile(engine, session, "chan-bad-policy")
+
+    assert "invalid Agent tool policy" in session.context_resolution_error
+    assert "unsupported_scope" in session.context_resolution_error
+    assert session.error_message == session.context_resolution_error
+    engine.transport_orchestrator.resolve_transport.assert_not_called()
+    engine._configure_no_input_watchdog.assert_not_awaited()

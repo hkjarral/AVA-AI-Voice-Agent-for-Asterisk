@@ -20,6 +20,11 @@ interface ToolFormProps {
     onSaveNow?: (newConfig: any) => Promise<void>;
 }
 
+interface VoicemailMailboxConfig {
+    name?: string;
+    extension?: string;
+}
+
 const DEFAULT_ATTENDED_ANNOUNCEMENT_TEMPLATE =
     "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}.";
 const DEFAULT_ATTENDED_AI_BRIEFING_INTRO_TEMPLATE =
@@ -1247,6 +1252,10 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
         updateNestedConfig('transfer', 'destinations', destinations);
     };
 
+    const configuredVoicemailMailboxes = (
+        config.leave_voicemail?.mailboxes || {}
+    ) as Record<string, VoicemailMailboxConfig>;
+
     return (
         <div className="space-y-8">
             {/* AI Identity & General Settings */}
@@ -1684,7 +1693,7 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                     <FormSwitch
                         label="Hangup Call"
-                        description="Allow the agent to end the call gracefully. Call ending behavior is controlled via context prompts."
+                        description="Allow the agent to end the call gracefully. Call ending behavior is controlled via agent prompts."
                         checked={config.hangup_call?.enabled ?? true}
                         onChange={(e) => updateNestedConfig('hangup_call', 'enabled', e.target.checked)}
                         className="mb-0 border-0 p-0 bg-transparent"
@@ -1752,8 +1761,8 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                             </div>
                             <p className="text-sm text-muted-foreground">
                                 <strong>Note:</strong> Call ending behavior (transcript offers, confirmation flows) is now controlled
-                                via context prompts rather than code guardrails. Configure the CALL ENDING PROTOCOL section in your
-                                context's system prompt to customize behavior.
+                                via agent prompts rather than code guardrails. Configure the CALL ENDING PROTOCOL section in each
+                                agent's system prompt to customize behavior.
                             </p>
                             <div className="border border-amber-300/40 rounded-lg p-3 bg-amber-500/5">
                                 <FormSwitch
@@ -1866,12 +1875,121 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onContextsChange, o
                         className="mb-0 border-0 p-0 bg-transparent"
                     />
                     {config.leave_voicemail?.enabled !== false && (
-                        <div className="mt-4 pl-4 border-l-2 border-border ml-2">
-                            <FormInput
-                                label="Voicemail Extension"
-                                value={config.leave_voicemail?.extension || ''}
-                                onChange={(e) => updateNestedConfig('leave_voicemail', 'extension', e.target.value)}
-                            />
+                        <div className="mt-4 pl-4 border-l-2 border-border ml-2 space-y-4">
+                            {Object.keys(configuredVoicemailMailboxes).length === 0 ? (
+                                <>
+                                    <FormInput
+                                        label="Default Voicemail Extension"
+                                        value={config.leave_voicemail?.extension || ''}
+                                        onChange={(e) => updateNestedConfig('leave_voicemail', 'extension', e.target.value)}
+                                        tooltip="Backward-compatible single mailbox. Add another mailbox to create an Agent-assignable inventory."
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const legacyExtension = String(config.leave_voicemail?.extension || '').trim();
+                                            const mailboxes: Record<string, VoicemailMailboxConfig> = {};
+                                            if (legacyExtension) {
+                                                mailboxes.default = { name: 'Default', extension: legacyExtension };
+                                            }
+                                            const nextKey = legacyExtension ? 'mailbox_2' : 'mailbox_1';
+                                            mailboxes[nextKey] = { name: '', extension: '' };
+                                            const next = { ...(config.leave_voicemail || {}) };
+                                            delete next.extension;
+                                            next.mailboxes = mailboxes;
+                                            next.default_mailbox_key = legacyExtension ? 'default' : nextKey;
+                                            onChange({ ...config, leave_voicemail: next });
+                                        }}
+                                        className="text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors"
+                                    >
+                                        <Plus className="w-3 h-3 mr-1" /> Add another mailbox
+                                    </button>
+                                </>
+                            ) : (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <p className="text-sm font-medium">Voicemail mailboxes</p>
+                                            <p className="text-xs text-muted-foreground">Configure globally, then assign one mailbox from each Agent&apos;s Tools section.</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const mailboxes = { ...configuredVoicemailMailboxes };
+                                                let index = Object.keys(mailboxes).length + 1;
+                                                let key = `mailbox_${index}`;
+                                                while (Object.prototype.hasOwnProperty.call(mailboxes, key)) {
+                                                    index += 1;
+                                                    key = `mailbox_${index}`;
+                                                }
+                                                mailboxes[key] = { name: '', extension: '' };
+                                                updateNestedConfig('leave_voicemail', 'mailboxes', mailboxes);
+                                            }}
+                                            className="text-xs flex items-center bg-secondary px-2 py-1 rounded hover:bg-secondary/80 transition-colors shrink-0"
+                                        >
+                                            <Plus className="w-3 h-3 mr-1" /> Add mailbox
+                                        </button>
+                                    </div>
+                                    <FormSelect
+                                        label="Default Mailbox"
+                                        value={config.leave_voicemail?.default_mailbox_key || ''}
+                                        onChange={(e) => updateNestedConfig('leave_voicemail', 'default_mailbox_key', e.target.value)}
+                                        options={[
+                                            { value: '', label: '— select default —' },
+                                            ...Object.entries(configuredVoicemailMailboxes).map(([key, mailbox]) => ({
+                                                value: key,
+                                                label: `${mailbox?.name || key}${mailbox?.extension ? ` (${mailbox.extension})` : ''}`,
+                                            })),
+                                        ]}
+                                        tooltip="Used by Agents that inherit global mailbox access. Required when more than one mailbox exists."
+                                    />
+                                    {Object.entries(configuredVoicemailMailboxes).map(([key, mailbox]) => (
+                                        <div key={key} className="rounded-md border border-border bg-background p-3 space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-xs font-mono text-muted-foreground">{key}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const mailboxes = { ...configuredVoicemailMailboxes };
+                                                        delete mailboxes[key];
+                                                        const next = { ...(config.leave_voicemail || {}), mailboxes };
+                                                        if (next.default_mailbox_key === key) {
+                                                            next.default_mailbox_key = Object.keys(mailboxes)[0] || '';
+                                                        }
+                                                        onChange({ ...config, leave_voicemail: next });
+                                                    }}
+                                                    className="text-destructive hover:text-destructive/80"
+                                                    aria-label={`Delete voicemail mailbox ${key}`}
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <FormInput
+                                                    label="Mailbox Name"
+                                                    value={mailbox?.name || ''}
+                                                    onChange={(e) => {
+                                                        const mailboxes = { ...configuredVoicemailMailboxes };
+                                                        mailboxes[key] = { ...(mailboxes[key] || {}), name: e.target.value };
+                                                        updateNestedConfig('leave_voicemail', 'mailboxes', mailboxes);
+                                                    }}
+                                                    placeholder="e.g. Sales Voicemail"
+                                                />
+                                                <FormInput
+                                                    label="Extension"
+                                                    value={mailbox?.extension || ''}
+                                                    onChange={(e) => {
+                                                        const mailboxes = { ...configuredVoicemailMailboxes };
+                                                        mailboxes[key] = { ...(mailboxes[key] || {}), extension: e.target.value };
+                                                        updateNestedConfig('leave_voicemail', 'mailboxes', mailboxes);
+                                                    }}
+                                                    placeholder="e.g. 2001"
+                                                />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

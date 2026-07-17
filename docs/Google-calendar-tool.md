@@ -55,18 +55,20 @@ tools:
     enabled: true
 ```
 
-### 6. Add to Your Context
+### 6. Assign Calendar Access to an Agent
 
-Make sure `google_calendar` is in the tools list for the context(s) that should have calendar access:
+Calendar credentials and inventory are global; each Agent can inherit all configured
+calendars, use selected calendar keys, or have no Google Calendar access.
 
-```yaml
-contexts:
-  my_context:
-    tools:
-      - google_calendar
-      - hangup_call
-      # ... other tools
-```
+1. Open **Agents**, edit the Agent, and enable `google_calendar`.
+2. In **Google Calendar access**, choose **Inherit**, **Selected**, or **None**.
+3. For **Selected**, check at least one current calendar key. Empty or stale selections
+   fail closed.
+4. Save the Agent. Agent changes apply to new calls without restarting AI Engine.
+
+Legacy single-calendar configuration is exposed as the compatible `default` calendar.
+Legacy Context `tool_overrides` are promoted during the one-time v7.4 Agent migration;
+YAML Contexts are not a live assignment mechanism after migration.
 
 ## Implementation
 
@@ -159,78 +161,44 @@ tools:
         timezone: America/Denver
 ```
 
-### Per-context calendar selection
+### Per-Agent calendar selection
 
-Each context binds to **exactly one calendar**. This keeps the routing
-unambiguous: when the caller says "book me for 2pm," the agent always
-knows which calendar the event belongs to.
+Configure calendar credentials and the named `calendars` inventory globally on
+the Tools page. Then open **Agents → Edit Agent → Tools**, enable
+`google_calendar`, and choose one access policy:
 
-In the Admin UI (Contexts → Edit Context → Google Calendar), pick one
-calendar. The others become disabled until you clear the selection.
+- **Inherit** — use every globally configured calendar (backward-compatible default).
+- **Selected** — expose only the checked calendar keys.
+- **None** — expose no calendars to this Agent.
 
-Equivalent YAML:
+One selected calendar is recommended because booking is unambiguous. Multiple
+selections remain available for cross-calendar availability. Empty or stale
+selections fail closed. Legacy Context `selected_calendars` values are promoted
+to the equivalent Agent policy during the v7.4 migration.
 
-```yaml
-contexts:
-  sales:
-    tools:
-      - google_calendar
-    tool_overrides:
-      google_calendar:
-        selected_calendars: [work]   # single entry — the UI enforces this
-```
+If `calendars` is omitted at the tool root but environment variables are set,
+the tool materializes a `default` calendar from `GOOGLE_CALENDAR_*`.
 
-**Missing vs. empty `selected_calendars`:**
-
-| `selected_calendars` value | Behavior |
-|----------------------------|----------|
-| Omitted (not present) | Context uses **all** configured calendars (legacy / single-calendar default). |
-| `[calendar_key]` | Context uses that one calendar. **Recommended.** |
-| `[]` (empty list) | No calendars available to this context — all calendar actions return an authorization error (fail-closed). |
-
-- If `calendars` is omitted at the tool root but env vars are set, the tool will auto-materialize `calendars.default` from `GOOGLE_CALENDAR_*` and use it.
-
-### Power-user: cross-calendar availability via YAML
-
-The UI constrains each context to one calendar because that matches how
-99% of deployments use the tool. However, the backend still supports
-multiple `selected_calendars` entries for one specific use case:
-**aggregating availability across multiple calendars in `get_free_slots`**
-(e.g. "find a time when both my work and personal calendars are free").
-
-This has to be set up in YAML — the UI will not produce a multi-calendar
-selection, and editing a context in the UI after setting this will reset
-it to single-select.
-
-```yaml
-contexts:
-  unified_assistant:
-    tools:
-      - google_calendar
-    tool_overrides:
-      google_calendar:
-        selected_calendars: [work, personal]   # YAML-only — not representable in UI
-```
+### Cross-calendar availability
 
 When multiple calendars are selected:
 
 - `get_free_slots` aggregates across all of them. `aggregate_mode: all` (default) returns times free on every calendar; `aggregate_mode: any` returns times free on any calendar.
 - `list_events` merges events from all selected calendars.
-- `create_event`, `delete_event`, `get_event` fall back to the first calendar in the list when the LLM doesn't pass `calendar_key` — this is why the UI forces single-select, to avoid the LLM silently picking a default.
+- `create_event`, `delete_event`, `get_event` fall back to the first calendar in the list when the LLM doesn't pass `calendar_key`; prompts should require an explicit key when more than one is assigned.
 
-If you use multi-calendar YAML, the LLM needs `calendar_key` to be
+If you assign multiple calendars, the LLM needs `calendar_key` to be
 explicit for create/delete actions, so you must prompt it with the
-available calendar keys in your context instructions (e.g. "Available
+available calendar keys in your Agent instructions (e.g. "Available
 calendars: `work`, `personal`. Use `calendar_key` to specify which one
 for any booking.").
 
 ## Actions
 
-In the normal (UI-configured) case, each context has exactly one
-selected calendar, so the LLM does not need to pass `calendar_key` —
-the tool uses the context's single calendar automatically. The
+In the recommended case, each Agent has exactly one selected calendar, so the
+LLM does not need to pass `calendar_key` — the tool uses the Agent's calendar automatically. The
 `calendar_key` and `aggregate_mode` parameters below only matter for
-the multi-calendar YAML setup described above.
+the multi-calendar setup described above.
 
 | Action | Purpose |
 |--------|--------|
@@ -380,7 +348,8 @@ Clicking it opens a file picker; choose your service-account JSON and:
    key, and written to a stable path under `secrets/` keyed off a hash of
    the SA's `client_email`. The same SA always gets the same filename, so
    re-uploading after a private-key rotation overwrites the existing file
-   and any references to it (in YAML, Contexts page, etc.) keep working.
+   and global calendar inventory references remain stable. Agent access uses
+   the calendar key, so assignments keep working across credential rotation.
 
 2. The backend then authenticates as the SA and calls Google's
    `calendarList.list()` API to discover which calendars the SA has access

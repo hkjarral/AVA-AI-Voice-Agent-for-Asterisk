@@ -63,7 +63,7 @@ All tools work identically across supported providers—no code changes needed w
 This repo is adding support for **MCP-backed tools** (Model Context Protocol) that can be called the same way as built-in tools, using the existing `ToolRegistry` + provider adapters.
 
 - Design + branch guide: `docs/MCP_INTEGRATION.md`
-- Key constraint: MCP tools must be exposed with **provider-safe names** (no `.` namespacing), and must respect `contexts.<name>.tools` allowlisting.
+- Key constraint: MCP tools must be exposed with **provider-safe names** (no `.` namespacing) and respect the selected Agent's tool allowlist.
 
 ### Modular Pipeline Tool Execution
 
@@ -939,17 +939,17 @@ tools:
     from_email: "agent@yourdomain.com"
     from_name: "AI Voice Agent"
     admin_email: "admin@yourdomain.com"
-    # Optional: route different contexts to different inboxes
+    # Legacy YAML routing maps (v7.4 operators normally configure email on Agents)
     # admin_email_by_context:
     #   support: "support@yourdomain.com"
     #   sales: "sales@yourdomain.com"
-    # Optional: route sender address per context
+    # Legacy sender routing map
     # from_email_by_context:
     #   support: "support-bot@yourdomain.com"
     #   sales: "sales-bot@yourdomain.com"
     include_transcript: true
     include_metadata: true
-    # Optional: subject prefix and per-context overrides
+    # Optional: subject prefix and legacy per-context overrides
     # subject_prefix: "[AAVA]"
     # subject_prefix_by_context:
     #   support: "[Support]"
@@ -1107,14 +1107,14 @@ exten => s,1,NoOp(AI Agent - Basic)
 ```asterisk
 [from-ai-agent-support]
 exten => s,1,NoOp(AI Agent - Support Line)
- same => n,Set(AI_CONTEXT=support)           ; Support persona
+ same => n,Set(AI_AGENT=support)             ; Support Agent slug
  same => n,Set(AI_PROVIDER=openai_realtime)  ; Fast provider
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 
 [from-ai-agent-sales]
 exten => s,1,NoOp(AI Agent - Sales Line)
- same => n,Set(AI_CONTEXT=sales)
+ same => n,Set(AI_AGENT=sales)
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```

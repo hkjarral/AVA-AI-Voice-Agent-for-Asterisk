@@ -95,3 +95,106 @@ describe('per-agent connection audio configuration', () => {
         expect(serialized.extra_json).toBeNull();
     });
 });
+
+describe('per-agent transfer destination policy', () => {
+    it('round-trips selected destination keys through the first-class column', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            tool_configs_json: JSON.stringify({
+                transfer: { destination_policy: 'selected', destination_keys: ['sales', 'support'] },
+            }),
+        });
+        expect(state.transferDestinationPolicy).toBe('selected');
+        expect(state.transferDestinationKeys).toEqual(['sales', 'support']);
+        expect(JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}')).toEqual({
+            transfer: { destination_policy: 'selected', destination_keys: ['sales', 'support'] },
+        });
+    });
+
+    it('omits inherited policy for backward compatibility', () => {
+        const state = parseAgentConfig({ provider: 'deepgram' });
+        expect(state.transferDestinationPolicy).toBe('inherit');
+        expect(serializeAgentConfig(state).tool_configs_json).toBeNull();
+    });
+
+    it('stores selected-with-empty as an explicit fail-closed policy', () => {
+        const state = parseAgentConfig({ provider: 'deepgram' });
+        state.transferDestinationPolicy = 'selected';
+        state.transferDestinationKeys = [];
+        const stored = JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}');
+        expect(stored.transfer).toEqual({ destination_policy: 'selected', destination_keys: [] });
+    });
+});
+
+describe('per-agent calendar and voicemail resource policies', () => {
+    it('round-trips Google, Microsoft, and voicemail assignments together', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            tool_configs_json: JSON.stringify({
+                google_calendar: {
+                    calendar_policy: 'selected',
+                    calendar_keys: ['sales'],
+                },
+                microsoft_calendar: {
+                    account_policy: 'selected',
+                    account_keys: ['dispatch'],
+                },
+                voicemail: {
+                    mailbox_policy: 'selected',
+                    mailbox_key: 'support',
+                },
+            }),
+        });
+
+        expect(state.googleCalendarKeys).toEqual(['sales']);
+        expect(state.microsoftAccountKeys).toEqual(['dispatch']);
+        expect(state.voicemailMailboxKey).toBe('support');
+
+        expect(JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}')).toEqual({
+            google_calendar: {
+                calendar_policy: 'selected',
+                calendar_keys: ['sales'],
+            },
+            microsoft_calendar: {
+                account_policy: 'selected',
+                account_keys: ['dispatch'],
+            },
+            voicemail: {
+                mailbox_policy: 'selected',
+                mailbox_key: 'support',
+            },
+        });
+    });
+
+    it('preserves an inherited transfer policy while storing calendar denial', () => {
+        const state = parseAgentConfig({ provider: 'deepgram' });
+        state.googleCalendarPolicy = 'none';
+        const stored = JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}');
+        expect(stored).toEqual({
+            google_calendar: { calendar_policy: 'none', calendar_keys: [] },
+        });
+    });
+
+    it('preserves invalid saved policies so editing cannot silently broaden access', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            tool_configs_json: JSON.stringify({
+                transfer: { destination_policy: 'future_policy', destination_keys: ['sales'] },
+                google_calendar: { calendar_policy: 'future_policy', calendar_keys: ['private'] },
+                voicemail: { mailbox_policy: 'future_policy', mailbox_key: 'executive' },
+            }),
+        });
+
+        expect(state.transferDestinationPolicy).toBe('future_policy');
+        const stored = JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}');
+        expect(stored.transfer).toEqual({
+            destination_policy: 'future_policy', destination_keys: ['sales'],
+        });
+        expect(stored.google_calendar).toEqual({
+            calendar_policy: 'future_policy', calendar_keys: ['private'],
+        });
+        expect(stored.voicemail).toEqual({
+            mailbox_policy: 'future_policy', mailbox_key: 'executive',
+        });
+    });
+});

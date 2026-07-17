@@ -87,17 +87,17 @@ See [LOCAL_ONLY_SETUP.md](LOCAL_ONLY_SETUP.md) for detailed configuration.
 
 ---
 
-## Call Selection & Precedence (Provider / Pipeline / Context)
+## Call Selection & Precedence (Provider / Pipeline / Agent)
 
 On each call, the engine selects:
-- a **context** (greeting/prompt/tools/profile)
+- an **agent** (greeting/prompt/tools/profile)
 - a **provider mode** (full agent provider vs pipeline)
 
 This selection is intentionally flexible so you can keep safe defaults while still overriding behavior per extension.
 
-### Context / agent selection
+### Agent selection
 
-> **v7+ resolution is agents.db-first.** After the one-time YAML → `agents.db`
+> **v7.4 resolution is Agent-only.** After the one-time YAML → `agents.db`
 > migration (see [OPERATOR_MIGRATION.md](OPERATOR_MIGRATION.md)), the engine resolves
 > the agent for a call from `agents.db`, **not** from `ai-agent.yaml` at runtime. Editing
 > a context directly in `ai-agent.yaml` or `config/contexts/*.yaml` after migration has
@@ -107,14 +107,14 @@ This selection is intentionally flexible so you can keep safe defaults while sti
 Resolution order on each call:
 
 1. `AI_AGENT` channel var (preferred) → agent looked up by slug in `agents.db`.
-2. `AI_CONTEXT` channel var (legacy — equivalent to `AI_AGENT`) → agent looked up by slug.
+2. `AI_CONTEXT` channel var (deprecated compatibility alias) → agent looked up display-name-first.
 3. Otherwise, the default agent in `agents.db`.
 
 `AI_AGENT` wins if both `AI_AGENT` and `AI_CONTEXT` are set on the channel.
 
-If `agents.db` is absent (pre-migration, or after a YAML-fallback rollback), the engine
-reads `ai-agent.yaml` + `config/contexts/` directly and `AI_CONTEXT`/`AI_AGENT` select a
-context by name, falling back to the `default` context.
+Before accepting calls, v7.4 atomically imports legacy YAML Contexts when `agents.db` is
+empty. Runtime routing then reads Agents only and fails closed if the database is absent
+or unreadable. There is no live YAML persona fallback in v7.4.
 
 ### Audio profile selection
 
@@ -123,7 +123,7 @@ Audio profiles control the call’s negotiated sample rates/encodings (telephony
 Highest priority first:
 
 1. **Dialplan override**: `AI_AUDIO_PROFILE` (if set)
-2. **Context mapping**: `contexts.<name>.profile` (if set for the selected context)
+2. **Agent mapping**: the selected Agent's `audio_profile` value in `agents.db`
 3. **Global default**: `profiles.default` (fallback is `telephony_ulaw_8k` if unset)
 
 ### Provider selection
@@ -131,7 +131,7 @@ Highest priority first:
 Highest priority first:
 
 1. **Dialplan override**: `AI_PROVIDER` (if set)
-2. **Context override**: `contexts.<name>.provider` (if set for the selected context)
+2. **Agent override**: the selected Agent's provider or pipeline in `agents.db`
 3. **Global default**: `default_provider`
 
 ### Pipeline selection
@@ -353,7 +353,7 @@ The engine-level watchdog prevents an answered call from remaining open indefini
 
 - `no_input.enabled`: Enables the policy. Defaults to `true`.
 - `no_input.inbound_enabled`: Applies the policy to inbound calls. Defaults to `true`.
-- `no_input.outbound_enabled`: Compatibility/default field; outbound calls still require `contexts.<name>.no_input.outbound_enabled: true` or the equivalent per-agent Admin UI option.
+- `no_input.outbound_enabled`: Compatibility/default field; outbound calls still require the equivalent per-Agent option under **Agents → Caller Inactivity Overrides**.
 - `no_input.initial_timeout_sec`: Idle time before the first check-in. Defaults to 30 seconds.
 - `no_input.grace_timeout_sec`: Reply window after each check-in. Defaults to 15 seconds.
 - `no_input.max_check_ins`: Number of check-ins before the final message and hangup. Defaults to 1; `0` skips directly to the final message.
@@ -568,13 +568,9 @@ Connection audio removes silent wait time between answer and the initial greetin
 
 In the Admin UI, edit an agent and enable **Play ringback while connecting**. The value is stored in the agent's `extra_json`, exported as `connection_audio`, and works identically for full-agent providers and modular pipelines.
 
-```yaml
-contexts:
-  support:
-    greeting: "Hello, how can I help?"
-    prompt: "You are a helpful support agent."
-    connection_audio: "tone:ring"
-```
+Configure these overrides under **Agents → Edit Agent → Caller Inactivity Overrides**.
+Agent persona and policy fields live in `agents.db`; legacy `contexts:` YAML is accepted
+only as one-time migration input and is not a live v7.4 configuration surface.
 
 ### HTTP Tools (Phase Tools)
 
@@ -590,7 +586,7 @@ See `docs/TOOL_CALLING_GUIDE.md` for full examples and variable substitution det
 
 Play ambient music during AI conversations. Music is mixed into the call audio.
 
-- `contexts.<name>.background_music`: MOH class name (e.g., `default`, `ambient`).
+- Agent `background_music`: MOH class name stored in the Agent's advanced fields (e.g., `default`, `ambient`).
   - When set, a snoop channel with Music On Hold starts when the call begins.
   - Music continues until the call ends.
   - Leave empty/omit to disable background music.

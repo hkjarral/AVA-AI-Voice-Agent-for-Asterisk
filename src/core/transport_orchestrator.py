@@ -75,6 +75,7 @@ class ContextConfig:
     voice: Optional[str] = None  # Per-agent voice override; provider config voice is the fallback
     pipeline: Optional[str] = None  # Pipeline name for modular STT/LLM/TTS (e.g., local_hybrid)
     tools: Optional[list] = None  # In-call tool names for function calling
+    tool_configs: Optional[Dict[str, Any]] = None  # v7.4 per-agent tool-scope policies
     background_music: Optional[str] = None  # MOH class name for background music during calls
     connection_audio: Optional[str] = None  # Caller-only ARI media while provider/pipeline connects
     
@@ -208,8 +209,8 @@ class TransportOrchestrator:
         self.contexts = self._load_contexts(config)
         self.default_profile_name = config.get('profiles', {}).get('default', 'telephony_ulaw_8k')
 
-        # agents.db (operator) is the source of truth when present; YAML contexts
-        # are the fallback for headless installs. Lazy import breaks the
+        # agents.db is the only runtime persona source in v7.4. YAML Contexts are
+        # loaded only as compatibility diagnostics after the startup importer. Lazy import breaks the
         # agent_store <-> transport_orchestrator circular import (ContextConfig).
         from src.core.agent_store import EngineAgentStore
         self.agent_store = EngineAgentStore()
@@ -293,9 +294,17 @@ class TransportOrchestrator:
                     email_enabled=_coerce_optional_bool(context_dict.get('email_enabled')),
                     no_input=context_dict.get('no_input'),
                 )
-                logger.debug("Loaded context mapping", name=name, context=contexts[name])
+                logger.debug(
+                    "Loaded legacy Context for migration diagnostics",
+                    name=name,
+                    context=contexts[name],
+                )
             except Exception as exc:
-                logger.warning("Failed to load context mapping", name=name, error=str(exc))
+                logger.warning(
+                    "Failed to load legacy Context diagnostic",
+                    name=name,
+                    error=str(exc),
+                )
         
         return contexts
     
@@ -724,12 +733,10 @@ class TransportOrchestrator:
     def get_context_config(
         self, context_name: Optional[str], routing_method: Optional[str] = None
     ) -> Optional[ContextConfig]:
-        """Resolve a context. agents.db is the source of truth when present (v1a);
-        YAML is the fallback for headless installs and post-rollback recovery.
-        When the DB is present, an inactive/unknown slug is NOT routable — we must
-        NOT silently fall through to a same-named legacy YAML context, or a
-        deactivated/deleted agent would keep routing. Only fall back to YAML when
-        the DB is absent/unavailable. Spec: archived plan decisions D1/D2.
+        """Resolve an Agent. ``agents.db`` is the only v7.4 runtime persona source.
+
+        An inactive/unknown slug is not routable, and an unreadable or absent DB
+        fails closed. YAML Context data is retained only for migration diagnostics.
 
         ``routing_method`` carries the dialplan channel-variable INTENT (Finding 1):
         ``'ai_context'`` (legacy original-name selector) resolves display_name-first;
@@ -737,21 +744,17 @@ class TransportOrchestrator:
         if not context_name:
             return None
         if self.agent_store.available():
-            # agents.db is authoritative when present: inactive/unknown agent => not
-            # routable. Fall back to YAML ONLY when the DB is present but unreadable
-            # (corrupt/locked) — HIGH-9 — never for a clean not-found, so a
-            # deactivated/deleted agent is not resurrected from YAML.
             from src.core.agent_store import AgentStoreReadError
             prefer = "display_name" if routing_method == "ai_context" else "slug"
             try:
                 return self.agent_store.resolve(context_name, prefer=prefer)
             except AgentStoreReadError:
-                logger.warning(
-                    "agents.db unreadable; falling back to YAML contexts",
+                logger.error(
+                    "agents.db unreadable; Agent routing failed closed",
                     context=context_name)
-                return self._yaml_context_config(context_name)
-        # No DB (headless / pre-migration): fall back to YAML contexts.
-        return self._yaml_context_config(context_name)
+                return None
+        logger.error("agents.db unavailable; Agent routing failed closed", context=context_name)
+        return None
 
     def _yaml_context_config(self, context_name: Optional[str]) -> Optional[ContextConfig]:
         """Original YAML-backed context lookup (fallback path)."""

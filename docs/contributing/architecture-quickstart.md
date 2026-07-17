@@ -147,16 +147,13 @@ vad:
 # config/ai-agent.yaml
 default_provider: openai_realtime
 active_pipeline: local_hybrid
-
-contexts:
-  default:
-    provider: openai_realtime
-    profile: telephony_ulaw_8k
+# Per-Agent provider/profile selection lives in agents.db (Admin UI → Agents).
+# `contexts:` is one-time v7.4 migration input only; see docs/AGENTS.md.
 ```
 
 **Lookup Order**:
 1. Dialplan override: `AI_PROVIDER` (if set)
-2. Context override: `contexts.<name>.provider` (if set for the selected context)
+2. Agent override: provider stored on the selected Agent in `agents.db`
 3. Global default: `default_provider`
 
 If the selected provider path is a pipeline-based configuration, the engine uses `active_pipeline`.

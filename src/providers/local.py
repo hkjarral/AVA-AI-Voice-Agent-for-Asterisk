@@ -301,12 +301,16 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             self._pending_llm_responses.pop(request_id, None)
 
     @staticmethod
-    def _build_allowed_tool_schemas(tool_names: List[str]) -> List[Dict[str, Any]]:
+    def _build_allowed_tool_schemas(
+        tool_names: List[str], tool_registry: Any = None
+    ) -> List[Dict[str, Any]]:
         names = [str(name or "").strip() for name in (tool_names or []) if str(name or "").strip()]
         if not names:
             return []
         try:
-            from src.tools.registry import tool_registry
+            if tool_registry is None:
+                from src.tools.registry import tool_registry as global_tool_registry
+                tool_registry = global_tool_registry
             schemas = tool_registry.to_openai_realtime_schema_filtered(names)
             result: List[Dict[str, Any]] = []
             for schema in schemas:
@@ -1327,6 +1331,7 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Apply system prompt from context (if provided).
         prompt = ""
         allowed_tools: list[str] = []
+        call_tool_registry = getattr(self, "_call_tool_registry", None)
         try:
             if isinstance(context, dict):
                 prompt = str(context.get("prompt") or context.get("instructions") or "").strip()
@@ -1337,7 +1342,9 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
             prompt = ""
         try:
             self._allowed_tools = set(allowed_tools or [])
-            self._allowed_tool_schemas = self._build_allowed_tool_schemas(allowed_tools)
+            self._allowed_tool_schemas = self._build_allowed_tool_schemas(
+                allowed_tools, call_tool_registry
+            )
         except Exception:
             self._allowed_tools = set()
             self._allowed_tool_schemas = []
@@ -1362,12 +1369,13 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                         allowed_tools=sorted(self._allowed_tools),
                     )
                 elif allowed_tools and "## Available Tools" not in prompt and self._effective_tool_policy != "off":
-                    from src.tools.registry import tool_registry
+                    if call_tool_registry is None:
+                        from src.tools.registry import tool_registry as call_tool_registry
 
                     if self._effective_tool_policy == "strict":
-                        tool_prompt = tool_registry.to_local_llm_prompt_filtered(allowed_tools)
+                        tool_prompt = call_tool_registry.to_local_llm_prompt_filtered(allowed_tools)
                     else:
-                        tool_prompt = tool_registry.to_local_llm_prompt_filtered_compact(allowed_tools)
+                        tool_prompt = call_tool_registry.to_local_llm_prompt_filtered_compact(allowed_tools)
                     if tool_prompt:
                         prompt = f"{prompt}\n\n{tool_prompt}".strip()
                 elif allowed_tools and self._effective_tool_policy == "off":

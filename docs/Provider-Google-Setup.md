@@ -13,8 +13,8 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `INSTALLATION.md`
 - `Transport-Mode-Compatibility.md`
 
-For how provider/context selection works (including `AI_CONTEXT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Context)"
+For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
+- `Configuration-Reference.md` → "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
 ```ini
 [from-ai-agent]
 exten => s,1,NoOp(AI Voice Agent - Google Live)
-exten => s,n,Set(AI_CONTEXT=demo_google_live)
+exten => s,n,Set(AI_AGENT=demo_google_live)
 exten => s,n,Set(AI_PROVIDER=google_live)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
@@ -59,17 +59,17 @@ exten => s,n,Hangup()
 ```ini
 [from-ai-agent]
 exten => s,1,NoOp(AI Voice Agent - Google Cloud Pipeline)
-exten => s,n,Set(AI_CONTEXT=demo_google)
+exten => s,n,Set(AI_AGENT=demo_google)
 exten => s,n,Set(AI_PROVIDER=google_cloud_full)  ; example pipeline name (you define this in `pipelines:`)
 exten => s,n,Stasis(asterisk-ai-voice-agent)
 exten => s,n,Hangup()
 ```
 
-**Recommended**: Set `AI_CONTEXT` and `AI_PROVIDER` when you want an explicit per-extension override:
-- `AI_CONTEXT` selects the context (greeting, prompt, profile, tools)
+**Recommended**: Set `AI_AGENT` and `AI_PROVIDER` when you want an explicit per-extension override:
+- `AI_AGENT` selects the Agent (greeting, prompt, profile, tools)
 - `AI_PROVIDER` selects the provider (e.g., `google_live`) or a pipeline name you defined under `pipelines:` (e.g., `google_cloud_full`)
 
-If you omit these, the engine will select a context/provider using the precedence rules in `docs/Configuration-Reference.md`.
+If you omit these, the engine selects the default Agent/provider using the precedence rules in `docs/Configuration-Reference.md`.
 
 ### 4. Restart Asterisk
 
@@ -138,7 +138,7 @@ pipelines:
 
 **Solution**: Add both variables to dialplan:
 ```ini
-exten => s,n,Set(AI_CONTEXT=demo_google)
+exten => s,n,Set(AI_AGENT=demo_google)
 exten => s,n,Set(AI_PROVIDER=google_cloud_full)
 ```
 
@@ -260,7 +260,7 @@ The setup wizard validates the key with Google's `models.list` endpoint. If that
 ```asterisk
 [from-ai-agent]
 exten => s,1,NoOp(Google Live API Demo)
-same => n,Set(AI_CONTEXT=demo_google_live)
+same => n,Set(AI_AGENT=demo_google_live)
 same => n,Set(AI_PROVIDER=google_live)  ; Use real-time agent
 same => n,Stasis(asterisk-ai-voice-agent)
 same => n,Hangup()
@@ -511,14 +511,14 @@ Barge-in on Google Live depends on `serverContent.interrupted=true` firing from 
 
 ### Before (Pipeline Mode)
 ```asterisk
-Set(AI_CONTEXT=demo_google)
+Set(AI_AGENT=demo_google)
 ; AI_PROVIDER defaults to your configured `default_provider`
 Stasis(asterisk-ai-voice-agent)
 ```
 
 ### After (Live API Mode)
 ```asterisk
-Set(AI_CONTEXT=demo_google_live)
+Set(AI_AGENT=demo_google_live)
 Set(AI_PROVIDER=google_live)  ; Enable real-time agent
 Stasis(asterisk-ai-voice-agent)
 ```

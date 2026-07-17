@@ -156,6 +156,7 @@ class DeepgramToolAdapter:
             session_store=context['session_store'],
             ari_client=context['ari_client'],
             config=context.get('config'),
+            tool_registry=self.registry,
             provider_name="deepgram",
             user_input=context.get('user_input')
         )

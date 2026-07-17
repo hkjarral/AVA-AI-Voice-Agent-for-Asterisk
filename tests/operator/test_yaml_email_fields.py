@@ -1,4 +1,4 @@
-"""Tests for per-agent email fields honored on the YAML / fallback path (#437).
+"""Tests for legacy email-field parsing used by the v7.4 Context importer (#437).
 
 _load_contexts() and _yaml_context_config() must both read email_recipient,
 email_from, and email_enabled from the YAML context dict into the ContextConfig.
@@ -8,7 +8,7 @@ email_enabled is tri-state: None means inherit (key absent stays None).
 from unittest.mock import patch
 
 from src.core.agent_store import AgentStoreReadError
-from src.core.transport_orchestrator import TransportOrchestrator, ContextConfig
+from src.core.transport_orchestrator import TransportOrchestrator
 
 
 def _orch_with_email():
@@ -58,33 +58,28 @@ def _orch_email_absent():
 
 def test_load_contexts_reads_email_recipient():
     orch = _orch_with_email()
-    # DB absent => YAML path
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("sales")
+    cc = orch._yaml_context_config("sales")
     assert cc is not None
     assert cc.email_recipient == "sales@x.test"
 
 
 def test_load_contexts_reads_email_from():
     orch = _orch_with_email()
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("sales")
+    cc = orch._yaml_context_config("sales")
     assert cc is not None
     assert cc.email_from == "from@x.test"
 
 
 def test_load_contexts_reads_email_enabled_true():
     orch = _orch_with_email()
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("sales")
+    cc = orch._yaml_context_config("sales")
     assert cc is not None
     assert cc.email_enabled is True
 
 
 def test_load_contexts_reads_email_enabled_false():
     orch = _orch_email_disabled()
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("support")
+    cc = orch._yaml_context_config("support")
     assert cc is not None
     assert cc.email_enabled is False
 
@@ -92,8 +87,7 @@ def test_load_contexts_reads_email_enabled_false():
 def test_load_contexts_absent_email_keys_stay_none():
     """Key absent in YAML => ContextConfig fields remain None (inherit)."""
     orch = _orch_email_absent()
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("billing")
+    cc = orch._yaml_context_config("billing")
     assert cc is not None
     assert cc.email_recipient is None
     assert cc.email_from is None
@@ -101,64 +95,20 @@ def test_load_contexts_absent_email_keys_stay_none():
 
 
 # ---------------------------------------------------------------------------
-# _yaml_context_config path (fallback when DB is present but unreadable)
+# Runtime fail-closed contract after Context removal
 # ---------------------------------------------------------------------------
 
-def test_yaml_context_config_fallback_reads_email_recipient():
-    """When agents.db is unreadable, fallback to YAML must still carry email_recipient."""
+def test_unreadable_agent_store_does_not_resurrect_yaml_email_configuration():
     orch = _orch_with_email()
     with patch.object(orch.agent_store, "available", return_value=True), \
          patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("locked")):
-        cc = orch.get_context_config("sales")
-    assert cc is not None
-    assert cc.email_recipient == "sales@x.test"
+        assert orch.get_context_config("sales") is None
 
 
-def test_yaml_context_config_fallback_reads_email_from():
+def test_absent_agent_store_does_not_route_legacy_yaml_email_configuration():
     orch = _orch_with_email()
-    with patch.object(orch.agent_store, "available", return_value=True), \
-         patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("locked")):
-        cc = orch.get_context_config("sales")
-    assert cc is not None
-    assert cc.email_from == "from@x.test"
-
-
-def test_yaml_context_config_fallback_reads_email_enabled_true():
-    orch = _orch_with_email()
-    with patch.object(orch.agent_store, "available", return_value=True), \
-         patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("locked")):
-        cc = orch.get_context_config("sales")
-    assert cc is not None
-    assert cc.email_enabled is True
-
-
-def test_yaml_context_config_fallback_absent_email_stays_none():
-    """Fallback path: absent email keys must stay None, not coerced to False."""
-    orch = _orch_email_absent()
-    with patch.object(orch.agent_store, "available", return_value=True), \
-         patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("locked")):
-        cc = orch.get_context_config("billing")
-    assert cc is not None
-    assert cc.email_enabled is None
-
-
-def test_yaml_and_fallback_paths_return_identical_email_fields():
-    """Both paths (YAML-only and DB-fallback) must resolve email fields identically."""
-    orch = _orch_with_email()
-
-    # YAML-only path (no DB)
     with patch.object(orch.agent_store, "available", return_value=False):
-        cc_yaml = orch.get_context_config("sales")
-
-    # DB-fallback path (DB present but unreadable)
-    with patch.object(orch.agent_store, "available", return_value=True), \
-         patch.object(orch.agent_store, "resolve", side_effect=AgentStoreReadError("corrupt")):
-        cc_fallback = orch.get_context_config("sales")
-
-    assert cc_yaml is not None and cc_fallback is not None
-    assert cc_yaml.email_recipient == cc_fallback.email_recipient
-    assert cc_yaml.email_from == cc_fallback.email_from
-    assert cc_yaml.email_enabled == cc_fallback.email_enabled
+        assert orch.get_context_config("sales") is None
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +150,7 @@ def test_load_contexts_int_1_coerced_to_true():
     int 1 satisfies `== True` but fails `is True`, silently disabling email.
     """
     orch = _orch_email_int_enabled()
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("sales_exported")
+    cc = orch._yaml_context_config("sales_exported")
     assert cc is not None
     assert cc.email_enabled is True  # strict identity, not == True
 
@@ -214,8 +163,7 @@ def test_load_contexts_int_0_coerced_to_false():
     it should be suppressed.
     """
     orch = _orch_email_int_disabled()
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("support_exported")
+    cc = orch._yaml_context_config("support_exported")
     assert cc is not None
     assert cc.email_enabled is False  # strict identity, not == False
 
@@ -243,8 +191,7 @@ def test_string_false_coerced_to_false():
     bool('false') == True in Python; _coerce_optional_bool must handle this.
     """
     orch = _orch_email_string("false")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is False
 
@@ -252,8 +199,7 @@ def test_string_false_coerced_to_false():
 def test_string_zero_coerced_to_false():
     """email_enabled: '0' (quoted YAML scalar) must resolve to False, not True."""
     orch = _orch_email_string("0")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is False
 
@@ -261,8 +207,7 @@ def test_string_zero_coerced_to_false():
 def test_string_true_coerced_to_true():
     """email_enabled: 'true' (quoted YAML scalar) must resolve to True."""
     orch = _orch_email_string("true")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is True
 
@@ -270,8 +215,7 @@ def test_string_true_coerced_to_true():
 def test_string_one_coerced_to_true():
     """email_enabled: '1' (quoted YAML scalar) must resolve to True."""
     orch = _orch_email_string("1")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is True
 
@@ -279,8 +223,7 @@ def test_string_one_coerced_to_true():
 def test_string_yes_coerced_to_true():
     """email_enabled: 'yes' must resolve to True."""
     orch = _orch_email_string("yes")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is True
 
@@ -288,8 +231,7 @@ def test_string_yes_coerced_to_true():
 def test_string_no_coerced_to_false():
     """email_enabled: 'no' must resolve to False."""
     orch = _orch_email_string("no")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is False
 
@@ -300,8 +242,7 @@ def test_unrecognized_string_coerced_to_none():
     Safest default: don't force-enable email for unknown string values.
     """
     orch = _orch_email_string("maybe")
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is None
 
@@ -310,8 +251,7 @@ def test_unexpected_int_coerced_to_none():
     """email_enabled: 2 (typo / unexpected numeric) must resolve to None (inherit),
     not True. Only 0/1 are recognized; never force-enable on a garbage numeric."""
     orch = _orch_email_string(2)
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is None
 
@@ -319,8 +259,7 @@ def test_unexpected_int_coerced_to_none():
 def test_unexpected_float_coerced_to_none():
     """email_enabled: 0.5 (unexpected numeric) must resolve to None (inherit)."""
     orch = _orch_email_string(0.5)
-    with patch.object(orch.agent_store, "available", return_value=False):
-        cc = orch.get_context_config("ctx")
+    cc = orch._yaml_context_config("ctx")
     assert cc is not None
     assert cc.email_enabled is None
 
@@ -330,7 +269,6 @@ def test_blank_string_coerced_to_none():
     (inherit), not False — a blank value must not become an explicit disable."""
     for blank in ("", "   "):
         orch = _orch_email_string(blank)
-        with patch.object(orch.agent_store, "available", return_value=False):
-            cc = orch.get_context_config("ctx")
+        cc = orch._yaml_context_config("ctx")
         assert cc is not None
         assert cc.email_enabled is None

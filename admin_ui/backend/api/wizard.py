@@ -3154,6 +3154,13 @@ async def save_setup_config(config: SetupConfig):
         if not yaml_config and os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, "r") as f:
                 yaml_config = yaml.safe_load(f)
+        pipeline_name = None
+        if config.provider == "local_hybrid":
+            llm_provider = (config.hybrid_llm_provider or "groq").lower()
+            pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
+                "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
+            )
+
         if yaml_config is not None:
             pre_edit_config = copy.deepcopy(yaml_config) if isinstance(yaml_config, dict) else {}
             
@@ -3309,9 +3316,6 @@ async def save_setup_config(config: SetupConfig):
                 # AAVA-185: Use variant-specific pipeline name so the dashboard
                 # correctly highlights the active pipeline (e.g. local_hybrid_groq).
                 llm_provider = (config.hybrid_llm_provider or "groq").lower()
-                pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
-                    "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
-                )
                 yaml_config["active_pipeline"] = pipeline_name
                 yaml_config["default_provider"] = pipeline_name  # Fallback provider
                 
@@ -3387,16 +3391,9 @@ async def save_setup_config(config: SetupConfig):
                     "tts": "local_tts"
                 }
 
-            # C6 Fix: Create default context
-            default_context = {
-                "greeting": config.greeting,
-                "prompt": f"You are {config.ai_name}, a {config.ai_role}. Be helpful and concise.",
-                "provider": config.provider if config.provider != "local_hybrid" else "local",
-                "profile": "telephony_ulaw_8k"
-            }
-            if config.provider == "local_hybrid":
-                default_context["pipeline"] = pipeline_name
-            yaml_config.setdefault("contexts", {})["default"] = default_context
+            # v7.4: Agents are the only active persona/configuration model. Do not
+            # create a new YAML Context; existing legacy Contexts are left untouched
+            # so the one-time migration bridge can import them safely.
 
             # Canonical: ARI application name is YAML-owned (asterisk.app_name).
             asterisk_block = yaml_config.get("asterisk")
@@ -3439,9 +3436,34 @@ async def save_setup_config(config: SetupConfig):
                 yaml.dump(local_override, default_flow_style=False, sort_keys=False),
                 mode_from_existing=True,
             )
+
+        # Seed only a genuinely empty, non-legacy install. This is independent of
+        # YAML write success; pending Contexts remain reserved for the engine's
+        # atomic one-time importer and must never be shadowed by starter rows.
+        from agents_migration import merged_effective_contexts
+        from agents_store import AgentsStore
+        from starter_agents import seed_starter_agents
+        starter_pipeline = pipeline_name if config.provider == "local_hybrid" else None
+        starter_provider = "local" if starter_pipeline else config.provider
+        with AgentsStore() as agent_store:
+            starter_result = seed_starter_agents(
+                agent_store,
+                provider=starter_provider,
+                pipeline=starter_pipeline,
+                assistant_name=config.ai_name,
+                assistant_role=config.ai_role,
+                receptionist_greeting=config.greeting,
+                legacy_contexts=merged_effective_contexts(
+                    CONFIG_PATH, os.path.join(os.path.dirname(CONFIG_PATH), "contexts")
+                ),
+            )
         
         # Config saved - engine start will be handled by completion step UI
-        return {"status": "success", "provider": config.provider}
+        return {
+            "status": "success",
+            "provider": config.provider,
+            "starter_agents": starter_result,
+        }
     except HTTPException:
         raise
     except Exception as e:

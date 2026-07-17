@@ -6,12 +6,12 @@
   <img alt="Asterisk AI Voice Agent" src="assets/banner_light_mode.png?v=9" width="100%">
 </picture>
 
-![Version](https://img.shields.io/badge/version-7.3.5-blue.svg)
+![Version](https://img.shields.io/badge/version-7.4.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
 ![Asterisk](https://img.shields.io/badge/asterisk-18+-orange.svg)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hkjarral/Asterisk-AI-Voice-Agent)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
 <br>
 <a href="https://www.producthunt.com/products/ava-ai-voice-agent-for-asterisk?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-ava-ai-voice-agent-for-asterisk" target="_blank" rel="noopener noreferrer"><img alt="AVA - AI Voice Agent for Asterisk - Open-source AI voice agent for any phone system | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1120145&amp;theme=light&amp;t=1775845744279"></a>
@@ -77,7 +77,7 @@ Open in your browser:
 - **Local:** `http://localhost:3003`
 - **Remote server:** `http://<server-ip>:3003`
 
-**Default Login:** On first start, a one-time admin password is printed to the container logs. Retrieve it with:
+**First login:** On first start, a one-time admin password is printed to the container logs. Retrieve it with:
 ```bash
 docker compose -p asterisk-ai-voice-agent logs admin_ui | grep -i password
 ```
@@ -167,6 +167,36 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 ## 🎉 What's New
 
 <details open>
+<summary><b>v7.4.0 — Agent-scoped tools and Agent-only routing 🧰</b></summary>
+
+**Each Agent can now receive only the transfer destinations, calendars, and
+voicemail mailboxes it should be allowed to use.**
+
+- **Per-Agent resource access** — configure the global inventory on **Tools**, then
+  choose **Inherit**, **Selected**, or **None** under **Agents → Edit Agent → Tools**
+  for the transfer family, Google Calendar, Microsoft Calendar, and voicemail.
+- **One enforced call snapshot** — provider schemas, prompt guidance, execution,
+  deferred transfers, and audit metadata all use the same effective resource set.
+  Empty or stale selections fail closed, and a globally disabled tool always wins.
+- **Restart-free tool updates** — **Tools → Save & Apply** validates and publishes a
+  new tool generation for new calls. Active calls keep the generation they started
+  with; a failed build leaves the previous generation running.
+- **Contexts retired** — runtime persona routing now reads Agents from `agents.db`.
+  Legacy YAML Contexts are imported atomically on upgrade, and `AI_CONTEXT` remains
+  a deprecated compatibility alias while dialplans move to `AI_AGENT`.
+- **Cleaner first run** — empty installations start with Receptionist, Sales, and
+  Support instead of a collection of demonstration Contexts.
+- **Call History compatibility** — tool names remain `google_calendar`,
+  `microsoft_calendar`, and `leave_voicemail`, so existing filters and reports keep
+  working.
+
+Before upgrading—especially from v7.3.0–v7.3.3—read the
+[v7.4 upgrade procedure](docs/INSTALLATION.md#upgrade-to-v740-existing-checkout)
+and [Contexts → Agents migration guide](docs/OPERATOR_MIGRATION.md).
+
+</details>
+
+<details>
 <summary><b>v7.3.5 — Caller connection ringback 📞</b></summary>
 
 **Callers no longer wait through silent provider or pipeline startup.**
@@ -302,10 +332,10 @@ Full notes in [CHANGELOG.md](CHANGELOG.md).
 
 The biggest release yet: **manage your AI agents from the Admin UI, not a config file.**
 
-- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt and provider, and copy a ready-to-paste dialplan snippet. (Voice is configured on the provider, not per agent.)
+- **🤖 Agents tab** — create, edit, and manage agents in the UI. Start from a template (receptionist, after-hours, appointment booker, and more), set the prompt and provider, and copy a ready-to-paste dialplan snippet.
 - **📊 Multi-agent dashboard** — live KPIs (active agents, active calls, calls routed, transfers), per-agent stats, and routing breakdowns at a glance.
 - **☎️ New `AI_AGENT` dialplan variable** — route a call to an agent by name. Your existing `AI_CONTEXT` dialplans keep working unchanged.
-- **🔄 Automatic migration** — your existing contexts move into a local agents database on first start. Nothing to do, and rollback is one command.
+- **🔄 Automatic migration** — your existing contexts move into a local agents database on first start. Back up `agents.db` before later major-version upgrades; see the operator migration guide for rollback boundaries.
 - **🔒 Security hardening** — no more `admin`/`admin`: a one-time admin password is generated and must be changed at first login. Config exports no longer bundle your `.env` by default.
 
 ⚠️ Major release — please read the [Upgrade Notes](CHANGELOG.md) before upgrading from 6.x.
@@ -352,7 +382,7 @@ If you have an `ai-agent.local.yaml` that explicitly pins `api_version: beta`, r
 ### 🏢 Multi-instance full-agent providers (NEW, v6.5.2)
 - Run multiple instances of the same full-agent provider type with isolated credentials (e.g. `acme_google_live` + `globex_google_live` both using `type: google_live`)
 - Per-instance credential files at `/app/project/secrets/providers/<provider_key>/{api-key,agent-id,vertex-json}` — the new per-provider Vertex upload path does NOT mutate `.env`
-- Route via `AI_PROVIDER` channel var, `contexts.<name>.provider:` YAML, or DID-based dispatch with Asterisk `Gosub`
+- Route via `AI_PROVIDER`, an Agent's provider selection plus `AI_AGENT`, or DID-based dispatch with Asterisk `Gosub`
 - Setup guide: [docs/Multi-Instance-Full-Agent-Providers.md](docs/Multi-Instance-Full-Agent-Providers.md)
 - **Breaking for multi-instance setups:** short aliases `AI_PROVIDER=openai`, `AI_PROVIDER=google`, `provider: deepgram_agent` now fail validation — use exact provider instance keys instead. Single-instance setups using the canonical block names are unaffected.
 
@@ -386,8 +416,8 @@ For older releases, expand **Previous Versions** below. Full release notes in [C
 <summary><b>Previous Versions</b></summary>
 
 #### v6.4.2 - Microsoft Calendar V1 + Google Calendar overhaul
-- 🗓️ Microsoft Calendar — Outlook / Microsoft 365 integration via device-code OAuth, Graph free/busy, per-context account binding, Tools UI Connect/Verify/Disconnect
-- 📅 Google Calendar — multi-account / per-context binding (#338), JSON upload + auto-discover, Domain-Wide Delegation, native free/busy mode
+- 🗓️ Microsoft Calendar — Outlook / Microsoft 365 integration via device-code OAuth, Graph free/busy, legacy per-context account binding, Tools UI Connect/Verify/Disconnect (migrated to per-Agent resource access in v7.4)
+- 📅 Google Calendar — multi-account / legacy per-context binding (#338), JSON upload + auto-discover, Domain-Wide Delegation, native free/busy mode (migrated to per-Agent resource access in v7.4)
 - 🎯 Reschedule reliability — server-side `event_id` resolution + 400/404 fallback eliminates LLM-id-hallucination duplicate bookings
 - 🔧 Date/time prompt placeholders (`{today}`, `{current_date}`, etc.) so models stop reasoning with stale years
 - OpenAI Realtime duplicate-events fix (per-`response_id` async-event gating); per-context `tool_overrides` now actually take effect on OpenAI Realtime / Deepgram / Google Live; Google Live 30-voice catalog (#349)
@@ -646,6 +676,22 @@ Agent: "I'll connect you to our sales team right away."
 - **Hangup Call**: Ends call gracefully with farewell.
 - **Voicemail**: Routes to voicemail box.
 
+### Agent-scoped resource access (v7.4+)
+
+The **Tools** page owns global configuration and inventory. The **Agents** page
+controls which inventory entries each Agent can use:
+
+| Resource family | Per-Agent choices |
+|---|---|
+| Transfers | Inherit all destinations, select destination keys, or deny all |
+| Google Calendar | Inherit all calendars, select calendar keys, or deny all |
+| Microsoft Calendar | Inherit all accounts, select account keys, or deny all |
+| Voicemail | Inherit the default mailbox, select one mailbox, or deny all |
+
+Global disablement is authoritative. Selected policies with no valid keys fail
+closed. See [Agents](docs/AGENTS.md#per-agent-tool-access-and-reloads) for the
+runtime model and [Tool Calling](docs/TOOL_CALLING_GUIDE.md) for operator setup.
+
 ### Email Integration
 
 - **Automatic Call Summaries**: Admins receive full transcripts and metadata.
@@ -682,15 +728,9 @@ in_call_tools:
     enabled: true
     is_global: false
 
-contexts:
-  default:
-    pre_call_tools:
-      - pre_call_lookup
-    tools:
-      - intent_router
-      - hangup_call
-    post_call_tools:
-      - post_call_webhook
+# Assign phase tools in Admin UI → Agents → Edit Agent → Tools.
+# Agent assignments are stored in data/operator/agents.db, not in live
+# YAML Context blocks. The global definitions above remain in YAML.
 ```
 
 ---
@@ -701,7 +741,7 @@ Production-ready CLI for operations and setup.
 
 **Installation:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/main/scripts/install-cli.sh | bash
+curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh | bash
 ```
 
 **Commands:**
@@ -900,8 +940,8 @@ See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list — contributions are r
 ## 💬 Community
 
 - **[Discord Server](https://discord.gg/ysg8fphxUe)** - Support and discussions
-- [GitHub Issues](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/issues) - Bug reports
-- [GitHub Discussions](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/discussions) - General chat
+- [GitHub Issues](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues) - Bug reports
+- [GitHub Discussions](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/discussions) - General chat
 
 ---
 
@@ -913,7 +953,10 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## 💖 Support This Project
 
-Asterisk AI Voice Agent is **free and open source**. If it's saving you money, consider supporting development:
+Asterisk AI Voice Agent is **free, open source, and independently maintained**. If AVA is
+handling real calls for you, a **$5 contribution** helps pay for PBX and provider compatibility
+testing, release infrastructure, and fixes. Organizations that rely on AVA can sponsor its
+continued maintenance through GitHub Sponsors.
 
 <p align="center">
   <a href="https://github.com/sponsors/hkjarral">
@@ -928,12 +971,12 @@ Asterisk AI Voice Agent is **free and open source**. If it's saving you money, c
 </p>
 
 Your support funds:
-- 🐛 Faster bug fixes and issue responses  
-- ✨ New provider integrations and features  
-- 📚 Better documentation and tutorials
+- 🧪 PBX, provider, upgrade, and regression testing
+- 🐛 Bug fixes, issue investigation, and release infrastructure
+- ✨ Provider integrations, operator features, and documentation
 
 If you find this project useful, please also give it a ⭐️!
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/Asterisk-AI-Voice-Agent&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/Asterisk-AI-Voice-Agent&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)

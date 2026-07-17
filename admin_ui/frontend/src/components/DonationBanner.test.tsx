@@ -15,24 +15,15 @@ const handlers = () => ({
 });
 
 describe('DonationBanner', () => {
-  it('renders the call count when provided', () => {
+  it('renders completed-call impact and concrete funding copy', () => {
     render(<DonationBanner callCount={1234} {...handlers()} />);
     expect(screen.getByText(/1,234 calls/)).toBeInTheDocument();
-  });
-
-  it('uses generic copy when count is absent', () => {
-    render(<DonationBanner {...handlers()} />);
-    expect(screen.getByText(/Thanks for running AVA/)).toBeInTheDocument();
-  });
-
-  it('uses generic copy for a zero-call install', () => {
-    render(<DonationBanner callCount={0} {...handlers()} />);
-    expect(screen.getByText(/Thanks for running AVA/)).toBeInTheDocument();
+    expect(screen.getByText(/PBX and provider compatibility testing/)).toBeInTheDocument();
   });
 
   it('Ko-fi link has correct href, target and rel', () => {
     render(<DonationBanner callCount={10} {...handlers()} />);
-    const link = screen.getByRole('link', { name: 'Support AVA on Ko-fi' });
+    const link = screen.getByRole('link', { name: 'Contribute $5 to AVA on Ko-fi' });
     expect(link).toHaveAttribute('href', KOFI_URL);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
@@ -40,7 +31,7 @@ describe('DonationBanner', () => {
 
   it('Sponsor link points at GitHub Sponsors', () => {
     render(<DonationBanner callCount={10} {...handlers()} />);
-    expect(screen.getByRole('link', { name: 'Sponsor AVA on GitHub' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Sponsor AVA as a business on GitHub' })).toHaveAttribute(
       'href',
       SPONSORS_URL,
     );
@@ -50,8 +41,8 @@ describe('DonationBanner', () => {
     const h = handlers();
     render(<DonationBanner callCount={10} {...h} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: 'Support AVA on Ko-fi' }));
-    await user.click(screen.getByRole('link', { name: 'Sponsor AVA on GitHub' }));
+    await user.click(screen.getByRole('link', { name: 'Contribute $5 to AVA on Ko-fi' }));
+    await user.click(screen.getByRole('link', { name: 'Sponsor AVA as a business on GitHub' }));
     expect(h.onDonate).toHaveBeenCalledTimes(2);
   });
 
@@ -59,7 +50,7 @@ describe('DonationBanner', () => {
     const h = handlers();
     render(<DonationBanner callCount={10} {...h} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'I already donated' }));
+    await user.click(screen.getByRole('button', { name: 'I already support AVA' }));
     expect(h.onAlreadyDonated).toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Maybe later' }));
     expect(h.onLater).toHaveBeenCalled();
@@ -71,15 +62,15 @@ describe('DonationBanner', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: "Don't show again" }));
     expect(h.onDismiss).not.toHaveBeenCalled();
-    expect(screen.getByText(/Really\?/)).toBeInTheDocument();
+    expect(screen.getByText(/Hide donation reminders\?/)).toBeInTheDocument();
   });
 
-  it('confirm Yes, hide for good calls onDismiss', async () => {
+  it('confirm Hide reminders calls onDismiss', async () => {
     const h = handlers();
     render(<DonationBanner callCount={10} {...h} />);
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: "Don't show again" }));
-    await user.click(screen.getByRole('button', { name: 'Yes, hide for good' }));
+    await user.click(screen.getByRole('button', { name: 'Hide reminders' }));
     expect(h.onDismiss).toHaveBeenCalled();
     expect(h.onKeepReminders).not.toHaveBeenCalled();
   });
