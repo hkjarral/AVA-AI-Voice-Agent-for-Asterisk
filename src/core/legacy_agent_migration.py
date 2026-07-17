@@ -9,6 +9,7 @@ After the import, Agents are the only runtime source of persona configuration.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -73,6 +74,22 @@ def _mapping(value: Any) -> Dict[str, Any]:
     raise TypeError(f"expected mapping, got {type(value).__name__}")
 
 
+def contexts_hash(contexts: Mapping[str, Any]) -> str:
+    """Return the Admin-compatible normalized digest used for drift checks."""
+    clean = {
+        key: {
+            field: value
+            for field, value in _mapping(raw_context).items()
+            if field != "_source_file"
+        }
+        for key, raw_context in contexts.items()
+    }
+    canonical = json.dumps(
+        clean, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def _email_enabled(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -131,7 +148,7 @@ def _migration_completed(db_path: str) -> bool:
         raise LegacyAgentMigrationError(f"existing agents.db is unreadable: {exc}") from exc
 
 
-def _record_migration_completed(db_path: str) -> None:
+def _record_migration_completed(db_path: str, digest: Optional[str]) -> None:
     """Mark an existing authoritative Agent store as migrated."""
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -146,8 +163,10 @@ def _record_migration_completed(db_path: str) -> None:
                     )"""
                 )
                 connection.execute(
-                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?,?)",
-                    (MIGRATION_VERSION, now),
+                    """INSERT OR IGNORE INTO schema_migrations(
+                       version, applied_at, contexts_hash
+                    ) VALUES (?,?,?)""",
+                    (MIGRATION_VERSION, now, digest),
                 )
         finally:
             connection.close()
@@ -279,7 +298,14 @@ def ensure_legacy_contexts_imported(
             # A pre-provisioned/early v7.4 store may have Agent rows without the
             # migration marker. Record that it is authoritative so deleting its
             # final Agent later cannot make retained legacy YAML import again.
-            _record_migration_completed(target)
+            try:
+                digest = contexts_hash(context_map)
+            except TypeError:
+                # A populated Agent store remains authoritative even if retained
+                # legacy diagnostics are malformed. Preserve the prior startup
+                # behavior and leave the optional drift baseline unknown.
+                digest = None
+            _record_migration_completed(target, digest)
             return {
                 "imported": 0,
                 "already_configured": True,
@@ -290,6 +316,7 @@ def ensure_legacy_contexts_imported(
         rows = []
         errors = []
         seen = set()
+        normalized_contexts: Dict[str, Dict[str, Any]] = {}
         now = datetime.now(timezone.utc).isoformat()
         for original_name, raw_context in context_map.items():
             try:
@@ -297,6 +324,7 @@ def ensure_legacy_contexts_imported(
             except TypeError as exc:
                 errors.append(f"{original_name}: {exc}")
                 continue
+            normalized_contexts[original_name] = context
             prompt = context.get("prompt") or context.get("system_prompt") or ""
             if not isinstance(prompt, str):
                 errors.append(f"{original_name}: prompt must be a string")
@@ -332,6 +360,7 @@ def ensure_legacy_contexts_imported(
             raise LegacyAgentMigrationError(
                 "legacy Context import validation failed: " + "; ".join(errors)
             )
+        digest = contexts_hash(normalized_contexts)
 
         fd, temp_path = tempfile.mkstemp(prefix=".agents-v740-", suffix=".db", dir=parent)
         os.close(fd)
@@ -353,8 +382,8 @@ def ensure_legacy_contexts_imported(
                     ("default" if "default" in seen else rows[0][1],),
                 )
                 connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at, contexts_hash) VALUES (?,?,NULL)",
-                    (MIGRATION_VERSION, now),
+                    "INSERT INTO schema_migrations(version, applied_at, contexts_hash) VALUES (?,?,?)",
+                    (MIGRATION_VERSION, now, digest),
                 )
                 connection.commit()
                 integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]

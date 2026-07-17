@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 
@@ -58,6 +59,31 @@ def test_import_is_atomic_complete_and_collision_safe(tmp_path):
         assert "tool_overrides" not in json.loads(first["extra_json"])
         assert first["email_enabled"] == 0
         assert sum(int(row["is_default"]) for row in rows) == 1
+
+
+def test_engine_import_records_admin_compatible_context_hash(tmp_path):
+    database = tmp_path / "agents.db"
+    contexts = {
+        "sales": {
+            "provider": "local",
+            "prompt": "Sell safely",
+            "_source_file": "contexts/sales.yaml",
+        }
+    }
+
+    ensure_legacy_contexts_imported(contexts, db_path=str(database))
+
+    canonical = json.dumps(
+        {"sales": {"provider": "local", "prompt": "Sell safely"}},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected = hashlib.sha256(canonical.encode()).hexdigest()
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT contexts_hash FROM schema_migrations WHERE version=1"
+        ).fetchone()[0]
+    assert stored == expected
 
 
 def test_populated_agent_store_is_never_overwritten(tmp_path):
