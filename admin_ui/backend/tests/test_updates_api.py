@@ -190,8 +190,13 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         "--local-changes=retain --self-update=false"
     ) in detail
     assert 'AAVA_HOME="$(getent passwd "$AAVA_UID"' in detail
+    assert '! sudo test -d "$AAVA_HOME"' in detail
     assert '--clear-groups test -x "$AAVA_HOME"' in detail
-    assert "AAVA_HOME=/tmp" in detail
+    assert 'AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)"' in detail
+    assert 'sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME"' in detail
+    assert 'sudo chmod 0700 "$AAVA_TEMP_HOME"' in detail
+    assert 'sudo rm -rf -- "$AAVA_TEMP_HOME"' in detail
+    assert "AAVA_HOME=/tmp" not in detail
     assert "--self-update=true" not in detail
 
 

@@ -213,11 +213,6 @@ AAVA_SETPRIV="$(command -v setpriv)" || {
   echo "setpriv is required; install util-linux and retry" >&2
   exit 2
 }
-AAVA_HOME="$(getent passwd "$AAVA_UID" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
-if [ -z "$AAVA_HOME" ] || ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" \
-  --regid="$AAVA_GID" --clear-groups test -x "$AAVA_HOME" 2>/dev/null; then
-  AAVA_HOME=/tmp
-fi
 AAVA_GROUPS="$(sudo -u "#$AAVA_UID" -g "#$AAVA_GID" id -G 2>/dev/null | tr ' ' ',')" \
   || AAVA_GROUPS="$AAVA_GID"
 AAVA_GROUPS="${AAVA_GROUPS:-$AAVA_GID}"
@@ -230,6 +225,7 @@ if sudo test -S /var/run/docker.sock; then
 fi
 (
   AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2
+  AAVA_TEMP_HOME=
   aava_restore_traversal() {
     AAVA_RESTORE_STATUS=0
     while IFS="$(printf '\t')" read -r AAVA_MODE AAVA_PARENT; do
@@ -237,6 +233,9 @@ fi
         sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2
       fi
     done < "$AAVA_TRAVERSAL_STATE"
+    if [ -n "$AAVA_TEMP_HOME" ]; then
+      sudo rm -rf -- "$AAVA_TEMP_HOME" || AAVA_RESTORE_STATUS=2
+    fi
     rm -f -- "$AAVA_TRAVERSAL_STATE"
     return "$AAVA_RESTORE_STATUS"
   }
@@ -244,6 +243,15 @@ fi
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  AAVA_HOME="$(getent passwd "$AAVA_UID" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
+  if [ -z "$AAVA_HOME" ] || ! sudo test -d "$AAVA_HOME" || \
+    ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
+      --clear-groups test -x "$AAVA_HOME" 2>/dev/null; then
+    AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2
+    sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2
+    sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2
+    AAVA_HOME="$AAVA_TEMP_HOME"
+  fi
   AAVA_PARENT="$(dirname "$AAVA_REPO")"
   while [ "$AAVA_PARENT" != "/" ]; do
     if ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
@@ -267,9 +275,11 @@ runtime files owned by Asterisk or another service account. The recovery above r
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
 so Docker access does not depend on which sudoer pasted the recovery. It also resets
-`HOME` to the checkout owner's traversable passwd home (or `/tmp` as a fallback), which
-keeps system-wide Docker CLI plugins such as Compose discoverable after the identity
-drop. Patch capture
+`HOME` to the checkout owner's traversable passwd home. If that is unavailable, recovery
+creates a random mode-700, target-owned temporary home and removes it on exit; it never
+uses shared `/tmp` itself as `HOME`, where an untrusted Docker plugin could shadow a
+system plugin. This keeps system-wide Docker CLI plugins such as Compose discoverable
+after the identity drop. Patch capture
 and CLI bootstrap fail closed before any repair or update if Git cannot inspect the
 checkout or read either diff, the filesystem cannot write the preservation file, the
 checkout owner cannot be determined, or the requested CLI cannot be downloaded,

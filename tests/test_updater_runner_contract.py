@@ -29,8 +29,12 @@ def test_updater_drops_to_the_project_owner_before_writing() -> None:
         in runner
     )
     assert 'user_home="$(getent passwd "${project_uid}"' in runner
+    assert '[ ! -d "${user_home}" ]' in runner
     assert 'gosu "${user_name}" test -x "${user_home}"' in runner
-    assert "user_home=/tmp" in runner
+    assert 'mktemp -d /tmp/aava-updater-home.XXXXXXXXXX' in runner
+    assert 'chown "${project_uid}:${project_gid}" "${user_home}"' in runner
+    assert 'chmod 0700 "${user_home}"' in runner
+    assert "user_home=/tmp" not in runner
     assert 'getent group "${project_gid}" 2>/dev/null' in runner
     assert "|| true" in runner
     assert "gosu" in dockerfile
@@ -52,7 +56,7 @@ def test_updater_refuses_privileged_legacy_state_repair() -> None:
     assert ownership_scan in drop_body
     assert "use host CLI recovery" in drop_body
     assert drop_body.index(ownership_scan) < drop_body.index(reexec)
-    assert drop_body.index("user_home=/tmp") < drop_body.index(reexec)
+    assert drop_body.index("mktemp -d /tmp/aava-updater-home") < drop_body.index(reexec)
     assert '[ -L "${PROJECT_ROOT}/.agent" ]' in drop_body
 
 
