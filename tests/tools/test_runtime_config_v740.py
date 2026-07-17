@@ -98,6 +98,22 @@ def test_stale_selected_key_is_reported_and_not_exposed():
     assert effective.effective_destination_keys == ()
 
 
+def test_selected_placeholder_destination_is_stale_and_not_exposed():
+    effective = resolve_agent_tool_config(
+        {"tools": {"transfer": {"destinations": {"support_queue": None}}}},
+        {
+            "transfer": {
+                "destination_policy": "selected",
+                "destination_keys": ["support_queue"],
+            }
+        },
+    )
+
+    assert effective.config["tools"]["transfer"]["destinations"] == {}
+    assert effective.stale_destination_keys == ("support_queue",)
+    assert effective.effective_destination_keys == ()
+
+
 def test_calendar_and_voicemail_resources_are_filtered_per_agent():
     effective = resolve_agent_tool_config(
         GLOBAL,

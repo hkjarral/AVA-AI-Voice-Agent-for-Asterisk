@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from api import agents as agents_api
 from agents_store import AgentsStore
+from starter_agents import seed_starter_agents
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -144,6 +145,38 @@ def test_pipeline_starter_set_preserves_profile_provider(client):
         __import__("json").loads(agent["extra_json"])["pipeline"] == "local_hybrid"
         for agent in agents
     )
+
+
+def test_starter_set_uses_defaults_for_whitespace_name_and_role(client):
+    response = client.post(
+        "/api/agents/starter-set",
+        json={
+            "provider": "openai_realtime",
+            "assistant_name": "   ",
+            "assistant_role": "\t",
+        },
+    )
+
+    assert response.status_code == 200
+    receptionist = next(
+        agent for agent in client.get("/api/agents").json()
+        if agent["slug"] == "receptionist"
+    )
+    assert receptionist["prompt"].startswith("You are AVA,")
+    assert "expected of a voice assistant." in receptionist["prompt"]
+
+
+def test_starter_set_rolls_back_when_default_selection_fails(tmp_path, monkeypatch):
+    with AgentsStore(db_path=str(tmp_path / "agents.db")) as store:
+        def fail_default(_slug):
+            raise RuntimeError("default write failed")
+
+        monkeypatch.setattr(store, "set_default", fail_default)
+
+        with pytest.raises(RuntimeError, match="default write failed"):
+            seed_starter_agents(store, provider="openai_realtime")
+
+        assert store.list_all() == []
 
 
 def test_starter_set_waits_for_pending_legacy_context_migration(

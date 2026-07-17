@@ -376,8 +376,15 @@ def resolve_agent_tool_config(
         effective = {}
         stale = ()
     else:
-        effective = {key: destinations[key] for key in requested if key in destinations}
-        stale = tuple(key for key in requested if key not in destinations)
+        effective = {
+            key: destinations[key]
+            for key in requested
+            if key in destinations and isinstance(destinations[key], Mapping)
+        }
+        # Placeholder inventory entries (for example ``support_queue: null``)
+        # are not executable routes. Keep them fail-closed and surface them as
+        # stale just like a selected resource removed from the global catalog.
+        stale = tuple(key for key in requested if key not in effective)
     transfer["destinations"] = effective
 
     # The transfer scope also governs direct live-agent/status targets.  In selected

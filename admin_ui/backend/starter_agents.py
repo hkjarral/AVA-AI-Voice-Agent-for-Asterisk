@@ -28,8 +28,8 @@ def seed_starter_agents(
             "legacy_contexts_pending": True,
         }
 
-    name = (assistant_name or "AVA").strip()
-    role = (assistant_role or "voice assistant").strip()
+    name = (assistant_name or "").strip() or "AVA"
+    role = (assistant_role or "").strip() or "voice assistant"
     # A pipeline remains the selected execution path, while a compatible full-
     # agent provider gives early transport/audio-profile resolution the same
     # capabilities that legacy pipeline Contexts supplied (for example, local +
@@ -94,10 +94,13 @@ def seed_starter_agents(
                 **definition,
             )
             created.append(row["slug"])
+        # Default selection is part of the same compensating transaction as
+        # creation. A late database failure must not strand a partial starter
+        # set that future retries mistake for an intentional configuration.
+        store.set_default("receptionist")
     except Exception:
         for slug in reversed(created):
             store.delete(slug)
         raise
 
-    store.set_default("receptionist")
     return {"created": created, "default_slug": "receptionist", "already_configured": False}
