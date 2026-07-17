@@ -4,6 +4,7 @@ import axios from 'axios';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
+import { copyTextToClipboard } from '../../utils/clipboard';
 
 type UpdateAvailable = boolean | null;
 
@@ -107,6 +108,7 @@ const UpdatesPage = () => {
   const [plan, setPlan] = useState<UpdatePlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [planRecoveryCopied, setPlanRecoveryCopied] = useState(false);
 
   const [jobId, setJobId] = useState<string | null>(() => localStorage.getItem('aava_update_job_id'));
   const [job, setJob] = useState<any>(null);
@@ -267,6 +269,17 @@ const UpdatesPage = () => {
     } catch (e) {
       window.prompt('Copy recovery commands:', text);
     }
+  };
+
+  const copyPlanErrorRecovery = async () => {
+    if (!planError) return;
+    const copied = await copyTextToClipboard(planError);
+    if (!copied) {
+      window.prompt('Copy update error and recovery commands:', planError);
+      return;
+    }
+    setPlanRecoveryCopied(true);
+    setTimeout(() => setPlanRecoveryCopied(false), 2000);
   };
 
   const rollbackFromJob = async (sourceJob: any) => {
@@ -735,7 +748,31 @@ const UpdatesPage = () => {
             </div>
           )}
 
-          {planError && <div className="text-sm text-destructive">{planError}</div>}
+          {planError && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-medium text-destructive">Update preview failed</div>
+                <button
+                  type="button"
+                  onClick={copyPlanErrorRecovery}
+                  className="shrink-0 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
+                >
+                  {planRecoveryCopied ? 'Copied' : 'Copy error + recovery'}
+                </button>
+              </div>
+              <pre className="mt-2 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/80 p-3 font-mono text-xs text-foreground">
+                {planError}
+              </pre>
+              <a
+                href="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/main/docs/INSTALLATION.md#update-planner-recovery-including-issue-518"
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-block text-xs text-primary hover:underline"
+              >
+                Open the full upgrade recovery guide
+              </a>
+            </div>
+          )}
           {renderUpdaterImageStatus('plan')}
 
           {plan && (

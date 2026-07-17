@@ -49,6 +49,78 @@ def test_updater_pull_preference_only_for_release_targets(ref: str, expected: st
     assert system._updater_prefer_pull_ref_for_update_target(ref) == expected
 
 
+@pytest.mark.parametrize(
+    ("exit_code", "expected"),
+    [
+        (0, '{"plan":true}'),
+        (1, "error: cannot open '.git/FETCH_HEAD': Permission denied\n"),
+    ],
+)
+def test_ephemeral_plan_keeps_success_json_clean_and_surfaces_failure_stderr(
+    monkeypatch, tmp_path, exit_code: int, expected: str
+) -> None:
+    class FakeContainer:
+        def wait(self, timeout: int):
+            assert timeout == 30
+            return {"StatusCode": exit_code}
+
+        def logs(self, *, stdout: bool, stderr: bool):
+            if stdout and not stderr:
+                return b'{"plan":true}' if exit_code == 0 else b""
+            if not stdout and stderr:
+                return b"error: cannot open '.git/FETCH_HEAD': Permission denied\n"
+            return b"unexpected combined logs"
+
+        def remove(self, force: bool):
+            assert force is True
+
+    container = FakeContainer()
+
+    class FakeContainers:
+        def run(self, *_args, **_kwargs):
+            return container
+
+        def get(self, _name: str):
+            return container
+
+    class FakeDockerClient:
+        containers = FakeContainers()
+
+    monkeypatch.setattr(system, "_current_project_head_sha", lambda: "abcdef123456")
+    monkeypatch.setattr(system, "_ensure_updater_image_for_ref", lambda *_args, **_kwargs: "updater:test")
+    monkeypatch.setattr(system, "_docker_sock_host_path_from_admin_ui_container", lambda: "/var/run/docker.sock")
+    monkeypatch.setattr(system.docker, "from_env", lambda: FakeDockerClient())
+
+    code, output = system._run_updater_ephemeral(
+        str(tmp_path),
+        env={"AAVA_UPDATE_MODE": "plan", "AAVA_UPDATE_REF": "v7.4.0"},
+        capture_stderr=False,
+    )
+
+    assert code == exit_code
+    assert output == expected
+
+
+@pytest.mark.asyncio
+async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(system, "_project_host_root_from_admin_ui_container", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        system,
+        "_run_updater_ephemeral",
+        lambda *_args, **_kwargs: (1, "mkdir: cannot create directory '/root': Permission denied\n"),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await system.updates_plan(ref="v7.4.0", include_ui=True, checkout=False)
+
+    detail = str(exc.value.detail)
+    assert "Updater error:" in detail
+    assert "mkdir: cannot create directory '/root': Permission denied" in detail
+    assert f"AAVA_REPO={tmp_path}" in detail
+    assert "AGENT_VERSION=v7.4.0" in detail
+    assert "agent update --ref v7.4.0 --include-ui --local-changes=retain" in detail
+
+
 def test_ai_engine_sessions_stats_urls_use_configured_health_port(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AI_ENGINE_HEALTH_URL", raising=False)
     monkeypatch.delenv("HEALTH_BIND_PORT", raising=False)

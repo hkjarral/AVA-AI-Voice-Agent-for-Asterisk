@@ -34,6 +34,24 @@ def test_updater_repairs_legacy_root_owned_state_before_privilege_drop() -> None
     assert '[ -L "${PROJECT_ROOT}/.agent" ]' in runner
 
 
+def test_updater_stays_root_when_checkout_and_git_metadata_owners_differ() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+
+    assert 'git_uid="$(stat -c \'%u\' "${PROJECT_ROOT}/.git" 2>/dev/null || true)"' in runner
+    assert '[ "${git_uid}" != "${project_uid}" ]' in runner
+    assert "updater will remain root" in runner
+
+
+def test_updater_makes_container_mount_parents_traversable_before_drop() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+
+    traversal = 'chmod a+x "${parent_dir}"'
+    reexec = 'exec gosu "${user_name}" "$0" "$@"'
+    assert 'parent_dir="$(dirname "${PROJECT_ROOT}")"' in runner
+    assert traversal in runner
+    assert runner.index(traversal) < runner.index(reexec)
+
+
 def test_updater_image_embeds_the_requested_cli_version() -> None:
     dockerfile = (ROOT / "updater" / "Dockerfile").read_text(encoding="utf-8")
     release_workflow = (ROOT / ".github" / "workflows" / "release-images.yml").read_text(

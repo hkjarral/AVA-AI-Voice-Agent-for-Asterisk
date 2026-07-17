@@ -21,10 +21,20 @@ drop_to_project_owner() {
     return 0
   fi
 
-  local project_uid project_gid socket_gid user_name primary_group socket_group
+  local project_uid project_gid git_uid socket_gid user_name primary_group socket_group parent_dir
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
   project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
   if [ "${project_uid}" = "0" ]; then
+    return 0
+  fi
+
+  # The checkout root and Git metadata can have different owners after an older
+  # root-run update or a bounded Admin UI permission repair. Dropping to the root
+  # directory owner in that state makes even `git fetch` fail on .git/FETCH_HEAD.
+  # Stay root for this recovery hop instead of guessing at a recursive chown.
+  git_uid="$(stat -c '%u' "${PROJECT_ROOT}/.git" 2>/dev/null || true)"
+  if [ -n "${git_uid}" ] && [ "${git_uid}" != "${project_uid}" ]; then
+    echo "WARN: checkout owner UID ${project_uid} differs from .git owner UID ${git_uid}; updater will remain root" >&2
     return 0
   fi
 
@@ -62,6 +72,21 @@ drop_to_project_owner() {
       usermod -aG "${socket_group}" "${user_name}"
     fi
   fi
+
+  # Docker creates the bind target at the host's absolute path. Image-owned
+  # ancestors such as /root may not be traversable by the project UID even when
+  # the mounted checkout itself is. Grant execute-only traversal inside this
+  # short-lived updater container before dropping privileges.
+  parent_dir="$(dirname "${PROJECT_ROOT}")"
+  while [ "${parent_dir}" != "/" ]; do
+    if ! gosu "${user_name}" test -x "${parent_dir}"; then
+      chmod a+x "${parent_dir}" || {
+        echo "WARN: cannot make updater mount parent traversable: ${parent_dir}; updater will remain root" >&2
+        return 0
+      }
+    fi
+    parent_dir="$(dirname "${parent_dir}")"
+  done
 
   exec gosu "${user_name}" "$0" "$@"
 }

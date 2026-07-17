@@ -80,12 +80,17 @@ The Admin UI path is **System → Updates**. Preview the plan, select **Retain l
 changes**, **Overwrite local changes**, or **Abort**, then proceed. Use a published tag
 for production; untagged branches belong on development systems only.
 
-#### Required recovery path for v7.3.0–v7.3.3 ([#518](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/518))
+#### Update planner recovery, including issue [#518](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/518)
 
-Some older installations can show only `Failed to compute update plan`. The common
-causes are a stale cached updater image, older updater ownership, or tracked local edits
-that the old UI did not surface. Bootstrap the *target release CLI* first so planning and
-execution use the fixed updater:
+Older installations, and checkouts with ownership left over from an older root-run
+update, can show `Failed to compute update plan`. Fixed Admin UI releases print the
+updater's exact stderr followed by host-CLI recovery commands. The common causes are a
+stale cached updater image, mixed checkout/`.git` ownership, a checkout mounted below
+`/root` that the updater's non-root user cannot traverse, or tracked local edits that the
+old UI did not surface.
+
+Bootstrap the *target release CLI* first so recovery does not depend on the failing UI
+planner container:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
@@ -97,12 +102,76 @@ agent update --ref v7.4.0 --include-ui --local-changes=retain
 ```
 
 Use `overwrite` only after the patch/backup step above confirms you do not need the
-tracked edits. If Git reports dubious ownership, add only this checkout as safe using
-the path printed by Git:
+tracked edits.
+
+If the exact UI error contains either of these messages:
+
+```text
+mkdir: cannot create directory '/root': Permission denied
+error: cannot open '.git/FETCH_HEAD': Permission denied
+```
+
+run the recovery from an SSH shell on the host. A host-side root invocation bypasses
+the short-lived updater container's `/root` traversal problem and can write existing
+root-owned Git metadata without recursively changing checkout ownership:
+
+```bash
+cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
+git status --short
+git diff > ../aava-update-recovery.patch
+
+curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+  | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
+
+sudo /usr/local/bin/agent version
+sudo git -C "$(pwd)" fetch origin --prune --tags
+sudo /usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain
+```
+
+Do not run a recursive `chown` based only on this error: production checkouts can
+legitimately contain runtime files owned by Asterisk or another service account. If Git
+instead reports *dubious ownership*, add only this checkout as safe using the path
+printed by Git; `safe.directory` does not fix a real write-permission failure:
 
 ```bash
 git config --global --add safe.directory "$(pwd)"
+
+# Use the same identity that will run the recovery command. If that is root:
+sudo git config --global --add safe.directory "$(pwd)"
 ```
+
+#### If the host `agent` CLI recovery also fails
+
+First confirm that the command being executed is the newly bootstrapped CLI, not an
+older binary earlier in `PATH`:
+
+```bash
+command -v agent || true
+/usr/local/bin/agent version
+```
+
+Use the exact failure to choose the next safe action:
+
+| CLI output | Recovery |
+|---|---|
+| `unknown flag: --local-changes` | The old CLI is still running. Repeat the target-release install command above and invoke `/usr/local/bin/agent` by absolute path. |
+| `detected dubious ownership` | Add only the current checkout to `safe.directory` for the same user that runs `agent`; this is a trust check, not a permissions repair. |
+| `.git/FETCH_HEAD: Permission denied` or another `.git` write failure | Preserve the patch, then use the host-side `sudo /usr/local/bin/agent ...` recovery command above. Do not recursively change ownership. |
+| `working tree has local changes` or `local-change policy` | Re-run with an explicit `--local-changes=retain`, `overwrite`, or `abort`; use `retain` unless the tracked edits are already preserved and intentionally disposable. |
+| merge, index, or stash conflict | Follow the conflict procedure below before retrying. Do not delete the stash or use `git reset --hard`. |
+| Docker image or Compose failure | Keep the updater backup and follow the service-specific recovery below; do not delete operator databases. |
+
+Capture the full CLI error for support or an issue without losing its exit status:
+
+```bash
+set -o pipefail
+sudo /usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain \
+  2>&1 | tee ../aava-update-recovery.log
+```
+
+The CLI creates its backup before changing the checkout. If the command reports a
+backup path or a preserved stash, include those paths in the support report but do not
+upload `.env`, database files, credentials, or other secrets.
 
 #### If an earlier update left a merge or stash conflict
 

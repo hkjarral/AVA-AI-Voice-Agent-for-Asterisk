@@ -4483,7 +4483,15 @@ def _run_updater_ephemeral(
             status = 124
 
         try:
+            # Successful plan responses must remain stdout-only because stdout is JSON.
+            # On failure, stderr is the actionable diagnostic and must not be discarded.
             logs = (container.logs(stdout=True, stderr=capture_stderr) or b"").decode("utf-8", errors="replace")
+            if status != 0 and not capture_stderr:
+                stderr_logs = (container.logs(stdout=False, stderr=True) or b"").decode(
+                    "utf-8", errors="replace"
+                )
+                if stderr_logs:
+                    logs = f"{logs.rstrip()}\n{stderr_logs}" if logs.strip() else stderr_logs
         except Exception as log_err:
             logs = f"[updater] Failed to read logs: {_sanitize_for_log(str(log_err))}"
 
@@ -4557,6 +4565,43 @@ def _select_latest_v_tag(ls_remote_text: str) -> Optional[dict]:
     if best and best.get("sha"):
         return best
     return None
+
+
+def _update_plan_failure_detail(
+    *,
+    host_root: str,
+    ref: str,
+    include_ui: bool,
+    updater_output: str,
+) -> str:
+    """Build an actionable plan error without polluting successful plan JSON."""
+    import shlex
+
+    output = (updater_output or "Updater exited without an error message").strip()
+    # Keep the useful tail when a tool emits a large preamble before the actual failure.
+    output = output[-4000:]
+    quoted_root = shlex.quote(host_root)
+    quoted_ref = shlex.quote(ref)
+    version_env = f"AGENT_VERSION={quoted_ref} " if _is_semver_tag(ref) else ""
+    include_ui_flag = " --include-ui" if include_ui else ""
+
+    return (
+        "Failed to compute update plan.\n\n"
+        "Updater error:\n"
+        f"{output}\n\n"
+        "Recovery (run these commands in a host SSH shell):\n"
+        f"AAVA_REPO={quoted_root}\n"
+        'cd "$AAVA_REPO"\n'
+        "git status --short\n"
+        "git diff > ../aava-update-recovery.patch\n"
+        "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
+        f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
+        "sudo /usr/local/bin/agent version\n"
+        'sudo git -C "$AAVA_REPO" fetch origin --prune --tags\n'
+        f"sudo /usr/local/bin/agent update --ref {quoted_ref}{include_ui_flag} --local-changes=retain\n\n"
+        "Use --local-changes=overwrite only after preserving any local source edits. "
+        "Do not recursively chown the checkout based only on this error."
+    )
 
 
 class UpdateStatusResponse(BaseModel):
@@ -4981,7 +5026,15 @@ async def updates_plan(
         allow_build=True,
     )
     if code != 0:
-        raise HTTPException(status_code=500, detail=f"Failed to compute update plan: {out.strip()[:400]}")
+        raise HTTPException(
+            status_code=500,
+            detail=_update_plan_failure_detail(
+                host_root=host_root,
+                ref=ref,
+                include_ui=include_ui,
+                updater_output=out,
+            ),
+        )
 
     import json
     try:
