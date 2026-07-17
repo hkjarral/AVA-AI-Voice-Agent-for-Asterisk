@@ -21,7 +21,7 @@ def test_updater_drops_to_the_project_owner_before_writing() -> None:
     assert "gosu" in dockerfile
 
 
-def test_updater_repairs_legacy_root_owned_state_before_privilege_drop() -> None:
+def test_updater_refuses_privileged_legacy_state_repair() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
 
     repair = (
@@ -29,12 +29,17 @@ def test_updater_repairs_legacy_root_owned_state_before_privilege_drop() -> None
         '"${PROJECT_ROOT}/.agent"'
     )
     reexec = 'exec gosu "${user_name}" "$0" "$@"'
-    assert repair in runner
-    assert runner.index(repair) < runner.index(reexec)
+    ownership_scan = (
+        'find "${PROJECT_ROOT}/.agent" ! -uid "${project_uid}" -print -quit'
+    )
+    assert repair not in runner
+    assert ownership_scan in runner
+    assert "use host CLI recovery" in runner
+    assert runner.index(ownership_scan) < runner.index(reexec)
     assert '[ -L "${PROJECT_ROOT}/.agent" ]' in runner
 
 
-def test_updater_stays_root_when_any_git_metadata_owner_differs() -> None:
+def test_updater_fails_closed_when_any_git_metadata_owner_differs() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
 
     symlink_guard = '[ -L "${PROJECT_ROOT}/.agent" ]'
@@ -46,7 +51,8 @@ def test_updater_stays_root_when_any_git_metadata_owner_differs() -> None:
     assert ownership_scan in runner
     assert mixed_owner_check in runner
     assert "files such as FETCH_HEAD" in runner
-    assert "updater will remain root" in runner
+    assert "running project-controlled updater state operations as root" in runner
+    assert "updater will remain root" not in runner
     assert runner.index(symlink_guard) < runner.index(root_owner_return)
     assert runner.index(symlink_guard) < runner.index(mixed_owner_check)
 

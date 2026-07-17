@@ -21,8 +21,8 @@ drop_to_project_owner() {
     return 0
   fi
 
-  # Refuse this before any stay-root return. Otherwise ensure_dirs would follow
-  # a repo-local .agent symlink with root privileges.
+  # Refuse this before the root-owned-checkout return. Non-root-owned checkouts
+  # fail closed below instead of performing updater-state writes as root.
   if [ -L "${PROJECT_ROOT}/.agent" ]; then
     echo "ERR: refusing to repair symlinked updater state: ${PROJECT_ROOT}/.agent" >&2
     return 2
@@ -30,6 +30,7 @@ drop_to_project_owner() {
 
   local project_uid project_gid git_dir git_common_dir
   local git_metadata_root git_metadata_path git_metadata_uid
+  local agent_metadata_path agent_metadata_uid
   local socket_gid user_name primary_group socket_group parent_dir
   local -a git_metadata_roots=()
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
@@ -38,25 +39,46 @@ drop_to_project_owner() {
     return 0
   fi
 
+  # Do not repair checkout-owned updater state with root privileges. The project
+  # owner can replace .agent while this container is running, so a point-in-time
+  # symlink check cannot make later privileged mkdir/chown operations safe. An
+  # absent directory will be created after the project-owner re-exec; unsafe or
+  # legacy mixed-owned state must use the documented host-CLI recovery.
+  if [ -e "${PROJECT_ROOT}/.agent" ]; then
+    if [ ! -d "${PROJECT_ROOT}/.agent" ]; then
+      echo "ERR: refusing non-directory updater state: ${PROJECT_ROOT}/.agent; use host CLI recovery" >&2
+      return 2
+    fi
+    if ! agent_metadata_path="$(find "${PROJECT_ROOT}/.agent" ! -uid "${project_uid}" -print -quit)"; then
+      echo "ERR: cannot inspect updater state ownership; use host CLI recovery" >&2
+      return 2
+    fi
+    if [ -n "${agent_metadata_path}" ]; then
+      agent_metadata_uid="$(stat -c '%u' "${agent_metadata_path}" 2>/dev/null || true)"
+      echo "ERR: checkout owner UID ${project_uid} differs from updater state owner UID ${agent_metadata_uid:-unknown} at ${agent_metadata_path}; use host CLI recovery" >&2
+      return 2
+    fi
+  fi
+
   # The checkout root and individual Git metadata entries can have different
   # owners after an older root-run update or a bounded Admin UI permission
   # repair. Checking only the .git directory misses files such as FETCH_HEAD,
-  # which `git fetch` must overwrite. Stay root for this recovery hop instead of
-  # guessing at a recursive chown.
+  # which `git fetch` must overwrite. Fail closed into host-CLI recovery instead
+  # of running project-controlled updater state operations as root.
   if [ -e "${PROJECT_ROOT}/.git" ]; then
     if ! git_dir="$(
       git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
         rev-parse --absolute-git-dir 2>/dev/null
     )" || [ -z "${git_dir}" ]; then
-      echo "WARN: cannot resolve the checkout Git directory; updater will remain root" >&2
-      return 0
+      echo "ERR: cannot resolve the checkout Git directory; use host CLI recovery" >&2
+      return 2
     fi
     if ! git_common_dir="$(
       git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
         rev-parse --path-format=absolute --git-common-dir 2>/dev/null
     )" || [ -z "${git_common_dir}" ]; then
-      echo "WARN: cannot resolve the checkout common Git directory; updater will remain root" >&2
-      return 0
+      echo "ERR: cannot resolve the checkout common Git directory; use host CLI recovery" >&2
+      return 2
     fi
     git_metadata_roots=("${git_dir}")
     if [ "${git_common_dir}" != "${git_dir}" ]; then
@@ -65,22 +87,16 @@ drop_to_project_owner() {
 
     for git_metadata_root in "${git_metadata_roots[@]}"; do
       if ! git_metadata_path="$(find "${git_metadata_root}" ! -uid "${project_uid}" -print -quit)"; then
-        echo "WARN: cannot inspect Git metadata ownership at ${git_metadata_root}; updater will remain root" >&2
-        return 0
+        echo "ERR: cannot inspect Git metadata ownership at ${git_metadata_root}; use host CLI recovery" >&2
+        return 2
       fi
       if [ -n "${git_metadata_path}" ]; then
         git_metadata_uid="$(stat -c '%u' "${git_metadata_path}" 2>/dev/null || true)"
-        echo "WARN: checkout owner UID ${project_uid} differs from Git metadata owner UID ${git_metadata_uid:-unknown} at ${git_metadata_path}; updater will remain root" >&2
-        return 0
+        echo "ERR: checkout owner UID ${project_uid} differs from Git metadata owner UID ${git_metadata_uid:-unknown} at ${git_metadata_path}; use host CLI recovery" >&2
+        return 2
       fi
     done
   fi
-
-  # Older updater images wrote this tree as root. Repair that state while we
-  # still have privileges so the project owner can create locks, job files,
-  # backups, and replacement CLI binaries after the re-exec.
-  mkdir -p "${PROJECT_ROOT}/.agent"
-  chown -R --no-dereference "${project_uid}:${project_gid}" "${PROJECT_ROOT}/.agent"
 
   primary_group="$(getent group "${project_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
   if [ -z "${primary_group}" ]; then
@@ -114,8 +130,8 @@ drop_to_project_owner() {
   while [ "${parent_dir}" != "/" ]; do
     if ! gosu "${user_name}" test -x "${parent_dir}"; then
       chmod a+x "${parent_dir}" || {
-        echo "WARN: cannot make updater mount parent traversable: ${parent_dir}; updater will remain root" >&2
-        return 0
+        echo "ERR: cannot make updater mount parent traversable: ${parent_dir}; use host CLI recovery" >&2
+        return 2
       }
     fi
     parent_dir="$(dirname "${parent_dir}")"
