@@ -81,6 +81,7 @@ from src.tools.telephony.hangup_policy import (
     text_is_short_polite_closing,
     normalize_marker_list,
 )
+from src.tools.runtime_config import ToolConfigPolicyError
 
 if TYPE_CHECKING:
     from src.tools.context import ToolExecutionContext
@@ -14111,7 +14112,25 @@ class Engine:
         # Resolve agent-scoped tools from the generation captured when the call
         # entered Stasis. A reload racing with routing cannot move this call to
         # the newly published generation.
-        Engine._resolve_session_tool_runtime(self, session, no_input_context)
+        try:
+            Engine._resolve_session_tool_runtime(self, session, no_input_context)
+        except ToolConfigPolicyError as exc:
+            message = (
+                f"context_resolution_failed: {resolved_context}: invalid Agent tool policy: "
+                f"{exc}"
+            )
+            session.context_resolution_error = message
+            session.error_message = message
+            await self._save_session(session)
+            logger.error(
+                "Requested Agent has an invalid tool policy",
+                call_id=session.call_id,
+                context_name=resolved_context,
+                routing_method=session.routing_method,
+                error=str(exc),
+                remediation="Open the Agent in the Agents UI and save a valid tool policy",
+            )
+            return
         await self._save_session(session)
         # Call through the class so lightweight compatibility stubs that invoke
         # Engine._resolve_audio_profile directly do not need to grow this helper.
