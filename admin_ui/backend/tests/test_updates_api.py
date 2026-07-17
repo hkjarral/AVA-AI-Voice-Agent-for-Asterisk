@@ -137,7 +137,8 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
-        'sudo -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update '
+        'sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" '
+        "/usr/local/bin/agent update "
         "--ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain"
     ) in detail

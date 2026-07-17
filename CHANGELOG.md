@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Admin UI update-plan failures are actionable and mixed-ownership checkouts recover safely** (`admin_ui`, `updater/run.sh`): successful plan JSON remains stdout-only, while non-zero updater exits now return the exact stderr plus host-CLI recovery commands in a copyable UI panel. The updater fails closed into that recovery when checkout, Git metadata, or updater-state ownership differs instead of writing project-controlled paths as root, and it makes image-owned mount parents such as `/root` traversable before a normal project-owner privilege drop. The upgrade guide covers both permission signatures, distinguishes `safe.directory` from write access, and avoids unsafe recursive ownership changes.
+- **Admin UI update-plan failures are actionable and mixed-ownership checkouts recover safely** (`admin_ui`, `updater/run.sh`): successful plan JSON remains stdout-only, while non-zero updater exits now return the exact stderr plus host-CLI recovery commands in a UI panel that copies only runnable commands. Host recovery preserves the SSH operator's supplemental groups when running the update as the checkout owner, retaining any Docker socket access already available to the operator. The updater fails closed into that recovery when checkout, Git metadata, or updater-state ownership differs instead of writing project-controlled paths as root, and it makes image-owned mount parents such as `/root` traversable before a normal project-owner privilege drop. The upgrade guide covers both permission signatures, distinguishes `safe.directory` from write access, and avoids unsafe recursive ownership changes.
 
 ## [7.4.0] - 2026-07-16
 

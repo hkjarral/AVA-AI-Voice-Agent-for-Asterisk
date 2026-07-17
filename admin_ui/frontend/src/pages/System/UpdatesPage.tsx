@@ -4,7 +4,7 @@ import axios from 'axios';
 import { useConfirmDialog } from '../../hooks/useConfirmDialog';
 import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
-import { copyTextToClipboard } from '../../utils/clipboard';
+import { copyTextToClipboard, extractUpdateRecoveryCommands } from '../../utils/clipboard';
 
 type UpdateAvailable = boolean | null;
 
@@ -150,6 +150,7 @@ const UpdatesPage = () => {
     !!updaterImageStatus &&
     updaterImageStatus.status !== 'idle' &&
     (statusLoading || planLoading || running || updaterImageStatus.status === 'error');
+  const planRecoveryCommands = useMemo(() => extractUpdateRecoveryCommands(planError || ''), [planError]);
 
   const loadBranches = async (opts?: { force?: boolean; localBranch?: string }) => {
     setBranchesError(null);
@@ -272,10 +273,10 @@ const UpdatesPage = () => {
   };
 
   const copyPlanErrorRecovery = async () => {
-    if (!planError) return;
-    const copied = await copyTextToClipboard(planError);
+    if (!planRecoveryCommands) return;
+    const copied = await copyTextToClipboard(planRecoveryCommands);
     if (!copied) {
-      window.prompt('Copy update error and recovery commands:', planError);
+      window.prompt('Copy recovery commands:', planRecoveryCommands);
       return;
     }
     setPlanRecoveryCopied(true);
@@ -752,13 +753,15 @@ const UpdatesPage = () => {
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <div className="font-medium text-destructive">Update preview failed</div>
-                <button
-                  type="button"
-                  onClick={copyPlanErrorRecovery}
-                  className="shrink-0 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
-                >
-                  {planRecoveryCopied ? 'Copied' : 'Copy error + recovery'}
-                </button>
+                {planRecoveryCommands && (
+                  <button
+                    type="button"
+                    onClick={copyPlanErrorRecovery}
+                    className="shrink-0 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
+                  >
+                    {planRecoveryCopied ? 'Copied' : 'Copy recovery commands'}
+                  </button>
+                )}
               </div>
               <pre className="mt-2 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/80 p-3 font-mono text-xs text-foreground">
                 {planError}

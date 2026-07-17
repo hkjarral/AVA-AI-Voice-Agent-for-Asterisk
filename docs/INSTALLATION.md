@@ -141,13 +141,15 @@ if [ -e "$AAVA_REPO/.agent" ]; then
   if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi
   sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"
 fi
-sudo -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update \
+sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update \
   --ref v7.4.0 --include-ui --local-changes=retain
 ```
 
 Do not recursively `chown` the checkout: production checkouts can legitimately contain
 runtime files owned by Asterisk or another service account. The recovery above repairs
-only `.git` and `.agent`, which are owned by the checkout operator. If Git
+only `.git` and `.agent`, which are owned by the checkout operator. It preserves the
+SSH operator's supplemental groups so any Docker socket access already available to
+that operator remains available while the CLI rebuilds or restarts services. If Git
 instead reports *dubious ownership*, add only this checkout as safe using the path
 printed by Git; `safe.directory` does not fix a real write-permission failure:
 

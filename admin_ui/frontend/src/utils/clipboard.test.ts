@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { copyTextToClipboard } from './clipboard';
+import { copyTextToClipboard, extractUpdateRecoveryCommands } from './clipboard';
 
 const setSecureContext = (value: boolean) => {
     Object.defineProperty(window, 'isSecureContext', {
@@ -79,5 +79,33 @@ describe('copyTextToClipboard', () => {
 
         expect(writeText).toHaveBeenCalledWith('uncopied');
         expect(execCommand).toHaveBeenCalledWith('copy');
+    });
+});
+
+describe('extractUpdateRecoveryCommands', () => {
+    it('returns only the runnable shell block from a plan failure', () => {
+        const detail = [
+            'Failed to compute update plan.',
+            '',
+            'Updater error:',
+            "error: cannot open '.git/FETCH_HEAD': Permission denied",
+            '',
+            'Recovery (run these commands in a host SSH shell):',
+            'AAVA_REPO=/srv/aava',
+            'cd "$AAVA_REPO"',
+            'sudo /usr/local/bin/agent update --ref v7.4.0',
+            '',
+            'Use --local-changes=overwrite only after preserving any local source edits.',
+        ].join('\n');
+
+        expect(extractUpdateRecoveryCommands(detail)).toBe(
+            'AAVA_REPO=/srv/aava\n' +
+                'cd "$AAVA_REPO"\n' +
+                'sudo /usr/local/bin/agent update --ref v7.4.0'
+        );
+    });
+
+    it('returns an empty string when no recovery block is present', () => {
+        expect(extractUpdateRecoveryCommands('Failed to load update plan')).toBe('');
     });
 });

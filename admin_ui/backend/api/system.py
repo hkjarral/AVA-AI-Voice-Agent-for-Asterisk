@@ -4619,7 +4619,8 @@ def _update_plan_failure_detail(
         '  if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi\n'
         '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"\n'
         "fi\n"
-        f"sudo -u \"#$AAVA_UID\" -g \"#$AAVA_GID\" /usr/local/bin/agent update --ref {quoted_ref} "
+        f"sudo --preserve-groups -u \"#$AAVA_UID\" -g \"#$AAVA_GID\" "
+        f"/usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "
         f"--include-ui={include_ui_flag} --local-changes=retain\n\n"
         "Use --local-changes=overwrite only after preserving any local source edits. "

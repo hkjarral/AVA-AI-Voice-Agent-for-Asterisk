@@ -37,3 +37,18 @@ export const copyTextToClipboard = async (text: string): Promise<boolean> => {
         }
     }
 };
+
+const UPDATE_RECOVERY_HEADING = 'Recovery (run these commands in a host SSH shell):\n';
+const UPDATE_RECOVERY_FOOTER =
+    '\n\nUse --local-changes=overwrite only after preserving any local source edits.';
+
+export const extractUpdateRecoveryCommands = (detail: string): string => {
+    const headingIndex = detail.lastIndexOf(UPDATE_RECOVERY_HEADING);
+    if (headingIndex === -1) {
+        return '';
+    }
+
+    const recovery = detail.slice(headingIndex + UPDATE_RECOVERY_HEADING.length);
+    const proseIndex = recovery.indexOf(UPDATE_RECOVERY_FOOTER);
+    return (proseIndex === -1 ? recovery : recovery.slice(0, proseIndex)).trim();
+};
