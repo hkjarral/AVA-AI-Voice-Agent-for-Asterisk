@@ -4603,7 +4603,7 @@ def _update_plan_failure_detail(
             "trap 'exit 129' HUP\n"
             "trap 'exit 130' INT\n"
             "trap 'exit 143' TERM\n"
-            'AAVA_CLI_REMOTE="$(aava_git config --get remote.origin.url)" || { '
+            'AAVA_CLI_REMOTE="$(aava_git ls-remote --get-url origin)" || { '
             'echo "Failed to resolve '
             'checkout origin for CLI source; update not attempted" >&2; exit 2; }\n'
             'git clone --quiet --depth 1 --single-branch --branch "$AAVA_CLI_REF" '

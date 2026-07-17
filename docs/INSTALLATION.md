@@ -119,7 +119,9 @@ container, install that binary at `/usr/local/bin/agent`, and fail closed if ori
 resolution, fetch, build, installation, or cleanup fails. This supports branches hosted
 on the operator's fork or private origin instead of assuming the public upstream. If
 Docker or Git cannot perform that exact-ref bootstrap, select a published release tag
-or repair the host prerequisites; do not continue with an older CLI.
+or repair the host prerequisites; do not continue with an older CLI. Origin resolution
+uses `git ls-remote --get-url` so `url.*.insteadOf` rewrites are expanded even on Git
+1.8.3, which predates `git remote get-url`.
 
 If the exact UI error contains either of these messages:
 
@@ -131,9 +133,8 @@ error: cannot open '.git/FETCH_HEAD': Permission denied
 run the recovery from an SSH shell on the host. The privileged steps repair only the
 bounded Git/updater metadata, then the update runs as the checkout owner. This bypasses
 the short-lived updater container's `/root` traversal problem without recursively
-changing checkout ownership. The `aava_git` wrapper also avoids newer Git-only `-C`,
-`remote get-url`, and absolute-path flags, so recovery works with Git 1.8.3 on
-RHEL/CentOS 7 hosts:
+changing checkout ownership. The `aava_git` wrapper also avoids newer Git-only `-C`
+and absolute-path flags, so recovery works with Git 1.8.3 on RHEL/CentOS 7 hosts:
 
 ```bash
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
