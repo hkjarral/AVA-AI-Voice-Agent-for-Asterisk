@@ -4660,7 +4660,9 @@ def _update_plan_failure_detail(
         '    AAVA_PARENT="$(dirname "$AAVA_PARENT")"\n'
         "  done\n"
         f"  sudo \"$AAVA_SETPRIV\" --reuid=\"$AAVA_UID\" --regid=\"$AAVA_GID\" "
-        f"--groups=\"$AAVA_GROUPS\" /usr/local/bin/agent update --ref {quoted_ref} "
+        f"--groups=\"$AAVA_GROUPS\" /bin/sh -c "
+        f"'cd \"$1\" && shift && exec \"$@\"' sh \"$AAVA_REPO\" "
+        f"/usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "
         f"--include-ui={include_ui_flag} --local-changes=retain\n"
         ")\n\n"

@@ -142,7 +142,9 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
-        '--groups="$AAVA_GROUPS" /usr/local/bin/agent update '
+        '--groups="$AAVA_GROUPS" /bin/sh -c '
+        '\'cd "$1" && shift && exec "$@"\' sh "$AAVA_REPO" '
+        "/usr/local/bin/agent update "
         "--ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain"
     ) in detail
@@ -180,6 +182,23 @@ def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> N
     assert detail.index(restore) < detail.index(grant) < detail.index(update)
 
 
+def test_update_plan_recovery_enters_repo_after_parent_traversal(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "private" / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    traversal = 'while [ "$AAVA_PARENT" != "/" ]; do'
+    owner_shell = '/bin/sh -c \'cd "$1" && shift && exec "$@"\' sh "$AAVA_REPO"'
+    update = "/usr/local/bin/agent update --ref main"
+
+    assert owner_shell in detail
+    assert detail.index(traversal) < detail.index(owner_shell) < detail.index(update)
+
+
 def test_update_plan_recovery_adds_docker_socket_gid_to_target_groups(tmp_path) -> None:
     detail = system._update_plan_failure_detail(
         host_root=str(tmp_path / "aava"),
@@ -195,7 +214,9 @@ def test_update_plan_recovery_adds_docker_socket_gid_to_target_groups(tmp_path) 
     append_socket_gid = 'AAVA_GROUPS="${AAVA_GROUPS},${AAVA_DOCKER_GID}"'
     update = (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
-        '--groups="$AAVA_GROUPS" /usr/local/bin/agent update'
+        '--groups="$AAVA_GROUPS" /bin/sh -c '
+        '\'cd "$1" && shift && exec "$@"\' sh "$AAVA_REPO" '
+        "/usr/local/bin/agent update"
     )
 
     assert setpriv in detail

@@ -182,8 +182,9 @@ fi
     AAVA_PARENT="$(dirname "$AAVA_PARENT")"
   done
   sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-    --groups="$AAVA_GROUPS" /usr/local/bin/agent update --ref v7.4.0 \
-    --include-ui --local-changes=retain
+    --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
+    sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
+    --local-changes=retain
 )
 ```
 
@@ -193,8 +194,9 @@ only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
 so Docker access does not depend on which sudoer pasted the recovery. Repository
 ancestors that the checkout owner cannot traverse receive execute-only access inside a
-guarded subshell; their exact original modes are restored on success, failure, or
-interruption. The early inspection and patch commands use privileged absolute paths, so
+guarded subshell; the owner-level command enters `AAVA_REPO` only after that repair, and
+the exact original modes are restored on success, failure, or interruption. The early
+inspection and patch commands use privileged absolute paths, so
 they do not require the sudoer to traverse `/root` before the guard is active. If Git
 instead reports *dubious ownership*, add only this checkout as safe using the path
 printed by Git; `safe.directory` does not fix a real write-permission failure:
@@ -235,8 +237,9 @@ guarded subshell above with this equivalent pipeline:
 AAVA_RECOVERY_LOG="$(dirname "$AAVA_REPO")/aava-update-recovery.log"
 set -o pipefail
 sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-  --groups="$AAVA_GROUPS" /usr/local/bin/agent update --ref v7.4.0 \
-  --include-ui --local-changes=retain 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
+  --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
+  sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
+  --local-changes=retain 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
 ```
 
 The CLI creates its backup before changing the checkout. If the command reports a
