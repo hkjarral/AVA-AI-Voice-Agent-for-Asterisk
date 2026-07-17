@@ -34,14 +34,18 @@ def test_updater_repairs_legacy_root_owned_state_before_privilege_drop() -> None
     assert '[ -L "${PROJECT_ROOT}/.agent" ]' in runner
 
 
-def test_updater_stays_root_when_checkout_and_git_metadata_owners_differ() -> None:
+def test_updater_stays_root_when_any_git_metadata_owner_differs() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
 
     symlink_guard = '[ -L "${PROJECT_ROOT}/.agent" ]'
     root_owner_return = 'if [ "${project_uid}" = "0" ]; then'
-    mixed_owner_check = '[ "${git_uid}" != "${project_uid}" ]'
-    assert 'git_uid="$(stat -c \'%u\' "${PROJECT_ROOT}/.git" 2>/dev/null || true)"' in runner
+    ownership_scan = (
+        'find "${PROJECT_ROOT}/.git" ! -uid "${project_uid}" -print -quit'
+    )
+    mixed_owner_check = '[ -n "${git_metadata_path}" ]'
+    assert ownership_scan in runner
     assert mixed_owner_check in runner
+    assert "files such as FETCH_HEAD" in runner
     assert "updater will remain root" in runner
     assert runner.index(symlink_guard) < runner.index(root_owner_return)
     assert runner.index(symlink_guard) < runner.index(mixed_owner_check)

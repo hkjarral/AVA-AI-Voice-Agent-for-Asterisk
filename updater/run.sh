@@ -28,21 +28,28 @@ drop_to_project_owner() {
     return 2
   fi
 
-  local project_uid project_gid git_uid socket_gid user_name primary_group socket_group parent_dir
+  local project_uid project_gid git_metadata_path git_metadata_uid socket_gid user_name primary_group socket_group parent_dir
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
   project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
   if [ "${project_uid}" = "0" ]; then
     return 0
   fi
 
-  # The checkout root and Git metadata can have different owners after an older
-  # root-run update or a bounded Admin UI permission repair. Dropping to the root
-  # directory owner in that state makes even `git fetch` fail on .git/FETCH_HEAD.
-  # Stay root for this recovery hop instead of guessing at a recursive chown.
-  git_uid="$(stat -c '%u' "${PROJECT_ROOT}/.git" 2>/dev/null || true)"
-  if [ -n "${git_uid}" ] && [ "${git_uid}" != "${project_uid}" ]; then
-    echo "WARN: checkout owner UID ${project_uid} differs from .git owner UID ${git_uid}; updater will remain root" >&2
-    return 0
+  # The checkout root and individual Git metadata entries can have different
+  # owners after an older root-run update or a bounded Admin UI permission
+  # repair. Checking only the .git directory misses files such as FETCH_HEAD,
+  # which `git fetch` must overwrite. Stay root for this recovery hop instead of
+  # guessing at a recursive chown.
+  if [ -e "${PROJECT_ROOT}/.git" ]; then
+    if ! git_metadata_path="$(find "${PROJECT_ROOT}/.git" ! -uid "${project_uid}" -print -quit)"; then
+      echo "WARN: cannot inspect Git metadata ownership; updater will remain root" >&2
+      return 0
+    fi
+    if [ -n "${git_metadata_path}" ]; then
+      git_metadata_uid="$(stat -c '%u' "${git_metadata_path}" 2>/dev/null || true)"
+      echo "WARN: checkout owner UID ${project_uid} differs from Git metadata owner UID ${git_metadata_uid:-unknown} at ${git_metadata_path}; updater will remain root" >&2
+      return 0
+    fi
   fi
 
   # Older updater images wrote this tree as root. Repair that state while we
