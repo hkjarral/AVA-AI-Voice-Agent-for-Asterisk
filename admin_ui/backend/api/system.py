@@ -4598,10 +4598,18 @@ def _update_plan_failure_detail(
         f"AAVA_REPO={quoted_root}\n"
         'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"\n'
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short\n'
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached '
+        "(\n"
+        "  set -o pipefail\n"
+        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached '
         '| sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null\n'
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff '
+        ') || { echo "Failed to preserve staged tracked edits; update not attempted" '
+        ">&2; exit 2; }\n"
+        "(\n"
+        "  set -o pipefail\n"
+        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff '
         '| sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null\n'
+        ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
+        ">&2; exit 2; }\n"
         "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
         f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
         "sudo /usr/local/bin/agent version\n"

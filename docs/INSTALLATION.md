@@ -120,10 +120,16 @@ changing checkout ownership:
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"
 sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short
-sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached \
-  | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null
-sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff \
-  | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null
+(
+  set -o pipefail
+  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached \
+    | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null
+) || { echo "Failed to preserve staged tracked edits; update not attempted" >&2; exit 2; }
+(
+  set -o pipefail
+  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff \
+    | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null
+) || { echo "Failed to preserve unstaged tracked edits; update not attempted" >&2; exit 2; }
 
 curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
   | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
@@ -192,7 +198,9 @@ Do not recursively `chown` the checkout: production checkouts can legitimately c
 runtime files owned by Asterisk or another service account. The recovery above repairs
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
-so Docker access does not depend on which sudoer pasted the recovery. Repository
+so Docker access does not depend on which sudoer pasted the recovery. Patch capture
+fails closed before any repair or update if Git cannot read either diff or the
+filesystem cannot write the preservation file. Repository
 ancestors that the checkout owner cannot traverse receive execute-only access inside a
 guarded subshell; the owner-level command enters `AAVA_REPO` only after that repair, and
 the exact original modes are restored on success, failure, or interruption. The early

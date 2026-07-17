@@ -129,6 +129,15 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
         'diff | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
+    assert detail.count("set -o pipefail") == 2
+    assert (
+        ') || { echo "Failed to preserve staged tracked edits; update not attempted" '
+        ">&2; exit 2; }"
+    ) in detail
+    assert (
+        ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
+        ">&2; exit 2; }"
+    ) in detail
     assert 'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"' in detail
     assert 'cd "$AAVA_REPO"' not in detail
     assert 'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"' in detail
@@ -148,6 +157,34 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         "--ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain"
     ) in detail
+
+
+def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    staged_capture = (
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
+        'diff --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
+    )
+    staged_failure = "Failed to preserve staged tracked edits; update not attempted"
+    unstaged_capture = (
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
+        'diff | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
+    )
+    unstaged_failure = "Failed to preserve unstaged tracked edits; update not attempted"
+    installer = "curl -sSL https://raw.githubusercontent.com/"
+    update = "/usr/local/bin/agent update --ref main"
+
+    assert detail.index(staged_capture) < detail.index(staged_failure)
+    assert detail.index(staged_failure) < detail.index(unstaged_capture)
+    assert detail.index(unstaged_capture) < detail.index(unstaged_failure)
+    assert detail.index(unstaged_failure) < detail.index(installer) < detail.index(update)
 
 
 def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> None:
