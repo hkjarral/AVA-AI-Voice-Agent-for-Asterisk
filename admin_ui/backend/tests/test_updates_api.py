@@ -123,13 +123,17 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        "diff --cached | sudo tee ../aava-update-recovery.patch >/dev/null"
+        'diff --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        "diff | sudo tee -a ../aava-update-recovery.patch >/dev/null"
+        'diff | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
-    assert 'AAVA_UID="$(stat -c \'%u\' "$AAVA_REPO")"' in detail
+    assert 'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"' in detail
+    assert 'cd "$AAVA_REPO"' not in detail
+    assert 'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"' in detail
+    assert 'if sudo test -e "$AAVA_REPO/.agent"; then' in detail
+    assert 'if sudo test -L "$AAVA_REPO/.agent"; then' in detail
     assert 'rev-parse --absolute-git-dir' in detail
     assert 'rev-parse --path-format=absolute --git-common-dir' in detail
     assert (
@@ -137,8 +141,8 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
-        'sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" '
-        "/usr/local/bin/agent update "
+        'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
+        '--groups="$AAVA_GROUPS" /usr/local/bin/agent update '
         "--ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain"
     ) in detail
@@ -156,8 +160,8 @@ def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> N
     state = 'AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2'
     parent_loop = 'while [ "$AAVA_PARENT" != "/" ]; do'
     access_probe = (
-        'sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" '
-        'test -x "$AAVA_PARENT"'
+        'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
+        '--groups="$AAVA_GROUPS" test -x "$AAVA_PARENT"'
     )
     grant = 'sudo chmod o+x -- "$AAVA_PARENT" || exit 2'
     restore = 'sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2'
@@ -174,6 +178,34 @@ def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> N
     assert "trap 'exit 143' TERM" in detail
     assert detail.index(state) < detail.index(parent_loop)
     assert detail.index(restore) < detail.index(grant) < detail.index(update)
+
+
+def test_update_plan_recovery_adds_docker_socket_gid_to_target_groups(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    setpriv = 'AAVA_SETPRIV="$(command -v setpriv)"'
+    target_groups = 'sudo -u "#$AAVA_UID" -g "#$AAVA_GID" id -G'
+    socket_gid = 'AAVA_DOCKER_GID="$(sudo stat -c \'%g\' /var/run/docker.sock)"'
+    append_socket_gid = 'AAVA_GROUPS="${AAVA_GROUPS},${AAVA_DOCKER_GID}"'
+    update = (
+        'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
+        '--groups="$AAVA_GROUPS" /usr/local/bin/agent update'
+    )
+
+    assert setpriv in detail
+    assert target_groups in detail
+    assert "if sudo test -S /var/run/docker.sock; then" in detail
+    assert socket_gid in detail
+    assert append_socket_gid in detail
+    assert update in detail
+    assert "--preserve-groups" not in detail
+    assert detail.index(target_groups) < detail.index(socket_gid) < detail.index(update)
 
 
 def test_update_plan_failure_preserves_long_stderr_and_explicit_flags(tmp_path) -> None:

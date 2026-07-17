@@ -4596,17 +4596,17 @@ def _update_plan_failure_detail(
         f"{output}\n\n"
         "Recovery (run these commands in a host SSH shell):\n"
         f"AAVA_REPO={quoted_root}\n"
-        'cd "$AAVA_REPO"\n'
+        'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"\n'
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short\n'
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached '
-        '| sudo tee ../aava-update-recovery.patch >/dev/null\n'
+        '| sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff '
-        '| sudo tee -a ../aava-update-recovery.patch >/dev/null\n'
+        '| sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
         f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
         "sudo /usr/local/bin/agent version\n"
-        'AAVA_UID="$(stat -c \'%u\' "$AAVA_REPO")"\n'
-        'AAVA_GID="$(stat -c \'%g\' "$AAVA_REPO")"\n'
+        'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"\n'
+        'AAVA_GID="$(sudo stat -c \'%g\' "$AAVA_REPO")"\n'
         'AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
         'rev-parse --absolute-git-dir)"\n'
         'AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
@@ -4615,9 +4615,22 @@ def _update_plan_failure_detail(
         'if [ "$AAVA_GIT_COMMON_DIR" != "$AAVA_GIT_DIR" ]; then\n'
         '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_COMMON_DIR"\n'
         "fi\n"
-        'if [ -e "$AAVA_REPO/.agent" ]; then\n'
-        '  if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi\n'
+        'if sudo test -e "$AAVA_REPO/.agent"; then\n'
+        '  if sudo test -L "$AAVA_REPO/.agent"; then '
+        'echo "Refusing symlinked .agent state" >&2; exit 2; fi\n'
         '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"\n'
+        "fi\n"
+        'AAVA_SETPRIV="$(command -v setpriv)" || { '
+        'echo "setpriv is required; install util-linux and retry" >&2; exit 2; }\n'
+        'AAVA_GROUPS="$(sudo -u "#$AAVA_UID" -g "#$AAVA_GID" id -G 2>/dev/null '
+        '| tr \' \' \',\')" || AAVA_GROUPS="$AAVA_GID"\n'
+        'AAVA_GROUPS="${AAVA_GROUPS:-$AAVA_GID}"\n'
+        'if sudo test -S /var/run/docker.sock; then\n'
+        '  AAVA_DOCKER_GID="$(sudo stat -c \'%g\' /var/run/docker.sock)" || exit 2\n'
+        '  case ",${AAVA_GROUPS}," in\n'
+        '    *,"${AAVA_DOCKER_GID}",*) ;;\n'
+        '    *) AAVA_GROUPS="${AAVA_GROUPS},${AAVA_DOCKER_GID}" ;;\n'
+        "  esac\n"
         "fi\n"
         "(\n"
         '  AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2\n'
@@ -4637,8 +4650,8 @@ def _update_plan_failure_detail(
         "  trap 'exit 143' TERM\n"
         '  AAVA_PARENT="$(dirname "$AAVA_REPO")"\n'
         '  while [ "$AAVA_PARENT" != "/" ]; do\n'
-        '    if ! sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" '
-        'test -x "$AAVA_PARENT"; then\n'
+        '    if ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
+        '--groups="$AAVA_GROUPS" test -x "$AAVA_PARENT"; then\n'
         '      AAVA_MODE="$(sudo stat -c \'%a\' "$AAVA_PARENT")" || exit 2\n'
         '      printf \'%s\\t%s\\n\' "$AAVA_MODE" "$AAVA_PARENT" '
         '>> "$AAVA_TRAVERSAL_STATE" || exit 2\n'
@@ -4646,8 +4659,8 @@ def _update_plan_failure_detail(
         "    fi\n"
         '    AAVA_PARENT="$(dirname "$AAVA_PARENT")"\n'
         "  done\n"
-        f"  sudo --preserve-groups -u \"#$AAVA_UID\" -g \"#$AAVA_GID\" "
-        f"/usr/local/bin/agent update --ref {quoted_ref} "
+        f"  sudo \"$AAVA_SETPRIV\" --reuid=\"$AAVA_UID\" --regid=\"$AAVA_GID\" "
+        f"--groups=\"$AAVA_GROUPS\" /usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "
         f"--include-ui={include_ui_flag} --local-changes=retain\n"
         ")\n\n"
