@@ -4597,7 +4597,8 @@ def _update_plan_failure_detail(
         "Recovery (run these commands in a host SSH shell):\n"
         f"AAVA_REPO={quoted_root}\n"
         'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"\n'
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short\n'
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short '
+        '|| { echo "Failed to inspect checkout changes; update not attempted" >&2; exit 2; }\n'
         "(\n"
         "  set -o pipefail\n"
         '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary --cached '
@@ -4618,8 +4619,10 @@ def _update_plan_failure_detail(
         ">&2; exit 2; }\n"
         'sudo /usr/local/bin/agent version || { echo "Installed agent CLI is not '
         'runnable; update not attempted" >&2; exit 2; }\n'
-        'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"\n'
-        'AAVA_GID="$(sudo stat -c \'%g\' "$AAVA_REPO")"\n'
+        'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")" || { '
+        'echo "Failed to read checkout owner UID; update not attempted" >&2; exit 2; }\n'
+        'AAVA_GID="$(sudo stat -c \'%g\' "$AAVA_REPO")" || { '
+        'echo "Failed to read checkout owner GID; update not attempted" >&2; exit 2; }\n'
         'if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then\n'
         '  echo "Refusing automatic repair for linked, symlinked, or missing .git '
         'metadata; inspect ownership manually" >&2\n'
@@ -4638,10 +4641,18 @@ def _update_plan_failure_detail(
         "fi\n"
         'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
         '"$AAVA_EXPECTED_GIT_DIR" || exit 2\n'
+        'if sudo test -L "$AAVA_REPO/.agent"; then\n'
+        '  echo "Refusing symlinked .agent state" >&2\n'
+        '  exit 2\n'
+        'fi\n'
         'if sudo test -e "$AAVA_REPO/.agent"; then\n'
-        '  if sudo test -L "$AAVA_REPO/.agent"; then '
-        'echo "Refusing symlinked .agent state" >&2; exit 2; fi\n'
-        '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"\n'
+        '  if ! sudo test -d "$AAVA_REPO/.agent"; then\n'
+        '    echo "Refusing non-directory .agent state" >&2\n'
+        '    exit 2\n'
+        '  fi\n'
+        '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
+        '"$AAVA_REPO/.agent" || { echo "Failed to repair .agent ownership; '
+        'update not attempted" >&2; exit 2; }\n'
         "fi\n"
         'AAVA_SETPRIV="$(command -v setpriv)" || { '
         'echo "setpriv is required; install util-linux and retry" >&2; exit 2; }\n'

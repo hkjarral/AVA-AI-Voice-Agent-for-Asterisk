@@ -119,7 +119,9 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert f"AAVA_REPO={tmp_path}" in detail
     assert "AGENT_VERSION=v7.4.0" in detail
     assert (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short'
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short '
+        '|| { echo "Failed to inspect checkout changes; update not attempted" '
+        '>&2; exit 2; }'
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
@@ -148,7 +150,14 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert 'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"' in detail
     assert 'cd "$AAVA_REPO"' not in detail
-    assert 'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"' in detail
+    assert (
+        'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")" || { '
+        'echo "Failed to read checkout owner UID; update not attempted" >&2; exit 2; }'
+    ) in detail
+    assert (
+        'AAVA_GID="$(sudo stat -c \'%g\' "$AAVA_REPO")" || { '
+        'echo "Failed to read checkout owner GID; update not attempted" >&2; exit 2; }'
+    ) in detail
     assert 'if sudo test -e "$AAVA_REPO/.agent"; then' in detail
     assert 'if sudo test -L "$AAVA_REPO/.agent"; then' in detail
     assert 'if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then' in detail
@@ -158,6 +167,12 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert (
         'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
         '"$AAVA_EXPECTED_GIT_DIR" || exit 2'
+    ) in detail
+    assert 'if ! sudo test -d "$AAVA_REPO/.agent"; then' in detail
+    assert (
+        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
+        '"$AAVA_REPO/.agent" || { echo "Failed to repair .agent ownership; '
+        'update not attempted" >&2; exit 2; }'
     ) in detail
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
@@ -180,6 +195,7 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
         updater_output="permission denied",
     )
 
+    inspection = 'status --short || { echo "Failed to inspect checkout changes; update not attempted"'
     staged_capture = (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
         'diff --binary --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
@@ -193,7 +209,7 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
     installer = "curl -sSL https://raw.githubusercontent.com/"
     update = "/usr/local/bin/agent update --ref main"
 
-    assert detail.index(staged_capture) < detail.index(staged_failure)
+    assert detail.index(inspection) < detail.index(staged_capture) < detail.index(staged_failure)
     assert detail.index(staged_failure) < detail.index(unstaged_capture)
     assert detail.index(unstaged_capture) < detail.index(unstaged_failure)
     assert detail.index(unstaged_failure) < detail.index(installer) < detail.index(update)
@@ -270,6 +286,34 @@ def test_update_plan_recovery_stops_before_repair_if_cli_bootstrap_fails(tmp_pat
     assert detail.index(bootstrap_failure) < detail.index(version)
     assert detail.index(version) < detail.index(version_failure)
     assert detail.index(version_failure) < detail.index(repair) < detail.index(update)
+
+
+def test_update_plan_recovery_fails_closed_on_owner_or_agent_repair_errors(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    uid_lookup = 'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"'
+    uid_failure = "Failed to read checkout owner UID; update not attempted"
+    gid_lookup = 'AAVA_GID="$(sudo stat -c \'%g\' "$AAVA_REPO")"'
+    gid_failure = "Failed to read checkout owner GID; update not attempted"
+    agent_type_guard = 'if ! sudo test -d "$AAVA_REPO/.agent"; then'
+    agent_repair = (
+        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
+        '"$AAVA_REPO/.agent" || {'
+    )
+    agent_failure = "Failed to repair .agent ownership; update not attempted"
+    update = "/usr/local/bin/agent update --ref main"
+
+    assert detail.index(uid_lookup) < detail.index(uid_failure)
+    assert detail.index(uid_failure) < detail.index(gid_lookup) < detail.index(gid_failure)
+    assert detail.index(gid_failure) < detail.index(agent_type_guard)
+    assert detail.index(agent_type_guard) < detail.index(agent_repair)
+    assert detail.index(agent_repair) < detail.index(agent_failure) < detail.index(update)
 
 
 def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> None:

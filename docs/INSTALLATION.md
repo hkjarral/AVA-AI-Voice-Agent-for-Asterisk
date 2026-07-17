@@ -126,7 +126,10 @@ changing checkout ownership:
 ```bash
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"
-sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short
+sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short || {
+  echo "Failed to inspect checkout changes; update not attempted" >&2
+  exit 2
+}
 (
   set -o pipefail
   sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary --cached \
@@ -148,8 +151,14 @@ sudo /usr/local/bin/agent version || {
   echo "Installed agent CLI is not runnable; update not attempted" >&2
   exit 2
 }
-AAVA_UID="$(sudo stat -c '%u' "$AAVA_REPO")"
-AAVA_GID="$(sudo stat -c '%g' "$AAVA_REPO")"
+AAVA_UID="$(sudo stat -c '%u' "$AAVA_REPO")" || {
+  echo "Failed to read checkout owner UID; update not attempted" >&2
+  exit 2
+}
+AAVA_GID="$(sudo stat -c '%g' "$AAVA_REPO")" || {
+  echo "Failed to read checkout owner GID; update not attempted" >&2
+  exit 2
+}
 if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then
   echo "Refusing automatic repair for linked, symlinked, or missing .git metadata; inspect ownership manually" >&2
   exit 2
@@ -163,9 +172,19 @@ if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ] || [ "$AAVA_GIT_COMMON_DIR" !
   exit 2
 fi
 sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_EXPECTED_GIT_DIR" || exit 2
+if sudo test -L "$AAVA_REPO/.agent"; then
+  echo "Refusing symlinked .agent state" >&2
+  exit 2
+fi
 if sudo test -e "$AAVA_REPO/.agent"; then
-  if sudo test -L "$AAVA_REPO/.agent"; then echo "Refusing symlinked .agent state" >&2; exit 2; fi
-  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"
+  if ! sudo test -d "$AAVA_REPO/.agent"; then
+    echo "Refusing non-directory .agent state" >&2
+    exit 2
+  fi
+  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent" || {
+    echo "Failed to repair .agent ownership; update not attempted" >&2
+    exit 2
+  }
 fi
 AAVA_SETPRIV="$(command -v setpriv)" || {
   echo "setpriv is required; install util-linux and retry" >&2
@@ -219,11 +238,12 @@ runtime files owned by Asterisk or another service account. The recovery above r
 only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
 so Docker access does not depend on which sudoer pasted the recovery. Patch capture
-and CLI bootstrap fail closed before any repair or update if Git cannot read either
-diff, the filesystem cannot write the preservation file, or the requested CLI cannot
-be downloaded, installed, and executed. Patch capture includes binary payloads, and
-the guarded update disables CLI self-update so it keeps the requested recovery
-version. Repository
+and CLI bootstrap fail closed before any repair or update if Git cannot inspect the
+checkout or read either diff, the filesystem cannot write the preservation file, the
+checkout owner cannot be determined, or the requested CLI cannot be downloaded,
+installed, and executed. Metadata repair also stops recovery immediately if either
+bounded ownership change fails. Patch capture includes binary payloads, and the guarded
+update disables CLI self-update so it keeps the requested recovery version. Repository
 ancestors that the checkout owner cannot traverse receive execute-only access inside a
 guarded subshell; the owner-level command enters `AAVA_REPO` only after that repair, and
 the exact original modes are restored on success, failure, or interruption. The early
@@ -232,8 +252,8 @@ they do not require the sudoer to traverse `/root` before the guard is active. I
 metadata resolves outside the checkout's real `.git` directory (including a linked
 worktree or gitfile), recovery prints the resolved paths and stops before `chown`;
 inspect and repair that shared metadata manually rather than changing another
-repository recursively. If Git
-instead reports *dubious ownership*, add only this checkout as safe using the path
+repository recursively. If Git instead reports *dubious ownership*, add only this
+checkout as safe using the path
 printed by Git; `safe.directory` does not fix a real write-permission failure:
 
 ```bash
