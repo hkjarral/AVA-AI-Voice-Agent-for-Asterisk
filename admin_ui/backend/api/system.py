@@ -4729,19 +4729,10 @@ def _update_plan_failure_detail(
         "  trap 'exit 129' HUP\n"
         "  trap 'exit 130' INT\n"
         "  trap 'exit 143' TERM\n"
-        '  AAVA_HOME="$(getent passwd "$AAVA_UID" 2>/dev/null | cut -d: -f6 '
-        '| head -n 1 || true)"\n'
-        '  if [ -z "$AAVA_HOME" ] || ! sudo test -d "$AAVA_HOME" || '
-        '[ "$(sudo stat -c \'%u\' "$AAVA_HOME" 2>/dev/null || true)" != "$AAVA_UID" ] || '
-        '[ -n "$(sudo find "$AAVA_HOME" -maxdepth 0 -perm /022 -print -quit '
-        '2>/dev/null)" ] || '
-        '! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
-        '--clear-groups test -x "$AAVA_HOME" 2>/dev/null; then\n'
-        '    AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2\n'
-        '    sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2\n'
-        '    sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2\n'
-        '    AAVA_HOME="$AAVA_TEMP_HOME"\n'
-        '  fi\n'
+        '  AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2\n'
+        '  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2\n'
+        '  sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2\n'
+        '  AAVA_HOME="$AAVA_TEMP_HOME"\n'
         '  AAVA_PARENT="$(dirname "$AAVA_REPO")"\n'
         '  while [ "$AAVA_PARENT" != "/" ]; do\n'
         '    if ! sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '

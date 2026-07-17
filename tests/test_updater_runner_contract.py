@@ -28,11 +28,8 @@ def test_updater_drops_to_the_project_owner_before_writing() -> None:
         'exec gosu "${user_name}" /usr/bin/env HOME="${user_home}" "$0" "$@"'
         in runner
     )
-    assert 'user_home="$(getent passwd "${project_uid}"' in runner
-    assert '[ ! -d "${user_home}" ]' in runner
-    assert 'stat -c \'%u\' "${user_home}"' in runner
-    assert 'find "${user_home}" -maxdepth 0 -perm /022' in runner
-    assert 'gosu "${user_name}" test -x "${user_home}"' in runner
+    assert 'user_home="$(getent passwd "${project_uid}"' not in runner
+    assert 'find "${user_home}"' not in runner
     assert 'mktemp -d /tmp/aava-updater-home.XXXXXXXXXX' in runner
     assert 'chown "${project_uid}:${project_gid}" "${user_home}"' in runner
     assert 'chmod 0700 "${user_home}"' in runner

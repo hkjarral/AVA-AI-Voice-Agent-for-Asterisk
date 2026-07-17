@@ -109,15 +109,9 @@ drop_to_project_owner() {
     user_name="aava-updater-${project_uid}"
     useradd --no-create-home -u "${project_uid}" -g "${project_gid}" -s /bin/bash "${user_name}"
   fi
-  user_home="$(getent passwd "${project_uid}" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
-  if [ -z "${user_home}" ] || [ ! -d "${user_home}" ] || \
-    [ "$(stat -c '%u' "${user_home}" 2>/dev/null || true)" != "${project_uid}" ] || \
-    [ -n "$(find "${user_home}" -maxdepth 0 -perm /022 -print -quit 2>/dev/null)" ] || \
-    ! gosu "${user_name}" test -x "${user_home}" 2>/dev/null; then
-    user_home="$(mktemp -d /tmp/aava-updater-home.XXXXXXXXXX)"
-    chown "${project_uid}:${project_gid}" "${user_home}"
-    chmod 0700 "${user_home}"
-  fi
+  user_home="$(mktemp -d /tmp/aava-updater-home.XXXXXXXXXX)"
+  chown "${project_uid}:${project_gid}" "${user_home}"
+  chmod 0700 "${user_home}"
 
   if [ -S /var/run/docker.sock ]; then
     socket_gid="$(stat -c '%g' /var/run/docker.sock)"
