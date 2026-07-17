@@ -110,6 +110,39 @@ def _existing_agent_count(db_path: str) -> Optional[int]:
         raise LegacyAgentMigrationError(f"existing agents.db is unreadable: {exc}") from exc
 
 
+def _prepare_existing_database_for_replace(db_path: str) -> None:
+    """Checkpoint and remove WAL sidecars before atomically replacing an empty DB.
+
+    An Admin UI startup or interrupted prior run may leave an empty ``agents.db``
+    in WAL mode. Publishing a newly migrated main file beside those old sidecars
+    can make SQLite replay frames that belong to the replaced database. Refuse to
+    publish if the checkpoint is busy, then remove both sidecars while the
+    migration lock is held.
+    """
+    if not os.path.exists(db_path):
+        return
+    try:
+        connection = sqlite3.connect(db_path, timeout=5.0)
+        try:
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint and int(checkpoint[0]) != 0:
+                raise LegacyAgentMigrationError(
+                    "existing agents.db WAL is busy; cannot safely replace the empty database"
+                )
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise LegacyAgentMigrationError(
+            f"existing agents.db WAL checkpoint failed: {exc}"
+        ) from exc
+
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.unlink(f"{db_path}{suffix}")
+        except FileNotFoundError:
+            pass
+
+
 def _upgrade_existing_resource_policies(db_path: str) -> int:
     """Promote calendar bindings left in extra_json by early v7.4 builds.
 
@@ -269,6 +302,7 @@ def ensure_legacy_contexts_imported(
             finally:
                 connection.close()
             os.chmod(temp_path, 0o600)
+            _prepare_existing_database_for_replace(target)
             os.replace(temp_path, target)
             return {"imported": len(rows), "default_slug": "default" if "default" in seen else rows[0][1]}
         except Exception as exc:

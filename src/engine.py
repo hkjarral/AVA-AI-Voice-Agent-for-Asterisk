@@ -14069,6 +14069,26 @@ class Engine:
                     context_name=resolved_context,
                     exc_info=True,
                 )
+        if (
+            resolved_context
+            and session.routing_method in {'ai_agent', 'ai_context', 'default'}
+            and no_input_context is None
+        ):
+            message = (
+                f"context_resolution_failed: {resolved_context}: could not resolve an active "
+                "Agent in authoritative agents.db"
+            )
+            session.context_resolution_error = message
+            session.error_message = message
+            await self._save_session(session)
+            logger.error(
+                "Requested Agent could not be resolved",
+                call_id=session.call_id,
+                context_name=resolved_context,
+                routing_method=session.routing_method,
+                remediation="Select an active Agent slug in the dialplan or Agents UI",
+            )
+            return
         # Resolve agent-scoped tools from the generation captured when the call
         # entered Stasis. A reload racing with routing cannot move this call to
         # the newly published generation.

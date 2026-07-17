@@ -75,6 +75,40 @@ def test_populated_agent_store_is_never_overwritten(tmp_path):
         assert connection.execute("SELECT display_name FROM agents").fetchall() == [("existing",)]
 
 
+def test_empty_wal_database_sidecars_are_removed_before_import(tmp_path):
+    database = tmp_path / "agents.db"
+    ensure_legacy_contexts_imported(
+        {"old": {"provider": "local", "prompt": "Old"}},
+        db_path=str(database),
+    )
+
+    stale_connection = sqlite3.connect(database)
+    assert stale_connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    stale_connection.execute("DELETE FROM agents")
+    stale_connection.execute("DELETE FROM schema_migrations")
+    stale_connection.commit()
+    wal_path = tmp_path / "agents.db-wal"
+    shm_path = tmp_path / "agents.db-shm"
+    assert wal_path.exists()
+    assert shm_path.exists()
+
+    try:
+        result = ensure_legacy_contexts_imported(
+            {"new": {"provider": "local", "prompt": "New"}},
+            db_path=str(database),
+        )
+    finally:
+        stale_connection.close()
+
+    assert result == {"imported": 1, "default_slug": "new"}
+    assert not wal_path.exists()
+    assert not shm_path.exists()
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT slug, prompt FROM agents").fetchall() == [
+            ("new", "New")
+        ]
+
+
 def test_existing_early_v740_rows_promote_calendar_bindings(tmp_path):
     database = tmp_path / "agents.db"
     ensure_legacy_contexts_imported(
