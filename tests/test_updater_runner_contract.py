@@ -40,7 +40,7 @@ def test_updater_stays_root_when_any_git_metadata_owner_differs() -> None:
     symlink_guard = '[ -L "${PROJECT_ROOT}/.agent" ]'
     root_owner_return = 'if [ "${project_uid}" = "0" ]; then'
     ownership_scan = (
-        'find "${PROJECT_ROOT}/.git" ! -uid "${project_uid}" -print -quit'
+        'find "${git_metadata_root}" ! -uid "${project_uid}" -print -quit'
     )
     mixed_owner_check = '[ -n "${git_metadata_path}" ]'
     assert ownership_scan in runner
@@ -49,6 +49,22 @@ def test_updater_stays_root_when_any_git_metadata_owner_differs() -> None:
     assert "updater will remain root" in runner
     assert runner.index(symlink_guard) < runner.index(root_owner_return)
     assert runner.index(symlink_guard) < runner.index(mixed_owner_check)
+
+
+def test_updater_resolves_worktree_gitdirs_before_scanning_ownership() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+
+    worktree_gitdir = "rev-parse --absolute-git-dir"
+    common_gitdir = "rev-parse --path-format=absolute --git-common-dir"
+    ownership_scan = (
+        'find "${git_metadata_root}" ! -uid "${project_uid}" -print -quit'
+    )
+    assert worktree_gitdir in runner
+    assert common_gitdir in runner
+    assert 'git_metadata_roots=("${git_dir}")' in runner
+    assert 'git_metadata_roots+=("${git_common_dir}")' in runner
+    assert runner.index(worktree_gitdir) < runner.index(ownership_scan)
+    assert runner.index(common_gitdir) < runner.index(ownership_scan)
 
 
 def test_updater_makes_container_mount_parents_traversable_before_drop() -> None:

@@ -28,7 +28,10 @@ drop_to_project_owner() {
     return 2
   fi
 
-  local project_uid project_gid git_metadata_path git_metadata_uid socket_gid user_name primary_group socket_group parent_dir
+  local project_uid project_gid git_dir git_common_dir
+  local git_metadata_root git_metadata_path git_metadata_uid
+  local socket_gid user_name primary_group socket_group parent_dir
+  local -a git_metadata_roots=()
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
   project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
   if [ "${project_uid}" = "0" ]; then
@@ -41,15 +44,36 @@ drop_to_project_owner() {
   # which `git fetch` must overwrite. Stay root for this recovery hop instead of
   # guessing at a recursive chown.
   if [ -e "${PROJECT_ROOT}/.git" ]; then
-    if ! git_metadata_path="$(find "${PROJECT_ROOT}/.git" ! -uid "${project_uid}" -print -quit)"; then
-      echo "WARN: cannot inspect Git metadata ownership; updater will remain root" >&2
+    if ! git_dir="$(
+      git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
+        rev-parse --absolute-git-dir 2>/dev/null
+    )" || [ -z "${git_dir}" ]; then
+      echo "WARN: cannot resolve the checkout Git directory; updater will remain root" >&2
       return 0
     fi
-    if [ -n "${git_metadata_path}" ]; then
-      git_metadata_uid="$(stat -c '%u' "${git_metadata_path}" 2>/dev/null || true)"
-      echo "WARN: checkout owner UID ${project_uid} differs from Git metadata owner UID ${git_metadata_uid:-unknown} at ${git_metadata_path}; updater will remain root" >&2
+    if ! git_common_dir="$(
+      git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
+        rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+    )" || [ -z "${git_common_dir}" ]; then
+      echo "WARN: cannot resolve the checkout common Git directory; updater will remain root" >&2
       return 0
     fi
+    git_metadata_roots=("${git_dir}")
+    if [ "${git_common_dir}" != "${git_dir}" ]; then
+      git_metadata_roots+=("${git_common_dir}")
+    fi
+
+    for git_metadata_root in "${git_metadata_roots[@]}"; do
+      if ! git_metadata_path="$(find "${git_metadata_root}" ! -uid "${project_uid}" -print -quit)"; then
+        echo "WARN: cannot inspect Git metadata ownership at ${git_metadata_root}; updater will remain root" >&2
+        return 0
+      fi
+      if [ -n "${git_metadata_path}" ]; then
+        git_metadata_uid="$(stat -c '%u' "${git_metadata_path}" 2>/dev/null || true)"
+        echo "WARN: checkout owner UID ${project_uid} differs from Git metadata owner UID ${git_metadata_uid:-unknown} at ${git_metadata_path}; updater will remain root" >&2
+        return 0
+      fi
+    done
   fi
 
   # Older updater images wrote this tree as root. Repair that state while we
