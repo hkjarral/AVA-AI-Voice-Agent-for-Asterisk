@@ -4605,11 +4605,25 @@ def _update_plan_failure_detail(
         "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
         f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
         "sudo /usr/local/bin/agent version\n"
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" fetch origin --prune --tags\n'
-        f"sudo /usr/local/bin/agent update --ref {quoted_ref} --checkout={checkout_flag} "
+        'AAVA_UID="$(stat -c \'%u\' "$AAVA_REPO")"\n'
+        'AAVA_GID="$(stat -c \'%g\' "$AAVA_REPO")"\n'
+        'AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
+        'rev-parse --absolute-git-dir)"\n'
+        'AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
+        'rev-parse --path-format=absolute --git-common-dir)"\n'
+        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_DIR"\n'
+        'if [ "$AAVA_GIT_COMMON_DIR" != "$AAVA_GIT_DIR" ]; then\n'
+        '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_COMMON_DIR"\n'
+        "fi\n"
+        'if [ -e "$AAVA_REPO/.agent" ]; then\n'
+        '  if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi\n'
+        '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"\n'
+        "fi\n"
+        f"sudo -u \"#$AAVA_UID\" -g \"#$AAVA_GID\" /usr/local/bin/agent update --ref {quoted_ref} "
+        f"--checkout={checkout_flag} "
         f"--include-ui={include_ui_flag} --local-changes=retain\n\n"
         "Use --local-changes=overwrite only after preserving any local source edits. "
-        "Do not recursively chown the checkout based only on this error."
+        "Only .git/.agent metadata is repaired; do not recursively chown the checkout."
     )
 
 

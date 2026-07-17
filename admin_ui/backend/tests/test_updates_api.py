@@ -129,12 +129,16 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
         "diff | sudo tee -a ../aava-update-recovery.patch >/dev/null"
     ) in detail
+    assert 'AAVA_UID="$(stat -c \'%u\' "$AAVA_REPO")"' in detail
+    assert 'rev-parse --absolute-git-dir' in detail
+    assert 'rev-parse --path-format=absolute --git-common-dir' in detail
     assert (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        "fetch origin --prune --tags"
+        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_DIR"'
     ) in detail
+    assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
-        "agent update --ref v7.4.0 --checkout=false --include-ui=true "
+        'sudo -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update '
+        "--ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain"
     ) in detail
 

@@ -111,28 +111,43 @@ mkdir: cannot create directory '/root': Permission denied
 error: cannot open '.git/FETCH_HEAD': Permission denied
 ```
 
-run the recovery from an SSH shell on the host. A host-side root invocation bypasses
-the short-lived updater container's `/root` traversal problem and can write existing
-root-owned Git metadata without recursively changing checkout ownership:
+run the recovery from an SSH shell on the host. The privileged steps repair only the
+bounded Git/updater metadata, then the update runs as the checkout owner. This bypasses
+the short-lived updater container's `/root` traversal problem without recursively
+changing checkout ownership:
 
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
-sudo git -c safe.directory="$(pwd)" -C "$(pwd)" status --short
-sudo git -c safe.directory="$(pwd)" -C "$(pwd)" diff --cached \
+AAVA_REPO="$(pwd)"
+sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short
+sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached \
   | sudo tee ../aava-update-recovery.patch >/dev/null
-sudo git -c safe.directory="$(pwd)" -C "$(pwd)" diff \
+sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff \
   | sudo tee -a ../aava-update-recovery.patch >/dev/null
 
 curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
   | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
 
 sudo /usr/local/bin/agent version
-sudo git -c safe.directory="$(pwd)" -C "$(pwd)" fetch origin --prune --tags
-sudo /usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain
+AAVA_UID="$(stat -c '%u' "$AAVA_REPO")"
+AAVA_GID="$(stat -c '%g' "$AAVA_REPO")"
+AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --absolute-git-dir)"
+AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --path-format=absolute --git-common-dir)"
+sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_DIR"
+if [ "$AAVA_GIT_COMMON_DIR" != "$AAVA_GIT_DIR" ]; then
+  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_COMMON_DIR"
+fi
+if [ -e "$AAVA_REPO/.agent" ]; then
+  if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi
+  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"
+fi
+sudo -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update \
+  --ref v7.4.0 --include-ui --local-changes=retain
 ```
 
-Do not run a recursive `chown` based only on this error: production checkouts can
-legitimately contain runtime files owned by Asterisk or another service account. If Git
+Do not recursively `chown` the checkout: production checkouts can legitimately contain
+runtime files owned by Asterisk or another service account. The recovery above repairs
+only `.git` and `.agent`, which are owned by the checkout operator. If Git
 instead reports *dubious ownership*, add only this checkout as safe using the path
 printed by Git; `safe.directory` does not fix a real write-permission failure:
 
