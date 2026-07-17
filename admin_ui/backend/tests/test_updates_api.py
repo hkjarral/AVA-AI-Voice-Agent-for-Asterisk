@@ -144,6 +144,38 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
 
 
+def test_update_plan_recovery_restores_temporary_parent_traversal(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "private" / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    state = 'AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2'
+    parent_loop = 'while [ "$AAVA_PARENT" != "/" ]; do'
+    access_probe = (
+        'sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" '
+        'test -x "$AAVA_PARENT"'
+    )
+    grant = 'sudo chmod o+x -- "$AAVA_PARENT" || exit 2'
+    restore = 'sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2'
+    update = "/usr/local/bin/agent update --ref main"
+
+    assert state in detail
+    assert parent_loop in detail
+    assert access_probe in detail
+    assert grant in detail
+    assert restore in detail
+    assert 'trap \'AAVA_EXIT=$?; aava_restore_traversal' in detail
+    assert "trap 'exit 129' HUP" in detail
+    assert "trap 'exit 130' INT" in detail
+    assert "trap 'exit 143' TERM" in detail
+    assert detail.index(state) < detail.index(parent_loop)
+    assert detail.index(restore) < detail.index(grant) < detail.index(update)
+
+
 def test_update_plan_failure_preserves_long_stderr_and_explicit_flags(tmp_path) -> None:
     updater_output = "root cause before long diagnostic\n" + ("x" * 5000) + "\nfinal error"
 

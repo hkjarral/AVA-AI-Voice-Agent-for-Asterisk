@@ -4619,12 +4619,41 @@ def _update_plan_failure_detail(
         '  if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi\n'
         '  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"\n'
         "fi\n"
-        f"sudo --preserve-groups -u \"#$AAVA_UID\" -g \"#$AAVA_GID\" "
+        "(\n"
+        '  AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2\n'
+        "  aava_restore_traversal() {\n"
+        "    AAVA_RESTORE_STATUS=0\n"
+        '    while IFS="$(printf \'\\t\')" read -r AAVA_MODE AAVA_PARENT; do\n'
+        '      if [ -n "$AAVA_PARENT" ]; then\n'
+        '        sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2\n'
+        "      fi\n"
+        '    done < "$AAVA_TRAVERSAL_STATE"\n'
+        '    rm -f -- "$AAVA_TRAVERSAL_STATE"\n'
+        '    return "$AAVA_RESTORE_STATUS"\n'
+        "  }\n"
+        '  trap \'AAVA_EXIT=$?; aava_restore_traversal || AAVA_EXIT=$?; exit "$AAVA_EXIT"\' EXIT\n'
+        "  trap 'exit 129' HUP\n"
+        "  trap 'exit 130' INT\n"
+        "  trap 'exit 143' TERM\n"
+        '  AAVA_PARENT="$(dirname "$AAVA_REPO")"\n'
+        '  while [ "$AAVA_PARENT" != "/" ]; do\n'
+        '    if ! sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" '
+        'test -x "$AAVA_PARENT"; then\n'
+        '      AAVA_MODE="$(sudo stat -c \'%a\' "$AAVA_PARENT")" || exit 2\n'
+        '      printf \'%s\\t%s\\n\' "$AAVA_MODE" "$AAVA_PARENT" '
+        '>> "$AAVA_TRAVERSAL_STATE" || exit 2\n'
+        '      sudo chmod o+x -- "$AAVA_PARENT" || exit 2\n'
+        "    fi\n"
+        '    AAVA_PARENT="$(dirname "$AAVA_PARENT")"\n'
+        "  done\n"
+        f"  sudo --preserve-groups -u \"#$AAVA_UID\" -g \"#$AAVA_GID\" "
         f"/usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "
-        f"--include-ui={include_ui_flag} --local-changes=retain\n\n"
+        f"--include-ui={include_ui_flag} --local-changes=retain\n"
+        ")\n\n"
         "Use --local-changes=overwrite only after preserving any local source edits. "
-        "Only .git/.agent metadata is repaired; do not recursively chown the checkout."
+        "Only .git/.agent metadata is repaired, and temporary parent traversal is restored; "
+        "do not recursively chown the checkout."
     )
 
 

@@ -141,15 +141,44 @@ if [ -e "$AAVA_REPO/.agent" ]; then
   if [ -L "$AAVA_REPO/.agent" ]; then echo "Refusing symlinked .agent state" >&2; exit 2; fi
   sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"
 fi
-sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update \
-  --ref v7.4.0 --include-ui --local-changes=retain
+(
+  AAVA_TRAVERSAL_STATE="$(mktemp)" || exit 2
+  aava_restore_traversal() {
+    AAVA_RESTORE_STATUS=0
+    while IFS="$(printf '\t')" read -r AAVA_MODE AAVA_PARENT; do
+      if [ -n "$AAVA_PARENT" ]; then
+        sudo chmod "$AAVA_MODE" -- "$AAVA_PARENT" || AAVA_RESTORE_STATUS=2
+      fi
+    done < "$AAVA_TRAVERSAL_STATE"
+    rm -f -- "$AAVA_TRAVERSAL_STATE"
+    return "$AAVA_RESTORE_STATUS"
+  }
+  trap 'AAVA_EXIT=$?; aava_restore_traversal || AAVA_EXIT=$?; exit "$AAVA_EXIT"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  AAVA_PARENT="$(dirname "$AAVA_REPO")"
+  while [ "$AAVA_PARENT" != "/" ]; do
+    if ! sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" test -x "$AAVA_PARENT"; then
+      AAVA_MODE="$(sudo stat -c '%a' "$AAVA_PARENT")" || exit 2
+      printf '%s\t%s\n' "$AAVA_MODE" "$AAVA_PARENT" >> "$AAVA_TRAVERSAL_STATE" || exit 2
+      sudo chmod o+x -- "$AAVA_PARENT" || exit 2
+    fi
+    AAVA_PARENT="$(dirname "$AAVA_PARENT")"
+  done
+  sudo --preserve-groups -u "#$AAVA_UID" -g "#$AAVA_GID" /usr/local/bin/agent update \
+    --ref v7.4.0 --include-ui --local-changes=retain
+)
 ```
 
 Do not recursively `chown` the checkout: production checkouts can legitimately contain
 runtime files owned by Asterisk or another service account. The recovery above repairs
 only `.git` and `.agent`, which are owned by the checkout operator. It preserves the
 SSH operator's supplemental groups so any Docker socket access already available to
-that operator remains available while the CLI rebuilds or restarts services. If Git
+that operator remains available while the CLI rebuilds or restarts services. Repository
+ancestors that the checkout owner cannot traverse receive execute-only access inside a
+guarded subshell; their exact original modes are restored on success, failure, or
+interruption. If Git
 instead reports *dubious ownership*, add only this checkout as safe using the path
 printed by Git; `safe.directory` does not fix a real write-permission failure:
 
