@@ -151,10 +151,13 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert 'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")"' in detail
     assert 'if sudo test -e "$AAVA_REPO/.agent"; then' in detail
     assert 'if sudo test -L "$AAVA_REPO/.agent"; then' in detail
+    assert 'if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then' in detail
+    assert 'AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2' in detail
     assert 'rev-parse --absolute-git-dir' in detail
     assert 'rev-parse --path-format=absolute --git-common-dir' in detail
     assert (
-        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_DIR"'
+        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
+        '"$AAVA_EXPECTED_GIT_DIR" || exit 2'
     ) in detail
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
@@ -212,6 +215,39 @@ def test_update_plan_recovery_preserves_binary_edits_and_pins_cli(tmp_path) -> N
         "--include-ui=true --local-changes=retain --self-update=false"
     ) in detail
     assert "--self-update=true" not in detail
+
+
+def test_update_plan_recovery_bounds_git_metadata_repair(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    metadata_guard = (
+        'if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then'
+    )
+    expected = 'AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2'
+    resolved = 'AAVA_GIT_DIR="$(sudo git'
+    boundary = (
+        'if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ] || '
+        '[ "$AAVA_GIT_COMMON_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then'
+    )
+    refusal = "Refusing Git metadata repair outside %s"
+    repair = (
+        'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
+        '"$AAVA_EXPECTED_GIT_DIR" || exit 2'
+    )
+
+    assert metadata_guard in detail
+    assert boundary in detail
+    assert refusal in detail
+    assert repair in detail
+    assert '"$AAVA_GIT_COMMON_DIR"\n' not in detail
+    assert detail.index(metadata_guard) < detail.index(expected) < detail.index(resolved)
+    assert detail.index(resolved) < detail.index(boundary) < detail.index(repair)
 
 
 def test_update_plan_recovery_stops_before_repair_if_cli_bootstrap_fails(tmp_path) -> None:

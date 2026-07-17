@@ -150,12 +150,19 @@ sudo /usr/local/bin/agent version || {
 }
 AAVA_UID="$(sudo stat -c '%u' "$AAVA_REPO")"
 AAVA_GID="$(sudo stat -c '%g' "$AAVA_REPO")"
-AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --absolute-git-dir)"
-AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --path-format=absolute --git-common-dir)"
-sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_DIR"
-if [ "$AAVA_GIT_COMMON_DIR" != "$AAVA_GIT_DIR" ]; then
-  sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_GIT_COMMON_DIR"
+if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then
+  echo "Refusing automatic repair for linked, symlinked, or missing .git metadata; inspect ownership manually" >&2
+  exit 2
 fi
+AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2
+AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --absolute-git-dir)" || exit 2
+AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --path-format=absolute --git-common-dir)" || exit 2
+if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ] || [ "$AAVA_GIT_COMMON_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then
+  printf 'Refusing Git metadata repair outside %s (gitdir=%s common=%s)\n' \
+    "$AAVA_EXPECTED_GIT_DIR" "$AAVA_GIT_DIR" "$AAVA_GIT_COMMON_DIR" >&2
+  exit 2
+fi
+sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_EXPECTED_GIT_DIR" || exit 2
 if sudo test -e "$AAVA_REPO/.agent"; then
   if sudo test -L "$AAVA_REPO/.agent"; then echo "Refusing symlinked .agent state" >&2; exit 2; fi
   sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_REPO/.agent"
@@ -222,6 +229,10 @@ guarded subshell; the owner-level command enters `AAVA_REPO` only after that rep
 the exact original modes are restored on success, failure, or interruption. The early
 inspection and patch commands use privileged absolute paths, so
 they do not require the sudoer to traverse `/root` before the guard is active. If Git
+metadata resolves outside the checkout's real `.git` directory (including a linked
+worktree or gitfile), recovery prints the resolved paths and stops before `chown`;
+inspect and repair that shared metadata manually rather than changing another
+repository recursively. If Git
 instead reports *dubious ownership*, add only this checkout as safe using the path
 printed by Git; `safe.directory` does not fix a real write-permission failure:
 
