@@ -35,8 +35,8 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff > ../aava-pre-v740-working-tree.patch
-git diff --cached > ../aava-pre-v740-staged.patch
+git diff --binary > ../aava-pre-v740-working-tree.patch
+git diff --binary --cached > ../aava-pre-v740-staged.patch
 ```
 
 Back up at least:
@@ -93,12 +93,19 @@ Bootstrap the *target release CLI* first so recovery does not depend on the fail
 planner container:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
-  | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
+(
+  set -o pipefail
+  curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+    | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
+) || { echo "Failed to install requested agent CLI; update not attempted" >&2; exit 2; }
 
-/usr/local/bin/agent version
+sudo /usr/local/bin/agent version || {
+  echo "Installed agent CLI is not runnable; update not attempted" >&2
+  exit 2
+}
 git fetch origin --prune --tags
-/usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain
+/usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain \
+  --self-update=false
 ```
 
 Use `overwrite` only after the patch/backup step above confirms you do not need the
@@ -122,12 +129,12 @@ AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"
 sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short
 (
   set -o pipefail
-  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached \
+  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary --cached \
     | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null
 ) || { echo "Failed to preserve staged tracked edits; update not attempted" >&2; exit 2; }
 (
   set -o pipefail
-  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff \
+  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary \
     | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null
 ) || { echo "Failed to preserve unstaged tracked edits; update not attempted" >&2; exit 2; }
 
@@ -196,7 +203,7 @@ fi
   sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
     --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
     sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
-    --local-changes=retain
+    --local-changes=retain --self-update=false
 )
 ```
 
@@ -207,7 +214,9 @@ uses the checkout owner's group vector and explicitly includes the Docker socket
 so Docker access does not depend on which sudoer pasted the recovery. Patch capture
 and CLI bootstrap fail closed before any repair or update if Git cannot read either
 diff, the filesystem cannot write the preservation file, or the requested CLI cannot
-be downloaded, installed, and executed. Repository
+be downloaded, installed, and executed. Patch capture includes binary payloads, and
+the guarded update disables CLI self-update so it keeps the requested recovery
+version. Repository
 ancestors that the checkout owner cannot traverse receive execute-only access inside a
 guarded subshell; the owner-level command enters `AAVA_REPO` only after that repair, and
 the exact original modes are restored on success, failure, or interruption. The early
@@ -254,7 +263,7 @@ set -o pipefail
 sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
   --groups="$AAVA_GROUPS" /bin/sh -c 'cd "$1" && shift && exec "$@"' \
   sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
-  --local-changes=retain 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
+  --local-changes=retain --self-update=false 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
 ```
 
 The CLI creates its backup before changing the checkout. If the command reports a

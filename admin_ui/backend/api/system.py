@@ -4600,13 +4600,13 @@ def _update_plan_failure_detail(
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short\n'
         "(\n"
         "  set -o pipefail\n"
-        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --cached '
+        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary --cached '
         '| sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         ') || { echo "Failed to preserve staged tracked edits; update not attempted" '
         ">&2; exit 2; }\n"
         "(\n"
         "  set -o pipefail\n"
-        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff '
+        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary '
         '| sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
         ">&2; exit 2; }\n"
@@ -4677,7 +4677,7 @@ def _update_plan_failure_detail(
         f"'cd \"$1\" && shift && exec \"$@\"' sh \"$AAVA_REPO\" "
         f"/usr/local/bin/agent update --ref {quoted_ref} "
         f"--checkout={checkout_flag} "
-        f"--include-ui={include_ui_flag} --local-changes=retain\n"
+        f"--include-ui={include_ui_flag} --local-changes=retain --self-update=false\n"
         ")\n\n"
         "Use --local-changes=overwrite only after preserving any local source edits. "
         "Only .git/.agent metadata is repaired, and temporary parent traversal is restored; "

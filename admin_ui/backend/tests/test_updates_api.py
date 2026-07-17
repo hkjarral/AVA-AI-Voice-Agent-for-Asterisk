@@ -123,11 +123,11 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'diff --binary --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
     assert detail.count("set -o pipefail") == 3
     assert (
@@ -163,8 +163,9 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         '\'cd "$1" && shift && exec "$@"\' sh "$AAVA_REPO" '
         "/usr/local/bin/agent update "
         "--ref v7.4.0 --checkout=false --include-ui=true "
-        "--local-changes=retain"
+        "--local-changes=retain --self-update=false"
     ) in detail
+    assert "--self-update=true" not in detail
 
 
 def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_path) -> None:
@@ -178,12 +179,12 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
 
     staged_capture = (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'diff --binary --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
     )
     staged_failure = "Failed to preserve staged tracked edits; update not attempted"
     unstaged_capture = (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     )
     unstaged_failure = "Failed to preserve unstaged tracked edits; update not attempted"
     installer = "curl -sSL https://raw.githubusercontent.com/"
@@ -193,6 +194,24 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
     assert detail.index(staged_failure) < detail.index(unstaged_capture)
     assert detail.index(unstaged_capture) < detail.index(unstaged_failure)
     assert detail.index(unstaged_failure) < detail.index(installer) < detail.index(update)
+
+
+def test_update_plan_recovery_preserves_binary_edits_and_pins_cli(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="v7.4.0",
+        include_ui=True,
+        checkout=False,
+        updater_output="permission denied",
+    )
+
+    assert 'diff --binary --cached | sudo tee "$AAVA_RECOVERY_PATCH"' in detail
+    assert 'diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH"' in detail
+    assert (
+        "/usr/local/bin/agent update --ref v7.4.0 --checkout=false "
+        "--include-ui=true --local-changes=retain --self-update=false"
+    ) in detail
+    assert "--self-update=true" not in detail
 
 
 def test_update_plan_recovery_stops_before_repair_if_cli_bootstrap_fails(tmp_path) -> None:
@@ -310,7 +329,7 @@ def test_update_plan_failure_preserves_long_stderr_and_explicit_flags(tmp_path) 
     assert updater_output in detail
     assert (
         "agent update --ref main --checkout=true --include-ui=false "
-        "--local-changes=retain"
+        "--local-changes=retain --self-update=false"
     ) in detail
 
 
