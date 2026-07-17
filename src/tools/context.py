@@ -37,7 +37,15 @@ def resolve_scoped_tool_config(
     merged = dict(base)
     merged.pop("_agent_scope_resolved", None)
     merged.update(overlay)
-    return merged or fallback()
+    if merged:
+        return merged
+    # A context config (including an intentionally empty dict) is the immutable
+    # per-call snapshot. Never replace an empty resolved scope with current live
+    # YAML, which could broaden access or leak a post-reload generation into an
+    # active call. Only standalone/legacy callers without a snapshot may load it.
+    if not context or getattr(context, "config", None) is None:
+        return fallback()
+    return {}
 
 
 @dataclass

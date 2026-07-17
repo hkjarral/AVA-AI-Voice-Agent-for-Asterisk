@@ -414,6 +414,17 @@ class GCalendarTool(Tool):
                 return {"status": "error", "message": msg}
             return None
 
+        # An explicit empty/stale Agent selection must fail closed before the
+        # legacy single-calendar branch. That branch materializes a synthetic
+        # ``default`` calendar from root credentials and must never override a
+        # resolved ``selected_calendars: []`` policy.
+        if not selected_keys:
+            logger.error("No calendars selected or configured", call_id=call_id)
+            return {
+                "status": "error",
+                "message": "No Google Calendars are selected or configured for this Agent.",
+            }
+
         # Backward-compat single-calendar guard
         if legacy_single:
             cal = self._get_cal(config)
@@ -423,9 +434,6 @@ class GCalendarTool(Tool):
                 return {"status": "error", "message": "Google Calendar is not configured or unavailable."}
         else:
             # For multi-cal, ensure at least one selected calendar resolves
-            if not selected_keys:
-                logger.error("No calendars selected or configured", call_id=call_id)
-                return {"status": "error", "message": "No Google Calendars are selected or configured for this context."}
             # Validate services exist (best-effort; skip broken ones at runtime)
             at_least_one_ready = False
             for k in selected_keys:

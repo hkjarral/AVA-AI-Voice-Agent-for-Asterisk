@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch, MagicMock
 
 from src.tools.business.gcal_tool import GCalendarTool
 from src.tools.base import ToolCategory
+from src.tools.runtime_config import resolve_agent_tool_config
 
 
 class TestGCalendarToolDefinition:
@@ -70,6 +71,53 @@ class TestGCalendarToolExecution:
         config = gcal_tool._get_config(tool_context)
         assert config["selected_calendars"] == ["agent-calendar"]
         assert "_agent_scope_resolved" not in config
+
+    def test_empty_agent_snapshot_does_not_fall_back_to_live_config(
+        self, gcal_tool, tool_context
+    ):
+        tool_context.config = {
+            "tools": {"google_calendar": {"_agent_scope_resolved": True}}
+        }
+        with patch.object(
+            gcal_tool,
+            "_load_config",
+            return_value={"enabled": True, "calendar_id": "live"},
+        ) as load_live:
+            config = gcal_tool._get_config(tool_context)
+
+        assert config == {}
+        load_live.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_none_policy_blocks_legacy_single_calendar(
+        self, gcal_tool, tool_context
+    ):
+        tool_context.config = resolve_agent_tool_config(
+            {
+                "tools": {
+                    "google_calendar": {
+                        "enabled": True,
+                        "credentials_path": "/fake/credentials.json",
+                        "calendar_id": "primary",
+                    }
+                }
+            },
+            {
+                "google_calendar": {
+                    "calendar_policy": "none",
+                    "calendar_keys": [],
+                }
+            },
+        ).config
+
+        with patch.object(gcal_tool, "_get_cal") as get_calendar:
+            result = await gcal_tool.execute(
+                parameters={"action": "list_events"}, context=tool_context
+            )
+
+        assert result["status"] == "error"
+        assert "No Google Calendars" in result["message"]
+        get_calendar.assert_not_called()
 
     @pytest.fixture
     def gcal_enabled_context(self, tool_context):
