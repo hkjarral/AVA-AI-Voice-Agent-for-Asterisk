@@ -4598,7 +4598,8 @@ def _update_plan_failure_detail(
         f"AAVA_REPO={quoted_root}\n"
         'cd "$AAVA_REPO"\n'
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short\n'
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff > ../aava-update-recovery.patch\n'
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff '
+        '| sudo tee ../aava-update-recovery.patch >/dev/null\n'
         "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
         f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
         "sudo /usr/local/bin/agent version\n"

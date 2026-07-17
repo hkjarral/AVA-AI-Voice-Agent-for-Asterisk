@@ -118,7 +118,8 @@ root-owned Git metadata without recursively changing checkout ownership:
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 sudo git -c safe.directory="$(pwd)" -C "$(pwd)" status --short
-sudo git -c safe.directory="$(pwd)" -C "$(pwd)" diff > ../aava-update-recovery.patch
+sudo git -c safe.directory="$(pwd)" -C "$(pwd)" diff \
+  | sudo tee ../aava-update-recovery.patch >/dev/null
 
 curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
   | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
