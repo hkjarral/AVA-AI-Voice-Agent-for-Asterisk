@@ -297,7 +297,7 @@ def run_migration(store: AgentsStore, yaml_path: str, contexts_dir: str) -> dict
             ctx.get("greeting"),
             prompt,
             json.dumps(ctx["tools"]) if ctx.get("tools") else None,
-            json.dumps(tool_configs, sort_keys=True) if tool_configs else None,
+            json.dumps(tool_configs, sort_keys=True, separators=(",", ":")) if tool_configs else None,
             ctx.get("profile") or ctx.get("audio_profile"),
             json.dumps(extra) if extra else None,
             1 if key == "default" else 0,  # is_default

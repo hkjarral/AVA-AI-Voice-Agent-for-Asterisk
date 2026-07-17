@@ -147,11 +147,8 @@ vad:
 # config/ai-agent.yaml
 default_provider: openai_realtime
 active_pipeline: local_hybrid
-
-contexts:
-  default:
-    provider: openai_realtime
-    profile: telephony_ulaw_8k
+# Per-Agent provider/profile selection lives in agents.db (Admin UI → Agents).
+# `contexts:` is one-time v7.4 migration input only; see docs/AGENTS.md.
 ```
 
 **Lookup Order**:

@@ -22,6 +22,9 @@ const TransferAccessEditor: React.FC<Props> = ({ destinations, state, onChange }
     const [query, setQuery] = useState('');
     const knownKeys = useMemo(() => new Set(destinations.map(item => item.key)), [destinations]);
     const staleKeys = state.transferDestinationKeys.filter(key => !knownKeys.has(key));
+    const policyIsValid = ['inherit', 'selected', 'none'].includes(
+        state.transferDestinationPolicy
+    );
     const filtered = destinations.filter(item => {
         const needle = query.trim().toLowerCase();
         if (!needle) return true;
@@ -65,6 +68,11 @@ const TransferAccessEditor: React.FC<Props> = ({ destinations, state, onChange }
                 }
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
             >
+                {!policyIsValid && (
+                    <option value={state.transferDestinationPolicy}>
+                        Invalid saved policy: {state.transferDestinationPolicy}
+                    </option>
+                )}
                 <option value="inherit">Inherit all global destinations</option>
                 <option value="selected">Selected destinations only</option>
                 <option value="none">No transfer destinations</option>
@@ -123,11 +131,30 @@ const TransferAccessEditor: React.FC<Props> = ({ destinations, state, onChange }
                         </p>
                     )}
                     {staleKeys.length > 0 && (
-                        <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
-                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                            Missing global destinations: {staleKeys.join(', ')}. They remain denied
-                            until recreated or removed here.
-                        </p>
+                        <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                            <p className="flex items-start gap-1.5">
+                                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                Missing global destinations: {staleKeys.join(', ')}. They remain denied
+                                until recreated or removed here.
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {staleKeys.map(key => (
+                                    <button
+                                        key={key}
+                                        type="button"
+                                        className="rounded border border-amber-400 px-2 py-1 hover:bg-amber-100"
+                                        onClick={() => onChange({
+                                            ...state,
+                                            transferDestinationKeys: state.transferDestinationKeys.filter(
+                                                item => item !== key
+                                            ),
+                                        })}
+                                    >
+                                        Remove {key}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                     )}
                 </div>
             )}

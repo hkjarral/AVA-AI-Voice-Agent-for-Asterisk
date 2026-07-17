@@ -1,3 +1,5 @@
+import type { ResourcePolicy } from './ResourceAccessEditor';
+
 export interface ToolDef {
     name: string;
     description?: string;
@@ -22,13 +24,13 @@ export interface AgentToolState {
     noInput: Record<string, unknown>; // extra.no_input per-agent policy overrides
     extraPassthrough: Record<string, unknown>; // extra keys we do not own (+ object-form in_call_http_tools)
     mcpJsonRaw: string;               // mcp_json preserved verbatim — NOTE: no runtime effect, MCP is configured globally not per-agent (audit LOW-T2)
-    transferDestinationPolicy: 'inherit' | 'selected' | 'none';
+    transferDestinationPolicy: ResourcePolicy;
     transferDestinationKeys: string[];
-    googleCalendarPolicy: 'inherit' | 'selected' | 'none';
+    googleCalendarPolicy: ResourcePolicy;
     googleCalendarKeys: string[];
-    microsoftCalendarPolicy: 'inherit' | 'selected' | 'none';
+    microsoftCalendarPolicy: ResourcePolicy;
     microsoftAccountKeys: string[];
-    voicemailMailboxPolicy: 'inherit' | 'selected' | 'none';
+    voicemailMailboxPolicy: ResourcePolicy;
     voicemailMailboxKey: string;
 }
 
@@ -43,6 +45,9 @@ const asStrArray = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+const parsePolicy = (value: unknown): ResourcePolicy => asString(value) || 'inherit';
+const isKnownPolicy = (value: ResourcePolicy): boolean =>
+    value === 'inherit' || value === 'selected' || value === 'none';
 const asObject = (v: unknown): Record<string, unknown> =>
     v && typeof v === 'object' && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
 
@@ -103,20 +108,16 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
     const toolConfigs = safeParseObject(agent?.tool_configs_json);
     const transferConfig = asObject(toolConfigs['transfer']);
     const rawTransferPolicy = asString(transferConfig['destination_policy']);
-    const transferDestinationPolicy = rawTransferPolicy === 'selected' || rawTransferPolicy === 'none'
-        ? rawTransferPolicy : 'inherit';
+    const transferDestinationPolicy = parsePolicy(rawTransferPolicy);
     const googleConfig = asObject(toolConfigs['google_calendar']);
     const rawGooglePolicy = asString(googleConfig['calendar_policy']);
-    const googleCalendarPolicy = rawGooglePolicy === 'selected' || rawGooglePolicy === 'none'
-        ? rawGooglePolicy : 'inherit';
+    const googleCalendarPolicy = parsePolicy(rawGooglePolicy);
     const microsoftConfig = asObject(toolConfigs['microsoft_calendar']);
     const rawMicrosoftPolicy = asString(microsoftConfig['account_policy']);
-    const microsoftCalendarPolicy = rawMicrosoftPolicy === 'selected' || rawMicrosoftPolicy === 'none'
-        ? rawMicrosoftPolicy : 'inherit';
+    const microsoftCalendarPolicy = parsePolicy(rawMicrosoftPolicy);
     const voicemailConfig = asObject(toolConfigs['voicemail']);
     const rawVoicemailPolicy = asString(voicemailConfig['mailbox_policy']);
-    const voicemailMailboxPolicy = rawVoicemailPolicy === 'selected' || rawVoicemailPolicy === 'none'
-        ? rawVoicemailPolicy : 'inherit';
+    const voicemailMailboxPolicy = parsePolicy(rawVoicemailPolicy);
 
     const ichRaw = extra['in_call_http_tools'];
     const ichIsObject = !!ichRaw && typeof ichRaw === 'object' && !Array.isArray(ichRaw);
@@ -150,16 +151,16 @@ export function parseAgentConfig(agent: AgentLike | null | undefined): AgentTool
         extraPassthrough: passthrough,
         mcpJsonRaw: agent?.mcp_json || '',
         transferDestinationPolicy,
-        transferDestinationKeys: transferDestinationPolicy === 'selected'
+        transferDestinationKeys: transferDestinationPolicy === 'selected' || !isKnownPolicy(transferDestinationPolicy)
             ? asStrArray(transferConfig['destination_keys']) : [],
         googleCalendarPolicy,
-        googleCalendarKeys: googleCalendarPolicy === 'selected'
+        googleCalendarKeys: googleCalendarPolicy === 'selected' || !isKnownPolicy(googleCalendarPolicy)
             ? asStrArray(googleConfig['calendar_keys']) : [],
         microsoftCalendarPolicy,
-        microsoftAccountKeys: microsoftCalendarPolicy === 'selected'
+        microsoftAccountKeys: microsoftCalendarPolicy === 'selected' || !isKnownPolicy(microsoftCalendarPolicy)
             ? asStrArray(microsoftConfig['account_keys']) : [],
         voicemailMailboxPolicy,
-        voicemailMailboxKey: voicemailMailboxPolicy === 'selected'
+        voicemailMailboxKey: voicemailMailboxPolicy === 'selected' || !isKnownPolicy(voicemailMailboxPolicy)
             ? asString(voicemailConfig['mailbox_key']) : '',
     };
 }
@@ -195,7 +196,7 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     if (state.transferDestinationPolicy !== 'inherit') {
         toolConfigs.transfer = {
             destination_policy: state.transferDestinationPolicy,
-            destination_keys: state.transferDestinationPolicy === 'selected'
+            destination_keys: state.transferDestinationPolicy === 'selected' || !isKnownPolicy(state.transferDestinationPolicy)
                 ? [...new Set(state.transferDestinationKeys.map((key) => key.trim()).filter(Boolean))]
                 : [],
         };
@@ -203,7 +204,7 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     if (state.googleCalendarPolicy !== 'inherit') {
         toolConfigs.google_calendar = {
             calendar_policy: state.googleCalendarPolicy,
-            calendar_keys: state.googleCalendarPolicy === 'selected'
+            calendar_keys: state.googleCalendarPolicy === 'selected' || !isKnownPolicy(state.googleCalendarPolicy)
                 ? [...new Set(state.googleCalendarKeys.map((key) => key.trim()).filter(Boolean))]
                 : [],
         };
@@ -211,7 +212,7 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     if (state.microsoftCalendarPolicy !== 'inherit') {
         toolConfigs.microsoft_calendar = {
             account_policy: state.microsoftCalendarPolicy,
-            account_keys: state.microsoftCalendarPolicy === 'selected'
+            account_keys: state.microsoftCalendarPolicy === 'selected' || !isKnownPolicy(state.microsoftCalendarPolicy)
                 ? [...new Set(state.microsoftAccountKeys.map((key) => key.trim()).filter(Boolean))]
                 : [],
         };
@@ -219,7 +220,7 @@ export function serializeAgentConfig(state: AgentToolState): SerializedAgentConf
     if (state.voicemailMailboxPolicy !== 'inherit') {
         toolConfigs.voicemail = {
             mailbox_policy: state.voicemailMailboxPolicy,
-            mailbox_key: state.voicemailMailboxPolicy === 'selected'
+            mailbox_key: state.voicemailMailboxPolicy === 'selected' || !isKnownPolicy(state.voicemailMailboxPolicy)
                 ? (state.voicemailMailboxKey.trim() || null) : null,
         };
     }

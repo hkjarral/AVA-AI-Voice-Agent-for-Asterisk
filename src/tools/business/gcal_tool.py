@@ -21,7 +21,7 @@ from typing import Dict, Any
 from zoneinfo import ZoneInfo
 
 from src.tools.base import Tool, ToolDefinition, ToolCategory
-from src.tools.context import ToolExecutionContext
+from src.tools.context import ToolExecutionContext, resolve_scoped_tool_config
 
 from src.tools.business.gcalendar import GCalendar, GoogleCalendarApiError, _get_timezone
 
@@ -315,26 +315,9 @@ class GCalendarTool(Tool):
         """
         Get google_calendar config: base from tools.google_calendar, with per-context overlay if present.
         """
-        base: Dict[str, Any] = {}
-        overlay: Dict[str, Any] = {}
-        if context and getattr(context, "get_config_value", None):
-            base = context.get_config_value("tools.google_calendar", {}) or {}
-            ctx_name = getattr(context, "context_name", None)
-            # v7.4 resolves Agent resource access into the immutable per-call base.
-            # Do not let a stale legacy Context overlay broaden or replace it.
-            if ctx_name and not base.get("_agent_scope_resolved"):
-                # Per-context override under contexts.<name>.tool_overrides.google_calendar
-                # Only catch KeyError/TypeError (path not found); other errors must surface
-                try:
-                    overlay = context.get_config_value(f"contexts.{ctx_name}.tool_overrides.google_calendar", {}) or {}
-                except (KeyError, TypeError, AttributeError):
-                    overlay = {}
-        # Merge (overlay wins)
-        out = dict(base or {})
-        out.pop("_agent_scope_resolved", None)
-        for k, v in (overlay or {}).items():
-            out[k] = v
-        return out or self._load_config()
+        return resolve_scoped_tool_config(
+            context, "google_calendar", self._load_config
+        )
 
     async def execute(
         self,

@@ -157,9 +157,11 @@ The deterministic ATIS server uses `met.no` (tafmetar feed) for METAR fetch and 
 - Optional: `defaults.explicit_not_available: true` to speak explicit “not available” lines when runway/frequency/advisories are not configured.
 - The ATIS MCP server re-reads its `--config` file when it changes (no engine restart required for those per-aerodrome tweaks).
 
-### Context scoping
+### Agent scoping
 
-Use existing context tool lists to expose MCP tools only where needed:
+Enable MCP tools only on the Agents that need them through **Admin UI → Agents →
+Tool Access**. The YAML below is one-time migration input only; `contexts:` is
+not a live v7.4 Agent configuration surface:
 
 ```yaml
 contexts:

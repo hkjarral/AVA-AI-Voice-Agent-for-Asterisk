@@ -56,9 +56,15 @@ async def test_reload_publishes_new_generation_without_mutating_active_call():
     active_call.tool_runtime_config = old.config
     engine._build_tool_generation = lambda _config: new
 
+    offloaded = []
+
+    async def run_in_thread(function, *args):
+        offloaded.append(function)
+        return function(*args)
+
     with patch("src.config.load_config", return_value=_config("new")), patch(
         "src.engine.TransportOrchestrator", return_value=SimpleNamespace()
-    ):
+    ), patch("src.engine.asyncio.to_thread", side_effect=run_in_thread):
         response = await Engine._reload_handler(engine, SimpleNamespace())
 
     payload = json.loads(response.text)
@@ -71,6 +77,7 @@ async def test_reload_publishes_new_generation_without_mutating_active_call():
         "old": {"type": "extension", "target": "6000"}
     }
     assert Engine._tool_registry_for_session(engine, None) is new.registry
+    assert offloaded == [engine._build_tool_generation]
     assert not engine._tool_reload_lock.locked()
 
 

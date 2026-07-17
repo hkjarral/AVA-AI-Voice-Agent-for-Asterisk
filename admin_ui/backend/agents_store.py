@@ -72,7 +72,6 @@ class AgentsStore:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         self._ensure_schema_sync()
-        self._upgrade_legacy_resource_policies()
         try: os.chmod(db_path, 0o600)
         except OSError: pass
 
@@ -97,7 +96,7 @@ class AgentsStore:
         except sqlite3.Error:
             pass
 
-    def _upgrade_legacy_resource_policies(self):
+    def upgrade_legacy_resource_policies(self) -> int:
         """Idempotently promote legacy calendar selections into tool_configs_json.
 
         Early v7.4 development databases stored Context ``tool_overrides`` in
@@ -105,6 +104,7 @@ class AgentsStore:
         original extra payload intact, but make Google/Microsoft bindings visible
         and enforceable as first-class Agent policies.
         """
+        changed = 0
         try:
             rows = self.conn.execute(
                 "SELECT id, tool_configs_json, extra_json FROM agents"
@@ -138,10 +138,12 @@ class AgentsStore:
                             "UPDATE agents SET tool_configs_json=? WHERE id=?",
                             (json.dumps(merged, sort_keys=True), row["id"]),
                         )
+                        changed += 1
         except (sqlite3.Error, json.JSONDecodeError, TypeError):
             # Preserve the established best-effort schema-upgrade behavior. The
             # API/runtime validators will surface malformed rows explicitly.
             pass
+        return changed
 
     def close(self):
         """Close the underlying sqlite connection. Safe to call more than once."""

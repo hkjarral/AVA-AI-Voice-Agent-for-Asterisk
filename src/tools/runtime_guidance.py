@@ -260,7 +260,7 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
         voicemail_cfg = (tools_cfg or {}).get("leave_voicemail") or {}
         from src.tools.telephony.voicemail import VoicemailTool
 
-        mailbox_key, extension = VoicemailTool._resolve_mailbox(voicemail_cfg or {})
+        mailbox_key, extension = VoicemailTool.resolve_mailbox(voicemail_cfg or {})
         if extension:
             sections.append(
                 "\n".join(

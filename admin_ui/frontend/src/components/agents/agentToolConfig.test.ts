@@ -174,4 +174,27 @@ describe('per-agent calendar and voicemail resource policies', () => {
             google_calendar: { calendar_policy: 'none', calendar_keys: [] },
         });
     });
+
+    it('preserves invalid saved policies so editing cannot silently broaden access', () => {
+        const state = parseAgentConfig({
+            provider: 'openai_realtime',
+            tool_configs_json: JSON.stringify({
+                transfer: { destination_policy: 'future_policy', destination_keys: ['sales'] },
+                google_calendar: { calendar_policy: 'future_policy', calendar_keys: ['private'] },
+                voicemail: { mailbox_policy: 'future_policy', mailbox_key: 'executive' },
+            }),
+        });
+
+        expect(state.transferDestinationPolicy).toBe('future_policy');
+        const stored = JSON.parse(serializeAgentConfig(state).tool_configs_json || '{}');
+        expect(stored.transfer).toEqual({
+            destination_policy: 'future_policy', destination_keys: ['sales'],
+        });
+        expect(stored.google_calendar).toEqual({
+            calendar_policy: 'future_policy', calendar_keys: ['private'],
+        });
+        expect(stored.voicemail).toEqual({
+            mailbox_policy: 'future_policy', mailbox_key: 'executive',
+        });
+    });
 });

@@ -9,7 +9,11 @@ from agents_store import AgentsStore
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     db = str(tmp_path / "agents.db")
+    yaml_path = tmp_path / "ai-agent.yaml"
+    contexts_dir = tmp_path / "contexts"
     monkeypatch.setattr(agents_api, "_store", lambda: AgentsStore(db_path=db))
+    monkeypatch.setattr(agents_api, "_yaml_path", lambda: str(yaml_path))
+    monkeypatch.setattr(agents_api, "_contexts_dir", lambda: str(contexts_dir))
     # stats endpoint reads a call-history DB path that won't exist in tests -> returns zeros
     app = FastAPI()
     app.include_router(agents_api.router, prefix="/api")
@@ -124,6 +128,47 @@ def test_starter_set_creates_exactly_three_agents_once(client):
     )
     assert second.json()["already_configured"] is True
     assert len(client.get("/api/agents").json()) == 3
+
+
+def test_starter_set_waits_for_pending_legacy_context_migration(
+    client, tmp_path, monkeypatch
+):
+    yaml_path = tmp_path / "ai-agent.yaml"
+    contexts_dir = tmp_path / "contexts"
+    contexts_dir.mkdir()
+    yaml_path.write_text(
+        "contexts:\n  legacy_sales:\n    provider: openai_realtime\n    prompt: legacy\n"
+    )
+    monkeypatch.setattr(agents_api, "_yaml_path", lambda: str(yaml_path))
+    monkeypatch.setattr(agents_api, "_contexts_dir", lambda: str(contexts_dir))
+
+    response = client.post(
+        "/api/agents/starter-set", json={"provider": "openai_realtime"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "created": [],
+        "already_configured": False,
+        "legacy_contexts_pending": True,
+    }
+    assert client.get("/api/agents").json() == []
+
+
+def test_starter_target_prefers_default_full_agent_over_stale_active_pipeline():
+    provider, pipeline = agents_api._starter_target_from_config(
+        {
+            "default_provider": "primary_openai",
+            "active_pipeline": "stale_hybrid",
+            "providers": {
+                "primary_openai": {"type": "openai_realtime"},
+                "stt": {"type": "deepgram_stt"},
+            },
+            "pipelines": {"stale_hybrid": {"stt": "stt"}},
+        }
+    )
+
+    assert (provider, pipeline) == ("primary_openai", None)
 
 
 def test_templates_are_packaged_outside_runtime_data_volume():

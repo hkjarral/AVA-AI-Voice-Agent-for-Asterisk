@@ -8,10 +8,36 @@ Includes:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Callable, Dict, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_scoped_tool_config(
+    context: Any,
+    tool_key: str,
+    fallback: Callable[[], Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Resolve a tool block without letting legacy overlays broaden Agent scope."""
+    base: Dict[str, Any] = {}
+    overlay: Dict[str, Any] = {}
+    if context and getattr(context, "get_config_value", None):
+        value = context.get_config_value(f"tools.{tool_key}", {}) or {}
+        base = value if isinstance(value, dict) else {}
+        context_name = getattr(context, "context_name", None)
+        if context_name and not base.get("_agent_scope_resolved"):
+            try:
+                value = context.get_config_value(
+                    f"contexts.{context_name}.tool_overrides.{tool_key}", {}
+                ) or {}
+                overlay = value if isinstance(value, dict) else {}
+            except (KeyError, TypeError, AttributeError):
+                overlay = {}
+    merged = dict(base)
+    merged.pop("_agent_scope_resolved", None)
+    merged.update(overlay)
+    return merged or fallback()
 
 
 @dataclass

@@ -51,6 +51,9 @@ def test_legacy_calendar_bindings_migrate_to_agent_tool_policies(tmp_path):
     import json
     row = store.get_by_slug("appointments")
     policies = json.loads(row["tool_configs_json"])
+    assert row["tool_configs_json"] == json.dumps(
+        policies, sort_keys=True, separators=(",", ":")
+    )
     assert policies["google_calendar"] == {
         "calendar_policy": "selected", "calendar_keys": ["sales"],
     }

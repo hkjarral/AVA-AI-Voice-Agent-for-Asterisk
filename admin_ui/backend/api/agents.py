@@ -182,6 +182,26 @@ class StarterSetIn(BaseModel):
     assistant_role: str = "voice assistant"
     receptionist_greeting: str | None = None
 
+
+def _starter_target_from_config(config: dict) -> tuple[str, str | None]:
+    """Choose the configured full-agent provider or pipeline for starter rows."""
+    active_pipeline = str(config.get("active_pipeline") or "").strip()
+    pipelines = config.get("pipelines") or {}
+    providers = config.get("providers") or {}
+    default_target = str(config.get("default_provider") or "").strip()
+
+    from src.config.provider_instances import is_full_agent_provider
+
+    if default_target and is_full_agent_provider(
+        default_target, providers.get(default_target)
+    ):
+        return default_target, None
+    if default_target in pipelines:
+        return "", default_target
+    if active_pipeline and active_pipeline in pipelines:
+        return "", active_pipeline
+    return default_target, None
+
 @router.get("/agents", response_model=list[AgentOut])
 def list_agents():
     return _store().list_all()
@@ -202,15 +222,7 @@ def create_starter_set(body: StarterSetIn):
             config = _read_merged_config_dict() or {}
         except Exception:
             config = {}
-        active_pipeline = str(config.get("active_pipeline") or "").strip()
-        pipelines = config.get("pipelines") or {}
-        default_target = str(config.get("default_provider") or "").strip()
-        if active_pipeline and active_pipeline in pipelines:
-            pipeline = active_pipeline
-        elif default_target in pipelines and default_target not in (config.get("providers") or {}):
-            pipeline = default_target
-        else:
-            provider = default_target
+        provider, pipeline = _starter_target_from_config(config)
     if not provider and not pipeline:
         raise HTTPException(422, "configure a provider or pipeline before creating starter agents")
     return seed_starter_agents(
@@ -220,6 +232,7 @@ def create_starter_set(body: StarterSetIn):
         assistant_name=body.assistant_name,
         assistant_role=body.assistant_role,
         receptionist_greeting=body.receptionist_greeting,
+        legacy_contexts=merged_effective_contexts(_yaml_path(), _contexts_dir()),
     )
 
 @router.get("/agents/summary", response_model=AgentSummaryResponse)

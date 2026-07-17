@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Mapping, Optional
 
 from agents_store import AgentsStore
 
@@ -16,10 +16,17 @@ def seed_starter_agents(
     assistant_name: str = "AVA",
     assistant_role: str = "voice assistant",
     receptionist_greeting: Optional[str] = None,
+    legacy_contexts: Optional[Mapping] = None,
 ) -> dict:
     """Create Receptionist, Sales, Support exactly once when the store is empty."""
     if store.list_all():
         return {"created": [], "already_configured": True}
+    if legacy_contexts:
+        return {
+            "created": [],
+            "already_configured": False,
+            "legacy_contexts_pending": True,
+        }
 
     name = (assistant_name or "AVA").strip()
     role = (assistant_role or "voice assistant").strip()

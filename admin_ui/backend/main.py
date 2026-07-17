@@ -199,9 +199,9 @@ if getattr(auth, "USING_PLACEHOLDER_SECRET", False):
 # The engine owns the one-time, atomic legacy Context import in v7.4.0. Keeping
 # Context import out of Admin UI startup avoids a race where two services import
 # the same empty store with different validation and promotion semantics. For an
-# existing store only, run the additive schema initializer so the new Agent tool
-# policy column is ready before the first authenticated API visit. This never
-# creates a fresh store and never edits Agent rows.
+# existing store only, run the additive schema initializer and the explicit,
+# one-time legacy resource-policy promotion before the first authenticated API
+# visit. Ordinary API store construction never scans or mutates Agent rows.
 app.state.agents_migration_result = None
 _existing_agents_db = os.path.abspath(
     os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
@@ -209,9 +209,12 @@ _existing_agents_db = os.path.abspath(
 if os.path.exists(_existing_agents_db):
     try:
         _schema_store = AgentsStore(db_path=_existing_agents_db)
+        _resource_rows_upgraded = _schema_store.upgrade_legacy_resource_policies()
         _schema_store.close()
         logging.getLogger(__name__).info(
-            "Existing Agent store schema is current: %s", _existing_agents_db
+            "Existing Agent store schema is current: %s (resource policies upgraded: %s)",
+            _existing_agents_db,
+            _resource_rows_upgraded,
         )
     except Exception as _schema_error:
         logging.getLogger(__name__).error(

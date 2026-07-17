@@ -17,7 +17,7 @@ If you used the Admin UI Setup Wizard, you may not need to follow this guide end
 - `Transport-Mode-Compatibility.md`
 
 For how provider/Agent selection works (including `AI_AGENT` / `AI_PROVIDER`), see:
-- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Context)"
+- `Configuration-Reference.md` -> "Call Selection & Precedence (Provider / Pipeline / Agent)"
 
 ## Quick Start
 

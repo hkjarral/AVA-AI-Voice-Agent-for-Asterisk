@@ -92,6 +92,9 @@ describe('useDonationReminder', () => {
     mockGet.mockRejectedValue(new Error('network'));
     const { result } = renderHook(() => useDonationReminder());
     await waitFor(() => expect(mockGet).toHaveBeenCalledWith('/api/calls/stats'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(result.current.callCount).toBeUndefined();
     expect(result.current.show).toBe(false);
   });

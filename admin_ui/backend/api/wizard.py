@@ -3154,6 +3154,13 @@ async def save_setup_config(config: SetupConfig):
         if not yaml_config and os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, "r") as f:
                 yaml_config = yaml.safe_load(f)
+        pipeline_name = None
+        if config.provider == "local_hybrid":
+            llm_provider = (config.hybrid_llm_provider or "groq").lower()
+            pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
+                "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
+            )
+
         if yaml_config is not None:
             pre_edit_config = copy.deepcopy(yaml_config) if isinstance(yaml_config, dict) else {}
             
@@ -3309,9 +3316,6 @@ async def save_setup_config(config: SetupConfig):
                 # AAVA-185: Use variant-specific pipeline name so the dashboard
                 # correctly highlights the active pipeline (e.g. local_hybrid_groq).
                 llm_provider = (config.hybrid_llm_provider or "groq").lower()
-                pipeline_name = "local_hybrid_groq" if llm_provider == "groq" else (
-                    "local_hybrid_ollama" if llm_provider == "ollama" else "local_hybrid"
-                )
                 yaml_config["active_pipeline"] = pipeline_name
                 yaml_config["default_provider"] = pipeline_name  # Fallback provider
                 
@@ -3433,27 +3437,31 @@ async def save_setup_config(config: SetupConfig):
                 mode_from_existing=True,
             )
 
-            # Seed exactly three starter agents only for a genuinely empty store.
-            # If legacy Contexts were migrated, the store is non-empty and this is
-            # intentionally a no-op.
-            from agents_store import AgentsStore
-            from starter_agents import seed_starter_agents
-            starter_pipeline = pipeline_name if config.provider == "local_hybrid" else None
-            with AgentsStore() as agent_store:
-                starter_result = seed_starter_agents(
-                    agent_store,
-                    provider=config.provider,
-                    pipeline=starter_pipeline,
-                    assistant_name=config.ai_name,
-                    assistant_role=config.ai_role,
-                    receptionist_greeting=config.greeting,
-                )
+        # Seed only a genuinely empty, non-legacy install. This is independent of
+        # YAML write success; pending Contexts remain reserved for the engine's
+        # atomic one-time importer and must never be shadowed by starter rows.
+        from agents_migration import merged_effective_contexts
+        from agents_store import AgentsStore
+        from starter_agents import seed_starter_agents
+        starter_pipeline = pipeline_name if config.provider == "local_hybrid" else None
+        with AgentsStore() as agent_store:
+            starter_result = seed_starter_agents(
+                agent_store,
+                provider=config.provider,
+                pipeline=starter_pipeline,
+                assistant_name=config.ai_name,
+                assistant_role=config.ai_role,
+                receptionist_greeting=config.greeting,
+                legacy_contexts=merged_effective_contexts(
+                    CONFIG_PATH, os.path.join(os.path.dirname(CONFIG_PATH), "contexts")
+                ),
+            )
         
         # Config saved - engine start will be handled by completion step UI
         return {
             "status": "success",
             "provider": config.provider,
-            "starter_agents": locals().get("starter_result", {"created": []}),
+            "starter_agents": starter_result,
         }
     except HTTPException:
         raise

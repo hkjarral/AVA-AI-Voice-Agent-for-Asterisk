@@ -59,12 +59,16 @@ def test_existing_extra_calendar_bindings_are_promoted(tmp_path):
     first.close()
 
     reopened = AgentsStore(db_path=str(db))
+    # Ordinary request-scoped store construction must not scan or mutate rows.
+    assert reopened.get_by_slug("legacy_calendar")["tool_configs_json"] is None
+    assert reopened.upgrade_legacy_resource_policies() == 1
     row = reopened.get_by_slug("legacy_calendar")
     import json
     assert json.loads(row["tool_configs_json"])["google_calendar"] == {
         "calendar_policy": "selected",
         "calendar_keys": ["sales"],
     }
+    assert reopened.upgrade_legacy_resource_policies() == 0
 
 def test_first_agent_becomes_default(store):
     a = store.create(display_name="A", provider="x", prompt="p")

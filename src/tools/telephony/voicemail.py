@@ -45,7 +45,7 @@ class VoicemailTool(Tool):
     """
 
     @staticmethod
-    def _resolve_mailbox(config: Dict[str, Any]) -> tuple[str, str]:
+    def resolve_mailbox(config: Dict[str, Any]) -> tuple[str, str]:
         """Return ``(mailbox_key, extension)`` with legacy compatibility.
 
         Agent-scoped runtime resolution writes ``selected_mailbox_key`` and an
@@ -120,7 +120,7 @@ class VoicemailTool(Tool):
                 "message": "Voicemail is not available",
             }
         
-        mailbox_key, extension = self._resolve_mailbox(config)
+        mailbox_key, extension = self.resolve_mailbox(config)
         if not extension:
             logger.error(
                 "Voicemail mailbox not configured or is ambiguous",

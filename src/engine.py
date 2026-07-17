@@ -736,7 +736,15 @@ class Engine:
         # object construction) also makes configuration inspection side-effect free.
         config_mapping = self.config.dict() if hasattr(self.config, "dict") else self.config.__dict__
         from .core.legacy_agent_migration import ensure_legacy_contexts_imported
-        legacy_import = ensure_legacy_contexts_imported(config_mapping.get("contexts") or {})
+        try:
+            legacy_import = ensure_legacy_contexts_imported(config_mapping.get("contexts") or {})
+        except Exception as exc:
+            logger.error(
+                "Legacy Context migration failed; refusing to start",
+                error=str(exc),
+                exc_info=True,
+            )
+            raise
         if legacy_import.get("imported"):
             logger.warning(
                 "Legacy YAML Contexts imported into Agents for v7.4",
@@ -17780,7 +17788,9 @@ class Engine:
             # mutated unless both tool construction and orchestration validation
             # succeed completely.
             try:
-                new_tool_generation = self._build_tool_generation(new_config)
+                new_tool_generation = await asyncio.to_thread(
+                    self._build_tool_generation, new_config
+                )
                 cfg_dict = new_config.dict() if hasattr(new_config, "dict") else new_config.__dict__
                 new_transport_orchestrator = TransportOrchestrator(cfg_dict)
             except Exception as e:

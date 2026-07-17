@@ -167,6 +167,10 @@ const AgentForm: React.FC<AgentFormProps> = ({ isOpen, onClose, onSaved, agent }
     }, [isOpen, agent]);
 
     const loadConfig = async () => {
+        setTransferDestinations([]);
+        setGoogleCalendars([]);
+        setMicrosoftAccounts([]);
+        setVoicemailMailboxes([]);
         try {
             const res = await axios.get('/api/config/yaml');
             if (res.data.yaml_error) return;

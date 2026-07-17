@@ -1,7 +1,9 @@
 import React, { useMemo } from 'react';
 import { AlertTriangle } from 'lucide-react';
 
-export type ResourcePolicy = 'inherit' | 'selected' | 'none';
+// Keep unknown persisted values representable so the editor cannot silently
+// turn an invalid/rejected policy into broad global inheritance.
+export type ResourcePolicy = string;
 
 export interface AgentResourceOption {
     key: string;
@@ -41,6 +43,7 @@ const ResourceAccessEditor: React.FC<Props> = ({
     const knownKeys = useMemo(() => new Set(options.map(option => option.key)), [options]);
     const staleKeys = selectedKeys.filter(key => !knownKeys.has(key));
     const pluralResourceName = pluralize(resourceName);
+    const policyIsValid = ['inherit', 'selected', 'none'].includes(policy);
 
     const setPolicy = (next: ResourcePolicy) => {
         onPolicyChange(next);
@@ -70,6 +73,9 @@ const ResourceAccessEditor: React.FC<Props> = ({
                 onChange={event => setPolicy(event.target.value as ResourcePolicy)}
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
             >
+                {!policyIsValid && (
+                    <option value={policy}>Invalid saved policy: {policy}</option>
+                )}
                 <option value="inherit">Inherit globally configured {pluralResourceName}</option>
                 <option value="selected">Selected {single ? resourceName : pluralResourceName} only</option>
                 <option value="none">No {resourceName} access</option>
@@ -111,11 +117,27 @@ const ResourceAccessEditor: React.FC<Props> = ({
                         </p>
                     )}
                     {staleKeys.length > 0 && (
-                        <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                        <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                            <p className="flex items-start gap-1.5">
                             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                             Missing global {pluralResourceName}: {staleKeys.join(', ')}. They remain denied
                             until recreated or removed here.
-                        </p>
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {staleKeys.map(key => (
+                                    <button
+                                        key={key}
+                                        type="button"
+                                        className="rounded border border-amber-400 px-2 py-1 hover:bg-amber-100"
+                                        onClick={() => onSelectedKeysChange(
+                                            selectedKeys.filter(item => item !== key)
+                                        )}
+                                    >
+                                        Remove {key}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                     )}
                 </div>
             )}
