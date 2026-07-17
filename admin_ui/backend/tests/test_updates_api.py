@@ -191,11 +191,15 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert 'getent passwd "$AAVA_UID"' not in detail
     assert 'sudo find "$AAVA_HOME"' not in detail
-    assert 'AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)"' in detail
+    assert 'AAVA_TEMP_HOME="$(sudo mktemp -d /tmp/aava-update-home.XXXXXXXXXX)"' in detail
+    assert 'AAVA_TEMP_HOME="$(mktemp -d ' not in detail
     assert 'sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME"' in detail
     assert 'sudo chmod 0700 "$AAVA_TEMP_HOME"' in detail
     assert 'sudo rm -rf -- "$AAVA_TEMP_HOME"' in detail
     assert "AAVA_HOME=/tmp" not in detail
+    assert detail.index('sudo chmod 0700 "$AAVA_TEMP_HOME"') < detail.index(
+        'sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME"'
+    )
     assert "--self-update=true" not in detail
 
 

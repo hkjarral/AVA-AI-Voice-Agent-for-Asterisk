@@ -243,9 +243,9 @@ fi
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2
-  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2
+  AAVA_TEMP_HOME="$(sudo mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2
   sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2
+  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2
   AAVA_HOME="$AAVA_TEMP_HOME"
   AAVA_PARENT="$(dirname "$AAVA_REPO")"
   while [ "$AAVA_PARENT" != "/" ]; do

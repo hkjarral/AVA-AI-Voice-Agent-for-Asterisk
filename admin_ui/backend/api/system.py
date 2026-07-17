@@ -4729,9 +4729,9 @@ def _update_plan_failure_detail(
         "  trap 'exit 129' HUP\n"
         "  trap 'exit 130' INT\n"
         "  trap 'exit 143' TERM\n"
-        '  AAVA_TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2\n'
-        '  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2\n'
+        '  AAVA_TEMP_HOME="$(sudo mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || exit 2\n'
         '  sudo chmod 0700 "$AAVA_TEMP_HOME" || exit 2\n'
+        '  sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME" || exit 2\n'
         '  AAVA_HOME="$AAVA_TEMP_HOME"\n'
         '  AAVA_PARENT="$(dirname "$AAVA_REPO")"\n'
         '  while [ "$AAVA_PARENT" != "/" ]; do\n'
