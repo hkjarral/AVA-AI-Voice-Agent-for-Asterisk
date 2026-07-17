@@ -24,6 +24,9 @@ GLOBAL = {
                 "6002": {"name": "Billing", "live_agent": True},
             }
         },
+        "check_extension_status": {
+            "restrict_to_configured_extensions": False,
+        },
         "google_calendar": {
             "enabled": True,
             "calendars": {
@@ -54,6 +57,9 @@ GLOBAL = {
 def test_inherit_preserves_global_inventory_without_mutation():
     effective = resolve_agent_tool_config(GLOBAL, None)
     assert set(effective.config["tools"]["transfer"]["destinations"]) == {"sales", "support"}
+    assert effective.config["tools"]["check_extension_status"][
+        "restrict_to_configured_extensions"
+    ] is False
     effective.config["tools"]["transfer"]["destinations"].clear()
     assert set(GLOBAL["tools"]["transfer"]["destinations"]) == {"sales", "support"}
 
@@ -66,6 +72,9 @@ def test_selected_filters_destinations_and_related_extensions():
     assert effective.effective_destination_keys == ("sales",)
     assert set(effective.config["tools"]["extensions"]["internal"]) == {"6001"}
     assert effective.config["tools"]["transfer"]["live_agent_destination_key"] == "sales"
+    assert effective.config["tools"]["check_extension_status"][
+        "restrict_to_configured_extensions"
+    ] is True
 
 
 def test_none_fails_closed_for_routes_and_live_agents():
@@ -75,6 +84,9 @@ def test_none_fails_closed_for_routes_and_live_agents():
     assert effective.config["tools"]["transfer"]["destinations"] == {}
     assert effective.config["tools"]["extensions"]["internal"] == {}
     assert "live_agent_destination_key" not in effective.config["tools"]["transfer"]
+    assert effective.config["tools"]["check_extension_status"][
+        "restrict_to_configured_extensions"
+    ] is True
 
 
 def test_stale_selected_key_is_reported_and_not_exposed():

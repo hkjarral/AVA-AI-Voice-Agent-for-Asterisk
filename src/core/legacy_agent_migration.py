@@ -110,6 +110,27 @@ def _existing_agent_count(db_path: str) -> Optional[int]:
         raise LegacyAgentMigrationError(f"existing agents.db is unreadable: {exc}") from exc
 
 
+def _migration_completed(db_path: str) -> bool:
+    """Return whether the one-time Context import was already recorded."""
+    if not os.path.exists(db_path):
+        return False
+    try:
+        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+            ).fetchone()
+            if not table_exists:
+                return False
+            return connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=?", (MIGRATION_VERSION,)
+            ).fetchone() is not None
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise LegacyAgentMigrationError(f"existing agents.db is unreadable: {exc}") from exc
+
+
 def _prepare_existing_database_for_replace(db_path: str) -> None:
     """Checkpoint and remove WAL sidecars before atomically replacing an empty DB.
 
@@ -216,6 +237,16 @@ def ensure_legacy_contexts_imported(
     os.makedirs(parent, exist_ok=True)
 
     with _migration_lock(target):
+        # The durable migration marker wins even if the operator later deletes
+        # every Agent. Legacy YAML remains on disk for rollback diagnostics and
+        # must not resurrect deleted Agents on the next engine restart.
+        if _migration_completed(target):
+            upgraded = _upgrade_existing_resource_policies(target)
+            return {
+                "imported": 0,
+                "already_configured": True,
+                "resource_policies_upgraded": upgraded,
+            }
         count = _existing_agent_count(target)
         if count:
             upgraded = _upgrade_existing_resource_policies(target)

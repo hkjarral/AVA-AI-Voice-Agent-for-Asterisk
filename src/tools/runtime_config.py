@@ -388,6 +388,14 @@ def resolve_agent_tool_config(
         if not isinstance(extensions, dict):
             extensions = {}
             tools["extensions"] = extensions
+        status_check = tools.setdefault("check_extension_status", {})
+        if not isinstance(status_check, dict):
+            status_check = {}
+            tools["check_extension_status"] = status_check
+        # A narrowed transfer policy also narrows status targets. Override a
+        # permissive global setting so an Agent cannot probe extensions outside
+        # the immutable effective inventory captured for this call.
+        status_check["restrict_to_configured_extensions"] = True
         internal = extensions.get("internal") or {}
         if not isinstance(internal, dict):
             internal = {}

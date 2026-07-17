@@ -75,6 +75,25 @@ def test_populated_agent_store_is_never_overwritten(tmp_path):
         assert connection.execute("SELECT display_name FROM agents").fetchall() == [("existing",)]
 
 
+def test_completed_migration_does_not_resurrect_deleted_agents(tmp_path):
+    database = tmp_path / "agents.db"
+    contexts = {"existing": {"provider": "local", "prompt": "Keep me"}}
+    ensure_legacy_contexts_imported(contexts, db_path=str(database))
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM agents")
+        connection.commit()
+
+    result = ensure_legacy_contexts_imported(contexts, db_path=str(database))
+
+    assert result == {
+        "imported": 0,
+        "already_configured": True,
+        "resource_policies_upgraded": 0,
+    }
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 0
+
+
 def test_empty_wal_database_sidecars_are_removed_before_import(tmp_path):
     database = tmp_path / "agents.db"
     ensure_legacy_contexts_imported(
