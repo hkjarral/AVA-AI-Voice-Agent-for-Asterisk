@@ -119,7 +119,9 @@ container, install that binary at `/usr/local/bin/agent`, and fail closed if ori
 resolution, fetch, build, installation, or cleanup fails. This supports branches hosted
 on the operator's fork or private origin instead of assuming the public upstream. If
 Docker or Git cannot perform that exact-ref bootstrap, select a published release tag
-or repair the host prerequisites; do not continue with an older CLI.
+or repair the host prerequisites; do not continue with an older CLI. Origin resolution
+uses `git ls-remote --get-url` so `url.*.insteadOf` rewrites are expanded even on Git
+1.8.3, which predates `git remote get-url`.
 
 If the exact UI error contains either of these messages:
 
@@ -131,23 +133,28 @@ error: cannot open '.git/FETCH_HEAD': Permission denied
 run the recovery from an SSH shell on the host. The privileged steps repair only the
 bounded Git/updater metadata, then the update runs as the checkout owner. This bypasses
 the short-lived updater container's `/root` traversal problem without recursively
-changing checkout ownership:
+changing checkout ownership. The `aava_git` wrapper also avoids newer Git-only `-C`
+and absolute-path flags, so recovery works with Git 1.8.3 on RHEL/CentOS 7 hosts:
 
 ```bash
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"
-sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short || {
+aava_git() {
+  sudo git -c safe.directory="$AAVA_REPO" --git-dir="$AAVA_REPO/.git" \
+    --work-tree="$AAVA_REPO" "$@"
+}
+aava_git status --short || {
   echo "Failed to inspect checkout changes; update not attempted" >&2
   exit 2
 }
 (
   set -o pipefail
-  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary --cached \
+  aava_git diff --binary --cached \
     | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null
 ) || { echo "Failed to preserve staged tracked edits; update not attempted" >&2; exit 2; }
 (
   set -o pipefail
-  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary \
+  aava_git diff --binary \
     | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null
 ) || { echo "Failed to preserve unstaged tracked edits; update not attempted" >&2; exit 2; }
 
@@ -174,11 +181,17 @@ if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then
   exit 2
 fi
 AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2
-AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --absolute-git-dir)" || exit 2
-AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" rev-parse --path-format=absolute --git-common-dir)" || exit 2
-if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ] || [ "$AAVA_GIT_COMMON_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then
-  printf 'Refusing Git metadata repair outside %s (gitdir=%s common=%s)\n' \
-    "$AAVA_EXPECTED_GIT_DIR" "$AAVA_GIT_DIR" "$AAVA_GIT_COMMON_DIR" >&2
+aava_resolve_git_path() {
+  case "$1" in
+    /*) sudo realpath -e -- "$1" ;;
+    *) sudo realpath -e -- "$AAVA_REPO/$1" ;;
+  esac
+}
+AAVA_GIT_DIR_RAW="$(aava_git rev-parse --git-dir)" || exit 2
+AAVA_GIT_DIR="$(aava_resolve_git_path "$AAVA_GIT_DIR_RAW")" || exit 2
+if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then
+  printf 'Refusing Git metadata repair outside %s (gitdir=%s)\n' \
+    "$AAVA_EXPECTED_GIT_DIR" "$AAVA_GIT_DIR" >&2
   exit 2
 fi
 sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" "$AAVA_EXPECTED_GIT_DIR" || exit 2

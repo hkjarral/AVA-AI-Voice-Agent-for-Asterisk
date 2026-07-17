@@ -119,17 +119,16 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert f"AAVA_REPO={tmp_path}" in detail
     assert "AGENT_VERSION=v7.4.0" in detail
     assert (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short '
+        'aava_git status --short '
         '|| { echo "Failed to inspect checkout changes; update not attempted" '
         '>&2; exit 2; }'
     ) in detail
     assert (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff --binary --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'aava_git diff --binary --cached '
+        '| sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
     assert (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'aava_git diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
     assert detail.count("set -o pipefail") == 3
     assert (
@@ -162,8 +161,15 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert 'if sudo test -L "$AAVA_REPO/.agent"; then' in detail
     assert 'if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then' in detail
     assert 'AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2' in detail
-    assert 'rev-parse --absolute-git-dir' in detail
-    assert 'rev-parse --path-format=absolute --git-common-dir' in detail
+    assert 'rev-parse --git-dir' in detail
+    assert 'rev-parse --git-common-dir' not in detail
+    assert 'rev-parse --absolute-git-dir' not in detail
+    assert 'rev-parse --path-format=absolute' not in detail
+    assert 'aava_resolve_git_path() {' in detail
+    assert 'aava_git() {' in detail
+    assert ' --git-dir="$AAVA_REPO/.git" ' in detail
+    assert '--work-tree="$AAVA_REPO" "$@"' in detail
+    assert ' -C "$AAVA_REPO"' not in detail
     assert (
         'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
         '"$AAVA_EXPECTED_GIT_DIR" || exit 2'
@@ -197,13 +203,12 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
 
     inspection = 'status --short || { echo "Failed to inspect checkout changes; update not attempted"'
     staged_capture = (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff --binary --cached | sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'aava_git diff --binary --cached '
+        '| sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null'
     )
     staged_failure = "Failed to preserve staged tracked edits; update not attempted"
     unstaged_capture = (
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
+        'aava_git diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     )
     unstaged_failure = "Failed to preserve unstaged tracked edits; update not attempted"
     installer = "AAVA_CLI_REF=main"
@@ -246,11 +251,8 @@ def test_update_plan_recovery_bounds_git_metadata_repair(tmp_path) -> None:
         'if sudo test -L "$AAVA_REPO/.git" || ! sudo test -d "$AAVA_REPO/.git"; then'
     )
     expected = 'AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2'
-    resolved = 'AAVA_GIT_DIR="$(sudo git'
-    boundary = (
-        'if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ] || '
-        '[ "$AAVA_GIT_COMMON_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then'
-    )
+    resolved = 'AAVA_GIT_DIR_RAW="$(aava_git rev-parse --git-dir)"'
+    boundary = 'if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then'
     refusal = "Refusing Git metadata repair outside %s"
     repair = (
         'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
@@ -261,7 +263,7 @@ def test_update_plan_recovery_bounds_git_metadata_repair(tmp_path) -> None:
     assert boundary in detail
     assert refusal in detail
     assert repair in detail
-    assert '"$AAVA_GIT_COMMON_DIR"\n' not in detail
+    assert "AAVA_GIT_COMMON_DIR" not in detail
     assert detail.index(metadata_guard) < detail.index(expected) < detail.index(resolved)
     assert detail.index(resolved) < detail.index(boundary) < detail.index(repair)
 
@@ -299,9 +301,9 @@ def test_update_plan_branch_recovery_builds_cli_from_exact_selected_ref(tmp_path
 
     assert "AAVA_CLI_REF=codex/upgrade-improvements" in detail
     assert (
-        'AAVA_CLI_REMOTE="$(sudo git -c safe.directory="$AAVA_REPO" '
-        '-C "$AAVA_REPO" remote get-url origin)"'
+        'AAVA_CLI_REMOTE="$(aava_git ls-remote --get-url origin)"'
     ) in detail
+    assert "config --get remote.origin.url" not in detail
     assert '--branch "$AAVA_CLI_REF"' in detail
     assert '-- "$AAVA_CLI_REMOTE" "$AAVA_CLI_SRC/repo"' in detail
     assert '-e AAVA_CLI_VERSION="$AAVA_CLI_REF" golang:1.22-bookworm' in detail
@@ -313,7 +315,7 @@ def test_update_plan_branch_recovery_builds_cli_from_exact_selected_ref(tmp_path
     assert "AGENT_VERSION=latest" not in detail
     assert "scripts/install-cli.sh" not in detail
     assert "https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git" not in detail
-    assert detail.index("remote get-url origin") < detail.index("git clone --quiet")
+    assert detail.index("ls-remote --get-url origin") < detail.index("git clone --quiet")
 
 
 def test_update_plan_recovery_fails_closed_on_owner_or_agent_repair_errors(tmp_path) -> None:

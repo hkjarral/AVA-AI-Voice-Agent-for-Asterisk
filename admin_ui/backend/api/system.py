@@ -4603,8 +4603,8 @@ def _update_plan_failure_detail(
             "trap 'exit 129' HUP\n"
             "trap 'exit 130' INT\n"
             "trap 'exit 143' TERM\n"
-            'AAVA_CLI_REMOTE="$(sudo git -c safe.directory="$AAVA_REPO" '
-            '-C "$AAVA_REPO" remote get-url origin)" || { echo "Failed to resolve '
+            'AAVA_CLI_REMOTE="$(aava_git ls-remote --get-url origin)" || { '
+            'echo "Failed to resolve '
             'checkout origin for CLI source; update not attempted" >&2; exit 2; }\n'
             'git clone --quiet --depth 1 --single-branch --branch "$AAVA_CLI_REF" '
             '-- "$AAVA_CLI_REMOTE" '
@@ -4636,17 +4636,23 @@ def _update_plan_failure_detail(
         "Recovery (run these commands in a host SSH shell):\n"
         f"AAVA_REPO={quoted_root}\n"
         'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"\n'
-        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" status --short '
+        # RHEL/CentOS 7 ships Git 1.8.3, before `git -C`, `remote get-url`,
+        # `--absolute-git-dir`, and `--path-format=absolute` existed.
+        'aava_git() {\n'
+        '  sudo git -c safe.directory="$AAVA_REPO" --git-dir="$AAVA_REPO/.git" '
+        '--work-tree="$AAVA_REPO" "$@"\n'
+        '}\n'
+        'aava_git status --short '
         '|| { echo "Failed to inspect checkout changes; update not attempted" >&2; exit 2; }\n'
         "(\n"
         "  set -o pipefail\n"
-        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary --cached '
+        '  aava_git diff --binary --cached '
         '| sudo tee "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         ') || { echo "Failed to preserve staged tracked edits; update not attempted" '
         ">&2; exit 2; }\n"
         "(\n"
         "  set -o pipefail\n"
-        '  sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" diff --binary '
+        '  aava_git diff --binary '
         '| sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
         ">&2; exit 2; }\n"
@@ -4663,14 +4669,17 @@ def _update_plan_failure_detail(
         "  exit 2\n"
         "fi\n"
         'AAVA_EXPECTED_GIT_DIR="$(sudo realpath -e "$AAVA_REPO/.git")" || exit 2\n'
-        'AAVA_GIT_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'rev-parse --absolute-git-dir)" || exit 2\n'
-        'AAVA_GIT_COMMON_DIR="$(sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        'rev-parse --path-format=absolute --git-common-dir)" || exit 2\n'
-        'if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ] || '
-        '[ "$AAVA_GIT_COMMON_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then\n'
-        '  printf \'Refusing Git metadata repair outside %s (gitdir=%s common=%s)\\n\' '
-        '"$AAVA_EXPECTED_GIT_DIR" "$AAVA_GIT_DIR" "$AAVA_GIT_COMMON_DIR" >&2\n'
+        'aava_resolve_git_path() {\n'
+        '  case "$1" in\n'
+        '    /*) sudo realpath -e -- "$1" ;;\n'
+        '    *) sudo realpath -e -- "$AAVA_REPO/$1" ;;\n'
+        '  esac\n'
+        '}\n'
+        'AAVA_GIT_DIR_RAW="$(aava_git rev-parse --git-dir)" || exit 2\n'
+        'AAVA_GIT_DIR="$(aava_resolve_git_path "$AAVA_GIT_DIR_RAW")" || exit 2\n'
+        'if [ "$AAVA_GIT_DIR" != "$AAVA_EXPECTED_GIT_DIR" ]; then\n'
+        '  printf \'Refusing Git metadata repair outside %s (gitdir=%s)\\n\' '
+        '"$AAVA_EXPECTED_GIT_DIR" "$AAVA_GIT_DIR" >&2\n'
         "  exit 2\n"
         "fi\n"
         'sudo chown -R --no-dereference "$AAVA_UID:$AAVA_GID" '
