@@ -30,7 +30,11 @@ def seed_starter_agents(
 
     name = (assistant_name or "AVA").strip()
     role = (assistant_role or "voice assistant").strip()
-    effective_provider = "" if pipeline else (provider or "").strip()
+    # A pipeline remains the selected execution path, while a compatible full-
+    # agent provider gives early transport/audio-profile resolution the same
+    # capabilities that legacy pipeline Contexts supplied (for example, local +
+    # local_hybrid). Callers leave this blank when no compatible provider exists.
+    effective_provider = (provider or "").strip()
     extra_json = json.dumps({"pipeline": pipeline}) if pipeline else None
     tools_json = json.dumps(["hangup_call"])
 

@@ -3444,10 +3444,11 @@ async def save_setup_config(config: SetupConfig):
         from agents_store import AgentsStore
         from starter_agents import seed_starter_agents
         starter_pipeline = pipeline_name if config.provider == "local_hybrid" else None
+        starter_provider = "local" if starter_pipeline else config.provider
         with AgentsStore() as agent_store:
             starter_result = seed_starter_agents(
                 agent_store,
-                provider=config.provider,
+                provider=starter_provider,
                 pipeline=starter_pipeline,
                 assistant_name=config.ai_name,
                 assistant_role=config.ai_role,

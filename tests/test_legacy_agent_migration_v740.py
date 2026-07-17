@@ -94,6 +94,38 @@ def test_completed_migration_does_not_resurrect_deleted_agents(tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 0
 
 
+def test_prepopulated_store_records_completion_before_agents_are_deleted(tmp_path):
+    database = tmp_path / "agents.db"
+    ensure_legacy_contexts_imported(
+        {"existing": {"provider": "local", "prompt": "Keep me"}},
+        db_path=str(database),
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM schema_migrations")
+        connection.commit()
+
+    result = ensure_legacy_contexts_imported(
+        {"replacement": {"provider": "local", "prompt": "Do not import"}},
+        db_path=str(database),
+    )
+
+    assert result["already_configured"] is True
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=1"
+        ).fetchone()[0] == 1
+        connection.execute("DELETE FROM agents")
+        connection.commit()
+
+    second = ensure_legacy_contexts_imported(
+        {"replacement": {"provider": "local", "prompt": "Do not import"}},
+        db_path=str(database),
+    )
+    assert second["already_configured"] is True
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 0
+
+
 def test_empty_wal_database_sidecars_are_removed_before_import(tmp_path):
     database = tmp_path / "agents.db"
     ensure_legacy_contexts_imported(

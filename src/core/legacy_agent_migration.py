@@ -131,6 +131,32 @@ def _migration_completed(db_path: str) -> bool:
         raise LegacyAgentMigrationError(f"existing agents.db is unreadable: {exc}") from exc
 
 
+def _record_migration_completed(db_path: str) -> None:
+    """Mark an existing authoritative Agent store as migrated."""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        connection = sqlite3.connect(db_path, timeout=5.0)
+        try:
+            with connection:
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS schema_migrations (
+                       version INTEGER PRIMARY KEY,
+                       applied_at TEXT NOT NULL,
+                       contexts_hash TEXT
+                    )"""
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?,?)",
+                    (MIGRATION_VERSION, now),
+                )
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise LegacyAgentMigrationError(
+            f"could not record existing agents.db migration completion: {exc}"
+        ) from exc
+
+
 def _prepare_existing_database_for_replace(db_path: str) -> None:
     """Checkpoint and remove WAL sidecars before atomically replacing an empty DB.
 
@@ -250,6 +276,10 @@ def ensure_legacy_contexts_imported(
         count = _existing_agent_count(target)
         if count:
             upgraded = _upgrade_existing_resource_policies(target)
+            # A pre-provisioned/early v7.4 store may have Agent rows without the
+            # migration marker. Record that it is authoritative so deleting its
+            # final Agent later cannot make retained legacy YAML import again.
+            _record_migration_completed(target)
             return {
                 "imported": 0,
                 "already_configured": True,

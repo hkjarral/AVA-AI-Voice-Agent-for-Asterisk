@@ -204,14 +204,27 @@ def _starter_target_from_config(config: dict) -> tuple[str, str | None]:
 
     from src.config.provider_instances import is_full_agent_provider
 
+    def pipeline_profile_provider(pipeline_name: str) -> str:
+        """Find a compatible full-agent provider for early profile resolution."""
+        entry = pipelines.get(pipeline_name) or {}
+        if not isinstance(entry, dict):
+            return ""
+        for role in ("tts", "stt", "llm"):
+            component = str(entry.get(role) or "").strip()
+            suffix = f"_{role}"
+            candidate = component[:-len(suffix)] if component.endswith(suffix) else ""
+            if candidate and is_full_agent_provider(candidate, providers.get(candidate)):
+                return candidate
+        return ""
+
     if default_target and is_full_agent_provider(
         default_target, providers.get(default_target)
     ):
         return default_target, None
     if default_target in pipelines:
-        return "", default_target
+        return pipeline_profile_provider(default_target), default_target
     if active_pipeline and active_pipeline in pipelines:
-        return "", active_pipeline
+        return pipeline_profile_provider(active_pipeline), active_pipeline
     return default_target, None
 
 @router.get("/agents", response_model=list[AgentOut])

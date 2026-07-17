@@ -130,6 +130,22 @@ def test_starter_set_creates_exactly_three_agents_once(client):
     assert len(client.get("/api/agents").json()) == 3
 
 
+def test_pipeline_starter_set_preserves_profile_provider(client):
+    response = client.post(
+        "/api/agents/starter-set",
+        json={"provider": "local", "pipeline": "local_hybrid"},
+    )
+
+    assert response.status_code == 200
+    agents = client.get("/api/agents").json()
+    assert len(agents) == 3
+    assert all(agent["provider"] == "local" for agent in agents)
+    assert all(
+        __import__("json").loads(agent["extra_json"])["pipeline"] == "local_hybrid"
+        for agent in agents
+    )
+
+
 def test_starter_set_waits_for_pending_legacy_context_migration(
     client, tmp_path, monkeypatch
 ):
@@ -190,6 +206,27 @@ def test_starter_target_prefers_default_full_agent_over_stale_active_pipeline():
     )
 
     assert (provider, pipeline) == ("primary_openai", None)
+
+
+def test_starter_target_keeps_local_profile_provider_for_pipeline():
+    provider, pipeline = agents_api._starter_target_from_config(
+        {
+            "default_provider": "local_hybrid",
+            "active_pipeline": "local_hybrid",
+            "providers": {
+                "local": {"type": "full", "capabilities": ["stt", "llm", "tts"]},
+            },
+            "pipelines": {
+                "local_hybrid": {
+                    "stt": "local_stt",
+                    "llm": "native_llm",
+                    "tts": "local_tts",
+                },
+            },
+        }
+    )
+
+    assert (provider, pipeline) == ("local", "local_hybrid")
 
 
 def test_templates_are_packaged_outside_runtime_data_volume():
