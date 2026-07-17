@@ -4585,8 +4585,44 @@ def _update_plan_failure_detail(
     if _is_semver_tag(release_ref):
         release_tag = release_ref if release_ref.startswith("v") else f"v{release_ref}"
         version_env = f"AGENT_VERSION={shlex.quote(release_tag)} "
+        cli_bootstrap = (
+            "(\n"
+            "  set -o pipefail\n"
+            "  curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
+            f"    | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
+            ') || { echo "Failed to install requested agent CLI; update not attempted" '
+            ">&2; exit 2; }\n"
+        )
     else:
-        version_env = ""
+        cli_bootstrap = (
+            f"AAVA_CLI_REF={quoted_ref}\n"
+            'AAVA_CLI_SRC="$(mktemp -d)" || { echo "Failed to create temporary CLI '
+            'build directory; update not attempted" >&2; exit 2; }\n'
+            "aava_cleanup_cli_source() { sudo rm -rf -- \"$AAVA_CLI_SRC\"; }\n"
+            "trap 'aava_cleanup_cli_source' EXIT\n"
+            "trap 'exit 129' HUP\n"
+            "trap 'exit 130' INT\n"
+            "trap 'exit 143' TERM\n"
+            'git clone --quiet --depth 1 --single-branch --branch "$AAVA_CLI_REF" '
+            'https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git '
+            '"$AAVA_CLI_SRC/repo" || { echo "Failed to fetch selected CLI source; '
+            'update not attempted" >&2; exit 2; }\n'
+            'mkdir -p "$AAVA_CLI_SRC/out" || exit 2\n'
+            'sudo docker run --rm -v "$AAVA_CLI_SRC/repo/cli:/src:ro" '
+            '-v "$AAVA_CLI_SRC/out:/out" -w /src -e HOME=/tmp '
+            '-e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go-mod '
+            '-e AAVA_CLI_VERSION="$AAVA_CLI_REF" golang:1.22-bookworm '
+            "bash -c 'go mod download && CGO_ENABLED=0 go build -buildvcs=false "
+            '-ldflags "-X main.version=$AAVA_CLI_VERSION" -o /out/agent ./cmd/agent\' '
+            '|| { echo "Failed to build CLI from selected ref; update not attempted" '
+            ">&2; exit 2; }\n"
+            'sudo install -m 0755 "$AAVA_CLI_SRC/out/agent" /usr/local/bin/agent '
+            '|| { echo "Failed to install selected-ref CLI; update not attempted" '
+            ">&2; exit 2; }\n"
+            'aava_cleanup_cli_source || { echo "Failed to clean temporary CLI source" '
+            ">&2; exit 2; }\n"
+            "trap - EXIT HUP INT TERM\n"
+        )
     checkout_flag = "true" if checkout else "false"
     include_ui_flag = "true" if include_ui else "false"
 
@@ -4611,12 +4647,7 @@ def _update_plan_failure_detail(
         '| sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null\n'
         ') || { echo "Failed to preserve unstaged tracked edits; update not attempted" '
         ">&2; exit 2; }\n"
-        "(\n"
-        "  set -o pipefail\n"
-        "  curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
-        f"    | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
-        ') || { echo "Failed to install requested agent CLI; update not attempted" '
-        ">&2; exit 2; }\n"
+        f"{cli_bootstrap}"
         'sudo /usr/local/bin/agent version || { echo "Installed agent CLI is not '
         'runnable; update not attempted" >&2; exit 2; }\n'
         'AAVA_UID="$(sudo stat -c \'%u\' "$AAVA_REPO")" || { '

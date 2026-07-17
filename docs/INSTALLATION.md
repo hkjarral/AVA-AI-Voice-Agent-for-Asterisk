@@ -111,6 +111,14 @@ git fetch origin --prune --tags
 Use `overwrite` only after the patch/backup step above confirms you do not need the
 tracked edits.
 
+For `main` or an advanced branch target, do not substitute the latest published CLI:
+branch updater behavior can be newer than the latest release. The recovery commands
+shown by the fixed Admin UI clone the exact selected ref into a temporary directory,
+build its CLI with the project's Go 1.22 container, install that binary at
+`/usr/local/bin/agent`, and fail closed if fetch, build, installation, or cleanup fails.
+If Docker or Git cannot perform that exact-ref bootstrap, select a published release
+tag or repair the host prerequisites; do not continue with an older CLI.
+
 If the exact UI error contains either of these messages:
 
 ```text

@@ -206,7 +206,7 @@ def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_pat
         'diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     )
     unstaged_failure = "Failed to preserve unstaged tracked edits; update not attempted"
-    installer = "curl -sSL https://raw.githubusercontent.com/"
+    installer = "AAVA_CLI_REF=main"
     update = "/usr/local/bin/agent update --ref main"
 
     assert detail.index(inspection) < detail.index(staged_capture) < detail.index(staged_failure)
@@ -275,8 +275,8 @@ def test_update_plan_recovery_stops_before_repair_if_cli_bootstrap_fails(tmp_pat
         updater_output="permission denied",
     )
 
-    bootstrap = "curl -sSL https://raw.githubusercontent.com/"
-    bootstrap_failure = "Failed to install requested agent CLI; update not attempted"
+    bootstrap = "git clone --quiet --depth 1 --single-branch"
+    bootstrap_failure = "Failed to fetch selected CLI source; update not attempted"
     version = "sudo /usr/local/bin/agent version"
     version_failure = "Installed agent CLI is not runnable; update not attempted"
     repair = 'AAVA_UID="$(sudo stat'
@@ -286,6 +286,27 @@ def test_update_plan_recovery_stops_before_repair_if_cli_bootstrap_fails(tmp_pat
     assert detail.index(bootstrap_failure) < detail.index(version)
     assert detail.index(version) < detail.index(version_failure)
     assert detail.index(version_failure) < detail.index(repair) < detail.index(update)
+
+
+def test_update_plan_branch_recovery_builds_cli_from_exact_selected_ref(tmp_path) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path / "aava"),
+        ref="codex/upgrade-improvements",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+
+    assert "AAVA_CLI_REF=codex/upgrade-improvements" in detail
+    assert '--branch "$AAVA_CLI_REF"' in detail
+    assert '-e AAVA_CLI_VERSION="$AAVA_CLI_REF" golang:1.22-bookworm' in detail
+    assert '-o /out/agent ./cmd/agent' in detail
+    assert 'sudo install -m 0755 "$AAVA_CLI_SRC/out/agent" /usr/local/bin/agent' in detail
+    assert "Failed to fetch selected CLI source; update not attempted" in detail
+    assert "Failed to build CLI from selected ref; update not attempted" in detail
+    assert "Failed to install selected-ref CLI; update not attempted" in detail
+    assert "AGENT_VERSION=latest" not in detail
+    assert "scripts/install-cli.sh" not in detail
 
 
 def test_update_plan_recovery_fails_closed_on_owner_or_agent_repair_errors(tmp_path) -> None:
