@@ -4597,7 +4597,7 @@ def _update_plan_failure_detail(
         "curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \\\n"
         f"  | sudo env {version_env}INSTALL_DIR=/usr/local/bin bash\n"
         "sudo /usr/local/bin/agent version\n"
-        'sudo git -C "$AAVA_REPO" fetch origin --prune --tags\n'
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" fetch origin --prune --tags\n'
         f"sudo /usr/local/bin/agent update --ref {quoted_ref} --checkout={checkout_flag} "
         f"--include-ui={include_ui_flag} --local-changes=retain\n\n"
         "Use --local-changes=overwrite only after preserving any local source edits. "

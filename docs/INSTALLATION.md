@@ -124,7 +124,7 @@ curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Aste
   | sudo env AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin bash
 
 sudo /usr/local/bin/agent version
-sudo git -C "$(pwd)" fetch origin --prune --tags
+sudo git -c safe.directory="$(pwd)" -C "$(pwd)" fetch origin --prune --tags
 sudo /usr/local/bin/agent update --ref v7.4.0 --include-ui --local-changes=retain
 ```
 

@@ -119,6 +119,10 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert f"AAVA_REPO={tmp_path}" in detail
     assert "AGENT_VERSION=v7.4.0" in detail
     assert (
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
+        "fetch origin --prune --tags"
+    ) in detail
+    assert (
         "agent update --ref v7.4.0 --checkout=false --include-ui=true "
         "--local-changes=retain"
     ) in detail
