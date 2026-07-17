@@ -21,6 +21,13 @@ drop_to_project_owner() {
     return 0
   fi
 
+  # Refuse this before any stay-root return. Otherwise ensure_dirs would follow
+  # a repo-local .agent symlink with root privileges.
+  if [ -L "${PROJECT_ROOT}/.agent" ]; then
+    echo "ERR: refusing to repair symlinked updater state: ${PROJECT_ROOT}/.agent" >&2
+    return 2
+  fi
+
   local project_uid project_gid git_uid socket_gid user_name primary_group socket_group parent_dir
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
   project_gid="$(stat -c '%g' "${PROJECT_ROOT}")"
@@ -40,12 +47,7 @@ drop_to_project_owner() {
 
   # Older updater images wrote this tree as root. Repair that state while we
   # still have privileges so the project owner can create locks, job files,
-  # backups, and replacement CLI binaries after the re-exec. Refuse a
-  # top-level symlink rather than recursively changing an unrelated path.
-  if [ -L "${PROJECT_ROOT}/.agent" ]; then
-    echo "ERR: refusing to repair symlinked updater state: ${PROJECT_ROOT}/.agent" >&2
-    return 2
-  fi
+  # backups, and replacement CLI binaries after the re-exec.
   mkdir -p "${PROJECT_ROOT}/.agent"
   chown -R --no-dereference "${project_uid}:${project_gid}" "${PROJECT_ROOT}/.agent"
 
