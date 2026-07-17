@@ -4581,7 +4581,12 @@ def _update_plan_failure_detail(
     output = (updater_output or "Updater exited without an error message").strip()
     quoted_root = shlex.quote(host_root)
     quoted_ref = shlex.quote(ref)
-    version_env = f"AGENT_VERSION={quoted_ref} " if _is_semver_tag(ref) else ""
+    release_ref = (ref or "").strip()
+    if _is_semver_tag(release_ref):
+        release_tag = release_ref if release_ref.startswith("v") else f"v{release_ref}"
+        version_env = f"AGENT_VERSION={shlex.quote(release_tag)} "
+    else:
+        version_env = ""
     checkout_flag = "true" if checkout else "false"
     include_ui_flag = "true" if include_ui else "false"
 

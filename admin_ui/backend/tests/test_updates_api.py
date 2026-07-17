@@ -146,6 +146,20 @@ def test_update_plan_failure_preserves_long_stderr_and_explicit_flags(tmp_path) 
     ) in detail
 
 
+@pytest.mark.parametrize("ref", ["7.4.0", "v7.4.0"])
+def test_update_plan_failure_normalizes_recovery_cli_release_tag(tmp_path, ref: str) -> None:
+    detail = system._update_plan_failure_detail(
+        host_root=str(tmp_path),
+        ref=ref,
+        include_ui=True,
+        checkout=False,
+        updater_output="plan failed",
+    )
+
+    assert "AGENT_VERSION=v7.4.0 INSTALL_DIR=/usr/local/bin" in detail
+    assert f"agent update --ref {ref}" in detail
+
+
 def test_ai_engine_sessions_stats_urls_use_configured_health_port(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AI_ENGINE_HEALTH_URL", raising=False)
     monkeypatch.delenv("HEALTH_BIND_PORT", raising=False)
