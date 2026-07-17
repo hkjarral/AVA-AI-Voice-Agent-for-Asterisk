@@ -123,7 +123,11 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
-        "diff | sudo tee ../aava-update-recovery.patch >/dev/null"
+        "diff --cached | sudo tee ../aava-update-recovery.patch >/dev/null"
+    ) in detail
+    assert (
+        'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
+        "diff | sudo tee -a ../aava-update-recovery.patch >/dev/null"
     ) in detail
     assert (
         'sudo git -c safe.directory="$AAVA_REPO" -C "$AAVA_REPO" '
