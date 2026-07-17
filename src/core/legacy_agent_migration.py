@@ -90,6 +90,17 @@ def contexts_hash(contexts: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _optional_contexts_hash(contexts: Mapping[str, Any]) -> Optional[str]:
+    """Hash valid retained Contexts without weakening authoritative Agent stores."""
+    try:
+        return contexts_hash(contexts)
+    except TypeError:
+        # A populated/completed Agent store remains authoritative even if its
+        # retained legacy diagnostics are malformed. Leave the optional drift
+        # baseline unknown instead of revalidating retired runtime input.
+        return None
+
+
 def _email_enabled(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -163,9 +174,14 @@ def _record_migration_completed(db_path: str, digest: Optional[str]) -> None:
                     )"""
                 )
                 connection.execute(
-                    """INSERT OR IGNORE INTO schema_migrations(
+                    """INSERT INTO schema_migrations(
                        version, applied_at, contexts_hash
-                    ) VALUES (?,?,?)""",
+                    ) VALUES (?,?,?)
+                    ON CONFLICT(version) DO UPDATE SET
+                        contexts_hash = COALESCE(
+                            schema_migrations.contexts_hash,
+                            excluded.contexts_hash
+                        )""",
                     (MIGRATION_VERSION, now, digest),
                 )
         finally:
@@ -286,6 +302,12 @@ def ensure_legacy_contexts_imported(
         # every Agent. Legacy YAML remains on disk for rollback diagnostics and
         # must not resurrect deleted Agents on the next engine restart.
         if _migration_completed(target):
+            # Early v7.4 engine imports recorded a NULL hash. Establish their
+            # drift baseline once, without ever replacing a non-NULL historical
+            # digest that Admin drift detection already relies on.
+            _record_migration_completed(
+                target, _optional_contexts_hash(context_map)
+            )
             upgraded = _upgrade_existing_resource_policies(target)
             return {
                 "imported": 0,
@@ -298,14 +320,9 @@ def ensure_legacy_contexts_imported(
             # A pre-provisioned/early v7.4 store may have Agent rows without the
             # migration marker. Record that it is authoritative so deleting its
             # final Agent later cannot make retained legacy YAML import again.
-            try:
-                digest = contexts_hash(context_map)
-            except TypeError:
-                # A populated Agent store remains authoritative even if retained
-                # legacy diagnostics are malformed. Preserve the prior startup
-                # behavior and leave the optional drift baseline unknown.
-                digest = None
-            _record_migration_completed(target, digest)
+            _record_migration_completed(
+                target, _optional_contexts_hash(context_map)
+            )
             return {
                 "imported": 0,
                 "already_configured": True,

@@ -86,6 +86,40 @@ def test_engine_import_records_admin_compatible_context_hash(tmp_path):
     assert stored == expected
 
 
+def test_completed_migration_backfills_only_a_missing_context_hash(tmp_path):
+    database = tmp_path / "agents.db"
+    contexts = {"sales": {"provider": "local", "prompt": "Sell safely"}}
+    ensure_legacy_contexts_imported(contexts, db_path=str(database))
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE schema_migrations SET contexts_hash=NULL WHERE version=1"
+        )
+        connection.commit()
+
+    result = ensure_legacy_contexts_imported(contexts, db_path=str(database))
+
+    canonical = json.dumps(contexts, sort_keys=True, separators=(",", ":"))
+    expected = hashlib.sha256(canonical.encode()).hexdigest()
+    assert result["already_configured"] is True
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT contexts_hash FROM schema_migrations WHERE version=1"
+        ).fetchone()[0]
+        rows = connection.execute("SELECT slug FROM agents").fetchall()
+    assert stored == expected
+    assert rows == [("sales",)]
+
+    ensure_legacy_contexts_imported(
+        {"sales": {"provider": "local", "prompt": "Changed legacy YAML"}},
+        db_path=str(database),
+    )
+    with sqlite3.connect(database) as connection:
+        preserved = connection.execute(
+            "SELECT contexts_hash FROM schema_migrations WHERE version=1"
+        ).fetchone()[0]
+    assert preserved == expected
+
+
 def test_populated_agent_store_is_never_overwritten(tmp_path):
     database = tmp_path / "agents.db"
     ensure_legacy_contexts_imported(
