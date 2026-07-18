@@ -62,3 +62,48 @@ async def test_outbound_store_campaign_import_and_leasing(tmp_path, monkeypatch)
     leased2 = await store.lease_pending_leads(campaign_id, limit=1, lease_seconds=60)
     assert len(leased2) == 1
     assert leased2[0]["id"] != lead["id"]
+
+
+@pytest.mark.asyncio
+async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+
+    from src.core.outbound_store import OutboundStore
+
+    store = OutboundStore(db_path=str(tmp_path / "call_history.db"))
+    campaign = await store.create_campaign(
+        {
+            "name": "Agent Routing Campaign",
+            "timezone": "UTC",
+            "daily_window_start_local": "09:00",
+            "daily_window_end_local": "17:00",
+            "default_context": "sales",
+        }
+    )
+
+    preferred = await store.import_leads_csv(
+        campaign["id"],
+        b"phone_number,agent\n+15551230011,support\n",
+        known_agents=["sales", "support"],
+    )
+    compatible = await store.import_leads_csv(
+        campaign["id"],
+        b"phone_number,context\n+15551230012,sales\n",
+        known_agents=["sales", "support"],
+    )
+    unknown = await store.import_leads_csv(
+        campaign["id"],
+        b"phone_number,agent\n+15551230013,missing-agent\n",
+        known_agents=["sales", "support"],
+    )
+
+    assert preferred["accepted"] == 1
+    assert compatible["accepted"] == 1
+    assert unknown["accepted"] == 1
+    assert "Unknown Agent slug" in unknown["warnings"][0]["warning_reason"]
+
+    leads = await store.list_leads(campaign["id"], page=1, page_size=50)
+    agents_by_phone = {lead["phone_number"]: lead["context_override"] for lead in leads["leads"]}
+    assert agents_by_phone["+15551230011"] == "support"
+    assert agents_by_phone["+15551230012"] == "sales"
+    assert agents_by_phone["+15551230013"] == "sales"

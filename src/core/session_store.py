@@ -243,14 +243,23 @@ class SessionStore:
         async with self._lock:
             return list(self._sessions_by_call_id.values())
 
-    async def count_active_outbound_calls(self, campaign_id: Optional[str] = None) -> int:
-        """Count active outbound calls (optionally scoped to a campaign)."""
+    async def count_active_outbound_calls(
+        self,
+        campaign_id: Optional[str] = None,
+        *,
+        excluding_attempt_ids: Optional[Set[str]] = None,
+    ) -> int:
+        """Count active outbound calls, optionally excluding attempts counted elsewhere."""
+        excluded = {str(value) for value in (excluding_attempt_ids or set()) if str(value)}
         async with self._lock:
             count = 0
             for session in self._sessions_by_call_id.values():
                 if not getattr(session, "is_outbound", False):
                     continue
                 if campaign_id and getattr(session, "outbound_campaign_id", None) != campaign_id:
+                    continue
+                attempt_id = str(getattr(session, "outbound_attempt_id", None) or "").strip()
+                if attempt_id and attempt_id in excluded:
                     continue
                 count += 1
             return count

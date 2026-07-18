@@ -42,6 +42,7 @@ type LeadImportResult = {
 type OutboundMeta = {
     server_timezone: string;
     iana_timezones: string[];
+    agents?: Array<{ slug: string; display_name: string; is_default?: boolean }>;
     server_now_iso?: string;
     default_amd_options?: Record<string, any>;
 };
@@ -318,6 +319,10 @@ const CallSchedulingPage = () => {
         if (raw && typeof raw === 'object') return { ...DEFAULT_AMD_OPTIONS, ...raw };
         return { ...DEFAULT_AMD_OPTIONS };
     }, [meta?.default_amd_options]);
+    const defaultAgentSlug = useMemo(
+        () => meta?.agents?.find(agent => agent.is_default)?.slug || meta?.agents?.[0]?.slug || 'default',
+        [meta?.agents]
+    );
     const isTimezoneValid = (tz: string) => {
         const t = (tz || '').trim();
         if (!t) return false;
@@ -371,7 +376,7 @@ const CallSchedulingPage = () => {
         daily_window_end_local: '17:00',
         max_concurrent: 1,
         min_interval_seconds_between_calls: 5,
-        default_context: 'default',
+        default_context: defaultAgentSlug,
         voicemail_drop_enabled: true,
         voicemail_drop_media_uri: DEFAULT_VOICEMAIL_MEDIA_URI,
         consent_enabled: false,
@@ -583,7 +588,7 @@ const CallSchedulingPage = () => {
             daily_window_end_local: '17:00',
             max_concurrent: 1,
             min_interval_seconds_between_calls: 5,
-            default_context: 'default',
+            default_context: defaultAgentSlug,
             voicemail_drop_enabled: true,
             voicemail_drop_media_uri: DEFAULT_VOICEMAIL_MEDIA_URI,
             consent_enabled: false,
@@ -606,7 +611,7 @@ const CallSchedulingPage = () => {
             daily_window_end_local: selectedCampaign.daily_window_end_local || '17:00',
             max_concurrent: selectedCampaign.max_concurrent || 1,
             min_interval_seconds_between_calls: selectedCampaign.min_interval_seconds_between_calls || 5,
-            default_context: selectedCampaign.default_context || 'default',
+            default_context: selectedCampaign.default_context || defaultAgentSlug,
             voicemail_drop_enabled: Boolean((selectedCampaign as any).voicemail_drop_enabled ?? true),
             voicemail_drop_media_uri: (selectedCampaign.voicemail_drop_media_uri || '').trim(),
             consent_enabled: Boolean((selectedCampaign as any).consent_enabled ?? false),
@@ -669,7 +674,7 @@ const CallSchedulingPage = () => {
                 daily_window_end_local: '17:00',
                 max_concurrent: 1,
                 min_interval_seconds_between_calls: 5,
-                default_context: 'default',
+                default_context: defaultAgentSlug,
                 voicemail_drop_enabled: true,
                 voicemail_drop_media_uri: DEFAULT_VOICEMAIL_MEDIA_URI,
                 consent_enabled: false,
@@ -1180,7 +1185,7 @@ const CallSchedulingPage = () => {
                                         <span className="text-xs px-2 py-0.5 rounded border">{selectedCampaign.status}</span>
                                     </div>
                                     <div className="text-sm text-muted-foreground mt-1">
-                                        Default context: <span className="font-mono">{selectedCampaign.default_context}</span> · Max concurrent:{' '}
+                                        Default Agent: <span className="font-mono">{selectedCampaign.default_context}</span> · Max concurrent:{' '}
                                         {selectedCampaign.max_concurrent} · Min interval: {selectedCampaign.min_interval_seconds_between_calls}s
                                     </div>
                                     <div className="text-xs text-muted-foreground mt-1">
@@ -1374,7 +1379,7 @@ const CallSchedulingPage = () => {
                                     <th className="py-2 px-3">Name</th>
                                     <th className="py-2 px-3">Number</th>
                                     <th className="py-2 px-3">State</th>
-                                    <th className="py-2 px-3">Context</th>
+                                    <th className="py-2 px-3">Agent</th>
                                     <th className="py-2 px-3">Provider</th>
                                     <th className="py-2 px-3">Time</th>
                                     <th className="py-2 px-3">Duration</th>
@@ -1389,7 +1394,7 @@ const CallSchedulingPage = () => {
                             </thead>
                             <tbody>
                                 {leads.map(l => {
-                                    const effectiveContext = (l.last_context || l.context_override || selectedCampaign?.default_context || 'default') as string;
+                                    const effectiveAgent = (l.last_context || l.context_override || selectedCampaign?.default_context || 'default') as string;
                                     const provider = (l.last_provider || '-') as string;
                                     const amd = l.last_amd_status ? `${l.last_amd_status}${l.last_amd_cause ? `/${l.last_amd_cause}` : ''}` : '-';
                                     const outcome = l.last_outcome_attempt || l.last_outcome || '-';
@@ -1401,7 +1406,7 @@ const CallSchedulingPage = () => {
                                             <td className="py-2 px-3">{l.name || '-'}</td>
                                             <td className="py-2 px-3 font-mono">{l.phone_number}</td>
                                             <td className="py-2 px-3">{l.state}</td>
-                                            <td className="py-2 px-3 font-mono">{effectiveContext}</td>
+                                            <td className="py-2 px-3 font-mono">{effectiveAgent}</td>
                                             <td className="py-2 px-3 font-mono">{provider}</td>
                                             <td className="py-2 px-3">{renderLeadTime(l.last_started_at_utc || l.last_attempt_at_utc)}</td>
                                             <td className="py-2 px-3">{renderDuration(l.last_duration_seconds ?? null)}</td>
@@ -1706,8 +1711,9 @@ const CallSchedulingPage = () => {
                                             />
                                         </div>
                                         <div className="md:col-span-2">
-                                            <FormLabel tooltip="Default AI context for leads that don’t provide a context override.">Default Context</FormLabel>
+                                            <FormLabel tooltip="Default active Agent slug for leads that do not provide an agent override.">Default Agent</FormLabel>
                                             <input
+                                                list="outbound-agent-options"
                                                 value={campaignModalMode === 'create' ? createForm.default_context : editForm.default_context}
                                                 onChange={e =>
                                                     campaignModalMode === 'create'
@@ -1716,6 +1722,11 @@ const CallSchedulingPage = () => {
                                                 }
                                                 className="mt-1 w-full px-3 py-2 rounded-lg border bg-background font-mono"
                                             />
+                                            <datalist id="outbound-agent-options">
+                                                {(meta?.agents || []).map(agent => (
+                                                    <option key={agent.slug} value={agent.slug}>{agent.display_name || agent.slug}</option>
+                                                ))}
+                                            </datalist>
                                         </div>
                                     </div>
 
@@ -1815,7 +1826,7 @@ const CallSchedulingPage = () => {
                                 <div className="space-y-4">
                                     <div className="border rounded-lg p-3 space-y-2">
                                         <FormLabel
-                                            tooltip="Import leads for this campaign. Columns: name, phone_number (required), context, timezone, caller_id, custom_vars (JSON)."
+                                            tooltip="Import leads for this campaign. Columns: name, phone_number (required), agent, timezone, caller_id, custom_vars (JSON)."
                                             className="mb-0"
                                         >
                                             Leads (CSV)
@@ -1825,8 +1836,9 @@ const CallSchedulingPage = () => {
                                             {campaignModalMode === 'create' ? ' Choose a CSV now; it will import after Create.' : ''}
                                         </div>
                                         <div className="text-xs text-muted-foreground">
-                                            Note: If a CSV row is missing/blank (or invalid) for <span className="font-mono">context</span> or{' '}
-                                            <span className="font-mono">timezone</span>, the campaign defaults will be used and a warning will be shown.
+                                            Note: Use the active <span className="font-mono">agent</span> slug from the Agents page. If agent or{' '}
+                                            <span className="font-mono">timezone</span> is missing/invalid, campaign defaults are used with a warning. The legacy{' '}
+                                            <span className="font-mono">context</span> header remains accepted for compatibility.
                                         </div>
                                         <div className="flex items-center gap-2 flex-wrap">
                                             <button

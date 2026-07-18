@@ -200,6 +200,7 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 
 - Your outbound **trunk(s) and outbound routes** are already configured in Asterisk/FreePBX.
 - Outbound calls originate as **extension identity `6789`** (default), and routing happens via your existing FreePBX dialplan patterns.
+- Campaign defaults and lead overrides should contain active Agent slugs; outbound channels set canonical `AI_AGENT` and retain `AI_CONTEXT` only as a v7.4 compatibility alias.
 - Persistence reuses the existing Call History SQLite DB path (`CALL_HISTORY_DB_PATH`) by adding outbound tables.
 
 ### Key env vars
@@ -212,6 +213,7 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 | `AAVA_OUTBOUND_DIAL_CONTEXT` | `from-internal` | Asterisk dialplan context for `Local/` channel origination |
 | `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for carrier selection (e.g. `911` in the experimental ViciDial notes) |
 | `AAVA_OUTBOUND_CHANNEL_TECH` | `auto` | Channel tech for extension probing: `auto` \| `pjsip` \| `sip` \| `local_only` |
+| `AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS` | `120` | Shared startup/runtime timeout for attempts that never reach a live session; minimum `10` seconds |
 | `AAVA_MEDIA_DIR` | `/mnt/asterisk_media/ai-generated` | Where the Admin UI uploads voicemail drop `.ulaw` files |
 
 ### Dialplan requirements

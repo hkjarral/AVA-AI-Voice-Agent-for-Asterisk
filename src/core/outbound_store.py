@@ -856,6 +856,7 @@ class OutboundStore:
         *,
         skip_existing: bool = True,
         max_error_rows: int = 20,
+        known_agents: Optional[List[str]] = None,
         known_contexts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -865,7 +866,8 @@ class OutboundStore:
           - name (optional; stored on lead and used for caller_name in outbound greeting)
           - phone_number (required)
           - custom_vars (optional JSON)
-          - context (optional)
+          - agent (optional; preferred Agent slug)
+          - context (deprecated compatibility alias for agent)
           - timezone (optional)
           - caller_id (optional; stored but MVP uses extension identity)
         """
@@ -904,7 +906,11 @@ class OutboundStore:
                 raise ValueError("CSV must include 'phone_number' column")
 
             custom_vars_key = normalized_to_raw.get("custom_vars")
-            context_key = normalized_to_raw.get("context")
+            context_key = (
+                normalized_to_raw.get("agent")
+                or normalized_to_raw.get("agent_slug")
+                or normalized_to_raw.get("context")
+            )
             tz_key = normalized_to_raw.get("timezone")
             caller_id_key = normalized_to_raw.get("caller_id")
             name_key = normalized_to_raw.get("name")
@@ -933,9 +939,10 @@ class OutboundStore:
                         campaign_default_context = "default"
 
                     known_ctx: Optional[set[str]] = None
-                    if known_contexts:
+                    known_agent_values = known_agents if known_agents is not None else known_contexts
+                    if known_agent_values:
                         try:
-                            known_ctx = {str(x).strip() for x in known_contexts if str(x).strip()}
+                            known_ctx = {str(x).strip() for x in known_agent_values if str(x).strip()}
                         except Exception:
                             known_ctx = None
 
@@ -963,7 +970,7 @@ class OutboundStore:
                         else:
                             custom_vars = {}
 
-                        # Context:
+                        # Agent (stored in the legacy context_override column for DB/API compatibility):
                         # - Missing/blank => campaign default_context
                         # - Invalid/unknown => warn + overwrite to campaign default_context
                         context_raw = _as_str((row or {}).get(context_key)).strip() if context_key else ""
@@ -978,7 +985,7 @@ class OutboundStore:
                                         ImportWarningRow(
                                             idx,
                                             phone,
-                                            f"Invalid context '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
+                                            f"Invalid Agent slug '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
                                         )
                                     )
                                 context_override = campaign_default_context
@@ -989,7 +996,7 @@ class OutboundStore:
                                         ImportWarningRow(
                                             idx,
                                             phone,
-                                            f"Unknown context '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
+                                            f"Unknown Agent slug '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
                                         )
                                     )
                                 context_override = campaign_default_context

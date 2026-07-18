@@ -100,6 +100,30 @@ PIPELINE_STT_ENCODING = "linear16"
 PIPELINE_STT_CHANNELS = 1
 PIPELINE_STT_BYTES_PER_SAMPLE = 2
 CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS = 10.0
+OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT = 120.0
+
+
+def _outbound_attempt_stale_seconds() -> float:
+    """Return one validated stale-attempt timeout for startup and runtime cleanup."""
+    raw = str(
+        os.getenv(
+            "AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS",
+            str(int(OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT)),
+        )
+        or str(int(OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT))
+    ).strip()
+    try:
+        value = float(raw)
+        if not math.isfinite(value):
+            raise ValueError("timeout must be finite")
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS; using default",
+            value=raw,
+            default_seconds=OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT,
+        )
+        value = OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT
+    return max(10.0, value)
 
 # -----------------------------------------------------------------------------
 # Environment variable resolution helper
@@ -1049,7 +1073,7 @@ class Engine:
                 # Cleanup stale attempts/leads that can get stuck across restarts.
                 try:
                     result = await self.outbound_store.cleanup_stale_attempts_and_leads(
-                        stale_seconds=int(os.getenv("AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS", "120") or "120")
+                        stale_seconds=int(_outbound_attempt_stale_seconds())
                     )
                     if result.get("attempts_closed") or result.get("leads_failed"):
                         logger.info("Outbound cleanup applied", **result)
@@ -1576,49 +1600,121 @@ class Engine:
     # Outbound Campaign Dialer (Milestone 22)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _apply_outbound_session_metadata(session: CallSession, channel_vars: Dict[str, str]) -> None:
+        """Apply normalized scheduled-outbound channel metadata to a call session."""
+        phone = str(channel_vars.get("AAVA_OUTBOUND_PHONE") or "").strip()
+        if phone:
+            # Preserve the established contact-centric outbound caller_number while
+            # also exposing the customer number through {called_number} (issue #538).
+            session.caller_number = phone
+            session.called_number = phone
+
+        for var_name, attr in (
+            ("AAVA_CAMPAIGN_ID", "outbound_campaign_id"),
+            ("AAVA_LEAD_ID", "outbound_lead_id"),
+            ("AAVA_ATTEMPT_ID", "outbound_attempt_id"),
+        ):
+            value = str(channel_vars.get(var_name) or "").strip()
+            if value:
+                setattr(session, attr, value)
+
+    async def _set_outbound_agent_channel_vars(self, channel_id: str, agent_slug: str) -> None:
+        """Set canonical Agent routing plus the v7.4 compatibility alias."""
+        slug = str(agent_slug or "").strip()
+        if not slug:
+            return
+        await self.ari_client.set_channel_var(channel_id, "AI_AGENT", slug)
+        await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", slug)
+
     def _outbound_campaign_in_window(self, campaign: Dict[str, Any], now_utc: datetime) -> bool:
         """Check campaign run window + daily window (timezone-aware, supports cross-midnight)."""
         try:
+            campaign_id = str(campaign.get("id") or "").strip() or None
+            if now_utc.tzinfo is None:
+                logger.warning(
+                    "Outbound campaign window rejected: current time is timezone-naive",
+                    campaign_id=campaign_id,
+                )
+                return False
+
             tz_name = str(campaign.get("timezone") or "UTC").strip() or "UTC"
             try:
                 tz = ZoneInfo(tz_name)
             except Exception:
-                tz = timezone.utc
+                logger.warning(
+                    "Outbound campaign window rejected: invalid timezone",
+                    campaign_id=campaign_id,
+                    timezone=tz_name,
+                )
+                return False
 
             # Optional absolute run window (UTC ISO strings)
             run_start = (campaign.get("run_start_at_utc") or "").strip()
             run_end = (campaign.get("run_end_at_utc") or "").strip()
+            run_start_dt: Optional[datetime] = None
+            run_end_dt: Optional[datetime] = None
             if run_start:
                 try:
-                    rs = datetime.fromisoformat(run_start.replace("Z", "+00:00"))
-                    if rs.tzinfo is None:
-                        rs = rs.replace(tzinfo=timezone.utc)
-                    if now_utc < rs.astimezone(timezone.utc):
-                        return False
+                    run_start_dt = datetime.fromisoformat(run_start.replace("Z", "+00:00"))
+                    if run_start_dt.tzinfo is None:
+                        run_start_dt = run_start_dt.replace(tzinfo=timezone.utc)
+                    run_start_dt = run_start_dt.astimezone(timezone.utc)
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Outbound campaign window rejected: invalid absolute start",
+                        campaign_id=campaign_id,
+                        run_start_at_utc=run_start,
+                    )
+                    return False
             if run_end:
                 try:
-                    re_ = datetime.fromisoformat(run_end.replace("Z", "+00:00"))
-                    if re_.tzinfo is None:
-                        re_ = re_.replace(tzinfo=timezone.utc)
-                    if now_utc > re_.astimezone(timezone.utc):
-                        return False
+                    run_end_dt = datetime.fromisoformat(run_end.replace("Z", "+00:00"))
+                    if run_end_dt.tzinfo is None:
+                        run_end_dt = run_end_dt.replace(tzinfo=timezone.utc)
+                    run_end_dt = run_end_dt.astimezone(timezone.utc)
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Outbound campaign window rejected: invalid absolute end",
+                        campaign_id=campaign_id,
+                        run_end_at_utc=run_end,
+                    )
+                    return False
+
+            if run_start_dt and run_end_dt and run_start_dt > run_end_dt:
+                logger.warning(
+                    "Outbound campaign window rejected: absolute start is after end",
+                    campaign_id=campaign_id,
+                    run_start_at_utc=run_start,
+                    run_end_at_utc=run_end,
+                )
+                return False
+
+            normalized_now_utc = now_utc.astimezone(timezone.utc)
+            if run_start_dt and normalized_now_utc < run_start_dt:
+                return False
+            if run_end_dt and normalized_now_utc > run_end_dt:
+                return False
 
             local_now = now_utc.astimezone(tz)
             start_s = str(campaign.get("daily_window_start_local") or "09:00")
             end_s = str(campaign.get("daily_window_end_local") or "17:00")
-            try:
-                start_h, start_m = (int(p) for p in start_s.split(":", 1))
-                end_h, end_m = (int(p) for p in end_s.split(":", 1))
-            except Exception:
-                return True
+            hhmm_pattern = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+            if not hhmm_pattern.fullmatch(start_s) or not hhmm_pattern.fullmatch(end_s):
+                logger.warning(
+                    "Outbound campaign window rejected: invalid daily window",
+                    campaign_id=campaign_id,
+                    daily_window_start_local=start_s,
+                    daily_window_end_local=end_s,
+                )
+                return False
+            start_h, start_m = (int(p) for p in start_s.split(":", 1))
+            end_h, end_m = (int(p) for p in end_s.split(":", 1))
             start_t = (start_h * 60) + start_m
             end_t = (end_h * 60) + end_m
             now_t = (local_now.hour * 60) + local_now.minute
 
+            # Preserve the existing documented behavior: equal values mean a 24-hour window.
             if start_t == end_t:
                 return True
             if end_t > start_t:
@@ -1626,7 +1722,8 @@ class Engine:
             # Cross-midnight window
             return (now_t >= start_t) or (now_t <= end_t)
         except Exception:
-            return True
+            logger.warning("Outbound campaign window rejected after unexpected validation error", exc_info=True)
+            return False
 
     def _outbound_build_amd_opts(self, amd_options: Dict[str, Any]) -> str:
         """
@@ -1678,6 +1775,22 @@ class Engine:
             return ",".join(v for v in values[: last_set + 1] if v is not None)
         except Exception:
             return ""
+
+    async def _outbound_campaign_capacity(self, campaign_id: str, max_concurrent: int) -> Tuple[int, int, int]:
+        """Return available, tracked-attempt, and additional active-session counts."""
+        tracked_attempt_ids = {
+            str(meta.get("attempt_id") or attempt_id)
+            for attempt_id, meta in self._outbound_attempt_meta_by_attempt_id.items()
+            if str(meta.get("campaign_id") or "") == campaign_id
+        }
+        inflight = len(tracked_attempt_ids)
+        # A HUMAN call remains in the in-memory attempt map after its CallSession
+        # becomes active. Exclude those IDs so each call consumes one slot.
+        active_outbound = await self.session_store.count_active_outbound_calls(
+            campaign_id=campaign_id,
+            excluding_attempt_ids=tracked_attempt_ids,
+        )
+        return max_concurrent - inflight - active_outbound, inflight, active_outbound
 
     async def _outbound_maybe_mark_campaign_completed(
         self,
@@ -1856,13 +1969,10 @@ class Engine:
 
                         max_concurrent = int(campaign.get("max_concurrent") or 1)
                         max_concurrent = max(1, min(5, max_concurrent))
-                        inflight = sum(
-                            1
-                            for meta in self._outbound_attempt_meta_by_attempt_id.values()
-                            if str(meta.get("campaign_id") or "") == campaign_id
+                        capacity, inflight, active_outbound = await self._outbound_campaign_capacity(
+                            campaign_id,
+                            max_concurrent,
                         )
-                        active_outbound = await self.session_store.count_active_outbound_calls(campaign_id=campaign_id)
-                        capacity = max_concurrent - inflight - active_outbound
                         if capacity <= 0:
                             continue
 
@@ -1892,11 +2002,10 @@ class Engine:
                             # Best-effort provider resolution for metadata/UI.
                             resolved_context_provider = None
                             try:
-                                # Outbound sets AI_CONTEXT on the channel (see _outbound
-                                # set_channel_var) — resolve with the legacy original-name
-                                # intent so this metadata lookup matches the live routing.
+                                # Outbound sets canonical AI_AGENT (plus AI_CONTEXT as a
+                                # compatibility alias); resolve slug-first to match live routing.
                                 ctx_cfg = self.transport_orchestrator.get_context_config(
-                                    context_name, "ai_context")
+                                    context_name, "ai_agent")
                                 ctx_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
                                 if isinstance(ctx_provider, str):
                                     ctx_provider = ctx_provider.strip()
@@ -1986,13 +2095,13 @@ class Engine:
         custom_vars = lead.get("custom_vars") if isinstance(lead.get("custom_vars"), dict) else {}
         lead_name = str(lead.get("name") or "").strip() or None
 
-        # If a context declares a monolithic provider (e.g., google_live), honor it by setting
+        # If an Agent declares a monolithic provider (e.g., google_live), honor it by setting
         # AI_PROVIDER on the originated channel. This prevents pipeline defaults from taking over
         # when the dialplan does not explicitly set AI_PROVIDER.
         context_provider = None
         try:
-            # Outbound routes via AI_CONTEXT — use the legacy original-name intent.
-            ctx_cfg = self.transport_orchestrator.get_context_config(context_name, "ai_context")
+            # Outbound routes via canonical AI_AGENT (slug-first).
+            ctx_cfg = self.transport_orchestrator.get_context_config(context_name, "ai_agent")
             context_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
         except Exception:
             context_provider = None
@@ -2035,8 +2144,10 @@ class Engine:
             "AAVA_LEAD_ID": lead_id,
             "AAVA_ATTEMPT_ID": attempt_id,
             "AAVA_OUTBOUND_PHONE": phone,
+            "AI_AGENT": context_name,
+            # Compatibility alias for existing dialplan hops and older tooling.
             "AI_CONTEXT": context_name,
-            # Honor context provider by default for outbound calls (unless dialplan overrides later).
+            # Honor Agent provider by default for outbound calls (unless dialplan overrides later).
             **({"AI_PROVIDER": resolved_context_provider} if resolved_context_provider else {}),
             # Ensure the called party sees our configured outbound identity.
             "CALLERID(num)": caller_id_num,
@@ -2074,6 +2185,7 @@ class Engine:
             "AAVA_LEAD_ID",
             "AAVA_ATTEMPT_ID",
             "AAVA_OUTBOUND_PHONE",
+            "AI_AGENT",
             "AI_CONTEXT",
             "AI_PROVIDER",
             "AAVA_VM_ENABLED",
@@ -2216,9 +2328,7 @@ class Engine:
         """
         try:
             now = time.time()
-            stale_after = float(os.getenv("AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS", "90") or "90")
-            if stale_after < 10:
-                stale_after = 10.0
+            stale_after = _outbound_attempt_stale_seconds()
 
             # Copy values to avoid mutation during iteration.
             metas = list(self._outbound_attempt_meta_by_attempt_id.values())
@@ -2326,8 +2436,11 @@ class Engine:
                 await self.ari_client.set_channel_var(channel_id, "AAVA_CAMPAIGN_ID", str(meta.get("campaign_id") or ""))
                 await self.ari_client.set_channel_var(channel_id, "AAVA_LEAD_ID", str(meta.get("lead_id") or ""))
                 await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND_PHONE", str(meta.get("phone_number") or ""))
-                # Ensure AI_CONTEXT survives to the final StasisStart so context prompt/greeting resolve correctly.
-                await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", str(meta.get("context") or "default"))
+                # Ensure canonical Agent routing survives to the final StasisStart.
+                await self._set_outbound_agent_channel_vars(
+                    channel_id,
+                    str(meta.get("context") or "default"),
+                )
                 # Ensure lead name survives so greeting can render {caller_name}.
                 if meta.get("lead_name"):
                     try:
@@ -2549,14 +2662,14 @@ class Engine:
             except Exception:
                 pass
 
-        # Ensure context is present on the channel before we reuse inbound call handling.
+        # Ensure Agent routing is present before we reuse inbound call handling.
         try:
             ctx = str((meta or {}).get("context") or "").strip()
             if ctx:
                 await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND", "1")
-                await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", ctx)
+                await self._set_outbound_agent_channel_vars(channel_id, ctx)
         except Exception:
-            logger.debug("Failed to set AI_CONTEXT for outbound human path", channel_id=channel_id, exc_info=True)
+            logger.debug("Failed to set AI_AGENT for outbound human path", channel_id=channel_id, exc_info=True)
 
         # Override caller metadata so call history shows the dialed number and uses the lead name (if present).
         phone = str((meta or {}).get("phone_number") or "")
@@ -3939,18 +4052,22 @@ class Engine:
                             if meta and meta.get("context"):
                                 session.context_name = str(meta.get("context") or "").strip() or session.context_name
                                 try:
-                                    await self.ari_client.set_channel_var(caller_channel_id, "AI_CONTEXT", session.context_name or "")
+                                    await self._set_outbound_agent_channel_vars(
+                                        caller_channel_id,
+                                        session.context_name or "",
+                                    )
                                 except Exception:
                                     pass
                                 await self._save_session(session)
                     except Exception:
                         logger.debug("Failed to pre-seed outbound context from attempt meta", call_id=caller_channel_id, exc_info=True)
 
-                    for var_name, attr in [
-                        ("AAVA_OUTBOUND_PHONE", "caller_number"),
-                        ("AAVA_CAMPAIGN_ID", "outbound_campaign_id"),
-                        ("AAVA_LEAD_ID", "outbound_lead_id"),
-                        ("AAVA_ATTEMPT_ID", "outbound_attempt_id"),
+                    outbound_channel_vars: Dict[str, str] = {}
+                    for var_name in [
+                        "AAVA_OUTBOUND_PHONE",
+                        "AAVA_CAMPAIGN_ID",
+                        "AAVA_LEAD_ID",
+                        "AAVA_ATTEMPT_ID",
                     ]:
                         resp = await self.ari_client.send_command(
                             "GET",
@@ -3961,7 +4078,8 @@ class Engine:
                         if isinstance(resp, dict):
                             value = (resp.get("value") or "").strip()
                             if value:
-                                setattr(session, attr, value)
+                                outbound_channel_vars[var_name] = value
+                    self._apply_outbound_session_metadata(session, outbound_channel_vars)
                     resp = await self.ari_client.send_command(
                         "GET",
                         f"channels/{caller_channel_id}/variable",

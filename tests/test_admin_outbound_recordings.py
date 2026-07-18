@@ -8,7 +8,10 @@ import pytest
 if importlib.util.find_spec("fastapi") is None:
     pytest.skip("fastapi not installed; admin_ui outbound tests skipped", allow_module_level=True)
 
+from fastapi import HTTPException
+
 from admin_ui.backend.api import outbound
+from admin_ui.backend.agents_store import AgentsStore
 
 
 def test_media_ulaw_lookup_only_relaxes_extension_case(tmp_path, monkeypatch):
@@ -45,3 +48,89 @@ async def test_list_recordings_includes_uppercase_ulaw_suffix(tmp_path, monkeypa
     assert rows[0].filename == "Greeting.ULAW"
     assert rows[0].media_uri == "sound:ai-generated/Greeting"
     assert rows[0].size_bytes == 3
+
+
+@pytest.mark.asyncio
+async def test_outbound_meta_lists_active_agent_slugs(tmp_path, monkeypatch):
+    agents_db = tmp_path / "agents.db"
+    monkeypatch.setenv("AGENTS_DB_PATH", str(agents_db))
+    with AgentsStore(db_path=str(agents_db)) as store:
+        sales = store.create(display_name="Sales", slug="sales", provider="local", prompt="Sell")
+        disabled = store.create(display_name="Old", slug="old", provider="local", prompt="Old")
+        with store.conn:
+            store.conn.execute("UPDATE agents SET is_default=1 WHERE id=?", (sales["id"],))
+            store.conn.execute("UPDATE agents SET is_active=0 WHERE id=?", (disabled["id"],))
+
+    meta = await outbound.outbound_meta()
+
+    assert meta["agents"] == [{"slug": "sales", "display_name": "Sales", "is_default": True}]
+
+
+@pytest.mark.asyncio
+async def test_sample_csv_prefers_configured_default_agent_header(monkeypatch):
+    monkeypatch.setattr(
+        outbound,
+        "_load_active_agents",
+        lambda: [
+            {"slug": "support", "display_name": "Support", "is_default": False},
+            {"slug": "sales", "display_name": "Sales", "is_default": True},
+        ],
+    )
+    response = await outbound.download_sample_csv()
+    body = response.body.decode("utf-8")
+
+    assert body.splitlines()[0] == "name,phone_number,agent,timezone,caller_id,custom_vars"
+    assert ",sales," in body
+    assert ",context," not in body
+
+
+def test_campaign_schedule_start_validation_accepts_valid_and_cross_midnight_windows():
+    outbound._validate_campaign_schedule_for_start(
+        {
+            "timezone": "America/Phoenix",
+            "daily_window_start_local": "22:00",
+            "daily_window_end_local": "06:00",
+            "run_start_at_utc": "2026-07-18T00:00:00Z",
+            "run_end_at_utc": "2026-07-19T00:00:00+00:00",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "campaign,detail_fragment",
+    [
+        (
+            {"timezone": "Invalid/Zone", "daily_window_start_local": "09:00", "daily_window_end_local": "17:00"},
+            "Invalid timezone",
+        ),
+        (
+            {"timezone": "UTC", "daily_window_start_local": "9:00", "daily_window_end_local": "17:00"},
+            "HH:MM",
+        ),
+        (
+            {
+                "timezone": "UTC",
+                "daily_window_start_local": "09:00",
+                "daily_window_end_local": "17:00",
+                "run_start_at_utc": "not-a-timestamp",
+            },
+            "Invalid absolute run start",
+        ),
+        (
+            {
+                "timezone": "UTC",
+                "daily_window_start_local": "09:00",
+                "daily_window_end_local": "17:00",
+                "run_start_at_utc": "2026-07-19T00:00:00Z",
+                "run_end_at_utc": "2026-07-18T00:00:00Z",
+            },
+            "start must be before",
+        ),
+    ],
+)
+def test_campaign_schedule_start_validation_rejects_invalid_values(campaign, detail_fragment):
+    with pytest.raises(HTTPException) as exc_info:
+        outbound._validate_campaign_schedule_for_start(campaign)
+
+    assert exc_info.value.status_code == 400
+    assert detail_fragment in str(exc_info.value.detail)

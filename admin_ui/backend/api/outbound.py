@@ -26,7 +26,6 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from pathlib import Path
-import yaml
 try:
     from zoneinfo import ZoneInfo, available_timezones
 except Exception:  # pragma: no cover
@@ -323,32 +322,76 @@ def _detect_server_timezone() -> str:
 
     return "UTC"
 
-def _load_known_context_names() -> List[str]:
-    """
-    Best-effort list of known context names from the active config.
-
-    Reads the merged config (base + local override) so operator-added
-    contexts in ai-agent.local.yaml are included.
-    """
+def _load_active_agents() -> List[Dict[str, Any]]:
+    """Best-effort active Agent metadata from the authoritative agents.db."""
     try:
-        from api.config import _read_merged_config_dict
-        parsed = _read_merged_config_dict()
-    except Exception:
-        # Fallback to reading base file directly.
         try:
-            from settings import CONFIG_PATH
-            if not os.path.exists(CONFIG_PATH):
-                return []
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                parsed = yaml.safe_load(f) or {}
+            from agents_store import AgentsStore
+        except ImportError:
+            from admin_ui.backend.agents_store import AgentsStore
+
+        with AgentsStore() as store:
+            rows = store.list_all()
+        return [
+            {
+                "slug": str(row.get("slug") or "").strip(),
+                "display_name": str(row.get("display_name") or "").strip(),
+                "is_default": bool(row.get("is_default")),
+            }
+            for row in rows
+            if bool(row.get("is_active")) and str(row.get("slug") or "").strip()
+        ]
+    except Exception:
+        return []
+
+
+def _load_known_agent_slugs() -> List[str]:
+    return [str(agent.get("slug") or "") for agent in _load_active_agents() if agent.get("slug")]
+
+
+_HHMM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validate_campaign_schedule_for_start(campaign: Dict[str, Any]) -> None:
+    """Reject invalid campaign schedule data before it can enter running state."""
+    tz_name = str(campaign.get("timezone") or "").strip() or "UTC"
+    if ZoneInfo is not None:
+        try:
+            ZoneInfo(tz_name)
         except Exception:
-            return []
-    if not isinstance(parsed, dict):
-        return []
-    ctxs = parsed.get("contexts") or {}
-    if not isinstance(ctxs, dict):
-        return []
-    return [str(k).strip() for k in ctxs.keys() if str(k).strip()]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid timezone '{tz_name}'. Use an IANA timezone like 'America/Phoenix' or 'UTC'.",
+            )
+
+    start_local = str(campaign.get("daily_window_start_local") or "")
+    end_local = str(campaign.get("daily_window_end_local") or "")
+    if not _HHMM_RE.fullmatch(start_local) or not _HHMM_RE.fullmatch(end_local):
+        raise HTTPException(
+            status_code=400,
+            detail="Daily calling window must use zero-padded 24-hour HH:MM values.",
+        )
+
+    parsed_absolute: Dict[str, datetime] = {}
+    for field_name, label in (
+        ("run_start_at_utc", "absolute run start"),
+        ("run_end_at_utc", "absolute run end"),
+    ):
+        raw_value = str(campaign.get(field_name) or "").strip()
+        if not raw_value:
+            continue
+        try:
+            value = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            parsed_absolute[field_name] = value.astimezone(timezone.utc)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid {label} timestamp '{raw_value}'.")
+
+    run_start = parsed_absolute.get("run_start_at_utc")
+    run_end = parsed_absolute.get("run_end_at_utc")
+    if run_start and run_end and run_start > run_end:
+        raise HTTPException(status_code=400, detail="Absolute run start must be before or equal to run end.")
 
 @router.get("/meta")
 async def outbound_meta():
@@ -367,6 +410,7 @@ async def outbound_meta():
     return {
         "server_timezone": tz,
         "iana_timezones": tzs,
+        "agents": _load_active_agents(),
         "server_now_iso": datetime.now(timezone.utc).isoformat(),
         "default_amd_options": {
             "initial_silence_ms": 2000,
@@ -425,16 +469,22 @@ async def download_sample_csv():
       - name (optional)
       - phone_number (required)
         - Can be E.164 (+15551234567) or an internal extension (e.g., 2765)
-      - context (optional)
+      - agent (optional; active Agent slug used with AI_AGENT)
+      - context (deprecated compatibility alias for agent)
       - timezone (optional)
       - caller_id (optional)
       - custom_vars (optional JSON object)
     """
+    active_agents = _load_active_agents()
+    sample_agent = next(
+        (str(agent["slug"]) for agent in active_agents if agent.get("is_default")),
+        str(active_agents[0]["slug"]) if active_agents else "default",
+    )
     csv_text = (
-        "name,phone_number,context,timezone,caller_id,custom_vars\n"
-        "Extension Test,2765,demo_outbound,America/Phoenix,6789,\"{\"\"name\"\":\"\"Extension Test\"\",\"\"note\"\":\"\"Call internal extension\"\"}\"\n"
-        "Alice Example,+15557654321,demo_outbound,America/Phoenix,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1002\"\",\"\"note\"\":\"\"US lead example\"\"}\"\n"
-        "International Example,+447700900123,demo_outbound,America/Phoenix,6789,\"{\"\"name\"\":\"\"International Example\"\",\"\"account_id\"\":\"\"A-1003\"\",\"\"note\"\":\"\"International lead example\"\"}\"\n"
+        "name,phone_number,agent,timezone,caller_id,custom_vars\n"
+        f"Extension Test,2765,{sample_agent},America/Phoenix,6789,\"{{\"\"name\"\":\"\"Extension Test\"\",\"\"note\"\":\"\"Call internal extension\"\"}}\"\n"
+        f"Alice Example,+15557654321,{sample_agent},America/Phoenix,6789,\"{{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1002\"\",\"\"note\"\":\"\"US lead example\"\"}}\"\n"
+        f"International Example,+447700900123,{sample_agent},America/Phoenix,6789,\"{{\"\"name\"\":\"\"International Example\"\",\"\"account_id\"\":\"\"A-1003\"\",\"\"note\"\":\"\"International lead example\"\"}}\"\n"
     )
     return Response(
         content=csv_text,
@@ -550,15 +600,7 @@ async def set_campaign_status(campaign_id: str, req: CampaignStatusRequest):
                         status_code=400,
                         detail="Consent gate is enabled but no consent recording is set. Upload consent before starting.",
                     )
-            tz_name = (campaign.get("timezone") or "").strip() or "UTC"
-            if ZoneInfo is not None and tz_name.upper() != "UTC":
-                try:
-                    ZoneInfo(tz_name)
-                except Exception:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid timezone '{tz_name}'. Use an IANA timezone like 'America/Phoenix' or 'UTC'.",
-                    )
+            _validate_campaign_schedule_for_start(campaign)
         return await store.set_campaign_status(campaign_id, req.status, cancel_pending=bool(req.cancel_pending))
     except KeyError:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -582,13 +624,13 @@ async def import_leads(
     store = _get_outbound_store()
     try:
         data = await file.read()
-        known_contexts = _load_known_context_names()
+        known_agents = _load_known_agent_slugs()
         result = await store.import_leads_csv(
             campaign_id,
             data,
             skip_existing=bool(skip_existing),
             max_error_rows=int(max_error_rows),
-            known_contexts=known_contexts or None,
+            known_agents=known_agents or None,
         )
         return LeadImportResponse(**result)
     except KeyError:

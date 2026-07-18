@@ -121,6 +121,7 @@ If you use **Admin UI → Call Scheduling**:
 
 - `AAVA_OUTBOUND_EXTENSION_IDENTITY`
 - `AAVA_OUTBOUND_AMD_CONTEXT`
+- `AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS` (default `120`, minimum `10`; shared by startup recovery and runtime cleanup)
 - `AAVA_MEDIA_DIR`
 - `AAVA_SERVER_TIMEZONE` (optional override; otherwise `TZ`)
 
