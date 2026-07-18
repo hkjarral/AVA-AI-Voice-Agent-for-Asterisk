@@ -118,17 +118,14 @@ drop_to_project_owner() {
   fi
   while IFS= read -r -d '' tracked_relative; do
     tracked_path="${PROJECT_ROOT}/${tracked_relative}"
-    if [ -e "${tracked_path}" ] || [ -L "${tracked_path}" ]; then
-      tracked_uid="$(stat -c '%u' "${tracked_path}" 2>/dev/null || true)"
-      if [ "${tracked_uid}" != "${project_uid}" ]; then
-        rm -f -- "${tracked_list}"
-        echo "ERR: checkout owner UID ${project_uid} differs from tracked path owner UID ${tracked_uid:-unknown} at ${tracked_path}; use host CLI recovery" >&2
-        return 2
-      fi
-    fi
     tracked_parent="${tracked_path%/*}"
     while [ "${tracked_parent}" != "${PROJECT_ROOT}" ]; do
-      if [ -e "${tracked_parent}" ] || [ -L "${tracked_parent}" ]; then
+      if [ -L "${tracked_parent}" ]; then
+        rm -f -- "${tracked_list}"
+        echo "ERR: tracked parent ${tracked_parent} is a symlink; inspect the checkout before retrying" >&2
+        return 2
+      fi
+      if [ -e "${tracked_parent}" ]; then
         tracked_uid="$(stat -c '%u' "${tracked_parent}" 2>/dev/null || true)"
         if [ "${tracked_uid}" != "${project_uid}" ]; then
           rm -f -- "${tracked_list}"
@@ -138,6 +135,14 @@ drop_to_project_owner() {
       fi
       tracked_parent="${tracked_parent%/*}"
     done
+    if [ -e "${tracked_path}" ] || [ -L "${tracked_path}" ]; then
+      tracked_uid="$(stat -c '%u' "${tracked_path}" 2>/dev/null || true)"
+      if [ "${tracked_uid}" != "${project_uid}" ]; then
+        rm -f -- "${tracked_list}"
+        echo "ERR: checkout owner UID ${project_uid} differs from tracked path owner UID ${tracked_uid:-unknown} at ${tracked_path}; use host CLI recovery" >&2
+        return 2
+      fi
+    fi
   done <"${tracked_list}"
   rm -f -- "${tracked_list}"
 

@@ -117,7 +117,15 @@ def test_updater_fails_closed_on_mixed_owned_tracked_paths_only() -> None:
     assert 'tracked_parent="${tracked_path%/*}"' in drop_body
     assert 'tracked_parent="${tracked_parent%/*}"' in drop_body
     assert 'dirname "${tracked_path}"' not in drop_body
-    assert '[ -e "${tracked_parent}" ] || [ -L "${tracked_parent}" ]' in drop_body
+    assert '[ -L "${tracked_parent}" ]' in drop_body
+    assert 'tracked parent ${tracked_parent} is a symlink' in drop_body
+    assert '[ -e "${tracked_parent}" ]' in drop_body
+    assert drop_body.index('[ -L "${tracked_parent}" ]') < drop_body.index(
+        'stat -c \'%u\' "${tracked_parent}"'
+    )
+    assert drop_body.index('[ -L "${tracked_parent}" ]') < drop_body.index(
+        'stat -c \'%u\' "${tracked_path}"'
+    )
     assert "differs from tracked path owner UID" in drop_body
     assert "differs from tracked parent owner UID" in drop_body
     assert "untracked runtime/operator data is intentionally out" in drop_body

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -193,6 +194,11 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert 'AAVA_TRACKED_PARENT="${AAVA_TRACKED_PATH%/*}"' in detail
     assert 'AAVA_TRACKED_PARENT="${AAVA_TRACKED_PARENT%/*}"' in detail
     assert 'dirname "$AAVA_TRACKED_PATH"' not in detail
+    assert "Refusing symlinked tracked parent" in detail
+    assert detail.count('AAVA_TRACKED_PARENT="${AAVA_TRACKED_PATH%/*}"') == 2
+    assert detail.index('sudo test -L "$AAVA_TRACKED_PARENT"') < detail.index(
+        'printf \'%s\\0\' "$AAVA_TRACKED_PATH"'
+    )
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
@@ -214,6 +220,64 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         'sudo chown "$AAVA_UID:$AAVA_GID" "$AAVA_TEMP_HOME"'
     )
     assert "--self-update=true" not in detail
+
+
+def test_generated_recovery_rejects_symlinked_parent_before_chown(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    external = tmp_path / "external"
+    (external / "nested").mkdir(parents=True)
+    (external / "nested" / "file").write_text("outside", encoding="utf-8")
+    repo.mkdir()
+    (repo / "link").symlink_to(external, target_is_directory=True)
+
+    detail = system._update_plan_failure_detail(
+        host_root=str(repo),
+        ref="main",
+        include_ui=True,
+        checkout=True,
+        updater_output="permission denied",
+    )
+    recovery = detail.split("Recovery (run these commands in a host SSH shell):\n", 1)[1]
+    start = recovery.index("(\n  set -o pipefail\n  aava_git ls-files -z")
+    end = recovery.index("\nAAVA_SETPRIV=", start)
+    repair = recovery[start:end]
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "chown-called"
+    fake_chown = fake_bin / "chown"
+    fake_chown.write_text(
+        '#!/bin/sh\n: > "$AAVA_CHOWN_MARKER"\n',
+        encoding="utf-8",
+    )
+    fake_chown.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "AAVA_CHOWN_MARKER": str(marker),
+            "AAVA_GID": str(os.getgid()),
+            "AAVA_REPO": str(repo),
+            "AAVA_UID": str(os.getuid()),
+            "PATH": f"{fake_bin}:{env['PATH']}",
+        }
+    )
+    shell = (
+        'sudo() { "$@"; }\n'
+        "aava_git() { printf 'link/nested/file\\0'; }\n"
+        f"{repair}\n"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Refusing symlinked tracked parent" in result.stderr
+    assert not marker.exists()
 
 
 def test_update_plan_recovery_stops_before_update_if_patch_capture_fails(tmp_path) -> None:
