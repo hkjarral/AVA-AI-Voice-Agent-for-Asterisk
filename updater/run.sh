@@ -2,6 +2,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/app/project}"
+while [ "${PROJECT_ROOT}" != "/" ] && [ "${PROJECT_ROOT%/}" != "${PROJECT_ROOT}" ]; do
+  PROJECT_ROOT="${PROJECT_ROOT%/}"
+done
 JOB_ID="${AAVA_UPDATE_JOB_ID:-}"
 MODE="${AAVA_UPDATE_MODE:-run}" # run|plan|rollback
 INCLUDE_UI="${AAVA_UPDATE_INCLUDE_UI:-false}" # true|false
@@ -123,7 +126,7 @@ drop_to_project_owner() {
         return 2
       fi
     fi
-    tracked_parent="$(dirname "${tracked_path}")"
+    tracked_parent="${tracked_path%/*}"
     while [ "${tracked_parent}" != "${PROJECT_ROOT}" ]; do
       if [ -e "${tracked_parent}" ] || [ -L "${tracked_parent}" ]; then
         tracked_uid="$(stat -c '%u' "${tracked_parent}" 2>/dev/null || true)"
@@ -133,7 +136,7 @@ drop_to_project_owner() {
           return 2
         fi
       fi
-      tracked_parent="$(dirname "${tracked_parent}")"
+      tracked_parent="${tracked_parent%/*}"
     done
   done <"${tracked_list}"
   rm -f -- "${tracked_list}"

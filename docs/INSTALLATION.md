@@ -138,6 +138,9 @@ and absolute-path flags, so recovery works with Git 1.8.3 on RHEL/CentOS 7 hosts
 
 ```bash
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
+while [ "$AAVA_REPO" != "/" ] && [ "${AAVA_REPO%/}" != "$AAVA_REPO" ]; do
+  AAVA_REPO="${AAVA_REPO%/}"
+done
 AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"
 aava_git() {
   sudo git -c safe.directory="$AAVA_REPO" --git-dir="$AAVA_REPO/.git" \
@@ -219,12 +222,12 @@ fi
     if sudo test -e "$AAVA_TRACKED_PATH" || sudo test -L "$AAVA_TRACKED_PATH"; then
       printf '%s\0' "$AAVA_TRACKED_PATH"
     fi
-    AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PATH")"
+    AAVA_TRACKED_PARENT="${AAVA_TRACKED_PATH%/*}"
     while [ "$AAVA_TRACKED_PARENT" != "$AAVA_REPO" ]; do
       if sudo test -e "$AAVA_TRACKED_PARENT" || sudo test -L "$AAVA_TRACKED_PARENT"; then
         printf '%s\0' "$AAVA_TRACKED_PARENT"
       fi
-      AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PARENT")"
+      AAVA_TRACKED_PARENT="${AAVA_TRACKED_PARENT%/*}"
     done
   done | sort -zu | sudo xargs -0 -r chown --no-dereference "$AAVA_UID:$AAVA_GID" --
 ) || { echo "Failed to repair tracked checkout ownership; update not attempted" >&2; exit 2; }

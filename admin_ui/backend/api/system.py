@@ -4635,6 +4635,9 @@ def _update_plan_failure_detail(
         f"{output}\n\n"
         "Recovery (run these commands in a host SSH shell):\n"
         f"AAVA_REPO={quoted_root}\n"
+        'while [ "$AAVA_REPO" != "/" ] && [ "${AAVA_REPO%/}" != "$AAVA_REPO" ]; do\n'
+        '  AAVA_REPO="${AAVA_REPO%/}"\n'
+        'done\n'
         'AAVA_RECOVERY_PATCH="$(dirname "$AAVA_REPO")/aava-update-recovery.patch"\n'
         # RHEL/CentOS 7 ships Git 1.8.3, before `git -C`, `remote get-url`,
         # `--absolute-git-dir`, and `--path-format=absolute` existed.
@@ -4709,13 +4712,13 @@ def _update_plan_failure_detail(
         'sudo test -L "$AAVA_TRACKED_PATH"; then\n'
         '      printf \'%s\\0\' "$AAVA_TRACKED_PATH"\n'
         '    fi\n'
-        '    AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PATH")"\n'
+        '    AAVA_TRACKED_PARENT="${AAVA_TRACKED_PATH%/*}"\n'
         '    while [ "$AAVA_TRACKED_PARENT" != "$AAVA_REPO" ]; do\n'
         '      if sudo test -e "$AAVA_TRACKED_PARENT" || '
         'sudo test -L "$AAVA_TRACKED_PARENT"; then\n'
         '        printf \'%s\\0\' "$AAVA_TRACKED_PARENT"\n'
         '      fi\n'
-        '      AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PARENT")"\n'
+        '      AAVA_TRACKED_PARENT="${AAVA_TRACKED_PARENT%/*}"\n'
         '    done\n'
         '  done | sort -zu | sudo xargs -0 -r chown --no-dereference '
         '"$AAVA_UID:$AAVA_GID" --\n'

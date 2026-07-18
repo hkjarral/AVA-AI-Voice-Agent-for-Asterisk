@@ -181,6 +181,8 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         'update not attempted" >&2; exit 2; }'
     ) in detail
     assert "aava_git ls-files -z" in detail
+    assert '[ "${AAVA_REPO%/}" != "$AAVA_REPO" ]' in detail
+    assert 'AAVA_REPO="${AAVA_REPO%/}"' in detail
     assert 'case "$AAVA_TRACKED" in' in detail
     assert 'printf \'%s\\0\' "$AAVA_TRACKED_PATH"' in detail
     assert 'sudo test -e "$AAVA_TRACKED_PARENT"' in detail
@@ -188,6 +190,9 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert 'sort -zu | sudo xargs -0 -r chown --no-dereference' in detail
     assert "Failed to repair tracked checkout ownership; update not attempted" in detail
     assert "find \"$AAVA_REPO\"" not in detail
+    assert 'AAVA_TRACKED_PARENT="${AAVA_TRACKED_PATH%/*}"' in detail
+    assert 'AAVA_TRACKED_PARENT="${AAVA_TRACKED_PARENT%/*}"' in detail
+    assert 'dirname "$AAVA_TRACKED_PATH"' not in detail
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '
