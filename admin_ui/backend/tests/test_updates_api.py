@@ -130,7 +130,7 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert (
         'aava_git diff --binary | sudo tee -a "$AAVA_RECOVERY_PATCH" >/dev/null'
     ) in detail
-    assert detail.count("set -o pipefail") == 3
+    assert detail.count("set -o pipefail") == 4
     assert (
         ') || { echo "Failed to preserve staged tracked edits; update not attempted" '
         ">&2; exit 2; }"
@@ -180,6 +180,12 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
         '"$AAVA_REPO/.agent" || { echo "Failed to repair .agent ownership; '
         'update not attempted" >&2; exit 2; }'
     ) in detail
+    assert "aava_git ls-files -z" in detail
+    assert 'case "$AAVA_TRACKED" in' in detail
+    assert 'printf \'%s\\0\' "$AAVA_TRACKED_PATH"' in detail
+    assert 'sort -zu | sudo xargs -0 -r chown --no-dereference' in detail
+    assert "Failed to repair tracked checkout ownership; update not attempted" in detail
+    assert "find \"$AAVA_REPO\"" not in detail
     assert 'sudo /usr/local/bin/agent update' not in detail
     assert (
         'sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" '

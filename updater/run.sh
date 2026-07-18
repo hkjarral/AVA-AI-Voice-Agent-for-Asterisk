@@ -31,6 +31,7 @@ drop_to_project_owner() {
   local project_uid project_gid git_dir git_common_dir
   local git_metadata_root git_metadata_path git_metadata_uid
   local agent_metadata_path agent_metadata_uid
+  local tracked_list tracked_relative tracked_path tracked_parent tracked_uid
   local socket_gid user_name user_home primary_group socket_group parent_dir
   local -a git_metadata_roots=()
   project_uid="$(stat -c '%u' "${PROJECT_ROOT}")"
@@ -97,6 +98,43 @@ drop_to_project_owner() {
       fi
     done
   fi
+
+  # Legacy root-run deployments can leave tracked source files or their parent
+  # directories owned by another UID even after .git is repaired. Detect only
+  # Git-tracked paths here; untracked runtime/operator data is intentionally out
+  # of scope and must never be recursively chowned by the updater container.
+  if ! tracked_list="$(mktemp)"; then
+    echo "ERR: cannot create tracked ownership scan; use host CLI recovery" >&2
+    return 2
+  fi
+  if ! git -c safe.directory="${PROJECT_ROOT}" -C "${PROJECT_ROOT}" \
+    ls-files -z >"${tracked_list}"; then
+    rm -f -- "${tracked_list}"
+    echo "ERR: cannot enumerate tracked checkout paths; use host CLI recovery" >&2
+    return 2
+  fi
+  while IFS= read -r -d '' tracked_relative; do
+    tracked_path="${PROJECT_ROOT}/${tracked_relative}"
+    if [ -e "${tracked_path}" ] || [ -L "${tracked_path}" ]; then
+      tracked_uid="$(stat -c '%u' "${tracked_path}" 2>/dev/null || true)"
+      if [ "${tracked_uid}" != "${project_uid}" ]; then
+        rm -f -- "${tracked_list}"
+        echo "ERR: checkout owner UID ${project_uid} differs from tracked path owner UID ${tracked_uid:-unknown} at ${tracked_path}; use host CLI recovery" >&2
+        return 2
+      fi
+    fi
+    tracked_parent="$(dirname "${tracked_path}")"
+    while [ "${tracked_parent}" != "${PROJECT_ROOT}" ]; do
+      tracked_uid="$(stat -c '%u' "${tracked_parent}" 2>/dev/null || true)"
+      if [ "${tracked_uid}" != "${project_uid}" ]; then
+        rm -f -- "${tracked_list}"
+        echo "ERR: checkout owner UID ${project_uid} differs from tracked parent owner UID ${tracked_uid:-unknown} at ${tracked_parent}; use host CLI recovery" >&2
+        return 2
+      fi
+      tracked_parent="$(dirname "${tracked_parent}")"
+    done
+  done <"${tracked_list}"
+  rm -f -- "${tracked_list}"
 
   primary_group="$(getent group "${project_gid}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
   if [ -z "${primary_group}" ]; then

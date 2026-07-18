@@ -209,6 +209,23 @@ if sudo test -e "$AAVA_REPO/.agent"; then
     exit 2
   }
 fi
+(
+  set -o pipefail
+  aava_git ls-files -z | while IFS= read -r -d '' AAVA_TRACKED; do
+    case "$AAVA_TRACKED" in
+      ""|/*|../*|*/../*|*/..) echo "Refusing unsafe tracked path: $AAVA_TRACKED" >&2; exit 2 ;;
+    esac
+    AAVA_TRACKED_PATH="$AAVA_REPO/$AAVA_TRACKED"
+    if sudo test -e "$AAVA_TRACKED_PATH" || sudo test -L "$AAVA_TRACKED_PATH"; then
+      printf '%s\0' "$AAVA_TRACKED_PATH"
+    fi
+    AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PATH")"
+    while [ "$AAVA_TRACKED_PARENT" != "$AAVA_REPO" ]; do
+      printf '%s\0' "$AAVA_TRACKED_PARENT"
+      AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PARENT")"
+    done
+  done | sort -zu | sudo xargs -0 -r chown --no-dereference "$AAVA_UID:$AAVA_GID" --
+) || { echo "Failed to repair tracked checkout ownership; update not attempted" >&2; exit 2; }
 AAVA_SETPRIV="$(command -v setpriv)" || {
   echo "setpriv is required; install util-linux and retry" >&2
   exit 2
@@ -267,7 +284,8 @@ fi
 
 Do not recursively `chown` the checkout: production checkouts can legitimately contain
 runtime files owned by Asterisk or another service account. The recovery above repairs
-only `.git` and `.agent`, which are owned by the checkout operator. The `setpriv` call
+`.git`, `.agent`, and only the paths returned by `git ls-files` plus their in-repository
+parent directories. Untracked runtime/operator files are never passed to `chown`. The `setpriv` call
 uses the checkout owner's group vector and explicitly includes the Docker socket GID,
 so Docker access does not depend on which sudoer pasted the recovery. It also resets
 `HOME` to a newly created random, mode-700, target-owned temporary directory and removes

@@ -107,6 +107,19 @@ def test_updater_resolves_worktree_gitdirs_before_scanning_ownership() -> None:
     assert drop_body.index(common_gitdir) < loop_start
 
 
+def test_updater_fails_closed_on_mixed_owned_tracked_paths_only() -> None:
+    runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
+    drop_body = _drop_to_project_owner_body(runner)
+
+    assert 'ls-files -z >"${tracked_list}"' in drop_body
+    assert 'tracked_path="${PROJECT_ROOT}/${tracked_relative}"' in drop_body
+    assert 'tracked_parent="$(dirname "${tracked_path}")"' in drop_body
+    assert "differs from tracked path owner UID" in drop_body
+    assert "differs from tracked parent owner UID" in drop_body
+    assert "untracked runtime/operator data is intentionally out" in drop_body
+    assert 'find "${PROJECT_ROOT}"' not in drop_body
+
+
 def test_updater_makes_container_mount_parents_traversable_before_drop() -> None:
     runner = (ROOT / "updater" / "run.sh").read_text(encoding="utf-8")
     drop_body = _drop_to_project_owner_body(runner)
