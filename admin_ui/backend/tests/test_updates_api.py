@@ -183,6 +183,8 @@ async def test_updates_plan_failure_returns_exact_error_and_cli_recovery(monkeyp
     assert "aava_git ls-files -z" in detail
     assert 'case "$AAVA_TRACKED" in' in detail
     assert 'printf \'%s\\0\' "$AAVA_TRACKED_PATH"' in detail
+    assert 'sudo test -e "$AAVA_TRACKED_PARENT"' in detail
+    assert 'sudo test -L "$AAVA_TRACKED_PARENT"' in detail
     assert 'sort -zu | sudo xargs -0 -r chown --no-dereference' in detail
     assert "Failed to repair tracked checkout ownership; update not attempted" in detail
     assert "find \"$AAVA_REPO\"" not in detail

@@ -125,11 +125,13 @@ drop_to_project_owner() {
     fi
     tracked_parent="$(dirname "${tracked_path}")"
     while [ "${tracked_parent}" != "${PROJECT_ROOT}" ]; do
-      tracked_uid="$(stat -c '%u' "${tracked_parent}" 2>/dev/null || true)"
-      if [ "${tracked_uid}" != "${project_uid}" ]; then
-        rm -f -- "${tracked_list}"
-        echo "ERR: checkout owner UID ${project_uid} differs from tracked parent owner UID ${tracked_uid:-unknown} at ${tracked_parent}; use host CLI recovery" >&2
-        return 2
+      if [ -e "${tracked_parent}" ] || [ -L "${tracked_parent}" ]; then
+        tracked_uid="$(stat -c '%u' "${tracked_parent}" 2>/dev/null || true)"
+        if [ "${tracked_uid}" != "${project_uid}" ]; then
+          rm -f -- "${tracked_list}"
+          echo "ERR: checkout owner UID ${project_uid} differs from tracked parent owner UID ${tracked_uid:-unknown} at ${tracked_parent}; use host CLI recovery" >&2
+          return 2
+        fi
       fi
       tracked_parent="$(dirname "${tracked_parent}")"
     done

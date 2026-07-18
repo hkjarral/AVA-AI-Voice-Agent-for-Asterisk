@@ -114,6 +114,7 @@ def test_updater_fails_closed_on_mixed_owned_tracked_paths_only() -> None:
     assert 'ls-files -z >"${tracked_list}"' in drop_body
     assert 'tracked_path="${PROJECT_ROOT}/${tracked_relative}"' in drop_body
     assert 'tracked_parent="$(dirname "${tracked_path}")"' in drop_body
+    assert '[ -e "${tracked_parent}" ] || [ -L "${tracked_parent}" ]' in drop_body
     assert "differs from tracked path owner UID" in drop_body
     assert "differs from tracked parent owner UID" in drop_body
     assert "untracked runtime/operator data is intentionally out" in drop_body

@@ -221,7 +221,9 @@ fi
     fi
     AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PATH")"
     while [ "$AAVA_TRACKED_PARENT" != "$AAVA_REPO" ]; do
-      printf '%s\0' "$AAVA_TRACKED_PARENT"
+      if sudo test -e "$AAVA_TRACKED_PARENT" || sudo test -L "$AAVA_TRACKED_PARENT"; then
+        printf '%s\0' "$AAVA_TRACKED_PARENT"
+      fi
       AAVA_TRACKED_PARENT="$(dirname "$AAVA_TRACKED_PARENT")"
     done
   done | sort -zu | sudo xargs -0 -r chown --no-dereference "$AAVA_UID:$AAVA_GID" --
