@@ -110,6 +110,12 @@ In **Admin → Remote Agents** create or update:
 `On-Hook Agent=Y` changes the inbound Remote Agent lifecycle and is not a substitute for the
 classic outbound mode. Validate it only as part of a separate inbound acceptance profile.
 
+For a mapping that handles both outbound and inbound calls, set the outbound campaign's
+**Allow Inbound and Blended** field to `Y` and select the same inbound groups on the campaign and
+Remote Agent. For an inbound-only Remote Agent, select VICIdial's `CLOSER` campaign and the
+desired inbound groups. The installed VICIdial help defines `CLOSER` for inbound-only Remote
+Agents; it is a VICIdial mode, not an AAVA campaign that must be created.
+
 For lab rows created with SQL, `closer_campaigns` must be an empty string when unused, not
 `NULL`. Use the UI in production.
 
