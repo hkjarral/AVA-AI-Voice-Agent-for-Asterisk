@@ -878,3 +878,6 @@ def test_agent_runtime_resolution_preserves_vicidial_destinations():
     }
     assert session.tool_policy["effective_destination_keys"] == ["sales"]
     assert session.tool_policy["effective_resource_keys"]["transfer"] == ["sales"]
+    assert session.tool_runtime_config["tools"]["vicidial"]["dispositions"] == {
+        "sale": "SALE"
+    }

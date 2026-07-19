@@ -255,6 +255,27 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
                 )
             )
 
+    if "set_call_disposition" in allowed:
+        tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}
+        vicidial_cfg = (tools_cfg or {}).get("vicidial") or {}
+        dispositions = (vicidial_cfg or {}).get("dispositions") or {}
+        if isinstance(dispositions, dict) and dispositions:
+            disposition_lines = [
+                f"- `{str(name).strip()}` (VICIdial status `{str(status).strip()}`)"
+                for name, status in dispositions.items()
+                if str(name or "").strip() and str(status or "").strip()
+            ]
+            if disposition_lines:
+                lines = [
+                    "Configured VICIdial dispositions:",
+                    *disposition_lines,
+                    "- Use only one of these exact names with `set_call_disposition.disposition`.",
+                    "- A do-not-call, DNC, stop-calling, or remove-my-number request is a compliance request. If `dnc` is listed, call `set_call_disposition` with `disposition` set to `dnc` immediately; do not refuse or merely acknowledge it.",
+                    "- For a callback request, collect and confirm the callback date and time, then call `set_call_disposition` with `disposition` set to `callback` and include `callback_datetime`.",
+                    "- `set_call_disposition` does not end the call. Call `hangup_call` as well only when the caller asks to end or the conversation is complete.",
+                ]
+                sections.append("\n".join(lines))
+
     if "leave_voicemail" in allowed:
         tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}
         voicemail_cfg = (tools_cfg or {}).get("leave_voicemail") or {}

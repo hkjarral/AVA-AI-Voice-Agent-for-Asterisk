@@ -4080,6 +4080,16 @@ class Engine:
             if isinstance(value, dict)
         }
         transfer["destinations"] = destinations
+        # Runtime guidance is built from the call-local tool configuration.
+        # Carry the mapping allowlist here so provider LLMs see the exact
+        # disposition names and the mandatory DNC/callback behavior instead of
+        # relying on a generic function schema.
+        vicidial = tools.setdefault("vicidial", {})
+        vicidial["dispositions"] = {
+            str(key): str(value)
+            for key, value in dict(mapping.get("dispositions") or {}).items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
         session.tool_runtime_config = runtime
 
         # Keep the diagnostic policy in agreement with the executable config.

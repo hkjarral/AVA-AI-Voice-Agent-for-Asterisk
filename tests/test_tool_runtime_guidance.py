@@ -122,3 +122,29 @@ def test_runtime_guidance_omits_unrelated_sections():
     assert "Configured live agents:" not in guidance
     assert "Configured blind-transfer destinations:" not in guidance
     assert "Configured voicemail target:" in guidance
+
+
+@pytest.mark.unit
+def test_runtime_guidance_includes_vicidial_disposition_allowlist_and_compliance_rules():
+    from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+
+    config = {
+        "tools": {
+            "vicidial": {
+                "dispositions": {
+                    "sale": "SALE",
+                    "dnc": "DNC",
+                    "callback": "CALLBK",
+                }
+            }
+        }
+    }
+
+    guidance = build_in_call_tool_runtime_guidance(config, ["set_call_disposition"])
+
+    assert "Configured VICIdial dispositions:" in guidance
+    assert "`dnc` (VICIdial status `DNC`)" in guidance
+    assert "compliance request" in guidance
+    assert "do not refuse" in guidance
+    assert "include `callback_datetime`" in guidance
+    assert "does not end the call" in guidance
