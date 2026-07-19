@@ -7,7 +7,7 @@ This feature adds a simple, AI-native outbound dialer inspired by Vicidial-style
 ## What You Get (v1)
 
 - **Campaign scheduler** (campaign timezone + daily window)
-- **Lead list import via CSV** using an active Agent slug (safe default: `skip_existing`)
+- **Lead intake via CSV, Excel (`.xlsx`), or manual entry** using an active Agent slug (safe default: `skip_existing`)
 - **Pacing + concurrency** (`max_concurrent` caps campaign activity; the safety ramp starts at most one new lead per scheduler tick)
 - **Asterisk AMD voicemail detection** (`AMD()`)
 - **Voicemail drop** (play a pre-recorded message and hang up)
@@ -40,6 +40,8 @@ See `docs/Configuration-Reference.md` for the full list and semantics. The most 
 
 - New campaigns and CSV files should select an active Agent **slug** from the Agents page.
 - The downloadable sample CSV uses the preferred `agent` column. The older `context` column remains accepted as a deprecated compatibility alias.
+- Excel imports use the first worksheet and the same columns and validation as CSV. Keep phone numbers and extensions formatted as text when leading zeros matter; numeric cells with an explicit all-zero number format are preserved.
+- Manual entry, CSV, and Excel all share the same validation, Agent fallback, timezone fallback, and per-campaign duplicate rules.
 - Outbound origination sets `AI_AGENT` as the canonical routing variable and also carries `AI_CONTEXT` through the AMD dialplan hop for v7.4 compatibility. When both are present, `AI_AGENT` wins.
 - Existing database/API field names such as `default_context` and `context_override` remain unchanged in 7.4.1 to avoid a breaking schema or automation migration; their values are treated as Agent slugs in the UI and runtime.
 
@@ -63,7 +65,15 @@ See `docs/Configuration-Reference.md` for the full list and semantics. The most 
    - `/etc/asterisk/extensions_custom.conf`
 5. Reload dialplan:
    - `asterisk -rx "dialplan reload"`
-6. Import leads via CSV using the preferred `agent` column and an active Agent slug, then click **Start**.
+6. Import leads via CSV/Excel or add them manually. Use the preferred `agent` field and an active Agent slug, then click **Start**.
+
+### Lead intake limits
+
+- CSV and `.xlsx` files are accepted; legacy `.xls`, macro-enabled `.xlsm`, and other spreadsheet formats are rejected.
+- `.xlsx` reads only the first worksheet, up to 64 columns and 10,000 lead rows by default.
+- Uploads default to a 10 MiB limit, and compressed workbooks may expand to at most 50 MiB.
+- Operators can tune the upload and worksheet row limits with `AAVA_OUTBOUND_LEAD_IMPORT_MAX_BYTES` and `AAVA_OUTBOUND_LEAD_IMPORT_MAX_ROWS`.
+- The downloadable sample CSV remains the canonical column reference: `name`, `phone_number`, `agent`, `timezone`, `caller_id`, and `custom_vars`.
 
 ## Testing Checklist (New User)
 

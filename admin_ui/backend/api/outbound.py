@@ -3,39 +3,45 @@ Outbound Campaign Dialer API endpoints (Milestone 22).
 
 MVP scope:
 - Campaign CRUD + status transitions (running/paused/stopped)
-- CSV lead import (skip_existing default)
+- CSV/XLSX lead import and manual lead entry (skip_existing default)
 - Leads list + ignore/recycle/delete
 - Attempts list + basic stats
 - Voicemail drop media upload + WAV preview (for browser playback)
 - Optional consent media upload + WAV preview (for browser playback)
 """
 
+import audioop
+import csv
 import io
+import json
 import logging
 import os
 import re
 import sys
 import uuid
 import wave
-import audioop
-from datetime import datetime, timezone
-from src.audio.resampler import resample_audio
+import zipfile
+from datetime import date, datetime, time as datetime_time, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from pathlib import Path
+
+# Add the project root before importing shared engine modules. The resolved
+# fallback keeps direct Admin-backend test runs working outside containers.
+project_root = os.environ.get("PROJECT_ROOT") or str(Path(__file__).resolve().parents[3])
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from src.audio.resampler import resample_audio
+
 try:
     from zoneinfo import ZoneInfo, available_timezones
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
     available_timezones = None  # type: ignore
-
-# Add project root to path for imports (mirrors calls.py)
-project_root = os.environ.get("PROJECT_ROOT", "/app/project")
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +84,101 @@ def _vm_upload_max_bytes() -> int:
         return max(1, int(os.getenv("AAVA_VM_UPLOAD_MAX_BYTES", "12582912")))
     except Exception:
         return 12582912
+
+
+def _lead_import_max_bytes() -> int:
+    try:
+        return max(1, int(os.getenv("AAVA_OUTBOUND_LEAD_IMPORT_MAX_BYTES", "10485760")))
+    except Exception:
+        return 10485760
+
+
+def _lead_import_max_rows() -> int:
+    try:
+        return max(1, min(100_000, int(os.getenv("AAVA_OUTBOUND_LEAD_IMPORT_MAX_ROWS", "10000"))))
+    except Exception:
+        return 10000
+
+
+def _xlsx_cell_text(cell: Any) -> str:
+    value = cell.value
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, (date, datetime_time)):
+        return value.isoformat()
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        number_format = str(getattr(cell, "number_format", "") or "")
+        if re.fullmatch(r"0+", number_format):
+            return str(value).zfill(len(number_format))
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else format(value, ".15g")
+    return str(value)
+
+
+def _xlsx_to_csv_bytes(data: bytes) -> bytes:
+    """Convert the first XLSX worksheet into bounded UTF-8 CSV for one importer."""
+    if not data:
+        raise ValueError("Excel workbook is empty")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if len(entries) > 1000:
+                raise ValueError("Excel workbook contains too many archive entries")
+            if sum(int(entry.file_size or 0) for entry in entries) > 50 * 1024 * 1024:
+                raise ValueError("Excel workbook expands beyond the 50 MB safety limit")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Invalid .xlsx workbook") from exc
+
+    try:
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(
+            io.BytesIO(data),
+            read_only=True,
+            data_only=True,
+            keep_links=False,
+        )
+    except Exception as exc:
+        raise ValueError(f"Unable to read .xlsx workbook: {exc}") from exc
+
+    try:
+        if not workbook.worksheets:
+            raise ValueError("Excel workbook has no worksheets")
+        worksheet = workbook.worksheets[0]
+        max_rows = _lead_import_max_rows() + 1  # include header
+        max_columns = 64
+        if int(worksheet.max_row or 0) > max_rows:
+            raise ValueError(f"Excel worksheet exceeds the {max_rows - 1} lead row limit")
+        if int(worksheet.max_column or 0) > max_columns:
+            raise ValueError(f"Excel worksheet exceeds the {max_columns} column limit")
+
+        rows: List[List[str]] = []
+        for cells in worksheet.iter_rows(
+            min_row=1,
+            max_row=max_rows,
+            max_col=max_columns,
+        ):
+            row = [_xlsx_cell_text(cell) for cell in cells]
+            while row and row[-1] == "":
+                row.pop()
+            if row or rows:
+                rows.append(row)
+        while rows and not any(value.strip() for value in rows[-1]):
+            rows.pop()
+        if not rows or not any(value.strip() for value in rows[0]):
+            raise ValueError("Excel worksheet is missing a header row")
+
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerows(rows)
+        return output.getvalue().encode("utf-8")
+    finally:
+        workbook.close()
 
 
 DEFAULT_CONSENT_MEDIA_URI = "sound:ai-generated/aava-consent-default"
@@ -463,6 +564,15 @@ class LeadImportResponse(BaseModel):
     warnings_truncated: bool = False
 
 
+class ManualLeadCreateRequest(BaseModel):
+    phone_number: str = Field(..., min_length=1, max_length=64)
+    name: Optional[str] = Field(None, max_length=200)
+    agent: Optional[str] = Field(None, max_length=64)
+    timezone: Optional[str] = Field(None, max_length=100)
+    caller_id: Optional[str] = Field(None, max_length=64)
+    custom_vars: Dict[str, Any] = Field(default_factory=dict)
+
+
 @router.get("/sample.csv")
 async def download_sample_csv():
     """
@@ -626,7 +736,21 @@ async def import_leads(
 ):
     store = _get_outbound_store()
     try:
-        data = await file.read()
+        max_bytes = _lead_import_max_bytes()
+        data = await file.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Lead import is too large (max {max_bytes} bytes)",
+            )
+        filename = os.path.basename((file.filename or "").strip()).lower()
+        if filename.endswith(".xlsx"):
+            data = _xlsx_to_csv_bytes(data)
+        elif not filename.endswith(".csv"):
+            raise HTTPException(
+                status_code=400,
+                detail="Lead import must be a .csv or .xlsx file",
+            )
         known_agents = _load_known_agent_slugs()
         result = await store.import_leads_csv(
             campaign_id,
@@ -634,6 +758,53 @@ async def import_leads(
             skip_existing=bool(skip_existing),
             max_error_rows=int(max_error_rows),
             known_agents=known_agents or None,
+        )
+        return LeadImportResponse(**result)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post(
+    "/campaigns/{campaign_id}/leads",
+    response_model=LeadImportResponse,
+)
+async def add_manual_lead(campaign_id: str, req: ManualLeadCreateRequest):
+    """Add one lead through the same validation and duplicate path as file imports."""
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "name",
+            "phone_number",
+            "agent",
+            "timezone",
+            "caller_id",
+            "custom_vars",
+        ],
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    writer.writerow(
+        {
+            "name": (req.name or "").strip(),
+            "phone_number": req.phone_number.strip(),
+            "agent": (req.agent or "").strip(),
+            "timezone": (req.timezone or "").strip(),
+            "caller_id": (req.caller_id or "").strip(),
+            "custom_vars": json.dumps(req.custom_vars or {}, separators=(",", ":")),
+        }
+    )
+
+    store = _get_outbound_store()
+    try:
+        result = await store.import_leads_csv(
+            campaign_id,
+            output.getvalue().encode("utf-8"),
+            skip_existing=True,
+            max_error_rows=20,
+            known_agents=_load_known_agent_slugs() or None,
         )
         return LeadImportResponse(**result)
     except KeyError:

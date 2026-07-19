@@ -24,6 +24,7 @@ import {
 import { Modal } from '../components/ui/Modal';
 import { FormLabel } from '../components/ui/FormComponents';
 import { toast } from 'sonner';
+import { describeApiError } from '../utils/apiErrors';
 import { copyTextToClipboard } from '../utils/clipboard';
 import {
     InCallToolGroup,
@@ -308,6 +309,14 @@ const CallSchedulingPage = () => {
     const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
     const [pendingVoicemailFile, setPendingVoicemailFile] = useState<File | null>(null);
     const [pendingConsentFile, setPendingConsentFile] = useState<File | null>(null);
+    const [manualLeadForm, setManualLeadForm] = useState({
+        name: '',
+        phone_number: '',
+        agent: '',
+        timezone: '',
+        caller_id: '',
+        custom_vars: '{}'
+    });
 
     const [recycleLeadRow, setRecycleLeadRow] = useState<LeadRow | null>(null);
     const [recycleMode, setRecycleMode] = useState<'redial' | 'reset'>('redial');
@@ -590,6 +599,14 @@ const CallSchedulingPage = () => {
         setPendingVoicemailFile(null);
         setPendingConsentFile(null);
         setLastLeadImport(null);
+        setManualLeadForm({
+            name: '',
+            phone_number: '',
+            agent: defaultAgentSlug,
+            timezone: serverTz || 'UTC',
+            caller_id: '',
+            custom_vars: '{}'
+        });
         setCreateForm({
             name: '',
             timezone: serverTz || 'UTC',
@@ -613,6 +630,14 @@ const CallSchedulingPage = () => {
         setCampaignModalMode('edit');
         setCampaignModalStep('settings');
         setDialplanNeedsReview(false);
+        setManualLeadForm({
+            name: '',
+            phone_number: '',
+            agent: selectedCampaign.default_context || defaultAgentSlug,
+            timezone: selectedCampaign.timezone || serverTz || 'UTC',
+            caller_id: '',
+            custom_vars: '{}'
+        });
         setEditForm({
             name: selectedCampaign.name || '',
             timezone: selectedCampaign.timezone || 'UTC',
@@ -771,6 +796,58 @@ const CallSchedulingPage = () => {
             });
         } catch (e: any) {
             setNotice({ type: 'error', message: e?.response?.data?.detail || e?.message || 'Failed to import leads' });
+        }
+    };
+
+    const addManualLead = async () => {
+        if (!selectedCampaign) return;
+        try {
+            let customVars: Record<string, unknown> = {};
+            const rawCustomVars = (manualLeadForm.custom_vars || '').trim();
+            if (rawCustomVars) {
+                customVars = JSON.parse(rawCustomVars);
+                if (!customVars || Array.isArray(customVars) || typeof customVars !== 'object') {
+                    throw new Error('Custom variables must be a JSON object');
+                }
+            }
+            const res = await axios.post(
+                `/api/outbound/campaigns/${selectedCampaign.id}/leads`,
+                {
+                    name: manualLeadForm.name.trim() || null,
+                    phone_number: manualLeadForm.phone_number.trim(),
+                    agent: manualLeadForm.agent || selectedCampaign.default_context,
+                    timezone: manualLeadForm.timezone || selectedCampaign.timezone,
+                    caller_id: manualLeadForm.caller_id.trim() || null,
+                    custom_vars: customVars
+                }
+            );
+            const data = res.data as LeadImportResult;
+            setLastLeadImport(data);
+            await refreshCampaignDetails(selectedCampaign.id);
+            if ((data.accepted || 0) > 0) {
+                setManualLeadForm(prev => ({
+                    ...prev,
+                    name: '',
+                    phone_number: '',
+                    caller_id: '',
+                    custom_vars: '{}'
+                }));
+                const warning = data.warnings?.[0]?.warning_reason;
+                setNotice({
+                    type: warning ? 'info' : 'success',
+                    message: warning ? `Lead added with warning: ${warning}` : 'Lead added'
+                });
+            } else if ((data.duplicates || 0) > 0) {
+                setNotice({ type: 'info', message: 'That phone number already exists in this campaign' });
+            } else {
+                setNotice({ type: 'error', message: data.errors?.[0]?.error_reason || 'Lead was not added' });
+            }
+        } catch (e: unknown) {
+            const error = describeApiError(e);
+            setNotice({
+                type: 'error',
+                message: error.detail || error.message || 'Failed to add lead'
+            });
         }
     };
 
@@ -1476,7 +1553,7 @@ const CallSchedulingPage = () => {
                                 {leads.length === 0 && (
                                     <tr>
                                         <td colSpan={14} className="py-10 text-center text-sm text-muted-foreground">
-                                            No leads yet. Use the campaign modal to import a CSV.
+                                            No leads yet. Use the campaign modal to import a CSV/Excel file or add a lead manually.
                                         </td>
                                     </tr>
                                 )}
@@ -1835,14 +1912,15 @@ const CallSchedulingPage = () => {
                                 <div className="space-y-4">
                                     <div className="border rounded-lg p-3 space-y-2">
                                         <FormLabel
-                                            tooltip="Import leads for this campaign. Columns: name, phone_number (required), agent, timezone, caller_id, custom_vars (JSON)."
+                                            tooltip="Import CSV or Excel (.xlsx) leads. The first worksheet is used. Columns: name, phone_number (required), agent, timezone, caller_id, custom_vars (JSON)."
                                             className="mb-0"
                                         >
-                                            Leads (CSV)
+                                            Import leads
                                         </FormLabel>
                                         <div className="text-xs text-muted-foreground">
-                                            Import leads from CSV. Default behavior is <span className="font-mono">skip_existing</span>.
-                                            {campaignModalMode === 'create' ? ' Choose a CSV now; it will import after Create.' : ''}
+                                            Import a CSV or Excel <span className="font-mono">.xlsx</span> file. Excel imports use the first worksheet.
+                                            Default behavior is <span className="font-mono">skip_existing</span>.
+                                            {campaignModalMode === 'create' ? ' Choose a file now; it will import after Create.' : ''}
                                         </div>
                                         <div className="text-xs text-muted-foreground">
                                             Note: Use the active <span className="font-mono">agent</span> slug from the Agents page. If agent or{' '}
@@ -1856,14 +1934,18 @@ const CallSchedulingPage = () => {
                                             >
                                                 <FileDown className="w-4 h-4" /> Sample CSV
                                             </button>
-                                            <input type="file" accept=".csv,text/csv" onChange={e => setPendingImportFile(e.target.files?.[0] || null)} />
+                                            <input
+                                                type="file"
+                                                accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                                onChange={e => setPendingImportFile(e.target.files?.[0] || null)}
+                                            />
                                             <button
                                                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
                                                 disabled={!pendingImportFile || (campaignModalMode === 'edit' && !selectedCampaign)}
                                                 onClick={async () => {
                                                     if (!pendingImportFile) return;
                                                     if (campaignModalMode === 'create') {
-                                                        setNotice({ type: 'info', message: 'CSV selected. It will import after campaign creation.' });
+                                                        setNotice({ type: 'info', message: 'Lead file selected. It will import after campaign creation.' });
                                                         return;
                                                     }
                                                     if (!selectedCampaign) return;
@@ -1871,7 +1953,7 @@ const CallSchedulingPage = () => {
                                                     setPendingImportFile(null);
                                                 }}
                                             >
-                                                <Upload className="w-4 h-4" /> Import CSV (skip existing)
+                                                <Upload className="w-4 h-4" /> Import file (skip existing)
                                             </button>
                                         </div>
                                         {campaignModalMode === 'create' && pendingImportFile && (
@@ -1881,6 +1963,99 @@ const CallSchedulingPage = () => {
                                         )}
                                         {campaignModalMode === 'edit' && !selectedCampaign && (
                                             <div className="text-xs text-muted-foreground">Select a campaign to import leads.</div>
+                                        )}
+                                    </div>
+
+                                    <div className="border rounded-lg p-3 space-y-3">
+                                        <FormLabel
+                                            tooltip="Add one lead without preparing a spreadsheet. Phone number is required; Agent and timezone default to the campaign."
+                                            className="mb-0"
+                                        >
+                                            Add one lead manually
+                                        </FormLabel>
+                                        {campaignModalMode === 'create' ? (
+                                            <div className="text-xs text-muted-foreground">
+                                                Create the campaign first, then open Edit → Leads to add individual leads.
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                    <div>
+                                                        <FormLabel>Name (optional)</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.name}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, name: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="Alice Example"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Phone number</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.phone_number}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, phone_number: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="+15551234567 or 2765"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Agent</FormLabel>
+                                                        <select
+                                                            value={manualLeadForm.agent || selectedCampaign?.default_context || defaultAgentSlug}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, agent: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                        >
+                                                            {(meta?.agents || []).map(agent => (
+                                                                <option key={agent.slug} value={agent.slug}>
+                                                                    {agent.display_name} ({agent.slug})
+                                                                </option>
+                                                            ))}
+                                                            {!(meta?.agents || []).length && (
+                                                                <option value={selectedCampaign?.default_context || 'default'}>
+                                                                    {selectedCampaign?.default_context || 'default'}
+                                                                </option>
+                                                            )}
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Timezone</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.timezone}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, timezone: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="America/Phoenix"
+                                                            list="aava-iana-timezones"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Caller ID override (optional)</FormLabel>
+                                                        <input
+                                                            value={manualLeadForm.caller_id}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, caller_id: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground"
+                                                            placeholder="6789"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <FormLabel>Custom variables (JSON)</FormLabel>
+                                                        <textarea
+                                                            value={manualLeadForm.custom_vars}
+                                                            onChange={e => setManualLeadForm(p => ({ ...p, custom_vars: e.target.value }))}
+                                                            className="mt-1 w-full px-3 py-2 rounded-lg border bg-background text-foreground font-mono text-sm"
+                                                            rows={2}
+                                                            placeholder='{"account_id":"A-1002"}'
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-sm disabled:opacity-50"
+                                                    disabled={!manualLeadForm.phone_number.trim() || !selectedCampaign}
+                                                    onClick={addManualLead}
+                                                >
+                                                    <Plus className="w-4 h-4" /> Add lead
+                                                </button>
+                                            </>
                                         )}
                                     </div>
                                 </div>

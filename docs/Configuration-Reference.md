@@ -214,6 +214,8 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 | `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for carrier selection (e.g. `911` in the experimental ViciDial notes) |
 | `AAVA_OUTBOUND_CHANNEL_TECH` | `auto` | Channel tech for extension probing: `auto` \| `pjsip` \| `sip` \| `local_only` |
 | `AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS` | `120` | Shared startup/runtime timeout for attempts that never reach a live session; minimum `10` seconds |
+| `AAVA_OUTBOUND_LEAD_IMPORT_MAX_BYTES` | `10485760` | Maximum uploaded CSV or `.xlsx` lead file size in bytes |
+| `AAVA_OUTBOUND_LEAD_IMPORT_MAX_ROWS` | `10000` | Maximum data rows read from the first `.xlsx` worksheet; hard-capped at `100000` |
 | `AAVA_MEDIA_DIR` | `/mnt/asterisk_media/ai-generated` | Where the Admin UI uploads voicemail drop `.ulaw` files |
 
 ### Dialplan requirements
