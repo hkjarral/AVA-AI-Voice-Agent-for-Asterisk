@@ -271,7 +271,8 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
                     *disposition_lines,
                     "- Use only one of these exact names with `set_call_disposition.disposition`.",
                     "- A do-not-call, DNC, stop-calling, or remove-my-number request is a compliance request. If `dnc` is listed, call `set_call_disposition` with `disposition` set to `dnc` immediately; do not refuse or merely acknowledge it.",
-                    "- For a callback request, collect and confirm the callback date and time, then call `set_call_disposition` with `disposition` set to `callback` and include `callback_datetime`.",
+                    "- On this VICIdial-owned call, a request to be called back must create a native VICIdial callback: collect and confirm the callback date, time, and timezone, then call `set_call_disposition` with `disposition` set to `callback` and include `callback_datetime`.",
+                    "- Do not use a calendar, appointment, or scheduling tool as a substitute for the VICIdial callback, even if one is available. Create a separate calendar appointment only when the caller explicitly requests one in addition to the callback.",
                     "- `set_call_disposition` does not end the call. Call `hangup_call` as well only when the caller asks to end or the conversation is complete.",
                 ]
                 sections.append("\n".join(lines))

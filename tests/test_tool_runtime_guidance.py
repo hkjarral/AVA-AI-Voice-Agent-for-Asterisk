@@ -147,4 +147,6 @@ def test_runtime_guidance_includes_vicidial_disposition_allowlist_and_compliance
     assert "compliance request" in guidance
     assert "do not refuse" in guidance
     assert "include `callback_datetime`" in guidance
+    assert "native VICIdial callback" in guidance
+    assert "Do not use a calendar" in guidance
     assert "does not end the call" in guidance

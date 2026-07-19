@@ -215,8 +215,13 @@ class SetCallDispositionTool(Tool):
                 "When a caller asks to be put on a do-not-call list, says DNC, asks to stop "
                 "calling, or asks to remove their number, you MUST call this tool immediately "
                 "with disposition='dnc'; never refuse or claim you cannot manage the request. "
-                "For a callback, include callback_datetime as an ISO date/time. This tool "
-                "does not end the call, so also use hangup_call when the caller asks to end."
+                "When a caller on a VICIdial call asks to be called back, you MUST use this "
+                "tool with disposition='callback' and callback_datetime as an ISO date/time. "
+                "Do not use a calendar, appointment, or scheduling tool as a substitute for "
+                "the VICIdial callback, even when those tools are available. Only create a "
+                "separate calendar appointment when the caller explicitly requests one in "
+                "addition to the callback. This tool does not end the call, so also use "
+                "hangup_call when the caller asks to end."
             ),
             category=ToolCategory.BUSINESS,
             requires_channel=True,
@@ -234,7 +239,10 @@ class SetCallDispositionTool(Tool):
                 ToolParameter(
                     name="callback_datetime",
                     type="string",
-                    description="ISO date/time for a callback disposition.",
+                    description=(
+                        "Required ISO date/time for a callback disposition. Confirm the "
+                        "caller's requested date, time, and timezone before calling the tool."
+                    ),
                 ),
                 ToolParameter(
                     name="comments",

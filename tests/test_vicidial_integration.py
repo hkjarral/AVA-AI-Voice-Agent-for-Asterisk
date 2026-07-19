@@ -568,6 +568,17 @@ def test_disposition_tool_schema_mandates_dnc_compliance_action():
     assert "remove-my-number request use dnc" in disposition.description
 
 
+def test_disposition_tool_schema_prioritizes_native_vicidial_callback():
+    definition = SetCallDispositionTool().definition
+
+    assert "MUST use this tool with disposition='callback'" in definition.description
+    assert "Do not use a calendar" in definition.description
+    callback_parameter = next(
+        param for param in definition.parameters if param.name == "callback_datetime"
+    )
+    assert "date, time, and timezone" in callback_parameter.description
+
+
 @pytest.mark.asyncio
 async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypatch):
     session = CallSession(call_id="ari-callback", caller_channel_id="ari-callback")
