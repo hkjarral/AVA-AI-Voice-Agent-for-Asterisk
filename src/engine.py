@@ -4562,15 +4562,11 @@ class Engine:
             except Exception:
                 logger.debug("Caller codec detection failed", call_id=caller_channel_id, exc_info=True)
 
-            # P1: Resolve Audio Profile (profiles.* + contexts.* + channel var overrides)
-            try:
-                await self._resolve_audio_profile(session, caller_channel_id)
-            except Exception:
-                logger.debug("Audio profile resolution failed", call_id=caller_channel_id, exc_info=True)
-
-            # VICIdial routing is resolved after the Agent-scoped tool snapshot so
-            # its configured destinations can be overlaid without mutating global
-            # tool configuration or other active calls.
+            # Resolve VICIdial routing after the Agent-scoped tool snapshot but
+            # before profile prompt/greeting rendering. Besides overlaying the
+            # call-local tool destinations, hydration replaces VICIdial's
+            # transport call code with API-confirmed customer metadata so a
+            # {caller_name} template can never speak the Y/V/M call identifier.
             try:
                 await self._hydrate_vicidial_session(session, caller_channel_id)
             except Exception:
@@ -4592,6 +4588,12 @@ class Engine:
                             exc_info=True,
                         )
                     return
+
+            # P1: Resolve Audio Profile (profiles.* + contexts.* + channel var overrides)
+            try:
+                await self._resolve_audio_profile(session, caller_channel_id)
+            except Exception:
+                logger.debug("Audio profile resolution failed", call_id=caller_channel_id, exc_info=True)
 
             if getattr(session, "context_resolution_error", None):
                 await self._handle_provider_start_failure(session)
@@ -5677,8 +5679,25 @@ class Engine:
         _now_utc = datetime.now(timezone.utc)
         _now_local = _now_utc.astimezone()
 
+        caller_name = getattr(session, 'caller_name', None) or "there"
+        if getattr(session, "external_platform", None) == "vicidial":
+            # VICIdial commonly puts its opaque Y/V/M call code in SIP
+            # CallerID(name). Hydration keeps a synthetic label for Call
+            # History when no real CNAM exists, but neither value should be
+            # spoken to the customer as their name.
+            external_call_id = str(
+                getattr(session, "external_call_id", None) or ""
+            ).strip()
+            synthetic_label = (
+                f"VICIdial {getattr(session, 'caller_number', None)}"
+                if getattr(session, "caller_number", None)
+                else ""
+            )
+            if str(caller_name).strip() in {external_call_id, synthetic_label}:
+                caller_name = "there"
+
         substitutions = {
-            "caller_name": getattr(session, 'caller_name', None) or "there",
+            "caller_name": caller_name,
             "caller_number": getattr(session, 'caller_number', None) or "unknown",
             "caller_id": getattr(session, 'caller_number', None) or "unknown",
             "call_id": session.call_id,

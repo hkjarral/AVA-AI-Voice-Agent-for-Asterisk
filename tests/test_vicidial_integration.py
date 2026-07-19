@@ -320,6 +320,42 @@ def test_call_id_validation_matches_vicidial_callid_info_contract():
         validate_call_id("1784424691.638")
 
 
+def test_vicidial_transport_identity_is_not_spoken_as_caller_name():
+    session = CallSession(
+        call_id="ari-inbound",
+        caller_channel_id="ari-inbound",
+        caller_name="VICIdial 8381",
+        caller_number="8381",
+    )
+    session.external_platform = "vicidial"
+    session.external_call_id = "Y7190334360000000010"
+
+    rendered = Engine._apply_prompt_template_substitution(
+        SimpleNamespace(),
+        "Hi {caller_name}; your number is {caller_number}.",
+        session,
+    )
+
+    assert rendered == "Hi there; your number is 8381."
+
+
+def test_vicidial_real_cnam_remains_available_to_templates():
+    session = CallSession(
+        call_id="ari-inbound",
+        caller_channel_id="ari-inbound",
+        caller_name="Alice Example",
+        caller_number="13165551212",
+    )
+    session.external_platform = "vicidial"
+    session.external_call_id = "Y7190334360000000010"
+
+    rendered = Engine._apply_prompt_template_substitution(
+        SimpleNamespace(), "Hi {caller_name}.", session
+    )
+
+    assert rendered == "Hi Alice Example."
+
+
 @pytest.mark.asyncio
 async def test_existing_dnc_is_normalized_as_idempotent_success(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
