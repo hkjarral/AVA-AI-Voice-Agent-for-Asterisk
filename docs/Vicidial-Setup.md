@@ -107,8 +107,18 @@ In **Admin → Remote Agents** create or update:
 - On-Hook Agent: `N` for the validated classic outbound mode
 - Closer Campaigns: selected in-groups for inbound/closer delivery
 
+`On-Hook Agent=Y` changes the inbound Remote Agent lifecycle and is not a substitute for the
+classic outbound mode. Validate it only as part of a separate inbound acceptance profile.
+
 For lab rows created with SQL, `closer_campaigns` must be an empty string when unused, not
 `NULL`. Use the UI in production.
+
+For the first outbound acceptance test, set the campaign **Drop Call Seconds** high enough for
+the customer-answer-to-Remote-Agent delivery path. The validated lab uses `30` seconds; its
+original `5` second value produced `DROP / QUEUETIMEOUT` while the development Remote Agent was
+being recycled. Measure the real answer-to-agent delay, abandonment policy, and regulatory
+requirements before tuning this value for production. Do not treat `30` as a universal pacing
+default.
 
 ### 1.4 Create statuses and campaign disposition choices
 
@@ -390,6 +400,9 @@ headers.
 
 - Confirm the customer carrier created a real SIP/PJSIP/IAX/PSTN channel, not a local answer loop.
 - Confirm campaign prefix and generated carrier dialplan.
+- Inspect `vicidial_log.term_reason`. `QUEUETIMEOUT` at the campaign's Drop Call Seconds value
+  means VICIdial stopped waiting before the Remote Agent accepted the delivery; raise the value
+  for a controlled acceptance test, then tune it using measured production behavior.
 - Confirm Remote Agent user selection and extension `8371` in VICIdial logs/live tables.
 - Confirm the INVITE reaches the exact FreePBX context and extension.
 

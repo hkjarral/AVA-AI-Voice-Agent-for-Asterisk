@@ -321,7 +321,8 @@ async def mapping_guidance(mapping_id: str):
         "vicidial_steps": [
             f"Create/verify Phone {mapping.get('conf_exten')} with protocol SIP and a unique conf_secret.",
             f"Create Remote Agent users starting at {mapping.get('user_start')} for {mapping.get('number_of_lines')} line(s).",
-            f"Create/verify Remote Agent with conf_exten {mapping.get('conf_exten')}, classic mode for outbound, and campaign {mapping.get('campaign_id') or '(inbound only)' }.",
+            f"Create/verify Remote Agent with conf_exten {mapping.get('conf_exten')}, On-Hook Agent=N for classic outbound mode, and campaign {mapping.get('campaign_id') or '(inbound only)' }.",
+            "For the first outbound acceptance test, use a measured Drop Call Seconds window (30 seconds in the validated lab); 5 seconds can expire before Remote Agent delivery. Tune it for production policy after measuring.",
             "For SQL-created lab records, keep closer_campaigns as an empty string rather than NULL.",
             "Grant the dedicated API user only the functions required by the readiness report.",
         ],

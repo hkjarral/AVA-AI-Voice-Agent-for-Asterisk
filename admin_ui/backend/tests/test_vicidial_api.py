@@ -76,6 +76,8 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     )
     assert guidance.status_code == 200
     body = guidance.json()
+    assert any("On-Hook Agent=N" in step for step in body["vicidial_steps"])
+    assert any("Drop Call Seconds" in step for step in body["vicidial_steps"])
     assert "exten => 8371,1" in body["dialplan"]
     assert "Set(__AAVA_CALL_OWNER=vicidial)" in body["dialplan"]
     assert "Set(__AI_AGENT=demo_deepgram)" in body["dialplan"]
