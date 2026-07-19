@@ -85,15 +85,16 @@ async def test_sample_csv_prefers_configured_default_agent_header(monkeypatch):
 
 
 def test_campaign_schedule_start_validation_accepts_valid_and_cross_midnight_windows():
-    outbound._validate_campaign_schedule_for_start(
-        {
-            "timezone": "America/Phoenix",
-            "daily_window_start_local": "22:00",
-            "daily_window_end_local": "06:00",
-            "run_start_at_utc": "2026-07-18T00:00:00Z",
-            "run_end_at_utc": "2026-07-19T00:00:00+00:00",
-        }
-    )
+    for start_local, end_local in (("22:00", "06:00"), (" 9:00 ", "17:00")):
+        outbound._validate_campaign_schedule_for_start(
+            {
+                "timezone": "America/Phoenix",
+                "daily_window_start_local": start_local,
+                "daily_window_end_local": end_local,
+                "run_start_at_utc": "2026-07-18T00:00:00Z",
+                "run_end_at_utc": "2026-07-19T00:00:00+00:00",
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -104,8 +105,8 @@ def test_campaign_schedule_start_validation_accepts_valid_and_cross_midnight_win
             "Invalid timezone",
         ),
         (
-            {"timezone": "UTC", "daily_window_start_local": "9:00", "daily_window_end_local": "17:00"},
-            "HH:MM",
+            {"timezone": "UTC", "daily_window_start_local": "24:00", "daily_window_end_local": "17:00"},
+            "H:MM",
         ),
         (
             {

@@ -36,6 +36,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.audio.resampler import resample_audio
+from src.core.outbound_schedule import normalize_outbound_daily_window
 
 try:
     from zoneinfo import ZoneInfo, available_timezones
@@ -473,9 +474,6 @@ def _load_known_agent_selectors() -> Tuple[Optional[List[str]], Optional[List[st
     return slugs, list(dict.fromkeys([*legacy_names, *slugs]))
 
 
-_HHMM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
-
-
 def _validate_campaign_schedule_for_start(campaign: Dict[str, Any]) -> None:
     """Reject invalid campaign schedule data before it can enter running state."""
     tz_name = str(campaign.get("timezone") or "").strip() or "UTC"
@@ -488,12 +486,16 @@ def _validate_campaign_schedule_for_start(campaign: Dict[str, Any]) -> None:
                 detail=f"Invalid timezone '{tz_name}'. Use an IANA timezone like 'America/Phoenix' or 'UTC'.",
             ) from exc
 
-    start_local = str(campaign.get("daily_window_start_local") or "")
-    end_local = str(campaign.get("daily_window_end_local") or "")
-    if not _HHMM_RE.fullmatch(start_local) or not _HHMM_RE.fullmatch(end_local):
+    start_local = normalize_outbound_daily_window(
+        campaign.get("daily_window_start_local"), "09:00"
+    )
+    end_local = normalize_outbound_daily_window(
+        campaign.get("daily_window_end_local"), "17:00"
+    )
+    if start_local is None or end_local is None:
         raise HTTPException(
             status_code=400,
-            detail="Daily calling window must use zero-padded 24-hour HH:MM values.",
+            detail="Daily calling window must use a valid 24-hour H:MM or HH:MM value.",
         )
 
     parsed_absolute: Dict[str, datetime] = {}

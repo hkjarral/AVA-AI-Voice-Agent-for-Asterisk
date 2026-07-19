@@ -71,6 +71,7 @@ from .core.streaming_playback_manager import StreamingPlaybackManager
 from .core.transport_orchestrator import TransportOrchestrator, TransportProfile, apply_context_voice
 from .core.models import CallSession
 from .core.no_input_watchdog import NoInputPolicy, NoInputWatchdog
+from .core.outbound_schedule import normalize_outbound_daily_window
 from .core.outbound_store import get_outbound_store
 from .utils.audio_capture import AudioCaptureManager
 from src.pipelines.base import LLMResponse
@@ -1701,14 +1702,7 @@ class Engine:
     @staticmethod
     def _normalize_outbound_daily_window(value: Any, default: str) -> Optional[str]:
         """Normalize legacy H:MM values while rejecting invalid clock times."""
-        raw = str(value or default).strip()
-        match = re.fullmatch(r"(\d{1,2}):([0-5]\d)", raw)
-        if not match:
-            return None
-        hour = int(match.group(1))
-        if hour > 23:
-            return None
-        return f"{hour:02d}:{match.group(2)}"
+        return normalize_outbound_daily_window(value, default)
 
     def _outbound_campaign_in_window(self, campaign: Dict[str, Any], now_utc: datetime) -> bool:
         """Check campaign run window + daily window (timezone-aware, supports cross-midnight)."""
