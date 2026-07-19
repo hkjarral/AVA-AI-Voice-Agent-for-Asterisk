@@ -54,6 +54,13 @@ def _as_str(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _normalize_agent_routing_method(value: Any, default: str = "ai_agent") -> str:
+    method = _as_str(value).strip().lower()
+    if method in {"ai_agent", "ai_context"}:
+        return method
+    return default
+
+
 def _safe_json_loads(raw: str) -> Dict[str, Any]:
     try:
         data = json.loads(raw)
@@ -169,6 +176,7 @@ class OutboundStore:
             max_concurrent INTEGER NOT NULL DEFAULT 1,
             min_interval_seconds_between_calls INTEGER NOT NULL DEFAULT 5,
             default_context TEXT NOT NULL DEFAULT 'default',
+            agent_routing_method TEXT NOT NULL DEFAULT 'ai_agent',
             voicemail_drop_enabled INTEGER NOT NULL DEFAULT 1,
             voicemail_drop_mode TEXT NOT NULL DEFAULT 'upload', -- upload|tts
             voicemail_drop_text TEXT,
@@ -190,6 +198,7 @@ class OutboundStore:
             phone_number TEXT NOT NULL,
             lead_timezone TEXT,
             context_override TEXT,
+            agent_routing_method TEXT NOT NULL DEFAULT 'ai_agent',
             caller_id_override TEXT,
             custom_vars_json TEXT NOT NULL DEFAULT '{}',
             state TEXT NOT NULL DEFAULT 'pending', -- pending|leased|dialing|amd_pending|in_progress|completed|failed|canceled
@@ -283,11 +292,22 @@ class OutboundStore:
                 cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_media_uri TEXT")
             if "consent_timeout_seconds" not in ccols:
                 cur.execute("ALTER TABLE outbound_campaigns ADD COLUMN consent_timeout_seconds INTEGER NOT NULL DEFAULT 5")
+            if "agent_routing_method" not in ccols:
+                # Rows that predate AI_AGENT were authored as AI_CONTEXT selectors.
+                cur.execute(
+                    "ALTER TABLE outbound_campaigns ADD COLUMN agent_routing_method "
+                    "TEXT NOT NULL DEFAULT 'ai_context'"
+                )
 
             # outbound_leads
             lcols = _cols("outbound_leads")
             if "name" not in lcols:
                 cur.execute("ALTER TABLE outbound_leads ADD COLUMN name TEXT")
+            if "agent_routing_method" not in lcols:
+                cur.execute(
+                    "ALTER TABLE outbound_leads ADD COLUMN agent_routing_method "
+                    "TEXT NOT NULL DEFAULT 'ai_context'"
+                )
 
             # outbound_attempts
             acols = _cols("outbound_attempts")
@@ -336,6 +356,9 @@ class OutboundStore:
             max_concurrent = max(1, min(5, _as_int(payload.get("max_concurrent"), 1)))
             min_interval = max(0, _as_int(payload.get("min_interval_seconds_between_calls"), 5))
             default_context = _as_str(payload.get("default_context")).strip() or "default"
+            agent_routing_method = _normalize_agent_routing_method(
+                payload.get("agent_routing_method"), "ai_agent"
+            )
             vm_enabled = 1 if bool(payload.get("voicemail_drop_enabled", True)) else 0
             vm_mode = _as_str(payload.get("voicemail_drop_mode")).strip() or "upload"
             vm_text = _as_str(payload.get("voicemail_drop_text")).strip() or None
@@ -354,7 +377,7 @@ class OutboundStore:
                             id, name, status, timezone, run_start_at_utc, run_end_at_utc,
                             daily_window_start_local, daily_window_end_local,
                             max_concurrent, min_interval_seconds_between_calls,
-                            default_context,
+                            default_context, agent_routing_method,
                             voicemail_drop_enabled, voicemail_drop_mode, voicemail_drop_text,
                             voicemail_drop_media_uri,
                             consent_enabled, consent_media_uri, consent_timeout_seconds,
@@ -364,7 +387,7 @@ class OutboundStore:
                             ?, ?, ?, ?, ?, ?,
                             ?, ?,
                             ?, ?,
-                            ?,
+                            ?, ?,
                             ?, ?, ?,
                             ?,
                             ?, ?, ?,
@@ -384,6 +407,7 @@ class OutboundStore:
                             max_concurrent,
                             min_interval,
                             default_context,
+                            agent_routing_method,
                             vm_enabled,
                             vm_mode,
                             vm_text,
@@ -471,6 +495,7 @@ class OutboundStore:
                 "max_concurrent",
                 "min_interval_seconds_between_calls",
                 "default_context",
+                "agent_routing_method",
                 "voicemail_drop_enabled",
                 "voicemail_drop_mode",
                 "voicemail_drop_text",
@@ -490,6 +515,14 @@ class OutboundStore:
 
             if "timezone" in updates:
                 updates["timezone"] = _validate_iana_timezone_name(_as_str(updates.get("timezone")).strip() or "UTC")
+
+            if "agent_routing_method" in updates:
+                updates["agent_routing_method"] = _normalize_agent_routing_method(
+                    updates.get("agent_routing_method"), "ai_agent"
+                )
+            elif "default_context" in updates:
+                # Editing the Agent selector in the v7.4 UI makes it canonical.
+                updates["agent_routing_method"] = "ai_agent"
 
             if "max_concurrent" in updates:
                 updates["max_concurrent"] = max(1, min(5, _as_int(updates.get("max_concurrent"), 1)))
@@ -906,11 +939,8 @@ class OutboundStore:
                 raise ValueError("CSV must include 'phone_number' column")
 
             custom_vars_key = normalized_to_raw.get("custom_vars")
-            context_key = (
-                normalized_to_raw.get("agent")
-                or normalized_to_raw.get("agent_slug")
-                or normalized_to_raw.get("context")
-            )
+            agent_key = normalized_to_raw.get("agent") or normalized_to_raw.get("agent_slug")
+            legacy_context_key = normalized_to_raw.get("context")
             tz_key = normalized_to_raw.get("timezone")
             caller_id_key = normalized_to_raw.get("caller_id")
             name_key = normalized_to_raw.get("name")
@@ -920,7 +950,8 @@ class OutboundStore:
                 try:
                     # Campaign defaults (applied when CSV field is missing/blank/invalid)
                     camp = conn.execute(
-                        "SELECT timezone, default_context FROM outbound_campaigns WHERE id=?",
+                        "SELECT timezone, default_context, agent_routing_method "
+                        "FROM outbound_campaigns WHERE id=?",
                         (campaign_id,),
                     ).fetchone()
                     if not camp:
@@ -928,6 +959,9 @@ class OutboundStore:
 
                     campaign_timezone_raw = _as_str(camp["timezone"]).strip()
                     campaign_default_context_raw = _as_str(camp["default_context"]).strip()
+                    campaign_routing_method = _normalize_agent_routing_method(
+                        camp["agent_routing_method"], "ai_context"
+                    )
 
                     try:
                         campaign_timezone = _validate_iana_timezone_name(campaign_timezone_raw or "UTC")
@@ -973,8 +1007,15 @@ class OutboundStore:
                         # Agent (stored in the legacy context_override column for DB/API compatibility):
                         # - Missing/blank => campaign default_context
                         # - Invalid/unknown => warn + overwrite to campaign default_context
-                        context_raw = _as_str((row or {}).get(context_key)).strip() if context_key else ""
+                        agent_raw = _as_str((row or {}).get(agent_key)).strip() if agent_key else ""
+                        legacy_context_raw = (
+                            _as_str((row or {}).get(legacy_context_key)).strip()
+                            if legacy_context_key
+                            else ""
+                        )
+                        context_raw = agent_raw or legacy_context_raw
                         context_candidate = context_raw.strip()
+                        context_routing_method = campaign_routing_method
                         if not context_candidate:
                             context_override = campaign_default_context
                         else:
@@ -1002,6 +1043,7 @@ class OutboundStore:
                                 context_override = campaign_default_context
                             else:
                                 context_override = context_candidate
+                                context_routing_method = "ai_agent" if agent_raw else "ai_context"
 
                         # Timezone:
                         # - Missing/blank => campaign timezone
@@ -1036,10 +1078,11 @@ class OutboundStore:
                                 """
                                 INSERT INTO outbound_leads (
                                     id, campaign_id, name, phone_number,
-                                    lead_timezone, context_override, caller_id_override,
+                                    lead_timezone, context_override, agent_routing_method,
+                                    caller_id_override,
                                     custom_vars_json, state,
                                     attempt_count, created_at_utc, updated_at_utc
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
                                 """,
                                 (
                                     lead_id,
@@ -1048,6 +1091,7 @@ class OutboundStore:
                                     phone,
                                     tz_override,
                                     context_override,
+                                    context_routing_method,
                                     caller_id_override,
                                     json.dumps(custom_vars or {}),
                                     now,
@@ -1066,6 +1110,7 @@ class OutboundStore:
                                 SET name = COALESCE(?, name),
                                     lead_timezone = COALESCE(?, lead_timezone),
                                     context_override = COALESCE(?, context_override),
+                                    agent_routing_method = ?,
                                     caller_id_override = COALESCE(?, caller_id_override),
                                     custom_vars_json = ?,
                                     updated_at_utc = ?
@@ -1075,6 +1120,7 @@ class OutboundStore:
                                     lead_name,
                                     tz_override,
                                     context_override,
+                                    context_routing_method,
                                     caller_id_override,
                                     json.dumps(custom_vars or {}),
                                     now,

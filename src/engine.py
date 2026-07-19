@@ -1630,13 +1630,36 @@ class Engine:
             if value:
                 setattr(session, attr, value)
 
-    async def _set_outbound_agent_channel_vars(self, channel_id: str, agent_slug: str) -> None:
-        """Set canonical Agent routing plus the v7.4 compatibility alias."""
+    async def _set_outbound_agent_channel_vars(
+        self,
+        channel_id: str,
+        agent_slug: str,
+        routing_method: str = "ai_agent",
+    ) -> None:
+        """Set canonical routing without changing legacy AI_CONTEXT semantics."""
         slug = str(agent_slug or "").strip()
         if not slug:
             return
-        await self.ari_client.set_channel_var(channel_id, "AI_AGENT", slug)
+        if routing_method != "ai_context":
+            await self.ari_client.set_channel_var(channel_id, "AI_AGENT", slug)
         await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", slug)
+
+    @staticmethod
+    def _outbound_agent_selector(
+        campaign: Dict[str, Any], lead: Dict[str, Any]
+    ) -> Tuple[str, str]:
+        """Return selector value and its persisted Agent-routing intent."""
+        lead_selector = str(lead.get("context_override") or "").strip()
+        if lead_selector:
+            selector = lead_selector
+            routing_method = str(lead.get("agent_routing_method") or "").strip().lower()
+        else:
+            selector = str(campaign.get("default_context") or "default").strip() or "default"
+            routing_method = str(campaign.get("agent_routing_method") or "").strip().lower()
+        if routing_method not in {"ai_agent", "ai_context"}:
+            # Missing metadata means the row predates canonical AI_AGENT campaigns.
+            routing_method = "ai_context"
+        return selector, routing_method
 
     def _warn_outbound_daily_window_rejected(
         self,
@@ -2039,16 +2062,14 @@ class Engine:
                             if not lead_id or not phone:
                                 continue
 
-                            context_name = str(
-                                lead.get("context_override") or campaign.get("default_context") or "default"
-                            ).strip() or "default"
+                            context_name, routing_method = self._outbound_agent_selector(
+                                campaign, lead
+                            )
                             # Best-effort provider resolution for metadata/UI.
                             resolved_context_provider = None
                             try:
-                                # Outbound sets canonical AI_AGENT (plus AI_CONTEXT as a
-                                # compatibility alias); resolve slug-first to match live routing.
                                 ctx_cfg = self.transport_orchestrator.get_context_config(
-                                    context_name, "ai_agent")
+                                    context_name, routing_method)
                                 ctx_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
                                 if isinstance(ctx_provider, str):
                                     ctx_provider = ctx_provider.strip()
@@ -2070,6 +2091,7 @@ class Engine:
                                 "lead_id": lead_id,
                                 "phone_number": phone,
                                 "context": context_name,
+                                "routing_method": routing_method,
                                 "provider": resolved_context_provider,
                                 "lead_name": str(lead.get("name") or "").strip() or None,
                                 "custom_vars": lead.get("custom_vars") or {},
@@ -2134,7 +2156,7 @@ class Engine:
         if not dial_phone:
             dial_phone = phone.lstrip("+").strip()
 
-        context_name = str(lead.get("context_override") or campaign.get("default_context") or "default").strip() or "default"
+        context_name, routing_method = self._outbound_agent_selector(campaign, lead)
         custom_vars = lead.get("custom_vars") if isinstance(lead.get("custom_vars"), dict) else {}
         lead_name = str(lead.get("name") or "").strip() or None
 
@@ -2143,8 +2165,9 @@ class Engine:
         # when the dialplan does not explicitly set AI_PROVIDER.
         context_provider = None
         try:
-            # Outbound routes via canonical AI_AGENT (slug-first).
-            ctx_cfg = self.transport_orchestrator.get_context_config(context_name, "ai_agent")
+            ctx_cfg = self.transport_orchestrator.get_context_config(
+                context_name, routing_method
+            )
             context_provider = getattr(ctx_cfg, "provider", None) if ctx_cfg else None
         except Exception:
             context_provider = None
@@ -2187,9 +2210,6 @@ class Engine:
             "AAVA_LEAD_ID": lead_id,
             "AAVA_ATTEMPT_ID": attempt_id,
             "AAVA_OUTBOUND_PHONE": phone,
-            "AI_AGENT": context_name,
-            # Compatibility alias for existing dialplan hops and older tooling.
-            "AI_CONTEXT": context_name,
             # Honor Agent provider by default for outbound calls (unless dialplan overrides later).
             **({"AI_PROVIDER": resolved_context_provider} if resolved_context_provider else {}),
             # Ensure the called party sees our configured outbound identity.
@@ -2198,6 +2218,13 @@ class Engine:
             "__CALLERID(num)": caller_id_num,
             "__CALLERID(name)": caller_id_name,
         }
+        if routing_method == "ai_context":
+            # Existing rows retain display-name-first AI_CONTEXT resolution.
+            channel_vars["AI_CONTEXT"] = context_name
+        else:
+            channel_vars["AI_AGENT"] = context_name
+            # Compatibility alias for existing dialplan hops and older tooling.
+            channel_vars["AI_CONTEXT"] = context_name
         # FreePBX-specific routing vars (AMPUSER/FROMEXTEN are not used by ViciDial or generic Asterisk).
         if self._outbound_pbx_type == "freepbx":
             channel_vars["AMPUSER"] = caller_id_num
@@ -2253,6 +2280,7 @@ class Engine:
             attempt_id=attempt_id,
             endpoint=endpoint,
             context=context_name,
+            routing_method=routing_method,
         )
 
         resp = await self.ari_client.originate_channel(
@@ -2483,6 +2511,7 @@ class Engine:
                 await self._set_outbound_agent_channel_vars(
                     channel_id,
                     str(meta.get("context") or "default"),
+                    str(meta.get("routing_method") or "ai_context"),
                 )
                 # Ensure lead name survives so greeting can render {caller_name}.
                 if meta.get("lead_name"):
@@ -2710,7 +2739,11 @@ class Engine:
             ctx = str((meta or {}).get("context") or "").strip()
             if ctx:
                 await self.ari_client.set_channel_var(channel_id, "AAVA_OUTBOUND", "1")
-                await self._set_outbound_agent_channel_vars(channel_id, ctx)
+                await self._set_outbound_agent_channel_vars(
+                    channel_id,
+                    ctx,
+                    str((meta or {}).get("routing_method") or "ai_context"),
+                )
         except Exception:
             logger.debug("Failed to set AI_AGENT for outbound human path", channel_id=channel_id, exc_info=True)
 
@@ -4094,10 +4127,14 @@ class Engine:
                             meta = self._outbound_attempt_meta_by_attempt_id.get(outbound_attempt_id)
                             if meta and meta.get("context"):
                                 session.context_name = str(meta.get("context") or "").strip() or session.context_name
+                                session.routing_method = str(
+                                    meta.get("routing_method") or "ai_context"
+                                )
                                 try:
                                     await self._set_outbound_agent_channel_vars(
                                         caller_channel_id,
                                         session.context_name or "",
+                                        session.routing_method,
                                     )
                                 except Exception:
                                     logger.debug(

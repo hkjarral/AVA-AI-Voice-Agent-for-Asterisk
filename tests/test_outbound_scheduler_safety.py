@@ -91,6 +91,29 @@ async def test_outbound_agent_vars_prefer_ai_agent_and_keep_compatibility_alias(
         ("channel-1", "AI_CONTEXT", "sales"),
     ]
 
+    calls.clear()
+    await engine._set_outbound_agent_channel_vars(
+        "channel-2", "sales_east", "ai_context"
+    )
+    assert calls == [("channel-2", "AI_CONTEXT", "sales_east")]
+
+
+def test_outbound_selector_preserves_legacy_rows_and_uses_agent_for_new_rows():
+    legacy = Engine._outbound_agent_selector(
+        {"default_context": "sales_east"},
+        {},
+    )
+    canonical = Engine._outbound_agent_selector(
+        {"default_context": "sales", "agent_routing_method": "ai_agent"},
+        {
+            "context_override": "support",
+            "agent_routing_method": "ai_agent",
+        },
+    )
+
+    assert legacy == ("sales_east", "ai_context")
+    assert canonical == ("support", "ai_agent")
+
 
 @pytest.mark.parametrize(
     "overrides",

@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 
@@ -24,6 +26,7 @@ async def test_outbound_store_campaign_import_and_leasing(tmp_path, monkeypatch)
         }
     )
     campaign_id = campaign["id"]
+    assert campaign["agent_routing_method"] == "ai_agent"
 
     csv_bytes = (
         "phone_number,custom_vars,context,timezone\n"
@@ -110,7 +113,44 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
 
     leads = await store.list_leads(campaign["id"], page=1, page_size=50)
     agents_by_phone = {lead["phone_number"]: lead["context_override"] for lead in leads["leads"]}
+    routing_by_phone = {
+        lead["phone_number"]: lead["agent_routing_method"] for lead in leads["leads"]
+    }
     assert agents_by_phone["+15551230011"] == "support"
     assert agents_by_phone["+15551230012"] == "sales"
     assert agents_by_phone["+15551230013"] == "sales"
     assert agents_by_phone["+15551230014"] == "support"
+    assert routing_by_phone["+15551230011"] == "ai_agent"
+    assert routing_by_phone["+15551230012"] == "ai_context"
+    assert routing_by_phone["+15551230013"] == "ai_agent"
+    assert routing_by_phone["+15551230014"] == "ai_agent"
+
+
+def test_outbound_schema_migration_marks_existing_selectors_as_ai_context(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+
+    from src.core.outbound_store import OutboundStore
+
+    store = OutboundStore(db_path=str(tmp_path / "current.db"))
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE outbound_campaigns (id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE outbound_leads (id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE outbound_attempts (id TEXT PRIMARY KEY)")
+        store._ensure_schema_sync(conn)
+        conn.execute("INSERT INTO outbound_campaigns (id) VALUES ('legacy-campaign')")
+        conn.execute("INSERT INTO outbound_leads (id) VALUES ('legacy-lead')")
+
+        campaign_method = conn.execute(
+            "SELECT agent_routing_method FROM outbound_campaigns"
+        ).fetchone()[0]
+        lead_method = conn.execute(
+            "SELECT agent_routing_method FROM outbound_leads"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert campaign_method == "ai_context"
+    assert lead_method == "ai_context"
