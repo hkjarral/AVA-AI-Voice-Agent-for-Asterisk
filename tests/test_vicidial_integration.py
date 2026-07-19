@@ -146,6 +146,77 @@ async def test_installed_agent_status_callerid_must_match(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_blended_inbound_uses_closer_group_not_agent_login_campaign(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    bodies = iter([
+        "call_id|custtime|call_date|phone|call_type|campaign_id|list_id|status|user\n"
+        "Y7190324550000000009|0|2026-07-19 03:24:55|8381|INBOUND|AVAIN|999|XFER|9001",
+        "status|callerid|lead_id|campaign_id|phone_number|session_id\n"
+        "INCALL|Y7190324550000000009|9|AVATEST|8381|8371",
+    ])
+
+    def factory(**_kwargs):
+        return _Session({}, next(bodies))
+
+    client = VicidialApiClient(_connection(), session_factory=factory)
+    info, evidence = await client.resolve_remote_agent_session(
+        call_id="Y7190324550000000009",
+        mapping={
+            "id": "map-1",
+            **_mapping(),
+            "campaign_id": "AVATEST",
+            "closer_campaigns": ["AVAIN"],
+        },
+        attempts=1,
+    )
+
+    assert info is not None
+    assert info.agent_user == "9001"
+    assert info.campaign_id == "AVAIN"
+    assert info.lead_id == "9"
+    assert info.direction == "inbound"
+    assert info.metadata["agent_status"]["campaign_id"] == "AVATEST"
+    assert len(evidence) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("log_user", "closer_campaigns"),
+    [("9002", ["AVAIN"]), ("9001", ["OTHER"]), ("9001", [])],
+)
+async def test_blended_inbound_rejects_wrong_user_or_closer_group(
+    monkeypatch, log_user, closer_campaigns
+):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    bodies = iter([
+        "call_id|phone|call_type|campaign_id|list_id|status|user\n"
+        f"Y7190324550000000009|8381|INBOUND|AVAIN|999|XFER|{log_user}",
+        "status|callerid|lead_id|campaign_id|phone_number|session_id\n"
+        "INCALL|Y7190324550000000009|9|AVATEST|8381|8371",
+    ])
+
+    def factory(**_kwargs):
+        return _Session({}, next(bodies))
+
+    client = VicidialApiClient(_connection(), session_factory=factory)
+    info, _evidence = await client.resolve_remote_agent_session(
+        call_id="Y7190324550000000009",
+        mapping={
+            "id": "map-1",
+            **_mapping(),
+            "campaign_id": "AVATEST",
+            "closer_campaigns": closer_campaigns,
+            "static_agent_user": None,
+        },
+        attempts=1,
+    )
+
+    assert info is None
+
+
+@pytest.mark.asyncio
 async def test_customer_name_on_sip_leg_resolves_by_unique_mapped_agent(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
     monkeypatch.setenv("VICI_PASS", "secret")

@@ -470,13 +470,11 @@ class VicidialApiClient:
             configured_direction = str(mapping.get("direction") or "outbound").lower()
             agent_campaign = str(agent_result.data.get("campaign_id") or "").strip()
             call_campaign = str(call_result.data.get("campaign_id") or "").strip()
-            if agent_campaign and call_campaign and agent_campaign != call_campaign:
-                return None
+            call_user = str(call_result.data.get("user") or "").strip()
             agent_phone = str(agent_result.data.get("phone_number") or "").strip()
             call_phone = str(call_result.data.get("phone") or "").strip()
             if agent_phone and call_phone and agent_phone != call_phone:
                 return None
-            campaign_id = agent_campaign or call_campaign
             configured_campaign = str(mapping.get("campaign_id") or "").strip()
             closer_campaigns = {
                 str(value).strip()
@@ -486,10 +484,26 @@ class VicidialApiClient:
 
             if configured_direction != "both" and configured_direction != direction:
                 return None
-            if direction == "outbound" and configured_campaign and campaign_id != configured_campaign:
-                return None
-            if direction == "inbound" and closer_campaigns and campaign_id not in closer_campaigns:
-                return None
+            if direction == "outbound":
+                # For outbound calls both APIs describe the dialing campaign.
+                # Keep requiring agreement when both values are available.
+                if agent_campaign and call_campaign and agent_campaign != call_campaign:
+                    return None
+                campaign_id = call_campaign or agent_campaign
+                if configured_campaign and campaign_id != configured_campaign:
+                    return None
+            else:
+                # In blended/closer mode agent_status reports the campaign the
+                # agent logged into, while callid_info reports the inbound
+                # group that delivered the call. They are distinct VICIdial
+                # concepts and normally differ (for example AVATEST/AVAIN).
+                # The closer group and the call-log user are the authoritative
+                # inbound mapping checks.
+                campaign_id = call_campaign
+                if call_user and call_user != user:
+                    return None
+                if not closer_campaigns or campaign_id not in closer_campaigns:
+                    return None
 
             return VicidialSessionInfo(
                 external_call_id=external_call_id,
@@ -517,9 +531,9 @@ class VicidialApiClient:
         # Preferred path: the Remote Agent SIP leg carries the VICIdial call
         # code in CallerID(name) or another dialplan-extracted identifier.
         # This is the cheapest and strongest correlation because both APIs
-            # must independently report the exact same call code. The
-            # callid_info ``user`` is commonly VDAD for outbound auto calls,
-            # so the Remote Agent identity comes from agent_status instead.
+        # must independently report the exact same call code. The callid_info
+        # ``user`` is commonly VDAD for outbound auto calls, so the Remote
+        # Agent identity comes from agent_status instead.
         if external_call_id:
             for index in range(max(1, attempts)):
                 result = await self.callid_info(external_call_id)
