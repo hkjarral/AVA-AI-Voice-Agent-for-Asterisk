@@ -1,8 +1,12 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.models import CallSession
+from src.core.session_store import SessionStore
+from src.engine import Engine
 from src.providers.deepgram import DeepgramProvider
 
 
@@ -117,6 +121,31 @@ async def test_provider_emits_hangup_ready_at_audio_boundary():
         }
     ]
     assert provider._terminal_turn_suppressed is True
+
+
+@pytest.mark.asyncio
+async def test_engine_records_hangup_ready_as_agent_hangup():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine._terminate_call_after_audio = AsyncMock(return_value=True)
+    session = CallSession(call_id="call-hangup-ready", caller_channel_id="caller")
+    await engine.session_store.upsert_call(session)
+
+    await engine.on_provider_event(
+        {
+            "type": "HangupReady",
+            "call_id": session.call_id,
+            "reason": "farewell_without_tool",
+            "had_audio": True,
+        }
+    )
+
+    engine._terminate_call_after_audio.assert_awaited_once_with(
+        session.call_id,
+        reason="hangup_ready:farewell_without_tool",
+        call_outcome="agent_hangup",
+        audio_already_drained=False,
+    )
 
 
 @pytest.mark.asyncio

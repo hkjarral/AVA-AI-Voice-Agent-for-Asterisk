@@ -11888,6 +11888,7 @@ class Engine:
                 await self._terminate_call_after_audio(
                     call_id,
                     reason=f"hangup_ready:{reason}",
+                    call_outcome="agent_hangup",
                     audio_already_drained=played_farewell_fallback,
                 )
             
