@@ -99,36 +99,36 @@ export const FormLabel = ({ children, htmlFor, tooltip, className = '' }: LabelP
 );
 
 const FormLabelImpl = ({ children, htmlFor, tooltip, className = '' }: LabelProps) => {
-    const iconRef = useRef<HTMLSpanElement>(null);
+    const iconRef = useRef<HTMLButtonElement>(null);
     const [open, setOpen] = useState(false);
     const anchorEl = iconRef.current;
     const helpLabel = typeof children === 'string' ? `Help for ${children}` : 'Help for this field';
 
     return (
-        <label
-            htmlFor={htmlFor}
-            className={`block text-sm font-medium mb-1.5 flex items-center gap-1.5 ${className}`}
-        >
-            {children}
+        <div className={`block text-sm font-medium mb-1.5 flex items-center gap-1.5 ${className}`}>
+            <label htmlFor={htmlFor}>{children}</label>
             {tooltip && (
                 <>
-                    <span
+                    <button
+                        type="button"
                         ref={iconRef}
                         className="inline-flex"
                         onMouseEnter={() => setOpen(true)}
                         onMouseLeave={() => setOpen(false)}
                         onFocus={() => setOpen(true)}
                         onBlur={() => setOpen(false)}
+                        onClick={event => {
+                            event.preventDefault();
+                            setOpen(true);
+                        }}
                         aria-label={helpLabel}
-                        role="button"
-                        tabIndex={0}
                     >
                         <HelpCircle className="w-3.5 h-3.5 text-muted-foreground cursor-help" />
-                    </span>
+                    </button>
                     <Tooltip anchorEl={anchorEl} text={tooltip} open={open} />
                 </>
             )}
-        </label>
+        </div>
     );
 };
 
@@ -303,25 +303,28 @@ export const FormSwitch = React.forwardRef<HTMLInputElement, SwitchProps>(
 FormSwitch.displayName = 'FormSwitch';
 
 const FormSwitchTooltip = ({ tooltip, label }: { tooltip: string; label?: string }) => {
-    const iconRef = useRef<HTMLSpanElement>(null);
+    const iconRef = useRef<HTMLButtonElement>(null);
     const [open, setOpen] = useState(false);
     const anchorEl = iconRef.current;
     const tip = useMemo(() => tooltip, [tooltip]);
     return (
         <>
-            <span
+            <button
+                type="button"
                 ref={iconRef}
                 className="inline-flex"
                 onMouseEnter={() => setOpen(true)}
                 onMouseLeave={() => setOpen(false)}
                 onFocus={() => setOpen(true)}
                 onBlur={() => setOpen(false)}
+                onClick={event => {
+                    event.preventDefault();
+                    setOpen(true);
+                }}
                 aria-label={label ? `Help for ${label}` : 'Help for this setting'}
-                role="button"
-                tabIndex={0}
             >
                 <HelpCircle className="w-3.5 h-3.5 text-muted-foreground cursor-help" />
-            </span>
+            </button>
             <Tooltip anchorEl={anchorEl} text={tip} open={open} />
         </>
     );

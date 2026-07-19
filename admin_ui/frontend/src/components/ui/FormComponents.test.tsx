@@ -47,7 +47,7 @@ describe('FormComponents — label association & error semantics', () => {
     it('exposes field help to keyboard users as an accessible tooltip', async () => {
         render(<FormInput label="SIP port" tooltip="SIP signaling port on the VICIdial server." />);
 
-        fireEvent.focus(screen.getByRole('button', { name: 'Help for SIP port' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Help for SIP port' }));
 
         expect(await screen.findByRole('tooltip')).toHaveTextContent(
             'SIP signaling port on the VICIdial server.'
