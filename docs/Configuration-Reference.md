@@ -227,6 +227,27 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 
 See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for the full snippet and smoke test checklist.
 
+## VICIdial Remote Agents (Alpha)
+
+VICIdial Remote Agents are separate from AAVA's native Outbound Campaign Dialer. VICIdial owns
+campaign origination, customer channels, reports, dispositions, DNC, callbacks, and transfers;
+AAVA supplies the mapped AI conversation. Configure connections and mappings under
+**Call Scheduling → VICIdial Remote Agents** and follow the
+[VICIdial Remote Agent Setup](Vicidial-Setup.md) acceptance sequence.
+
+The connection stores environment-variable names rather than credential values. The UI defaults
+to the following names, but a mapping may reference other valid environment-variable names:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VICIDIAL_API_USER` | (empty) | Dedicated least-privilege VICIdial API username referenced by the connection |
+| `VICIDIAL_API_PASS` | (empty) | Dedicated VICIdial API password referenced by the connection |
+| `VICIDIAL_DB_PATH` | `/app/data/operator/vicidial.db` | Shared SQLite store for connections, mappings, and readiness evidence |
+
+Recreate `ai_engine` and `admin_ui` after changing credential environment variables so both
+services receive the same values. Back up `vicidial.db` with the rest of `data/operator/`; it
+contains configuration and verification evidence, but never the referenced API password.
+
 ## Canonical persona and greeting
 
 - llm.initial_greeting: Text the agent speaks first (if provider supports explicit greeting or the engine plays via TTS).

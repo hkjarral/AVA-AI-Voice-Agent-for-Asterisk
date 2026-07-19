@@ -125,6 +125,19 @@ If you use **Admin UI → Call Scheduling**:
 - `AAVA_MEDIA_DIR`
 - `AAVA_SERVER_TIMEZONE` (optional override; otherwise `TZ`)
 
+### VICIdial Remote Agents
+
+VICIdial Remote Agents use a separate VICIdial-owned call lifecycle. A connection stores the
+names of its credential variables; the UI defaults are:
+
+- `VICIDIAL_API_USER`: dedicated least-privilege VICIdial API username.
+- `VICIDIAL_API_PASS`: dedicated VICIdial API password.
+- `VICIDIAL_DB_PATH`: shared connection, mapping, and readiness-evidence store; defaults to
+  `/app/data/operator/vicidial.db`.
+
+Recreate `ai_engine` and `admin_ui` after credential changes. See
+[VICIdial Remote Agent Setup](Vicidial-Setup.md) before enabling a mapping.
+
 ## Where to change “behavior”
 
 - Transport mode / pipelines / providers / barge-in / streaming: `config/ai-agent.yaml`

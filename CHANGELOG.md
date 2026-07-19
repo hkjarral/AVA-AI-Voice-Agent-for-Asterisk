@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **VICIdial Remote Agent integration** (`Call Scheduling → VICIdial Remote Agents`): AAVA can now register as a mapped VICIdial Remote Agent while VICIdial remains authoritative for campaigns, customer channels, agent state, reporting, hangup, dispositions, DNC, callbacks, and cold transfers. The Admin UI provides connection verification, Remote Agent mappings, generated trusted dialplan/trunk guidance, readiness evidence, and contextual help. Calls are correlated against live Agent and Non-Agent API state, fail closed on missing or ambiguous ownership, expose only mapping-allowlisted tools, and retain sanitized VICIdial lifecycle evidence in Call History. The validated Alpha profile covers separate-box LAN/VPN operation with classic outbound and blended inbound Remote Agents, real PSTN origination, two-line concurrency, DTMF, both VICIdial cold-transfer modes, normal dispositions, campaign DNC, native scheduled callbacks, and AAVA/customer termination.
+
+### Changed
+
+- **Direct AAVA origination through VICIdial carrier dialplans is deprecated:** new deployments must use the Remote Agent integration. The Admin UI no longer offers `AAVA_OUTBOUND_PBX_TYPE=vicidial` as a new selection; an existing value remains visible and readable for one migration release and emits a runtime warning. Existing AAVA Campaign routing for FreePBX and generic Asterisk is unchanged.
+
 ## [7.4.1] - 2026-07-18
 
 ### Fixed

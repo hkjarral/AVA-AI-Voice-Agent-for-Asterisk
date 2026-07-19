@@ -7,6 +7,7 @@ import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormLabel, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { Link } from 'react-router-dom';
+import { getOutboundPbxTypeOptions } from '../../utils/outboundPbx';
 
 import { useAuth } from '../../auth/AuthContext';
 
@@ -2108,13 +2109,9 @@ const EnvPage = () => {
                                     label="PBX Type"
                                     value={env['AAVA_OUTBOUND_PBX_TYPE'] || 'freepbx'}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_PBX_TYPE', e.target.value)}
-                                    options={[
-                                        { value: 'freepbx', label: 'FreePBX' },
-                                        { value: 'generic', label: 'Generic Asterisk' },
-                                        ...(env['AAVA_OUTBOUND_PBX_TYPE'] === 'vicidial'
-                                            ? [{ value: 'vicidial', label: 'VICIdial (legacy — migrate to Remote Agents)' }]
-                                            : []),
-                                    ]}
+                                    options={getOutboundPbxTypeOptions(
+                                        env['AAVA_OUTBOUND_PBX_TYPE']
+                                    )}
                                     tooltip="Controls PBX-specific channel variables for AAVA Campaigns. New VICIdial integrations use Call Scheduling → VICIdial Remote Agents; the legacy direct-origination value is shown only when already configured."
                                 />
                                 <FormInput

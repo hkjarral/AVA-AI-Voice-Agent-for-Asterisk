@@ -18,6 +18,9 @@ The first validated profile is a separate-box LAN/VPN deployment:
 - two concurrent Remote Agent lines: users `9001`–`9002`, sharing VICIdial
   Phone/extension `8371`
 - one AAVA Agent mapping: `9001`–`9002 / 8371` → `demo_deepgram`
+- a real outbound PSTN carrier/customer call with two-way audio, mapped Agent correlation,
+  `ra_call_control` hangup, confirmed `AIHU`, Remote Agent return to `READY`, and stable carrier
+  registration across multiple renewal cycles
 
 Treat other VICIdial releases, Asterisk versions, multi-server dialers, NAT/public Internet
 topologies and PJSIP-on-VICIdial as separate acceptance profiles.
@@ -197,6 +200,13 @@ asterisk -rx "sip show peer 8371"
 
 One green sample is insufficient. Observe at least two registration/qualification cycles and
 confirm the contact address is the intended AAVA interface.
+
+For a `chan_sip` carrier `register =>` line, characters used by the registration grammar can make
+an otherwise correct password parse incorrectly. In particular, literal `?` separates the
+optional peer name from the user portion. If an approved carrier password contains `?`, quote the
+entire secret in the registration string or rotate to a parser-safe secret, then prove at least
+two renewals. A successful initial registration or completed call is not evidence that renewal
+authentication will remain stable.
 
 When more than one registered `chan_sip` Phone arrives from the same NAT address, the VICIdial
 server may identify the INVITE by source address or `From` instead of the authenticated username.
@@ -423,6 +433,8 @@ headers.
 ### Registration is rejected or flaps
 
 - Verify the Phone `conf_secret`, not `pass`.
+- For a `chan_sip register =>` line, quote an approved secret containing `?` or rotate it; inspect
+  renewal responses for `Forbidden - wrong password` instead of trusting the first registration.
 - Confirm transport, source address, contact user, expiration, and duplicate registrations.
 - Confirm only one endpoint-identification rule owns the VICIdial source address.
 - Inspect both PBXs during a single registration cycle; do not leave SIP logging enabled.

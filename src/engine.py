@@ -2344,10 +2344,9 @@ class Engine:
         """
         Choose best endpoint for outbound dialing.
 
-        Configurable via env vars for FreePBX, generic Asterisk, or the experimental
-        ViciDial community-tested notes:
+        Configurable via env vars for FreePBX or generic Asterisk routing:
         - AAVA_OUTBOUND_DIAL_CONTEXT  (default: from-internal)
-        - AAVA_OUTBOUND_DIAL_PREFIX   (default: empty; ViciDial notes use e.g. '911')
+        - AAVA_OUTBOUND_DIAL_PREFIX   (default: empty)
         - AAVA_OUTBOUND_CHANNEL_TECH  (auto | pjsip | sip | local_only)
 
         When channel_tech is 'auto', probes PJSIP then SIP for internal extensions.
