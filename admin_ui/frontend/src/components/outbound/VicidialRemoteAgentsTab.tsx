@@ -48,6 +48,13 @@ type Mapping = {
     ai_agent: string;
     trusted_context: string;
     trusted_endpoint?: string | null;
+    pbx_setup_mode: 'generated_registration' | 'existing_endpoint';
+    pbx_technology: 'PJSIP' | 'SIP';
+    pbx_trunk_name?: string | null;
+    sip_username?: string | null;
+    sip_auth_username?: string | null;
+    sip_contact_user?: string | null;
+    sip_transport: 'udp' | 'tcp' | 'tls';
     dispositions?: Record<string, string>;
     statuses?: Record<string, string>;
     destinations?: Record<string, TransferDestination>;
@@ -63,10 +70,20 @@ type Agent = { slug: string; display_name: string };
 type Verification = {
     ready?: boolean;
     configuration_ready?: boolean;
+    pbx_ready?: boolean;
+    pbx_endpoint?: {
+        ari_connected?: boolean | null;
+        probe_available?: boolean;
+        found?: boolean;
+        state?: 'online' | 'offline' | 'unknown' | null;
+        resource?: string | null;
+        note?: string;
+    };
     real_call?: {
         verified?: boolean;
         required_directions?: string[];
     };
+    real_calls?: Record<string, { verified?: boolean; verified_at?: string }>;
 };
 
 type TransferDestination = {
@@ -109,6 +126,13 @@ type MappingForm = {
     ai_agent: string;
     trusted_context: string;
     trusted_endpoint: string;
+    pbx_setup_mode: Mapping['pbx_setup_mode'];
+    pbx_technology: Mapping['pbx_technology'];
+    pbx_trunk_name: string;
+    sip_username: string;
+    sip_auth_username: string;
+    sip_contact_user: string;
+    sip_transport: Mapping['sip_transport'];
     dispositions: Record<string, string>;
     statuses: Record<string, string>;
     destinations: Record<string, TransferDestination>;
@@ -124,6 +148,19 @@ type SetupGuidance = {
     verification_order: string[];
 };
 
+type AsteriskEndpoint = {
+    resource: string;
+    state?: 'online' | 'offline' | 'unknown' | null;
+    channel_count?: number;
+};
+
+type EndpointDiscovery = {
+    ari_connected?: boolean | null;
+    probe_available?: boolean;
+    note?: string;
+    endpoints: AsteriskEndpoint[];
+};
+
 type ActivityRange = 'today' | '7d' | '30d';
 
 type ActivityMappingSummary = {
@@ -131,6 +168,8 @@ type ActivityMappingSummary = {
     mapping_name: string;
     handled: number;
     finalized: number;
+    unconfirmed_errors: number;
+    confirmed_failures: number;
     needs_attention: number;
     last_call_at?: string | null;
 };
@@ -147,6 +186,8 @@ type ActivityCall = {
     disposition?: string | null;
     disposition_confirmed: boolean;
     finalized: boolean;
+    unconfirmed_error: boolean;
+    confirmed_failure: boolean;
     needs_attention: boolean;
     mapping_id?: string | null;
 };
@@ -155,6 +196,8 @@ type VicidialActivity = {
     summary: {
         handled: number;
         finalized: number;
+        unconfirmed_errors: number;
+        confirmed_failures: number;
         needs_attention: number;
         average_duration_seconds: number;
         last_call_at?: string | null;
@@ -191,13 +234,20 @@ const emptyMapping = {
     direction: 'both' as const,
     campaign_id: '',
     closer_campaigns: '',
-    user_start: '9001',
+    user_start: '',
     number_of_lines: 1,
-    conf_exten: '8371',
-    static_agent_user: '9001',
-    ai_agent: 'demo_deepgram',
+    conf_exten: '',
+    static_agent_user: '',
+    ai_agent: '',
     trusted_context: 'from-vicidial-ra',
     trusted_endpoint: '',
+    pbx_setup_mode: 'generated_registration' as const,
+    pbx_technology: 'PJSIP' as const,
+    pbx_trunk_name: '',
+    sip_username: '',
+    sip_auth_username: '',
+    sip_contact_user: '',
+    sip_transport: 'udp' as const,
     dispositions: { sale: 'SALE', not_interested: 'NI' } as Record<string, string>,
     statuses: {
         ai_hangup: 'AIHU',
@@ -221,8 +271,25 @@ const statusLabel = (mapping: Mapping) => {
     if (!check) return { label: 'Not verified', tone: 'text-amber-500', ok: false };
     if (!check.configuration_ready)
         return { label: 'Needs attention', tone: 'text-destructive', ok: false };
+    if (!check.pbx_ready) {
+        const state = check.pbx_endpoint?.state;
+        return {
+            label:
+                state === 'offline'
+                    ? 'Configuration valid — PBX endpoint offline'
+                    : state === 'unknown'
+                      ? 'Configuration valid — PBX endpoint reachability unknown'
+                      : 'Configuration valid — PBX endpoint verification required',
+            tone: 'text-amber-500',
+            ok: false,
+        };
+    }
     if (!check.real_call?.verified) {
-        const required = (check.real_call?.required_directions || []).join(' + ');
+        const requiredDirections = check.real_call?.required_directions || [];
+        const missing = requiredDirections.filter(
+            direction => !check.real_calls?.[direction]?.verified
+        );
+        const required = missing.join(' + ');
         return {
             label: `Configuration valid — ${required || 'real'} call test required`,
             tone: 'text-amber-500',
@@ -305,7 +372,23 @@ const mappingHelp = {
     context:
         'Exact trusted Asterisk dialplan context that sets VICIdial ownership, call ID, mapping ID, and AI_AGENT before entering Stasis.',
     endpoint:
-        'Optional PJSIP endpoint name used by the generated dialplan to reject calls arriving from any other endpoint.',
+        'Exact Asterisk endpoint resource shown by ARI or pjsip show endpoints. AAVA uses it for source authorization and reachability checks; it may differ from the friendly trunk label.',
+    endpointDiscovery:
+        'Queries AAVA Asterisk through its existing ARI connection and lists endpoint IDs without changing PBX configuration. Manual entry remains available when ARI cannot enumerate an endpoint.',
+    pbxSetupMode:
+        'Generate setup creates operator-applied trunk guidance. Existing endpoint keeps the current PBX configuration and uses its exact ARI endpoint ID for verification.',
+    pbxTechnology:
+        'PJSIP is the fully verified AAVA path. SIP is available for an existing/manual endpoint but may provide less consistent state reporting.',
+    pbxTrunkName:
+        'Friendly trunk label used in the generated guide. Choose a name that fits your PBX naming convention; it is not used as the ARI identity unless both names match.',
+    sipUsername:
+        'SIP registration username. Leave empty to inherit the VICIdial Remote Agent Phone extension.',
+    sipAuthUsername:
+        'SIP authentication username. Leave empty to inherit the registration username.',
+    sipContactUser:
+        'SIP Contact user VICIdial calls for the Remote Agent leg. Leave empty to inherit the Phone extension.',
+    sipTransport:
+        'Transport used by the AAVA-side endpoint. UDP is the validated baseline; use TCP or TLS only when both PBXs are already configured for it.',
     dispositions:
         'Business choices the AI may set during a call. Each friendly key maps to an existing VICIdial status of at most six characters.',
     dispositionName:
@@ -350,6 +433,13 @@ const trunkHelp: Record<string, string> = {
     username: 'VICIdial Phone extension used as the SIP registration username.',
     auth_username:
         'Authentication username for the VICIdial Phone. It normally matches the Phone extension.',
+    setup_mode:
+        'Existing endpoint means this guide must not overwrite the PBX. Generated registration provides values for a new operator-applied endpoint.',
+    technology: 'Asterisk channel technology used by the selected endpoint.',
+    endpoint_id:
+        'Exact ARI endpoint resource used for reachability checks and trusted dialplan authorization.',
+    configuration:
+        'Existing-endpoint mode is read-only. Keep the operator-managed endpoint configuration and apply only the generated trusted dialplan where appropriate.',
     secret: 'Use the Phone conf_secret from VICIdial. The Phone pass field is not the SIP registration secret.',
     authentication:
         'Outbound authentication means AAVA authenticates when registering or sending requests to VICIdial.',
@@ -359,6 +449,7 @@ const trunkHelp: Record<string, string> = {
     context:
         'Dedicated inbound context applied to calls arriving on the trusted VICIdial endpoint.',
     contact_user: 'Contact user VICIdial calls for the shared Remote Agent Phone extension.',
+    transport: 'Configured SIP signaling transport for this endpoint.',
     match_permit:
         'Source address allowed to identify this endpoint. Restrict it to the VICIdial signaling address.',
     codec: 'Validated baseline codec for the Remote Agent and AI media path.',
@@ -407,6 +498,9 @@ export const VicidialRemoteAgentsTab = () => {
     const [activity, setActivity] = useState<VicidialActivity | null>(null);
     const [activityLoading, setActivityLoading] = useState(true);
     const [activityError, setActivityError] = useState('');
+    const [endpointDiscovery, setEndpointDiscovery] = useState<EndpointDiscovery | null>(null);
+    const [endpointDiscoveryLoading, setEndpointDiscoveryLoading] = useState(false);
+    const [endpointDiscoveryError, setEndpointDiscoveryError] = useState('');
 
     const loadActivity = useCallback(async () => {
         setActivityLoading(true);
@@ -465,6 +559,50 @@ export const VicidialRemoteAgentsTab = () => {
             })),
         [agents]
     );
+    const progressSteps = useMemo(() => {
+        const enabledConnections = connections.filter(item => item.enabled);
+        const enabledMappings = mappings.filter(item => item.enabled);
+        const build = (label: string, complete: number, total: number, noun: string) => ({
+            label,
+            complete,
+            total,
+            detail: total ? `${complete}/${total} ${noun}` : 'Not configured',
+            tone:
+                total > 0 && complete === total
+                    ? 'border-emerald-500/40 bg-emerald-500/5'
+                    : complete > 0
+                      ? 'border-amber-500/40 bg-amber-500/5'
+                      : 'border-border',
+        });
+        return [
+            build(
+                '1. Connect APIs',
+                enabledConnections.filter(item => item.last_verification?.ready).length,
+                enabledConnections.length,
+                'verified'
+            ),
+            build(
+                '2. Map Remote Agent',
+                enabledMappings.filter(
+                    item => item.agent_available && item.last_verification?.configuration_ready
+                ).length,
+                enabledMappings.length,
+                'valid'
+            ),
+            build(
+                '3. PBX endpoint reachable',
+                enabledMappings.filter(item => item.last_verification?.pbx_ready).length,
+                enabledMappings.length,
+                'reachable'
+            ),
+            build(
+                '4. Verify real calls',
+                enabledMappings.filter(item => item.last_verification?.real_call?.verified).length,
+                enabledMappings.length,
+                'verified'
+            ),
+        ];
+    }, [connections, mappings]);
 
     const openConnection = (connection?: Connection) => {
         setEditingConnection(connection?.id || null);
@@ -475,6 +613,8 @@ export const VicidialRemoteAgentsTab = () => {
     };
 
     const openMapping = (mapping?: Mapping) => {
+        setEndpointDiscovery(null);
+        setEndpointDiscoveryError('');
         setEditingMapping(mapping?.id || null);
         setMappingForm(
             mapping
@@ -485,6 +625,17 @@ export const VicidialRemoteAgentsTab = () => {
                       closer_campaigns: (mapping.closer_campaigns || []).join(', '),
                       static_agent_user: mapping.static_agent_user || '',
                       trusted_endpoint: mapping.trusted_endpoint || '',
+                      pbx_setup_mode: mapping.pbx_setup_mode || 'generated_registration',
+                      pbx_technology: mapping.pbx_technology || 'PJSIP',
+                      pbx_trunk_name: mapping.pbx_trunk_name || mapping.trusted_endpoint || '',
+                      sip_username: mapping.sip_username || mapping.conf_exten || '',
+                      sip_auth_username:
+                          mapping.sip_auth_username ||
+                          mapping.sip_username ||
+                          mapping.conf_exten ||
+                          '',
+                      sip_contact_user: mapping.sip_contact_user || mapping.conf_exten || '',
+                      sip_transport: mapping.sip_transport || 'udp',
                       dispositions: { ...(mapping.dispositions || {}) },
                       statuses: { ...emptyMapping.statuses, ...(mapping.statuses || {}) },
                       destinations: { ...(mapping.destinations || {}) },
@@ -499,6 +650,27 @@ export const VicidialRemoteAgentsTab = () => {
                   }
         );
         setMappingModal(true);
+    };
+
+    const discoverEndpoints = async () => {
+        setEndpointDiscoveryLoading(true);
+        setEndpointDiscoveryError('');
+        try {
+            const response = await axios.get('/api/outbound/vicidial/asterisk/endpoints', {
+                params: { technology: mappingForm.pbx_technology },
+            });
+            setEndpointDiscovery({
+                ...response.data,
+                endpoints: response.data?.endpoints || [],
+            });
+        } catch (error) {
+            setEndpointDiscovery(null);
+            setEndpointDiscoveryError(
+                describeApiError(error, 'Unable to query Asterisk endpoints')
+            );
+        } finally {
+            setEndpointDiscoveryLoading(false);
+        }
     };
 
     const saveConnection = async () => {
@@ -555,9 +727,20 @@ export const VicidialRemoteAgentsTab = () => {
         setBusy(`verify-${id}`);
         try {
             const response = await axios.post(`/api/outbound/vicidial/${kind}/${id}/verify`);
-            if (response.data?.ready) toast.success('API connection verified');
+            if (response.data?.ready)
+                toast.success(
+                    kind === 'mappings'
+                        ? 'Remote Agent mapping is ready'
+                        : 'API connection verified'
+                );
+            else if (
+                kind === 'mappings' &&
+                response.data?.configuration_ready &&
+                !response.data?.pbx_ready
+            )
+                toast.warning('Configuration passed; PBX endpoint is not confirmed online');
             else if (kind === 'mappings' && response.data?.configuration_ready)
-                toast.success('Configuration checks passed; complete a real call test');
+                toast.success('Configuration and PBX checks passed; complete required real calls');
             else toast.warning('Verification found items that need attention');
             await refresh();
         } catch (error) {
@@ -631,17 +814,13 @@ export const VicidialRemoteAgentsTab = () => {
                     </button>
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-4">
-                    {[
-                        '1. Connect APIs',
-                        '2. Map Remote Agent',
-                        '3. Apply PBX setup',
-                        '4. Verify real calls',
-                    ].map((label, index) => (
+                    {progressSteps.map(step => (
                         <div
-                            key={label}
-                            className={`rounded-md border p-3 text-sm ${index === 0 && connections.length ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-border'}`}
+                            key={step.label}
+                            className={`rounded-md border p-3 text-sm ${step.tone}`}
                         >
-                            {label}
+                            <div>{step.label}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{step.detail}</div>
                         </div>
                     ))}
                 </div>
@@ -658,12 +837,21 @@ export const VicidialRemoteAgentsTab = () => {
                                 <span>{activity?.summary.finalized ?? 0} finalized</span>
                                 <span
                                     className={
-                                        activity?.summary.needs_attention
+                                        activity?.summary.unconfirmed_errors
                                             ? 'text-amber-500'
                                             : 'text-muted-foreground'
                                     }
                                 >
-                                    {activity?.summary.needs_attention ?? 0} need attention
+                                    {activity?.summary.unconfirmed_errors ?? 0} unconfirmed/errors
+                                </span>
+                                <span
+                                    className={
+                                        activity?.summary.confirmed_failures
+                                            ? 'text-destructive'
+                                            : 'text-muted-foreground'
+                                    }
+                                >
+                                    {activity?.summary.confirmed_failures ?? 0} confirmed failures
                                 </span>
                             </>
                         )}
@@ -816,7 +1004,7 @@ export const VicidialRemoteAgentsTab = () => {
                                             {status.label}
                                             <HelpTooltip
                                                 ariaLabel={`Help for ${mapping.name} readiness`}
-                                                content="Ready requires valid API/configuration checks plus a correlated real call with confirmed VICIdial terminal control in every configured direction. SIP registration by itself is not sufficient."
+                                                content="Ready requires valid API/configuration checks, an online exact Asterisk endpoint through ARI, and a correlated real call with confirmed VICIdial terminal control in every configured direction. ARI reachability does not prove registration renewal."
                                             />
                                         </div>
                                         <div className="mt-2 text-xs text-muted-foreground">
@@ -824,11 +1012,22 @@ export const VicidialRemoteAgentsTab = () => {
                                                 <>
                                                     {mappingActivity.handled} AAVA-handled ·{' '}
                                                     {mappingActivity.finalized} finalized
-                                                    {mappingActivity.needs_attention > 0 && (
+                                                    {mappingActivity.unconfirmed_errors > 0 && (
                                                         <span className="text-amber-500">
                                                             {' '}
-                                                            · {mappingActivity.needs_attention} need
-                                                            attention
+                                                            · {
+                                                                mappingActivity.unconfirmed_errors
+                                                            }{' '}
+                                                            unconfirmed/errors
+                                                        </span>
+                                                    )}
+                                                    {mappingActivity.confirmed_failures > 0 && (
+                                                        <span className="text-destructive">
+                                                            {' '}
+                                                            · {
+                                                                mappingActivity.confirmed_failures
+                                                            }{' '}
+                                                            confirmed failures
                                                         </span>
                                                     )}
                                                 </>
@@ -843,7 +1042,7 @@ export const VicidialRemoteAgentsTab = () => {
                                     </div>
                                     <div className="flex flex-wrap gap-2">
                                         <button
-                                            title="Validate API access, campaign, AAVA Agent, every mapped VICIdial user, logged-in visibility, and retained real-call evidence"
+                                            title="Validate API access, campaign, AAVA Agent, every mapped VICIdial user, logged-in visibility, the exact Asterisk endpoint, and retained real-call evidence"
                                             onClick={() => void verify('mappings', mapping.id)}
                                             className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
                                         >
@@ -964,11 +1163,12 @@ export const VicidialRemoteAgentsTab = () => {
                     </div>
                 ) : (
                     <>
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
                             {[
                                 ['Handled by AAVA', activity?.summary.handled ?? 0],
                                 ['Finalized in VICIdial', activity?.summary.finalized ?? 0],
-                                ['Needs attention', activity?.summary.needs_attention ?? 0],
+                                ['Unconfirmed / errors', activity?.summary.unconfirmed_errors ?? 0],
+                                ['Confirmed failures', activity?.summary.confirmed_failures ?? 0],
                                 [
                                     'Average duration',
                                     formatActivityDuration(
@@ -987,8 +1187,9 @@ export const VicidialRemoteAgentsTab = () => {
                             ))}
                         </div>
                         <p className="text-xs text-muted-foreground">
-                            Needs attention includes unconfirmed lifecycle records, AAVA errors, and
-                            confirmed AIFAIL outcomes, so it can overlap the finalized count.
+                            Unconfirmed/errors did not receive a confirmed VICIdial terminal result.
+                            Confirmed failures ended with this mapping’s configured AI-failure
+                            status and therefore overlap the finalized count.
                         </p>
 
                         <div>
@@ -1069,17 +1270,21 @@ export const VicidialRemoteAgentsTab = () => {
                                                     <td className="px-3 py-2">
                                                         <span
                                                             className={
-                                                                call.needs_attention
-                                                                    ? 'text-amber-500'
-                                                                    : 'text-emerald-500'
+                                                                call.confirmed_failure
+                                                                    ? 'text-destructive'
+                                                                    : call.unconfirmed_error
+                                                                      ? 'text-amber-500'
+                                                                      : 'text-emerald-500'
                                                             }
                                                         >
                                                             {call.disposition ||
-                                                                (call.needs_attention
-                                                                    ? 'Needs attention'
-                                                                    : call.finalized
-                                                                      ? 'Finalized'
-                                                                      : 'Pending')}
+                                                                (call.unconfirmed_error
+                                                                    ? 'Unconfirmed/error'
+                                                                    : call.confirmed_failure
+                                                                      ? 'Confirmed failure'
+                                                                      : call.finalized
+                                                                        ? 'Finalized'
+                                                                        : 'Pending')}
                                                             {!call.disposition_confirmed &&
                                                                 call.disposition &&
                                                                 ' (requested)'}
@@ -1355,6 +1560,8 @@ export const VicidialRemoteAgentsTab = () => {
                         onChange={e =>
                             setMappingForm({ ...mappingForm, user_start: e.target.value })
                         }
+                        placeholder="e.g. 4501"
+                        required
                     />
                     <FormInput
                         label="Number of lines"
@@ -1374,6 +1581,8 @@ export const VicidialRemoteAgentsTab = () => {
                         onChange={e =>
                             setMappingForm({ ...mappingForm, conf_exten: e.target.value })
                         }
+                        placeholder="e.g. 8600"
+                        required
                     />
                     <FormInput
                         label="One-line fallback user"
@@ -1382,23 +1591,218 @@ export const VicidialRemoteAgentsTab = () => {
                         onChange={e =>
                             setMappingForm({ ...mappingForm, static_agent_user: e.target.value })
                         }
+                        placeholder="Optional; must equal the starting user"
                     />
-                    <FormInput
-                        label="Trusted AAVA dialplan context"
-                        tooltip={mappingHelp.context}
-                        value={mappingForm.trusted_context}
-                        onChange={e =>
-                            setMappingForm({ ...mappingForm, trusted_context: e.target.value })
-                        }
-                    />
-                    <FormInput
-                        label="Trusted endpoint (optional)"
-                        tooltip={mappingHelp.endpoint}
-                        value={mappingForm.trusted_endpoint}
-                        onChange={e =>
-                            setMappingForm({ ...mappingForm, trusted_endpoint: e.target.value })
-                        }
-                    />
+                </div>
+
+                <div className="space-y-4 rounded-md border bg-muted/20 p-4">
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-semibold">AAVA PBX endpoint</h4>
+                            <HelpTooltip
+                                ariaLabel="Help for AAVA PBX endpoint"
+                                content="These values describe the Asterisk endpoint that receives the VICIdial Remote Agent leg. They generate setup guidance and drive read-only ARI reachability checks."
+                            />
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            Use your own PBX names and SIP identities. AAVA never stores the SIP
+                            secret or automatically changes FreePBX/Asterisk.
+                        </p>
+                    </div>
+                    <div className="grid gap-x-4 md:grid-cols-2">
+                        <FormSelect
+                            label="PBX setup mode"
+                            tooltip={mappingHelp.pbxSetupMode}
+                            value={mappingForm.pbx_setup_mode}
+                            onChange={e =>
+                                setMappingForm({
+                                    ...mappingForm,
+                                    pbx_setup_mode: e.target.value as MappingForm['pbx_setup_mode'],
+                                })
+                            }
+                            options={[
+                                ...(mappingForm.pbx_technology === 'PJSIP'
+                                    ? [
+                                          {
+                                              value: 'generated_registration',
+                                              label: 'Generate registration setup',
+                                          },
+                                      ]
+                                    : []),
+                                { value: 'existing_endpoint', label: 'Use existing endpoint' },
+                            ]}
+                        />
+                        <FormSelect
+                            label="PBX technology"
+                            tooltip={mappingHelp.pbxTechnology}
+                            value={mappingForm.pbx_technology}
+                            onChange={e => {
+                                setEndpointDiscovery(null);
+                                setEndpointDiscoveryError('');
+                                const technology = e.target.value as MappingForm['pbx_technology'];
+                                setMappingForm({
+                                    ...mappingForm,
+                                    pbx_technology: technology,
+                                    pbx_setup_mode:
+                                        technology === 'SIP'
+                                            ? 'existing_endpoint'
+                                            : mappingForm.pbx_setup_mode,
+                                });
+                            }}
+                            options={[
+                                { value: 'PJSIP', label: 'PJSIP (recommended)' },
+                                { value: 'SIP', label: 'SIP / chan_sip (manual)' },
+                            ]}
+                        />
+                        <FormInput
+                            label="PBX trunk name"
+                            tooltip={mappingHelp.pbxTrunkName}
+                            value={mappingForm.pbx_trunk_name}
+                            onChange={e =>
+                                setMappingForm({ ...mappingForm, pbx_trunk_name: e.target.value })
+                            }
+                            placeholder="e.g. support-vicidial"
+                        />
+                        <FormInput
+                            label="Asterisk endpoint ID"
+                            tooltip={mappingHelp.endpoint}
+                            value={mappingForm.trusted_endpoint}
+                            onChange={e =>
+                                setMappingForm({ ...mappingForm, trusted_endpoint: e.target.value })
+                            }
+                            placeholder="Exact ARI endpoint resource"
+                            required
+                        />
+                        <div className="space-y-2 md:col-span-2">
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium">Endpoint discovery</span>
+                                <HelpTooltip
+                                    ariaLabel="Help for Endpoint discovery"
+                                    content={mappingHelp.endpointDiscovery}
+                                />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    type="button"
+                                    className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                                    onClick={() => void discoverEndpoints()}
+                                    disabled={endpointDiscoveryLoading}
+                                >
+                                    {endpointDiscoveryLoading ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <RefreshCw className="h-4 w-4" />
+                                    )}
+                                    Detect {mappingForm.pbx_technology} endpoints
+                                </button>
+                                {endpointDiscovery?.endpoints?.length ? (
+                                    <select
+                                        aria-label="Detected Asterisk endpoint"
+                                        className={rowInputClass}
+                                        value=""
+                                        onChange={event => {
+                                            const endpoint = event.target.value;
+                                            if (!endpoint) return;
+                                            setMappingForm({
+                                                ...mappingForm,
+                                                trusted_endpoint: endpoint,
+                                            });
+                                        }}
+                                    >
+                                        <option value="">Choose a detected endpoint…</option>
+                                        {endpointDiscovery.endpoints.map(endpoint => (
+                                            <option
+                                                key={endpoint.resource}
+                                                value={endpoint.resource}
+                                            >
+                                                {endpoint.resource} — {endpoint.state || 'unknown'}
+                                                {endpoint.channel_count
+                                                    ? ` (${endpoint.channel_count} active)`
+                                                    : ''}
+                                            </option>
+                                        ))}
+                                    </select>
+                                ) : null}
+                            </div>
+                            {endpointDiscovery && !endpointDiscovery.endpoints.length ? (
+                                <p className="text-xs text-amber-500">
+                                    {endpointDiscovery.note ||
+                                        `No ${mappingForm.pbx_technology} endpoints were returned. Enter the exact endpoint ID manually.`}
+                                </p>
+                            ) : null}
+                            {endpointDiscoveryError ? (
+                                <p className="text-xs text-destructive">{endpointDiscoveryError}</p>
+                            ) : null}
+                        </div>
+                        <FormInput
+                            label="Trusted AAVA dialplan context"
+                            tooltip={mappingHelp.context}
+                            value={mappingForm.trusted_context}
+                            onChange={e =>
+                                setMappingForm({ ...mappingForm, trusted_context: e.target.value })
+                            }
+                            required
+                        />
+                        {mappingForm.pbx_setup_mode === 'generated_registration' && (
+                            <FormSelect
+                                label="SIP transport"
+                                tooltip={mappingHelp.sipTransport}
+                                value={mappingForm.sip_transport}
+                                onChange={e =>
+                                    setMappingForm({
+                                        ...mappingForm,
+                                        sip_transport: e.target
+                                            .value as MappingForm['sip_transport'],
+                                    })
+                                }
+                                options={[
+                                    { value: 'udp', label: 'UDP (validated baseline)' },
+                                    { value: 'tcp', label: 'TCP' },
+                                    { value: 'tls', label: 'TLS' },
+                                ]}
+                            />
+                        )}
+                        {mappingForm.pbx_setup_mode === 'generated_registration' && (
+                            <>
+                                <FormInput
+                                    label="SIP username override"
+                                    tooltip={mappingHelp.sipUsername}
+                                    value={mappingForm.sip_username}
+                                    onChange={e =>
+                                        setMappingForm({
+                                            ...mappingForm,
+                                            sip_username: e.target.value,
+                                        })
+                                    }
+                                    placeholder="Defaults to Remote Agent extension"
+                                />
+                                <FormInput
+                                    label="SIP auth username override"
+                                    tooltip={mappingHelp.sipAuthUsername}
+                                    value={mappingForm.sip_auth_username}
+                                    onChange={e =>
+                                        setMappingForm({
+                                            ...mappingForm,
+                                            sip_auth_username: e.target.value,
+                                        })
+                                    }
+                                    placeholder="Defaults to SIP username"
+                                />
+                                <FormInput
+                                    label="SIP contact user override"
+                                    tooltip={mappingHelp.sipContactUser}
+                                    value={mappingForm.sip_contact_user}
+                                    onChange={e =>
+                                        setMappingForm({
+                                            ...mappingForm,
+                                            sip_contact_user: e.target.value,
+                                        })
+                                    }
+                                    placeholder="Defaults to Remote Agent extension"
+                                />
+                            </>
+                        )}
+                    </div>
                 </div>
 
                 <div className="space-y-5 rounded-md border bg-muted/20 p-4">
@@ -1859,7 +2263,11 @@ export const VicidialRemoteAgentsTab = () => {
                                 <h4 className="font-semibold">FreePBX / AAVA trunk</h4>
                                 <HelpTooltip
                                     ariaLabel="Help for FreePBX trunk"
-                                    content="Use these values to create the outbound-authenticated PJSIP registration from AAVA to the dedicated VICIdial Remote Agent Phone."
+                                    content={
+                                        guidance.freepbx_trunk.setup_mode === 'existing_endpoint'
+                                            ? 'Confirm these identifiers against the existing operator-managed endpoint. AAVA does not overwrite its trunk, authentication, registration, or transport configuration.'
+                                            : 'Use these values to create the outbound-authenticated PJSIP registration from AAVA to the dedicated VICIdial Remote Agent Phone.'
+                                    }
                                 />
                             </div>
                             <div className="grid gap-2 md:grid-cols-2">

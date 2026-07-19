@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -57,6 +58,13 @@ class VicidialMappingRequest(BaseModel):
     ai_agent: str
     trusted_context: str = "from-vicidial-ra"
     trusted_endpoint: Optional[str] = None
+    pbx_setup_mode: str = "generated_registration"
+    pbx_technology: str = "PJSIP"
+    pbx_trunk_name: Optional[str] = None
+    sip_username: Optional[str] = None
+    sip_auth_username: Optional[str] = None
+    sip_contact_user: Optional[str] = None
+    sip_transport: str = "udp"
     dispositions: Dict[str, str] = Field(default_factory=dict)
     statuses: Dict[str, str] = Field(default_factory=dict)
     destinations: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -102,6 +110,105 @@ def _call_history_store():
         raise HTTPException(status_code=500, detail=f"Call History unavailable: {exc}")
 
 
+async def _engine_health_ari_connected_compat() -> Optional[bool]:
+    from api import system as system_api
+
+    return await system_api._engine_health_ari_connected()
+
+
+async def _asterisk_endpoints(technology: str, resource: Optional[str] = None) -> Dict[str, Any]:
+    """Return a sanitized ARI endpoint snapshot without exposing ARI credentials."""
+    import httpx
+    from api import system as system_api
+
+    tech = str(technology or "PJSIP").strip().upper()
+    if tech not in {"PJSIP", "SIP"}:
+        raise ValueError("PBX technology must be PJSIP or SIP")
+    endpoint = str(resource or "").strip() or None
+    settings = await asyncio.to_thread(system_api._ari_env_settings)
+    engine_ari = await system_api._engine_health_ari_connected()
+    result: Dict[str, Any] = {
+        "ari_connected": engine_ari,
+        "probe_available": False,
+        "technology": tech,
+        "resource": endpoint,
+        "found": False,
+        "state": None,
+        "channel_count": 0,
+        "ready": False,
+    }
+    if engine_ari is False:
+        result["note"] = "Asterisk ARI is disconnected"
+        return result
+    if not settings.get("username") or not settings.get("password"):
+        result["note"] = "ARI is connected, but endpoint detail credentials are unavailable to Admin UI"
+        return result
+
+    base_url = f"{settings['scheme']}://{settings['host']}:{settings['port']}"
+    verify = settings["ssl_verify"] if settings["scheme"] == "https" else True
+    path = f"/ari/endpoints/{quote(tech, safe='')}"
+    if endpoint:
+        path += f"/{quote(endpoint, safe='')}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0, connect=3.0), verify=verify
+        ) as client:
+            response = await client.get(
+                base_url + path,
+                auth=(settings["username"], settings["password"]),
+            )
+    except Exception:
+        result["note"] = "ARI endpoint query failed"
+        return result
+
+    result["probe_available"] = True
+    if response.status_code == 404:
+        result["note"] = "Asterisk endpoint was not found"
+        return result
+    if response.status_code != 200:
+        result["note"] = f"ARI endpoint query returned HTTP {response.status_code}"
+        return result
+
+    payload = response.json()
+    rows = payload if isinstance(payload, list) else [payload]
+    endpoints = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_tech = str(row.get("technology") or tech).strip().upper()
+        row_resource = str(row.get("resource") or "").strip()
+        if not row_resource:
+            continue
+        state = str(row.get("state") or "unknown").strip().lower()
+        if state not in {"online", "offline", "unknown"}:
+            state = "unknown"
+        endpoints.append(
+            {
+                "technology": row_tech,
+                "resource": row_resource,
+                "state": state,
+                "channel_count": len(row.get("channel_ids") or []),
+            }
+        )
+    result["endpoints"] = sorted(endpoints, key=lambda row: row["resource"].lower())
+    if endpoint:
+        match = next((row for row in endpoints if row["resource"] == endpoint), None)
+        if match:
+            result.update(match)
+            result["found"] = True
+            result["ready"] = match["state"] == "online"
+            result["note"] = (
+                "Endpoint is reachable through Asterisk"
+                if result["ready"]
+                else "Endpoint exists but is not currently online"
+            )
+    else:
+        result["found"] = bool(endpoints)
+        result["ready"] = engine_ari is not False
+        result["note"] = "Asterisk endpoints loaded"
+    return result
+
+
 def _activity_start(range_name: str, now: Optional[datetime] = None) -> datetime:
     """Return a UTC lower bound for one of the deliberately small UI windows."""
     current = now or datetime.now(timezone.utc)
@@ -126,18 +233,23 @@ def _mask_phone_number(value: Optional[str]) -> Optional[str]:
     return f"•••{digits[-visible:]}"
 
 
-def _record_activity(record: Any) -> Dict[str, Any]:
+def _record_activity(record: Any, ai_failure_status: Optional[str] = None) -> Dict[str, Any]:
     metadata = record.external_metadata if isinstance(record.external_metadata, dict) else {}
     session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
     disposition = str(record.external_disposition or "").strip() or None
     requested = str(metadata.get("requested_disposition") or "").strip() or None
     finalized = bool(metadata.get("finalized") and disposition)
     outcome = str(record.outcome or "unknown").strip().lower()
-    needs_attention = bool(
-        not finalized
-        or outcome in {"error", "failed"}
-        or str(metadata.get("disposition_label") or "").strip() == "ai_failure"
+    semantic = str(metadata.get("disposition_label") or "").strip()
+    unconfirmed_error = bool(not finalized or outcome in {"error", "failed"})
+    confirmed_failure = bool(
+        finalized
+        and (
+            semantic == "ai_failure"
+            or (ai_failure_status and disposition == ai_failure_status)
+        )
     )
+    needs_attention = bool(unconfirmed_error or confirmed_failure)
     return {
         "id": record.id,
         "started_at": record.start_time.isoformat() if record.start_time else None,
@@ -150,6 +262,8 @@ def _record_activity(record: Any) -> Dict[str, Any]:
         "disposition": disposition or requested,
         "disposition_confirmed": bool(disposition),
         "finalized": finalized,
+        "unconfirmed_error": unconfirmed_error,
+        "confirmed_failure": confirmed_failure,
         "needs_attention": needs_attention,
         "mapping_id": str(metadata.get("mapping_id") or "").strip() or None,
         "mapping_name": str(metadata.get("mapping_name") or "").strip() or None,
@@ -161,13 +275,26 @@ def _summarize_activity(
     mapping_id: Optional[str],
     mappings: List[Dict[str, Any]],
 ):
-    rows = [_record_activity(record) for record in records]
+    failure_statuses = {
+        str(mapping.get("id")): str(
+            (mapping.get("statuses") or {}).get("ai_failure") or "AIFAIL"
+        ).strip()
+        for mapping in mappings
+        if mapping.get("id")
+    }
+    rows = []
+    for record in records:
+        metadata = record.external_metadata if isinstance(record.external_metadata, dict) else {}
+        record_mapping_id = str(metadata.get("mapping_id") or "").strip()
+        rows.append(_record_activity(record, failure_statuses.get(record_mapping_id)))
     mapping_summaries: Dict[str, Dict[str, Any]] = {
         str(mapping.get("id")): {
             "mapping_id": str(mapping.get("id")),
             "mapping_name": str(mapping.get("name") or "Unnamed mapping"),
             "handled": 0,
             "finalized": 0,
+            "unconfirmed_errors": 0,
+            "confirmed_failures": 0,
             "needs_attention": 0,
             "last_call_at": None,
         }
@@ -182,12 +309,16 @@ def _summarize_activity(
                 "mapping_name": row["mapping_name"] or "Unknown/deleted mapping",
                 "handled": 0,
                 "finalized": 0,
+                "unconfirmed_errors": 0,
+                "confirmed_failures": 0,
                 "needs_attention": 0,
                 "last_call_at": None,
             }
         summary = mapping_summaries[key]
         summary["handled"] += 1
         summary["finalized"] += int(row["finalized"])
+        summary["unconfirmed_errors"] += int(row["unconfirmed_error"])
+        summary["confirmed_failures"] += int(row["confirmed_failure"])
         summary["needs_attention"] += int(row["needs_attention"])
         if summary["last_call_at"] is None:
             summary["last_call_at"] = row["started_at"]
@@ -204,6 +335,8 @@ def _summarize_activity(
         "summary": {
             "handled": handled,
             "finalized": sum(int(row["finalized"]) for row in selected),
+            "unconfirmed_errors": sum(int(row["unconfirmed_error"]) for row in selected),
+            "confirmed_failures": sum(int(row["confirmed_failure"]) for row in selected),
             "needs_attention": sum(int(row["needs_attention"]) for row in selected),
             "average_duration_seconds": round(duration / handled, 1) if handled else 0,
             "last_call_at": selected[0]["started_at"] if selected else None,
@@ -265,6 +398,16 @@ async def verify_connection(connection_id: str):
 @router.get("/mappings")
 async def list_mappings():
     return [_mapping_with_connection(mapping) for mapping in _store().list_mappings()]
+
+
+@router.get("/asterisk/endpoints")
+async def list_asterisk_endpoints(
+    technology: str = Query("PJSIP", pattern="^(?i:PJSIP|SIP)$"),
+):
+    try:
+        return await _asterisk_endpoints(technology)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/activity")
@@ -406,12 +549,31 @@ async def verify_mapping(mapping_id: str):
         bool(dict(real_calls.get(direction) or {}).get("verified"))
         for direction in required_directions
     )
+    trusted_endpoint = str(mapping.get("trusted_endpoint") or "").strip()
+    if trusted_endpoint:
+        pbx_endpoint = await _asterisk_endpoints(
+            str(mapping.get("pbx_technology") or "PJSIP"), trusted_endpoint
+        )
+    else:
+        pbx_endpoint = {
+            "ari_connected": await _engine_health_ari_connected_compat(),
+            "probe_available": False,
+            "technology": str(mapping.get("pbx_technology") or "PJSIP").upper(),
+            "resource": None,
+            "found": False,
+            "state": None,
+            "channel_count": 0,
+            "ready": False,
+            "note": "Select the exact Asterisk endpoint ID to enable ARI verification",
+        }
     result: Dict[str, Any] = {
         # API and configuration checks cannot prove SIP registration, stable
         # READY state, media, or disposition. Only a real acceptance call may
         # promote a mapping to ready.
-        "ready": bool(configuration_ready and live_call_ready),
+        "ready": bool(configuration_ready and pbx_endpoint.get("ready") and live_call_ready),
         "configuration_ready": configuration_ready,
+        "pbx_ready": bool(pbx_endpoint.get("ready")),
+        "pbx_endpoint": pbx_endpoint,
         "connection": connection_result,
         "campaign": {
             "id": campaign_id or None,
@@ -433,7 +595,10 @@ async def verify_mapping(mapping_id: str):
         },
         "registration": {
             "verified": False,
-            "note": "Confirm pjsip show registrations and sip show peer on the PBX hosts",
+            "note": (
+                "ARI confirms endpoint reachability, not outbound registration renewal; "
+                "confirm registration on the PBX or with a real call"
+            ),
         },
         "real_call": {
             "verified": live_call_ready,
@@ -492,6 +657,46 @@ async def mapping_guidance(mapping_id: str):
         if len(remote_agent_users) == 1
         else f"{remote_agent_users[0]} through {remote_agent_users[-1]}"
     )
+    setup_mode = str(mapping.get("pbx_setup_mode") or "generated_registration")
+    endpoint_id = str(mapping.get("trusted_endpoint") or "").strip()
+    trunk_name = str(mapping.get("pbx_trunk_name") or endpoint_id or "").strip()
+    sip_username = str(mapping.get("sip_username") or mapping.get("conf_exten") or "").strip()
+    sip_auth_username = str(mapping.get("sip_auth_username") or sip_username).strip()
+    sip_contact_user = str(
+        mapping.get("sip_contact_user") or mapping.get("conf_exten") or ""
+    ).strip()
+    technology = str(mapping.get("pbx_technology") or "PJSIP").upper()
+    if setup_mode == "existing_endpoint":
+        pbx_guidance: Dict[str, Any] = {
+            "setup_mode": setup_mode,
+            "technology": technology,
+            "name": trunk_name or "<EXISTING_TRUNK_LABEL>",
+            "endpoint_id": endpoint_id or "<SELECT_ENDPOINT_ID>",
+            "configuration": "Keep the existing endpoint; AAVA performs no PBX mutation",
+            "context": mapping.get("trusted_context"),
+        }
+    else:
+        pbx_guidance = {
+            "setup_mode": setup_mode,
+            "technology": technology,
+            "name": trunk_name or "<CHOOSE_TRUNK_NAME>",
+            "endpoint_id": endpoint_id or "<SELECT_ENDPOINT_ID>",
+            "username": sip_username,
+            "auth_username": sip_auth_username,
+            "secret": "Use the VICIdial Phone conf_secret; never the Phone pass field",
+            "authentication": "Outbound",
+            "registration": "Send",
+            "sip_server": connection.get("vicidial_host") or "<VICIDIAL_HOST>",
+            "sip_server_port": connection.get("sip_port") or 5060,
+            "context": mapping.get("trusted_context"),
+            "contact_user": sip_contact_user,
+            "transport": str(mapping.get("sip_transport") or "udp").upper(),
+            "match_permit": connection.get("vicidial_host") or "<VICIDIAL_HOST>",
+            "codec": "ulaw",
+            "dtmf": "RFC4733/RFC2833",
+            "direct_media": False,
+            "qualify": "Keep enabled when OPTIONS succeeds; disable only the failing direction after verification",
+        }
     nat_notes = {
         "lan_vpn": [
             "Prefer private routed addresses or a site-to-site VPN.",
@@ -520,24 +725,13 @@ async def mapping_guidance(mapping_id: str):
             "For the first outbound acceptance test, use a measured Drop Call Seconds window (30 seconds in the validated lab); 5 seconds can expire before Remote Agent delivery. Tune it for production policy after measuring.",
             "For SQL-created lab records, keep closer_campaigns as an empty string rather than NULL.",
             "Grant the dedicated API user only the functions required by the readiness report.",
+            (
+                f"Reuse existing Asterisk endpoint {endpoint_id or '<SELECT_ENDPOINT_ID>'}; do not create or overwrite a trunk from this guide."
+                if setup_mode == "existing_endpoint"
+                else f"Create a dedicated AAVA-side trunk/endpoint named {trunk_name or '<CHOOSE_TRUNK_NAME>'}."
+            ),
         ],
-        "freepbx_trunk": {
-            "name": "vicidial-ra",
-            "username": mapping.get("conf_exten"),
-            "auth_username": mapping.get("conf_exten"),
-            "secret": "Use the VICIdial Phone conf_secret; never the Phone pass field",
-            "authentication": "Outbound",
-            "registration": "Send",
-            "sip_server": connection.get("vicidial_host") or "<VICIDIAL_HOST>",
-            "sip_server_port": connection.get("sip_port") or 5060,
-            "context": mapping.get("trusted_context"),
-            "contact_user": mapping.get("conf_exten"),
-            "match_permit": connection.get("vicidial_host") or "<VICIDIAL_HOST>",
-            "codec": "ulaw",
-            "dtmf": "RFC4733/RFC2833",
-            "direct_media": False,
-            "qualify": "Keep enabled when OPTIONS succeeds; disable only the failing direction after verification",
-        },
+        "freepbx_trunk": pbx_guidance,
         "dialplan": _dialplan(mapping),
         "network": {
             "topology": topology,

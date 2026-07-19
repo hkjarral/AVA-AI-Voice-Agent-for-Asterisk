@@ -22,6 +22,7 @@ _ENV_REFERENCE_RE = re.compile(
 )
 _DIALPLAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _VICIDIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_SIP_IDENTITY_RE = re.compile(r"^[A-Za-z0-9_.+@-]+$")
 
 
 def _now() -> str:
@@ -104,6 +105,13 @@ class VicidialStore:
                     ai_agent TEXT NOT NULL,
                     trusted_context TEXT NOT NULL DEFAULT 'from-vicidial-ra',
                     trusted_endpoint TEXT,
+                    pbx_setup_mode TEXT NOT NULL DEFAULT 'generated_registration',
+                    pbx_technology TEXT NOT NULL DEFAULT 'PJSIP',
+                    pbx_trunk_name TEXT,
+                    sip_username TEXT,
+                    sip_auth_username TEXT,
+                    sip_contact_user TEXT,
+                    sip_transport TEXT NOT NULL DEFAULT 'udp',
                     dispositions_json TEXT,
                     statuses_json TEXT,
                     destinations_json TEXT,
@@ -130,6 +138,23 @@ class VicidialStore:
                 conn.execute(
                     "ALTER TABLE vicidial_connections ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'"
                 )
+            mapping_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(vicidial_mappings)")
+            }
+            additive_mapping_columns = {
+                "pbx_setup_mode": "TEXT NOT NULL DEFAULT 'generated_registration'",
+                "pbx_technology": "TEXT NOT NULL DEFAULT 'PJSIP'",
+                "pbx_trunk_name": "TEXT",
+                "sip_username": "TEXT",
+                "sip_auth_username": "TEXT",
+                "sip_contact_user": "TEXT",
+                "sip_transport": "TEXT NOT NULL DEFAULT 'udp'",
+            }
+            for column_name, definition in additive_mapping_columns.items():
+                if column_name not in mapping_columns:
+                    conn.execute(
+                        f"ALTER TABLE vicidial_mappings ADD COLUMN {column_name} {definition}"
+                    )
 
     @staticmethod
     def _connection_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -257,6 +282,36 @@ class VicidialStore:
             raise ValueError("Trusted dialplan context contains unsupported characters")
         if trusted_endpoint and not _DIALPLAN_TOKEN_RE.fullmatch(trusted_endpoint):
             raise ValueError("Trusted endpoint contains unsupported characters")
+        pbx_setup_mode = str(
+            payload.get("pbx_setup_mode") or "generated_registration"
+        ).strip().lower()
+        if pbx_setup_mode not in {"generated_registration", "existing_endpoint"}:
+            raise ValueError("PBX setup mode must be generated_registration or existing_endpoint")
+        pbx_technology = str(payload.get("pbx_technology") or "PJSIP").strip().upper()
+        if pbx_technology not in {"PJSIP", "SIP"}:
+            raise ValueError("PBX technology must be PJSIP or SIP")
+        if pbx_setup_mode == "generated_registration" and pbx_technology != "PJSIP":
+            raise ValueError(
+                "Generated registration setup supports PJSIP only; use an existing endpoint for SIP"
+            )
+        pbx_trunk_name = str(
+            payload.get("pbx_trunk_name") or trusted_endpoint or ""
+        ).strip() or None
+        if pbx_trunk_name and (len(pbx_trunk_name) > 80 or any(ord(ch) < 32 for ch in pbx_trunk_name)):
+            raise ValueError("PBX trunk name must be 80 printable characters or fewer")
+
+        def sip_identity(field_name: str, fallback: Optional[str]) -> Optional[str]:
+            value = str(payload.get(field_name) or fallback or "").strip() or None
+            if value and (len(value) > 128 or not _SIP_IDENTITY_RE.fullmatch(value)):
+                raise ValueError(f"{field_name} contains unsupported characters")
+            return value
+
+        sip_username = sip_identity("sip_username", conf_exten)
+        sip_auth_username = sip_identity("sip_auth_username", sip_username)
+        sip_contact_user = sip_identity("sip_contact_user", conf_exten)
+        sip_transport = str(payload.get("sip_transport") or "udp").strip().lower()
+        if sip_transport not in {"udp", "tcp", "tls"}:
+            raise ValueError("SIP transport must be udp, tcp, or tls")
         static_agent_user = str(payload.get("static_agent_user") or "").strip() or None
         if static_agent_user and (lines != 1 or static_agent_user != user_start):
             raise ValueError("The one-line fallback user must equal the starting user and requires exactly one line")
@@ -330,6 +385,13 @@ class VicidialStore:
             "ai_agent": ai_agent,
             "trusted_context": trusted_context,
             "trusted_endpoint": trusted_endpoint,
+            "pbx_setup_mode": pbx_setup_mode,
+            "pbx_technology": pbx_technology,
+            "pbx_trunk_name": pbx_trunk_name,
+            "sip_username": sip_username,
+            "sip_auth_username": sip_auth_username,
+            "sip_contact_user": sip_contact_user,
+            "sip_transport": sip_transport,
             "dispositions": dispositions,
             "statuses": statuses,
             "destinations": destinations,
@@ -458,6 +520,29 @@ class VicidialStore:
         mapping_id = mapping_id or str(uuid.uuid4())
         now = _now()
         with self._lock, self._connection() as conn:
+            if data["enabled"]:
+                start = int(data["user_start"])
+                end = start + int(data["number_of_lines"]) - 1
+                for row in conn.execute(
+                    "SELECT * FROM vicidial_mappings WHERE connection_id=? AND enabled=1 AND id<>?",
+                    (data["connection_id"], mapping_id),
+                ).fetchall():
+                    other = self._mapping_dict(row)
+                    other_start = int(str(other.get("user_start") or "0"))
+                    other_end = other_start + int(other.get("number_of_lines") or 1) - 1
+                    if start <= other_end and other_start <= end:
+                        raise ValueError(
+                            f"Remote Agent user range overlaps enabled mapping {other.get('name')}"
+                        )
+                    if str(other.get("conf_exten") or "") == data["conf_exten"]:
+                        raise ValueError(
+                            f"Remote Agent extension is already used by enabled mapping {other.get('name')}"
+                        )
+                    endpoint = str(data.get("trusted_endpoint") or "")
+                    if endpoint and endpoint == str(other.get("trusted_endpoint") or ""):
+                        raise ValueError(
+                            f"Asterisk endpoint is already used by enabled mapping {other.get('name')}"
+                        )
             exists = conn.execute(
                 "SELECT * FROM vicidial_mappings WHERE id=?", (mapping_id,)
             ).fetchone()
@@ -475,9 +560,11 @@ class VicidialStore:
                 INSERT INTO vicidial_mappings (
                     id,connection_id,name,enabled,direction,campaign_id,closer_campaigns_json,
                     user_start,number_of_lines,conf_exten,static_agent_user,ai_agent,
-                    trusted_context,trusted_endpoint,dispositions_json,statuses_json,
+                    trusted_context,trusted_endpoint,pbx_setup_mode,pbx_technology,pbx_trunk_name,
+                    sip_username,sip_auth_username,sip_contact_user,sip_transport,
+                    dispositions_json,statuses_json,
                     destinations_json,dnc_scope,callback_type,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     connection_id=excluded.connection_id,name=excluded.name,enabled=excluded.enabled,
                     direction=excluded.direction,campaign_id=excluded.campaign_id,
@@ -485,6 +572,10 @@ class VicidialStore:
                     number_of_lines=excluded.number_of_lines,conf_exten=excluded.conf_exten,
                     static_agent_user=excluded.static_agent_user,ai_agent=excluded.ai_agent,
                     trusted_context=excluded.trusted_context,trusted_endpoint=excluded.trusted_endpoint,
+                    pbx_setup_mode=excluded.pbx_setup_mode,pbx_technology=excluded.pbx_technology,
+                    pbx_trunk_name=excluded.pbx_trunk_name,sip_username=excluded.sip_username,
+                    sip_auth_username=excluded.sip_auth_username,
+                    sip_contact_user=excluded.sip_contact_user,sip_transport=excluded.sip_transport,
                     dispositions_json=excluded.dispositions_json,statuses_json=excluded.statuses_json,
                     destinations_json=excluded.destinations_json,dnc_scope=excluded.dnc_scope,
                     callback_type=excluded.callback_type,updated_at=excluded.updated_at
@@ -494,7 +585,10 @@ class VicidialStore:
                     data["direction"], data["campaign_id"], _json(data["closer_campaigns"], []),
                     data["user_start"], data["number_of_lines"], data["conf_exten"],
                     data["static_agent_user"], data["ai_agent"], data["trusted_context"],
-                    data["trusted_endpoint"], _json(data["dispositions"], {}),
+                    data["trusted_endpoint"], data["pbx_setup_mode"], data["pbx_technology"],
+                    data["pbx_trunk_name"], data["sip_username"], data["sip_auth_username"],
+                    data["sip_contact_user"], data["sip_transport"],
+                    _json(data["dispositions"], {}),
                     _json(data["statuses"], {}), _json(data["destinations"], {}),
                     data["dnc_scope"], data["callback_type"],
                     str(exists["created_at"]) if exists else now, now,

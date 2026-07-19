@@ -35,6 +35,13 @@ def _mapping_payload(connection_id):
         "ai_agent": "demo_deepgram",
         "trusted_context": "from-vicidial-ra",
         "trusted_endpoint": "vicidial-ra",
+        "pbx_setup_mode": "generated_registration",
+        "pbx_technology": "PJSIP",
+        "pbx_trunk_name": "Support VICIdial",
+        "sip_username": "ava-phone",
+        "sip_auth_username": "ava-auth",
+        "sip_contact_user": "ava-contact",
+        "sip_transport": "tcp",
         "dispositions": {"sale": "SALE", "callback": "CALLBK"},
         "statuses": {},
         "destinations": {
@@ -55,6 +62,31 @@ def _client(monkeypatch, tmp_path):
         "_active_agent",
         lambda slug: {"slug": slug, "is_active": True} if slug == "demo_deepgram" else None,
     )
+    async def _online_endpoint(technology, resource=None):
+        return {
+            "ari_connected": True,
+            "probe_available": True,
+            "technology": str(technology).upper(),
+            "resource": resource,
+            "found": bool(resource),
+            "state": "online" if resource else None,
+            "channel_count": 0,
+            "ready": True,
+            "endpoints": [] if resource else [
+                {
+                    "technology": str(technology).upper(),
+                    "resource": "vicidial-ra",
+                    "state": "online",
+                    "channel_count": 0,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(vicidial_api, "_asterisk_endpoints", _online_endpoint)
+    async def _ari_connected():
+        return True
+
+    monkeypatch.setattr(vicidial_api, "_engine_health_ari_connected_compat", _ari_connected)
     app = FastAPI()
     app.include_router(vicidial_api.router, prefix="/api")
     return TestClient(app), store
@@ -89,6 +121,85 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     assert "Set(__AAVA_CALL_OWNER=vicidial)" in body["dialplan"]
     assert "Set(__AI_AGENT=demo_deepgram)" in body["dialplan"]
     assert body["freepbx_trunk"]["secret"].startswith("Use the VICIdial Phone")
+    assert body["freepbx_trunk"]["name"] == "Support VICIdial"
+    assert body["freepbx_trunk"]["endpoint_id"] == "vicidial-ra"
+    assert body["freepbx_trunk"]["username"] == "ava-phone"
+    assert body["freepbx_trunk"]["auth_username"] == "ava-auth"
+    assert body["freepbx_trunk"]["contact_user"] == "ava-contact"
+    assert body["freepbx_trunk"]["transport"] == "TCP"
+
+
+def test_enabled_mapping_rejects_overlapping_users_and_reused_endpoint(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+
+    overlapping = _mapping_payload(connection["id"])
+    overlapping.update(
+        {
+            "name": "Overlapping users",
+            "user_start": "9001",
+            "conf_exten": "8400",
+            "trusted_endpoint": "other-endpoint",
+        }
+    )
+    response = client.post("/api/outbound/vicidial/mappings", json=overlapping)
+    assert response.status_code == 422
+    assert "user range overlaps" in response.json()["detail"]
+
+    reused_endpoint = _mapping_payload(connection["id"])
+    reused_endpoint.update(
+        {
+            "name": "Reused endpoint",
+            "user_start": "9100",
+            "static_agent_user": "9100",
+            "conf_exten": "8400",
+        }
+    )
+    response = client.post("/api/outbound/vicidial/mappings", json=reused_endpoint)
+    assert response.status_code == 422
+    assert "endpoint is already used" in response.json()["detail"]
+
+
+def test_sip_requires_existing_endpoint_mode_and_preserves_existing_configuration(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    payload = _mapping_payload(connection["id"])
+    payload["pbx_technology"] = "SIP"
+
+    response = client.post("/api/outbound/vicidial/mappings", json=payload)
+    assert response.status_code == 422
+    assert "supports PJSIP only" in response.json()["detail"]
+
+    payload["pbx_setup_mode"] = "existing_endpoint"
+    response = client.post("/api/outbound/vicidial/mappings", json=payload)
+    assert response.status_code == 200
+
+    guidance = client.get(
+        f"/api/outbound/vicidial/mappings/{response.json()['id']}/guidance"
+    )
+    assert guidance.status_code == 200
+    trunk = guidance.json()["freepbx_trunk"]
+    assert trunk["technology"] == "SIP"
+    assert "no PBX mutation" in trunk["configuration"]
+    assert "secret" not in trunk
+    assert "registration" not in trunk
+
+
+def test_lists_sanitized_asterisk_endpoints(monkeypatch, tmp_path):
+    client, _store = _client(monkeypatch, tmp_path)
+    response = client.get("/api/outbound/vicidial/asterisk/endpoints?technology=PJSIP")
+    assert response.status_code == 200
+    assert response.json()["endpoints"] == [
+        {
+            "technology": "PJSIP",
+            "resource": "vicidial-ra",
+            "state": "online",
+            "channel_count": 0,
+        }
+    ]
 
 
 def test_mapping_verification_preserves_directional_live_call_evidence(
@@ -138,6 +249,8 @@ def test_mapping_verification_preserves_directional_live_call_evidence(
     assert response.status_code == 200
     body = response.json()
     assert body["configuration_ready"] is True
+    assert body["pbx_ready"] is True
+    assert body["pbx_endpoint"]["state"] == "online"
     assert body["remote_agent"]["api_users"] == ["9001"]
     assert body["remote_agent"]["unverified_users"] == []
     assert body["ready"] is False
@@ -251,6 +364,27 @@ def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_p
                 "finalized": False,
             },
         ),
+        CallRecord(
+            id="record-3",
+            call_id="asterisk-3",
+            caller_number="13165550124",
+            start_time=now - timedelta(minutes=3),
+            end_time=now - timedelta(minutes=2, seconds=52),
+            duration_seconds=8,
+            context_name="demo_deepgram",
+            outcome="completed",
+            external_platform="vicidial",
+            external_direction="outbound",
+            external_disposition="AIFAIL",
+            external_metadata={
+                "mapping_id": "mapping-1",
+                "mapping_name": "AVA Remote Agent",
+                "session": {"agent_user": "9001"},
+                "requested_disposition": "DNC",
+                "disposition_label": "dnc",
+                "finalized": True,
+            },
+        ),
     ]
 
     class _History:
@@ -268,14 +402,21 @@ def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_p
     assert response.status_code == 200
     body = response.json()
     assert body["summary"] == {
-        "handled": 2,
-        "finalized": 1,
-        "needs_attention": 1,
-        "average_duration_seconds": 26.0,
+        "handled": 3,
+        "finalized": 2,
+        "unconfirmed_errors": 1,
+        "confirmed_failures": 1,
+        "needs_attention": 2,
+        "average_duration_seconds": 20.0,
         "last_call_at": now.isoformat(),
     }
-    assert body["dispositions"] == [{"status": "AIHU", "count": 1}]
-    assert body["by_mapping"][0]["handled"] == 2
+    assert body["dispositions"] == [
+        {"status": "AIFAIL", "count": 1},
+        {"status": "AIHU", "count": 1},
+    ]
+    assert body["by_mapping"][0]["handled"] == 3
+    assert body["by_mapping"][0]["unconfirmed_errors"] == 1
+    assert body["by_mapping"][0]["confirmed_failures"] == 1
     assert len(body["recent_calls"]) == 1
     assert body["recent_calls"][0]["masked_number"] == "•••9284"
     assert body["recent_calls"][0]["remote_agent"] == "9001"

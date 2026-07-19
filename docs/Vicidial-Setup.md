@@ -10,7 +10,8 @@ carrier dialplan. Do not use `AAVA_OUTBOUND_PBX_TYPE=vicidial` for new deploymen
 
 ## Support boundary
 
-The first validated profile is a separate-box LAN/VPN deployment:
+The first validated profile is a separate-box LAN/VPN deployment. The identifiers below describe
+the acceptance lab; they are examples, not product defaults or required names:
 
 - VICIdial/ViciBox 12: VICIdial `2.14b0.5`, schema `1723`, revision `3896`, Asterisk
   `18.26.4-vici`, `chan_sip`
@@ -165,37 +166,54 @@ add_dnc_phone update_lead lead_callback_info
 Do not grant `ALL_FUNCTIONS` after setup. AAVA's connection check performs only read-only calls;
 it does not probe mutating functions.
 
-## 2. Configure the AAVA-facing trunk in FreePBX
+## 2. Configure the AAVA-facing endpoint in FreePBX/Asterisk
 
-In **Connectivity → Trunks → Add SIP (chan_pjsip) Trunk**, create `vicidial-ra`.
+Each enabled mapping owns one dedicated AAVA-side Phone/PBX route. Do not share that route across
+mappings. AAVA supports two operator-selected setup modes:
+
+- **Generate registration setup** produces guidance for a new operator-applied PJSIP registration.
+- **Use existing endpoint** preserves an endpoint already managed in FreePBX/Asterisk. AAVA only
+  records its exact endpoint ID, generates the trusted dialplan, and performs read-only checks.
+
+AAVA never writes FreePBX, Asterisk, or VICIdial configuration and never stores the SIP secret.
+`PJSIP` is the recommended and validated AAVA-side technology. `SIP/chan_sip` remains a manual
+existing-endpoint path and requires its own acceptance testing.
+
+For a generated PJSIP registration, open **Connectivity → Trunks → Add SIP (chan_pjsip) Trunk**
+and choose names and SIP identities appropriate for the deployment.
 
 ### General/registration settings
 
 | Field | Value |
 | --- | --- |
-| Username | Remote Agent Phone extension, e.g. `8371` |
-| Auth username | same as Username |
+| Friendly trunk name | operator-selected label, e.g. `support-vicidial` |
+| Exact Asterisk endpoint ID | ARI/PJSIP resource, often but not always the trunk name |
+| Username | operator-selected registration username; normally the Remote Agent Phone extension |
+| Auth username | authentication identity; normally the same as Username |
 | Secret | VICIdial Phone `conf_secret` |
 | Authentication | Outbound |
 | Registration | Send |
 | SIP server | VICIdial dialer IP/FQDN |
 | SIP port | normally `5060` |
-| Context | a dedicated context such as `from-vicidial-ra` |
-| Contact user | Remote Agent Phone extension |
+| Context | operator-selected dedicated context such as `from-vicidial-ra` |
+| Contact user | user VICIdial calls; normally the Remote Agent Phone extension |
 | Match/permit | exact VICIdial signaling address when supported |
 | Codec | `ulaw` baseline |
 | Direct media | No |
 
-Choose the FreePBX PJSIP transport that reaches VICIdial. On a multi-homed host, this may require
-a dedicated LAN transport. Apply Config, then confirm both sides:
+The friendly label, endpoint ID, registration username, authentication username, contact user,
+Remote Agent Phone, context, and Remote Agent user range are independent configurable values. They
+may match for convenience but AAVA does not assume that they do. Choose the FreePBX PJSIP transport
+that reaches VICIdial. On a multi-homed host, this may require a dedicated LAN transport. Apply
+Config, then confirm both sides using the operator-selected values:
 
 ```bash
 # AAVA/FreePBX
 asterisk -rx "pjsip show registrations"
-asterisk -rx "pjsip show endpoint vicidial-ra"
+asterisk -rx "pjsip show endpoint <EXACT_ENDPOINT_ID>"
 
 # VICIdial dialer
-asterisk -rx "sip show peer 8371"
+asterisk -rx "sip show peer <REMOTE_AGENT_PHONE>"
 ```
 
 One green sample is insufficient. Observe at least two registration/qualification cycles and
@@ -243,18 +261,36 @@ and logged-agent visibility.
 
 ### 3.2 Remote Agent mapping
 
-Create the initial mapping:
+Create the initial mapping. Values such as `4501`, `8600`, `support-vicidial`, and
+`from-vicidial-ra` are illustrative; use identifiers that do not collide with the existing
+VICIdial or Asterisk environment:
 
 - Direction: outbound, inbound, or both
 - VICIdial campaign ID and any inbound/closer campaigns
-- Starting Remote Agent user: `9001`
+- Starting Remote Agent user: the first user in a dedicated contiguous numeric range
 - Number of lines: `1`
-- Remote Agent extension: `8371`
-- One-line fallback user: `9001` only for a one-line mapping
-- AAVA Agent: `demo_deepgram` or another active Agent slug
-- Trusted context: `from-vicidial-ra`
-- Trusted endpoint: `vicidial-ra` where `CHANNEL(endpoint)` is available
+- Remote Agent extension: the VICIdial Phone login/`conf_exten` shared by all mapping lines
+- One-line fallback user: the starting user only for a one-line mapping
+- AAVA Agent: any active Agent slug
+- PBX setup mode: generated registration or existing endpoint
+- PBX technology: PJSIP recommended; SIP is a manual existing-endpoint path
+- PBX trunk name: an operator-facing label used in the generated guide
+- Asterisk endpoint ID: the exact ARI endpoint resource used for verification and authorization
+- SIP username, auth username, contact user, and transport: deployment-specific values; blank
+  generated-mode identity fields inherit the Remote Agent extension
+- Trusted context: a dedicated operator-selected context
 - allowed dispositions, lifecycle statuses, DNC/callback policy, and cold-transfer destinations
+
+Use **Detect endpoints** to query the AAVA Asterisk ARI endpoint list, or enter the exact endpoint
+ID manually when ARI cannot enumerate it. Detection is read-only and does not prove that an
+outbound registration will renew. **Run checks** reports endpoint state as online, offline, or
+unknown. A successful real call remains the end-to-end proof of signaling, media, routing, and
+VICIdial lifecycle behavior.
+
+Within one API connection, enabled mappings may not overlap Remote Agent user ranges, reuse the
+same Remote Agent extension, or reuse the same trusted endpoint. One connection can therefore
+describe several independent endpoint profiles, but AAVA does not automatically fail calls over
+between them.
 
 The one-line fallback still requires `agent_status.callerid` to exactly match the live VICIdial
 call ID. It does not trust a static user without call correlation and is not used for multi-line
@@ -279,7 +315,8 @@ AI-initiated hangup and explicit disposition still use `ra_call_control` while t
 
 ### 3.3 Apply the generated dialplan
 
-Open **Setup guide**, copy the generated context into
+Open **Setup guide**, confirm that its friendly trunk name, exact endpoint ID, SIP identities,
+Phone, user range, and context match the intended environment, then copy the generated context into
 `/etc/asterisk/extensions_custom.conf`, and reload the dialplan. The generated extension is exact,
 not a wildcard. A representative context is:
 
@@ -365,9 +402,12 @@ active callback match before requesting terminal HANGUP with the callback status
 
 ### Readiness
 
-**Run checks** distinguishes configuration readiness from live-call readiness. A mapping becomes
-Ready only after every configured direction has completed a correlated call with a confirmed
-VICIdial terminal action. Registration, two-way audio, DTMF, transfers, DNC/callback effects, and
+The page tracks four independent gates: verified APIs, valid mapping, reachable PBX endpoint, and
+verified real calls. **Run checks** queries the exact saved endpoint through AAVA's existing ARI
+connection. ARI endpoint state is useful reachability evidence but is not proof that an outbound
+registration is configured or renewing. A mapping becomes Ready only after the first three gates
+pass and every configured direction has completed a correlated call with a confirmed VICIdial
+terminal action. Registration renewal, two-way audio, DTMF, transfers, DNC/callback effects, and
 report rows still belong in the deployment acceptance record.
 
 For multi-line mappings, **Run checks** calls `agent_status` for every user and separately requires
@@ -377,12 +417,16 @@ row from making an uncreated VICIdial user look ready.
 ### AAVA-handled activity
 
 The **Remote Agent activity** section is a read-only view over AAVA Call History. It provides
-per-mapping counts, finalized and attention-needed totals, average duration, confirmed disposition
-counts, and the ten most recent calls for Today, 7-day, and 30-day ranges. Recent rows link to the
-existing Call Details view for transcripts, tool executions, and sanitized VICIdial lifecycle
-evidence. Customer phone numbers are masked in the activity response.
-**Needs attention** includes unconfirmed lifecycle records, AAVA errors, and confirmed `AIFAIL`
-outcomes, so it can overlap the finalized count.
+per-mapping counts, finalized totals, unconfirmed/error totals, confirmed-failure totals, average
+duration, confirmed disposition counts, and the ten most recent calls for Today, 7-day, and 30-day
+ranges. Recent rows link to the existing Call Details view for transcripts, tool executions, and
+sanitized VICIdial lifecycle evidence. Customer phone numbers are masked in the activity response.
+
+**Unconfirmed / errors** means AAVA did not obtain terminal confirmation or the AAVA call itself
+errored. **Confirmed failures** means VICIdial confirmed the mapping's configured AI-failure status
+(the default is `AIFAIL`); these calls are finalized, so this count intentionally overlaps the
+finalized total. The classifier uses each mapping's configured status rather than assuming the
+default code.
 
 These metrics count only VICIdial calls that reached an AAVA Remote Agent and were saved to AAVA
 Call History. They are not VICIdial campaign reports: carrier attempts, busy/no-answer results,
@@ -468,7 +512,7 @@ headers.
 - Inspect `vicidial_log.term_reason`. `QUEUETIMEOUT` at the campaign's Drop Call Seconds value
   means VICIdial stopped waiting before the Remote Agent accepted the delivery; raise the value
   for a controlled acceptance test, then tune it using measured production behavior.
-- Confirm Remote Agent user selection and extension `8371` in VICIdial logs/live tables.
+- Confirm the selected Remote Agent user and configured Phone/extension in VICIdial logs/live tables.
 - Confirm the INVITE reaches the exact FreePBX context and extension.
 
 ### AAVA rejects the call at admission

@@ -18,6 +18,7 @@ const connection = {
     username_env: 'VICIDIAL_API_USER',
     password_env: 'VICIDIAL_API_PASS',
     timezone: 'America/Phoenix',
+    last_verification: { ready: true },
 };
 
 const mapping = {
@@ -35,6 +36,13 @@ const mapping = {
     ai_agent: 'demo_deepgram',
     trusted_context: 'from-vicidial-ra',
     trusted_endpoint: 'vicidial-ra',
+    pbx_setup_mode: 'generated_registration',
+    pbx_technology: 'PJSIP',
+    pbx_trunk_name: 'VICIdial lab trunk',
+    sip_username: '8371',
+    sip_auth_username: '8371',
+    sip_contact_user: '8371',
+    sip_transport: 'udp',
     dispositions: { sale: 'SALE' },
     statuses: { ai_hangup: 'AIHU', dnc: 'DNC', callback: 'CALLBK' },
     destinations: {
@@ -43,6 +51,13 @@ const mapping = {
     dnc_scope: 'campaign',
     callback_type: 'ANYONE',
     agent_available: true,
+    last_verification: {
+        configuration_ready: true,
+        pbx_ready: true,
+        pbx_endpoint: { state: 'online', resource: 'vicidial-ra' },
+        real_call: { verified: false, required_directions: ['inbound', 'outbound'] },
+        real_calls: { outbound: { verified: true, verified_at: '2026-07-19T18:30:00+00:00' } },
+    },
 };
 
 describe('VicidialRemoteAgentsTab tooltips', () => {
@@ -56,6 +71,8 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
                         summary: {
                             handled: 3,
                             finalized: 2,
+                            unconfirmed_errors: 1,
+                            confirmed_failures: 0,
                             needs_attention: 1,
                             average_duration_seconds: 42,
                             last_call_at: '2026-07-19T18:30:00+00:00',
@@ -70,6 +87,8 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
                                 mapping_name: mapping.name,
                                 handled: 3,
                                 finalized: 2,
+                                unconfirmed_errors: 1,
+                                confirmed_failures: 0,
                                 needs_attention: 1,
                                 last_call_at: '2026-07-19T18:30:00+00:00',
                             },
@@ -87,6 +106,8 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
                                 disposition: 'AIHU',
                                 disposition_confirmed: true,
                                 finalized: true,
+                                unconfirmed_error: false,
+                                confirmed_failure: false,
                                 needs_attention: false,
                                 mapping_id: mapping.id,
                             },
@@ -106,6 +127,17 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
                         freepbx_trunk: { name: 'vicidial-ra', secret: 'Use conf_secret' },
                         network: { notes: ['Use a routed private LAN.'] },
                         verification_order: ['Verify APIs'],
+                    },
+                };
+            }
+            if (url === '/api/outbound/vicidial/asterisk/endpoints') {
+                return {
+                    data: {
+                        ari_connected: true,
+                        probe_available: true,
+                        endpoints: [
+                            { resource: 'support-vicidial', state: 'online', channel_count: 0 },
+                        ],
                     },
                 };
             }
@@ -158,7 +190,15 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
             'Remote Agent extension',
             'One-line fallback user',
             'Trusted AAVA dialplan context',
-            'Trusted endpoint (optional)',
+            'PBX setup mode',
+            'PBX technology',
+            'PBX trunk name',
+            'Asterisk endpoint ID',
+            'Endpoint discovery',
+            'SIP transport',
+            'SIP username override',
+            'SIP auth username override',
+            'SIP contact user override',
             'DNC scope',
             'Callback ownership',
         ]) {
@@ -181,6 +221,48 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(await screen.findByRole('tooltip')).toHaveTextContent(
             'Statuses used automatically for hangup, transfer, failure, DNC, and callback outcomes.'
         );
+    });
+
+    it('discovers an existing endpoint without replacing manual entry', async () => {
+        render(<VicidialRemoteAgentsTab />);
+        await screen.findByText('VICIdial Lab');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit mapping' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Detect PJSIP endpoints' }));
+
+        const detected = await screen.findByLabelText('Detected Asterisk endpoint');
+        fireEvent.change(detected, { target: { value: 'support-vicidial' } });
+
+        expect(screen.getByLabelText('Asterisk endpoint ID')).toHaveValue('support-vicidial');
+        expect(axios.get).toHaveBeenCalledWith('/api/outbound/vicidial/asterisk/endpoints', {
+            params: { technology: 'PJSIP' },
+        });
+    });
+
+    it('keeps chan_sip on the manual existing-endpoint path', async () => {
+        render(<VicidialRemoteAgentsTab />);
+        await screen.findByText('VICIdial Lab');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit mapping' }));
+        fireEvent.change(screen.getByLabelText('PBX technology'), {
+            target: { value: 'SIP' },
+        });
+
+        expect(screen.getByLabelText('PBX setup mode')).toHaveValue('existing_endpoint');
+        expect(screen.queryByLabelText('SIP username override')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Detect SIP endpoints' })).toBeInTheDocument();
+    });
+
+    it('shows independent setup progress and the missing call direction', async () => {
+        render(<VicidialRemoteAgentsTab />);
+
+        expect(await screen.findByText('1/1 verified')).toBeInTheDocument();
+        expect(screen.getByText('1/1 valid')).toBeInTheDocument();
+        expect(screen.getByText('1/1 reachable')).toBeInTheDocument();
+        expect(screen.getByText('0/1 verified')).toBeInTheDocument();
+        expect(
+            screen.getByText('Configuration valid — inbound call test required')
+        ).toBeInTheDocument();
     });
 
     it('provides contextual help throughout the generated setup guide', async () => {
@@ -215,7 +297,8 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(screen.getByText('Only calls delivered to AAVA are counted.')).toBeInTheDocument();
         expect(screen.getByText('Handled by AAVA')).toBeInTheDocument();
         expect(screen.getByText('Finalized in VICIdial')).toBeInTheDocument();
-        expect(screen.getByText('Needs attention')).toBeInTheDocument();
+        expect(screen.getByText('Unconfirmed / errors')).toBeInTheDocument();
+        expect(screen.getByText('Confirmed failures')).toBeInTheDocument();
         expect(screen.getByText('•••9284')).toBeInTheDocument();
         expect(screen.getByText('AIHU')).toBeInTheDocument();
         expect(screen.getByText(/AIHU · 1/)).toBeInTheDocument();
