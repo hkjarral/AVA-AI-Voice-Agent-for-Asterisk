@@ -10,7 +10,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { FullscreenPanel } from '../components/ui/FullscreenPanel';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
     InCallToolGroup,
     PhaseToolGroup,
@@ -169,6 +169,7 @@ const RoutingBadge = ({ method }: { method: string | null }) => {
 const CallHistoryPage = () => {
     const { confirm } = useConfirmDialog();
     const location = useLocation();
+    const navigate = useNavigate();
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
     const [stats, setStats] = useState<CallStats | null>(null);
     const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
@@ -367,6 +368,27 @@ const CallHistoryPage = () => {
         }
     }, [cleanupAudio]);
 
+    const closeCallDetails = useCallback(() => {
+        cleanupAudio();
+        setRecordingInfo(null);
+        setSelectedCall(null);
+        setSelectedCallSummary(null);
+
+        const params = new URLSearchParams(location.search);
+        if (params.has('id')) {
+            params.delete('id');
+            const search = params.toString();
+            navigate(
+                {
+                    pathname: location.pathname,
+                    search: search ? `?${search}` : '',
+                    hash: location.hash,
+                },
+                { replace: true }
+            );
+        }
+    }, [cleanupAudio, location.hash, location.pathname, location.search, navigate]);
+
     // Deep-link support: /history?id=<call_record_id>
     useEffect(() => {
         const id = new URLSearchParams(location.search).get('id');
@@ -446,10 +468,7 @@ const CallHistoryPage = () => {
             fetchCalls();
             fetchStats();
             if (selectedCall?.id === id || selectedCallSummary?.id === id) {
-                cleanupAudio();
-                setRecordingInfo(null);
-                setSelectedCall(null);
-                setSelectedCallSummary(null);
+                closeCallDetails();
             }
         } catch (err) {
             console.error('Failed to delete:', err);
@@ -930,11 +949,16 @@ const CallHistoryPage = () => {
             {/* Call Detail Modal */}
             {modalCall && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="call-details-title"
+                        className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+                    >
                         {/* Modal Header */}
                         <div className="flex items-center justify-between p-4 border-b">
                             <div>
-                                <h2 className="text-xl font-bold">Call Details</h2>
+                                <h2 id="call-details-title" className="text-xl font-bold">Call Details</h2>
                                 <p className="text-sm text-muted-foreground">{modalCall.call_id}</p>
                             </div>
                             <div className="flex items-center gap-2">
@@ -953,8 +977,10 @@ const CallHistoryPage = () => {
                                     <Trash2 className="w-5 h-5" />
                                 </button>
                                 <button
-                                    onClick={() => { cleanupAudio(); setRecordingInfo(null); setSelectedCall(null); setSelectedCallSummary(null); }}
+                                    onClick={closeCallDetails}
                                     className="p-2 hover:bg-muted rounded-lg"
+                                    aria-label="Close call details"
+                                    title="Close call details"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
