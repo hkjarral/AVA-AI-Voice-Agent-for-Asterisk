@@ -29,6 +29,28 @@ def _session_info(session: Any) -> VicidialSessionInfo:
     })
 
 
+def _callback_campaign_id(
+    info: VicidialSessionInfo,
+    mapping: Dict[str, Any],
+) -> str:
+    """Return the dialing campaign VICIdial requires for a callback.
+
+    ``callid_info.campaign_id`` is an inbound group for inbound/blended calls,
+    not a valid dialing campaign for ``update_lead``. The Remote Agent mapping
+    owns the actual campaign in that direction. Outbound calls already report
+    the dialing campaign directly.
+    """
+    if str(info.direction or "").strip().lower() == "inbound":
+        configured = str(mapping.get("campaign_id") or "").strip()
+        if configured:
+            return configured
+        agent_status = dict((info.metadata or {}).get("agent_status") or {})
+        agent_campaign = str(agent_status.get("campaign_id") or "").strip()
+        if agent_campaign:
+            return agent_campaign
+    return str(info.campaign_id or mapping.get("campaign_id") or "").strip()
+
+
 async def commit_vicidial_disposition_workflow(session: Any) -> bool:
     """Commit and verify a pending DNC/callback side effect before hangup."""
     semantic = str(getattr(session, "external_disposition_label", None) or "").strip()
@@ -295,12 +317,13 @@ class SetCallDispositionTool(Tool):
                 )
             except VicidialIntegrationError as exc:
                 return {"status": "failed", "message": str(exc)}
-            if not info.lead_id or not info.campaign_id:
+            callback_campaign_id = _callback_campaign_id(info, mapping)
+            if not info.lead_id or not callback_campaign_id:
                 return {"status": "failed", "message": "VICIdial lead/campaign data is unavailable for callback"}
             callback_type = str(mapping.get("callback_type") or "ANYONE").upper()
             payload = {
                 "lead_id": info.lead_id,
-                "campaign_id": info.campaign_id,
+                "campaign_id": callback_campaign_id,
                 "callback_datetime": callback_datetime,
                 "callback_type": callback_type,
                 "callback_user": info.agent_user,

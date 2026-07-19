@@ -587,8 +587,10 @@ async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypat
         external_call_id="M4050908070000012345",
         mapping_id="map-1",
         agent_user="9001",
-        campaign_id="TESTCAMP",
+        campaign_id="TESTINGROUP",
         lead_id="456",
+        direction="inbound",
+        metadata={"agent_status": {"campaign_id": "TESTCAMP"}},
     ).to_dict()
     session.external_mapping = {
         **_mapping(),
@@ -604,6 +606,7 @@ async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypat
 
         async def update_lead_callback(self, **kwargs):
             assert kwargs["callback_datetime"] == "2026-07-19 18:30:00"
+            assert kwargs["campaign_id"] == "TESTCAMP"
             return VicidialApiResult(True, "update_lead", "SUCCESS")
 
         async def lead_callback_info(self, **_kwargs):
