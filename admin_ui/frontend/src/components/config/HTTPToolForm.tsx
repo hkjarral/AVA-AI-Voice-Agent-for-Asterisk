@@ -96,6 +96,13 @@ const DEFAULT_TEST_VALUES: Record<string, string> = {
     lead_id: 'test-lead-123',
 };
 
+const editorInputClass =
+    'min-w-0 rounded-md border border-input bg-background px-2 py-1 text-sm text-foreground caret-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
+const editorSmallInputClass =
+    'w-full rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground caret-foreground shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
+const editorTextareaClass =
+    'w-full rounded-md border border-input bg-background p-3 text-sm text-foreground caret-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
+
 const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) => {
     const { confirm } = useConfirmDialog();
     const { token } = useAuth();
@@ -115,7 +122,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     const [showTestPanel, setShowTestPanel] = useState(false);
     const [showTestValues, setShowTestValues] = useState(false);
     const [showAllMappings, setShowAllMappings] = useState(false);
-    const variableTokenClass = 'font-mono text-emerald-700';
+    const variableTokenClass = 'font-mono text-emerald-700 dark:text-emerald-400';
 
     const resetDraftRows = () => {
         setHeaderKey('');
@@ -645,13 +652,13 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                         </div>
                         <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                             <input
-                                className="min-w-0 px-2 py-1 text-sm border rounded"
+                                className={editorInputClass}
                                 placeholder="Header name"
                                 value={headerKey}
                                 onChange={e => setHeaderKey(e.target.value)}
                             />
                             <input
-                                className="min-w-0 px-2 py-1 text-sm border rounded"
+                                className={editorInputClass}
                                 placeholder="Value (use ${VAR} for secrets)"
                                 value={headerValue}
                                 onChange={e => setHeaderValue(e.target.value)}
@@ -694,13 +701,13 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 </div>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                                     <input
-                                        className="min-w-0 px-2 py-1 text-sm border rounded"
+                                        className={editorInputClass}
                                         placeholder="Parameter name (e.g., phone)"
                                         value={queryParamKey}
                                         onChange={e => setQueryParamKey(e.target.value)}
                                     />
                                     <input
-                                        className="min-w-0 px-2 py-1 text-sm border rounded"
+                                        className={editorInputClass}
                                         placeholder="Value (e.g., {caller_number})"
                                         value={queryParamValue}
                                         onChange={e => setQueryParamValue(e.target.value)}
@@ -724,7 +731,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                         Body Template
                                     </FormLabel>
                                     <textarea
-                                        className="w-full p-3 rounded-md border border-input bg-transparent text-sm font-mono min-h-[120px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                        className={`${editorTextareaClass} min-h-[120px] font-mono`}
                                         value={toolForm.body_template || ''}
                                         onChange={e =>
                                             setToolForm({
@@ -766,13 +773,13 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 </div>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                                     <input
-                                        className={`min-w-0 px-2 py-1 text-sm border rounded ${variableTokenClass}`}
+                                        className={`${editorInputClass} ${variableTokenClass}`}
                                         placeholder="Variable name (e.g., customer_name)"
                                         value={outputVarKey}
                                         onChange={e => setOutputVarKey(e.target.value)}
                                     />
                                     <input
-                                        className="min-w-0 px-2 py-1 text-sm border rounded"
+                                        className={editorInputClass}
                                         placeholder="JSON path (e.g., contact.name)"
                                         value={outputVarPath}
                                         onChange={e => setOutputVarPath(e.target.value)}
@@ -834,7 +841,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                             <div key={key} className="flex flex-col gap-1">
                                                 <label className="text-xs text-muted-foreground font-mono">{`{${key}}`}</label>
                                                 <input
-                                                    className="w-full px-2 py-1 text-xs border rounded bg-background"
+                                                    className={editorSmallInputClass}
                                                     value={value}
                                                     onChange={e =>
                                                         setTestValues({
@@ -991,7 +998,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                     Tool Description
                                 </FormLabel>
                                 <textarea
-                                    className="w-full p-3 rounded-md border border-input bg-transparent text-sm min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    className={`${editorTextareaClass} min-h-[80px]`}
                                     value={toolForm.description || ''}
                                     onChange={e =>
                                         setToolForm({ ...toolForm, description: e.target.value })
@@ -1014,7 +1021,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                             >
                                                 <div className="flex-1 grid grid-cols-4 gap-2">
                                                     <input
-                                                        className={`px-2 py-1 text-xs border rounded ${variableTokenClass}`}
+                                                        className={`${editorSmallInputClass} ${variableTokenClass}`}
                                                         placeholder="Name"
                                                         value={param.name}
                                                         onChange={e => {
@@ -1032,7 +1039,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                                         }}
                                                     />
                                                     <select
-                                                        className="px-2 py-1 text-xs border rounded bg-background"
+                                                        className={editorSmallInputClass}
                                                         value={param.type}
                                                         onChange={e => {
                                                             const params = [
@@ -1053,7 +1060,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                                         <option value="boolean">boolean</option>
                                                     </select>
                                                     <input
-                                                        className="px-2 py-1 text-xs border rounded col-span-2"
+                                                        className={`${editorSmallInputClass} col-span-2`}
                                                         placeholder="Description for AI"
                                                         value={param.description}
                                                         onChange={e => {
@@ -1154,13 +1161,13 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 </div>
                                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                                     <input
-                                        className="min-w-0 px-2 py-1 text-sm border rounded"
+                                        className={editorInputClass}
                                         placeholder="Parameter name"
                                         value={queryParamKey}
                                         onChange={e => setQueryParamKey(e.target.value)}
                                     />
                                     <input
-                                        className="min-w-0 px-2 py-1 text-sm border rounded"
+                                        className={editorInputClass}
                                         placeholder="Value (e.g., {date})"
                                         value={queryParamValue}
                                         onChange={e => setQueryParamValue(e.target.value)}
@@ -1184,7 +1191,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                         Body Template
                                     </FormLabel>
                                     <textarea
-                                        className="w-full p-3 rounded-md border border-input bg-transparent text-sm font-mono min-h-[120px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                        className={`${editorTextareaClass} min-h-[120px] font-mono`}
                                         value={toolForm.body_template || ''}
                                         onChange={e =>
                                             setToolForm({
@@ -1246,13 +1253,13 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                     </div>
                                     <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                                         <input
-                                            className={`min-w-0 px-2 py-1 text-sm border rounded ${variableTokenClass}`}
+                                            className={`${editorInputClass} ${variableTokenClass}`}
                                             placeholder="Variable name (e.g., available)"
                                             value={outputVarKey}
                                             onChange={e => setOutputVarKey(e.target.value)}
                                         />
                                         <input
-                                            className="min-w-0 px-2 py-1 text-sm border rounded"
+                                            className={editorInputClass}
                                             placeholder="JSON path (e.g., data.available)"
                                             value={outputVarPath}
                                             onChange={e => setOutputVarPath(e.target.value)}
@@ -1329,7 +1336,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                                     className={`text-xs ${variableTokenClass}`}
                                                 >{`{${key}}`}</label>
                                                 <input
-                                                    className="w-full px-2 py-1 text-xs border rounded bg-background"
+                                                    className={editorSmallInputClass}
                                                     value={value}
                                                     onChange={e =>
                                                         setTestValues({
@@ -1355,7 +1362,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                                     </span>
                                                 </label>
                                                 <input
-                                                    className="w-full px-2 py-1 text-xs border rounded bg-background"
+                                                    className={editorSmallInputClass}
                                                     value={testValues[param.name] || ''}
                                                     onChange={e =>
                                                         setTestValues({
@@ -1541,7 +1548,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                     Payload Template
                                 </FormLabel>
                                 <textarea
-                                    className="w-full p-3 rounded-md border border-input bg-transparent text-sm font-mono min-h-[200px] focus:outline-none focus:ring-1 focus:ring-ring"
+                                    className={`${editorTextareaClass} min-h-[200px] font-mono`}
                                     value={toolForm.payload_template || ''}
                                     onChange={e =>
                                         setToolForm({
