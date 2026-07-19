@@ -829,3 +829,52 @@ def test_vicidial_tool_policy_is_scoped_to_external_calls():
     ordinary.external_mapping = _mapping()
     tools = Engine._apply_vicidial_tool_policy(ordinary, ["attended_transfer"])
     assert tools == ["hangup_call", "blind_transfer", "set_call_disposition"]
+
+
+def test_agent_runtime_resolution_preserves_vicidial_destinations():
+    global_config = {
+        "tools": {
+            "transfer": {
+                "destinations": {
+                    "Live Agent": {
+                        "type": "extension",
+                        "target": "6000",
+                    }
+                }
+            }
+        }
+    }
+    effective = SimpleNamespace(
+        config=global_config,
+        policy="selected",
+        requested_destination_keys=("Live Agent",),
+        effective_destination_keys=("Live Agent",),
+        stale_destination_keys=(),
+        policies={"transfer": "selected"},
+        effective_resource_keys={"transfer": ("Live Agent",)},
+        stale_resource_keys={},
+    )
+    generation = SimpleNamespace(
+        generation_id=1,
+        config_hash="hash",
+        registry=SimpleNamespace(),
+        for_agent=lambda _policy: effective,
+    )
+    engine = Engine.__new__(Engine)
+    engine._tool_generation = generation
+    session = CallSession(call_id="ari-runtime", caller_channel_id="ari-runtime")
+    session.external_platform = "vicidial"
+    session.external_mapping = _mapping()
+
+    Engine._resolve_session_tool_runtime(engine, session)
+
+    transfer = session.tool_runtime_config["tools"]["transfer"]
+    assert transfer["destinations"] == {
+        "sales": {
+            "type": "vicidial_ingroup",
+            "target": "SALESLINE",
+            "description": "Sales",
+        }
+    }
+    assert session.tool_policy["effective_destination_keys"] == ["sales"]
+    assert session.tool_policy["effective_resource_keys"]["transfer"] == ["sales"]

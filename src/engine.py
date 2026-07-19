@@ -4052,6 +4052,54 @@ class Engine:
                 result.append(required_name)
         return result
 
+    @staticmethod
+    def _overlay_vicidial_tool_runtime(session: CallSession) -> None:
+        """Keep mapping-scoped transfer routes authoritative for this call.
+
+        Agent-scoped runtime resolution can run again after VICIdial admission
+        while the audio profile is applied. Reapply the mapping overlay at that
+        boundary so a global transfer inventory cannot replace the Remote Agent
+        allowlist captured during correlation.
+        """
+        if getattr(session, "external_platform", None) != "vicidial":
+            return
+        mapping = dict(getattr(session, "external_mapping", {}) or {})
+        runtime = copy.deepcopy(getattr(session, "tool_runtime_config", None) or {})
+        tools = runtime.setdefault("tools", {})
+        transfer = tools.setdefault("transfer", {})
+        transfer["enabled"] = True
+        transfer["deferred"] = False
+        destinations = {
+            str(key): {
+                **dict(value),
+                "type": "vicidial_ingroup"
+                if str(value.get("type") or "").lower() == "ingroup"
+                else "vicidial_extension",
+            }
+            for key, value in dict(mapping.get("destinations") or {}).items()
+            if isinstance(value, dict)
+        }
+        transfer["destinations"] = destinations
+        session.tool_runtime_config = runtime
+
+        # Keep the diagnostic policy in agreement with the executable config.
+        policy = dict(getattr(session, "tool_policy", None) or {})
+        destination_keys = list(destinations)
+        policy["transfer"] = "selected"
+        policy["requested_destination_keys"] = destination_keys
+        policy["effective_destination_keys"] = destination_keys
+        policy["stale_destination_keys"] = []
+        resource_policies = dict(policy.get("resource_policies") or {})
+        resource_policies["transfer"] = "selected"
+        policy["resource_policies"] = resource_policies
+        effective_keys = dict(policy.get("effective_resource_keys") or {})
+        effective_keys["transfer"] = destination_keys
+        policy["effective_resource_keys"] = effective_keys
+        stale_keys = dict(policy.get("stale_resource_keys") or {})
+        stale_keys.pop("transfer", None)
+        policy["stale_resource_keys"] = stale_keys
+        session.tool_policy = policy
+
     async def _hydrate_vicidial_session(
         self, session: CallSession, channel_id: str
     ) -> None:
@@ -4122,25 +4170,9 @@ class Engine:
                 else session.caller_name
             )
 
-        # Overlay mapping-scoped destinations onto this call's immutable tool
-        # config. ViciDial-specific types ensure UnifiedTransferTool never uses
-        # ARI continue() for a dialer-owned customer call.
-        runtime = copy.deepcopy(self._tool_config_for_session(session))
-        tools = runtime.setdefault("tools", {})
-        transfer = tools.setdefault("transfer", {})
-        transfer["enabled"] = True
-        transfer["deferred"] = False
-        transfer["destinations"] = {
-            str(key): {
-                **dict(value),
-                "type": "vicidial_ingroup"
-                if str(value.get("type") or "").lower() == "ingroup"
-                else "vicidial_extension",
-            }
-            for key, value in dict(mapping.get("destinations") or {}).items()
-            if isinstance(value, dict)
-        }
-        session.tool_runtime_config = runtime
+        # ViciDial-specific destination types ensure UnifiedTransferTool never
+        # uses ARI continue() for a dialer-owned customer call.
+        self._overlay_vicidial_tool_runtime(session)
         await self._save_session(session)
         logger.info(
             "VICIdial Remote Agent session resolved",
@@ -15502,6 +15534,7 @@ class Engine:
                 if keys
             },
         }
+        self._overlay_vicidial_tool_runtime(session)
         stale_resource_keys = {
             scope: list(keys)
             for scope, keys in effective.stale_resource_keys.items()
