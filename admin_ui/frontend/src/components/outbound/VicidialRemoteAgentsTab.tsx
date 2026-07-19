@@ -986,6 +986,10 @@ export const VicidialRemoteAgentsTab = () => {
                                 </div>
                             ))}
                         </div>
+                        <p className="text-xs text-muted-foreground">
+                            Needs attention includes unconfirmed lifecycle records, AAVA errors, and
+                            confirmed AIFAIL outcomes, so it can overlap the finalized count.
+                        </p>
 
                         <div>
                             <div className="text-sm font-medium">Confirmed dispositions</div>
@@ -1071,9 +1075,11 @@ export const VicidialRemoteAgentsTab = () => {
                                                             }
                                                         >
                                                             {call.disposition ||
-                                                                (call.finalized
-                                                                    ? 'Finalized'
-                                                                    : 'Pending')}
+                                                                (call.needs_attention
+                                                                    ? 'Needs attention'
+                                                                    : call.finalized
+                                                                      ? 'Finalized'
+                                                                      : 'Pending')}
                                                             {!call.disposition_confirmed &&
                                                                 call.disposition &&
                                                                 ' (requested)'}

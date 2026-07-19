@@ -381,6 +381,8 @@ per-mapping counts, finalized and attention-needed totals, average duration, con
 counts, and the ten most recent calls for Today, 7-day, and 30-day ranges. Recent rows link to the
 existing Call Details view for transcripts, tool executions, and sanitized VICIdial lifecycle
 evidence. Customer phone numbers are masked in the activity response.
+**Needs attention** includes unconfirmed lifecycle records, AAVA errors, and confirmed `AIFAIL`
+outcomes, so it can overlap the finalized count.
 
 These metrics count only VICIdial calls that reached an AAVA Remote Agent and were saved to AAVA
 Call History. They are not VICIdial campaign reports: carrier attempts, busy/no-answer results,
