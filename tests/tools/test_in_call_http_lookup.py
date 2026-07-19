@@ -236,6 +236,29 @@ class TestInCallHTTPTool:
         assert kwargs["method"] == "GET"
         assert "json" not in kwargs
         assert "data" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_delete_preserves_configured_body(self, tool_config, execution_context):
+        tool_config.method = "DELETE"
+        tool = InCallHTTPTool(tool_config)
+        response = AsyncMock(status=200, headers={})
+        response.charset = "utf-8"
+        response.content = self._make_content([b'{"data":{"available":true}}'])
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute({"date": "2026-01-30"}, execution_context)
+
+        kwargs = session.request.call_args.kwargs
+        assert kwargs["method"] == "DELETE"
+        assert kwargs["json"] == {"caller": "+1234567890", "date": "2026-01-30"}
     
     @pytest.mark.asyncio
     async def test_return_raw_json(self, execution_context):

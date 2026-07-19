@@ -96,7 +96,6 @@ async def test_outbound_agent_vars_prefer_ai_agent_and_keep_compatibility_alias(
     "overrides",
     [
         {"timezone": "Not/A_Timezone"},
-        {"daily_window_start_local": "9:00"},
         {"daily_window_end_local": "24:00"},
         {"daily_window_end_local": "17:99"},
         {"run_start_at_utc": "not-a-timestamp"},
@@ -120,6 +119,33 @@ def test_campaign_window_fails_closed_on_unexpected_input():
 
     assert engine._outbound_campaign_in_window(None, now) is False
     assert engine._outbound_campaign_in_window(_campaign(), now.replace(tzinfo=None)) is False
+
+
+def test_campaign_window_normalizes_legacy_and_whitespace_values():
+    engine = Engine.__new__(Engine)
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+
+    assert engine._outbound_campaign_in_window(
+        _campaign(daily_window_start_local=" 9:00 ", daily_window_end_local=" 17:00 "),
+        now,
+    )
+
+
+def test_invalid_daily_window_warning_is_rate_limited(monkeypatch):
+    engine = Engine.__new__(Engine)
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+    warning_calls = []
+
+    monkeypatch.setattr(
+        "src.engine.logger.warning",
+        lambda *args, **kwargs: warning_calls.append((args, kwargs)),
+    )
+    campaign = _campaign(daily_window_start_local="invalid")
+
+    assert not engine._outbound_campaign_in_window(campaign, now)
+    assert not engine._outbound_campaign_in_window(campaign, now)
+    assert len(warning_calls) == 1
+    assert warning_calls[0][1]["campaign_id"] == "campaign-1"
 
 
 def test_campaign_window_preserves_valid_and_cross_midnight_behavior():

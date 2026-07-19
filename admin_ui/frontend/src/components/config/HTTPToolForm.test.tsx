@@ -59,6 +59,19 @@ describe('HTTPToolForm editor colors', () => {
         )).toHaveValue('');
     });
 
+    it('preserves a configured body when switching from POST to DELETE', () => {
+        renderForm('pre_call');
+        fireEvent.click(screen.getByRole('button', { name: 'Add Lookup' }));
+        fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'POST' } });
+        const body = screen.getByPlaceholderText(
+            '{"phone": "{caller_number}", "context": "{context_name}"}'
+        );
+        fireEvent.change(body, { target: { value: '{"delete":true}' } });
+        fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'DELETE' } });
+
+        expect(screen.getByDisplayValue('{"delete":true}')).toBeInTheDocument();
+    });
+
     it('styles in-call parameter, query, output, body, and description controls', () => {
         renderForm('in_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));

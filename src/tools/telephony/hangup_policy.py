@@ -231,7 +231,7 @@ def text_is_short_polite_closing(text: str) -> bool:
         return False
     return bool(
         re.fullmatch(
-            r"(?:(?:ok(?:ay)?|no|nope|never\s+mind|nevermind|leave\s+it|that\s+s\s+(?:all|it)|thats\s+(?:all|it)|nothing\s+else)\s+)*"
+            r"(?:(?:ok(?:ay)?|no(?:pe)?(?!\s+(?:thank\s+you|thanks)\b)|never\s+mind|nevermind|leave\s+it|that\s+s\s+(?:all|it)|thats\s+(?:all|it)|nothing\s+else)\s+)*"
             r"(?:thank\s+you|thanks)(?:\s+(?:so\s+much|very\s+much))?(?:\s+(?:bye|goodbye))?",
             compact,
         )

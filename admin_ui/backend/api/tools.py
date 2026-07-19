@@ -772,7 +772,7 @@ async def test_http_tool(request: TestHTTPRequest):
         resolved_headers[key] = _substitute_variables(value, test_values)
     
     method = (request.method or "GET").strip().upper()
-    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"):
+    if method not in _SUPPORTED_HTTP_METHODS:
         raise HTTPException(status_code=400, detail=f"Unsupported HTTP method: {method}")
 
     # Never display or send a stale hidden body for bodyless methods.
@@ -803,8 +803,9 @@ async def test_http_tool(request: TestHTTPRequest):
                 "params": resolved_params if resolved_params else None,
             }
             
-            # Add body for POST/PUT/PATCH
-            if method in ("POST", "PUT", "PATCH") and resolved_body:
+            # GET and HEAD are intentionally bodyless; preserve payloads for
+            # body-bearing DELETE/OPTIONS integrations as well as write methods.
+            if method in _BODY_CAPABLE_HTTP_METHODS and resolved_body:
                 # Check if Content-Type is JSON
                 content_type = resolved_headers.get("Content-Type", resolved_headers.get("content-type", ""))
                 if "application/json" in content_type.lower():
@@ -926,7 +927,7 @@ _IN_CALL_BLOCK_KINDS = {"in_call_http_lookup"}
 _SUPPORTED_HTTP_METHODS = frozenset(
     {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 )
-_BODY_CAPABLE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH"})
+_BODY_CAPABLE_HTTP_METHODS = _SUPPORTED_HTTP_METHODS - {"GET", "HEAD"}
 _MAX_MANAGED_TOOL_TIMEOUT_MS = 300_000
 _MAX_FAREWELL_DELAY_SEC = 300.0
 

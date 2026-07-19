@@ -20,6 +20,10 @@ import { useAuth } from '../../auth/AuthContext';
 import { FormInput, FormSwitch, FormSelect, FormLabel } from '../ui/FormComponents';
 import { Modal } from '../ui/Modal';
 
+const BODY_CAPABLE_HTTP_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+const isBodyCapableHTTPMethod = (method?: string) =>
+    BODY_CAPABLE_HTTP_METHODS.includes((method || '').toUpperCase());
+
 interface HTTPToolFormProps {
     config: any;
     onChange: (newConfig: any) => void;
@@ -239,7 +243,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
 
     const handleSaveTool = () => {
         let committedToolForm = withDraftRowsCommitted(toolForm);
-        if (!['POST', 'PUT', 'PATCH'].includes((committedToolForm.method || '').toUpperCase())) {
+        if (!isBodyCapableHTTPMethod(committedToolForm.method)) {
             committedToolForm = {
                 ...committedToolForm,
                 body_template: undefined,
@@ -380,7 +384,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     };
 
     const handleMethodChange = (method: string) => {
-        const bodyCapable = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase());
+        const bodyCapable = isBodyCapableHTTPMethod(method);
         const headers = { ...(toolForm.headers || {}) };
         if (
             bodyCapable &&
@@ -639,6 +643,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 { value: 'POST', label: 'POST' },
                                 { value: 'PUT', label: 'PUT' },
                                 { value: 'PATCH', label: 'PATCH' },
+                                { value: 'DELETE', label: 'DELETE' },
                             ]}
                             value={toolForm.method || 'POST'}
                             onChange={e => handleMethodChange(e.target.value)}
@@ -747,12 +752,10 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 </div>
                             </div>
 
-                            {/* Body Template (for POST requests) */}
-                            {(toolForm.method === 'POST' ||
-                                toolForm.method === 'PUT' ||
-                                toolForm.method === 'PATCH') && (
+                            {/* Body Template */}
+                            {isBodyCapableHTTPMethod(toolForm.method) && (
                                 <div className="space-y-2">
-                                    <FormLabel tooltip="JSON body template for POST/PUT/PATCH requests. Use {caller_number}, {call_id}, etc. for variable substitution.">
+                                    <FormLabel tooltip="JSON body template for body-bearing requests. Use {caller_number}, {call_id}, etc. for variable substitution.">
                                         Body Template
                                     </FormLabel>
                                     <textarea
@@ -1208,9 +1211,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                             </div>
 
                             {/* Body Template */}
-                            {(toolForm.method === 'POST' ||
-                                toolForm.method === 'PUT' ||
-                                toolForm.method === 'PATCH') && (
+                            {isBodyCapableHTTPMethod(toolForm.method) && (
                                 <div className="space-y-2">
                                     <FormLabel tooltip="JSON body template. Use {param_name} for AI params, {caller_number}, {call_id}, etc. for context vars.">
                                         Body Template
@@ -1568,7 +1569,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                     </div>
                                 )}
                             </div>
-                            {['POST', 'PUT', 'PATCH'].includes((toolForm.method || '').toUpperCase()) && (
+                            {isBodyCapableHTTPMethod(toolForm.method) && (
                                 <div className="space-y-2">
                                     <FormLabel tooltip="JSON payload with variable substitution. Available: {call_id}, {caller_number}, {call_duration}, {transcript_json}, {summary}, etc.">
                                         Payload Template

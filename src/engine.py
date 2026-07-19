@@ -18,7 +18,7 @@ import ipaddress
 import sqlite3
 from collections import deque
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import TYPE_CHECKING, Dict, Any, Optional, List, Set, Tuple, Callable
 
 # Simple audio capture system removed - not used in production
@@ -1638,6 +1638,42 @@ class Engine:
         await self.ari_client.set_channel_var(channel_id, "AI_AGENT", slug)
         await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", slug)
 
+    def _warn_outbound_daily_window_rejected(
+        self,
+        *,
+        campaign_id: Optional[str],
+        start_value: str,
+        end_value: str,
+    ) -> None:
+        """Rate-limit persistent scheduler warnings for one invalid campaign window."""
+        now = time.monotonic()
+        key = f"{campaign_id or '<unknown>'}:{start_value}:{end_value}"
+        warned_at = getattr(self, "_outbound_daily_window_warning_at", None)
+        if not isinstance(warned_at, dict):
+            warned_at = {}
+            self._outbound_daily_window_warning_at = warned_at
+        if key in warned_at and now - float(warned_at[key]) < 60.0:
+            return
+        warned_at[key] = now
+        logger.warning(
+            "Outbound campaign window rejected: invalid daily window",
+            campaign_id=campaign_id,
+            daily_window_start_local=start_value,
+            daily_window_end_local=end_value,
+        )
+
+    @staticmethod
+    def _normalize_outbound_daily_window(value: Any, default: str) -> Optional[str]:
+        """Normalize legacy H:MM values while rejecting invalid clock times."""
+        raw = str(value or default).strip()
+        match = re.fullmatch(r"(\d{1,2}):([0-5]\d)", raw)
+        if not match:
+            return None
+        hour = int(match.group(1))
+        if hour > 23:
+            return None
+        return f"{hour:02d}:{match.group(2)}"
+
     def _outbound_campaign_in_window(self, campaign: Dict[str, Any], now_utc: datetime) -> bool:
         """Check campaign run window + daily window (timezone-aware, supports cross-midnight)."""
         try:
@@ -1652,7 +1688,7 @@ class Engine:
             tz_name = str(campaign.get("timezone") or "UTC").strip() or "UTC"
             try:
                 tz = ZoneInfo(tz_name)
-            except Exception:
+            except (ZoneInfoNotFoundError, ValueError):
                 logger.warning(
                     "Outbound campaign window rejected: invalid timezone",
                     campaign_id=campaign_id,
@@ -1708,15 +1744,15 @@ class Engine:
                 return False
 
             local_now = now_utc.astimezone(tz)
-            start_s = str(campaign.get("daily_window_start_local") or "09:00")
-            end_s = str(campaign.get("daily_window_end_local") or "17:00")
-            hhmm_pattern = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
-            if not hhmm_pattern.fullmatch(start_s) or not hhmm_pattern.fullmatch(end_s):
-                logger.warning(
-                    "Outbound campaign window rejected: invalid daily window",
+            raw_start_s = str(campaign.get("daily_window_start_local") or "09:00")
+            raw_end_s = str(campaign.get("daily_window_end_local") or "17:00")
+            start_s = self._normalize_outbound_daily_window(raw_start_s, "09:00")
+            end_s = self._normalize_outbound_daily_window(raw_end_s, "17:00")
+            if start_s is None or end_s is None:
+                self._warn_outbound_daily_window_rejected(
                     campaign_id=campaign_id,
-                    daily_window_start_local=start_s,
-                    daily_window_end_local=end_s,
+                    start_value=raw_start_s,
+                    end_value=raw_end_s,
                 )
                 return False
             start_h, start_m = (int(p) for p in start_s.split(":", 1))
@@ -4064,7 +4100,11 @@ class Engine:
                                         session.context_name or "",
                                     )
                                 except Exception:
-                                    pass
+                                    logger.debug(
+                                        "Failed to set AI_AGENT during outbound context pre-seed",
+                                        call_id=caller_channel_id,
+                                        exc_info=True,
+                                    )
                                 await self._save_session(session)
                     except Exception:
                         logger.debug("Failed to pre-seed outbound context from attempt meta", call_id=caller_channel_id, exc_info=True)

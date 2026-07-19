@@ -121,20 +121,104 @@ class GenericHTTPLookupTool(PreCallTool):
         except (TypeError, ValueError):
             return 512
 
-    @staticmethod
-    def _sanitize_response(value: Any) -> Any:
-        """Redact likely credentials before persisting a response preview."""
+    @classmethod
+    def _sanitize_response(cls, value: Any) -> Any:
+        """Redact likely credentials and PII before persisting diagnostics."""
         if isinstance(value, dict):
             sanitized: Dict[str, Any] = {}
             for key, item in value.items():
-                if re.search(r"(?:api[_-]?key|token|secret|password|authorization|auth)", str(key), re.I):
+                if cls._is_sensitive_diagnostic_key(key):
                     sanitized[str(key)] = "***"
                 else:
-                    sanitized[str(key)] = GenericHTTPLookupTool._sanitize_response(item)
+                    sanitized[str(key)] = cls._sanitize_response(item)
             return sanitized
         if isinstance(value, list):
-            return [GenericHTTPLookupTool._sanitize_response(item) for item in value]
+            return [cls._sanitize_response(item) for item in value]
+        if isinstance(value, str):
+            return cls._sanitize_plain_text(value)
         return value
+
+    @staticmethod
+    def _is_sensitive_diagnostic_key(key: Any) -> bool:
+        normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower().replace("-", "_")
+        if re.search(r"(?:api_?key|token|secret|password|authorization|auth)", normalized):
+            return True
+        if normalized in {
+            "name",
+            "first_name",
+            "last_name",
+            "full_name",
+            "customer_name",
+            "caller_name",
+            "contact_name",
+            "email",
+            "email_address",
+            "phone",
+            "phone_number",
+            "mobile",
+            "telephone",
+            "address",
+            "street_address",
+            "ssn",
+            "social_security_number",
+            "dob",
+            "date_of_birth",
+            "account_number",
+        }:
+            return True
+        return normalized.endswith(
+            (
+                "_name",
+                "_email",
+                "_phone",
+                "_mobile",
+                "_telephone",
+                "_address",
+                "_ssn",
+                "_dob",
+                "_account_number",
+            )
+        )
+
+    @staticmethod
+    def _sanitize_plain_text(plain_text: str) -> str:
+        """Best-effort redaction for unstructured diagnostic strings."""
+        sensitive_key = (
+            r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|auth|"
+            r"first[_-]?name|last[_-]?name|full[_-]?name|customer[_-]?name|caller[_-]?name|contact[_-]?name|"
+            r"name|email(?:[_-]?address)?|phone(?:[_-]?number)?|mobile|telephone|(?:street[_-]?)?address|"
+            r"ssn|social[_-]?security[_-]?number|dob|date[_-]?of[_-]?birth|account[_-]?number)"
+        )
+
+        def redact_assignment(match: re.Match[str]) -> str:
+            prefix = match.group(1)
+            value = match.group(2)
+            auth_scheme = re.match(r"(?i)(Bearer|Basic)\b", value)
+            if auth_scheme:
+                return f"{prefix}{auth_scheme.group(1)} ***"
+            if value[:1] in {'"', "'"}:
+                return f"{prefix}{value[0]}***{value[0]}"
+            return f"{prefix}***"
+
+        redacted = re.sub(
+            rf"(?i)([\"']?{sensitive_key}[\"']?\s*[:=]\s*)((?:Bearer|Basic)\s+[^\s,;&}}]+|\"[^\"]*\"|'[^']*'|[^\s,;&}}]+)",
+            redact_assignment,
+            plain_text,
+        )
+        return re.sub(r"(?i)\b(Bearer|Basic)\s+[^\s,;&}]+", r"\1 ***", redacted)
+
+    @classmethod
+    def _sanitize_response_text(cls, body_text: str) -> str:
+        """Redact likely credentials and PII in JSON and plain-text bodies."""
+        if not body_text:
+            return ""
+        try:
+            parsed = json.loads(body_text)
+        except (TypeError, ValueError):
+            return cls._sanitize_plain_text(str(body_text))
+        if isinstance(parsed, str):
+            return cls._sanitize_plain_text(parsed)
+        return json.dumps(cls._sanitize_response(parsed), ensure_ascii=False, separators=(",", ":"))
 
     def _record_result(
         self,
@@ -153,13 +237,14 @@ class GenericHTTPLookupTool(PreCallTool):
         max_chars = self._response_body_max_chars()
         summary: Optional[str] = None
         if max_chars and body_text:
-            summary = body_text if len(body_text) <= max_chars else body_text[:max_chars] + "…"
+            safe_body = self._sanitize_response_text(body_text)
+            summary = safe_body if len(safe_body) <= max_chars else safe_body[:max_chars] + "…"
         self._last_results[call_id] = {
             "status": status,
             "http_status": http_status,
             "response_summary": summary,
             "error_message": error_message[:500] if error_message else None,
-            "output_variables": dict(output_variables or {}),
+            "output_variables": self._sanitize_response(dict(output_variables or {})),
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": round((time.monotonic() - started_monotonic) * 1000, 2),
@@ -208,7 +293,7 @@ class GenericHTTPLookupTool(PreCallTool):
             
             method = str(self.config.method or "GET").strip().upper()
             body = None
-            if method in {"POST", "PUT", "PATCH"} and self.config.body_template:
+            if method not in {"GET", "HEAD"} and self.config.body_template:
                 body = self._substitute_variables(self.config.body_template, context)
 
             if debug_enabled(logger):
@@ -270,17 +355,18 @@ class GenericHTTPLookupTool(PreCallTool):
                             )
                         except Exception:
                             pass
+                        safe_error_body = self._sanitize_response_text(error_body)
                         self._record_result(
                             call_id=call_id, status="error", started_at=started_at,
                             started_monotonic=started, http_status=response.status,
-                            body_text=error_body, error_message=f"HTTP {response.status}",
+                            body_text=safe_error_body, error_message=f"HTTP {response.status}",
                             output_variables=results,
                         )
                         if debug_enabled(logger):
                             elapsed_ms = round((time.monotonic() - started) * 1000, 2)
                             body_preview = ""
                             try:
-                                body_preview = preview(error_body)
+                                body_preview = preview(safe_error_body)
                             except Exception as e:
                                 body_preview = f"<failed to read body: {e}>"
                             logger.debug(
@@ -315,6 +401,7 @@ class GenericHTTPLookupTool(PreCallTool):
 
                     # Read body with enforced size limit (do not trust Content-Length header).
                     body_bytes = b""
+                    charset = getattr(response, "charset", None) or "utf-8"
                     try:
                         max_bytes = int(self.config.max_response_size_bytes or 0)
                         if max_bytes <= 0:
@@ -352,10 +439,11 @@ class GenericHTTPLookupTool(PreCallTool):
                             chunks.append(chunk)
 
                         body_bytes = b"".join(chunks)
-                        charset = getattr(response, "charset", None) or "utf-8"
                         data = json.loads(body_bytes.decode(charset, errors="replace"))
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse JSON response: {self.config.name} error={e}")
+                        invalid_body = body_bytes.decode(charset, errors="replace")
+                        safe_invalid_body = self._sanitize_response_text(invalid_body)
                         if debug_enabled(logger):
                             elapsed_ms = round((time.monotonic() - started) * 1000, 2)
                             logger.debug(
@@ -364,12 +452,12 @@ class GenericHTTPLookupTool(PreCallTool):
                                 response.status,
                                 elapsed_ms,
                                 len(body_bytes or b""),
-                                preview(body_bytes),
+                                preview(safe_invalid_body),
                             )
                         self._record_result(
                             call_id=call_id, status="error", started_at=started_at,
                             started_monotonic=started, http_status=response.status,
-                            body_text=body_bytes.decode("utf-8", errors="replace"),
+                            body_text=safe_invalid_body,
                             error_message=f"invalid JSON response: {e}", output_variables=results,
                         )
                         return results
@@ -384,7 +472,11 @@ class GenericHTTPLookupTool(PreCallTool):
                                 elapsed_ms,
                                 str(e),
                                 len(body_bytes or b""),
-                                preview(body_bytes),
+                                preview(
+                                    self._sanitize_response_text(
+                                        body_bytes.decode(charset, errors="replace")
+                                    )
+                                ),
                             )
                         self._record_result(
                             call_id=call_id, status="error", started_at=started_at,
@@ -410,8 +502,8 @@ class GenericHTTPLookupTool(PreCallTool):
                             response.status,
                             elapsed_ms,
                             len(body_bytes or b""),
-                            preview(body_bytes),
-                            results,
+                            preview(safe_body),
+                            self._sanitize_response(results),
                         )
                     
                     logger.info(f"HTTP lookup completed: {self.config.name} status={response.status} keys={list(results.keys())}")

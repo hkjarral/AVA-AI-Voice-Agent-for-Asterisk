@@ -112,6 +112,14 @@ def test_bodyless_methods_clear_hidden_request_templates(client):
     assert patched.status_code == 200
     assert "payload_template" not in patched.json()["config"]
 
+    delete_tool = client.post("/api/tools/managed", json={
+        "name": "delete_with_body", "phase": "pre_call",
+        "url": "https://api.example.com/contact", "method": "DELETE",
+        "body_template": '{"phone":"{caller_number}"}',
+    })
+    assert delete_tool.status_code == 201
+    assert delete_tool.json()["config"]["body_template"] == '{"phone":"{caller_number}"}'
+
 
 def test_create_duplicate_returns_409(client):
     payload = {"name": "dup", "phase": "pre_call", "url": "https://a.example.com"}

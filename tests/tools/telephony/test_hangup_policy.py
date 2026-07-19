@@ -47,3 +47,5 @@ def test_short_polite_closing_detection_accepts_terminal_thanks():
 def test_short_polite_closing_detection_rejects_long_mid_call_phrases():
     assert not text_is_short_polite_closing("Thanks, can you also explain pricing and setup again")
     assert not text_is_short_polite_closing("No thank you, but please tell me about pricing")
+    assert not text_is_short_polite_closing("No, thank you")
+    assert not text_is_short_polite_closing("No thanks")

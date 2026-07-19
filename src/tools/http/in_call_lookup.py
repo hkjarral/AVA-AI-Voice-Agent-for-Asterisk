@@ -192,7 +192,7 @@ class InCallHTTPTool(Tool):
             body = None
             json_body = None
             method = str(self.config.method or "GET").strip().upper()
-            if method in {"POST", "PUT", "PATCH"} and self.config.body_template:
+            if method not in {"GET", "HEAD"} and self.config.body_template:
                 body_str = self._substitute_variables(self.config.body_template, sub_context)
                 # Try to parse as JSON for proper Content-Type handling
                 try:

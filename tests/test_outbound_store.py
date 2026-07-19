@@ -91,6 +91,11 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
         b"phone_number,context\n+15551230012,sales\n",
         known_agents=["sales", "support"],
     )
+    conflicting = await store.import_leads_csv(
+        campaign["id"],
+        b"phone_number,agent,context\n+15551230014,support,sales\n",
+        known_agents=["sales", "support"],
+    )
     unknown = await store.import_leads_csv(
         campaign["id"],
         b"phone_number,agent\n+15551230013,missing-agent\n",
@@ -99,6 +104,7 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
 
     assert preferred["accepted"] == 1
     assert compatible["accepted"] == 1
+    assert conflicting["accepted"] == 1
     assert unknown["accepted"] == 1
     assert "Unknown Agent slug" in unknown["warnings"][0]["warning_reason"]
 
@@ -107,3 +113,4 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
     assert agents_by_phone["+15551230011"] == "support"
     assert agents_by_phone["+15551230012"] == "sales"
     assert agents_by_phone["+15551230013"] == "sales"
+    assert agents_by_phone["+15551230014"] == "support"

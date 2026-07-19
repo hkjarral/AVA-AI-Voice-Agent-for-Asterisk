@@ -251,7 +251,7 @@ class GenericWebhookTool(PostCallTool):
             }
             
             method = str(self.config.method or "POST").strip().upper()
-            body_capable = method in {"POST", "PUT", "PATCH"}
+            body_capable = method not in {"GET", "HEAD"}
 
             # Content-Type and payload only apply to body-capable methods.
             if body_capable and 'Content-Type' not in headers and 'content-type' not in headers:

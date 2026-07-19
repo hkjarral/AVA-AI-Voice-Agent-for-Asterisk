@@ -185,6 +185,34 @@ class TestGenericWebhookTool:
         assert kwargs["method"] == "GET"
         assert kwargs["data"] is None
         assert "Content-Type" not in kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_delete_preserves_configured_payload(self, postcall_context):
+        tool = GenericWebhookTool(WebhookConfig(
+            name="delete_webhook",
+            url="https://webhook.example.com/status",
+            method="DELETE",
+            headers={},
+            payload_template='{"call_id":"{call_id}"}',
+        ))
+        response = AsyncMock(status=204)
+        response.text = AsyncMock(return_value="")
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(postcall_context)
+
+        kwargs = session.request.call_args.kwargs
+        assert kwargs["method"] == "DELETE"
+        assert json.loads(kwargs["data"]) == {"call_id": "test_call_123"}
+        assert kwargs["headers"]["Content-Type"] == "application/json"
     
     @pytest.mark.asyncio
     async def test_non_2xx_logs_warning(self, webhook_config, postcall_context):
