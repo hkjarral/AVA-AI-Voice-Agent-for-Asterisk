@@ -566,6 +566,7 @@ const EnvPage = () => {
         // System - Outbound Campaign
         'AAVA_OUTBOUND_EXTENSION_IDENTITY', 'AAVA_OUTBOUND_AMD_CONTEXT', 'AAVA_MEDIA_DIR', 'AAVA_VM_UPLOAD_MAX_BYTES',
         'AAVA_OUTBOUND_PBX_TYPE', 'AAVA_OUTBOUND_DIAL_CONTEXT', 'AAVA_OUTBOUND_DIAL_PREFIX', 'AAVA_OUTBOUND_CHANNEL_TECH',
+        'VICIDIAL_API_USER', 'VICIDIAL_API_PASS',
         // System - Docker Build Settings (build-time ARGs, require rebuild)
         'INCLUDE_VOSK', 'INCLUDE_SHERPA', 'INCLUDE_FASTER_WHISPER',
         'INCLUDE_PIPER', 'INCLUDE_KOKORO', 'INCLUDE_MELOTTS', 'INCLUDE_LLAMA', 'INCLUDE_KROKO_EMBEDDED',
@@ -2109,22 +2110,24 @@ const EnvPage = () => {
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_PBX_TYPE', e.target.value)}
                                     options={[
                                         { value: 'freepbx', label: 'FreePBX' },
-                                        { value: 'vicidial', label: 'ViciDial (experimental)' },
                                         { value: 'generic', label: 'Generic Asterisk' },
+                                        ...(env['AAVA_OUTBOUND_PBX_TYPE'] === 'vicidial'
+                                            ? [{ value: 'vicidial', label: 'VICIdial (legacy — migrate to Remote Agents)' }]
+                                            : []),
                                     ]}
-                                    tooltip="Controls FreePBX-specific channel vars (AMPUSER/FROMEXTEN). ViciDial mode is experimental/community-tested and not production-reviewed by ViciDial maintainers."
+                                    tooltip="Controls PBX-specific channel variables for AAVA Campaigns. New VICIdial integrations use Call Scheduling → VICIdial Remote Agents; the legacy direct-origination value is shown only when already configured."
                                 />
                                 <FormInput
                                     label="Dial Context"
                                     value={env['AAVA_OUTBOUND_DIAL_CONTEXT'] || 'from-internal'}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_DIAL_CONTEXT', e.target.value)}
-                                    tooltip="Asterisk dialplan context for Local/ origination. FreePBX: from-internal. Experimental ViciDial notes commonly use default."
+                                    tooltip="Asterisk dialplan context for AAVA Campaign Local/ origination. FreePBX commonly uses from-internal."
                                 />
                                 <FormInput
                                     label="Dial Prefix"
                                     value={env['AAVA_OUTBOUND_DIAL_PREFIX'] || ''}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_DIAL_PREFIX', e.target.value)}
-                                    tooltip="Prefix prepended to phone number for carrier routing. Experimental ViciDial notes use examples like 911."
+                                    tooltip="Prefix prepended to the phone number for AAVA Campaign carrier routing."
                                 />
                                 <FormSelect
                                     label="Channel Tech"
@@ -2136,8 +2139,15 @@ const EnvPage = () => {
                                         { value: 'sip', label: 'SIP only (chan_sip)' },
                                         { value: 'local_only', label: 'Local only (no probing)' },
                                     ]}
-                                    tooltip="Channel technology for internal extension probing. Experimental ViciDial notes typically use SIP (chan_sip)."
+                                    tooltip="Channel technology used for AAVA Campaign internal extension probing."
                                 />
+                                <FormInput
+                                    label="VICIdial API Username"
+                                    value={env['VICIDIAL_API_USER'] || ''}
+                                    onChange={(e) => updateEnv('VICIDIAL_API_USER', e.target.value)}
+                                    tooltip="Dedicated least-privilege API user used by the VICIdial Remote Agent integration."
+                                />
+                                {renderSecretInput('VICIdial API Password', 'VICIDIAL_API_PASS', 'Dedicated API password')}
                                 <FormInput
                                     label="Media Directory"
                                     value={env['AAVA_MEDIA_DIR'] || '/mnt/asterisk_media/ai-generated'}

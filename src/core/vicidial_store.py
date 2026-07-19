@@ -1,0 +1,541 @@
+"""Shared SQLite persistence for VICIdial connections and Remote Agent mappings."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import threading
+from typing import Any, Dict, List, Mapping, Optional
+import uuid
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from src.integrations.vicidial import validate_status
+
+
+_ENV_REFERENCE_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\})$"
+)
+_DIALPLAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_VICIDIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json(value: Any, default: Any) -> str:
+    return json.dumps(value if value is not None else default, sort_keys=True)
+
+
+def _decode(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    try:
+        parsed = json.loads(value)
+        return parsed
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+class VicidialStore:
+    """Thread-safe additive store mounted into both engine and Admin UI."""
+
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or os.getenv(
+            "VICIDIAL_DB_PATH", "/app/data/operator/vicidial.db"
+        )
+        self._lock = threading.RLock()
+        self._init_db()
+
+    def _connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def _init_db(self) -> None:
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        with self._lock, self._connection() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS vicidial_connections (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    base_url TEXT NOT NULL,
+                    agent_api_url TEXT,
+                    non_agent_api_url TEXT,
+                    source TEXT NOT NULL DEFAULT 'aava',
+                    username_env TEXT NOT NULL,
+                    password_env TEXT NOT NULL,
+                    verify_ssl INTEGER NOT NULL DEFAULT 1,
+                    timeout_ms INTEGER NOT NULL DEFAULT 5000,
+                    topology TEXT NOT NULL DEFAULT 'lan_vpn',
+                    vicidial_host TEXT,
+                    sip_port INTEGER NOT NULL DEFAULT 5060,
+                    rtp_start INTEGER NOT NULL DEFAULT 10000,
+                    rtp_end INTEGER NOT NULL DEFAULT 20000,
+                    timezone TEXT NOT NULL DEFAULT 'UTC',
+                    last_verification_json TEXT,
+                    last_verified_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS vicidial_mappings (
+                    id TEXT PRIMARY KEY,
+                    connection_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    direction TEXT NOT NULL DEFAULT 'both',
+                    campaign_id TEXT,
+                    closer_campaigns_json TEXT,
+                    user_start TEXT NOT NULL,
+                    number_of_lines INTEGER NOT NULL DEFAULT 1,
+                    conf_exten TEXT NOT NULL,
+                    static_agent_user TEXT,
+                    ai_agent TEXT NOT NULL,
+                    trusted_context TEXT NOT NULL DEFAULT 'from-vicidial-ra',
+                    trusted_endpoint TEXT,
+                    dispositions_json TEXT,
+                    statuses_json TEXT,
+                    destinations_json TEXT,
+                    dnc_scope TEXT NOT NULL DEFAULT 'campaign',
+                    callback_type TEXT NOT NULL DEFAULT 'ANYONE',
+                    last_verification_json TEXT,
+                    last_verified_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(connection_id) REFERENCES vicidial_connections(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vicidial_mappings_connection
+                    ON vicidial_mappings(connection_id);
+                CREATE INDEX IF NOT EXISTS idx_vicidial_mappings_enabled
+                    ON vicidial_mappings(enabled);
+                """
+            )
+            # Additive migration for databases created by an earlier preview.
+            connection_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(vicidial_connections)")
+            }
+            if "timezone" not in connection_columns:
+                conn.execute(
+                    "ALTER TABLE vicidial_connections ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'"
+                )
+
+    @staticmethod
+    def _connection_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        data["enabled"] = bool(data.get("enabled"))
+        data["verify_ssl"] = bool(data.get("verify_ssl"))
+        data["last_verification"] = _decode(data.pop("last_verification_json", None), None)
+        return data
+
+    @staticmethod
+    def _mapping_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        data["enabled"] = bool(data.get("enabled"))
+        data["closer_campaigns"] = _decode(data.pop("closer_campaigns_json", None), [])
+        data["dispositions"] = _decode(data.pop("dispositions_json", None), {})
+        data["statuses"] = _decode(data.pop("statuses_json", None), {})
+        data["destinations"] = _decode(data.pop("destinations_json", None), {})
+        data["last_verification"] = _decode(data.pop("last_verification_json", None), None)
+        return data
+
+    @staticmethod
+    def validate_connection(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        base_url = str(payload.get("base_url") or "").strip().rstrip("/")
+        if not name:
+            raise ValueError("Connection name is required")
+        parsed_url = urlsplit(base_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+            raise ValueError("Base URL must use http or https")
+        if parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+            raise ValueError("Base URL must not contain credentials, a query, or a fragment")
+        custom_urls: Dict[str, Optional[str]] = {}
+        for field_name in ("agent_api_url", "non_agent_api_url"):
+            raw_url = str(payload.get(field_name) or "").strip() or None
+            if raw_url:
+                parsed_custom = urlsplit(raw_url)
+                if parsed_custom.scheme not in {"http", "https"} or not parsed_custom.hostname:
+                    raise ValueError(f"{field_name} must use http or https")
+                if (
+                    parsed_custom.username
+                    or parsed_custom.password
+                    or parsed_custom.query
+                    or parsed_custom.fragment
+                ):
+                    raise ValueError(
+                        f"{field_name} must not contain credentials, a query, or a fragment"
+                    )
+            custom_urls[field_name] = raw_url
+        topology = str(payload.get("topology") or "lan_vpn").strip()
+        if topology not in {"lan_vpn", "ava_behind_nat", "public_sbc"}:
+            raise ValueError("Topology must be lan_vpn, ava_behind_nat, or public_sbc")
+        username_env = str(payload.get("username_env") or "").strip()
+        password_env = str(payload.get("password_env") or "").strip()
+        if not username_env or not password_env:
+            raise ValueError("API username and password environment references are required")
+        if not _ENV_REFERENCE_RE.fullmatch(username_env) or not _ENV_REFERENCE_RE.fullmatch(password_env):
+            raise ValueError("API credentials must be environment-variable names or ${NAME} references")
+        timeout_ms = int(payload.get("timeout_ms") or 5000)
+        if timeout_ms < 250 or timeout_ms > 30000:
+            raise ValueError("Timeout must be between 250 and 30000 milliseconds")
+        rtp_start = int(payload.get("rtp_start") or 10000)
+        rtp_end = int(payload.get("rtp_end") or 20000)
+        if not (1 <= rtp_start <= rtp_end <= 65535):
+            raise ValueError("RTP range is invalid")
+        sip_port = int(payload.get("sip_port") or 5060)
+        if not 1 <= sip_port <= 65535:
+            raise ValueError("SIP port is invalid")
+        timezone_name = str(payload.get("timezone") or "UTC").strip() or "UTC"
+        try:
+            ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("VICIdial timezone must be a valid IANA timezone") from exc
+        source = str(payload.get("source") or "aava").strip() or "aava"
+        if len(source) > 20 or not _DIALPLAN_TOKEN_RE.fullmatch(source):
+            raise ValueError("API source must be a 1-20 character identifier")
+        return {
+            "name": name,
+            "enabled": bool(payload.get("enabled", True)),
+            "base_url": base_url,
+            "agent_api_url": custom_urls["agent_api_url"],
+            "non_agent_api_url": custom_urls["non_agent_api_url"],
+            "source": source,
+            "username_env": username_env,
+            "password_env": password_env,
+            "verify_ssl": bool(payload.get("verify_ssl", True)),
+            "timeout_ms": timeout_ms,
+            "topology": topology,
+            "vicidial_host": str(payload.get("vicidial_host") or "").strip() or None,
+            "sip_port": sip_port,
+            "rtp_start": rtp_start,
+            "rtp_end": rtp_end,
+            "timezone": timezone_name,
+        }
+
+    @staticmethod
+    def validate_mapping(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        connection_id = str(payload.get("connection_id") or "").strip()
+        user_start = str(payload.get("user_start") or "").strip()
+        conf_exten = str(payload.get("conf_exten") or "").strip()
+        ai_agent = str(payload.get("ai_agent") or "").strip()
+        if not all((name, connection_id, user_start, conf_exten, ai_agent)):
+            raise ValueError(
+                "Mapping name, connection, starting user, Remote Agent extension, and AAVA Agent are required"
+            )
+        if not user_start.isdigit():
+            raise ValueError("Remote Agent starting user must be numeric")
+        if not _DIALPLAN_TOKEN_RE.fullmatch(conf_exten):
+            raise ValueError("Remote Agent extension contains unsupported characters")
+        lines = int(payload.get("number_of_lines") or 1)
+        if lines < 1 or lines > 100:
+            raise ValueError("Number of lines must be between 1 and 100")
+        direction = str(payload.get("direction") or "both").strip()
+        if direction not in {"outbound", "inbound", "both"}:
+            raise ValueError("Direction must be outbound, inbound, or both")
+        dnc_scope = str(payload.get("dnc_scope") or "campaign").strip()
+        if dnc_scope not in {"campaign", "system"}:
+            raise ValueError("DNC scope must be campaign or system")
+        callback_type = str(payload.get("callback_type") or "ANYONE").strip().upper()
+        if callback_type not in {"ANYONE", "USERONLY"}:
+            raise ValueError("Callback type must be ANYONE or USERONLY")
+        trusted_context = str(payload.get("trusted_context") or "from-vicidial-ra").strip()
+        trusted_endpoint = str(payload.get("trusted_endpoint") or "").strip() or None
+        if not _DIALPLAN_TOKEN_RE.fullmatch(trusted_context):
+            raise ValueError("Trusted dialplan context contains unsupported characters")
+        if trusted_endpoint and not _DIALPLAN_TOKEN_RE.fullmatch(trusted_endpoint):
+            raise ValueError("Trusted endpoint contains unsupported characters")
+        static_agent_user = str(payload.get("static_agent_user") or "").strip() or None
+        if static_agent_user and (lines != 1 or static_agent_user != user_start):
+            raise ValueError("The one-line fallback user must equal the starting user and requires exactly one line")
+
+        campaign_id = str(payload.get("campaign_id") or "").strip() or None
+        closer_campaigns = [
+            str(value).strip()
+            for value in list(payload.get("closer_campaigns") or [])
+            if str(value).strip()
+        ]
+        for field_name, value in [
+            ("campaign_id", campaign_id),
+            *(("closer_campaigns", value) for value in closer_campaigns),
+        ]:
+            if value and (len(value) > 32 or not _VICIDIAL_ID_RE.fullmatch(value)):
+                raise ValueError(f"{field_name} contains unsupported characters")
+
+        dispositions: Dict[str, str] = {}
+        for key, value in dict(payload.get("dispositions") or {}).items():
+            semantic = str(key or "").strip().lower()
+            if semantic:
+                dispositions[semantic] = validate_status(
+                    value, field_name=f"dispositions.{semantic}"
+                )
+        statuses: Dict[str, str] = {}
+        default_statuses = {
+            "ai_hangup": "AIHU",
+            "caller_hangup": "AICU",
+            "ai_ingroup_transfer": "AIXFR",
+            "ai_extension_transfer": "AIEXT",
+            "ai_failure": "AIFAIL",
+            "dnc": "DNC",
+            "callback": "CALLBK",
+        }
+        for key, default in default_statuses.items():
+            statuses[key] = validate_status(
+                dict(payload.get("statuses") or {}).get(key) or default,
+                field_name=f"statuses.{key}",
+            )
+
+        destinations: Dict[str, Dict[str, Any]] = {}
+        for key, raw in dict(payload.get("destinations") or {}).items():
+            if not isinstance(raw, Mapping):
+                raise ValueError(f"Destination {key} must be an object")
+            kind = str(raw.get("type") or "").strip().lower()
+            target = str(raw.get("target") or "").strip()
+            if kind not in {"ingroup", "extension"} or not target:
+                raise ValueError(f"Destination {key} requires type ingroup/extension and a target")
+            destinations[str(key)] = {
+                "type": kind,
+                "target": target,
+                "description": str(raw.get("description") or key).strip(),
+                "status": validate_status(
+                    raw.get("status")
+                    or statuses["ai_ingroup_transfer" if kind == "ingroup" else "ai_extension_transfer"],
+                    field_name=f"destinations.{key}.status",
+                ),
+            }
+
+        return {
+            "connection_id": connection_id,
+            "name": name,
+            "enabled": bool(payload.get("enabled", True)),
+            "direction": direction,
+            "campaign_id": campaign_id,
+            "closer_campaigns": closer_campaigns,
+            "user_start": user_start,
+            "number_of_lines": lines,
+            "conf_exten": conf_exten,
+            "static_agent_user": static_agent_user,
+            "ai_agent": ai_agent,
+            "trusted_context": trusted_context,
+            "trusted_endpoint": trusted_endpoint,
+            "dispositions": dispositions,
+            "statuses": statuses,
+            "destinations": destinations,
+            "dnc_scope": dnc_scope,
+            "callback_type": callback_type,
+        }
+
+    def list_connections(self) -> List[Dict[str, Any]]:
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vicidial_connections ORDER BY name COLLATE NOCASE, id"
+            ).fetchall()
+        return [self._connection_dict(row) for row in rows]
+
+    def get_connection(self, connection_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM vicidial_connections WHERE id=?", (connection_id,)
+            ).fetchone()
+        return self._connection_dict(row) if row else None
+
+    def save_connection(
+        self, payload: Mapping[str, Any], connection_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        data = self.validate_connection(payload)
+        connection_id = connection_id or str(uuid.uuid4())
+        now = _now()
+        with self._lock, self._connection() as conn:
+            exists = conn.execute(
+                "SELECT created_at FROM vicidial_connections WHERE id=?", (connection_id,)
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO vicidial_connections (
+                    id,name,enabled,base_url,agent_api_url,non_agent_api_url,source,
+                    username_env,password_env,verify_ssl,timeout_ms,topology,vicidial_host,
+                    sip_port,rtp_start,rtp_end,timezone,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,enabled=excluded.enabled,base_url=excluded.base_url,
+                    agent_api_url=excluded.agent_api_url,non_agent_api_url=excluded.non_agent_api_url,
+                    source=excluded.source,username_env=excluded.username_env,
+                    password_env=excluded.password_env,verify_ssl=excluded.verify_ssl,
+                    timeout_ms=excluded.timeout_ms,topology=excluded.topology,
+                    vicidial_host=excluded.vicidial_host,sip_port=excluded.sip_port,
+                    rtp_start=excluded.rtp_start,rtp_end=excluded.rtp_end,
+                    timezone=excluded.timezone,updated_at=excluded.updated_at
+                """,
+                (
+                    connection_id,
+                    data["name"], int(data["enabled"]), data["base_url"],
+                    data["agent_api_url"], data["non_agent_api_url"], data["source"],
+                    data["username_env"], data["password_env"], int(data["verify_ssl"]),
+                    data["timeout_ms"], data["topology"], data["vicidial_host"],
+                    data["sip_port"], data["rtp_start"], data["rtp_end"], data["timezone"],
+                    str(exists[0]) if exists else now, now,
+                ),
+            )
+        return self.get_connection(connection_id) or {}
+
+    def delete_connection(self, connection_id: str) -> bool:
+        with self._lock, self._connection() as conn:
+            cur = conn.execute("DELETE FROM vicidial_connections WHERE id=?", (connection_id,))
+            return cur.rowcount > 0
+
+    def list_mappings(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM vicidial_mappings"
+        params: tuple[Any, ...] = ()
+        if connection_id:
+            query += " WHERE connection_id=?"
+            params = (connection_id,)
+        query += " ORDER BY name COLLATE NOCASE, id"
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._mapping_dict(row) for row in rows]
+
+    def get_mapping(self, mapping_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM vicidial_mappings WHERE id=?", (mapping_id,)
+            ).fetchone()
+        return self._mapping_dict(row) if row else None
+
+    def get_enabled_mapping(self, mapping_id: str) -> Optional[Dict[str, Any]]:
+        mapping = self.get_mapping(mapping_id)
+        if not mapping or not mapping.get("enabled"):
+            return None
+        connection = self.get_connection(str(mapping.get("connection_id") or ""))
+        if not connection or not connection.get("enabled"):
+            return None
+        mapping["connection"] = connection
+        return mapping
+
+    def save_mapping(
+        self, payload: Mapping[str, Any], mapping_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        data = self.validate_mapping(payload)
+        if not self.get_connection(data["connection_id"]):
+            raise ValueError("VICIdial connection does not exist")
+        mapping_id = mapping_id or str(uuid.uuid4())
+        now = _now()
+        with self._lock, self._connection() as conn:
+            exists = conn.execute(
+                "SELECT created_at FROM vicidial_mappings WHERE id=?", (mapping_id,)
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO vicidial_mappings (
+                    id,connection_id,name,enabled,direction,campaign_id,closer_campaigns_json,
+                    user_start,number_of_lines,conf_exten,static_agent_user,ai_agent,
+                    trusted_context,trusted_endpoint,dispositions_json,statuses_json,
+                    destinations_json,dnc_scope,callback_type,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    connection_id=excluded.connection_id,name=excluded.name,enabled=excluded.enabled,
+                    direction=excluded.direction,campaign_id=excluded.campaign_id,
+                    closer_campaigns_json=excluded.closer_campaigns_json,user_start=excluded.user_start,
+                    number_of_lines=excluded.number_of_lines,conf_exten=excluded.conf_exten,
+                    static_agent_user=excluded.static_agent_user,ai_agent=excluded.ai_agent,
+                    trusted_context=excluded.trusted_context,trusted_endpoint=excluded.trusted_endpoint,
+                    dispositions_json=excluded.dispositions_json,statuses_json=excluded.statuses_json,
+                    destinations_json=excluded.destinations_json,dnc_scope=excluded.dnc_scope,
+                    callback_type=excluded.callback_type,updated_at=excluded.updated_at
+                """,
+                (
+                    mapping_id, data["connection_id"], data["name"], int(data["enabled"]),
+                    data["direction"], data["campaign_id"], _json(data["closer_campaigns"], []),
+                    data["user_start"], data["number_of_lines"], data["conf_exten"],
+                    data["static_agent_user"], data["ai_agent"], data["trusted_context"],
+                    data["trusted_endpoint"], _json(data["dispositions"], {}),
+                    _json(data["statuses"], {}), _json(data["destinations"], {}),
+                    data["dnc_scope"], data["callback_type"],
+                    str(exists[0]) if exists else now, now,
+                ),
+            )
+        return self.get_mapping(mapping_id) or {}
+
+    def delete_mapping(self, mapping_id: str) -> bool:
+        with self._lock, self._connection() as conn:
+            cur = conn.execute("DELETE FROM vicidial_mappings WHERE id=?", (mapping_id,))
+            return cur.rowcount > 0
+
+    def record_verification(
+        self, *, kind: str, record_id: str, result: Mapping[str, Any]
+    ) -> None:
+        if kind not in {"connection", "mapping"}:
+            raise ValueError("Verification kind must be connection or mapping")
+        table = "vicidial_connections" if kind == "connection" else "vicidial_mappings"
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                f"UPDATE {table} SET last_verification_json=?, last_verified_at=?, updated_at=? WHERE id=?",
+                (_json(dict(result), {}), _now(), _now(), record_id),
+            )
+
+    def record_real_call_verification(
+        self,
+        *,
+        mapping_id: str,
+        direction: str,
+        external_call_id: str,
+        status: str,
+        operation: str,
+    ) -> None:
+        """Merge successful live-call evidence into mapping readiness state."""
+        normalized_direction = str(direction or "").strip().lower()
+        if normalized_direction not in {"inbound", "outbound"}:
+            raise ValueError("Real-call direction must be inbound or outbound")
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT last_verification_json FROM vicidial_mappings WHERE id=?",
+                (mapping_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("VICIdial mapping does not exist")
+            verification = _decode(row[0], {})
+            if not isinstance(verification, dict):
+                verification = {}
+            real_calls = verification.get("real_calls")
+            if not isinstance(real_calls, dict):
+                real_calls = {}
+            real_calls[normalized_direction] = {
+                "verified": True,
+                "verified_at": _now(),
+                "external_call_id": str(external_call_id or "").strip(),
+                "status": validate_status(status),
+                "operation": str(operation or "hangup").strip(),
+            }
+            verification["real_calls"] = real_calls
+            now = _now()
+            conn.execute(
+                """
+                UPDATE vicidial_mappings
+                   SET last_verification_json=?, last_verified_at=?, updated_at=?
+                 WHERE id=?
+                """,
+                (_json(verification, {}), now, now, mapping_id),
+            )
+
+
+_store: Optional[VicidialStore] = None
+_store_lock = threading.Lock()
+
+
+def get_vicidial_store() -> VicidialStore:
+    global _store
+    with _store_lock:
+        if _store is None:
+            _store = VicidialStore()
+        return _store

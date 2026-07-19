@@ -592,6 +592,12 @@ Tool Definitions:
             self.register(HangupCallTool)
         except ImportError as e:
             logger.warning(f"Could not import HangupCallTool: {e}")
+
+        try:
+            from src.tools.telephony.vicidial import SetCallDispositionTool
+            self.register(SetCallDispositionTool)
+        except ImportError as e:
+            logger.warning(f"Could not import SetCallDispositionTool: {e}")
         
         try:
             from src.tools.telephony.voicemail import VoicemailTool

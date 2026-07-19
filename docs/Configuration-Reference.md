@@ -209,9 +209,9 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 |----------|---------|-------------|
 | `AAVA_OUTBOUND_EXTENSION_IDENTITY` | `6789` | Extension identity for FreePBX routing (sets `AMPUSER` + `CALLERID(num)` on originate) |
 | `AAVA_OUTBOUND_AMD_CONTEXT` | `aava-outbound-amd` | Dialplan context name used for AMD hop (`continueInDialplan`) |
-| `AAVA_OUTBOUND_PBX_TYPE` | `freepbx` | PBX-specific channel vars: `freepbx` \| `vicidial` experimental/community-tested \| `generic` |
+| `AAVA_OUTBOUND_PBX_TYPE` | `freepbx` | PBX-specific AAVA Campaign channel vars: `freepbx` \| `generic`. Legacy `vicidial` remains readable for one migration release but cannot be newly selected in the UI; use Call Scheduling → VICIdial Remote Agents. |
 | `AAVA_OUTBOUND_DIAL_CONTEXT` | `from-internal` | Asterisk dialplan context for `Local/` channel origination |
-| `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for carrier selection (e.g. `911` in the experimental ViciDial notes) |
+| `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for AAVA Campaign carrier selection |
 | `AAVA_OUTBOUND_CHANNEL_TECH` | `auto` | Channel tech for extension probing: `auto` \| `pjsip` \| `sip` \| `local_only` |
 | `AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS` | `120` | Shared startup/runtime timeout for attempts that never reach a live session; minimum `10` seconds |
 | `AAVA_OUTBOUND_LEAD_IMPORT_MAX_BYTES` | `10485760` | Maximum uploaded CSV or `.xlsx` lead file size in bytes |

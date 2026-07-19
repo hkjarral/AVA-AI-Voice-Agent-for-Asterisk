@@ -95,7 +95,7 @@ def _ai_engine_env_key(key: str) -> bool:
             "TZ",
             "STREAMING_LOG_LEVEL",
         )
-        or _is_prefix(key, ("AUDIO_TRANSPORT", "DOWNSTREAM_MODE", "AUDIOSOCKET_", "EXTERNAL_MEDIA_", "BARGE_IN_"))
+        or _is_prefix(key, ("AUDIO_TRANSPORT", "DOWNSTREAM_MODE", "AUDIOSOCKET_", "EXTERNAL_MEDIA_", "BARGE_IN_", "VICIDIAL_"))
         or _is_prefix(key, ("SMTP_",))
         # Local provider runtime uses these env vars via ${LOCAL_WS_*} placeholders in ai-agent.yaml
         or _is_prefix(key, ("LOCAL_WS_",))
@@ -120,7 +120,7 @@ def _admin_ui_env_key(key: str) -> bool:
     # service's runtime behavior. Refs #370.
     return (
         key in ("JWT_SECRET", "DOCKER_SOCK", "DOCKER_GID", "TZ", "HEALTH_API_TOKEN", "LIVE_STATUS_PUSH_TOKEN")
-        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_", "AAVA_HTTP_TOOL_TEST_"))
+        or _is_prefix(key, ("UVICORN_", "ADMIN_UI_", "AAVA_HTTP_TOOL_TEST_", "VICIDIAL_"))
         or key in ("LIVE_STATUS_POLL_INTERVAL_SECONDS", "LIVE_STATUS_INITIAL_PROBE_TIMEOUT_SECONDS")
     )
 

@@ -364,12 +364,19 @@ class Engine:
         self._outbound_amd_context = str(os.getenv("AAVA_OUTBOUND_AMD_CONTEXT", "aava-outbound-amd")).strip() or "aava-outbound-amd"
         self._outbound_pjsip_endpoint_cache: Dict[str, Dict[str, Any]] = {}
         self._outbound_pjsip_endpoint_cache_ttl_seconds = float(os.getenv("AAVA_OUTBOUND_PJSIP_ENDPOINT_CACHE_TTL_SECONDS", "300") or "300")
-        # Generic PBX routing plus experimental/community-tested ViciDial notes.
-        # Defaults preserve FreePBX behavior.
+        # Generic PBX routing. The legacy ``vicidial`` token remains readable
+        # for one migration window, but new VICIdial deployments use the
+        # Remote Agent integration and never originate AAVA campaigns through
+        # VICIdial's carrier dialplan.
         self._outbound_dial_context = str(os.getenv("AAVA_OUTBOUND_DIAL_CONTEXT", "from-internal")).strip() or "from-internal"
         self._outbound_dial_prefix = str(os.getenv("AAVA_OUTBOUND_DIAL_PREFIX", "")).strip()
         self._outbound_channel_tech = str(os.getenv("AAVA_OUTBOUND_CHANNEL_TECH", "auto")).strip().lower() or "auto"
         self._outbound_pbx_type = str(os.getenv("AAVA_OUTBOUND_PBX_TYPE", "freepbx")).strip().lower() or "freepbx"
+        if self._outbound_pbx_type == "vicidial":
+            logger.warning(
+                "Legacy direct VICIdial campaign origination is deprecated",
+                remediation="Configure Call Scheduling > VICIdial Remote Agents and change AAVA_OUTBOUND_PBX_TYPE",
+            )
         
         # Initialize streaming playback manager
         streaming_config = {}
@@ -4000,6 +4007,257 @@ class Engine:
                 reason="external-media-attach-retry-exhausted",
             )
 
+    async def _read_channel_variable(self, channel_id: str, name: str) -> str:
+        try:
+            response = await self.ari_client.send_command(
+                "GET",
+                f"channels/{channel_id}/variable",
+                params={"variable": name},
+                tolerate_statuses=[404],
+            )
+            if isinstance(response, dict):
+                return str(response.get("value") or "").strip()
+        except Exception:
+            logger.debug(
+                "Channel variable read failed",
+                channel_id=channel_id,
+                variable=name,
+                exc_info=True,
+            )
+        return ""
+
+    @staticmethod
+    def _apply_vicidial_tool_policy(session: CallSession, names: List[str]) -> List[str]:
+        """Return the safe tool surface for a VICIdial-owned call."""
+        if getattr(session, "external_platform", None) != "vicidial":
+            return list(names or [])
+        unsupported = {
+            "attended_transfer",
+            "cancel_transfer",
+            "live_agent_transfer",
+            "check_extension_status",
+            "voicemail",
+            "blind_transfer",
+            "set_call_disposition",
+        }
+        result = [name for name in list(names or []) if name not in unsupported]
+        mapping = dict(getattr(session, "external_mapping", {}) or {})
+        required = ["hangup_call"]
+        if dict(mapping.get("destinations") or {}):
+            required.append("blind_transfer")
+        if dict(mapping.get("dispositions") or {}):
+            required.append("set_call_disposition")
+        for required_name in required:
+            if required_name not in result:
+                result.append(required_name)
+        return result
+
+    async def _hydrate_vicidial_session(
+        self, session: CallSession, channel_id: str
+    ) -> None:
+        """Resolve an admitted VICIdial Remote Agent leg into a call-local snapshot."""
+        owner = (await self._read_channel_variable(channel_id, "AAVA_CALL_OWNER")).lower()
+        if owner != "vicidial":
+            return
+
+        mapping_id = await self._read_channel_variable(channel_id, "VICIDIAL_MAPPING_ID")
+        external_call_id = await self._read_channel_variable(channel_id, "VICIDIAL_RA_CALL_ID")
+        if not mapping_id or not external_call_id:
+            session.external_platform = "vicidial"
+            session.external_events.append({
+                "operation": "resolve",
+                "success": False,
+                "message": "Trusted dialplan did not provide mapping ID and VICIdial call ID",
+            })
+            await self._save_session(session)
+            raise RuntimeError(
+                "Trusted VICIdial dialplan did not provide mapping and call identifiers"
+            )
+
+        from src.core.vicidial_store import get_vicidial_store
+        from src.integrations.vicidial import VicidialApiClient
+
+        store = get_vicidial_store()
+        mapping = store.get_mapping(mapping_id)
+        if not mapping or not mapping.get("enabled"):
+            raise RuntimeError(f"VICIdial mapping {mapping_id!r} is missing or disabled")
+        connection = store.get_connection(str(mapping.get("connection_id") or ""))
+        if not connection or not connection.get("enabled"):
+            raise RuntimeError("VICIdial connection is missing or disabled")
+
+        session.external_platform = "vicidial"
+        session.external_call_id = external_call_id
+        session.external_mapping = copy.deepcopy(mapping)
+        session.external_connection = copy.deepcopy(connection)
+        client = VicidialApiClient(connection)
+        resolved, evidence = await client.resolve_remote_agent_session(
+            call_id=external_call_id,
+            mapping=mapping,
+        )
+        session.external_events.extend(
+            {"operation": "resolve", **item} for item in evidence
+        )
+        if resolved is None:
+            session.external_events.append({
+                "operation": "resolve",
+                "success": False,
+                "message": "No active Remote Agent session matched this call",
+            })
+            await self._save_session(session)
+            raise RuntimeError("No active VICIdial Remote Agent session matched this call")
+
+        session.external_session = resolved.to_dict()
+        session.external_direction = resolved.direction
+        session.is_outbound = resolved.direction == "outbound"
+        if resolved.phone_number:
+            session.caller_number = resolved.phone_number
+            session.caller_name = (
+                f"VICIdial {resolved.phone_number}"
+                if not str(session.caller_name or "").strip()
+                or str(session.caller_name or "").strip() == resolved.external_call_id
+                else session.caller_name
+            )
+
+        # Overlay mapping-scoped destinations onto this call's immutable tool
+        # config. ViciDial-specific types ensure UnifiedTransferTool never uses
+        # ARI continue() for a dialer-owned customer call.
+        runtime = copy.deepcopy(self._tool_config_for_session(session))
+        tools = runtime.setdefault("tools", {})
+        transfer = tools.setdefault("transfer", {})
+        transfer["enabled"] = True
+        transfer["deferred"] = False
+        transfer["destinations"] = {
+            str(key): {
+                **dict(value),
+                "type": "vicidial_ingroup"
+                if str(value.get("type") or "").lower() == "ingroup"
+                else "vicidial_extension",
+            }
+            for key, value in dict(mapping.get("destinations") or {}).items()
+            if isinstance(value, dict)
+        }
+        session.tool_runtime_config = runtime
+        await self._save_session(session)
+        logger.info(
+            "VICIdial Remote Agent session resolved",
+            call_id=session.call_id,
+            external_call_id=resolved.external_call_id,
+            remote_agent_user=resolved.agent_user,
+            campaign_id=resolved.campaign_id,
+            lead_id=resolved.lead_id,
+            direction=resolved.direction,
+            mapping_id=mapping_id,
+            resolution_source=resolved.resolution_source,
+        )
+
+    async def _finalize_vicidial_call(
+        self,
+        session: CallSession,
+        *,
+        semantic: str,
+        operation_reason: str,
+    ) -> bool:
+        """Ask ViciDial to end and disposition its owned customer call."""
+        if getattr(session, "external_platform", None) != "vicidial":
+            return False
+        if bool(getattr(session, "external_finalized", False)):
+            return True
+        if bool(getattr(session, "external_finalizing", False)):
+            logger.info(
+                "VICIdial terminal workflow already in progress",
+                call_id=session.call_id,
+                external_call_id=getattr(session, "external_call_id", None),
+            )
+            return False
+        raw_info = dict(getattr(session, "external_session", {}) or {})
+        if not raw_info:
+            logger.error(
+                "VICIdial hangup unavailable because Remote Agent resolution failed",
+                call_id=session.call_id,
+                external_call_id=getattr(session, "external_call_id", None),
+            )
+            return False
+
+        from src.integrations.vicidial import VicidialApiClient, VicidialSessionInfo, status_for
+        from src.tools.telephony.vicidial import commit_vicidial_disposition_workflow
+
+        info = VicidialSessionInfo(**{
+            key: value
+            for key, value in raw_info.items()
+            if key in VicidialSessionInfo.__dataclass_fields__
+        })
+        mapping = dict(getattr(session, "external_mapping", {}) or {})
+        connection = dict(getattr(session, "external_connection", {}) or {})
+        status = str(getattr(session, "external_requested_disposition", None) or status_for(
+            mapping,
+            semantic,
+            "AIHU" if semantic == "ai_hangup" else "AICU",
+        ))
+        session.external_finalizing = True
+        await self._save_session(session)
+        try:
+            try:
+                workflow_ok = await commit_vicidial_disposition_workflow(session)
+            except Exception as exc:
+                workflow_ok = False
+                session.external_events.append({
+                    "operation": "disposition_workflow",
+                    "success": False,
+                    "message": f"VICIdial disposition workflow failed: {type(exc).__name__}",
+                })
+            if not workflow_ok:
+                status = status_for(mapping, "ai_failure", "AIFAIL")
+                session.external_events.append({
+                    "operation": "disposition_workflow",
+                    "success": False,
+                    "message": "Requested disposition side effect was not verified; using failure status",
+                    "fallback_status": status,
+                })
+            result = await VicidialApiClient(connection).call_control(
+                info,
+                stage="HANGUP",
+                status=status,
+            )
+            session.external_events.append({
+                "operation": "hangup",
+                "reason": operation_reason,
+                **result.to_dict(),
+            })
+            if result.success:
+                session.external_finalized = True
+                session.external_disposition = status
+                if not session.external_disposition_label:
+                    session.external_disposition_label = semantic
+                try:
+                    from src.core.vicidial_store import get_vicidial_store
+
+                    get_vicidial_store().record_real_call_verification(
+                        mapping_id=info.mapping_id,
+                        direction=info.direction,
+                        external_call_id=info.external_call_id,
+                        status=status,
+                        operation="hangup",
+                    )
+                except Exception:
+                    logger.warning(
+                        "VICIdial call completed but readiness evidence could not be recorded",
+                        call_id=session.call_id,
+                        mapping_id=info.mapping_id,
+                        exc_info=True,
+                    )
+        finally:
+            session.external_finalizing = False
+            await self._save_session(session)
+        if not result.success:
+            logger.error(
+                "VICIdial rejected terminal call control; no ARI fallback was reported as success",
+                call_id=session.call_id,
+                external_call_id=info.external_call_id,
+                vicidial_status=status,
+                api_message=result.message,
+            )
+        return bool(result.success)
+
     async def _handle_caller_stasis_start_hybrid(self, caller_channel_id: str, channel: dict):
         """Handle caller channel entering Stasis - Hybrid ARI approach."""
         caller_info = channel.get('caller', {})
@@ -4230,6 +4488,31 @@ class Engine:
                 await self._resolve_audio_profile(session, caller_channel_id)
             except Exception:
                 logger.debug("Audio profile resolution failed", call_id=caller_channel_id, exc_info=True)
+
+            # VICIdial routing is resolved after the Agent-scoped tool snapshot so
+            # its configured destinations can be overlaid without mutating global
+            # tool configuration or other active calls.
+            try:
+                await self._hydrate_vicidial_session(session, caller_channel_id)
+            except Exception:
+                logger.error(
+                    "VICIdial Remote Agent hydration failed; rejecting the uncontrolled call",
+                    call_id=caller_channel_id,
+                    exc_info=True,
+                )
+                if getattr(session, "external_platform", None) == "vicidial":
+                    session.error_message = "VICIdial Remote Agent correlation failed"
+                    session.call_outcome = "failed"
+                    await self._save_session(session)
+                    try:
+                        await self.ari_client.hangup_channel(caller_channel_id)
+                    except Exception:
+                        logger.warning(
+                            "Failed to hang up rejected VICIdial channel",
+                            call_id=caller_channel_id,
+                            exc_info=True,
+                        )
+                    return
 
             if getattr(session, "context_resolution_error", None):
                 await self._handle_provider_start_failure(session)
@@ -7181,6 +7464,27 @@ class Engine:
             except Exception:
                 logger.debug("Failed to persist call_outcome onto session", call_id=call_id, exc_info=True)
 
+            # Caller disconnects can reach cleanup before AAVA initiates a
+            # terminal action. Best-effort disposition through ViciDial while
+            # its live agent record is still addressable.
+            if (
+                getattr(session, "external_platform", None) == "vicidial"
+                and not bool(getattr(session, "external_finalized", False))
+                and not self._session_was_transferred(session)
+            ):
+                try:
+                    await self._finalize_vicidial_call(
+                        session,
+                        semantic="caller_hangup" if call_outcome == "caller_hangup" else "ai_hangup",
+                        operation_reason="call-cleanup",
+                    )
+                except Exception:
+                    logger.warning(
+                        "VICIdial cleanup disposition failed",
+                        call_id=call_id,
+                        exc_info=True,
+                    )
+
             # Stop any active streaming playback.
             try:
                 await self.streaming_playback_manager.stop_streaming_playback(call_id)
@@ -7299,7 +7603,14 @@ class Engine:
                     logger.debug("Hangup failed during cleanup", call_id=call_id, channel_id=channel_id, exc_info=True)
             
             # Hang up caller channel ONLY if not transferred
-            if not transfer_active:
+            if getattr(session, "external_platform", None) == "vicidial":
+                logger.info(
+                    "Skipping caller ARI hangup for VICIdial-owned call",
+                    call_id=call_id,
+                    external_call_id=getattr(session, "external_call_id", None),
+                    finalized=bool(getattr(session, "external_finalized", False)),
+                )
+            elif not transfer_active:
                 try:
                     await self.ari_client.hangup_channel(session.caller_channel_id)
                 except Exception:
@@ -7681,6 +7992,7 @@ class Engine:
                 call_id=call_id,
                 caller_number=session.caller_number,
                 caller_name=session.caller_name,
+                called_number=session.called_number,
                 start_time=start_time,
                 end_time=end_time,
                 duration_seconds=duration,
@@ -7706,6 +8018,19 @@ class Engine:
                 caller_audio_format=session.caller_audio_format,
                 codec_alignment_ok=session.codec_alignment_ok,
                 barge_in_count=barge_in_count,
+                external_platform=getattr(session, 'external_platform', None),
+                external_call_id=getattr(session, 'external_call_id', None),
+                external_direction=getattr(session, 'external_direction', None),
+                external_disposition=getattr(session, 'external_disposition', None),
+                external_metadata={
+                    "session": getattr(session, 'external_session', {}) or {},
+                    "mapping_id": (getattr(session, 'external_mapping', {}) or {}).get("id"),
+                    "mapping_name": (getattr(session, 'external_mapping', {}) or {}).get("name"),
+                    "events": getattr(session, 'external_events', []) or [],
+                    "requested_disposition": getattr(session, 'external_requested_disposition', None),
+                    "disposition_label": getattr(session, 'external_disposition_label', None),
+                    "finalized": bool(getattr(session, 'external_finalized', False)),
+                },
             )
             
             saved = await store.save(record)
@@ -11991,13 +12316,19 @@ class Engine:
             session.cleanup_after_tts = False
             await self._save_session(session)
             logger.info(
-                "Executing terminal ARI hangup",
+                "Executing terminal hangup",
                 call_id=call_id,
                 channel_id=session.caller_channel_id,
                 reason=reason,
                 audio_drained=drained,
                 transport=getattr(getattr(self, "config", None), "audio_transport", None),
             )
+            if getattr(session, "external_platform", None) == "vicidial":
+                return await self._finalize_vicidial_call(
+                    session,
+                    semantic="ai_hangup",
+                    operation_reason=reason,
+                )
             try:
                 await self.ari_client.hangup_channel(session.caller_channel_id)
                 return True
@@ -12374,6 +12705,8 @@ class Engine:
                         allowed_tools = filtered
                     except Exception:
                         pass
+
+                allowed_tools = self._apply_vicidial_tool_policy(session, allowed_tools)
 
                 # Always override any legacy pipeline/provider tool settings.
                 llm_options = dict(llm_options)
@@ -16207,6 +16540,9 @@ class Engine:
                             provider_context["tools"] = [t.definition.name for t in tools]
                         except Exception:
                             provider_context["tools"] = allowed
+                        provider_context["tools"] = self._apply_vicidial_tool_policy(
+                            session, provider_context.get("tools") or []
+                        )
                         # Local provider can choose strict context-only tools while other providers
                         # keep effective (global+context) tools in provider_context["tools"].
                         provider_context["context_tools"] = list(explicit_context_tools)

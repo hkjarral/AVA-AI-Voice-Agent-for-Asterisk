@@ -28,6 +28,7 @@ class CallRecord:
     call_id: str = ""
     caller_number: Optional[str] = None
     caller_name: Optional[str] = None
+    called_number: Optional[str] = None
     
     # Timing
     start_time: Optional[datetime] = None
@@ -50,6 +51,13 @@ class CallRecord:
     outcome: str = "completed"  # completed | transferred | error | abandoned | no_input_timeout
     transfer_destination: Optional[str] = None
     error_message: Optional[str] = None
+
+    # External dialer lifecycle (additive; null for ordinary AAVA calls).
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_disposition: Optional[str] = None
+    external_metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Tool executions (debugging)
     # tool_calls = in-call tool invocations issued by the LLM during the conversation.
@@ -95,7 +103,7 @@ class CallRecord:
         
         # Parse JSON strings for complex fields
         _list_fields = ['conversation_history', 'tool_calls', 'pre_call_tool_calls', 'post_call_tool_calls']
-        for key in ['pipeline_components', *_list_fields]:
+        for key in ['pipeline_components', 'external_metadata', *_list_fields]:
             if data.get(key) and isinstance(data[key], str):
                 try:
                     data[key] = json.loads(data[key])
@@ -127,6 +135,7 @@ class CallHistoryStore:
         call_id TEXT NOT NULL,
         caller_number TEXT,
         caller_name TEXT,
+        called_number TEXT,
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
         duration_seconds REAL,
@@ -141,6 +150,11 @@ class CallHistoryStore:
         outcome TEXT,
         transfer_destination TEXT,
         error_message TEXT,
+        external_platform TEXT,
+        external_call_id TEXT,
+        external_direction TEXT,
+        external_disposition TEXT,
+        external_metadata TEXT,
         tool_calls TEXT,
         pre_call_tool_calls TEXT,
         post_call_tool_calls TEXT,
@@ -227,6 +241,17 @@ class CallHistoryStore:
                 cur.execute("ALTER TABLE call_records ADD COLUMN voice TEXT")
             if "voice_source" not in existing:
                 cur.execute("ALTER TABLE call_records ADD COLUMN voice_source TEXT")
+            additive_columns = {
+                "called_number": "TEXT",
+                "external_platform": "TEXT",
+                "external_call_id": "TEXT",
+                "external_direction": "TEXT",
+                "external_disposition": "TEXT",
+                "external_metadata": "TEXT",
+            }
+            for name, sql_type in additive_columns.items():
+                if name not in existing:
+                    cur.execute(f"ALTER TABLE call_records ADD COLUMN {name} {sql_type}")
         except Exception:
             logger.debug("call_records schema migration failed (non-fatal)", exc_info=True)
     
@@ -268,20 +293,23 @@ class CallHistoryStore:
                     
                     cursor.execute("""
                         INSERT OR REPLACE INTO call_records (
-                            id, call_id, caller_number, caller_name,
+                            id, call_id, caller_number, caller_name, called_number,
                             start_time, end_time, duration_seconds,
                             provider_name, pipeline_name, pipeline_components, context_name,
                             routing_method, voice, voice_source,
                             conversation_history, outcome, transfer_destination, error_message,
+                            external_platform, external_call_id, external_direction,
+                            external_disposition, external_metadata,
                             tool_calls, pre_call_tool_calls, post_call_tool_calls,
                             avg_turn_latency_ms, max_turn_latency_ms, total_turns,
                             caller_audio_format, codec_alignment_ok, barge_in_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record.id,
                         record.call_id,
                         record.caller_number,
                         record.caller_name,
+                        record.called_number,
                         record.start_time.isoformat() if record.start_time else None,
                         record.end_time.isoformat() if record.end_time else None,
                         record.duration_seconds,
@@ -298,6 +326,11 @@ class CallHistoryStore:
                         record.outcome,
                         record.transfer_destination,
                         record.error_message,
+                        record.external_platform,
+                        record.external_call_id,
+                        record.external_direction,
+                        record.external_disposition,
+                        json.dumps(record.external_metadata),
                         json.dumps(record.tool_calls),
                         json.dumps(record.pre_call_tool_calls),
                         json.dumps(record.post_call_tool_calls),
@@ -628,6 +661,7 @@ class CallHistoryStore:
                             "call_id",
                             "caller_number",
                             "caller_name",
+                            "called_number",
                             "start_time",
                             "end_time",
                             "duration_seconds",
@@ -639,6 +673,10 @@ class CallHistoryStore:
                             "outcome",
                             "transfer_destination",
                             "error_message",
+                            "external_platform",
+                            "external_call_id",
+                            "external_direction",
+                            "external_disposition",
                             "avg_turn_latency_ms",
                             "max_turn_latency_ms",
                             "total_turns",

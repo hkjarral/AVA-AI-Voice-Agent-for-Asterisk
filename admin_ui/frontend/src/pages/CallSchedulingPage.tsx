@@ -33,6 +33,7 @@ import {
     type InCallToolCall,
     type PhaseToolCall,
 } from '../components/calls/ToolExecutionGroups';
+import { VicidialRemoteAgentsTab } from '../components/outbound/VicidialRemoteAgentsTab';
 
 type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived' | 'completed';
 type LeadImportIssueRow = { row_number: number; phone_number: string; error_reason?: string; warning_reason?: string };
@@ -275,6 +276,7 @@ const formatSeconds = (secs: number): string => {
 
 const CallSchedulingPage = () => {
     const { confirm } = useConfirmDialog();
+    const [schedulingMode, setSchedulingMode] = useState<'campaigns' | 'vicidial'>('campaigns');
     const [meta, setMeta] = useState<OutboundMeta | null>(null);
     const [serverOffsetMs, setServerOffsetMs] = useState(0);
     const [clockTick, setClockTick] = useState(0);
@@ -1072,6 +1074,29 @@ const CallSchedulingPage = () => {
         return `${m}m ${r}s`;
     };
 
+    const schedulingTabs = (
+        <div className="inline-flex rounded-lg border border-border bg-muted/20 p-1" role="tablist" aria-label="Call scheduling mode">
+            <button
+                type="button"
+                role="tab"
+                aria-selected={schedulingMode === 'campaigns'}
+                onClick={() => setSchedulingMode('campaigns')}
+                className={`rounded-md px-4 py-2 text-sm transition-colors ${schedulingMode === 'campaigns' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+                AAVA Campaigns
+            </button>
+            <button
+                type="button"
+                role="tab"
+                aria-selected={schedulingMode === 'vicidial'}
+                onClick={() => setSchedulingMode('vicidial')}
+                className={`rounded-md px-4 py-2 text-sm transition-colors ${schedulingMode === 'vicidial' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+                VICIdial Remote Agents
+            </button>
+        </div>
+    );
+
     if (loading) {
         return (
             <div className="p-6">
@@ -1079,6 +1104,22 @@ const CallSchedulingPage = () => {
                     <RefreshCw className="w-4 h-4 animate-spin" />
                     Loading call scheduling…
                 </div>
+            </div>
+        );
+    }
+
+    if (schedulingMode === 'vicidial') {
+        return (
+            <div className="p-6 space-y-6">
+                <div>
+                    <h1 className="text-3xl font-bold flex items-center gap-2">
+                        <CalendarClock className="w-7 h-7" />
+                        Call Scheduling
+                    </h1>
+                    <p className="text-sm text-muted-foreground">AAVA campaigns and external dialer integrations.</p>
+                </div>
+                {schedulingTabs}
+                <VicidialRemoteAgentsTab />
             </div>
         );
     }
@@ -1137,6 +1178,8 @@ const CallSchedulingPage = () => {
                     </div>
                 </div>
             </div>
+
+            {schedulingTabs}
 
             {lastLeadImport && ((lastLeadImport.rejected || 0) > 0 || (lastLeadImport.warnings?.length || 0) > 0) && (
                 <div className="rounded-lg border border-border bg-card p-3 text-sm">

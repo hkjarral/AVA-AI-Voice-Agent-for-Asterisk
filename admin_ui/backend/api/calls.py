@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from zoneinfo import ZoneInfo
 
 # Add project root to path for imports
@@ -88,6 +88,7 @@ class CallRecordSummaryResponse(BaseModel):
     call_id: str
     caller_number: Optional[str] = None
     caller_name: Optional[str] = None
+    called_number: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     duration_seconds: float = 0.0
@@ -109,6 +110,10 @@ class CallRecordSummaryResponse(BaseModel):
     total_turns: int = 0
     barge_in_count: int = 0
     created_at: Optional[str] = None
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_disposition: Optional[str] = None
 
 
 class CallRecordResponse(BaseModel):
@@ -117,12 +122,13 @@ class CallRecordResponse(BaseModel):
     call_id: str
     caller_number: Optional[str] = None
     caller_name: Optional[str] = None
+    called_number: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     duration_seconds: float = 0.0
     provider_name: str = "unknown"
     pipeline_name: Optional[str] = None
-    pipeline_components: dict = {}
+    pipeline_components: dict = Field(default_factory=dict)
     context_name: Optional[str] = None
     routing_method: Optional[str] = None  # 'ai_agent' | 'ai_context' | 'default' | None
     voice: Optional[str] = None  # Resolved session voice (v7.3.0; None = provider default)
@@ -130,13 +136,18 @@ class CallRecordResponse(BaseModel):
     # Additive v7 aliases (see CallRecordSummaryResponse for semantics).
     agent_slug: Optional[str] = None
     agent_name: Optional[str] = None
-    conversation_history: list = []
+    conversation_history: list = Field(default_factory=list)
     outcome: str = "completed"
     transfer_destination: Optional[str] = None
     error_message: Optional[str] = None
-    tool_calls: list = []
-    pre_call_tool_calls: list = []
-    post_call_tool_calls: list = []
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_disposition: Optional[str] = None
+    external_metadata: dict = Field(default_factory=dict)
+    tool_calls: list = Field(default_factory=list)
+    pre_call_tool_calls: list = Field(default_factory=list)
+    post_call_tool_calls: list = Field(default_factory=list)
     avg_turn_latency_ms: float = 0.0
     max_turn_latency_ms: float = 0.0
     total_turns: int = 0
@@ -292,6 +303,7 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         call_id=record.call_id,
         caller_number=record.caller_number,
         caller_name=record.caller_name,
+        called_number=getattr(record, "called_number", None),
         start_time=record.start_time.isoformat() if record.start_time else None,
         end_time=record.end_time.isoformat() if record.end_time else None,
         duration_seconds=record.duration_seconds,
@@ -308,6 +320,11 @@ def _record_to_response(record, agent_names: Optional[Dict[str, str]] = None) ->
         outcome=record.outcome,
         transfer_destination=record.transfer_destination,
         error_message=record.error_message,
+        external_platform=getattr(record, "external_platform", None),
+        external_call_id=getattr(record, "external_call_id", None),
+        external_direction=getattr(record, "external_direction", None),
+        external_disposition=getattr(record, "external_disposition", None),
+        external_metadata=getattr(record, "external_metadata", {}) or {},
         tool_calls=_normalize_tool_calls(record.tool_calls or []),
         pre_call_tool_calls=_normalize_phase_tool_calls(
             getattr(record, "pre_call_tool_calls", None) or [], "pre_call"
@@ -333,6 +350,7 @@ def _record_to_summary_response(record, agent_names: Optional[Dict[str, str]] = 
         call_id=record.call_id,
         caller_number=record.caller_number,
         caller_name=record.caller_name,
+        called_number=getattr(record, "called_number", None),
         start_time=record.start_time.isoformat() if record.start_time else None,
         end_time=record.end_time.isoformat() if record.end_time else None,
         duration_seconds=record.duration_seconds,
@@ -344,6 +362,10 @@ def _record_to_summary_response(record, agent_names: Optional[Dict[str, str]] = 
         agent_name=agent_name,
         outcome=record.outcome,
         error_message=record.error_message,
+        external_platform=getattr(record, "external_platform", None),
+        external_call_id=getattr(record, "external_call_id", None),
+        external_direction=getattr(record, "external_direction", None),
+        external_disposition=getattr(record, "external_disposition", None),
         avg_turn_latency_ms=record.avg_turn_latency_ms,
         total_turns=record.total_turns,
         barge_in_count=record.barge_in_count,

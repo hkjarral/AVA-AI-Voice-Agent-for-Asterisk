@@ -23,6 +23,7 @@ interface CallRecordSummary {
     call_id: string;
     caller_number: string | null;
     caller_name: string | null;
+    called_number?: string | null;
     start_time: string | null;
     end_time: string | null;
     duration_seconds: number;
@@ -37,6 +38,10 @@ interface CallRecordSummary {
     avg_turn_latency_ms: number;
     total_turns: number;
     barge_in_count: number;
+    external_platform?: string | null;
+    external_call_id?: string | null;
+    external_direction?: string | null;
+    external_disposition?: string | null;
 }
 
 interface CallRecordDetail extends CallRecordSummary {
@@ -49,6 +54,15 @@ interface CallRecordDetail extends CallRecordSummary {
     max_turn_latency_ms: number;
     caller_audio_format: string;
     codec_alignment_ok: boolean;
+    external_metadata?: {
+        mapping_id?: string | null;
+        mapping_name?: string | null;
+        finalized?: boolean;
+        requested_disposition?: string | null;
+        disposition_label?: string | null;
+        session?: Record<string, any>;
+        events?: Array<Record<string, any>>;
+    };
 }
 
 interface CallStats {
@@ -1097,6 +1111,33 @@ const CallHistoryPage = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {selectedCall?.external_platform && (
+                                <div>
+                                    <h3 className="font-semibold mb-2">External dialer</h3>
+                                    <div className="rounded-lg border border-border bg-card p-4">
+                                        <div className="grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
+                                            <div><div className="text-xs text-muted-foreground">Platform</div><div className="font-medium uppercase">{selectedCall.external_platform}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Call ID</div><div className="break-all font-mono text-xs">{selectedCall.external_call_id || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Direction</div><div className="font-medium capitalize">{selectedCall.external_direction || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Remote Agent</div><div className="font-mono">{selectedCall.external_metadata?.session?.agent_user || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Mapping</div><div className="font-medium">{selectedCall.external_metadata?.mapping_name || selectedCall.external_metadata?.mapping_id || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Disposition</div><div className="font-mono">{selectedCall.external_disposition || selectedCall.external_metadata?.requested_disposition || '-'}</div>{!selectedCall.external_disposition && selectedCall.external_metadata?.requested_disposition && <div className="text-[11px] text-amber-500">requested, not confirmed</div>}</div>
+                                        </div>
+                                        <div className="mt-3 text-xs text-muted-foreground">
+                                            Dialer lifecycle: {selectedCall.external_metadata?.finalized ? 'finalized' : 'not confirmed'} · API events: {selectedCall.external_metadata?.events?.length || 0}
+                                        </div>
+                                        {(selectedCall.external_metadata?.events?.length || 0) > 0 && (
+                                            <details className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+                                                <summary className="cursor-pointer text-xs font-medium">VICIdial API evidence</summary>
+                                                <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
+                                                    {JSON.stringify(selectedCall.external_metadata?.events, null, 2)}
+                                                </pre>
+                                            </details>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Transcript */}
                             <div>

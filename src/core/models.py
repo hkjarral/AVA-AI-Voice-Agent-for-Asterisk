@@ -202,6 +202,23 @@ class CallSession:
     outbound_attempt_id: Optional[str] = None
     outbound_custom_vars: Dict[str, Any] = field(default_factory=dict)
 
+    # External dialer ownership (VICIdial Remote Agent integration).
+    # These are call-local snapshots so an operator edit cannot change the
+    # behavior or authorization boundaries of a call already in progress.
+    external_platform: Optional[str] = None
+    external_call_id: Optional[str] = None
+    external_direction: Optional[str] = None
+    external_session: Dict[str, Any] = field(default_factory=dict)
+    external_mapping: Dict[str, Any] = field(default_factory=dict)
+    external_connection: Dict[str, Any] = field(default_factory=dict)
+    external_events: List[Dict[str, Any]] = field(default_factory=list)
+    external_requested_disposition: Optional[str] = None
+    external_disposition: Optional[str] = None
+    external_disposition_label: Optional[str] = None
+    external_disposition_payload: Dict[str, Any] = field(default_factory=dict)
+    external_finalizing: bool = False
+    external_finalized: bool = False
+
     def __post_init__(self):
         """Initialize default VAD and fallback state."""
         if not self.vad_state:
