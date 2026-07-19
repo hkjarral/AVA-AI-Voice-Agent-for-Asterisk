@@ -1864,7 +1864,7 @@ class Engine:
         *,
         inflight: int,
         active_outbound: int,
-    ) -> None:
+    ) -> bool:
         """
         Mark a running campaign as completed when there is no remaining runnable work.
 
@@ -1878,9 +1878,9 @@ class Engine:
             campaign_id = str(campaign.get("id") or "").strip()
             status = str(campaign.get("status") or "").strip().lower()
             if not campaign_id or status != "running":
-                return
+                return False
             if inflight > 0 or active_outbound > 0:
-                return
+                return False
 
             stats = await self.outbound_store.campaign_stats(campaign_id)
             lead_states = (stats or {}).get("lead_states") or {}
@@ -1894,7 +1894,7 @@ class Engine:
                     except Exception:
                         pass
             if total_leads <= 0:
-                return
+                return False
 
             active_states = ("pending", "leased", "dialing", "amd_pending", "in_progress")
             try:
@@ -1907,12 +1907,16 @@ class Engine:
                     except Exception:
                         pass
             if active_count != 0:
-                return
+                return False
 
-            await self.outbound_store.set_campaign_status(campaign_id, "completed", cancel_pending=False)
+            await self.outbound_store.set_campaign_status(
+                campaign_id, "completed", cancel_pending=False
+            )
             logger.info("Outbound campaign completed", campaign_id=campaign_id)
+            return True
         except Exception:
             logger.debug("Failed to mark outbound campaign completed", exc_info=True)
+            return False
 
     async def _retention_cleanup_loop(self) -> None:
         """Periodically prune call-history records past the retention window (HIGH-7).
@@ -2030,8 +2034,6 @@ class Engine:
                     try:
                         if not campaign_id:
                             continue
-                        if not self._outbound_campaign_in_window(campaign, now_utc):
-                            continue
 
                         max_concurrent = int(campaign.get("max_concurrent") or 1)
                         max_concurrent = max(1, min(5, max_concurrent))
@@ -2039,6 +2041,16 @@ class Engine:
                             campaign_id,
                             max_concurrent,
                         )
+                        # Completion is lifecycle bookkeeping, not new origination.
+                        # Run it even after the campaign's calling window closes.
+                        if await self._outbound_maybe_mark_campaign_completed(
+                            campaign,
+                            inflight=inflight,
+                            active_outbound=active_outbound,
+                        ):
+                            continue
+                        if not self._outbound_campaign_in_window(campaign, now_utc):
+                            continue
                         if capacity <= 0:
                             continue
 

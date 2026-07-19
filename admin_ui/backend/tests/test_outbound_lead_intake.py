@@ -43,7 +43,11 @@ def _xlsx_bytes(rows):
 def _client(monkeypatch):
     store = _FakeOutboundStore()
     monkeypatch.setattr(outbound_api, "_get_outbound_store", lambda: store)
-    monkeypatch.setattr(outbound_api, "_load_known_agent_slugs", lambda: ["sales"])
+    monkeypatch.setattr(
+        outbound_api,
+        "_load_known_agent_selectors",
+        lambda: (["sales"], ["Sales Team", "sales"]),
+    )
     app = FastAPI()
     app.include_router(outbound_api.router, prefix="/api")
     return TestClient(app), store
@@ -95,6 +99,26 @@ def test_xlsx_import_endpoint_normalizes_into_existing_csv_path(monkeypatch):
     assert campaign_id == "campaign-1"
     assert "+15551234567" in csv_bytes.decode("utf-8")
     assert kwargs["known_agents"] == ["sales"]
+    assert kwargs["known_contexts"] == ["Sales Team", "sales"]
+
+
+def test_import_preserves_valid_empty_agent_set_for_validation(monkeypatch):
+    client, store = _client(monkeypatch)
+    monkeypatch.setattr(
+        outbound_api,
+        "_load_known_agent_selectors",
+        lambda: ([], []),
+    )
+
+    response = client.post(
+        "/api/outbound/campaigns/campaign-1/leads/import",
+        files={"file": ("leads.csv", b"phone_number,agent\n2765,missing\n", "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    _, _, kwargs = store.imports[0]
+    assert kwargs["known_agents"] == []
+    assert kwargs["known_contexts"] == []
 
 
 def test_xlsx_conversion_rejects_invalid_archive_and_row_overflow(monkeypatch):

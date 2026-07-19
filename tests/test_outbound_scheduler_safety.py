@@ -233,6 +233,37 @@ def test_amd_defaults_are_human_first_and_campaign_values_override():
     )
 
 
+@pytest.mark.asyncio
+async def test_campaign_completion_is_independent_of_dialing_window():
+    class _Store:
+        def __init__(self):
+            self.status_updates = []
+
+        async def campaign_stats(self, campaign_id):
+            return {"lead_states": {"completed": 2}}
+
+        async def set_campaign_status(self, campaign_id, status, cancel_pending=False):
+            self.status_updates.append((campaign_id, status, cancel_pending))
+
+    engine = Engine.__new__(Engine)
+    engine.outbound_store = _Store()
+    campaign = _campaign(status="running")
+
+    assert not engine._outbound_campaign_in_window(
+        campaign, datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc)
+    )
+    completed = await engine._outbound_maybe_mark_campaign_completed(
+        campaign,
+        inflight=0,
+        active_outbound=0,
+    )
+
+    assert completed is True
+    assert engine.outbound_store.status_updates == [
+        ("campaign-1", "completed", False)
+    ]
+
+
 def test_empty_pre_call_value_removes_only_its_optional_greeting_phrase():
     engine = Engine.__new__(Engine)
     session = SimpleNamespace(

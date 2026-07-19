@@ -20,6 +20,7 @@ import aiohttp
 from src.tools.base import Tool, ToolDefinition, ToolCategory, ToolPhase, ToolParameter
 from src.tools.context import ToolExecutionContext
 from src.tools.http.debug_trace import (
+    BODY_CAPABLE_HTTP_METHODS,
     build_var_snapshot,
     debug_enabled,
     extract_used_brace_vars,
@@ -192,7 +193,7 @@ class InCallHTTPTool(Tool):
             body = None
             json_body = None
             method = str(self.config.method or "GET").strip().upper()
-            if method not in {"GET", "HEAD"} and self.config.body_template:
+            if method in BODY_CAPABLE_HTTP_METHODS and self.config.body_template:
                 body_str = self._substitute_variables(self.config.body_template, sub_context)
                 # Try to parse as JSON for proper Content-Type handling
                 try:
@@ -268,9 +269,9 @@ class InCallHTTPTool(Tool):
                             "message": self.config.error_message,
                         }
                     
-                    if response.status != 200:
+                    if not 200 <= response.status < 300:
                         logger.warning(
-                            f"In-call HTTP tool returned non-200: {self.config.name}",
+                            f"In-call HTTP tool returned non-2xx: {self.config.name}",
                             extra={"status": response.status, "call_id": context.call_id}
                         )
                         if debug_enabled(logger):
@@ -281,7 +282,7 @@ class InCallHTTPTool(Tool):
                             except Exception as e:
                                 body_preview = f"<failed to read body: {e}>"
                             logger.debug(
-                                "[HTTP_TOOL_TRACE] response_non_200 in_call tool=%s status=%s elapsed_ms=%s body_preview=%s call_id=%s",
+                                "[HTTP_TOOL_TRACE] response_non_2xx in_call tool=%s status=%s elapsed_ms=%s body_preview=%s call_id=%s",
                                 self.config.name,
                                 response.status,
                                 elapsed_ms,
@@ -340,7 +341,7 @@ class InCallHTTPTool(Tool):
                         body_bytes = b"".join(chunks)
                         charset = getattr(response, "charset", None) or "utf-8"
                         body_text = body_bytes.decode(charset, errors="replace")
-                        data = json.loads(body_text)
+                        data = json.loads(body_text) if body_text.strip() else {}
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse JSON response: {self.config.name} error={e}")
                         if debug_enabled(logger):

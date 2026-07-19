@@ -26,6 +26,7 @@ import { FormLabel } from '../components/ui/FormComponents';
 import { toast } from 'sonner';
 import { describeApiError } from '../utils/apiErrors';
 import { copyTextToClipboard } from '../utils/clipboard';
+import { buildCampaignEditPayload } from '../utils/outboundCampaign';
 import {
     InCallToolGroup,
     PhaseToolGroup,
@@ -78,6 +79,7 @@ interface OutboundCampaign {
     max_concurrent: number;
     min_interval_seconds_between_calls: number;
     default_context: string;
+    agent_routing_method?: 'ai_agent' | 'ai_context';
     voicemail_drop_enabled?: number | boolean;
     voicemail_drop_media_uri?: string | null;
     consent_enabled?: number | boolean;
@@ -724,7 +726,8 @@ const CallSchedulingPage = () => {
     const saveEdit = async () => {
         if (!selectedCampaign) return;
         try {
-            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, editForm);
+            const payload = buildCampaignEditPayload(editForm, selectedCampaign.default_context);
+            await axios.patch(`/api/outbound/campaigns/${selectedCampaign.id}`, payload);
             await refreshCampaigns();
             await refreshCampaignDetails(selectedCampaign.id);
             setNotice({ type: 'success', message: 'Campaign updated' });

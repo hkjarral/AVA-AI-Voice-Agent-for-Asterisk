@@ -61,6 +61,15 @@ def _normalize_agent_routing_method(value: Any, default: str = "ai_agent") -> st
     return default
 
 
+def _is_safe_legacy_agent_selector(value: str) -> bool:
+    """Allow historical display-name selectors while rejecting control characters."""
+    return (
+        bool(value)
+        and len(value) <= 200
+        and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+    )
+
+
 def _safe_json_loads(raw: str) -> Dict[str, Any]:
     try:
         data = json.loads(raw)
@@ -520,9 +529,6 @@ class OutboundStore:
                 updates["agent_routing_method"] = _normalize_agent_routing_method(
                     updates.get("agent_routing_method"), "ai_agent"
                 )
-            elif "default_context" in updates:
-                # Editing the Agent selector in the v7.4 UI makes it canonical.
-                updates["agent_routing_method"] = "ai_agent"
 
             if "max_concurrent" in updates:
                 updates["max_concurrent"] = max(1, min(5, _as_int(updates.get("max_concurrent"), 1)))
@@ -537,17 +543,27 @@ class OutboundStore:
             if "consent_timeout_seconds" in updates:
                 updates["consent_timeout_seconds"] = max(1, min(30, _as_int(updates.get("consent_timeout_seconds"), 5)))
 
-            updates["updated_at_utc"] = now
-
-            if not updates:
-                return self.get_campaign_sync(campaign_id)
-
-            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-            values = list(updates.values()) + [campaign_id]
-
             with self._lock:
                 conn = self._get_connection()
                 try:
+                    if (
+                        "default_context" in updates
+                        and "agent_routing_method" not in updates
+                    ):
+                        current = conn.execute(
+                            "SELECT default_context FROM outbound_campaigns WHERE id=?",
+                            (campaign_id,),
+                        ).fetchone()
+                        if current is None:
+                            raise KeyError("campaign not found")
+                        if _as_str(updates["default_context"]).strip() != _as_str(
+                            current["default_context"]
+                        ).strip():
+                            updates["agent_routing_method"] = "ai_agent"
+
+                    updates["updated_at_utc"] = now
+                    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+                    values = list(updates.values()) + [campaign_id]
                     cur = conn.execute(
                         f"UPDATE outbound_campaigns SET {set_clause} WHERE id = ?",
                         values,
@@ -969,16 +985,34 @@ class OutboundStore:
                         campaign_timezone = "UTC"
 
                     campaign_default_context = campaign_default_context_raw or "default"
-                    if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", campaign_default_context):
+                    default_selector_valid = (
+                        bool(
+                            re.match(
+                                r"^[a-zA-Z0-9_.-]{1,64}$",
+                                campaign_default_context,
+                            )
+                        )
+                        if campaign_routing_method == "ai_agent"
+                        else _is_safe_legacy_agent_selector(campaign_default_context)
+                    )
+                    if not default_selector_valid:
                         campaign_default_context = "default"
 
-                    known_ctx: Optional[set[str]] = None
-                    known_agent_values = known_agents if known_agents is not None else known_contexts
-                    if known_agent_values:
-                        try:
-                            known_ctx = {str(x).strip() for x in known_agent_values if str(x).strip()}
-                        except Exception:
-                            known_ctx = None
+                    known_agent_slugs: Optional[set[str]] = None
+                    known_legacy_contexts: Optional[set[str]] = None
+                    if known_agents is not None:
+                        known_agent_slugs = {
+                            str(x).strip() for x in known_agents if str(x).strip()
+                        }
+                    legacy_validation_values = (
+                        known_contexts if known_contexts is not None else known_agents
+                    )
+                    if legacy_validation_values is not None:
+                        known_legacy_contexts = {
+                            str(x).strip()
+                            for x in legacy_validation_values
+                            if str(x).strip()
+                        }
 
                     for idx, row in enumerate(reader, start=2):  # header is row 1
                         raw_phone = _as_str((row or {}).get(phone_key)).strip()
@@ -1019,25 +1053,58 @@ class OutboundStore:
                         if not context_candidate:
                             context_override = campaign_default_context
                         else:
-                            if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", context_candidate):
+                            candidate_valid = (
+                                bool(
+                                    re.match(
+                                        r"^[a-zA-Z0-9_.-]{1,64}$",
+                                        context_candidate,
+                                    )
+                                )
+                                if agent_raw
+                                else _is_safe_legacy_agent_selector(context_candidate)
+                            )
+                            if not candidate_valid:
                                 warning_total += 1
                                 if len(warnings) < max_error_rows:
                                     warnings.append(
                                         ImportWarningRow(
                                             idx,
                                             phone,
-                                            f"Invalid Agent slug '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
+                                            f"Invalid Agent selector '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
                                         )
                                     )
                                 context_override = campaign_default_context
-                            elif known_ctx is not None and context_candidate not in known_ctx:
+                            elif (
+                                agent_raw
+                                and known_agent_slugs is not None
+                                and context_candidate not in known_agent_slugs
+                            ):
                                 warning_total += 1
                                 if len(warnings) < max_error_rows:
                                     warnings.append(
                                         ImportWarningRow(
                                             idx,
                                             phone,
-                                            f"Unknown Agent slug '{context_candidate}' (overwritten with campaign default '{campaign_default_context}')",
+                                            f"Unknown Agent slug '{context_candidate}' "
+                                            f"(overwritten with campaign default "
+                                            f"'{campaign_default_context}')",
+                                        )
+                                    )
+                                context_override = campaign_default_context
+                            elif (
+                                not agent_raw
+                                and known_legacy_contexts is not None
+                                and context_candidate not in known_legacy_contexts
+                            ):
+                                warning_total += 1
+                                if len(warnings) < max_error_rows:
+                                    warnings.append(
+                                        ImportWarningRow(
+                                            idx,
+                                            phone,
+                                            f"Unknown legacy Agent selector "
+                                            f"'{context_candidate}' (overwritten with "
+                                            f"campaign default '{campaign_default_context}')",
                                         )
                                     )
                                 context_override = campaign_default_context

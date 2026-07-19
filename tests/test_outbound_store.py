@@ -94,6 +94,12 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
         b"phone_number,context\n+15551230012,sales\n",
         known_agents=["sales", "support"],
     )
+    compatible_display_name = await store.import_leads_csv(
+        campaign["id"],
+        b"phone_number,context\n+15551230015,Sales East Team\n",
+        known_agents=["sales", "support"],
+        known_contexts=["sales", "support", "Sales East Team"],
+    )
     conflicting = await store.import_leads_csv(
         campaign["id"],
         b"phone_number,agent,context\n+15551230014,support,sales\n",
@@ -107,6 +113,7 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
 
     assert preferred["accepted"] == 1
     assert compatible["accepted"] == 1
+    assert compatible_display_name["accepted"] == 1
     assert conflicting["accepted"] == 1
     assert unknown["accepted"] == 1
     assert "Unknown Agent slug" in unknown["warnings"][0]["warning_reason"]
@@ -118,12 +125,59 @@ async def test_outbound_store_prefers_agent_csv_header_and_accepts_context_alias
     }
     assert agents_by_phone["+15551230011"] == "support"
     assert agents_by_phone["+15551230012"] == "sales"
+    assert agents_by_phone["+15551230015"] == "Sales East Team"
     assert agents_by_phone["+15551230013"] == "sales"
     assert agents_by_phone["+15551230014"] == "support"
     assert routing_by_phone["+15551230011"] == "ai_agent"
     assert routing_by_phone["+15551230012"] == "ai_context"
+    assert routing_by_phone["+15551230015"] == "ai_context"
     assert routing_by_phone["+15551230013"] == "ai_agent"
     assert routing_by_phone["+15551230014"] == "ai_agent"
+
+
+@pytest.mark.asyncio
+async def test_empty_agent_set_rejects_unknown_and_campaign_edits_preserve_legacy_routing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+
+    from src.core.outbound_store import OutboundStore
+
+    db_path = str(tmp_path / "call_history.db")
+    store = OutboundStore(db_path=db_path)
+    campaign = await store.create_campaign(
+        {
+            "name": "Legacy campaign",
+            "timezone": "UTC",
+            "default_context": "legacy_sales",
+        }
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE outbound_campaigns SET agent_routing_method='ai_context' WHERE id=?",
+            (campaign["id"],),
+        )
+        conn.commit()
+
+    imported = await store.import_leads_csv(
+        campaign["id"],
+        b"phone_number,agent\n+15551230016,missing-agent\n",
+        known_agents=[],
+        known_contexts=[],
+    )
+    assert "Unknown Agent slug" in imported["warnings"][0]["warning_reason"]
+
+    unchanged_selector = await store.update_campaign(
+        campaign["id"],
+        {"name": "Renamed", "default_context": "legacy_sales"},
+    )
+    assert unchanged_selector["agent_routing_method"] == "ai_context"
+
+    canonical_selector = await store.update_campaign(
+        campaign["id"],
+        {"default_context": "sales"},
+    )
+    assert canonical_selector["agent_routing_method"] == "ai_agent"
 
 
 def test_outbound_schema_migration_marks_existing_selectors_as_ai_context(

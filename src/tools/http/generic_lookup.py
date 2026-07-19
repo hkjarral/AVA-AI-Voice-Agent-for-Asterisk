@@ -22,6 +22,7 @@ import aiohttp
 from src.tools.base import PreCallTool, ToolDefinition, ToolCategory, ToolPhase
 from src.tools.context import PreCallContext
 from src.tools.http.debug_trace import (
+    BODY_CAPABLE_HTTP_METHODS,
     build_var_snapshot,
     debug_enabled,
     extract_used_brace_vars,
@@ -293,7 +294,7 @@ class GenericHTTPLookupTool(PreCallTool):
             
             method = str(self.config.method or "GET").strip().upper()
             body = None
-            if method not in {"GET", "HEAD"} and self.config.body_template:
+            if method in BODY_CAPABLE_HTTP_METHODS and self.config.body_template:
                 body = self._substitute_variables(self.config.body_template, context)
 
             if debug_enabled(logger):

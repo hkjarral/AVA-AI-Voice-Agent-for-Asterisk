@@ -23,7 +23,7 @@ import wave
 import zipfile
 from datetime import date, datetime, time as datetime_time, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -423,8 +423,8 @@ def _detect_server_timezone() -> str:
 
     return "UTC"
 
-def _load_active_agents() -> List[Dict[str, Any]]:
-    """Best-effort active Agent metadata from the authoritative agents.db."""
+def _try_load_active_agents() -> Optional[List[Dict[str, Any]]]:
+    """Load active Agent metadata, preserving unavailable vs. valid-empty state."""
     try:
         try:
             from agents_store import AgentsStore
@@ -443,11 +443,34 @@ def _load_active_agents() -> List[Dict[str, Any]]:
             if bool(row.get("is_active")) and str(row.get("slug") or "").strip()
         ]
     except Exception:
-        return []
+        logger.warning(
+            "Unable to load active Agents for outbound validation", exc_info=True
+        )
+        return None
 
 
-def _load_known_agent_slugs() -> List[str]:
-    return [str(agent.get("slug") or "") for agent in _load_active_agents() if agent.get("slug")]
+def _load_active_agents() -> List[Dict[str, Any]]:
+    """Best-effort active Agent metadata for API/UI responses."""
+    return _try_load_active_agents() or []
+
+
+def _load_known_agent_selectors() -> Tuple[Optional[List[str]], Optional[List[str]]]:
+    """Return canonical slugs and legacy display-name selectors for validation."""
+    agents = _try_load_active_agents()
+    if agents is None:
+        return None, None
+    slugs = [
+        str(agent.get("slug") or "").strip()
+        for agent in agents
+        if agent.get("slug")
+    ]
+    legacy_names = [
+        str(agent.get("display_name") or "").strip()
+        for agent in agents
+        if agent.get("display_name")
+    ]
+    # AI_CONTEXT resolution accepts display names first, then exact slugs.
+    return slugs, list(dict.fromkeys([*legacy_names, *slugs]))
 
 
 _HHMM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -459,11 +482,11 @@ def _validate_campaign_schedule_for_start(campaign: Dict[str, Any]) -> None:
     if ZoneInfo is not None:
         try:
             ZoneInfo(tz_name)
-        except Exception:
+        except Exception as exc:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid timezone '{tz_name}'. Use an IANA timezone like 'America/Phoenix' or 'UTC'.",
-            )
+            ) from exc
 
     start_local = str(campaign.get("daily_window_start_local") or "")
     end_local = str(campaign.get("daily_window_end_local") or "")
@@ -486,8 +509,11 @@ def _validate_campaign_schedule_for_start(campaign: Dict[str, Any]) -> None:
             if value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)
             parsed_absolute[field_name] = value.astimezone(timezone.utc)
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid {label} timestamp '{raw_value}'.")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {label} timestamp '{raw_value}'.",
+            ) from exc
 
     run_start = parsed_absolute.get("run_start_at_utc")
     run_end = parsed_absolute.get("run_end_at_utc")
@@ -751,13 +777,14 @@ async def import_leads(
                 status_code=400,
                 detail="Lead import must be a .csv or .xlsx file",
             )
-        known_agents = _load_known_agent_slugs()
+        known_agents, known_contexts = _load_known_agent_selectors()
         result = await store.import_leads_csv(
             campaign_id,
             data,
             skip_existing=bool(skip_existing),
             max_error_rows=int(max_error_rows),
-            known_agents=known_agents or None,
+            known_agents=known_agents,
+            known_contexts=known_contexts,
         )
         return LeadImportResponse(**result)
     except KeyError:
@@ -799,12 +826,14 @@ async def add_manual_lead(campaign_id: str, req: ManualLeadCreateRequest):
 
     store = _get_outbound_store()
     try:
+        known_agents, known_contexts = _load_known_agent_selectors()
         result = await store.import_leads_csv(
             campaign_id,
             output.getvalue().encode("utf-8"),
             skip_existing=True,
             max_error_rows=20,
-            known_agents=_load_known_agent_slugs() or None,
+            known_agents=known_agents,
+            known_contexts=known_contexts,
         )
         return LeadImportResponse(**result)
     except KeyError:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -135,6 +136,69 @@ async def test_caller_audio_is_suppressed_after_terminal_turn():
     await provider.send_audio(b"caller audio", sample_rate=8000, encoding="ulaw")
 
     assert provider.websocket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_caller_transcript_is_not_forwarded_or_persisted_after_terminal_turn():
+    class _Websocket:
+        def __init__(self):
+            self.messages = iter(
+                [
+                    json.dumps(
+                        {
+                            "type": "ConversationText",
+                            "role": "user",
+                            "content": "one more thing",
+                        }
+                    )
+                ]
+            )
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.messages)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    class _SessionStore:
+        def __init__(self):
+            self.reads = 0
+            self.writes = 0
+
+        async def get_by_call_id(self, _call_id):
+            self.reads += 1
+            return None
+
+        async def upsert_call(self, _session):
+            self.writes += 1
+
+    events = []
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider.websocket = _Websocket()
+    provider.call_id = "call-terminal-transcript"
+    provider.request_id = None
+    provider.session_id = None
+    provider._settings_sent = False
+    provider._ack_logged = False
+    provider._terminal_turn_suppressed = True
+    provider._in_audio_burst = False
+    provider._dg_output_encoding = "mulaw"
+    provider._dg_output_rate = 8000
+    provider._session_store = _SessionStore()
+
+    async def on_event(event):
+        events.append(event)
+
+    provider.on_event = on_event
+
+    await provider._receive_loop()
+
+    assert all(event.get("type") != "ConversationText" for event in events)
+    assert provider._session_store.reads == 0
+    assert provider._session_store.writes == 0
 
 
 def test_custom_hangup_markers_drive_deepgram_fallback_state():

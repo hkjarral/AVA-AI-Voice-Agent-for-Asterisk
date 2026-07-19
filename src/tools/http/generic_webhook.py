@@ -45,6 +45,7 @@ def _now_iso() -> str:
 from src.tools.base import PostCallTool, ToolDefinition, ToolCategory, ToolPhase
 from src.tools.context import PostCallContext
 from src.tools.http.debug_trace import (
+    BODY_CAPABLE_HTTP_METHODS,
     build_var_snapshot,
     debug_enabled,
     extract_used_brace_vars,
@@ -251,7 +252,7 @@ class GenericWebhookTool(PostCallTool):
             }
             
             method = str(self.config.method or "POST").strip().upper()
-            body_capable = method not in {"GET", "HEAD"}
+            body_capable = method in BODY_CAPABLE_HTTP_METHODS
 
             # Content-Type and payload only apply to body-capable methods.
             if body_capable and 'Content-Type' not in headers and 'content-type' not in headers:

@@ -19,6 +19,10 @@ _SENSITIVE_HEADER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Match the managed-tool UI/backend semantics. HTTP permits request bodies on
+# DELETE and OPTIONS as well as the more common POST/PUT/PATCH methods.
+BODY_CAPABLE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+
 
 def debug_enabled(logger: logging.Logger) -> bool:
     """Return True when DEBUG logging is enabled for this logger."""
