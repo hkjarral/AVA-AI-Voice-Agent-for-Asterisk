@@ -4255,6 +4255,9 @@ class Engine:
                         or agent_result.data.get("call_id")
                         or ""
                     ).strip()
+                    agent_sub_status = str(
+                        agent_result.data.get("real_time_sub_status") or ""
+                    ).strip().upper()
                     observed_status = str(
                         call_result.data.get("status") or ""
                     ).strip().upper()
@@ -4268,7 +4271,15 @@ class Engine:
                         call_result.success
                         and agent_result.success
                         and observed_call_id == info.external_call_id
-                        and agent_call_id != info.external_call_id
+                        # VICIdial can write the terminal call log before its
+                        # live-agent cleanup cycle clears callerid. The
+                        # Non-Agent API reports real_time_sub_status=DEAD when
+                        # that call no longer exists in vicidial_auto_calls;
+                        # this is terminal evidence, not an active INCALL.
+                        and (
+                            agent_call_id != info.external_call_id
+                            or agent_sub_status == "DEAD"
+                        )
                         and observed_status
                         and observed_status not in active_statuses
                         and (

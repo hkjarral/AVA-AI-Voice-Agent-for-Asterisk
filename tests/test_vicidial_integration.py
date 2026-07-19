@@ -774,8 +774,12 @@ async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(mo
             return VicidialApiResult(
                 True,
                 "agent_status",
-                "ready",
-                data={"callerid": "", "status": "READY"},
+                "cleanup pending",
+                data={
+                    "callerid": "M4050908070000012345",
+                    "status": "INCALL",
+                    "real_time_sub_status": "DEAD",
+                },
             )
 
     recorded = {}
