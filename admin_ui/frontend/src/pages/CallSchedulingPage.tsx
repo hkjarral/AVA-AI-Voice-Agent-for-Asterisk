@@ -25,6 +25,12 @@ import { Modal } from '../components/ui/Modal';
 import { FormLabel } from '../components/ui/FormComponents';
 import { toast } from 'sonner';
 import { copyTextToClipboard } from '../utils/clipboard';
+import {
+    InCallToolGroup,
+    PhaseToolGroup,
+    type InCallToolCall,
+    type PhaseToolCall,
+} from '../components/calls/ToolExecutionGroups';
 
 type CampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'archived' | 'completed';
 type LeadImportIssueRow = { row_number: number; phone_number: string; error_reason?: string; warning_reason?: string };
@@ -2333,6 +2339,23 @@ const CallSchedulingPage = () => {
                                         )}
                                     </div>
                                 </div>
+                                {(() => {
+                                    const preCall = (callHistoryRecord.pre_call_tool_calls || []) as PhaseToolCall[];
+                                    const inCall = (callHistoryRecord.tool_calls || []) as InCallToolCall[];
+                                    const postCall = (callHistoryRecord.post_call_tool_calls || []) as PhaseToolCall[];
+                                    const total = preCall.length + inCall.length + postCall.length;
+                                    if (total === 0) return null;
+                                    return (
+                                        <div>
+                                            <div className="font-medium text-sm mb-2">Tool Executions ({total})</div>
+                                            <div className="space-y-4">
+                                                {preCall.length > 0 && <PhaseToolGroup phase="pre_call" entries={preCall} />}
+                                                {inCall.length > 0 && <InCallToolGroup entries={inCall} />}
+                                                {postCall.length > 0 && <PhaseToolGroup phase="post_call" entries={postCall} />}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         ) : (
                             <div className="text-sm text-muted-foreground">No record loaded.</div>
