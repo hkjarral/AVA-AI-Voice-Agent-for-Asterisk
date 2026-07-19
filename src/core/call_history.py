@@ -170,6 +170,7 @@ class CallHistoryStore:
     
     _CREATE_INDEXES_SQL = [
         "CREATE INDEX IF NOT EXISTS idx_call_records_start_time ON call_records(start_time)",
+        "CREATE INDEX IF NOT EXISTS idx_call_records_external_platform_start ON call_records(external_platform COLLATE NOCASE, start_time)",
         "CREATE INDEX IF NOT EXISTS idx_call_records_caller_number ON call_records(caller_number)",
         "CREATE INDEX IF NOT EXISTS idx_call_records_outcome ON call_records(outcome)",
         "CREATE INDEX IF NOT EXISTS idx_call_records_provider ON call_records(provider_name)",
@@ -701,6 +702,62 @@ class CallHistoryStore:
                 finally:
                     conn.close()
         
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _list_sync)
+
+    async def list_external_activity(
+        self,
+        platform: str,
+        start_date: datetime,
+        end_date: Optional[datetime] = None,
+    ) -> List[CallRecord]:
+        """Return lightweight external-dialer records for bounded activity summaries.
+
+        The query intentionally includes ``external_metadata`` (mapping and
+        VICIdial lifecycle state) while excluding transcripts, tool payloads,
+        and latency detail. Callers must provide a start date so this cannot
+        accidentally become an unbounded history export.
+        """
+        if not self._enabled:
+            return []
+
+        normalized_platform = str(platform or "").strip().lower()
+        if not normalized_platform:
+            return []
+
+        def _list_sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    conditions = [
+                        "external_platform = ? COLLATE NOCASE",
+                        "start_time >= ?",
+                    ]
+                    params: List[Any] = [normalized_platform, start_date.isoformat()]
+                    if end_date:
+                        conditions.append("start_time <= ?")
+                        params.append(end_date.isoformat())
+
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            id, call_id, caller_number, called_number,
+                            start_time, end_time, duration_seconds,
+                            context_name, outcome, error_message,
+                            external_platform, external_call_id,
+                            external_direction, external_disposition,
+                            external_metadata
+                        FROM call_records
+                        WHERE {' AND '.join(conditions)}
+                        ORDER BY start_time DESC
+                        """,
+                        params,
+                    )
+                    return [CallRecord.from_dict(dict(row)) for row in cursor.fetchall()]
+                finally:
+                    conn.close()
+
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _list_sync)
     

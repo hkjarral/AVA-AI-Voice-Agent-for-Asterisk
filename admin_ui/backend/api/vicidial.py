@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 project_root = os.environ.get("PROJECT_ROOT") or str(Path(__file__).resolve().parents[3])
@@ -91,6 +93,132 @@ def _mapping_with_connection(mapping: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _call_history_store():
+    try:
+        from src.core.call_history import get_call_history_store
+
+        return get_call_history_store()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Call History unavailable: {exc}")
+
+
+def _activity_start(range_name: str, now: Optional[datetime] = None) -> datetime:
+    """Return a UTC lower bound for one of the deliberately small UI windows."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    if range_name == "today":
+        local_now = current.astimezone()
+        return local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(
+            timezone.utc
+        )
+    if range_name == "30d":
+        return current - timedelta(days=30)
+    return current - timedelta(days=7)
+
+
+def _mask_phone_number(value: Optional[str]) -> Optional[str]:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if not digits:
+        return None
+    visible = 4 if len(digits) > 4 else 2
+    return f"•••{digits[-visible:]}"
+
+
+def _record_activity(record: Any) -> Dict[str, Any]:
+    metadata = record.external_metadata if isinstance(record.external_metadata, dict) else {}
+    session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
+    disposition = str(record.external_disposition or "").strip() or None
+    requested = str(metadata.get("requested_disposition") or "").strip() or None
+    finalized = bool(metadata.get("finalized") and disposition)
+    outcome = str(record.outcome or "unknown").strip().lower()
+    needs_attention = bool(
+        not finalized
+        or outcome in {"error", "failed"}
+        or str(metadata.get("disposition_label") or "").strip() == "ai_failure"
+    )
+    return {
+        "id": record.id,
+        "started_at": record.start_time.isoformat() if record.start_time else None,
+        "direction": str(record.external_direction or "unknown").strip().lower(),
+        "masked_number": _mask_phone_number(record.caller_number or record.called_number),
+        "remote_agent": str(session.get("agent_user") or "").strip() or None,
+        "ai_agent": str(record.context_name or "").strip() or None,
+        "duration_seconds": round(float(record.duration_seconds or 0), 1),
+        "outcome": outcome,
+        "disposition": disposition or requested,
+        "disposition_confirmed": bool(disposition),
+        "finalized": finalized,
+        "needs_attention": needs_attention,
+        "mapping_id": str(metadata.get("mapping_id") or "").strip() or None,
+        "mapping_name": str(metadata.get("mapping_name") or "").strip() or None,
+    }
+
+
+def _summarize_activity(
+    records: List[Any],
+    mapping_id: Optional[str],
+    mappings: List[Dict[str, Any]],
+):
+    rows = [_record_activity(record) for record in records]
+    mapping_summaries: Dict[str, Dict[str, Any]] = {
+        str(mapping.get("id")): {
+            "mapping_id": str(mapping.get("id")),
+            "mapping_name": str(mapping.get("name") or "Unnamed mapping"),
+            "handled": 0,
+            "finalized": 0,
+            "needs_attention": 0,
+            "last_call_at": None,
+        }
+        for mapping in mappings
+        if mapping.get("id")
+    }
+    for row in rows:
+        key = row["mapping_id"] or "unknown"
+        if key not in mapping_summaries:
+            mapping_summaries[key] = {
+                "mapping_id": row["mapping_id"],
+                "mapping_name": row["mapping_name"] or "Unknown/deleted mapping",
+                "handled": 0,
+                "finalized": 0,
+                "needs_attention": 0,
+                "last_call_at": None,
+            }
+        summary = mapping_summaries[key]
+        summary["handled"] += 1
+        summary["finalized"] += int(row["finalized"])
+        summary["needs_attention"] += int(row["needs_attention"])
+        if summary["last_call_at"] is None:
+            summary["last_call_at"] = row["started_at"]
+
+    selected = [row for row in rows if not mapping_id or row["mapping_id"] == mapping_id]
+    handled = len(selected)
+    duration = sum(float(row["duration_seconds"] or 0) for row in selected)
+    dispositions = Counter(
+        str(row["disposition"])
+        for row in selected
+        if row["disposition"] and row["disposition_confirmed"]
+    )
+    return {
+        "summary": {
+            "handled": handled,
+            "finalized": sum(int(row["finalized"]) for row in selected),
+            "needs_attention": sum(int(row["needs_attention"]) for row in selected),
+            "average_duration_seconds": round(duration / handled, 1) if handled else 0,
+            "last_call_at": selected[0]["started_at"] if selected else None,
+        },
+        "dispositions": [
+            {"status": status, "count": count}
+            for status, count in sorted(
+                dispositions.items(), key=lambda item: (-item[1], item[0])
+            )
+        ],
+        "by_mapping": list(mapping_summaries.values()),
+        "recent_calls": selected,
+    }
+
+
 @router.get("/connections")
 async def list_connections():
     return _store().list_connections()
@@ -137,6 +265,36 @@ async def verify_connection(connection_id: str):
 @router.get("/mappings")
 async def list_mappings():
     return [_mapping_with_connection(mapping) for mapping in _store().list_mappings()]
+
+
+@router.get("/activity")
+async def vicidial_activity(
+    range_name: str = Query("7d", alias="range", pattern="^(today|7d|30d)$"),
+    mapping_id: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=25),
+):
+    """Summarize only VICIdial calls that reached AAVA and entered Call History."""
+    now = datetime.now(timezone.utc)
+    records = await _call_history_store().list_external_activity(
+        "vicidial",
+        start_date=_activity_start(range_name, now),
+        end_date=now,
+    )
+    mappings = _store().list_mappings()
+    result = _summarize_activity(records, mapping_id, mappings)
+    result["recent_calls"] = result["recent_calls"][:limit]
+    result.update(
+        {
+            "range": range_name,
+            "mapping_id": mapping_id,
+            "generated_at": now.isoformat(),
+            "scope_note": (
+                "Only calls delivered to AAVA are counted. VICIdial dial attempts that never "
+                "reached an AAVA Remote Agent are not included."
+            ),
+        }
+    )
+    return result
 
 
 @router.post("/mappings")

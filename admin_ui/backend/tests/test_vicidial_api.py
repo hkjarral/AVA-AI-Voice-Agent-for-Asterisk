@@ -1,9 +1,12 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import vicidial as vicidial_api
 from src.core.vicidial_store import VicidialStore
 from src.integrations.vicidial import VicidialApiResult
+from src.core.call_history import CallRecord
 
 
 def _connection_payload():
@@ -200,3 +203,83 @@ def test_mapping_verification_rejects_live_row_without_vicidial_user(
         "status": None,
         "error_code": "api_error",
     }
+
+
+def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+    now = datetime.now(timezone.utc)
+    records = [
+        CallRecord(
+            id="record-1",
+            call_id="asterisk-1",
+            caller_number="13164619284",
+            start_time=now,
+            end_time=now + timedelta(seconds=42),
+            duration_seconds=42,
+            context_name="demo_deepgram",
+            outcome="completed",
+            external_platform="vicidial",
+            external_direction="outbound",
+            external_disposition="AIHU",
+            external_metadata={
+                "mapping_id": "mapping-1",
+                "mapping_name": "AVA Remote Agent",
+                "session": {"agent_user": "9001"},
+                "disposition_label": "ai_hangup",
+                "finalized": True,
+            },
+        ),
+        CallRecord(
+            id="record-2",
+            call_id="asterisk-2",
+            caller_number="13165550123",
+            start_time=now - timedelta(minutes=2),
+            end_time=now - timedelta(minutes=1, seconds=50),
+            duration_seconds=10,
+            context_name="demo_deepgram",
+            outcome="error",
+            external_platform="vicidial",
+            external_direction="outbound",
+            external_metadata={
+                "mapping_id": "mapping-1",
+                "mapping_name": "AVA Remote Agent",
+                "session": {"agent_user": "9001"},
+                "requested_disposition": "AIFAIL",
+                "disposition_label": "ai_failure",
+                "finalized": False,
+            },
+        ),
+    ]
+
+    class _History:
+        async def list_external_activity(self, platform, start_date, end_date=None):
+            assert platform == "vicidial"
+            assert start_date < end_date
+            return records
+
+    monkeypatch.setattr(vicidial_api, "_call_history_store", lambda: _History())
+
+    response = client.get(
+        "/api/outbound/vicidial/activity?range=7d&mapping_id=mapping-1&limit=1"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {
+        "handled": 2,
+        "finalized": 1,
+        "needs_attention": 1,
+        "average_duration_seconds": 26.0,
+        "last_call_at": now.isoformat(),
+    }
+    assert body["dispositions"] == [{"status": "AIHU", "count": 1}]
+    assert body["by_mapping"][0]["handled"] == 2
+    assert len(body["recent_calls"]) == 1
+    assert body["recent_calls"][0]["masked_number"] == "•••9284"
+    assert body["recent_calls"][0]["remote_agent"] == "9001"
+    assert body["recent_calls"][0]["disposition_confirmed"] is True
+    assert "never reached" in body["scope_note"]
+
+    assert client.get("/api/outbound/vicidial/activity?range=90d").status_code == 422

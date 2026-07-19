@@ -103,6 +103,50 @@ async def test_call_history_list_count_filter_parity(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_external_activity_is_bounded_lightweight_and_keeps_mapping_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "external-activity.db"))
+    now = datetime.now(timezone.utc)
+    for record in [
+        CallRecord(
+            call_id="vicidial-current",
+            caller_number="13164619284",
+            start_time=now,
+            end_time=now + timedelta(seconds=12),
+            external_platform="VICIDIAL",
+            external_metadata={"mapping_id": "mapping-1"},
+            conversation_history=[{"role": "user", "content": "sensitive"}],
+            tool_calls=[{"name": "test"}],
+        ),
+        CallRecord(
+            call_id="ordinary-call",
+            start_time=now,
+            end_time=now + timedelta(seconds=1),
+        ),
+        CallRecord(
+            call_id="vicidial-old",
+            start_time=now - timedelta(days=31),
+            end_time=now - timedelta(days=31) + timedelta(seconds=1),
+            external_platform="vicidial",
+        ),
+    ]:
+        assert await store.save(record) is True
+
+    rows = await store.list_external_activity(
+        "vicidial", start_date=now - timedelta(days=30), end_date=now + timedelta(seconds=1)
+    )
+
+    assert [record.call_id for record in rows] == ["vicidial-current"]
+    assert rows[0].external_metadata == {"mapping_id": "mapping-1"}
+    assert rows[0].conversation_history == []
+    assert rows[0].tool_calls == []
+
+
+@pytest.mark.asyncio
 async def test_routing_method_round_trips(tmp_path, monkeypatch):
     """routing_method persists to DB and reads back unchanged."""
     monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
@@ -217,4 +261,3 @@ async def test_store_warmup_initializes_off_loop(tmp_path, monkeypatch):
     # Initialized off-loop: subsequent persist sees a ready store, no sync init.
     assert store._initialized is True
     assert ch.get_call_history_store() is store
-

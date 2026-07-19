@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
     AlertTriangle,
@@ -124,6 +124,47 @@ type SetupGuidance = {
     verification_order: string[];
 };
 
+type ActivityRange = 'today' | '7d' | '30d';
+
+type ActivityMappingSummary = {
+    mapping_id?: string | null;
+    mapping_name: string;
+    handled: number;
+    finalized: number;
+    needs_attention: number;
+    last_call_at?: string | null;
+};
+
+type ActivityCall = {
+    id: string;
+    started_at?: string | null;
+    direction: string;
+    masked_number?: string | null;
+    remote_agent?: string | null;
+    ai_agent?: string | null;
+    duration_seconds: number;
+    outcome: string;
+    disposition?: string | null;
+    disposition_confirmed: boolean;
+    finalized: boolean;
+    needs_attention: boolean;
+    mapping_id?: string | null;
+};
+
+type VicidialActivity = {
+    summary: {
+        handled: number;
+        finalized: number;
+        needs_attention: number;
+        average_duration_seconds: number;
+        last_call_at?: string | null;
+    };
+    dispositions: Array<{ status: string; count: number }>;
+    by_mapping: ActivityMappingSummary[];
+    recent_calls: ActivityCall[];
+    scope_note: string;
+};
+
 const emptyConnection = {
     name: 'VICIdial',
     enabled: true,
@@ -189,6 +230,26 @@ const statusLabel = (mapping: Mapping) => {
         };
     }
     return { label: 'Ready', tone: 'text-emerald-500', ok: true };
+};
+
+const formatActivityTime = (value?: string | null) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+        ? '—'
+        : new Intl.DateTimeFormat(undefined, {
+              month: 'short',
+              day: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+          }).format(date);
+};
+
+const formatActivityDuration = (seconds: number) => {
+    const rounded = Math.max(0, Math.round(Number(seconds) || 0));
+    const minutes = Math.floor(rounded / 60);
+    const remainder = rounded % 60;
+    return minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
 };
 
 const rowInputClass =
@@ -341,6 +402,30 @@ export const VicidialRemoteAgentsTab = () => {
     const [connectionForm, setConnectionForm] = useState<ConnectionForm>(emptyConnection);
     const [mappingForm, setMappingForm] = useState<MappingForm>(emptyMapping);
     const [guidance, setGuidance] = useState<SetupGuidance | null>(null);
+    const [activityRange, setActivityRange] = useState<ActivityRange>('7d');
+    const [activityMappingId, setActivityMappingId] = useState('');
+    const [activity, setActivity] = useState<VicidialActivity | null>(null);
+    const [activityLoading, setActivityLoading] = useState(true);
+    const [activityError, setActivityError] = useState('');
+
+    const loadActivity = useCallback(async () => {
+        setActivityLoading(true);
+        setActivityError('');
+        try {
+            const response = await axios.get('/api/outbound/vicidial/activity', {
+                params: {
+                    range: activityRange,
+                    mapping_id: activityMappingId || undefined,
+                    limit: 10,
+                },
+            });
+            setActivity(response.data);
+        } catch (error) {
+            setActivityError(describeApiError(error, 'Unable to load Remote Agent activity'));
+        } finally {
+            setActivityLoading(false);
+        }
+    }, [activityMappingId, activityRange]);
 
     const refresh = async () => {
         setLoading(true);
@@ -363,6 +448,10 @@ export const VicidialRemoteAgentsTab = () => {
     useEffect(() => {
         void refresh();
     }, []);
+
+    useEffect(() => {
+        void loadActivity();
+    }, [loadActivity]);
 
     const connectionOptions = useMemo(
         () => connections.map(item => ({ value: item.id, label: item.name })),
@@ -534,7 +623,7 @@ export const VicidialRemoteAgentsTab = () => {
                     </div>
                     <button
                         title="Reload connections, mappings, Agent availability, and saved verification results"
-                        onClick={() => void refresh()}
+                        onClick={() => void Promise.all([refresh(), loadActivity()])}
                         className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
                     >
                         <RefreshCw className="h-4 w-4" />
@@ -555,6 +644,33 @@ export const VicidialRemoteAgentsTab = () => {
                             {label}
                         </div>
                     ))}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2 text-xs">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                        <span className="font-medium">AAVA-handled activity</span>
+                        {activityLoading && !activity ? (
+                            <span className="text-muted-foreground">Loading…</span>
+                        ) : activityError ? (
+                            <span className="text-destructive">Activity unavailable</span>
+                        ) : (
+                            <>
+                                <span>{activity?.summary.handled ?? 0} handled</span>
+                                <span>{activity?.summary.finalized ?? 0} finalized</span>
+                                <span
+                                    className={
+                                        activity?.summary.needs_attention
+                                            ? 'text-amber-500'
+                                            : 'text-muted-foreground'
+                                    }
+                                >
+                                    {activity?.summary.needs_attention ?? 0} need attention
+                                </span>
+                            </>
+                        )}
+                    </div>
+                    <a href="#vicidial-activity" className="text-primary hover:underline">
+                        View activity
+                    </a>
                 </div>
             </div>
 
@@ -671,6 +787,9 @@ export const VicidialRemoteAgentsTab = () => {
                 ) : (
                     mappings.map(mapping => {
                         const status = statusLabel(mapping);
+                        const mappingActivity = activity?.by_mapping.find(
+                            summary => summary.mapping_id === mapping.id
+                        );
                         return (
                             <div key={mapping.id} className="rounded-lg border bg-card p-4">
                                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -699,6 +818,27 @@ export const VicidialRemoteAgentsTab = () => {
                                                 ariaLabel={`Help for ${mapping.name} readiness`}
                                                 content="Ready requires valid API/configuration checks plus a correlated real call with confirmed VICIdial terminal control in every configured direction. SIP registration by itself is not sufficient."
                                             />
+                                        </div>
+                                        <div className="mt-2 text-xs text-muted-foreground">
+                                            {mappingActivity ? (
+                                                <>
+                                                    {mappingActivity.handled} AAVA-handled ·{' '}
+                                                    {mappingActivity.finalized} finalized
+                                                    {mappingActivity.needs_attention > 0 && (
+                                                        <span className="text-amber-500">
+                                                            {' '}
+                                                            · {mappingActivity.needs_attention} need
+                                                            attention
+                                                        </span>
+                                                    )}
+                                                </>
+                                            ) : activityLoading ? (
+                                                'Loading activity…'
+                                            ) : activityError ? (
+                                                'Activity unavailable'
+                                            ) : (
+                                                'No AAVA-handled calls in this range'
+                                            )}
                                         </div>
                                     </div>
                                     <div className="flex flex-wrap gap-2">
@@ -738,6 +878,227 @@ export const VicidialRemoteAgentsTab = () => {
                             </div>
                         );
                     })
+                )}
+            </section>
+
+            <section
+                id="vicidial-activity"
+                className="scroll-mt-4 space-y-4 rounded-lg border bg-card p-4"
+            >
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <h3 className="font-semibold">Remote Agent activity</h3>
+                            <HelpTooltip
+                                ariaLabel="Help for Remote Agent activity"
+                                content="Read-only metrics from AAVA Call History. This shows calls that reached an AAVA Remote Agent, not every VICIdial dial attempt or carrier outcome."
+                            />
+                        </div>
+                        <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
+                            {activity?.scope_note ||
+                                'Only calls delivered to AAVA are counted. VICIdial attempts that never reached an AAVA Remote Agent are not included.'}
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <label className="sr-only" htmlFor="vicidial-activity-mapping">
+                            Activity mapping
+                        </label>
+                        <select
+                            id="vicidial-activity-mapping"
+                            aria-label="Activity mapping"
+                            value={activityMappingId}
+                            onChange={event => setActivityMappingId(event.target.value)}
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                            <option value="">All mappings</option>
+                            {mappings.map(mapping => (
+                                <option key={mapping.id} value={mapping.id}>
+                                    {mapping.name}
+                                </option>
+                            ))}
+                        </select>
+                        <label className="sr-only" htmlFor="vicidial-activity-range">
+                            Activity range
+                        </label>
+                        <select
+                            id="vicidial-activity-range"
+                            aria-label="Activity range"
+                            value={activityRange}
+                            onChange={event =>
+                                setActivityRange(event.target.value as ActivityRange)
+                            }
+                            className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                            <option value="today">Today</option>
+                            <option value="7d">Last 7 days</option>
+                            <option value="30d">Last 30 days</option>
+                        </select>
+                        <button
+                            type="button"
+                            title="Reload AAVA-handled VICIdial activity"
+                            aria-label="Refresh Remote Agent activity"
+                            onClick={() => void loadActivity()}
+                            className="rounded-md border p-2 hover:bg-muted"
+                        >
+                            <RefreshCw
+                                className={`h-4 w-4 ${activityLoading ? 'animate-spin' : ''}`}
+                            />
+                        </button>
+                    </div>
+                </div>
+
+                {activityError ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                        <span>{activityError}</span>
+                        <button
+                            type="button"
+                            onClick={() => void loadActivity()}
+                            className="rounded-md border px-3 py-1.5 text-xs"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                ) : activityLoading && !activity ? (
+                    <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Loading activity…
+                    </div>
+                ) : (
+                    <>
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                            {[
+                                ['Handled by AAVA', activity?.summary.handled ?? 0],
+                                ['Finalized in VICIdial', activity?.summary.finalized ?? 0],
+                                ['Needs attention', activity?.summary.needs_attention ?? 0],
+                                [
+                                    'Average duration',
+                                    formatActivityDuration(
+                                        activity?.summary.average_duration_seconds ?? 0
+                                    ),
+                                ],
+                                [
+                                    'Last handled call',
+                                    formatActivityTime(activity?.summary.last_call_at),
+                                ],
+                            ].map(([label, value]) => (
+                                <div key={label} className="rounded-md border p-3">
+                                    <div className="text-xs text-muted-foreground">{label}</div>
+                                    <div className="mt-1 text-lg font-semibold">{value}</div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div>
+                            <div className="text-sm font-medium">Confirmed dispositions</div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {activity?.dispositions.length ? (
+                                    activity.dispositions.map(item => (
+                                        <span
+                                            key={item.status}
+                                            className="rounded-full border bg-muted/40 px-2.5 py-1 text-xs"
+                                        >
+                                            {item.status} · {item.count}
+                                        </span>
+                                    ))
+                                ) : (
+                                    <span className="text-xs text-muted-foreground">
+                                        No confirmed VICIdial dispositions in this range.
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        <div>
+                            <div className="mb-2 flex items-center justify-between gap-3">
+                                <div className="text-sm font-medium">Recent AAVA-handled calls</div>
+                                <a href="/history" className="text-xs text-primary hover:underline">
+                                    Open Call History
+                                </a>
+                            </div>
+                            {activity?.recent_calls.length ? (
+                                <div className="overflow-x-auto rounded-md border">
+                                    <table className="w-full min-w-[860px] text-left text-sm">
+                                        <thead className="bg-muted/40 text-xs text-muted-foreground">
+                                            <tr>
+                                                <th className="px-3 py-2 font-medium">Time</th>
+                                                <th className="px-3 py-2 font-medium">Direction</th>
+                                                <th className="px-3 py-2 font-medium">Number</th>
+                                                <th className="px-3 py-2 font-medium">
+                                                    Remote Agent
+                                                </th>
+                                                <th className="px-3 py-2 font-medium">
+                                                    AAVA Agent
+                                                </th>
+                                                <th className="px-3 py-2 font-medium">Duration</th>
+                                                <th className="px-3 py-2 font-medium">Outcome</th>
+                                                <th className="px-3 py-2 font-medium">
+                                                    Disposition
+                                                </th>
+                                                <th className="px-3 py-2 font-medium"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y">
+                                            {activity.recent_calls.map(call => (
+                                                <tr key={call.id}>
+                                                    <td className="whitespace-nowrap px-3 py-2">
+                                                        {formatActivityTime(call.started_at)}
+                                                    </td>
+                                                    <td className="capitalize px-3 py-2">
+                                                        {call.direction}
+                                                    </td>
+                                                    <td className="font-mono px-3 py-2">
+                                                        {call.masked_number || '—'}
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                        {call.remote_agent || '—'}
+                                                    </td>
+                                                    <td className="font-mono px-3 py-2">
+                                                        {call.ai_agent || '—'}
+                                                    </td>
+                                                    <td className="whitespace-nowrap px-3 py-2">
+                                                        {formatActivityDuration(
+                                                            call.duration_seconds
+                                                        )}
+                                                    </td>
+                                                    <td className="capitalize px-3 py-2">
+                                                        {call.outcome}
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                        <span
+                                                            className={
+                                                                call.needs_attention
+                                                                    ? 'text-amber-500'
+                                                                    : 'text-emerald-500'
+                                                            }
+                                                        >
+                                                            {call.disposition ||
+                                                                (call.finalized
+                                                                    ? 'Finalized'
+                                                                    : 'Pending')}
+                                                            {!call.disposition_confirmed &&
+                                                                call.disposition &&
+                                                                ' (requested)'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right">
+                                                        <a
+                                                            href={`/history?id=${encodeURIComponent(call.id)}`}
+                                                            className="text-primary hover:underline"
+                                                        >
+                                                            Details
+                                                        </a>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+                                    No VICIdial calls reached AAVA in this range.
+                                </div>
+                            )}
+                        </div>
+                    </>
                 )}
             </section>
 

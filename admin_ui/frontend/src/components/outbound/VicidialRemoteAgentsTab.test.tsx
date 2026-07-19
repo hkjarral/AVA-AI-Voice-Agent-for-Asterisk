@@ -50,6 +50,51 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         vi.mocked(axios.get).mockImplementation(async url => {
             if (url === '/api/outbound/vicidial/connections') return { data: [connection] };
             if (url === '/api/outbound/vicidial/mappings') return { data: [mapping] };
+            if (url === '/api/outbound/vicidial/activity') {
+                return {
+                    data: {
+                        summary: {
+                            handled: 3,
+                            finalized: 2,
+                            needs_attention: 1,
+                            average_duration_seconds: 42,
+                            last_call_at: '2026-07-19T18:30:00+00:00',
+                        },
+                        dispositions: [
+                            { status: 'AIHU', count: 1 },
+                            { status: 'DNC', count: 1 },
+                        ],
+                        by_mapping: [
+                            {
+                                mapping_id: mapping.id,
+                                mapping_name: mapping.name,
+                                handled: 3,
+                                finalized: 2,
+                                needs_attention: 1,
+                                last_call_at: '2026-07-19T18:30:00+00:00',
+                            },
+                        ],
+                        recent_calls: [
+                            {
+                                id: 'record-1',
+                                started_at: '2026-07-19T18:30:00+00:00',
+                                direction: 'outbound',
+                                masked_number: '•••9284',
+                                remote_agent: '9001',
+                                ai_agent: 'demo_deepgram',
+                                duration_seconds: 42,
+                                outcome: 'completed',
+                                disposition: 'AIHU',
+                                disposition_confirmed: true,
+                                finalized: true,
+                                needs_attention: false,
+                                mapping_id: mapping.id,
+                            },
+                        ],
+                        scope_note: 'Only calls delivered to AAVA are counted.',
+                    },
+                };
+            }
             if (url === '/api/outbound/meta') {
                 return { data: { agents: [{ slug: 'demo_deepgram', display_name: 'Deepgram' }] } };
             }
@@ -161,5 +206,29 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(
             screen.getByRole('button', { name: 'Help for verification order' })
         ).toBeInTheDocument();
+    });
+
+    it('shows scoped Remote Agent metrics and deep-links recent calls', async () => {
+        render(<VicidialRemoteAgentsTab />);
+
+        expect(await screen.findByText('Remote Agent activity')).toBeInTheDocument();
+        expect(screen.getByText('Only calls delivered to AAVA are counted.')).toBeInTheDocument();
+        expect(screen.getByText('Handled by AAVA')).toBeInTheDocument();
+        expect(screen.getByText('Finalized in VICIdial')).toBeInTheDocument();
+        expect(screen.getByText('Needs attention')).toBeInTheDocument();
+        expect(screen.getByText('•••9284')).toBeInTheDocument();
+        expect(screen.getByText('AIHU')).toBeInTheDocument();
+        expect(screen.getByText(/AIHU · 1/)).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'Details' })).toHaveAttribute(
+            'href',
+            '/history?id=record-1'
+        );
+
+        fireEvent.change(screen.getByLabelText('Activity range'), { target: { value: '30d' } });
+        await waitFor(() =>
+            expect(axios.get).toHaveBeenCalledWith('/api/outbound/vicidial/activity', {
+                params: { range: '30d', mapping_id: undefined, limit: 10 },
+            })
+        );
     });
 });

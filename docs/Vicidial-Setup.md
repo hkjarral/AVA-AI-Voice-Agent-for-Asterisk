@@ -374,6 +374,19 @@ For multi-line mappings, **Run checks** calls `agent_status` for every user and 
 all users to appear in `logged_in_agents`. This prevents a stale or manually inserted live-agent
 row from making an uncreated VICIdial user look ready.
 
+### AAVA-handled activity
+
+The **Remote Agent activity** section is a read-only view over AAVA Call History. It provides
+per-mapping counts, finalized and attention-needed totals, average duration, confirmed disposition
+counts, and the ten most recent calls for Today, 7-day, and 30-day ranges. Recent rows link to the
+existing Call Details view for transcripts, tool executions, and sanitized VICIdial lifecycle
+evidence. Customer phone numbers are masked in the activity response.
+
+These metrics count only VICIdial calls that reached an AAVA Remote Agent and were saved to AAVA
+Call History. They are not VICIdial campaign reports: carrier attempts, busy/no-answer results,
+AMD/drop outcomes, and calls that never reached the Remote Agent remain visible only in VICIdial.
+Use VICIdial reports for total attempts, answer rates, pacing, and campaign conversion metrics.
+
 ## 6. Lab-only customer leg
 
 Never test a campaign with a carrier that only `Answer()`s locally or nests another `Local/`
