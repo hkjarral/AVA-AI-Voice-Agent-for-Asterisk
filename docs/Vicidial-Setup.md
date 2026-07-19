@@ -226,6 +226,10 @@ Remote Agent user range, validating each active agent's VICIdial call code with 
 enforcing campaign and direction, and accepting exactly one match. Missing or ambiguous matches
 fail closed.
 
+For an outbound auto call, `callid_info.user` can be `VDAD`; this is the dialer owner, not the
+Remote Agent user. AAVA obtains the Remote Agent identity from the mapped `agent_status` record and
+joins the two API views by their exact VICIdial call code, campaign, direction, and phone number.
+
 ### 3.3 Apply the generated dialplan
 
 Open **Setup guide**, copy the generated context into

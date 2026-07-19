@@ -94,7 +94,7 @@ async def test_non_agent_requests_include_headers_and_parse_dynamic_session(monk
     captures = []
     bodies = iter([
         "call_id|custtime|call_date|campaign_id|list_id|status|user|phone\n"
-        "M4050908070000012345|12|2026-07-19 10:00:00|TESTCAMP|101|INCALL|9001|13165551212",
+        "M4050908070000012345|12|2026-07-19 10:00:00|TESTCAMP|101|INCALL|VDAD|13165551212",
         "status|call_id|lead_id|campaign_id|calls_today|full_name|user_group|user_level|pause_code|real_time_sub_status|phone_number|vendor_lead_code|session_id\n"
         "INCALL|M4050908070000012345|456|TESTCAMP|1|AAVA|AGENTS|8|||13165551212||8371",
     ])
@@ -153,7 +153,7 @@ async def test_customer_name_on_sip_leg_resolves_by_unique_mapped_agent(monkeypa
         "status|callerid|lead_id|campaign_id|phone_number\n"
         "QUEUE|V7190228450000000008|8|TESTCAMP|5551234567",
         "call_id|phone|call_type|campaign_id|list_id|status|user\n"
-        "V7190228450000000008|5551234567|OUT|TESTCAMP|998|INCALL|9001",
+        "V7190228450000000008|5551234567|OUTBOUND_AUTO|TESTCAMP|998|INCALL|VDAD",
     ])
 
     def factory(**_kwargs):

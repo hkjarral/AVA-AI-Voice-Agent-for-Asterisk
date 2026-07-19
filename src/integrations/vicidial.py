@@ -468,11 +468,15 @@ class VicidialApiClient:
             call_type = str(call_result.data.get("call_type") or "").strip().upper()
             direction = "inbound" if call_type.startswith("IN") else "outbound"
             configured_direction = str(mapping.get("direction") or "outbound").lower()
-            campaign_id = str(
-                agent_result.data.get("campaign_id")
-                or call_result.data.get("campaign_id")
-                or ""
-            ).strip()
+            agent_campaign = str(agent_result.data.get("campaign_id") or "").strip()
+            call_campaign = str(call_result.data.get("campaign_id") or "").strip()
+            if agent_campaign and call_campaign and agent_campaign != call_campaign:
+                return None
+            agent_phone = str(agent_result.data.get("phone_number") or "").strip()
+            call_phone = str(call_result.data.get("phone") or "").strip()
+            if agent_phone and call_phone and agent_phone != call_phone:
+                return None
+            campaign_id = agent_campaign or call_campaign
             configured_campaign = str(mapping.get("campaign_id") or "").strip()
             closer_campaigns = {
                 str(value).strip()
@@ -494,11 +498,7 @@ class VicidialApiClient:
                 campaign_id=campaign_id or None,
                 lead_id=str(agent_result.data.get("lead_id") or "").strip() or None,
                 list_id=str(call_result.data.get("list_id") or "").strip() or None,
-                phone_number=str(
-                    agent_result.data.get("phone_number")
-                    or call_result.data.get("phone")
-                    or ""
-                ).strip() or None,
+                phone_number=agent_phone or call_phone or None,
                 call_type=call_type or None,
                 vicidial_status=str(call_result.data.get("status") or "").strip() or None,
                 direction=direction,
@@ -517,31 +517,49 @@ class VicidialApiClient:
         # Preferred path: the Remote Agent SIP leg carries the VICIdial call
         # code in CallerID(name) or another dialplan-extracted identifier.
         # This is the cheapest and strongest correlation because both APIs
-        # must independently report the exact same call code and user.
+            # must independently report the exact same call code. The
+            # callid_info ``user`` is commonly VDAD for outbound auto calls,
+            # so the Remote Agent identity comes from agent_status instead.
         if external_call_id:
             for index in range(max(1, attempts)):
                 result = await self.callid_info(external_call_id)
                 evidence.append(result.to_dict())
-                user = str(result.data.get("user") or "").strip()
-                if result.success and user in allowed_users:
-                    agent_result = await self.agent_status(user)
-                    evidence.append(agent_result.to_dict())
-                    if agent_result.success:
+                if result.success:
+                    candidates: list[VicidialSessionInfo] = []
+                    for user in sorted(allowed_users, key=int):
+                        agent_result = await self.agent_status(user)
+                        evidence.append(agent_result.to_dict())
+                        agent_state = str(
+                            agent_result.data.get("status") or ""
+                        ).strip().upper()
                         agent_call_id = str(
                             agent_result.data.get("callerid")
                             or agent_result.data.get("call_id")
                             or ""
                         ).strip()
-                        if agent_call_id == external_call_id:
-                            resolved = build_session(
-                                external_call_id,
-                                user,
-                                result,
-                                agent_result,
-                                resolution_source="callid_info",
-                            )
-                            if resolved is not None:
-                                return resolved, evidence
+                        if (
+                            not agent_result.success
+                            or agent_state not in {"QUEUE", "INCALL"}
+                            or agent_call_id != external_call_id
+                        ):
+                            continue
+                        resolved = build_session(
+                            external_call_id,
+                            user,
+                            result,
+                            agent_result,
+                            resolution_source="callid_info",
+                        )
+                        if resolved is not None:
+                            candidates.append(resolved)
+
+                    unique_users = {
+                        candidate.agent_user: candidate for candidate in candidates
+                    }
+                    if len(unique_users) == 1:
+                        return next(iter(unique_users.values())), evidence
+                    if len(unique_users) > 1:
+                        return None, evidence
                 if index + 1 < attempts:
                     await asyncio.sleep(max(0.05, delay_seconds))
 
@@ -560,7 +578,7 @@ class VicidialApiClient:
                     # and never admits a different call identifier.
                     result = await self.callid_info(external_call_id)
                     evidence.append(result.to_dict())
-                    if result.success and str(result.data.get("user") or "").strip() == fallback:
+                    if result.success:
                         resolved = build_session(
                             external_call_id,
                             fallback,
@@ -596,10 +614,7 @@ class VicidialApiClient:
                     continue
                 call_result = await self.callid_info(candidate_call_id)
                 evidence.append(call_result.to_dict())
-                if (
-                    not call_result.success
-                    or str(call_result.data.get("user") or "").strip() != user
-                ):
+                if not call_result.success:
                     continue
                 resolved = build_session(
                     candidate_call_id,
