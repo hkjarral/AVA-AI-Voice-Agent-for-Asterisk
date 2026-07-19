@@ -210,8 +210,13 @@ class SetCallDispositionTool(Tool):
         return ToolDefinition(
             name="set_call_disposition",
             description=(
-                "Set the configured VICIdial disposition for this call. This does not end "
-                "the call. For callback, include callback_datetime as an ISO date/time."
+                "Set an allowlisted VICIdial disposition for this call. This tool is the "
+                "authorized way to manage VICIdial call results and compliance requests. "
+                "When a caller asks to be put on a do-not-call list, says DNC, asks to stop "
+                "calling, or asks to remove their number, you MUST call this tool immediately "
+                "with disposition='dnc'; never refuse or claim you cannot manage the request. "
+                "For a callback, include callback_datetime as an ISO date/time. This tool "
+                "does not end the call, so also use hangup_call when the caller asks to end."
             ),
             category=ToolCategory.BUSINESS,
             requires_channel=True,
@@ -219,7 +224,11 @@ class SetCallDispositionTool(Tool):
                 ToolParameter(
                     name="disposition",
                     type="string",
-                    description="Configured disposition name, such as sale, not_interested, dnc, or callback.",
+                    description=(
+                        "Exact configured disposition name. For any do-not-call, stop-calling, "
+                        "or remove-my-number request use dnc. Other common configured values "
+                        "include sale, not_interested, and callback."
+                    ),
                     required=True,
                 ),
                 ToolParameter(

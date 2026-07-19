@@ -559,6 +559,15 @@ async def test_disposition_is_allowlisted_and_deferred_until_hangup():
     assert store.session.external_finalized is False
 
 
+def test_disposition_tool_schema_mandates_dnc_compliance_action():
+    definition = SetCallDispositionTool().definition
+
+    assert "MUST call this tool immediately" in definition.description
+    assert "never refuse" in definition.description
+    disposition = next(param for param in definition.parameters if param.name == "disposition")
+    assert "remove-my-number request use dnc" in disposition.description
+
+
 @pytest.mark.asyncio
 async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypatch):
     session = CallSession(call_id="ari-callback", caller_channel_id="ari-callback")
