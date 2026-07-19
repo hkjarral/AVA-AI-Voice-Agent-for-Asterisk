@@ -110,7 +110,10 @@ const DEFAULT_AMD_OPTIONS = {
     initial_silence_ms: 2000,
     greeting_ms: 2000,
     after_greeting_silence_ms: 1000,
-    total_analysis_time_ms: 5000
+    total_analysis_time_ms: 5000,
+    minimum_word_length_ms: 100,
+    between_words_silence_ms: 50,
+    maximum_number_of_words: 10
 };
 
 const DEFAULT_CONSENT_MEDIA_URI = 'sound:ai-generated/aava-consent-default';
@@ -129,7 +132,7 @@ const buildDialplanSnippet = (opts: {
         '[aava-outbound-amd]',
         'exten => s,1,NoOp(AAVA Outbound AMD hop)',
         ' same => n,NoOp(Attempt=${AAVA_ATTEMPT_ID} Campaign=${AAVA_CAMPAIGN_ID} Lead=${AAVA_LEAD_ID})',
-        ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000))',
+        ' same => n,ExecIf($["${AAVA_AMD_OPTS}" = ""]?Set(AAVA_AMD_OPTS=2000,2000,1000,5000,100,50,10))',
         ' same => n,AMD(${AAVA_AMD_OPTS})',
         ' same => n,NoOp(AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})',
         ' ; Guardrails to reduce false MACHINE on silent humans',
@@ -236,7 +239,7 @@ const amdTooltipForKey = (key: string): string => {
         case 'greeting_ms':
             return 'Max length of the greeting/intro phrase (ms).';
         case 'after_greeting_silence_ms':
-            return 'Silence required after greeting to decide MACHINE (ms).';
+            return 'Silence after a short greeting that is sufficient to classify the answer as HUMAN (ms).';
         case 'total_analysis_time_ms':
             return 'Max total time AMD will spend analyzing audio (ms).';
         case 'minimum_word_length_ms':
@@ -244,7 +247,7 @@ const amdTooltipForKey = (key: string): string => {
         case 'between_words_silence_ms':
             return 'Silence between words (ms).';
         case 'maximum_number_of_words':
-            return 'Maximum number of detected “words” before classifying.';
+            return 'Detected words before classifying as MACHINE; the human-first default is 10 to reduce false voicemail drops.';
         case 'silence_threshold':
             return 'Silence threshold (signal level) used by AMD; lower is more sensitive.';
         case 'maximum_word_length_ms':

@@ -191,7 +191,8 @@ class InCallHTTPTool(Tool):
             
             body = None
             json_body = None
-            if self.config.body_template:
+            method = str(self.config.method or "GET").strip().upper()
+            if method in {"POST", "PUT", "PATCH"} and self.config.body_template:
                 body_str = self._substitute_variables(self.config.body_template, sub_context)
                 # Try to parse as JSON for proper Content-Type handling
                 try:
@@ -215,7 +216,7 @@ class InCallHTTPTool(Tool):
                 logger.debug(
                     "[HTTP_TOOL_TRACE] request_resolved in_call tool=%s method=%s url=%s headers=%s params=%s body=%s json_body=%s vars=%s call_id=%s",
                     self.config.name,
-                    self.config.method,
+                    method,
                     url,
                     redact_headers(headers),
                     query_params,
@@ -233,7 +234,7 @@ class InCallHTTPTool(Tool):
             logger.info(
                 f"Executing in-call HTTP tool: {self.config.name}",
                 extra={
-                    "method": self.config.method,
+                    "method": method,
                     "url": self._redact_url(url),
                     "call_id": context.call_id,
                 }
@@ -243,7 +244,7 @@ class InCallHTTPTool(Tool):
             timeout = aiohttp.ClientTimeout(total=self.config.timeout_ms / 1000.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 request_kwargs = {
-                    "method": self.config.method,
+                    "method": method,
                     "url": url,
                     "headers": headers,
                     "params": query_params if query_params else None,

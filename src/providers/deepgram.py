@@ -225,6 +225,7 @@ class DeepgramProvider(AIProviderInterface):
     async def _emit_farewell_fallback_if_needed(self, *, had_audio: bool = True) -> bool:
         if not self.on_event or not self._consume_farewell_fallback():
             return False
+        self._terminal_turn_suppressed = True
         logger.warning(
             "Deepgram omitted hangup_call after farewell; emitting HangupReady fallback",
             call_id=self.call_id,
@@ -416,6 +417,7 @@ class DeepgramProvider(AIProviderInterface):
         self._user_last_ts: float = 0.0
         # Hangup tracking (for farewell + HangupReady event)
         self._hangup_pending: bool = False
+        self._terminal_turn_suppressed: bool = False
         self._hangup_audio_started: bool = False
         self._hangup_fallback_task: Optional[asyncio.Task] = None
         self._farewell_text_fallback_task: Optional[asyncio.Task] = None
@@ -593,6 +595,7 @@ class DeepgramProvider(AIProviderInterface):
             # Persist call context for downstream events
             self.call_id = call_id
             self._farewell_fallback_state = {}
+            self._terminal_turn_suppressed = False
             # Per-call tool allowlist (contexts are the source of truth).
             # Missing/None is treated as [] for safety.
             if context and "tools" in context:
@@ -887,6 +890,8 @@ class DeepgramProvider(AIProviderInterface):
         Engine provides explicit encoding/sample_rate when available.
         Falls back to chunk size inference for backward compatibility.
         """
+        if self._terminal_turn_suppressed or self._hangup_pending:
+            return
         if self.websocket and audio_chunk:
             try:
                 self._is_audio_flowing = True
@@ -1150,6 +1155,7 @@ class DeepgramProvider(AIProviderInterface):
             # Check if this was a hangup request
             if result.get('function_name') == 'hangup_call' and result.get('status') == 'success':
                 self._hangup_pending = True
+                self._terminal_turn_suppressed = True
                 self._hangup_audio_started = False
                 self._farewell_message = result.get('farewell_message') or result.get('message', '')
                 logger.info(
@@ -1567,6 +1573,16 @@ class DeepgramProvider(AIProviderInterface):
                                 try:
                                     role = event_data.get("role")
                                     text = event_data.get("text") or event_data.get("content")
+                                    if (
+                                        str(role or "").strip().lower() == "user"
+                                        and self._terminal_turn_suppressed
+                                    ):
+                                        logger.debug(
+                                            "Suppressing caller transcript after terminal turn",
+                                            call_id=self.call_id,
+                                            text=text,
+                                        )
+                                        continue
                                     self._track_farewell_fallback(role=role, text=text)
                                     if str(role or "").strip().lower() == "user":
                                         self._cancel_farewell_text_fallback()

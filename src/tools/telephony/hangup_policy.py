@@ -218,8 +218,8 @@ def text_is_short_polite_closing(text: str) -> bool:
     Detect short gratitude closings even when custom marker lists are too narrow.
 
     This is intentionally conservative to avoid mid-call false positives:
-    - utterance must be short (<= 6 words after normalization)
-    - must look like a closing gratitude phrase (e.g. "okay thank you")
+    - utterance must be short (<= 8 words after normalization)
+    - must end in gratitude, optionally after a recognized closing prefix
     """
     normalized = _normalize_end_call_text(text)
     if not normalized:
@@ -227,11 +227,12 @@ def text_is_short_polite_closing(text: str) -> bool:
     compact = _normalize_text(re.sub(r"[^a-z0-9\s]", " ", normalized))
     if not compact:
         return False
-    if len(compact.split()) > 6:
+    if len(compact.split()) > 8:
         return False
     return bool(
         re.fullmatch(
-            r"(?:ok(?:ay)?\s+)?(?:thank\s+you|thanks)(?:\s+(?:so\s+much|very\s+much))?(?:\s+(?:bye|goodbye))?",
+            r"(?:(?:ok(?:ay)?|no|nope|never\s+mind|nevermind|leave\s+it|that\s+s\s+(?:all|it)|thats\s+(?:all|it)|nothing\s+else)\s+)*"
+            r"(?:thank\s+you|thanks)(?:\s+(?:so\s+much|very\s+much))?(?:\s+(?:bye|goodbye))?",
             compact,
         )
     )

@@ -5,11 +5,13 @@ Fetches enrichment data from external APIs (e.g., GoHighLevel, HubSpot)
 and returns output variables for prompt injection.
 """
 
+import asyncio
 import os
 import re
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
@@ -54,6 +56,7 @@ class HTTPLookupConfig:
     
     # Response limits
     max_response_size_bytes: int = 65536  # 64KB max
+    response_body_max_chars: Optional[int] = None
 
 
 class GenericHTTPLookupTool(PreCallTool):
@@ -96,10 +99,71 @@ class GenericHTTPLookupTool(PreCallTool):
             hold_audio_file=config.hold_audio_file,
             hold_audio_threshold_ms=config.hold_audio_threshold_ms,
         )
+        # The registry shares one tool instance across calls. Keep diagnostics
+        # per call so concurrent campaign lookups cannot overwrite each other.
+        self._last_results: Dict[str, Dict[str, Any]] = {}
     
     @property
     def definition(self) -> ToolDefinition:
         return self._definition
+
+    def get_last_result(self, call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if not call_id:
+            return None
+        return self._last_results.pop(call_id, None)
+
+    def _response_body_max_chars(self) -> int:
+        raw: Any = self.config.response_body_max_chars
+        if raw is None:
+            raw = os.environ.get("CALL_HISTORY_RESPONSE_BODY_MAX_CHARS", "512")
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 512
+
+    @staticmethod
+    def _sanitize_response(value: Any) -> Any:
+        """Redact likely credentials before persisting a response preview."""
+        if isinstance(value, dict):
+            sanitized: Dict[str, Any] = {}
+            for key, item in value.items():
+                if re.search(r"(?:api[_-]?key|token|secret|password|authorization|auth)", str(key), re.I):
+                    sanitized[str(key)] = "***"
+                else:
+                    sanitized[str(key)] = GenericHTTPLookupTool._sanitize_response(item)
+            return sanitized
+        if isinstance(value, list):
+            return [GenericHTTPLookupTool._sanitize_response(item) for item in value]
+        return value
+
+    def _record_result(
+        self,
+        *,
+        call_id: str,
+        status: str,
+        started_at: str,
+        started_monotonic: float,
+        http_status: Optional[int] = None,
+        body_text: str = "",
+        error_message: Optional[str] = None,
+        output_variables: Optional[Dict[str, str]] = None,
+    ) -> None:
+        if not call_id:
+            return
+        max_chars = self._response_body_max_chars()
+        summary: Optional[str] = None
+        if max_chars and body_text:
+            summary = body_text if len(body_text) <= max_chars else body_text[:max_chars] + "…"
+        self._last_results[call_id] = {
+            "status": status,
+            "http_status": http_status,
+            "response_summary": summary,
+            "error_message": error_message[:500] if error_message else None,
+            "output_variables": dict(output_variables or {}),
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": round((time.monotonic() - started_monotonic) * 1000, 2),
+        }
     
     async def execute(self, context: PreCallContext) -> Dict[str, str]:
         """
@@ -112,17 +176,25 @@ class GenericHTTPLookupTool(PreCallTool):
             Dictionary of output_variable_name -> value (strings)
         """
         results: Dict[str, str] = {var: "" for var in self.config.output_variables.keys()}
+        started_at = datetime.now(timezone.utc).isoformat()
+        started = time.monotonic()
+        call_id = getattr(context, "call_id", None) or ""
         
         if not self.config.enabled:
             logger.debug(f"HTTP lookup tool disabled: {self.config.name}")
+            self._record_result(call_id=call_id, status="skipped", started_at=started_at,
+                                started_monotonic=started, error_message="tool disabled",
+                                output_variables=results)
             return results
         
         if not self.config.url:
             logger.warning(f"HTTP lookup tool has no URL configured: {self.config.name}")
+            self._record_result(call_id=call_id, status="skipped", started_at=started_at,
+                                started_monotonic=started, error_message="no URL configured",
+                                output_variables=results)
             return results
         
         try:
-            started = time.monotonic()
             # Build request
             url = self._substitute_variables(self.config.url, context)
             headers = {
@@ -134,8 +206,9 @@ class GenericHTTPLookupTool(PreCallTool):
                 for k, v in self.config.query_params.items()
             }
             
+            method = str(self.config.method or "GET").strip().upper()
             body = None
-            if self.config.body_template:
+            if method in {"POST", "PUT", "PATCH"} and self.config.body_template:
                 body = self._substitute_variables(self.config.body_template, context)
 
             if debug_enabled(logger):
@@ -163,7 +236,7 @@ class GenericHTTPLookupTool(PreCallTool):
                 logger.debug(
                     "[HTTP_TOOL_TRACE] request_resolved pre_call tool=%s method=%s url=%s headers=%s params=%s body=%s vars=%s",
                     self.config.name,
-                    self.config.method,
+                    method,
                     url,
                     redact_headers(headers),
                     params,
@@ -176,25 +249,38 @@ class GenericHTTPLookupTool(PreCallTool):
                     ),
                 )
 
-            logger.info(f"Executing HTTP lookup: {self.config.name} {self.config.method} {self._redact_url(url)}")
+            logger.info(f"Executing HTTP lookup: {self.config.name} {method} {self._redact_url(url)}")
             
             # Make request
             timeout = aiohttp.ClientTimeout(total=self.config.timeout_ms / 1000.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
-                    method=self.config.method,
+                    method=method,
                     url=url,
                     headers=headers,
                     params=params,
                     data=body,
                 ) as response:
-                    if response.status != 200:
-                        logger.warning(f"HTTP lookup returned non-200: {self.config.name} status={response.status}")
+                    if not 200 <= response.status < 300:
+                        logger.warning(f"HTTP lookup returned non-2xx: {self.config.name} status={response.status}")
+                        error_body = ""
+                        try:
+                            error_body = (await response.content.read(4096)).decode(
+                                getattr(response, "charset", None) or "utf-8", errors="replace"
+                            )
+                        except Exception:
+                            pass
+                        self._record_result(
+                            call_id=call_id, status="error", started_at=started_at,
+                            started_monotonic=started, http_status=response.status,
+                            body_text=error_body, error_message=f"HTTP {response.status}",
+                            output_variables=results,
+                        )
                         if debug_enabled(logger):
                             elapsed_ms = round((time.monotonic() - started) * 1000, 2)
                             body_preview = ""
                             try:
-                                body_preview = preview(await response.content.read(4096))
+                                body_preview = preview(error_body)
                             except Exception as e:
                                 body_preview = f"<failed to read body: {e}>"
                             logger.debug(
@@ -217,6 +303,12 @@ class GenericHTTPLookupTool(PreCallTool):
                                     content_length,
                                     self.config.max_response_size_bytes,
                                 )
+                                self._record_result(
+                                    call_id=call_id, status="error", started_at=started_at,
+                                    started_monotonic=started, http_status=response.status,
+                                    error_message="response exceeds configured size limit",
+                                    output_variables=results,
+                                )
                                 return results
                         except Exception:
                             pass
@@ -231,6 +323,11 @@ class GenericHTTPLookupTool(PreCallTool):
                                 self.config.name,
                                 self.config.max_response_size_bytes,
                             )
+                            self._record_result(
+                                call_id=call_id, status="error", started_at=started_at,
+                                started_monotonic=started, http_status=response.status,
+                                error_message="invalid response size limit", output_variables=results,
+                            )
                             return results
 
                         total = 0
@@ -244,6 +341,12 @@ class GenericHTTPLookupTool(PreCallTool):
                                     "Response too large, skipping: %s max=%s",
                                     self.config.name,
                                     max_bytes,
+                                )
+                                self._record_result(
+                                    call_id=call_id, status="error", started_at=started_at,
+                                    started_monotonic=started, http_status=response.status,
+                                    error_message="response exceeds configured size limit",
+                                    output_variables=results,
                                 )
                                 return results
                             chunks.append(chunk)
@@ -263,6 +366,12 @@ class GenericHTTPLookupTool(PreCallTool):
                                 len(body_bytes or b""),
                                 preview(body_bytes),
                             )
+                        self._record_result(
+                            call_id=call_id, status="error", started_at=started_at,
+                            started_monotonic=started, http_status=response.status,
+                            body_text=body_bytes.decode("utf-8", errors="replace"),
+                            error_message=f"invalid JSON response: {e}", output_variables=results,
+                        )
                         return results
                     except Exception as e:
                         logger.warning(f"Failed to read response: {self.config.name} error={e}")
@@ -277,10 +386,21 @@ class GenericHTTPLookupTool(PreCallTool):
                                 len(body_bytes or b""),
                                 preview(body_bytes),
                             )
+                        self._record_result(
+                            call_id=call_id, status="error", started_at=started_at,
+                            started_monotonic=started, http_status=getattr(response, "status", None),
+                            error_message=f"{e.__class__.__name__}: {e}", output_variables=results,
+                        )
                         return results
                     
                     # Extract output variables
                     results = self._extract_output_variables(data)
+                    safe_body = json.dumps(self._sanitize_response(data), ensure_ascii=False, separators=(",", ":"))
+                    self._record_result(
+                        call_id=call_id, status="ok", started_at=started_at,
+                        started_monotonic=started, http_status=response.status,
+                        body_text=safe_body, output_variables=results,
+                    )
 
                     if debug_enabled(logger):
                         elapsed_ms = round((time.monotonic() - started) * 1000, 2)
@@ -296,10 +416,21 @@ class GenericHTTPLookupTool(PreCallTool):
                     
                     logger.info(f"HTTP lookup completed: {self.config.name} status={response.status} keys={list(results.keys())}")
         
+        except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+            logger.warning(f"HTTP lookup timed out: {self.config.name} error={e}")
+            self._record_result(call_id=call_id, status="timeout", started_at=started_at,
+                                started_monotonic=started,
+                                error_message=f"{e.__class__.__name__}: {e}", output_variables=results)
         except aiohttp.ClientError as e:
             logger.warning(f"HTTP lookup request failed: {self.config.name} error={e}")
+            self._record_result(call_id=call_id, status="error", started_at=started_at,
+                                started_monotonic=started,
+                                error_message=f"{e.__class__.__name__}: {e}", output_variables=results)
         except Exception as e:
             logger.error(f"HTTP lookup unexpected error: {self.config.name} error={e}", exc_info=True)
+            self._record_result(call_id=call_id, status="error", started_at=started_at,
+                                started_monotonic=started,
+                                error_message=f"{e.__class__.__name__}: {e}", output_variables=results)
         
         return results
     
@@ -414,6 +545,7 @@ def create_http_lookup_tool(name: str, config_dict: Dict[str, Any]) -> GenericHT
         body_template=config_dict.get('body_template'),
         output_variables=config_dict.get('output_variables', {}),
         max_response_size_bytes=config_dict.get('max_response_size_bytes', 65536),
+        response_body_max_chars=config_dict.get('response_body_max_chars'),
     )
     
     return GenericHTTPLookupTool(config)

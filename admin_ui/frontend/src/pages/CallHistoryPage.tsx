@@ -49,6 +49,7 @@ interface PhaseToolCall {
     duration_ms?: number | null;
     http_status?: number | null;
     response_summary?: string | null;
+    output_variables?: Record<string, string> | null;
     error_message?: string | null;
     attempt?: number | null;
 }
@@ -215,6 +216,19 @@ const PhaseToolCard = ({ entry }: { entry: PhaseToolCall }) => {
                 <pre className="mt-2 text-xs bg-background/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">
                     {entry.response_summary}
                 </pre>
+            )}
+            {entry.output_variables && Object.keys(entry.output_variables).length > 0 && (
+                <div className="mt-2 text-xs">
+                    <div className="text-muted-foreground mb-1">Output variables</div>
+                    <div className="bg-background/50 rounded p-2 space-y-1">
+                        {Object.entries(entry.output_variables).map(([key, value]) => (
+                            <div key={key} className="grid grid-cols-[minmax(0,10rem)_1fr] gap-2">
+                                <span className="font-mono text-blue-400 break-all">{key}</span>
+                                <span className="break-words">{value || <em className="text-muted-foreground">empty</em>}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
             )}
         </div>
     );

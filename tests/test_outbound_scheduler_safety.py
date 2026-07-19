@@ -175,6 +175,34 @@ def test_stale_attempt_timeout_uses_one_validated_default(monkeypatch):
     assert _outbound_attempt_stale_seconds() == 120.0
 
 
+def test_amd_defaults_are_human_first_and_campaign_values_override():
+    engine = Engine.__new__(Engine)
+
+    assert engine._outbound_build_amd_opts({}) == "2000,2000,1000,5000,100,50,10"
+    assert engine._outbound_build_amd_opts({"maximum_number_of_words": 4}) == (
+        "2000,2000,1000,5000,100,50,4"
+    )
+
+
+def test_empty_pre_call_value_removes_only_its_optional_greeting_phrase():
+    engine = Engine.__new__(Engine)
+    session = SimpleNamespace(
+        call_id="call-1",
+        caller_name="Alice",
+        caller_number="13164619284",
+        context_name="sales",
+        is_outbound=True,
+        outbound_campaign_id="campaign-1",
+        outbound_lead_id="lead-1",
+        pre_call_results={"carrier": ""},
+    )
+
+    rendered = engine._apply_prompt_template_substitution(
+        "Hi {caller_name} from {carrier}, welcome to {unknown}.", session
+    )
+
+    assert rendered == "Hi Alice, welcome to {unknown}."
+
 @pytest.mark.asyncio
 async def test_active_human_session_is_not_double_counted_against_capacity():
     engine = Engine.__new__(Engine)
@@ -223,3 +251,36 @@ async def test_untracked_active_session_still_consumes_capacity():
     assert tracked == 1
     assert additional_active == 1
     assert capacity == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maximum", [1, 2, 3, 4, 5])
+async def test_campaign_capacity_matrix_respects_configured_limit(maximum):
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine._outbound_attempt_meta_by_attempt_id = {
+        f"attempt-{index}": {
+            "attempt_id": f"attempt-{index}",
+            "campaign_id": "campaign-1",
+        }
+        for index in range(maximum)
+    }
+
+    capacity, tracked, additional_active = await engine._outbound_campaign_capacity(
+        "campaign-1", maximum
+    )
+
+    assert (capacity, tracked, additional_active) == (0, maximum, 0)
+
+
+@pytest.mark.asyncio
+async def test_campaign_capacity_is_independent_between_campaigns():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine._outbound_attempt_meta_by_attempt_id = {
+        "attempt-a": {"attempt_id": "attempt-a", "campaign_id": "campaign-a"},
+        "attempt-b": {"attempt_id": "attempt-b", "campaign_id": "campaign-b"},
+    }
+
+    assert await engine._outbound_campaign_capacity("campaign-a", 2) == (1, 1, 0)
+    assert await engine._outbound_campaign_capacity("campaign-b", 3) == (2, 1, 0)

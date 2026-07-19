@@ -771,9 +771,13 @@ async def test_http_tool(request: TestHTTPRequest):
     for key, value in request.headers.items():
         resolved_headers[key] = _substitute_variables(value, test_values)
     
-    # Resolve body template
+    method = (request.method or "GET").strip().upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"):
+        raise HTTPException(status_code=400, detail=f"Unsupported HTTP method: {method}")
+
+    # Never display or send a stale hidden body for bodyless methods.
     resolved_body = None
-    if request.body_template:
+    if method in _BODY_CAPABLE_HTTP_METHODS and request.body_template:
         resolved_body = _substitute_variables(request.body_template, test_values)
     
     # Prepare the response
@@ -784,10 +788,6 @@ async def test_http_tool(request: TestHTTPRequest):
         resolved_body=resolved_body
     )
     
-    method = (request.method or "GET").strip().upper()
-    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"):
-        raise HTTPException(status_code=400, detail=f"Unsupported HTTP method: {method}")
-
     # Make the HTTP request
     start_time = time.time()
     timeout_seconds = request.timeout_ms / 1000.0
@@ -926,6 +926,7 @@ _IN_CALL_BLOCK_KINDS = {"in_call_http_lookup"}
 _SUPPORTED_HTTP_METHODS = frozenset(
     {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 )
+_BODY_CAPABLE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _MAX_MANAGED_TOOL_TIMEOUT_MS = 300_000
 _MAX_FAREWELL_DELAY_SEC = 300.0
 
@@ -1249,6 +1250,9 @@ def _build_tool_doc(data: Dict[str, Any], phase: str) -> Dict[str, Any]:
     for field in _PASSTHROUGH_FIELDS:
         if data.get(field) is not None:
             doc[field] = data[field]
+    if doc["method"] not in _BODY_CAPABLE_HTTP_METHODS:
+        doc.pop("body_template", None)
+        doc.pop("payload_template", None)
     params = data.get("parameters")
     if params is not None:
         doc["parameters"] = [
@@ -1373,6 +1377,12 @@ async def patch_managed_tool(name: str, body: ManagedToolPatch):
     # Always normalize kind to the canonical value for the (possibly new) phase,
     # rejecting any mismatched client-supplied kind.
     merged["kind"] = _resolve_kind(new_phase, patch.get("kind"))
+    merged["method"] = str(
+        merged.get("method") or ("GET" if new_phase == "pre_call" else "POST")
+    ).upper()
+    if merged["method"] not in _BODY_CAPABLE_HTTP_METHODS:
+        merged.pop("body_template", None)
+        merged.pop("payload_template", None)
 
     target_block = _block_for_phase(new_phase)
     _remove_tool_everywhere(cfg, name)

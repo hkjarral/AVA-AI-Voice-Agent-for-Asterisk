@@ -417,6 +417,9 @@ async def outbound_meta():
             "greeting_ms": 2000,
             "after_greeting_silence_ms": 1000,
             "total_analysis_time_ms": 5000,
+            "minimum_word_length_ms": 100,
+            "between_words_silence_ms": 50,
+            "maximum_number_of_words": 10,
         },
     }
 

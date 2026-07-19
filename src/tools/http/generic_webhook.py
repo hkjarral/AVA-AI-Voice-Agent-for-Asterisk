@@ -250,17 +250,21 @@ class GenericWebhookTool(PostCallTool):
                 for k, v in self.config.headers.items()
             }
             
-            # Ensure content-type is set
-            if 'Content-Type' not in headers and 'content-type' not in headers:
+            method = str(self.config.method or "POST").strip().upper()
+            body_capable = method in {"POST", "PUT", "PATCH"}
+
+            # Content-Type and payload only apply to body-capable methods.
+            if body_capable and 'Content-Type' not in headers and 'content-type' not in headers:
                 headers['Content-Type'] = self.config.content_type
             
             # Build payload
             payload = None
-            if self.config.payload_template:
-                payload = self._build_payload(context)
-            else:
-                # Default payload using context's to_payload_dict
-                payload = json.dumps(context.to_payload_dict())
+            if body_capable:
+                if self.config.payload_template:
+                    payload = self._build_payload(context)
+                else:
+                    # Default payload using context's to_payload_dict
+                    payload = json.dumps(context.to_payload_dict())
 
             if debug_enabled(logger):
                 used_brace = extract_used_brace_vars(
@@ -277,7 +281,7 @@ class GenericWebhookTool(PostCallTool):
                 logger.debug(
                     "[HTTP_TOOL_TRACE] request_resolved post_call tool=%s method=%s url=%s headers=%s payload=%s vars=%s call_id=%s",
                     self.config.name,
-                    self.config.method,
+                    method,
                     url,
                     redact_headers(headers),
                     preview(payload),
@@ -290,13 +294,13 @@ class GenericWebhookTool(PostCallTool):
                     getattr(context, "call_id", None),
                 )
             
-            logger.info(f"Sending webhook: {self.config.name} {self.config.method} {self._redact_url(url)}")
+            logger.info(f"Sending webhook: {self.config.name} {method} {self._redact_url(url)}")
             
             # Make request (fire-and-forget)
             timeout = aiohttp.ClientTimeout(total=self.config.timeout_ms / 1000.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
-                    method=self.config.method,
+                    method=method,
                     url=url,
                     headers=headers,
                     data=payload,

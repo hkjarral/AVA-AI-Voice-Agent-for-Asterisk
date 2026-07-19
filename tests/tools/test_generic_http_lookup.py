@@ -75,6 +75,10 @@ class TestGenericHTTPLookupTool:
                 for part in self._parts:
                     yield part
 
+            async def read(self, _size=-1):
+                data = b"".join(self._parts)
+                return data if _size < 0 else data[:_size]
+
         return _Content(chunks)
     
     @pytest.fixture
@@ -180,6 +184,43 @@ class TestGenericHTTPLookupTool:
         
         assert result["customer_name"] == "John"
         assert result["customer_email"] == "john@example.com"
+
+        diagnostics = tool.get_last_result(call_id=precall_context.call_id)
+        assert diagnostics["status"] == "ok"
+        assert diagnostics["http_status"] == 200
+        assert diagnostics["output_variables"] == result
+        assert '"firstName":"John"' in diagnostics["response_summary"]
+        assert tool.get_last_result(call_id=precall_context.call_id) is None
+
+    @pytest.mark.asyncio
+    async def test_get_never_sends_legacy_hidden_body(self, lookup_config, precall_context):
+        lookup_config.body_template = '{"phone":"{caller_number}"}'
+        tool = GenericHTTPLookupTool(lookup_config)
+        response = AsyncMock(status=200, headers={})
+        response.content = self._make_content([b'{"firstName":"John"}'])
+        response.charset = "utf-8"
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(precall_context)
+
+        assert session.request.call_args.kwargs["method"] == "GET"
+        assert session.request.call_args.kwargs["data"] is None
+
+    def test_diagnostics_are_call_keyed(self, lookup_config):
+        tool = GenericHTTPLookupTool(lookup_config)
+        tool._last_results["call-a"] = {"status": "ok"}
+        tool._last_results["call-b"] = {"status": "error"}
+
+        assert tool.get_last_result("call-a") == {"status": "ok"}
+        assert tool.get_last_result("call-b") == {"status": "error"}
 
     @pytest.mark.asyncio
     async def test_missing_content_length_enforces_max_size(self, lookup_config, precall_context):

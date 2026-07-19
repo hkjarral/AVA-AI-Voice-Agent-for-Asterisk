@@ -40,6 +40,25 @@ describe('HTTPToolForm editor colors', () => {
         );
     });
 
+    it('starts GET lookups without a JSON header and clears a hidden body on method change', () => {
+        renderForm('pre_call');
+        fireEvent.click(screen.getByRole('button', { name: 'Add Lookup' }));
+
+        expect(screen.queryByText(/Content-Type: application\/json/)).not.toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'POST' } });
+        expect(screen.getByText(/Content-Type: application\/json/)).toBeInTheDocument();
+        const body = screen.getByPlaceholderText(
+            '{"phone": "{caller_number}", "context": "{context_name}"}'
+        );
+        fireEvent.change(body, { target: { value: '{"stale":true}' } });
+        fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'GET' } });
+        expect(screen.queryByDisplayValue('{"stale":true}')).not.toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Method'), { target: { value: 'POST' } });
+        expect(screen.getByPlaceholderText(
+            '{"phone": "{caller_number}", "context": "{context_name}"}'
+        )).toHaveValue('');
+    });
+
     it('styles in-call parameter, query, output, body, and description controls', () => {
         renderForm('in_call');
         fireEvent.click(screen.getByRole('button', { name: 'Add Tool' }));

@@ -115,6 +115,26 @@ async def test_provider_emits_hangup_ready_at_audio_boundary():
             "had_audio": True,
         }
     ]
+    assert provider._terminal_turn_suppressed is True
+
+
+@pytest.mark.asyncio
+async def test_caller_audio_is_suppressed_after_terminal_turn():
+    class _Websocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, payload):
+            self.sent.append(payload)
+
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider.websocket = _Websocket()
+    provider._terminal_turn_suppressed = True
+    provider._hangup_pending = False
+
+    await provider.send_audio(b"caller audio", sample_rate=8000, encoding="ulaw")
+
+    assert provider.websocket.sent == []
 
 
 def test_custom_hangup_markers_drive_deepgram_fallback_state():

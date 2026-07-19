@@ -213,7 +213,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
             timeout_ms: phase === 'pre_call' ? 2000 : 5000,
             url: '',
             method: phase === 'pre_call' ? 'GET' : 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: phase === 'pre_call' ? {} : { 'Content-Type': 'application/json' },
             query_params: {},
             output_variables: {},
             payload_template: phase === 'post_call' ? DEFAULT_WEBHOOK_PAYLOAD : undefined,
@@ -238,7 +238,14 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
     };
 
     const handleSaveTool = () => {
-        const committedToolForm = withDraftRowsCommitted(toolForm);
+        let committedToolForm = withDraftRowsCommitted(toolForm);
+        if (!['POST', 'PUT', 'PATCH'].includes((committedToolForm.method || '').toUpperCase())) {
+            committedToolForm = {
+                ...committedToolForm,
+                body_template: undefined,
+                payload_template: undefined,
+            };
+        }
 
         if (!committedToolForm.key) {
             toast.error('Please enter a Tool Name');
@@ -370,6 +377,24 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
         const params = { ...toolForm.query_params };
         delete params[key];
         setToolForm({ ...toolForm, query_params: params });
+    };
+
+    const handleMethodChange = (method: string) => {
+        const bodyCapable = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase());
+        const headers = { ...(toolForm.headers || {}) };
+        if (
+            bodyCapable &&
+            !Object.keys(headers).some(key => key.toLowerCase() === 'content-type')
+        ) {
+            headers['Content-Type'] = 'application/json';
+        }
+        setToolForm({
+            ...toolForm,
+            method,
+            headers,
+            body_template: bodyCapable ? toolForm.body_template : undefined,
+            payload_template: bodyCapable ? toolForm.payload_template : undefined,
+        });
     };
 
     const handleTestTool = async () => {
@@ -616,7 +641,7 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                 { value: 'PATCH', label: 'PATCH' },
                             ]}
                             value={toolForm.method || 'POST'}
-                            onChange={e => setToolForm({ ...toolForm, method: e.target.value })}
+                            onChange={e => handleMethodChange(e.target.value)}
                         />
                         <FormInput
                             label="Timeout (ms)"
@@ -1543,22 +1568,24 @@ const HTTPToolForm = ({ config, onChange, phase, contexts }: HTTPToolFormProps) 
                                     </div>
                                 )}
                             </div>
-                            <div className="space-y-2">
-                                <FormLabel tooltip="JSON payload with variable substitution. Available: {call_id}, {caller_number}, {call_duration}, {transcript_json}, {summary}, etc.">
-                                    Payload Template
-                                </FormLabel>
-                                <textarea
-                                    className={`${editorTextareaClass} min-h-[200px] font-mono`}
-                                    value={toolForm.payload_template || ''}
-                                    onChange={e =>
-                                        setToolForm({
-                                            ...toolForm,
-                                            payload_template: e.target.value,
-                                        })
-                                    }
-                                    placeholder={DEFAULT_WEBHOOK_PAYLOAD}
-                                />
-                            </div>
+                            {['POST', 'PUT', 'PATCH'].includes((toolForm.method || '').toUpperCase()) && (
+                                <div className="space-y-2">
+                                    <FormLabel tooltip="JSON payload with variable substitution. Available: {call_id}, {caller_number}, {call_duration}, {transcript_json}, {summary}, etc.">
+                                        Payload Template
+                                    </FormLabel>
+                                    <textarea
+                                        className={`${editorTextareaClass} min-h-[200px] font-mono`}
+                                        value={toolForm.payload_template || ''}
+                                        onChange={e =>
+                                            setToolForm({
+                                                ...toolForm,
+                                                payload_template: e.target.value,
+                                            })
+                                        }
+                                        placeholder={DEFAULT_WEBHOOK_PAYLOAD}
+                                    />
+                                </div>
+                            )}
                         </>
                     )}
                 </div>

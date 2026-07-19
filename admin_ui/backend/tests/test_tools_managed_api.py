@@ -93,6 +93,26 @@ def test_post_call_webhook(client):
     assert r.json()["config"]["method"] == "POST"
 
 
+def test_bodyless_methods_clear_hidden_request_templates(client):
+    created = client.post("/api/tools/managed", json={
+        "name": "legacy_get", "phase": "pre_call",
+        "url": "https://api.example.com/lookup", "method": "GET",
+        "body_template": '{"phone":"{caller_number}"}',
+    })
+    assert created.status_code == 201
+    assert "body_template" not in created.json()["config"]
+
+    webhook = client.post("/api/tools/managed", json={
+        "name": "switch_method", "phase": "post_call",
+        "url": "https://hooks.example.com/x", "method": "POST",
+        "payload_template": '{"id":"{call_id}"}',
+    })
+    assert webhook.status_code == 201
+    patched = client.patch("/api/tools/managed/switch_method", json={"method": "HEAD"})
+    assert patched.status_code == 200
+    assert "payload_template" not in patched.json()["config"]
+
+
 def test_create_duplicate_returns_409(client):
     payload = {"name": "dup", "phase": "pre_call", "url": "https://a.example.com"}
     assert client.post("/api/tools/managed", json=payload).status_code == 201

@@ -157,6 +157,34 @@ class TestGenericWebhookTool:
             
             # Should not raise
             await tool.execute(postcall_context)
+
+    @pytest.mark.asyncio
+    async def test_get_never_sends_legacy_hidden_payload(self, postcall_context):
+        tool = GenericWebhookTool(WebhookConfig(
+            name="legacy_get_webhook",
+            url="https://webhook.example.com/status",
+            method="GET",
+            headers={},
+            payload_template='{"call_id":"{call_id}"}',
+        ))
+        response = AsyncMock(status=204)
+        response.text = AsyncMock(return_value="")
+        request_cm = AsyncMock()
+        request_cm.__aenter__ = AsyncMock(return_value=response)
+        request_cm.__aexit__ = AsyncMock(return_value=None)
+        session = AsyncMock()
+        session.request = MagicMock(return_value=request_cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session_cm):
+            await tool.execute(postcall_context)
+
+        kwargs = session.request.call_args.kwargs
+        assert kwargs["method"] == "GET"
+        assert kwargs["data"] is None
+        assert "Content-Type" not in kwargs["headers"]
     
     @pytest.mark.asyncio
     async def test_non_2xx_logs_warning(self, webhook_config, postcall_context):

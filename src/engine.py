@@ -101,6 +101,17 @@ PIPELINE_STT_CHANNELS = 1
 PIPELINE_STT_BYTES_PER_SAMPLE = 2
 CONNECTION_AUDIO_HANDOFF_TIMEOUT_SECONDS = 10.0
 OUTBOUND_ATTEMPT_STALE_SECONDS_DEFAULT = 120.0
+# A human-first AMD preset. In particular, Asterisk's stock max-word default
+# of 3 classified the observed four-word human greeting as MACHINE.
+OUTBOUND_AMD_HUMAN_FIRST_DEFAULTS: Dict[str, int] = {
+    "initial_silence_ms": 2000,
+    "greeting_ms": 2000,
+    "after_greeting_silence_ms": 1000,
+    "total_analysis_time_ms": 5000,
+    "minimum_word_length_ms": 100,
+    "between_words_silence_ms": 50,
+    "maximum_number_of_words": 10,
+}
 
 
 def _outbound_attempt_stale_seconds() -> float:
@@ -1729,12 +1740,11 @@ class Engine:
         """
         Build AMD() positional argument string.
 
-        We keep this conservative for MVP and allow future tuning via amd_options JSON.
+        Defaults favor avoiding false MACHINE classifications of live people;
+        campaign values may override any position.
         """
         try:
-            opts = amd_options or {}
-            # Asterisk AMD args are positional; when missing, Asterisk defaults apply.
-            # Provide only when at least one key is specified.
+            opts = {**OUTBOUND_AMD_HUMAN_FIRST_DEFAULTS, **(amd_options or {})}
             mapping = [
                 ("initial_silence_ms", None),
                 ("greeting_ms", None),
@@ -1755,9 +1765,6 @@ class Engine:
                     continue
                 values.append(str(int(raw)))
                 set_indexes.append(idx)
-
-            if not set_indexes:
-                return ""
 
             # AMD() args are positional; you can't safely "skip" a middle arg.
             # Only allow a contiguous prefix [0..last_set] so we never pass empty values
@@ -5241,6 +5248,21 @@ class Engine:
             # Don't override built-in variables
             if key not in substitutions:
                 substitutions[key] = str(value) if value else ""
+
+        # Avoid awkward optional-enrichment output such as "from ," when a
+        # lookup succeeds but does not return a mapped value. This deliberately
+        # handles only a small phrase immediately preceding an empty pre-call
+        # placeholder; unknown placeholders remain untouched.
+        for key, value in pre_call_results.items():
+            if value not in (None, ""):
+                continue
+            escaped = re.escape(str(key))
+            text = re.sub(
+                rf"\s+(?:from|at|with|for)\s+\{{{escaped}\}}(?=\s*[,.;:!?]|$)",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
 
         if isinstance(extra_substitutions, dict):
             for key, value in extra_substitutions.items():
@@ -14460,10 +14482,8 @@ class Engine:
                         if greeting_to_apply:
                             try:
                                 caller_name = getattr(session, "caller_name", None) or "there"
-                                caller_number = getattr(session, "caller_number", None) or "unknown"
-                                greeting_to_apply = greeting_to_apply.format(
-                                    caller_name=caller_name,
-                                    caller_number=caller_number,
+                                greeting_to_apply = self._apply_prompt_template_substitution(
+                                    str(greeting_to_apply), session
                                 )
                                 logger.debug(
                                     "Applied greeting template substitution for provider",
@@ -17266,7 +17286,12 @@ class Engine:
                         else:
                             last = None
                         if isinstance(last, dict):
-                            for k in ("http_status", "response_summary"):
+                            diagnostic_status = last.get("status")
+                            if diagnostic_status in {"ok", "error", "timeout", "skipped"}:
+                                metadata["status"] = diagnostic_status
+                            if last.get("error_message"):
+                                metadata["error_message"] = str(last["error_message"])[:500]
+                            for k in ("http_status", "response_summary", "output_variables"):
                                 if last.get(k) is not None:
                                     metadata[k] = last[k]
                     except Exception:
