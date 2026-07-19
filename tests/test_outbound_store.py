@@ -180,6 +180,13 @@ async def test_empty_agent_set_rejects_unknown_and_campaign_edits_preserve_legac
     assert canonical_selector["agent_routing_method"] == "ai_agent"
 
 
+def test_legacy_agent_selector_rejects_unicode_controls():
+    from src.core.outbound_store import _is_safe_legacy_agent_selector
+
+    assert _is_safe_legacy_agent_selector("Ventes – Montréal")
+    assert not _is_safe_legacy_agent_selector("Sales\u0085Team")
+
+
 def test_outbound_schema_migration_marks_existing_selectors_as_ai_context(
     tmp_path, monkeypatch
 ):

@@ -96,6 +96,13 @@ async def test_outbound_agent_vars_prefer_ai_agent_and_keep_compatibility_alias(
         "channel-2", "sales_east", "ai_context"
     )
     assert calls == [("channel-2", "AI_CONTEXT", "sales_east")]
+    assert Engine._outbound_routing_channel_vars("sales", "ai_agent") == {
+        "AI_AGENT": "sales",
+        "AI_CONTEXT": "sales",
+    }
+    assert Engine._outbound_routing_channel_vars("sales_east", "ai_context") == {
+        "AI_CONTEXT": "sales_east"
+    }
 
 
 def test_outbound_selector_preserves_legacy_rows_and_uses_agent_for_new_rows():

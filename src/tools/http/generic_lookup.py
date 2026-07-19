@@ -244,7 +244,11 @@ class GenericHTTPLookupTool(PreCallTool):
             "status": status,
             "http_status": http_status,
             "response_summary": summary,
-            "error_message": error_message[:500] if error_message else None,
+            "error_message": (
+                self._sanitize_plain_text(error_message)[:500]
+                if error_message
+                else None
+            ),
             "output_variables": self._sanitize_response(dict(output_variables or {})),
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -440,7 +444,8 @@ class GenericHTTPLookupTool(PreCallTool):
                             chunks.append(chunk)
 
                         body_bytes = b"".join(chunks)
-                        data = json.loads(body_bytes.decode(charset, errors="replace"))
+                        body_text = body_bytes.decode(charset, errors="replace")
+                        data = json.loads(body_text) if body_text.strip() else {}
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse JSON response: {self.config.name} error={e}")
                         invalid_body = body_bytes.decode(charset, errors="replace")
@@ -510,20 +515,25 @@ class GenericHTTPLookupTool(PreCallTool):
                     logger.info(f"HTTP lookup completed: {self.config.name} status={response.status} keys={list(results.keys())}")
         
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
-            logger.warning(f"HTTP lookup timed out: {self.config.name} error={e}")
+            safe_error = self._sanitize_plain_text(f"{e.__class__.__name__}: {e}")
+            logger.warning(f"HTTP lookup timed out: {self.config.name} error={safe_error}")
             self._record_result(call_id=call_id, status="timeout", started_at=started_at,
                                 started_monotonic=started,
-                                error_message=f"{e.__class__.__name__}: {e}", output_variables=results)
+                                error_message=safe_error, output_variables=results)
         except aiohttp.ClientError as e:
-            logger.warning(f"HTTP lookup request failed: {self.config.name} error={e}")
+            safe_error = self._sanitize_plain_text(f"{e.__class__.__name__}: {e}")
+            logger.warning(f"HTTP lookup request failed: {self.config.name} error={safe_error}")
             self._record_result(call_id=call_id, status="error", started_at=started_at,
                                 started_monotonic=started,
-                                error_message=f"{e.__class__.__name__}: {e}", output_variables=results)
+                                error_message=safe_error, output_variables=results)
         except Exception as e:
-            logger.error(f"HTTP lookup unexpected error: {self.config.name} error={e}", exc_info=True)
+            safe_error = self._sanitize_plain_text(f"{e.__class__.__name__}: {e}")
+            logger.error(
+                f"HTTP lookup unexpected error: {self.config.name} error={safe_error}",
+            )
             self._record_result(call_id=call_id, status="error", started_at=started_at,
                                 started_monotonic=started,
-                                error_message=f"{e.__class__.__name__}: {e}", output_variables=results)
+                                error_message=safe_error, output_variables=results)
         
         return results
     

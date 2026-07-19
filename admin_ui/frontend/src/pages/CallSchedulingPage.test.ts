@@ -12,6 +12,15 @@ describe('buildCampaignEditPayload', () => {
         expect(payload).not.toHaveProperty('agent_routing_method');
     });
 
+    it('preserves legacy routing for a partial edit without an Agent selector', () => {
+        const payload = buildCampaignEditPayload(
+            { name: 'Renamed campaign' },
+            'legacy_sales'
+        );
+
+        expect(payload).not.toHaveProperty('agent_routing_method');
+    });
+
     it('marks a changed Agent selector as canonical AI_AGENT routing', () => {
         const payload = buildCampaignEditPayload(
             { name: 'Campaign', default_context: 'sales' },

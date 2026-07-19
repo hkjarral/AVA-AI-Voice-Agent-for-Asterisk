@@ -22,6 +22,7 @@ import logging
 import os
 import sqlite3
 import threading
+import unicodedata
 import uuid
 import re
 from dataclasses import dataclass
@@ -66,7 +67,7 @@ def _is_safe_legacy_agent_selector(value: str) -> bool:
     return (
         bool(value)
         and len(value) <= 200
-        and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+        and not any(unicodedata.category(char) == "Cc" for char in value)
     )
 
 

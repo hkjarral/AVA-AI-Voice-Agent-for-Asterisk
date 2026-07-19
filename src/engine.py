@@ -1630,6 +1630,19 @@ class Engine:
             if value:
                 setattr(session, attr, value)
 
+    @staticmethod
+    def _outbound_routing_channel_vars(
+        agent_slug: str,
+        routing_method: str = "ai_agent",
+    ) -> Dict[str, str]:
+        """Return channel variables for one persisted outbound routing intent."""
+        slug = str(agent_slug or "").strip()
+        if not slug:
+            return {}
+        if routing_method == "ai_context":
+            return {"AI_CONTEXT": slug}
+        return {"AI_AGENT": slug, "AI_CONTEXT": slug}
+
     async def _set_outbound_agent_channel_vars(
         self,
         channel_id: str,
@@ -1637,12 +1650,12 @@ class Engine:
         routing_method: str = "ai_agent",
     ) -> None:
         """Set canonical routing without changing legacy AI_CONTEXT semantics."""
-        slug = str(agent_slug or "").strip()
-        if not slug:
-            return
-        if routing_method != "ai_context":
-            await self.ari_client.set_channel_var(channel_id, "AI_AGENT", slug)
-        await self.ari_client.set_channel_var(channel_id, "AI_CONTEXT", slug)
+        channel_vars = self._outbound_routing_channel_vars(
+            agent_slug,
+            routing_method,
+        )
+        for var_name, value in channel_vars.items():
+            await self.ari_client.set_channel_var(channel_id, var_name, value)
 
     @staticmethod
     def _outbound_agent_selector(
@@ -2222,6 +2235,7 @@ class Engine:
             "AAVA_LEAD_ID": lead_id,
             "AAVA_ATTEMPT_ID": attempt_id,
             "AAVA_OUTBOUND_PHONE": phone,
+            **self._outbound_routing_channel_vars(context_name, routing_method),
             # Honor Agent provider by default for outbound calls (unless dialplan overrides later).
             **({"AI_PROVIDER": resolved_context_provider} if resolved_context_provider else {}),
             # Ensure the called party sees our configured outbound identity.
@@ -2230,13 +2244,6 @@ class Engine:
             "__CALLERID(num)": caller_id_num,
             "__CALLERID(name)": caller_id_name,
         }
-        if routing_method == "ai_context":
-            # Existing rows retain display-name-first AI_CONTEXT resolution.
-            channel_vars["AI_CONTEXT"] = context_name
-        else:
-            channel_vars["AI_AGENT"] = context_name
-            # Compatibility alias for existing dialplan hops and older tooling.
-            channel_vars["AI_CONTEXT"] = context_name
         # FreePBX-specific routing vars (AMPUSER/FROMEXTEN are not used by ViciDial or generic Asterisk).
         if self._outbound_pbx_type == "freepbx":
             channel_vars["AMPUSER"] = caller_id_num
