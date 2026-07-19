@@ -120,13 +120,50 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     assert "exten => 8371,1" in body["dialplan"]
     assert "Set(__AAVA_CALL_OWNER=vicidial)" in body["dialplan"]
     assert "Set(__AI_AGENT=demo_deepgram)" in body["dialplan"]
-    assert body["freepbx_trunk"]["secret"].startswith("Use the VICIdial Phone")
+    assert body["freepbx_trunk"]["secret"] == "<VICIDIAL_PHONE_CONF_SECRET>"
     assert body["freepbx_trunk"]["name"] == "Support VICIdial"
     assert body["freepbx_trunk"]["endpoint_id"] == "vicidial-ra"
     assert body["freepbx_trunk"]["username"] == "ava-phone"
     assert body["freepbx_trunk"]["auth_username"] == "ava-auth"
     assert body["freepbx_trunk"]["contact_user"] == "ava-contact"
     assert body["freepbx_trunk"]["transport"] == "TCP"
+    assert body["artifact_inputs"] == {
+        "setup_mode": "generated_registration",
+        "technology": "PJSIP",
+        "remote_agent_extension": "8371",
+        "trunk_name": "Support VICIdial",
+        "endpoint_id": "vicidial-ra",
+        "username": "ava-phone",
+        "auth_username": "ava-auth",
+        "contact_user": "ava-contact",
+    }
+    assert body["dialplan_install"]["path"] == "/etc/asterisk/extensions_custom.conf"
+    assert "fwconsole reload" in body["dialplan_install"]["freepbx_apply"]
+
+
+def test_mapping_requires_operator_selected_endpoint_and_generated_trunk_name(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+
+    missing_endpoint = _mapping_payload(connection["id"])
+    missing_endpoint["trusted_endpoint"] = ""
+    response = client.post("/api/outbound/vicidial/mappings", json=missing_endpoint)
+    assert response.status_code == 422
+    assert "Exact Asterisk endpoint ID is required" in response.json()["detail"]
+
+    missing_trunk = _mapping_payload(connection["id"])
+    missing_trunk["pbx_trunk_name"] = ""
+    response = client.post("/api/outbound/vicidial/mappings", json=missing_trunk)
+    assert response.status_code == 422
+    assert "PBX trunk name is required" in response.json()["detail"]
+
+    existing_endpoint = _mapping_payload(connection["id"])
+    existing_endpoint["pbx_setup_mode"] = "existing_endpoint"
+    existing_endpoint["pbx_trunk_name"] = ""
+    response = client.post("/api/outbound/vicidial/mappings", json=existing_endpoint)
+    assert response.status_code == 200
 
 
 def test_enabled_mapping_rejects_overlapping_users_and_reused_endpoint(monkeypatch, tmp_path):

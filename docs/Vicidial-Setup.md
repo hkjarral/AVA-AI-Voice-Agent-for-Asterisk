@@ -248,14 +248,17 @@ Add a connection with:
 - API credential environment-variable names, not credential values
 - SIP/RTP ports used by the two PBXs
 
-Set the referenced variables in the AAVA deployment environment:
+Set the referenced variables under **Admin → Environment → System → Outbound
+Campaign**, or in the project-root `.env` file:
 
 ```env
 VICIDIAL_API_USER=<dedicated API username>
 VICIDIAL_API_PASS=<dedicated API password>
 ```
 
-Recreate the `ai_engine` and `admin_ui` containers after changing environment variables. Click
+The connection fields store only these variable names; the resolved credentials are not saved in
+the VICIdial connection record. Apply the Environment change or recreate the `ai_engine` and
+`admin_ui` containers after editing `.env`. Click
 **Verify API**. The check must pass both API version endpoints, authentication, campaign listing,
 and logged-agent visibility.
 
@@ -313,12 +316,27 @@ agent to `READY`. AAVA records VICIdial's actual terminal status (for example `X
 caller-side termination) and does not claim that the configured AAVA status was written.
 AI-initiated hangup and explicit disposition still use `ra_call_control` while the call is active.
 
-### 3.3 Apply the generated dialplan
+### 3.3 Generate and apply environment-specific artifacts
 
-Open **Setup guide**, confirm that its friendly trunk name, exact endpoint ID, SIP identities,
-Phone, user range, and context match the intended environment, then copy the generated context into
-`/etc/asterisk/extensions_custom.conf`, and reload the dialplan. The generated extension is exact,
-not a wildcard. A representative context is:
+Open **Setup guide**. It first shows the saved friendly trunk name, exact endpoint ID, SIP
+identities, Phone, user range, and context without revealing deployment artifacts. Return to
+**Edit mapping** if any value is wrong. Generated-registration mode then offers two secret-safe
+choices:
+
+- paste the VICIdial Phone `conf_secret` for this browser session; or
+- generate a parser-safe secret in the browser and set that same value as the Phone `conf_secret`
+  in VICIdial.
+
+The SIP secret exists only in the open browser modal. It is never sent to the AAVA API, written to
+the mapping database, or retained after the guide closes. Leaving it blank generates the guide
+with `<VICIDIAL_PHONE_CONF_SECRET>` so the operator can substitute the value outside AAVA. Existing
+endpoint mode remains read-only and does not offer secret or registration generation.
+
+Click **Generate dialplan and trunk guide**, then copy the exact generated context into
+`/etc/asterisk/extensions_custom.conf`. Do not edit FreePBX-generated dialplan files. Use FreePBX
+**Apply Config** or run `fwconsole reload`; vanilla Asterisk deployments can run
+`asterisk -rx 'dialplan reload'`. The generated extension comes from the selected Remote Agent
+extension and is exact, not a wildcard. A representative context is:
 
 ```ini
 [from-vicidial-ra]

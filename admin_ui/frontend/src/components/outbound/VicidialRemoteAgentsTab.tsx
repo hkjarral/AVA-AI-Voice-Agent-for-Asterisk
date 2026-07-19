@@ -4,6 +4,9 @@ import {
     AlertTriangle,
     CheckCircle2,
     Clipboard,
+    Eye,
+    EyeOff,
+    KeyRound,
     Link2,
     Loader2,
     Pencil,
@@ -141,9 +144,25 @@ type MappingForm = {
 };
 
 type SetupGuidance = {
+    artifact_inputs: {
+        setup_mode: Mapping['pbx_setup_mode'];
+        technology: string;
+        remote_agent_extension: string;
+        trunk_name: string;
+        endpoint_id: string;
+        username: string;
+        auth_username: string;
+        contact_user: string;
+    };
     vicidial_steps: string[];
     dialplan: string;
     freepbx_trunk: Record<string, unknown>;
+    dialplan_install: {
+        path: string;
+        freepbx_apply: string;
+        asterisk_apply: string;
+        note: string;
+    };
     network: { notes: string[] };
     verification_order: string[];
 };
@@ -322,6 +341,13 @@ const formatActivityDuration = (seconds: number) => {
 const rowInputClass =
     'min-w-0 rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
+const generateBrowserOnlySipSecret = () => {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!_-';
+    const random = new Uint32Array(24);
+    window.crypto.getRandomValues(random);
+    return `A7a!${Array.from(random, value => alphabet[value % alphabet.length]).join('')}`;
+};
+
 const connectionHelp = {
     enabled:
         'Controls whether AAVA may admit and control calls through this VICIdial connection. Disable it to stop new VICIdial-owned calls without deleting the configuration.',
@@ -339,9 +365,9 @@ const connectionHelp = {
         'First UDP media port used by the VICIdial Asterisk RTP range. Firewalls must permit the configured range between the PBXs.',
     rtpEnd: 'Last UDP media port used by the VICIdial Asterisk RTP range. It must be greater than or equal to the start port.',
     usernameEnv:
-        'Name of the server environment variable containing the dedicated VICIdial API username. Enter the variable name, not the username or secret itself.',
+        'Enter the variable name, not the username. Set its value under Admin → Environment → System → Outbound Campaign, or in the project-root .env file, then apply the deployment change.',
     passwordEnv:
-        'Name of the server environment variable containing the dedicated VICIdial API password. AAVA does not store the resolved password in this record.',
+        'Enter the variable name, not the password. Set its value under Admin → Environment → System → Outbound Campaign, or in the project-root .env file. AAVA never stores the resolved password in this connection record.',
     source: 'Short source value sent with VICIdial API requests for audit and access-control rules. Keep it stable and allow it for the dedicated API user.',
     timeout:
         'Maximum time AAVA waits for one VICIdial API request before treating it as unavailable. The value is bounded by the backend.',
@@ -370,7 +396,7 @@ const mappingHelp = {
     fallback:
         'Optional compatibility user for a one-line mapping only. Leave empty for multi-line mappings; AAVA normally resolves the live user through VICIdial APIs.',
     context:
-        'Exact trusted Asterisk dialplan context that sets VICIdial ownership, call ID, mapping ID, and AI_AGENT before entering Stasis.',
+        'Exact trusted Asterisk dialplan context that sets VICIdial ownership, call ID, mapping ID, and AI_AGENT before entering Stasis. The setup guide generates it for /etc/asterisk/extensions_custom.conf.',
     endpoint:
         'Exact Asterisk endpoint resource shown by ARI or pjsip show endpoints. AAVA uses it for source authorization and reachability checks; it may differ from the friendly trunk label.',
     endpointDiscovery:
@@ -440,7 +466,7 @@ const trunkHelp: Record<string, string> = {
         'Exact ARI endpoint resource used for reachability checks and trusted dialplan authorization.',
     configuration:
         'Existing-endpoint mode is read-only. Keep the operator-managed endpoint configuration and apply only the generated trusted dialplan where appropriate.',
-    secret: 'Use the Phone conf_secret from VICIdial. The Phone pass field is not the SIP registration secret.',
+    secret: 'Use the Phone conf_secret from VICIdial. The Phone pass field is not the SIP registration secret. AAVA never transmits or stores this value.',
     authentication:
         'Outbound authentication means AAVA authenticates when registering or sending requests to VICIdial.',
     registration: 'Send registration lets VICIdial learn AAVA’s current contact address.',
@@ -493,6 +519,9 @@ export const VicidialRemoteAgentsTab = () => {
     const [connectionForm, setConnectionForm] = useState<ConnectionForm>(emptyConnection);
     const [mappingForm, setMappingForm] = useState<MappingForm>(emptyMapping);
     const [guidance, setGuidance] = useState<SetupGuidance | null>(null);
+    const [artifactsGenerated, setArtifactsGenerated] = useState(false);
+    const [ephemeralSipSecret, setEphemeralSipSecret] = useState('');
+    const [showSipSecret, setShowSipSecret] = useState(false);
     const [activityRange, setActivityRange] = useState<ActivityRange>('7d');
     const [activityMappingId, setActivityMappingId] = useState('');
     const [activity, setActivity] = useState<VicidialActivity | null>(null);
@@ -697,6 +726,17 @@ export const VicidialRemoteAgentsTab = () => {
     };
 
     const saveMapping = async () => {
+        if (!mappingForm.trusted_endpoint.trim()) {
+            toast.error('Enter the exact Asterisk endpoint ID before saving the mapping');
+            return;
+        }
+        if (
+            mappingForm.pbx_setup_mode === 'generated_registration' &&
+            !mappingForm.pbx_trunk_name.trim()
+        ) {
+            toast.error('Choose a PBX trunk name before saving generated registration setup');
+            return;
+        }
         setBusy('save-mapping');
         try {
             const payload = {
@@ -767,6 +807,9 @@ export const VicidialRemoteAgentsTab = () => {
     };
 
     const openGuidance = async (id: string) => {
+        setArtifactsGenerated(false);
+        setEphemeralSipSecret('');
+        setShowSipSecret(false);
         setBusy(`guidance-${id}`);
         try {
             const response = await axios.get(`/api/outbound/vicidial/mappings/${id}/guidance`);
@@ -777,6 +820,23 @@ export const VicidialRemoteAgentsTab = () => {
             setBusy('');
         }
     };
+
+    const closeGuidance = () => {
+        setGuidance(null);
+        setArtifactsGenerated(false);
+        setEphemeralSipSecret('');
+        setShowSipSecret(false);
+    };
+
+    const displayedTrunkGuidance = useMemo(() => {
+        if (!guidance) return {};
+        return Object.fromEntries(
+            Object.entries(guidance.freepbx_trunk).map(([key, value]) => [
+                key,
+                key === 'secret' && ephemeralSipSecret ? ephemeralSipSecret : value,
+            ])
+        );
+    }, [ephemeralSipSecret, guidance]);
 
     if (loading)
         return (
@@ -2207,7 +2267,7 @@ export const VicidialRemoteAgentsTab = () => {
 
             <Modal
                 isOpen={Boolean(guidance)}
-                onClose={() => setGuidance(null)}
+                onClose={closeGuidance}
                 title="VICIdial + AAVA setup guide"
                 size="xl"
                 allowFullscreen
@@ -2218,6 +2278,100 @@ export const VicidialRemoteAgentsTab = () => {
                             Apply and verify each stage in order. A mapping is not production-ready
                             until a real call in every configured direction completes with two-way
                             audio and the expected final VICIdial status.
+                        </div>
+                        <div className="space-y-3 rounded-md border bg-muted/20 p-4">
+                            <div>
+                                <h4 className="font-semibold">Setup artifact inputs</h4>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    These values come from the saved mapping. Return to Edit mapping
+                                    to change them before generating deployment artifacts.
+                                </p>
+                            </div>
+                            <div className="grid gap-2 md:grid-cols-2">
+                                {Object.entries(guidance.artifact_inputs).map(([key, value]) => (
+                                    <div key={key} className="rounded-md border bg-background p-2">
+                                        <div className="text-xs text-muted-foreground">
+                                            {key.replaceAll('_', ' ')}
+                                        </div>
+                                        <div className="break-all font-mono text-xs">
+                                            {String(value || '—')}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            {guidance.artifact_inputs.setup_mode === 'generated_registration' ? (
+                                <div className="space-y-2 rounded-md border border-amber-500/30 p-3">
+                                    <div className="flex items-center gap-2">
+                                        <KeyRound className="h-4 w-4" />
+                                        <span className="font-medium">
+                                            VICIdial Phone SIP secret
+                                        </span>
+                                        <HelpTooltip
+                                            ariaLabel="Help for browser-only SIP secret"
+                                            content="Paste the VICIdial Phone conf_secret, or generate a parser-safe value and set that same value as the Phone conf_secret. It stays only in this browser modal and is never sent to or saved by AAVA."
+                                        />
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <div className="relative min-w-[18rem] flex-1">
+                                            <input
+                                                aria-label="Browser-only SIP secret"
+                                                type={showSipSecret ? 'text' : 'password'}
+                                                autoComplete="new-password"
+                                                value={ephemeralSipSecret}
+                                                onChange={event =>
+                                                    setEphemeralSipSecret(event.target.value)
+                                                }
+                                                className={`${rowInputClass} w-full pr-10`}
+                                                placeholder="Optional; leave blank to keep a placeholder"
+                                            />
+                                            <button
+                                                type="button"
+                                                aria-label={
+                                                    showSipSecret
+                                                        ? 'Hide browser-only SIP secret'
+                                                        : 'Show browser-only SIP secret'
+                                                }
+                                                onClick={() => setShowSipSecret(value => !value)}
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+                                            >
+                                                {showSipSecret ? (
+                                                    <EyeOff className="h-4 w-4" />
+                                                ) : (
+                                                    <Eye className="h-4 w-4" />
+                                                )}
+                                            </button>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setEphemeralSipSecret(
+                                                    generateBrowserOnlySipSecret()
+                                                );
+                                                setShowSipSecret(true);
+                                            }}
+                                            className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
+                                        >
+                                            Generate secure secret
+                                        </button>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        Browser only: closing this guide clears the value. The API
+                                        response and mapping retain only a placeholder.
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="rounded-md border p-3 text-xs text-muted-foreground">
+                                    Existing endpoint mode is read-only. AAVA will not generate or
+                                    overwrite trunk authentication, registration, or transport.
+                                </div>
+                            )}
+                            <button
+                                type="button"
+                                onClick={() => setArtifactsGenerated(true)}
+                                className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:opacity-90"
+                            >
+                                Generate dialplan and trunk guide
+                            </button>
                         </div>
                         <div>
                             <div className="mb-2 flex items-center gap-2">
@@ -2233,91 +2387,140 @@ export const VicidialRemoteAgentsTab = () => {
                                 ))}
                             </ol>
                         </div>
-                        <div>
-                            <div className="mb-2 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <h4 className="font-semibold">AAVA trusted dialplan</h4>
-                                    <HelpTooltip
-                                        ariaLabel="Help for AAVA trusted dialplan"
-                                        content="Install this exact context on the AAVA/FreePBX host. It limits admission to the trusted endpoint and sets ownership, external call ID, mapping ID, and AI_AGENT before Stasis."
-                                    />
-                                </div>
-                                <button
-                                    title="Copy the complete generated dialplan to the clipboard"
-                                    onClick={async () => {
-                                        await copyTextToClipboard(guidance.dialplan);
-                                        toast.success('Dialplan copied');
-                                    }}
-                                    className="inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs"
-                                >
-                                    <Clipboard className="h-3.5 w-3.5" />
-                                    Copy
-                                </button>
-                            </div>
-                            <pre className="overflow-x-auto rounded-md border bg-background p-4 text-xs text-foreground">
-                                {guidance.dialplan}
-                            </pre>
-                        </div>
-                        <div>
-                            <div className="mb-2 flex items-center gap-2">
-                                <h4 className="font-semibold">FreePBX / AAVA trunk</h4>
-                                <HelpTooltip
-                                    ariaLabel="Help for FreePBX trunk"
-                                    content={
-                                        guidance.freepbx_trunk.setup_mode === 'existing_endpoint'
-                                            ? 'Confirm these identifiers against the existing operator-managed endpoint. AAVA does not overwrite its trunk, authentication, registration, or transport configuration.'
-                                            : 'Use these values to create the outbound-authenticated PJSIP registration from AAVA to the dedicated VICIdial Remote Agent Phone.'
-                                    }
-                                />
-                            </div>
-                            <div className="grid gap-2 md:grid-cols-2">
-                                {Object.entries(guidance.freepbx_trunk).map(([key, value]) => (
-                                    <div key={key} className="rounded-md border p-2">
-                                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                                            {key.replaceAll('_', ' ')}
+                        {artifactsGenerated ? (
+                            <>
+                                <div>
+                                    <div className="mb-2 flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <h4 className="font-semibold">AAVA trusted dialplan</h4>
                                             <HelpTooltip
-                                                ariaLabel={`Help for trunk ${key.replaceAll('_', ' ')}`}
+                                                ariaLabel="Help for AAVA trusted dialplan"
+                                                content={`Generated from Remote Agent extension ${guidance.artifact_inputs.remote_agent_extension}. Add this exact context to ${guidance.dialplan_install.path}; do not edit FreePBX-generated dialplan files.`}
+                                            />
+                                        </div>
+                                        <button
+                                            title="Copy the complete generated dialplan to the clipboard"
+                                            onClick={async () => {
+                                                await copyTextToClipboard(guidance.dialplan);
+                                                toast.success('Dialplan copied');
+                                            }}
+                                            className="inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs"
+                                        >
+                                            <Clipboard className="h-3.5 w-3.5" />
+                                            Copy
+                                        </button>
+                                    </div>
+                                    <div className="mb-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs">
+                                        Generated from Remote Agent extension{' '}
+                                        <span className="font-mono">
+                                            {guidance.artifact_inputs.remote_agent_extension}
+                                        </span>
+                                        . Add this exact context to{' '}
+                                        <span className="font-mono">
+                                            {guidance.dialplan_install.path}
+                                        </span>
+                                        . {guidance.dialplan_install.note}. Then{' '}
+                                        {guidance.dialplan_install.freepbx_apply}.
+                                    </div>
+                                    <pre className="overflow-x-auto rounded-md border bg-background p-4 text-xs text-foreground">
+                                        {guidance.dialplan}
+                                    </pre>
+                                </div>
+                                <div>
+                                    <div className="mb-2 flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                            <h4 className="font-semibold">FreePBX / AAVA trunk</h4>
+                                            <HelpTooltip
+                                                ariaLabel="Help for FreePBX trunk"
                                                 content={
-                                                    trunkHelp[key] ||
-                                                    'Generated FreePBX trunk value for this VICIdial mapping.'
+                                                    guidance.freepbx_trunk.setup_mode ===
+                                                    'existing_endpoint'
+                                                        ? 'Confirm these identifiers against the existing operator-managed endpoint. AAVA does not overwrite its trunk, authentication, registration, or transport configuration.'
+                                                        : 'Use these values to create the outbound-authenticated PJSIP registration from AAVA to the dedicated VICIdial Remote Agent Phone.'
                                                 }
                                             />
                                         </div>
-                                        <div className="break-all font-mono text-xs">
-                                            {String(value)}
-                                        </div>
+                                        <button
+                                            type="button"
+                                            title="Copy all generated trunk values"
+                                            onClick={async () => {
+                                                await copyTextToClipboard(
+                                                    Object.entries(displayedTrunkGuidance)
+                                                        .map(
+                                                            ([key, value]) =>
+                                                                `${key}=${String(value)}`
+                                                        )
+                                                        .join('\n')
+                                                );
+                                                toast.success('Trunk values copied');
+                                            }}
+                                            className="inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs"
+                                        >
+                                            <Clipboard className="h-3.5 w-3.5" />
+                                            Copy values
+                                        </button>
                                     </div>
-                                ))}
+                                    <div className="grid gap-2 md:grid-cols-2">
+                                        {Object.entries(displayedTrunkGuidance).map(
+                                            ([key, value]) => (
+                                                <div key={key} className="rounded-md border p-2">
+                                                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                                                        {key.replaceAll('_', ' ')}
+                                                        <HelpTooltip
+                                                            ariaLabel={`Help for trunk ${key.replaceAll('_', ' ')}`}
+                                                            content={
+                                                                trunkHelp[key] ||
+                                                                'Generated FreePBX trunk value for this VICIdial mapping.'
+                                                            }
+                                                        />
+                                                    </div>
+                                                    <div className="break-all font-mono text-xs">
+                                                        {key === 'secret' &&
+                                                        ephemeralSipSecret &&
+                                                        !showSipSecret
+                                                            ? '••••••••'
+                                                            : String(value)}
+                                                    </div>
+                                                </div>
+                                            )
+                                        )}
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="mb-2 flex items-center gap-2">
+                                        <h4 className="font-semibold">Network and NAT</h4>
+                                        <HelpTooltip
+                                            ariaLabel="Help for network and NAT"
+                                            content="Recommendations are generated from the selected topology. Registration success does not prove correct SDP, RTP, firewall, or symmetric-media behavior."
+                                        />
+                                    </div>
+                                    <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                                        {guidance.network.notes.map((note: string) => (
+                                            <li key={note}>{note}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                                <div>
+                                    <div className="mb-2 flex items-center gap-2">
+                                        <h4 className="font-semibold">Verification order</h4>
+                                        <HelpTooltip
+                                            ariaLabel="Help for verification order"
+                                            content="Run checks in this sequence so API, SIP, correlation, media, and lifecycle failures remain distinguishable. Do not skip directly from registration to Ready."
+                                        />
+                                    </div>
+                                    <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
+                                        {guidance.verification_order.map((step: string) => (
+                                            <li key={step}>{step}</li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            </>
+                        ) : (
+                            <div className="rounded-md border border-dashed p-5 text-center text-sm text-muted-foreground">
+                                Review the saved extension, endpoint, trunk, and SIP identities,
+                                then generate the environment-specific dialplan and trunk guide.
                             </div>
-                        </div>
-                        <div>
-                            <div className="mb-2 flex items-center gap-2">
-                                <h4 className="font-semibold">Network and NAT</h4>
-                                <HelpTooltip
-                                    ariaLabel="Help for network and NAT"
-                                    content="Recommendations are generated from the selected topology. Registration success does not prove correct SDP, RTP, firewall, or symmetric-media behavior."
-                                />
-                            </div>
-                            <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                                {guidance.network.notes.map((note: string) => (
-                                    <li key={note}>{note}</li>
-                                ))}
-                            </ul>
-                        </div>
-                        <div>
-                            <div className="mb-2 flex items-center gap-2">
-                                <h4 className="font-semibold">Verification order</h4>
-                                <HelpTooltip
-                                    ariaLabel="Help for verification order"
-                                    content="Run checks in this sequence so API, SIP, correlation, media, and lifecycle failures remain distinguishable. Do not skip directly from registration to Ready."
-                                />
-                            </div>
-                            <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                                {guidance.verification_order.map((step: string) => (
-                                    <li key={step}>{step}</li>
-                                ))}
-                            </ol>
-                        </div>
+                        )}
                     </div>
                 )}
             </Modal>

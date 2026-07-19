@@ -294,11 +294,13 @@ class VicidialStore:
             raise ValueError(
                 "Generated registration setup supports PJSIP only; use an existing endpoint for SIP"
             )
-        pbx_trunk_name = str(
-            payload.get("pbx_trunk_name") or trusted_endpoint or ""
-        ).strip() or None
+        pbx_trunk_name = str(payload.get("pbx_trunk_name") or "").strip() or None
         if pbx_trunk_name and (len(pbx_trunk_name) > 80 or any(ord(ch) < 32 for ch in pbx_trunk_name)):
             raise ValueError("PBX trunk name must be 80 printable characters or fewer")
+        if not trusted_endpoint:
+            raise ValueError("Exact Asterisk endpoint ID is required before setup artifacts can be generated")
+        if pbx_setup_mode == "generated_registration" and not pbx_trunk_name:
+            raise ValueError("PBX trunk name is required for generated registration setup")
 
         def sip_identity(field_name: str, fallback: Optional[str]) -> Optional[str]:
             value = str(payload.get(field_name) or fallback or "").strip() or None

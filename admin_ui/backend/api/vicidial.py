@@ -683,7 +683,7 @@ async def mapping_guidance(mapping_id: str):
             "endpoint_id": endpoint_id or "<SELECT_ENDPOINT_ID>",
             "username": sip_username,
             "auth_username": sip_auth_username,
-            "secret": "Use the VICIdial Phone conf_secret; never the Phone pass field",
+            "secret": "<VICIDIAL_PHONE_CONF_SECRET>",
             "authentication": "Outbound",
             "registration": "Send",
             "sip_server": connection.get("vicidial_host") or "<VICIDIAL_HOST>",
@@ -716,6 +716,16 @@ async def mapping_guidance(mapping_id: str):
     return {
         "mapping": mapping,
         "connection": connection,
+        "artifact_inputs": {
+            "setup_mode": setup_mode,
+            "technology": technology,
+            "remote_agent_extension": str(mapping.get("conf_exten") or ""),
+            "trunk_name": trunk_name,
+            "endpoint_id": endpoint_id,
+            "username": sip_username,
+            "auth_username": sip_auth_username,
+            "contact_user": sip_contact_user,
+        },
         "vicidial_steps": [
             f"Create/verify Phone {mapping.get('conf_exten')} with protocol SIP and a unique conf_secret.",
             f"Create every VICIdial user in the contiguous range {user_range}; agent_status must recognize each user before enabling {mapping.get('number_of_lines')} line(s).",
@@ -733,6 +743,12 @@ async def mapping_guidance(mapping_id: str):
         ],
         "freepbx_trunk": pbx_guidance,
         "dialplan": _dialplan(mapping),
+        "dialplan_install": {
+            "path": "/etc/asterisk/extensions_custom.conf",
+            "freepbx_apply": "Use FreePBX Apply Config or run fwconsole reload",
+            "asterisk_apply": "For vanilla Asterisk, run asterisk -rx 'dialplan reload'",
+            "note": "Do not edit FreePBX-generated dialplan files; add this exact context to extensions_custom.conf",
+        },
         "network": {
             "topology": topology,
             "sip_port": connection.get("sip_port"),

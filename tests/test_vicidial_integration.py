@@ -75,6 +75,8 @@ def _mapping(connection_id: str = "connection-1"):
         "conf_exten": "8371",
         "static_agent_user": "9001",
         "ai_agent": "demo_deepgram",
+        "trusted_endpoint": "vicidial-ra",
+        "pbx_trunk_name": "VICIdial RA",
         "dispositions": {"sale": "SALE"},
         "statuses": {},
         "destinations": {

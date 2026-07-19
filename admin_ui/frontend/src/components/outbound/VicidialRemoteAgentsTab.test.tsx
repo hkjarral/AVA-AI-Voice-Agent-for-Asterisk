@@ -122,9 +122,30 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
             if (url === '/api/outbound/vicidial/mappings/mapping-1/guidance') {
                 return {
                     data: {
+                        artifact_inputs: {
+                            setup_mode: 'generated_registration',
+                            technology: 'PJSIP',
+                            remote_agent_extension: '8371',
+                            trunk_name: 'VICIdial lab trunk',
+                            endpoint_id: 'vicidial-ra',
+                            username: '8371',
+                            auth_username: '8371',
+                            contact_user: '8371',
+                        },
                         vicidial_steps: ['Create every VICIdial user.'],
                         dialplan: '[from-vicidial-ra]',
-                        freepbx_trunk: { name: 'vicidial-ra', secret: 'Use conf_secret' },
+                        freepbx_trunk: {
+                            setup_mode: 'generated_registration',
+                            name: 'VICIdial lab trunk',
+                            secret: '<VICIDIAL_PHONE_CONF_SECRET>',
+                        },
+                        dialplan_install: {
+                            path: '/etc/asterisk/extensions_custom.conf',
+                            freepbx_apply: 'Use FreePBX Apply Config or run fwconsole reload',
+                            asterisk_apply:
+                                "For vanilla Asterisk, run asterisk -rx 'dialplan reload'",
+                            note: 'Do not edit FreePBX-generated dialplan files',
+                        },
                         network: { notes: ['Use a routed private LAN.'] },
                         verification_order: ['Verify APIs'],
                     },
@@ -169,6 +190,15 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         ]) {
             expect(screen.getByRole('button', { name: `Help for ${label}` })).toBeInTheDocument();
         }
+
+        fireEvent.click(
+            screen.getByRole('button', {
+                name: 'Help for API username environment variable',
+            })
+        );
+        expect(await screen.findByRole('tooltip')).toHaveTextContent(
+            'Admin → Environment → System → Outbound Campaign'
+        );
     });
 
     it('provides help for mapping, lifecycle, and transfer options', async () => {
@@ -274,6 +304,11 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
             expect(screen.getByText('Create every VICIdial user.')).toBeInTheDocument()
         );
 
+        expect(screen.queryByText('[from-vicidial-ra]')).not.toBeInTheDocument();
+        expect(screen.getByText('remote agent extension')).toBeInTheDocument();
+        expect(screen.getAllByText('8371').length).toBeGreaterThan(0);
+        fireEvent.click(screen.getByRole('button', { name: 'Generate dialplan and trunk guide' }));
+
         expect(
             screen.getByRole('button', { name: 'Help for VICIdial setup steps' })
         ).toBeInTheDocument();
@@ -288,6 +323,36 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(
             screen.getByRole('button', { name: 'Help for verification order' })
         ).toBeInTheDocument();
+        expect(screen.getByText('/etc/asterisk/extensions_custom.conf')).toBeInTheDocument();
+    });
+
+    it('keeps the generated SIP secret browser-only and clears it on close', async () => {
+        render(<VicidialRemoteAgentsTab />);
+        await screen.findByText('VICIdial Lab');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Setup guide' }));
+        const secret = await screen.findByLabelText('Browser-only SIP secret');
+        fireEvent.change(secret, { target: { value: 'BrowserOnly_Test-2026!' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Generate dialplan and trunk guide' }));
+
+        expect(secret).toHaveValue('BrowserOnly_Test-2026!');
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(axios.put).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Setup guide' }));
+        expect(await screen.findByLabelText('Browser-only SIP secret')).toHaveValue('');
+    });
+
+    it('starts a first-time mapping with environment-specific PBX fields blank', async () => {
+        render(<VicidialRemoteAgentsTab />);
+        await screen.findByText('VICIdial Lab');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add mapping' }));
+
+        expect(screen.getByLabelText('Remote Agent extension')).toHaveValue('');
+        expect(screen.getByLabelText('PBX trunk name')).toHaveValue('');
+        expect(screen.getByLabelText('Asterisk endpoint ID')).toHaveValue('');
     });
 
     it('shows scoped Remote Agent metrics and deep-links recent calls', async () => {
