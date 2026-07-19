@@ -26,6 +26,7 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({
     linkText = 'Learn more',
     ariaLabel = 'Show help',
 }) => {
+    const tooltipId = React.useId();
     const [isOpen, setIsOpen] = useState(false);
     const [placement, setPlacement] = useState<'top' | 'bottom'>('top');
     const [horizontalOffset, setHorizontalOffset] = useState<number>(-112);
@@ -108,10 +109,20 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({
                 type="button"
                 aria-label={ariaLabel}
                 aria-expanded={isOpen}
+                aria-describedby={isOpen ? tooltipId : undefined}
                 className="inline-flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                onFocus={() => setIsOpen(true)}
+                onBlur={event => {
+                    if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) {
+                        setIsOpen(false);
+                    }
+                }}
                 onClick={e => {
                     e.preventDefault();
-                    setIsOpen(prev => !prev);
+                    setIsOpen(true);
+                }}
+                onKeyDown={event => {
+                    if (event.key === 'Escape') setIsOpen(false);
                 }}
             >
                 <HelpCircle className="w-4 h-4" />
@@ -119,6 +130,8 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({
 
             {isOpen && (
                 <div
+                    id={tooltipId}
+                    role="tooltip"
                     ref={popoverRef}
                     className={`absolute z-50 w-64 p-3 text-sm bg-popover border border-border rounded-md shadow-lg ${popoverPositionClasses}`}
                     style={{ left: `${horizontalOffset}px` }}

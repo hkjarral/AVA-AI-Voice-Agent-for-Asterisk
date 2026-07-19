@@ -123,15 +123,19 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(
             screen.getByRole('button', { name: 'Help for allowed dispositions' })
         ).toBeInTheDocument();
-        expect(
-            screen.getByRole('button', { name: 'Help for lifecycle statuses' })
-        ).toBeInTheDocument();
+        const lifecycleHelp = screen.getByRole('button', { name: 'Help for lifecycle statuses' });
+        expect(lifecycleHelp).toBeInTheDocument();
         expect(
             screen.getByRole('button', { name: 'Help for cold transfer destinations' })
         ).toBeInTheDocument();
         expect(
             screen.getByRole('button', { name: 'Help for destination target' })
         ).toBeInTheDocument();
+
+        fireEvent.click(lifecycleHelp);
+        expect(await screen.findByRole('tooltip')).toHaveTextContent(
+            'Statuses used automatically for hangup, transfer, failure, DNC, and callback outcomes.'
+        );
     });
 
     it('provides contextual help throughout the generated setup guide', async () => {
