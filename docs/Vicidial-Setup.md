@@ -220,7 +220,11 @@ Create the initial mapping:
 
 The one-line fallback still requires `agent_status.callerid` to exactly match the live VICIdial
 call ID. It does not trust a static user without call correlation and is not used for multi-line
-mappings.
+mappings. Some VICIdial builds replace `CALLERID(name)` with the customer's display name before
+dialing the Remote Agent. AAVA handles that variance by scanning only the mapping's configured
+Remote Agent user range, validating each active agent's VICIdial call code with `callid_info`,
+enforcing campaign and direction, and accepting exactly one match. Missing or ambiguous matches
+fail closed.
 
 ### 3.3 Apply the generated dialplan
 
@@ -243,10 +247,11 @@ exten => 8371,1,NoOp(VICIdial Remote Agent call: ${CALLERID(all)})
  same => n,Hangup()
 ```
 
-Always use the generated mapping UUID. Do not copy the placeholder above. AAVA accepts only a
-valid VICIdial call-ID shape, then confirms the call with `callid_info` and exact
-`agent_status.callerid` correlation before enabling any VICIdial tools. Failed or ambiguous
-correlation is rejected; the call does not continue as an uncontrolled ordinary AAVA call.
+Always use the generated mapping UUID. Do not copy the placeholder above. When the SIP leg carries
+a valid VICIdial call ID, AAVA confirms it with `callid_info` and exact
+`agent_status.callerid` correlation. If the leg carries a customer display name instead, AAVA uses
+the bounded mapped-user lookup described above. Failed or ambiguous correlation is rejected; the
+call does not continue as an uncontrolled ordinary AAVA call.
 
 ## 4. Network and NAT profiles
 

@@ -452,96 +452,172 @@ class VicidialApiClient:
         attempts: int = 5,
         delay_seconds: float = 0.5,
     ) -> tuple[Optional[VicidialSessionInfo], list[Dict[str, Any]]]:
-        external_call_id = validate_call_id(call_id)
         evidence: list[Dict[str, Any]] = []
         start_user = int(str(mapping.get("user_start") or "0"))
         line_count = max(1, int(mapping.get("number_of_lines") or 1))
         allowed_users = {str(start_user + index) for index in range(line_count)}
 
-        for index in range(max(1, attempts)):
-            result = await self.callid_info(external_call_id)
-            evidence.append(result.to_dict())
-            user = str(result.data.get("user") or "").strip()
-            if result.success and user in allowed_users:
-                agent_result = await self.agent_status(user)
-                evidence.append(agent_result.to_dict())
-                if agent_result.success:
-                    # Installed ViciDial returns this field as ``callerid``.
-                    # Some forks call it ``call_id``, so accept both but require
-                    # an exact match before binding the AAVA session.
-                    agent_call_id = str(
-                        agent_result.data.get("callerid")
-                        or agent_result.data.get("call_id")
-                        or ""
-                    ).strip()
-                    if agent_call_id != external_call_id:
-                        if index + 1 < attempts:
-                            await asyncio.sleep(max(0.05, delay_seconds))
-                        continue
-                    call_type = str(result.data.get("call_type") or "").strip().upper()
-                    direction = "inbound" if call_type == "IN" else "outbound"
-                    return VicidialSessionInfo(
-                        external_call_id=external_call_id,
-                        mapping_id=str(mapping.get("id") or ""),
-                        agent_user=user,
-                        campaign_id=str(
-                            agent_result.data.get("campaign_id")
-                            or result.data.get("campaign_id")
-                            or ""
-                        ).strip() or None,
-                        lead_id=str(agent_result.data.get("lead_id") or "").strip() or None,
-                        list_id=str(result.data.get("list_id") or "").strip() or None,
-                        phone_number=str(
-                            agent_result.data.get("phone_number")
-                            or result.data.get("phone")
-                            or ""
-                        ).strip() or None,
-                        call_type=call_type or None,
-                        vicidial_status=str(result.data.get("status") or "").strip() or None,
-                        direction=direction,
-                        metadata={"callid_info": result.data, "agent_status": agent_result.data},
-                    ), evidence
-            if index + 1 < attempts:
-                await asyncio.sleep(max(0.05, delay_seconds))
-
-        fallback = str(mapping.get("static_agent_user") or "").strip()
-        if line_count == 1 and fallback and fallback in allowed_users:
-            agent_result = await self.agent_status(fallback)
-            evidence.append(agent_result.to_dict())
-            fallback_call_id = str(
-                agent_result.data.get("callerid")
-                or agent_result.data.get("call_id")
+        def build_session(
+            external_call_id: str,
+            user: str,
+            call_result: VicidialApiResult,
+            agent_result: VicidialApiResult,
+            *,
+            resolution_source: str,
+        ) -> Optional[VicidialSessionInfo]:
+            call_type = str(call_result.data.get("call_type") or "").strip().upper()
+            direction = "inbound" if call_type.startswith("IN") else "outbound"
+            configured_direction = str(mapping.get("direction") or "outbound").lower()
+            campaign_id = str(
+                agent_result.data.get("campaign_id")
+                or call_result.data.get("campaign_id")
                 or ""
             ).strip()
-            if agent_result.success and fallback_call_id == external_call_id:
-                campaign_id = str(
-                    agent_result.data.get("campaign_id")
-                    or mapping.get("campaign_id")
+            configured_campaign = str(mapping.get("campaign_id") or "").strip()
+            closer_campaigns = {
+                str(value).strip()
+                for value in mapping.get("closer_campaigns") or []
+                if str(value).strip()
+            }
+
+            if configured_direction != "both" and configured_direction != direction:
+                return None
+            if direction == "outbound" and configured_campaign and campaign_id != configured_campaign:
+                return None
+            if direction == "inbound" and closer_campaigns and campaign_id not in closer_campaigns:
+                return None
+
+            return VicidialSessionInfo(
+                external_call_id=external_call_id,
+                mapping_id=str(mapping.get("id") or ""),
+                agent_user=user,
+                campaign_id=campaign_id or None,
+                lead_id=str(agent_result.data.get("lead_id") or "").strip() or None,
+                list_id=str(call_result.data.get("list_id") or "").strip() or None,
+                phone_number=str(
+                    agent_result.data.get("phone_number")
+                    or call_result.data.get("phone")
                     or ""
-                ).strip() or None
-                configured_direction = str(mapping.get("direction") or "outbound")
-                if configured_direction == "both":
-                    closer_campaigns = {
-                        str(value).strip()
-                        for value in mapping.get("closer_campaigns") or []
-                    }
-                    direction = "inbound" if campaign_id in closer_campaigns else "outbound"
-                else:
-                    direction = configured_direction
-                return VicidialSessionInfo(
-                    external_call_id=external_call_id,
-                    mapping_id=str(mapping.get("id") or ""),
-                    agent_user=fallback,
-                    campaign_id=campaign_id,
-                    lead_id=str(agent_result.data.get("lead_id") or "").strip() or None,
-                    phone_number=str(agent_result.data.get("phone_number") or "").strip() or None,
-                    direction=direction,
-                    resolution_source="static_one_line_fallback",
-                    metadata={
-                        "warning": "callid_info did not resolve the Remote Agent",
-                        "agent_status": agent_result.data,
-                    },
-                ), evidence
+                ).strip() or None,
+                call_type=call_type or None,
+                vicidial_status=str(call_result.data.get("status") or "").strip() or None,
+                direction=direction,
+                resolution_source=resolution_source,
+                metadata={
+                    "callid_info": call_result.data,
+                    "agent_status": agent_result.data,
+                },
+            )
+
+        try:
+            external_call_id = validate_call_id(call_id)
+        except VicidialIntegrationError:
+            external_call_id = ""
+
+        # Preferred path: the Remote Agent SIP leg carries the VICIdial call
+        # code in CallerID(name) or another dialplan-extracted identifier.
+        # This is the cheapest and strongest correlation because both APIs
+        # must independently report the exact same call code and user.
+        if external_call_id:
+            for index in range(max(1, attempts)):
+                result = await self.callid_info(external_call_id)
+                evidence.append(result.to_dict())
+                user = str(result.data.get("user") or "").strip()
+                if result.success and user in allowed_users:
+                    agent_result = await self.agent_status(user)
+                    evidence.append(agent_result.to_dict())
+                    if agent_result.success:
+                        agent_call_id = str(
+                            agent_result.data.get("callerid")
+                            or agent_result.data.get("call_id")
+                            or ""
+                        ).strip()
+                        if agent_call_id == external_call_id:
+                            resolved = build_session(
+                                external_call_id,
+                                user,
+                                result,
+                                agent_result,
+                                resolution_source="callid_info",
+                            )
+                            if resolved is not None:
+                                return resolved, evidence
+                if index + 1 < attempts:
+                    await asyncio.sleep(max(0.05, delay_seconds))
+
+            fallback = str(mapping.get("static_agent_user") or "").strip()
+            if line_count == 1 and fallback and fallback in allowed_users:
+                agent_result = await self.agent_status(fallback)
+                evidence.append(agent_result.to_dict())
+                fallback_call_id = str(
+                    agent_result.data.get("callerid")
+                    or agent_result.data.get("call_id")
+                    or ""
+                ).strip()
+                if agent_result.success and fallback_call_id == external_call_id:
+                    # The preceding exact path already queried callid_info. The
+                    # fallback remains deliberately limited to a one-line map
+                    # and never admits a different call identifier.
+                    result = await self.callid_info(external_call_id)
+                    evidence.append(result.to_dict())
+                    if result.success and str(result.data.get("user") or "").strip() == fallback:
+                        resolved = build_session(
+                            external_call_id,
+                            fallback,
+                            result,
+                            agent_result,
+                            resolution_source="static_one_line_fallback",
+                        )
+                        if resolved is not None:
+                            return resolved, evidence
+            return None, evidence
+
+        # Some VICIdial releases replace CallerID(name) with the customer name
+        # before dialing the Remote Agent. In that case, discover the call code
+        # only through the mapped agent range. Every candidate must be active,
+        # carry a valid VICIdial code, be confirmed by callid_info, and match
+        # the mapping's campaign/direction. Exactly one candidate is required.
+        for index in range(max(1, attempts)):
+            candidates: list[VicidialSessionInfo] = []
+            for user in sorted(allowed_users, key=int):
+                agent_result = await self.agent_status(user)
+                evidence.append(agent_result.to_dict())
+                agent_state = str(agent_result.data.get("status") or "").strip().upper()
+                candidate_call_id = str(
+                    agent_result.data.get("callerid")
+                    or agent_result.data.get("call_id")
+                    or ""
+                ).strip()
+                if not agent_result.success or agent_state not in {"QUEUE", "INCALL"}:
+                    continue
+                try:
+                    candidate_call_id = validate_call_id(candidate_call_id)
+                except VicidialIntegrationError:
+                    continue
+                call_result = await self.callid_info(candidate_call_id)
+                evidence.append(call_result.to_dict())
+                if (
+                    not call_result.success
+                    or str(call_result.data.get("user") or "").strip() != user
+                ):
+                    continue
+                resolved = build_session(
+                    candidate_call_id,
+                    user,
+                    call_result,
+                    agent_result,
+                    resolution_source="mapped_agent_status_scan",
+                )
+                if resolved is not None:
+                    candidates.append(resolved)
+
+            unique = {candidate.external_call_id: candidate for candidate in candidates}
+            if len(unique) == 1:
+                return next(iter(unique.values())), evidence
+            if len(unique) > 1:
+                return None, evidence
+            if index + 1 < attempts:
+                await asyncio.sleep(max(0.05, delay_seconds))
         return None, evidence
 
 

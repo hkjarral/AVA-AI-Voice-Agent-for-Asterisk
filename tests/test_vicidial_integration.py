@@ -145,6 +145,104 @@ async def test_installed_agent_status_callerid_must_match(monkeypatch):
     assert info is None
 
 
+@pytest.mark.asyncio
+async def test_customer_name_on_sip_leg_resolves_by_unique_mapped_agent(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    bodies = iter([
+        "status|callerid|lead_id|campaign_id|phone_number\n"
+        "QUEUE|V7190228450000000008|8|TESTCAMP|5551234567",
+        "call_id|phone|call_type|campaign_id|list_id|status|user\n"
+        "V7190228450000000008|5551234567|OUT|TESTCAMP|998|INCALL|9001",
+    ])
+
+    def factory(**_kwargs):
+        return _Session({}, next(bodies))
+
+    client = VicidialApiClient(_connection(), session_factory=factory)
+    info, evidence = await client.resolve_remote_agent_session(
+        call_id="AVA Lab Customer",
+        mapping={"id": "map-1", **_mapping()},
+        attempts=1,
+    )
+
+    assert info is not None
+    assert info.external_call_id == "V7190228450000000008"
+    assert info.agent_user == "9001"
+    assert info.direction == "outbound"
+    assert info.resolution_source == "mapped_agent_status_scan"
+    assert len(evidence) == 2
+
+
+@pytest.mark.asyncio
+async def test_customer_name_scan_fails_closed_when_multiple_agents_match(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    bodies = iter([
+        "status|callerid|campaign_id\nQUEUE|V7190228450000000008|TESTCAMP",
+        "call_id|call_type|campaign_id|user\n"
+        "V7190228450000000008|OUT|TESTCAMP|9001",
+        "status|callerid|campaign_id\nINCALL|V7190228450000000009|TESTCAMP",
+        "call_id|call_type|campaign_id|user\n"
+        "V7190228450000000009|OUT|TESTCAMP|9002",
+    ])
+
+    def factory(**_kwargs):
+        return _Session({}, next(bodies))
+
+    client = VicidialApiClient(_connection(), session_factory=factory)
+    info, evidence = await client.resolve_remote_agent_session(
+        call_id="Customer Display Name",
+        mapping={"id": "map-1", **_mapping(), "number_of_lines": 2},
+        attempts=1,
+    )
+
+    assert info is None
+    assert len(evidence) == 4
+
+
+@pytest.mark.asyncio
+async def test_customer_name_scan_rejects_wrong_campaign(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    bodies = iter([
+        "status|callerid|campaign_id\nQUEUE|V7190228450000000008|OTHER",
+        "call_id|call_type|campaign_id|user\n"
+        "V7190228450000000008|OUT|OTHER|9001",
+    ])
+
+    def factory(**_kwargs):
+        return _Session({}, next(bodies))
+
+    client = VicidialApiClient(_connection(), session_factory=factory)
+    info, _evidence = await client.resolve_remote_agent_session(
+        call_id="Customer Display Name",
+        mapping={"id": "map-1", **_mapping()},
+        attempts=1,
+    )
+
+    assert info is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_sip_identifier_without_active_api_match_is_rejected(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+
+    def factory(**_kwargs):
+        return _Session({}, "status|callerid|campaign_id\nREADY||TESTCAMP")
+
+    client = VicidialApiClient(_connection(), session_factory=factory)
+    info, evidence = await client.resolve_remote_agent_session(
+        call_id="1784424691.638",
+        mapping={"id": "map-1", **_mapping()},
+        attempts=1,
+    )
+
+    assert info is None
+    assert len(evidence) == 1
+
+
 def test_call_id_validation_matches_vicidial_callid_info_contract():
     assert validate_call_id("M4050908070000012345") == "M4050908070000012345"
     with pytest.raises(VicidialIntegrationError):

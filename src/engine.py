@@ -4106,6 +4106,10 @@ class Engine:
             await self._save_session(session)
             raise RuntimeError("No active VICIdial Remote Agent session matched this call")
 
+        # The SIP leg may contain a customer display name on VICIdial builds
+        # that do not preserve the call code in CallerID(name). Persist only
+        # the API-confirmed identifier after admission succeeds.
+        session.external_call_id = resolved.external_call_id
         session.external_session = resolved.to_dict()
         session.external_direction = resolved.direction
         session.is_outbound = resolved.direction == "outbound"
