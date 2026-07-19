@@ -537,6 +537,26 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
         async def call_control(self, *_args, **_kwargs):
             return VicidialApiResult(False, "ra_call_control", "ERROR: no active call")
 
+        async def callid_info(self, *_args, **_kwargs):
+            return VicidialApiResult(
+                True,
+                "callid_info",
+                "active",
+                data={
+                    "call_id": "M4050908070000012345",
+                    "campaign_id": "TESTCAMP",
+                    "status": "QUEUE",
+                },
+            )
+
+        async def agent_status(self, *_args, **_kwargs):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "active",
+                data={"callerid": "M4050908070000012345", "status": "INCALL"},
+            )
+
     async def save(saved_session):
         assert saved_session is session
 
@@ -552,7 +572,84 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
 
     assert result is False
     assert session.external_finalized is False
-    assert session.external_events[-1]["success"] is False
+    hangup_event = next(
+        event for event in session.external_events if event["operation"] == "hangup"
+    )
+    assert hangup_event["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(monkeypatch):
+    session = CallSession(call_id="ari-reconcile", caller_channel_id="ari-reconcile")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        direction="outbound",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def call_control(self, *_args, **_kwargs):
+            return VicidialApiResult(False, "ra_call_control", "ERROR: no active call")
+
+        async def callid_info(self, *_args, **_kwargs):
+            return VicidialApiResult(
+                True,
+                "callid_info",
+                "terminal",
+                data={
+                    "call_id": "M4050908070000012345",
+                    "campaign_id": "TESTCAMP",
+                    "status": "XFER",
+                },
+            )
+
+        async def agent_status(self, *_args, **_kwargs):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ready",
+                data={"callerid": "", "status": "READY"},
+            )
+
+    recorded = {}
+
+    class Store:
+        def record_real_call_verification(self, **kwargs):
+            recorded.update(kwargs)
+
+    async def save(saved_session):
+        assert saved_session is session
+
+    monkeypatch.setattr("src.integrations.vicidial.VicidialApiClient", Client)
+    monkeypatch.setattr("src.core.vicidial_store.get_vicidial_store", lambda: Store())
+    engine = SimpleNamespace(_save_session=save)
+
+    result = await Engine._finalize_vicidial_call(
+        engine,
+        session,
+        semantic="caller_hangup",
+        operation_reason="call-cleanup",
+    )
+
+    assert result is True
+    assert session.external_finalized is True
+    assert session.external_disposition == "XFER"
+    assert session.external_disposition_label == "vicidial_terminal"
+    assert recorded == {
+        "mapping_id": "map-1",
+        "direction": "outbound",
+        "external_call_id": "M4050908070000012345",
+        "status": "XFER",
+        "operation": "terminal_reconcile",
+    }
 
 
 def test_vicidial_tool_policy_is_scoped_to_external_calls():

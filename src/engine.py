@@ -4217,7 +4217,8 @@ class Engine:
                     "message": "Requested disposition side effect was not verified; using failure status",
                     "fallback_status": status,
                 })
-            result = await VicidialApiClient(connection).call_control(
+            client = VicidialApiClient(connection)
+            result = await client.call_control(
                 info,
                 stage="HANGUP",
                 status=status,
@@ -4227,11 +4228,77 @@ class Engine:
                 "reason": operation_reason,
                 **result.to_dict(),
             })
-            if result.success:
+            confirmed_status: Optional[str] = status if result.success else None
+            verification_operation = "hangup"
+
+            # The customer can disconnect first. VICIdial then owns and
+            # records the terminal disposition before the Remote Agent SIP leg
+            # leaves Stasis, so a late ra_call_control correctly returns "no
+            # active call". Confirm that terminal state through both API views
+            # instead of claiming the requested status was written.
+            if not result.success:
+                try:
+                    call_result = await client.callid_info(info.external_call_id)
+                    agent_result = await client.agent_status(info.agent_user)
+                    session.external_events.extend([
+                        {"operation": "terminal_reconcile", **call_result.to_dict()},
+                        {"operation": "terminal_reconcile", **agent_result.to_dict()},
+                    ])
+                    observed_call_id = str(
+                        call_result.data.get("call_id") or ""
+                    ).strip()
+                    observed_campaign = str(
+                        call_result.data.get("campaign_id") or ""
+                    ).strip()
+                    agent_call_id = str(
+                        agent_result.data.get("callerid")
+                        or agent_result.data.get("call_id")
+                        or ""
+                    ).strip()
+                    observed_status = str(
+                        call_result.data.get("status") or ""
+                    ).strip().upper()
+                    active_statuses = {
+                        "QUEUE", "INCALL", "LIVE", "RING", "READY", "PAUSED"
+                    }
+                    expected_campaign = str(
+                        info.campaign_id or mapping.get("campaign_id") or ""
+                    ).strip()
+                    if (
+                        call_result.success
+                        and agent_result.success
+                        and observed_call_id == info.external_call_id
+                        and agent_call_id != info.external_call_id
+                        and observed_status
+                        and observed_status not in active_statuses
+                        and (
+                            not expected_campaign
+                            or observed_campaign == expected_campaign
+                        )
+                    ):
+                        from src.integrations.vicidial import validate_status
+
+                        confirmed_status = validate_status(
+                            observed_status,
+                            field_name="observed VICIdial terminal status",
+                        )
+                        verification_operation = "terminal_reconcile"
+                except Exception:
+                    logger.warning(
+                        "VICIdial terminal reconciliation failed",
+                        call_id=session.call_id,
+                        external_call_id=info.external_call_id,
+                        exc_info=True,
+                    )
+
+            if confirmed_status:
                 session.external_finalized = True
-                session.external_disposition = status
-                if not session.external_disposition_label:
-                    session.external_disposition_label = semantic
+                session.external_disposition = confirmed_status
+                if result.success:
+                    if not session.external_disposition_label:
+                        session.external_disposition_label = semantic
+                else:
+                    session.external_disposition_label = "vicidial_terminal"
                 try:
                     from src.core.vicidial_store import get_vicidial_store
 
@@ -4239,8 +4306,8 @@ class Engine:
                         mapping_id=info.mapping_id,
                         direction=info.direction,
                         external_call_id=info.external_call_id,
-                        status=status,
-                        operation="hangup",
+                        status=confirmed_status,
+                        operation=verification_operation,
                     )
                 except Exception:
                     logger.warning(
@@ -4252,7 +4319,7 @@ class Engine:
         finally:
             session.external_finalizing = False
             await self._save_session(session)
-        if not result.success:
+        if not result.success and not confirmed_status:
             logger.error(
                 "VICIdial rejected terminal call control; no ARI fallback was reported as success",
                 call_id=session.call_id,
@@ -4260,7 +4327,15 @@ class Engine:
                 vicidial_status=status,
                 api_message=result.message,
             )
-        return bool(result.success)
+        elif not result.success:
+            logger.info(
+                "VICIdial terminal state reconciled after customer-side disconnect",
+                call_id=session.call_id,
+                external_call_id=info.external_call_id,
+                requested_status=status,
+                observed_status=confirmed_status,
+            )
+        return bool(confirmed_status)
 
     async def _handle_caller_stasis_start_hybrid(self, caller_channel_id: str, channel: dict):
         """Handle caller channel entering Stasis - Hybrid ARI approach."""

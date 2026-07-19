@@ -230,6 +230,13 @@ For an outbound auto call, `callid_info.user` can be `VDAD`; this is the dialer 
 Remote Agent user. AAVA obtains the Remote Agent identity from the mapped `agent_status` record and
 joins the two API views by their exact VICIdial call code, campaign, direction, and phone number.
 
+If the customer disconnects first, VICIdial may finalize the customer record before the Remote
+Agent SIP leg leaves Stasis. A late `ra_call_control` then correctly reports that no active call
+exists. AAVA reconciles `callid_info` with the now-idle mapped agent, records VICIdial's actual
+terminal status (for example `XFER` with a caller-side termination), and does not claim that the
+configured AAVA status was written. AI-initiated hangup and explicit disposition still use
+`ra_call_control` while the call is active.
+
 ### 3.3 Apply the generated dialplan
 
 Open **Setup guide**, copy the generated context into
