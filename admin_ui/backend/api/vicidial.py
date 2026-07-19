@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -188,6 +189,30 @@ async def verify_mapping(mapping_id: str):
     agent_available = bool(_active_agent(str(mapping.get("ai_agent") or "")))
 
     users = list(remote_agent_user_range(mapping))
+    status_results = []
+    # agent_status is authoritative for whether each configured VICIdial user
+    # actually exists. logged_in_agents alone can include a stale or manually
+    # inserted live-agent row whose user is rejected by call-control APIs.
+    # Bound each burst so a large Remote Agent range does not overwhelm the
+    # dialer's legacy Non-Agent API.
+    for offset in range(0, len(users), 10):
+        status_results.extend(await asyncio.gather(*(
+            client.agent_status(user)
+            for user in users[offset:offset + 10]
+        )))
+    status_checks: Dict[str, Dict[str, Any]] = {}
+    api_users: List[str] = []
+    for user, status_result in zip(users, status_results):
+        status_data = dict(status_result.data or {})
+        status = str(status_data.get("status") or "").strip().upper()
+        status_checks[user] = {
+            "success": bool(status_result.success),
+            "status": status or None,
+            "error_code": status_result.error_code,
+        }
+        if status_result.success:
+            api_users.append(user)
+    unverified_users = [user for user in users if user not in api_users]
     logged_agents = dict(connection_result.get("agent_visibility") or {})
     logged_rows = list(logged_agents.get("rows") or [])
     agent_rows = {
@@ -198,12 +223,13 @@ async def verify_mapping(mapping_id: str):
     visible_users = [user for user in users if user in agent_rows]
     ready_users = [
         user for user in visible_users
-        if str(agent_rows[user].get("status") or "").strip().upper() == "READY"
+        if status_checks.get(user, {}).get("status") == "READY"
     ]
     configuration_ready = bool(
         connection_result.get("ready")
         and campaign_found
         and agent_available
+        and len(api_users) == len(users)
         and len(visible_users) == len(users)
     )
     previous_verification = mapping.get("last_verification")
@@ -235,8 +261,11 @@ async def verify_mapping(mapping_id: str):
         },
         "remote_agent": {
             "users": users,
+            "api_users": api_users,
+            "unverified_users": unverified_users,
             "visible_users": visible_users,
             "ready_users": ready_users,
+            "status_checks": status_checks,
             "conf_exten": mapping.get("conf_exten"),
             "note": "READY is confirmed by a real call test; API visibility alone is not sufficient",
         },
@@ -299,6 +328,12 @@ async def mapping_guidance(mapping_id: str):
         raise HTTPException(status_code=422, detail="VICIdial connection is missing")
 
     topology = str(connection.get("topology") or "lan_vpn")
+    remote_agent_users = list(remote_agent_user_range(mapping))
+    user_range = (
+        remote_agent_users[0]
+        if len(remote_agent_users) == 1
+        else f"{remote_agent_users[0]} through {remote_agent_users[-1]}"
+    )
     nat_notes = {
         "lan_vpn": [
             "Prefer private routed addresses or a site-to-site VPN.",
@@ -320,7 +355,8 @@ async def mapping_guidance(mapping_id: str):
         "connection": connection,
         "vicidial_steps": [
             f"Create/verify Phone {mapping.get('conf_exten')} with protocol SIP and a unique conf_secret.",
-            f"Create Remote Agent users starting at {mapping.get('user_start')} for {mapping.get('number_of_lines')} line(s).",
+            f"Create every VICIdial user in the contiguous range {user_range}; agent_status must recognize each user before enabling {mapping.get('number_of_lines')} line(s).",
+            f"All {mapping.get('number_of_lines')} Remote Agent line(s) share Phone/conf_exten {mapping.get('conf_exten')}; do not create incremented SIP Phones for the additional users.",
             f"Create/verify Remote Agent with conf_exten {mapping.get('conf_exten')}, On-Hook Agent=N for classic outbound mode, and campaign {mapping.get('campaign_id') or 'CLOSER (inbound only)' }.",
             "For a both-direction mapping, set the outbound campaign Allow Inbound and Blended=Y and select the same inbound groups on the campaign and Remote Agent. Inbound-only Remote Agents use campaign CLOSER plus their inbound groups.",
             "For the first outbound acceptance test, use a measured Drop Call Seconds window (30 seconds in the validated lab); 5 seconds can expire before Remote Agent delivery. Tune it for production policy after measuring.",

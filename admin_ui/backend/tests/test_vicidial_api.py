@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from api import vicidial as vicidial_api
 from src.core.vicidial_store import VicidialStore
+from src.integrations.vicidial import VicidialApiResult
 
 
 def _connection_payload():
@@ -79,6 +80,8 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     assert any("On-Hook Agent=N" in step for step in body["vicidial_steps"])
     assert any("Allow Inbound and Blended=Y" in step for step in body["vicidial_steps"])
     assert any("Drop Call Seconds" in step for step in body["vicidial_steps"])
+    assert any("agent_status" in step for step in body["vicidial_steps"])
+    assert any("share Phone/conf_exten 8371" in step for step in body["vicidial_steps"])
     assert "exten => 8371,1" in body["dialplan"]
     assert "Set(__AAVA_CALL_OWNER=vicidial)" in body["dialplan"]
     assert "Set(__AI_AGENT=demo_deepgram)" in body["dialplan"]
@@ -116,6 +119,14 @@ def test_mapping_verification_preserves_directional_live_call_evidence(
                 },
             }
 
+        async def agent_status(self, agent_user):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ok",
+                data={"user": agent_user, "status": "READY"},
+            )
+
     monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
     response = client.post(
         "/api/outbound/vicidial/mappings/mapping-1/verify"
@@ -124,7 +135,68 @@ def test_mapping_verification_preserves_directional_live_call_evidence(
     assert response.status_code == 200
     body = response.json()
     assert body["configuration_ready"] is True
+    assert body["remote_agent"]["api_users"] == ["9001"]
+    assert body["remote_agent"]["unverified_users"] == []
     assert body["ready"] is False
     assert body["real_call"]["required_directions"] == ["inbound", "outbound"]
     assert body["real_calls"]["outbound"]["verified"] is True
     assert "inbound" not in body["real_calls"]
+
+
+def test_mapping_verification_rejects_live_row_without_vicidial_user(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    payload = _mapping_payload(connection["id"])
+    payload.update({"number_of_lines": 2, "static_agent_user": None})
+    store.save_mapping(payload, "mapping-1")
+
+    class _Client:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            return {
+                "ready": True,
+                "authentication": {
+                    "success": True,
+                    "rows": [{"campaign_id": "AVATEST"}],
+                },
+                "agent_visibility": {
+                    "success": True,
+                    "rows": [
+                        {"user": "9001", "status": "READY"},
+                        {"user": "9002", "status": "READY"},
+                    ],
+                },
+            }
+
+        async def agent_status(self, agent_user):
+            if agent_user == "9002":
+                return VicidialApiResult(
+                    False,
+                    "agent_status",
+                    "ERROR: AGENT NOT FOUND",
+                    error_code="api_error",
+                )
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ok",
+                data={"user": agent_user, "status": "READY"},
+            )
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
+    response = client.post("/api/outbound/vicidial/mappings/mapping-1/verify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configuration_ready"] is False
+    assert body["remote_agent"]["api_users"] == ["9001"]
+    assert body["remote_agent"]["unverified_users"] == ["9002"]
+    assert body["remote_agent"]["status_checks"]["9002"] == {
+        "success": False,
+        "status": None,
+        "error_code": "api_error",
+    }
