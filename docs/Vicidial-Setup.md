@@ -248,10 +248,12 @@ joins the two API views by their exact VICIdial call code, campaign, direction, 
 
 If the customer disconnects first, VICIdial may finalize the customer record before the Remote
 Agent SIP leg leaves Stasis. A late `ra_call_control` then correctly reports that no active call
-exists. AAVA reconciles `callid_info` with the now-idle mapped agent, records VICIdial's actual
-terminal status (for example `XFER` with a caller-side termination), and does not claim that the
-configured AAVA status was written. AI-initiated hangup and explicit disposition still use
-`ra_call_control` while the call is active.
+exists. AAVA reconciles `callid_info` with the mapped agent. The agent is considered released when
+its call ID is cleared or when `agent_status.real_time_sub_status` is `DEAD`; VICIdial uses
+`DEAD` after the active-call row disappears and before the live-agent cleanup cycle returns the
+agent to `READY`. AAVA records VICIdial's actual terminal status (for example `XFER` with a
+caller-side termination) and does not claim that the configured AAVA status was written.
+AI-initiated hangup and explicit disposition still use `ra_call_control` while the call is active.
 
 ### 3.3 Apply the generated dialplan
 
@@ -316,9 +318,11 @@ VICIdial does not use AAVA's ordinary ARI hangup path for these calls.
 3. DNC and callback side effects are deferred until terminal completion.
 4. On completion, AAVA performs and verifies any required side effect.
 5. AAVA calls `ra_call_control` with `stage=HANGUP` and the requested/default status.
-6. Only a VICIdial success response marks the call finalized and records the confirmed status.
-7. A rejected API call remains visible as unconfirmed; AAVA never reports an ARI fallback as a
-   successful VICIdial disposition.
+6. A VICIdial success response marks the requested status confirmed. If the customer ended first
+   and the active call is gone, AAVA may instead confirm the exact terminal call log against the
+   mapped agent's released/`DEAD` state and records the observed native status.
+7. Any API rejection that cannot pass that exact terminal reconciliation remains visible as
+   unconfirmed; AAVA never reports an ARI fallback as a successful VICIdial disposition.
 
 For transfers, AAVA uses `INGROUPTRANSFER` or `EXTENSIONTRANSFER`. These are cold transfers; the
 Remote Agent leg disconnects after VICIdial accepts the transfer. Warm/consultative Remote Agent
@@ -418,6 +422,9 @@ headers.
 - Confirm `CALLERID(name)` contains the VICIdial call ID unchanged.
 - Query `callid_info` and `agent_status` with the dedicated API user; the returned user must be in
   the mapping range and `agent_status.callerid` must exactly match.
+- For blended inbound calls, `callid_info.campaign_id` is the inbound group while
+  `agent_status.campaign_id` is the agent's login/outbound campaign. Configure the inbound group
+  under **Closer groups**; do not require those two campaign fields to be equal.
 
 ### One-way or no audio
 
@@ -431,6 +438,9 @@ headers.
 - Inspect the Call History VICIdial evidence for API rejection or correlation failure.
 - Confirm the API user's `ra_call_control` permission and status length/existence.
 - Query VICIdial reports/logs and confirm the Remote Agent returned to READY.
+- A transient `INCALL` with `real_time_sub_status=DEAD` after caller hangup is VICIdial's cleanup
+  interval. Call History should retain the exact terminal status, and the agent must subsequently
+  return to `READY`.
 - Do not repair production reports with direct SQL; correct the API/status configuration and retest.
 
 ## 9. Disable and rollback
