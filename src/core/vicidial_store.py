@@ -359,8 +359,17 @@ class VicidialStore:
         now = _now()
         with self._lock, self._connection() as conn:
             exists = conn.execute(
-                "SELECT created_at FROM vicidial_connections WHERE id=?", (connection_id,)
+                "SELECT * FROM vicidial_connections WHERE id=?", (connection_id,)
             ).fetchone()
+            previous = self._connection_dict(exists) if exists else None
+            material_changed = bool(
+                previous
+                and any(
+                    previous.get(key) != value
+                    for key, value in data.items()
+                    if key != "name"
+                )
+            )
             conn.execute(
                 """
                 INSERT INTO vicidial_connections (
@@ -385,9 +394,26 @@ class VicidialStore:
                     data["username_env"], data["password_env"], int(data["verify_ssl"]),
                     data["timeout_ms"], data["topology"], data["vicidial_host"],
                     data["sip_port"], data["rtp_start"], data["rtp_end"], data["timezone"],
-                    str(exists[0]) if exists else now, now,
+                    str(exists["created_at"]) if exists else now, now,
                 ),
             )
+            if material_changed:
+                conn.execute(
+                    """
+                    UPDATE vicidial_connections
+                       SET last_verification_json=NULL, last_verified_at=NULL
+                     WHERE id=?
+                    """,
+                    (connection_id,),
+                )
+                conn.execute(
+                    """
+                    UPDATE vicidial_mappings
+                       SET last_verification_json=NULL, last_verified_at=NULL, updated_at=?
+                     WHERE connection_id=?
+                    """,
+                    (now, connection_id),
+                )
         return self.get_connection(connection_id) or {}
 
     def delete_connection(self, connection_id: str) -> bool:
@@ -433,8 +459,17 @@ class VicidialStore:
         now = _now()
         with self._lock, self._connection() as conn:
             exists = conn.execute(
-                "SELECT created_at FROM vicidial_mappings WHERE id=?", (mapping_id,)
+                "SELECT * FROM vicidial_mappings WHERE id=?", (mapping_id,)
             ).fetchone()
+            previous = self._mapping_dict(exists) if exists else None
+            material_changed = bool(
+                previous
+                and any(
+                    previous.get(key) != value
+                    for key, value in data.items()
+                    if key != "name"
+                )
+            )
             conn.execute(
                 """
                 INSERT INTO vicidial_mappings (
@@ -462,9 +497,18 @@ class VicidialStore:
                     data["trusted_endpoint"], _json(data["dispositions"], {}),
                     _json(data["statuses"], {}), _json(data["destinations"], {}),
                     data["dnc_scope"], data["callback_type"],
-                    str(exists[0]) if exists else now, now,
+                    str(exists["created_at"]) if exists else now, now,
                 ),
             )
+            if material_changed:
+                conn.execute(
+                    """
+                    UPDATE vicidial_mappings
+                       SET last_verification_json=NULL, last_verified_at=NULL
+                     WHERE id=?
+                    """,
+                    (mapping_id,),
+                )
         return self.get_mapping(mapping_id) or {}
 
     def delete_mapping(self, mapping_id: str) -> bool:
@@ -499,12 +543,12 @@ class VicidialStore:
             raise ValueError("Real-call direction must be inbound or outbound")
         with self._lock, self._connection() as conn:
             row = conn.execute(
-                "SELECT last_verification_json FROM vicidial_mappings WHERE id=?",
+                "SELECT direction,last_verification_json FROM vicidial_mappings WHERE id=?",
                 (mapping_id,),
             ).fetchone()
             if not row:
                 raise ValueError("VICIdial mapping does not exist")
-            verification = _decode(row[0], {})
+            verification = _decode(row["last_verification_json"], {})
             if not isinstance(verification, dict):
                 verification = {}
             real_calls = verification.get("real_calls")
@@ -518,6 +562,24 @@ class VicidialStore:
                 "operation": str(operation or "hangup").strip(),
             }
             verification["real_calls"] = real_calls
+            configured_direction = str(row["direction"] or "both").strip().lower()
+            required_directions = (
+                ["inbound", "outbound"]
+                if configured_direction == "both"
+                else [configured_direction]
+            )
+            live_call_ready = all(
+                bool(dict(real_calls.get(required) or {}).get("verified"))
+                for required in required_directions
+            )
+            verification["real_call"] = {
+                "verified": live_call_ready,
+                "required_directions": required_directions,
+                "note": "Each configured direction requires a correlated call with confirmed VICIdial terminal control",
+            }
+            verification["ready"] = bool(
+                verification.get("configuration_ready") and live_call_ready
+            )
             now = _now()
             conn.execute(
                 """

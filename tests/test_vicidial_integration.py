@@ -304,6 +304,11 @@ def test_store_merges_directional_real_call_readiness(tmp_path):
         status="AIHU",
         operation="hangup",
     )
+    verification = store.get_mapping("mapping-1")["last_verification"]
+    assert verification["real_call"]["verified"] is False
+    assert verification["real_call"]["required_directions"] == ["inbound", "outbound"]
+    assert verification["ready"] is False
+
     store.record_real_call_verification(
         mapping_id="mapping-1",
         direction="inbound",
@@ -316,6 +321,53 @@ def test_store_merges_directional_real_call_readiness(tmp_path):
     assert verification["configuration_ready"] is True
     assert verification["real_calls"]["outbound"]["status"] == "AIHU"
     assert verification["real_calls"]["inbound"]["status"] == "AICU"
+    assert verification["real_call"]["verified"] is True
+    assert verification["ready"] is True
+
+
+def test_store_invalidates_readiness_after_material_mapping_change(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection({
+        **_connection(),
+        "name": "Lab",
+        "username_env": "VICI_USER",
+        "password_env": "VICI_PASS",
+    }, "connection-1")
+    mapping = store.save_mapping(_mapping(connection["id"]), "mapping-1")
+    store.record_verification(
+        kind="mapping",
+        record_id="mapping-1",
+        result={"configuration_ready": True, "ready": True},
+    )
+
+    store.save_mapping({**mapping, "name": "Renamed"}, "mapping-1")
+    assert store.get_mapping("mapping-1")["last_verification"] is not None
+
+    store.save_mapping({**mapping, "name": "Renamed", "ai_agent": "other_agent"}, "mapping-1")
+    assert store.get_mapping("mapping-1")["last_verification"] is None
+
+
+def test_store_invalidates_mapping_readiness_after_connection_change(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    payload = {
+        **_connection(),
+        "name": "Lab",
+        "username_env": "VICI_USER",
+        "password_env": "VICI_PASS",
+    }
+    connection = store.save_connection(payload, "connection-1")
+    store.save_mapping(_mapping(connection["id"]), "mapping-1")
+    store.record_verification(
+        kind="mapping",
+        record_id="mapping-1",
+        result={"configuration_ready": True, "ready": True},
+    )
+
+    store.save_connection({**payload, "name": "Renamed"}, "connection-1")
+    assert store.get_mapping("mapping-1")["last_verification"] is not None
+
+    store.save_connection({**payload, "name": "Renamed", "base_url": "http://new-vicidial.test"}, "connection-1")
+    assert store.get_mapping("mapping-1")["last_verification"] is None
 
 
 class _SessionStore:
