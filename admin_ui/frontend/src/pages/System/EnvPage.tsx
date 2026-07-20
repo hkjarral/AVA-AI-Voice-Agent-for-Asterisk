@@ -7,7 +7,10 @@ import { ConfigSection } from '../../components/ui/ConfigSection';
 import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput, FormLabel, FormSelect, FormSwitch } from '../../components/ui/FormComponents';
 import { Link } from 'react-router-dom';
-import { getOutboundPbxTypeOptions } from '../../utils/outboundPbx';
+import {
+    getOutboundPbxTypeOptions,
+    normalizeOutboundPbxType,
+} from '../../utils/outboundPbx';
 
 import { useAuth } from '../../auth/AuthContext';
 
@@ -300,6 +303,9 @@ const EnvPage = () => {
         setSaving(true);
         try {
             const envToSave = { ...env };
+            envToSave['AAVA_OUTBOUND_PBX_TYPE'] = normalizeOutboundPbxType(
+                envToSave['AAVA_OUTBOUND_PBX_TYPE']
+            );
             // If file logging is enabled, ensure LOG_FILE_PATH is persisted (UI shows a recommended default).
             const logToFile = (envToSave['LOG_TO_FILE'] || '').toLowerCase();
             const logEnabled = logToFile === '1' || logToFile === 'true' || logToFile === 'on' || logToFile === 'yes';
@@ -2107,7 +2113,9 @@ const EnvPage = () => {
                                 />
                                 <FormSelect
                                     label="PBX Type"
-                                    value={env['AAVA_OUTBOUND_PBX_TYPE'] || 'freepbx'}
+                                    value={normalizeOutboundPbxType(
+                                        env['AAVA_OUTBOUND_PBX_TYPE']
+                                    )}
                                     onChange={(e) => updateEnv('AAVA_OUTBOUND_PBX_TYPE', e.target.value)}
                                     options={getOutboundPbxTypeOptions(
                                         env['AAVA_OUTBOUND_PBX_TYPE']

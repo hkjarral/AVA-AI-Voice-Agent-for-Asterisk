@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+import logging
 import os
 from pathlib import Path
 import sys
@@ -23,6 +24,9 @@ from src.core.vicidial_store import get_vicidial_store
 from src.integrations.vicidial import VicidialApiClient, remote_agent_user_range
 
 router = APIRouter(prefix="/outbound/vicidial", tags=["outbound"])
+logger = logging.getLogger(__name__)
+
+ACTIVITY_SUMMARY_MAX_ROWS = 5000
 
 
 class VicidialConnectionRequest(BaseModel):
@@ -79,8 +83,9 @@ def _dump(model: BaseModel) -> Dict[str, Any]:
 def _store():
     try:
         return get_vicidial_store()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"VICIdial store unavailable: {exc}")
+    except Exception:
+        logger.exception("VICIdial store unavailable")
+        raise HTTPException(status_code=500, detail="VICIdial store unavailable")
 
 
 def _active_agent(slug: str) -> Optional[Dict[str, Any]]:
@@ -106,8 +111,9 @@ def _call_history_store():
         from src.core.call_history import get_call_history_store
 
         return get_call_history_store()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Call History unavailable: {exc}")
+    except Exception:
+        logger.exception("Call History unavailable for VICIdial activity")
+        raise HTTPException(status_code=500, detail="Call History unavailable")
 
 
 async def _engine_health_ari_connected_compat() -> Optional[bool]:
@@ -389,8 +395,16 @@ async def verify_connection(connection_id: str):
         raise HTTPException(status_code=404, detail="VICIdial connection not found")
     try:
         result = await VicidialApiClient(connection).verify_connection()
-    except ValueError as exc:
-        result = {"ready": False, "error": str(exc)}
+    except ValueError:
+        logger.warning(
+            "Invalid VICIdial connection configuration",
+            exc_info=True,
+            extra={"connection_id": connection_id},
+        )
+        result = {
+            "ready": False,
+            "error": "VICIdial connection configuration is invalid",
+        }
     _store().record_verification(kind="connection", record_id=connection_id, result=result)
     return result
 
@@ -422,7 +436,11 @@ async def vicidial_activity(
         "vicidial",
         start_date=_activity_start(range_name, now),
         end_date=now,
+        max_rows=ACTIVITY_SUMMARY_MAX_ROWS + 1,
     )
+    truncated = len(records) > ACTIVITY_SUMMARY_MAX_ROWS
+    if truncated:
+        records = records[:ACTIVITY_SUMMARY_MAX_ROWS]
     mappings = _store().list_mappings()
     result = _summarize_activity(records, mapping_id, mappings)
     result["recent_calls"] = result["recent_calls"][:limit]
@@ -431,9 +449,15 @@ async def vicidial_activity(
             "range": range_name,
             "mapping_id": mapping_id,
             "generated_at": now.isoformat(),
+            "truncated": truncated,
             "scope_note": (
                 "Only calls delivered to AAVA are counted. VICIdial dial attempts that never "
                 "reached an AAVA Remote Agent are not included."
+                + (
+                    f" This range exceeded {ACTIVITY_SUMMARY_MAX_ROWS:,} calls; metrics use the most recent records."
+                    if truncated
+                    else ""
+                )
             ),
         }
     )

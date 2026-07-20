@@ -145,6 +145,14 @@ async def test_external_activity_is_bounded_lightweight_and_keeps_mapping_metada
     assert rows[0].conversation_history == []
     assert rows[0].tool_calls == []
 
+    capped = await store.list_external_activity(
+        "vicidial",
+        start_date=now - timedelta(days=30),
+        end_date=now + timedelta(seconds=1),
+        max_rows=1,
+    )
+    assert [record.call_id for record in capped] == ["vicidial-current"]
+
 
 @pytest.mark.asyncio
 async def test_routing_method_round_trips(tmp_path, monkeypatch):

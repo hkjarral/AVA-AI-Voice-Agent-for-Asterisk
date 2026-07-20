@@ -196,6 +196,41 @@ async def test_hydration_rejects_call_when_mapping_agent_cannot_be_applied(monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mapping", "connection", "expected_error"),
+    [
+        (None, None, "mapping 'map-1' is missing or disabled"),
+        ({"id": "map-1", "enabled": True, **_mapping()}, None, "connection is missing or disabled"),
+    ],
+)
+async def test_hydration_marks_vicidial_owner_before_store_validation(
+    monkeypatch, mapping, connection, expected_error
+):
+    store = SimpleNamespace(
+        get_mapping=lambda _mapping_id: mapping,
+        get_connection=lambda _connection_id: connection,
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    engine = Engine.__new__(Engine)
+    variables = {
+        "AAVA_CALL_OWNER": "vicidial",
+        "VICIDIAL_MAPPING_ID": "map-1",
+        "VICIDIAL_RA_CALL_ID": "V4050908070000012345",
+    }
+    engine._read_channel_variable = AsyncMock(
+        side_effect=lambda _channel_id, name: variables.get(name, "")
+    )
+    session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        await Engine._hydrate_vicidial_session(engine, session, "ari-call")
+
+    assert session.external_platform == "vicidial"
+
+
+@pytest.mark.asyncio
 async def test_non_agent_requests_include_headers_and_parse_dynamic_session(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
     monkeypatch.setenv("VICI_PASS", "secret")
@@ -685,6 +720,48 @@ def test_disposition_tool_schema_prioritizes_native_vicidial_callback():
         param for param in definition.parameters if param.name == "callback_datetime"
     )
     assert "date, time, and timezone" in callback_parameter.description
+
+
+@pytest.mark.asyncio
+async def test_inbound_campaign_dnc_uses_mapped_dialing_campaign(monkeypatch):
+    session = CallSession(call_id="ari-dnc", caller_channel_id="ari-dnc")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTINGROUP",
+        phone_number="13165551212",
+        direction="inbound",
+        metadata={"agent_status": {"campaign_id": "TESTCAMP"}},
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dnc_scope": "campaign",
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    session.external_connection = _connection()
+    store = _SessionStore(session)
+    context = ToolExecutionContext(call_id="ari-dnc", session_store=store)
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def add_dnc_phone(self, **kwargs):
+            assert kwargs == {
+                "phone_number": "13165551212",
+                "campaign_id": "TESTCAMP",
+            }
+            return VicidialApiResult(True, "add_dnc_phone", "SUCCESS")
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+    result = await SetCallDispositionTool().execute({"disposition": "dnc"}, context)
+
+    assert result["status"] == "success"
+    assert session.external_disposition_payload["campaign_id"] == "TESTCAMP"
+    assert await commit_vicidial_disposition_workflow(session) is True
+    assert session.external_disposition_payload["workflow_committed"] is True
 
 
 @pytest.mark.asyncio

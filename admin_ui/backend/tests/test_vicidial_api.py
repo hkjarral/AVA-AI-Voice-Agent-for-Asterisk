@@ -239,6 +239,28 @@ def test_lists_sanitized_asterisk_endpoints(monkeypatch, tmp_path):
     ]
 
 
+def test_connection_verification_does_not_expose_exception_details(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    store.save_connection(_connection_payload(), "connection-1")
+
+    class _InvalidClient:
+        def __init__(self, _connection):
+            raise ValueError("secret path /srv/private/config and stack detail")
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _InvalidClient)
+    response = client.post(
+        "/api/outbound/vicidial/connections/connection-1/verify"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "error": "VICIdial connection configuration is invalid",
+    }
+    stored = store.get_connection("connection-1")["last_verification"]
+    assert stored == response.json()
+
+
 def test_mapping_verification_preserves_directional_live_call_evidence(
     monkeypatch, tmp_path
 ):
@@ -425,9 +447,12 @@ def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_p
     ]
 
     class _History:
-        async def list_external_activity(self, platform, start_date, end_date=None):
+        async def list_external_activity(
+            self, platform, start_date, end_date=None, max_rows=5000
+        ):
             assert platform == "vicidial"
             assert start_date < end_date
+            assert max_rows == vicidial_api.ACTIVITY_SUMMARY_MAX_ROWS + 1
             return records
 
     monkeypatch.setattr(vicidial_api, "_call_history_store", lambda: _History())
@@ -459,5 +484,32 @@ def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_p
     assert body["recent_calls"][0]["remote_agent"] == "9001"
     assert body["recent_calls"][0]["disposition_confirmed"] is True
     assert "never reached" in body["scope_note"]
+    assert body["truncated"] is False
 
     assert client.get("/api/outbound/vicidial/activity?range=90d").status_code == 422
+
+
+def test_activity_reports_when_summary_rows_are_truncated(monkeypatch, tmp_path):
+    client, _store = _client(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    record = CallRecord(
+        id="record-1",
+        call_id="asterisk-1",
+        start_time=now,
+        external_platform="vicidial",
+        external_metadata={},
+    )
+
+    class _History:
+        async def list_external_activity(self, platform, start_date, end_date=None, max_rows=5000):
+            assert max_rows == vicidial_api.ACTIVITY_SUMMARY_MAX_ROWS + 1
+            return [record] * max_rows
+
+    monkeypatch.setattr(vicidial_api, "_call_history_store", lambda: _History())
+    response = client.get("/api/outbound/vicidial/activity?range=30d")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["truncated"] is True
+    assert body["summary"]["handled"] == vicidial_api.ACTIVITY_SUMMARY_MAX_ROWS
+    assert "metrics use the most recent records" in body["scope_note"]

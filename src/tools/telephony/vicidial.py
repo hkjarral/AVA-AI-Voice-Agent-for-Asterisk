@@ -29,16 +29,16 @@ def _session_info(session: Any) -> VicidialSessionInfo:
     })
 
 
-def _callback_campaign_id(
+def _dialing_campaign_id(
     info: VicidialSessionInfo,
     mapping: Dict[str, Any],
 ) -> str:
-    """Return the dialing campaign VICIdial requires for a callback.
+    """Return the dialing campaign VICIdial requires for campaign actions.
 
     ``callid_info.campaign_id`` is an inbound group for inbound/blended calls,
-    not a valid dialing campaign for ``update_lead``. The Remote Agent mapping
-    owns the actual campaign in that direction. Outbound calls already report
-    the dialing campaign directly.
+    not a valid dialing campaign for campaign-scoped DNC or ``update_lead``.
+    The Remote Agent mapping owns the actual campaign in that direction.
+    Outbound calls already report the dialing campaign directly.
     """
     if str(info.direction or "").strip().lower() == "inbound":
         configured = str(mapping.get("campaign_id") or "").strip()
@@ -299,12 +299,15 @@ class SetCallDispositionTool(Tool):
         info = _session_info(session)
         payload: Dict[str, Any] = {}
         if semantic == "dnc":
-            if not info.phone_number or not info.campaign_id:
+            dnc_campaign_id = _dialing_campaign_id(info, mapping)
+            if not info.phone_number or (
+                mapping.get("dnc_scope") == "campaign" and not dnc_campaign_id
+            ):
                 return {"status": "failed", "message": "VICIdial phone/campaign data is unavailable for DNC"}
             payload = {
                 "phone_number": info.phone_number,
                 "campaign_id": (
-                    info.campaign_id
+                    dnc_campaign_id
                     if mapping.get("dnc_scope") == "campaign"
                     else "SYSTEM_INTERNAL"
                 ),
@@ -317,7 +320,7 @@ class SetCallDispositionTool(Tool):
                 )
             except VicidialIntegrationError as exc:
                 return {"status": "failed", "message": str(exc)}
-            callback_campaign_id = _callback_campaign_id(info, mapping)
+            callback_campaign_id = _dialing_campaign_id(info, mapping)
             if not info.lead_id or not callback_campaign_id:
                 return {"status": "failed", "message": "VICIdial lead/campaign data is unavailable for callback"}
             callback_type = str(mapping.get("callback_type") or "ANYONE").upper()

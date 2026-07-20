@@ -4117,10 +4117,15 @@ class Engine:
         if owner != "vicidial":
             return
 
+        # Ownership is confirmed by the trusted dialplan. Mark it before any
+        # subsequent validation can raise so the caller handler's fail-closed
+        # guard rejects stale or disabled VICIdial mappings/connections instead
+        # of continuing as an ordinary AAVA call.
+        session.external_platform = "vicidial"
+
         mapping_id = await self._read_channel_variable(channel_id, "VICIDIAL_MAPPING_ID")
         external_call_id = await self._read_channel_variable(channel_id, "VICIDIAL_RA_CALL_ID")
         if not mapping_id or not external_call_id:
-            session.external_platform = "vicidial"
             session.external_events.append({
                 "operation": "resolve",
                 "success": False,
@@ -4142,7 +4147,6 @@ class Engine:
         if not connection or not connection.get("enabled"):
             raise RuntimeError("VICIdial connection is missing or disabled")
 
-        session.external_platform = "vicidial"
         session.external_call_id = external_call_id
         session.external_mapping = copy.deepcopy(mapping)
         session.external_connection = copy.deepcopy(connection)

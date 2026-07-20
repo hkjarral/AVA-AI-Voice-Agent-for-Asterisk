@@ -341,6 +341,46 @@ const formatActivityDuration = (seconds: number) => {
 const rowInputClass =
     'min-w-0 rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
+const DeferredMapKeyInput = ({
+    value,
+    onCommit,
+    title,
+    ariaLabel,
+    placeholder,
+}: {
+    value: string;
+    onCommit: (value: string) => void;
+    title: string;
+    ariaLabel: string;
+    placeholder: string;
+}) => {
+    const [draft, setDraft] = useState(value);
+
+    useEffect(() => setDraft(value), [value]);
+
+    return (
+        <input
+            title={title}
+            aria-label={ariaLabel}
+            value={draft}
+            onChange={event => setDraft(event.target.value)}
+            onBlur={() => {
+                onCommit(draft);
+                setDraft(value);
+            }}
+            onKeyDown={event => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+                if (event.key === 'Escape') {
+                    setDraft(value);
+                    event.currentTarget.blur();
+                }
+            }}
+            className={rowInputClass}
+            placeholder={placeholder}
+        />
+    );
+};
+
 const generateBrowserOnlySipSecret = () => {
     const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!_-';
     const random = new Uint32Array(24);
@@ -1938,21 +1978,20 @@ export const VicidialRemoteAgentsTab = () => {
                         <div className="space-y-2">
                             {Object.entries(mappingForm.dispositions || {}).map(([key, value]) => (
                                 <div key={key} className="grid gap-2 sm:grid-cols-[1fr_10rem_auto]">
-                                    <input
+                                    <DeferredMapKeyInput
                                         title={mappingHelp.dispositionName}
-                                        aria-label="Disposition name"
+                                        ariaLabel="Disposition name"
                                         value={key}
-                                        onChange={e =>
+                                        onCommit={nextKey =>
                                             setMappingForm({
                                                 ...mappingForm,
                                                 dispositions: renameKey(
                                                     mappingForm.dispositions || {},
                                                     key,
-                                                    e.target.value
+                                                    nextKey
                                                 ),
                                             })
                                         }
-                                        className={rowInputClass}
                                         placeholder="sale"
                                     />
                                     <input
@@ -2143,21 +2182,20 @@ export const VicidialRemoteAgentsTab = () => {
                                         key={key}
                                         className="grid gap-2 rounded-md border bg-background/50 p-3 md:grid-cols-2 lg:grid-cols-[1fr_9rem_1fr_1fr_7rem_auto]"
                                     >
-                                        <input
+                                        <DeferredMapKeyInput
                                             title={mappingHelp.destinationName}
-                                            aria-label="Destination name"
+                                            ariaLabel="Destination name"
                                             value={key}
-                                            onChange={e =>
+                                            onCommit={nextKey =>
                                                 setMappingForm({
                                                     ...mappingForm,
                                                     destinations: renameKey(
                                                         mappingForm.destinations || {},
                                                         key,
-                                                        e.target.value
+                                                        nextKey
                                                     ),
                                                 })
                                             }
-                                            className={rowInputClass}
                                             placeholder="sales"
                                         />
                                         <select

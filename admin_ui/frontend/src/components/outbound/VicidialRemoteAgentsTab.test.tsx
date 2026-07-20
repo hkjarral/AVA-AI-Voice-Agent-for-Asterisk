@@ -253,6 +253,29 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         );
     });
 
+    it('keeps focus while editing disposition and destination names', async () => {
+        render(<VicidialRemoteAgentsTab />);
+        await screen.findByText('VICIdial Lab');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit mapping' }));
+
+        const dispositionName = screen.getByLabelText('Disposition name');
+        dispositionName.focus();
+        fireEvent.change(dispositionName, { target: { value: 'qualified_sale' } });
+        expect(dispositionName).toHaveFocus();
+        expect(dispositionName).toHaveValue('qualified_sale');
+        fireEvent.blur(dispositionName);
+        expect(screen.getByLabelText('Disposition name')).toHaveValue('qualified_sale');
+
+        const destinationName = screen.getByLabelText('Destination name');
+        destinationName.focus();
+        fireEvent.change(destinationName, { target: { value: 'priority_sales' } });
+        expect(destinationName).toHaveFocus();
+        expect(destinationName).toHaveValue('priority_sales');
+        fireEvent.blur(destinationName);
+        expect(screen.getByLabelText('Destination name')).toHaveValue('priority_sales');
+    });
+
     it('discovers an existing endpoint without replacing manual entry', async () => {
         render(<VicidialRemoteAgentsTab />);
         await screen.findByText('VICIdial Lab');

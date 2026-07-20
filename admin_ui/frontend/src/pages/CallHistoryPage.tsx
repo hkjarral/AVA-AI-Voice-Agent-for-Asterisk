@@ -151,6 +151,9 @@ const outcomeLabel = (outcome: string): string => {
     return outcome.replace(/_/g, ' ');
 };
 
+const CALL_DETAILS_FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 // How a call was routed to its agent (engine writes call_records.routing_method).
 // Older calls predating the column have method === null and render nothing.
 const RoutingBadge = ({ method }: { method: string | null }) => {
@@ -181,6 +184,9 @@ const CallHistoryPage = () => {
     const [selectedCall, setSelectedCall] = useState<CallRecordDetail | null>(null);
     const [selectedCallLoading, setSelectedCallLoading] = useState(false);
     const [showStats, setShowStats] = useState(true);
+    const callDetailsDialogRef = useRef<HTMLDivElement>(null);
+    const modalCall = selectedCall ?? selectedCallSummary;
+    const callDetailsOpen = Boolean(modalCall);
 
     // Recording playback
     const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
@@ -389,6 +395,65 @@ const CallHistoryPage = () => {
         }
     }, [cleanupAudio, location.hash, location.pathname, location.search, navigate]);
 
+    useEffect(() => {
+        if (!callDetailsOpen) return;
+        const dialog = callDetailsDialogRef.current;
+        if (!dialog) return;
+
+        const previouslyFocused = document.activeElement as HTMLElement | null;
+        const previousBodyOverflow = document.body.style.overflow;
+
+        const isTopmostModal = () => {
+            const dialogs = Array.from(
+                document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')
+            );
+            return dialogs[dialogs.length - 1] === dialog;
+        };
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (!isTopmostModal()) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeCallDetails();
+                return;
+            }
+            if (event.key !== 'Tab') return;
+
+            const focusable = Array.from(
+                dialog.querySelectorAll<HTMLElement>(CALL_DETAILS_FOCUSABLE_SELECTOR)
+            );
+            if (focusable.length === 0) {
+                event.preventDefault();
+                dialog.focus();
+                return;
+            }
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey) {
+                if (active === first || active === dialog || !dialog.contains(active)) {
+                    event.preventDefault();
+                    last.focus();
+                }
+            } else if (active === last || active === dialog || !dialog.contains(active)) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        document.body.style.overflow = 'hidden';
+        dialog.focus();
+
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = previousBodyOverflow;
+            previouslyFocused?.focus?.();
+        };
+    }, [callDetailsOpen, closeCallDetails]);
+
     // Deep-link support: /history?id=<call_record_id>
     useEffect(() => {
         const id = new URLSearchParams(location.search).get('id');
@@ -559,8 +624,6 @@ const CallHistoryPage = () => {
     };
 
     const hasActiveFilters = Object.values(filters).some(v => v !== '') || transcriptSearch !== '';
-    const modalCall = selectedCall ?? selectedCallSummary;
-
     return (
         <div className="space-y-6">
             {/* Header */}
@@ -863,10 +926,20 @@ const CallHistoryPage = () => {
                             </thead>
                             <tbody className="divide-y divide-border">
                                 {calls.map((call) => (
-	                                    <tr 
+	                                    <tr
 	                                        key={call.id} 
-	                                        className="hover:bg-muted/30 cursor-pointer"
-	                                        onClick={() => openCallDetails(call)}
+	                                        className="hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+	                                        tabIndex={0}
+	                                        aria-label={`Open call details for ${call.caller_number || call.call_id}`}
+	                                        onClick={(event) => {
+	                                            event.currentTarget.focus();
+	                                            void openCallDetails(call);
+	                                        }}
+	                                        onKeyDown={(event) => {
+	                                            if (event.key !== 'Enter' && event.key !== ' ') return;
+	                                            event.preventDefault();
+	                                            void openCallDetails(call);
+	                                        }}
 	                                    >
                                         <td className="px-4 py-3">
                                             <div className="font-medium">{call.caller_number || 'Unknown'}</div>
@@ -950,10 +1023,12 @@ const CallHistoryPage = () => {
             {modalCall && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
                     <div
+                        ref={callDetailsDialogRef}
+                        tabIndex={-1}
                         role="dialog"
                         aria-modal="true"
                         aria-labelledby="call-details-title"
-                        className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+                        className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col focus:outline-none"
                     >
                         {/* Modal Header */}
                         <div className="flex items-center justify-between p-4 border-b">

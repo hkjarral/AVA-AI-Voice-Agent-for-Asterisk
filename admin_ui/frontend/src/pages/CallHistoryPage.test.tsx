@@ -115,4 +115,37 @@ describe('CallHistoryPage deep links', () => {
             vi.mocked(axios.get).mock.calls.filter(([url]) => url === '/api/calls/record-1')
         ).toHaveLength(1);
     });
+
+    it('moves and traps focus, closes on Escape, and restores the previous focus', async () => {
+        render(
+            <MemoryRouter initialEntries={['/history?range=7d&id=record-1']}>
+                <button type="button">Return target</button>
+                <Routes>
+                    <Route path="/history" element={<CallHistoryPage />} />
+                </Routes>
+            </MemoryRouter>
+        );
+
+        const returnTarget = screen.getByRole('button', { name: 'Return target' });
+        returnTarget.focus();
+
+        const dialog = await screen.findByRole('dialog', { name: 'Call Details' });
+        await waitFor(() => expect(dialog).toHaveFocus());
+
+        const dialogButtons = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'));
+        const firstButton = dialogButtons[0];
+        const lastButton = dialogButtons[dialogButtons.length - 1];
+
+        lastButton.focus();
+        fireEvent.keyDown(document, { key: 'Tab' });
+        expect(firstButton).toHaveFocus();
+
+        firstButton.focus();
+        fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+        expect(lastButton).toHaveFocus();
+
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(dialog).not.toBeInTheDocument());
+        expect(returnTarget).toHaveFocus();
+    });
 });

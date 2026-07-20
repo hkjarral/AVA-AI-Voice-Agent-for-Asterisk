@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS = 5000
+
 
 @dataclass
 class CallRecord:
@@ -710,6 +712,7 @@ class CallHistoryStore:
         platform: str,
         start_date: datetime,
         end_date: Optional[datetime] = None,
+        max_rows: int = DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS,
     ) -> List[CallRecord]:
         """Return lightweight external-dialer records for bounded activity summaries.
 
@@ -724,6 +727,7 @@ class CallHistoryStore:
         normalized_platform = str(platform or "").strip().lower()
         if not normalized_platform:
             return []
+        bounded_max_rows = max(1, min(int(max_rows), 50000))
 
         def _list_sync():
             with self._lock:
@@ -751,8 +755,9 @@ class CallHistoryStore:
                         FROM call_records
                         WHERE {' AND '.join(conditions)}
                         ORDER BY start_time DESC
+                        LIMIT ?
                         """,
-                        params,
+                        [*params, bounded_max_rows],
                     )
                     return [CallRecord.from_dict(dict(row)) for row in cursor.fetchall()]
                 finally:
