@@ -548,6 +548,82 @@ class CallHistoryStore:
         
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _get_sync)
+
+    async def update_external_lifecycle(
+        self,
+        call_id: str,
+        *,
+        external_disposition: Optional[str],
+        external_metadata: Dict[str, Any],
+    ) -> bool:
+        """Merge a late external-dialer result into an existing history row.
+
+        Durable external-dialer retries can finish after normal call cleanup has
+        already saved Call History. Keep the original call record intact while
+        appending retry events and replacing only lifecycle summary fields. A
+        missing row is a successful no-op (history may be disabled, expired, or
+        not yet written); database failures return ``False`` so the durable
+        action remains retryable.
+        """
+        if not self._enabled:
+            return True
+
+        def _update_sync():
+            with self._lock:
+                conn = self._get_connection()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT external_metadata FROM call_records WHERE call_id = ?",
+                        (call_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        return True
+
+                    try:
+                        current = json.loads(row["external_metadata"] or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        current = {}
+                    if not isinstance(current, dict):
+                        current = {}
+
+                    updates = dict(external_metadata or {})
+                    previous_events = current.get("events")
+                    retry_events = updates.pop("events", None)
+                    current.update(updates)
+                    if isinstance(retry_events, list):
+                        current["events"] = [
+                            *(previous_events if isinstance(previous_events, list) else []),
+                            *retry_events,
+                        ]
+
+                    cursor.execute(
+                        """
+                        UPDATE call_records
+                        SET external_disposition = ?, external_metadata = ?
+                        WHERE call_id = ?
+                        """,
+                        (
+                            external_disposition,
+                            json.dumps(current),
+                            call_id,
+                        ),
+                    )
+                    conn.commit()
+                    return True
+                except Exception as exc:
+                    logger.error(
+                        "Failed to update external lifecycle for call %s: %s",
+                        call_id,
+                        exc,
+                    )
+                    return False
+                finally:
+                    conn.close()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _update_sync)
     
     async def list(
         self,

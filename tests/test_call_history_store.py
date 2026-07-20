@@ -184,6 +184,49 @@ async def test_external_activity_is_bounded_lightweight_and_keeps_mapping_metada
 
 
 @pytest.mark.asyncio
+async def test_external_lifecycle_update_merges_late_retry_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "external-retry.db"))
+    now = datetime.now(timezone.utc)
+    assert await store.save(
+        CallRecord(
+            call_id="vicidial-late-retry",
+            start_time=now,
+            end_time=now + timedelta(seconds=5),
+            external_platform="vicidial",
+            external_disposition=None,
+            external_metadata={
+                "mapping_id": "mapping-1",
+                "events": [{"operation": "terminal_queue", "success": True}],
+                "finalized": False,
+            },
+        )
+    ) is True
+
+    assert await store.update_external_lifecycle(
+        "vicidial-late-retry",
+        external_disposition="AIHU",
+        external_metadata={
+            "events": [{"operation": "hangup", "success": True}],
+            "disposition_label": "ai_hangup",
+            "finalized": True,
+        },
+    ) is True
+
+    updated = await store.get_by_call_id("vicidial-late-retry")
+    assert updated is not None
+    assert updated.external_disposition == "AIHU"
+    assert updated.external_metadata["mapping_id"] == "mapping-1"
+    assert updated.external_metadata["finalized"] is True
+    assert [event["operation"] for event in updated.external_metadata["events"]] == [
+        "terminal_queue",
+        "hangup",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_routing_method_round_trips(tmp_path, monkeypatch):
     """routing_method persists to DB and reads back unchanged."""
     monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")

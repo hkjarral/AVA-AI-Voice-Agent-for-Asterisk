@@ -2647,6 +2647,7 @@ async def test_missing_session_is_reconstructed_for_terminal_retry(monkeypatch):
     store = Store()
     session_store = MissingSessionStore()
     finalizer = AsyncMock(return_value=False)
+    history_store = SimpleNamespace(update_external_lifecycle=AsyncMock(return_value=True))
     engine = SimpleNamespace(
         session_store=session_store,
         _save_session=AsyncMock(),
@@ -2661,6 +2662,9 @@ async def test_missing_session_is_reconstructed_for_terminal_retry(monkeypatch):
     monkeypatch.setattr(
         "src.core.vicidial_store.get_vicidial_store", lambda: store
     )
+    monkeypatch.setattr(
+        "src.core.call_history.get_call_history_store", lambda: history_store
+    )
 
     assert await Engine._retry_pending_vicidial_actions(engine) == 0
     assert store.completed == []
@@ -2672,12 +2676,44 @@ async def test_missing_session_is_reconstructed_for_terminal_retry(monkeypatch):
         "M4050908070000012345"
     )
     assert session_store.removed == ["ari-missing-session"]
+    history_store.update_external_lifecycle.assert_not_awaited()
 
-    finalizer.return_value = True
+    async def finalize_retry(reconstructed_session, **_kwargs):
+        reconstructed_session.external_disposition = "DNCLST"
+        reconstructed_session.external_disposition_label = "dnc"
+        reconstructed_session.external_finalized = True
+        reconstructed_session.external_events.append(
+            {"operation": "hangup", "success": True}
+        )
+        return True
+
+    finalizer.side_effect = finalize_retry
+    history_store.update_external_lifecycle.return_value = False
+    store.retried.clear()
+    assert await Engine._retry_pending_vicidial_actions(engine) == 0
+    assert store.completed == []
+    assert "could not be persisted" in store.retried[0][1]["error"]
+    assert session_store.removed == [
+        "ari-missing-session",
+        "ari-missing-session",
+    ]
+
+    history_store.update_external_lifecycle.return_value = True
+    history_store.update_external_lifecycle.reset_mock()
     store.retried.clear()
     assert await Engine._retry_pending_vicidial_actions(engine) == 1
     assert store.completed == [action["id"]]
-    assert session_store.removed == ["ari-missing-session", "ari-missing-session"]
+    assert session_store.removed == [
+        "ari-missing-session",
+        "ari-missing-session",
+        "ari-missing-session",
+    ]
+    history_store.update_external_lifecycle.assert_awaited_once()
+    history_call = history_store.update_external_lifecycle.await_args
+    assert history_call.args == ("ari-missing-session",)
+    assert history_call.kwargs["external_disposition"] == "DNCLST"
+    assert history_call.kwargs["external_metadata"]["finalized"] is True
+    assert history_call.kwargs["external_metadata"]["events"][-1]["operation"] == "hangup"
 
 
 @pytest.mark.asyncio

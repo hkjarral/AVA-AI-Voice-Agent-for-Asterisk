@@ -2203,6 +2203,10 @@ class Engine:
                 ):
                     disposition_payload["workflow_committed"] = True
                     disposition_payload["workflow_queued"] = False
+                    # The retry worker owns completion of this durable row. The
+                    # finalizer must not close it before a reconstructed call's
+                    # already-persisted Call History record is updated.
+                    disposition_payload["retry_worker_owns_completion"] = True
                     session.external_disposition_payload = disposition_payload
                     await self._save_session(session)
                     try:
@@ -2216,6 +2220,57 @@ class Engine:
                                 or "durable-workflow-retry"
                             ),
                         )
+                        if finalized and reconstructed_session:
+                            from src.core.call_history import get_call_history_store
+
+                            history_store = get_call_history_store()
+                            history_updated = (
+                                await history_store.update_external_lifecycle(
+                                    call_id,
+                                    external_disposition=getattr(
+                                        session, "external_disposition", None
+                                    ),
+                                    external_metadata={
+                                        "session": getattr(
+                                            session, "external_session", {}
+                                        ) or {},
+                                        "mapping_id": (
+                                            getattr(
+                                                session, "external_mapping", {}
+                                            ) or {}
+                                        ).get("id"),
+                                        "mapping_name": (
+                                            getattr(
+                                                session, "external_mapping", {}
+                                            ) or {}
+                                        ).get("name"),
+                                        "events": getattr(
+                                            session, "external_events", []
+                                        ) or [],
+                                        "requested_disposition": getattr(
+                                            session,
+                                            "external_requested_disposition",
+                                            None,
+                                        ),
+                                        "disposition_label": getattr(
+                                            session,
+                                            "external_disposition_label",
+                                            None,
+                                        ),
+                                        "finalized": bool(
+                                            getattr(
+                                                session,
+                                                "external_finalized",
+                                                False,
+                                            )
+                                        ),
+                                    },
+                                )
+                            )
+                            if not history_updated:
+                                raise RuntimeError(
+                                    "VICIdial retry result could not be persisted to Call History"
+                                )
                     finally:
                         if reconstructed_session:
                             await self.session_store.remove_call(call_id)
@@ -4888,7 +4943,12 @@ class Engine:
                     ).get("workflow_queue_id")
                     or ""
                 ).strip()
-                if queued_action_id:
+                retry_worker_owns_completion = bool(
+                    dict(
+                        getattr(session, "external_disposition_payload", {}) or {}
+                    ).get("retry_worker_owns_completion")
+                )
+                if queued_action_id and not retry_worker_owns_completion:
                     try:
                         from src.core.vicidial_store import get_vicidial_store
 
