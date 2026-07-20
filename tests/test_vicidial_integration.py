@@ -2228,6 +2228,112 @@ async def test_engine_retries_and_completes_queued_dnc(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pending_action_keeps_captured_endpoint_when_connection_is_repointed():
+    captured_connection = {
+        **_connection(),
+        "id": "connection-1",
+        "agent_api_url": "http://vicidial.test/agc/api.php",
+        "non_agent_api_url": "http://vicidial.test/vicidial/non_agent_api.php",
+    }
+    action = {
+        "id": "action-captured-endpoint",
+        "operation": "dnc",
+        "connection": captured_connection,
+        "payload": {
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+        },
+        "call_id": "ari-captured-endpoint",
+        "status": "pending",
+    }
+    repointed_connection = {
+        **captured_connection,
+        "base_url": "http://other-vicidial.test",
+        "agent_api_url": "http://other-vicidial.test/agc/api.php",
+        "non_agent_api_url": "http://other-vicidial.test/vicidial/non_agent_api.php",
+        "username_env": "OTHER_VICI_USER",
+        "password_env": "OTHER_VICI_PASS",
+    }
+
+    class Store:
+        def get_connection(self, connection_id):
+            assert connection_id == "connection-1"
+            return repointed_connection
+
+        def mark_pending_action_workflow_completed(self, _action_id):
+            return True
+
+        def complete_pending_action(self, _action_id):
+            return True
+
+    engine = SimpleNamespace(
+        _execute_pending_vicidial_workflow=AsyncMock(return_value=True),
+        session_store=_SessionStore(
+            CallSession(
+                call_id="ari-captured-endpoint",
+                caller_channel_id="ari-captured-endpoint",
+            )
+        ),
+    )
+
+    await Engine._retry_pending_vicidial_action(engine, action, Store())
+
+    engine._execute_pending_vicidial_workflow.assert_awaited_once_with(
+        action, captured_connection
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_action_accepts_credential_rotation_on_same_endpoint():
+    captured_connection = {**_connection(), "id": "connection-1"}
+    action = {
+        "id": "action-rotated-credentials",
+        "operation": "dnc",
+        "connection": captured_connection,
+        "payload": {
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+        },
+        "call_id": "ari-rotated-credentials",
+        "status": "pending",
+    }
+    rotated_connection = {
+        **captured_connection,
+        "username_env": "ROTATED_VICI_USER",
+        "password_env": "ROTATED_VICI_PASS",
+    }
+
+    class Store:
+        def get_connection(self, _connection_id):
+            return rotated_connection
+
+        def mark_pending_action_workflow_completed(self, _action_id):
+            return True
+
+        def complete_pending_action(self, _action_id):
+            return True
+
+    engine = SimpleNamespace(
+        _execute_pending_vicidial_workflow=AsyncMock(return_value=True),
+        session_store=_SessionStore(
+            CallSession(
+                call_id="ari-rotated-credentials",
+                caller_channel_id="ari-rotated-credentials",
+            )
+        ),
+    )
+
+    await Engine._retry_pending_vicidial_action(engine, action, Store())
+
+    replay_connection = (
+        engine._execute_pending_vicidial_workflow.await_args.args[1]
+    )
+    assert replay_connection["base_url"] == captured_connection["base_url"]
+    assert replay_connection["username_env"] == "ROTATED_VICI_USER"
+    assert replay_connection["password_env"] == "ROTATED_VICI_PASS"
+
+
+@pytest.mark.asyncio
 async def test_pending_action_stays_open_until_terminal_retry_succeeds(monkeypatch):
     action = {
         "id": "action-terminal-1",

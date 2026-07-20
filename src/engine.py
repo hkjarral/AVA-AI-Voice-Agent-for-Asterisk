@@ -2081,7 +2081,24 @@ class Engine:
         payload = dict(action.get("payload") or {})
         connection_id = str(connection.get("id") or "").strip()
         if connection_id:
-            connection = store.get_connection(connection_id) or connection
+            live_connection = store.get_connection(connection_id)
+            endpoint_fields = (
+                "base_url",
+                "agent_api_url",
+                "non_agent_api_url",
+                "source",
+            )
+            if live_connection and all(
+                live_connection.get(key) == connection.get(key)
+                for key in endpoint_fields
+            ):
+                # The queued endpoint is immutable: replaying against a
+                # repointed connection ID could mutate an unrelated VICIdial
+                # server. Credential references may rotate only while the
+                # captured endpoint identity is unchanged.
+                for key in ("username_env", "password_env"):
+                    if live_connection.get(key):
+                        connection[key] = live_connection[key]
         if operation not in {"dnc", "callback"}:
             raise ValueError(f"Unsupported queued VICIdial action: {operation}")
         if not bool(action.get("workflow_completed")):
