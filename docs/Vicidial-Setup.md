@@ -416,7 +416,11 @@ transfer is not offered by `ra_call_control`.
 
 The `dnc` choice appears only when explicitly allowlisted. AAVA calls `add_dnc_phone` for the
 mapped campaign or `SYSTEM_INTERNAL`; an “already exists” response is treated as idempotent
-success. In the acceptance lab, confirm the resulting DNC row as well as the final call status.
+success. Transient failures receive three immediate attempts, then enter a deduplicated durable
+retry queue with bounded backoff; queued connection snapshots contain environment-variable
+references, never credential values. If the call is still active when the DNC write succeeds,
+AAVA resumes its pending terminal request. In the acceptance lab, confirm the resulting DNC row
+as well as the final call status.
 
 ### Scheduled callback
 

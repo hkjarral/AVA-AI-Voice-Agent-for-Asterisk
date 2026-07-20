@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import structlog
 
@@ -50,7 +50,11 @@ def _dialing_campaign_id(
     return str(info.campaign_id or mapping.get("campaign_id") or "").strip()
 
 
-async def commit_vicidial_disposition_workflow(session: Any) -> bool:
+async def commit_vicidial_disposition_workflow(
+    session: Any,
+    *,
+    retry_terminal: Optional[Dict[str, str]] = None,
+) -> bool:
     """Commit and verify a pending DNC/callback side effect before hangup."""
     semantic = str(getattr(session, "external_disposition_label", None) or "").strip()
     if semantic not in {"dnc", "callback"}:
@@ -76,11 +80,74 @@ async def commit_vicidial_disposition_workflow(session: Any) -> bool:
                 **result.to_dict(),
             })
             if result.success:
+                queued_action_id = str(payload.get("workflow_queue_id") or "").strip()
+                if queued_action_id:
+                    try:
+                        from src.core.vicidial_store import get_vicidial_store
+
+                        get_vicidial_store().complete_pending_action(queued_action_id)
+                    except Exception:
+                        logger.warning(
+                            "VICIdial DNC succeeded but its retry record was not completed",
+                            call_id=getattr(session, "call_id", None),
+                            action_id=queued_action_id,
+                            exc_info=True,
+                        )
                 payload["workflow_committed"] = True
                 session.external_disposition_payload = payload
                 return True
             if attempt < DNC_WRITE_ATTEMPTS:
                 await asyncio.sleep(DNC_RETRY_DELAY_SECONDS)
+        try:
+            from src.core.vicidial_store import get_vicidial_store
+
+            queued_payload = dict(payload)
+            if retry_terminal:
+                queued_payload["retry_terminal"] = {
+                    "semantic": str(retry_terminal.get("semantic") or "ai_hangup"),
+                    "operation_reason": str(
+                        retry_terminal.get("operation_reason") or "durable-dnc-retry"
+                    ),
+                }
+            queued = get_vicidial_store().enqueue_pending_action(
+                operation="dnc",
+                connection=connection,
+                payload=queued_payload,
+                call_id=str(getattr(session, "call_id", None) or "") or None,
+                external_call_id=info.external_call_id or None,
+            )
+            if not str(queued.get("id") or "").strip():
+                raise RuntimeError("VICIdial DNC retry queue did not return an action ID")
+            if str(queued.get("status") or "") == "completed":
+                payload["workflow_committed"] = True
+                session.external_disposition_payload = payload
+                session.external_events.append({
+                    "operation": "dnc_queue",
+                    "success": True,
+                    "message": "An identical queued DNC action was already completed",
+                    "action_id": queued.get("id"),
+                })
+                return True
+            payload["workflow_queued"] = True
+            payload["workflow_queue_id"] = queued.get("id")
+            session.external_disposition_payload = payload
+            session.external_events.append({
+                "operation": "dnc_queue",
+                "success": True,
+                "message": "DNC action queued durably for retry",
+                "action_id": queued.get("id"),
+            })
+        except Exception as exc:
+            session.external_events.append({
+                "operation": "dnc_queue",
+                "success": False,
+                "message": f"DNC retry queue failed: {type(exc).__name__}",
+            })
+            logger.error(
+                "VICIdial DNC retries exhausted and durable queueing failed",
+                call_id=getattr(session, "call_id", None),
+                exc_info=True,
+            )
         return False
 
     expected = {
@@ -163,12 +230,34 @@ async def execute_vicidial_transfer(
     context: ToolExecutionContext,
     destination: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Commit a configured cold transfer through VICIdial's RA API."""
-    session = await context.get_session()
+    """Serialize a configured cold transfer with other terminal operations."""
+    from src.core.vicidial_lifecycle import vicidial_lifecycle_lock
+
+    async with vicidial_lifecycle_lock(context.call_id):
+        session = await context.get_session()
+        return await _execute_vicidial_transfer_locked(
+            context=context,
+            destination=destination,
+            session=session,
+        )
+
+
+async def _execute_vicidial_transfer_locked(
+    *,
+    context: ToolExecutionContext,
+    destination: Dict[str, Any],
+    session: Any,
+) -> Dict[str, Any]:
+    """Commit a cold transfer while the call lifecycle lock is held."""
     if getattr(session, "external_platform", None) != "vicidial":
         return {"status": "failed", "message": "This is not a VICIdial-owned call"}
     if bool(getattr(session, "external_finalized", False)):
         return {"status": "failed", "message": "The VICIdial call is already finalized"}
+    if bool(getattr(session, "external_finalizing", False)):
+        return {
+            "status": "failed",
+            "message": "The VICIdial terminal workflow has already started",
+        }
 
     # DNC and callback are API workflows, not merely terminal statuses. Commit
     # and verify either one before transfer finalizes the Remote Agent session;

@@ -345,6 +345,7 @@ class Engine:
         # ------------------------------------------------------------------
         self.outbound_store = get_outbound_store()
         self._outbound_scheduler_task: Optional[asyncio.Task] = None
+        self._vicidial_action_retry_task: Optional[asyncio.Task] = None
         self._retention_cleanup_task: Optional[asyncio.Task] = None
         # Warm/probe task for a local default provider (breaks the readiness
         # deadlock: LocalProvider opens its WS lazily on the first call, so
@@ -1101,6 +1102,13 @@ class Engine:
                 self._outbound_scheduler_task = asyncio.create_task(self._outbound_scheduler_loop())
         except Exception:
             logger.debug("Failed to start outbound scheduler task", exc_info=True)
+        try:
+            if not self._vicidial_action_retry_task:
+                self._vicidial_action_retry_task = asyncio.create_task(
+                    self._vicidial_action_retry_loop()
+                )
+        except Exception:
+            logger.debug("Failed to start VICIdial action retry task", exc_info=True)
         # LOW-CH1: warm the call-history store off the event loop so the first call's
         # teardown doesn't pay a synchronous _init_db() (mkdir/connect/CREATE) on the loop.
         try:
@@ -2024,6 +2032,125 @@ class Engine:
         except Exception:
             logger.debug("Pipeline readiness refresh loop exited", exc_info=True)
 
+    async def _retry_pending_vicidial_actions(self) -> int:
+        """Retry due idempotent VICIdial compliance actions from durable storage."""
+        from src.core.vicidial_store import get_vicidial_store
+        from src.integrations.vicidial import VicidialApiClient
+
+        store = get_vicidial_store()
+        completed = 0
+        for action in store.list_pending_actions(limit=20):
+            action_id = str(action.get("id") or "").strip()
+            operation = str(action.get("operation") or "").strip().lower()
+            connection = dict(action.get("connection") or {})
+            payload = dict(action.get("payload") or {})
+            connection_id = str(connection.get("id") or "").strip()
+            if connection_id:
+                connection = store.get_connection(connection_id) or connection
+            try:
+                if operation != "dnc":
+                    raise ValueError(f"Unsupported queued VICIdial action: {operation}")
+                result = await VicidialApiClient(connection).add_dnc_phone(
+                    phone_number=str(payload.get("phone_number") or ""),
+                    campaign_id=str(payload.get("campaign_id") or ""),
+                )
+                if result.success:
+                    store.complete_pending_action(action_id)
+                    completed += 1
+                    logger.info(
+                        "Durable VICIdial action completed",
+                        action_id=action_id,
+                        operation=operation,
+                        call_id=action.get("call_id"),
+                        external_call_id=action.get("external_call_id"),
+                    )
+                    retry_terminal = payload.get("retry_terminal")
+                    if isinstance(retry_terminal, dict):
+                        try:
+                            call_id = str(action.get("call_id") or "").strip()
+                            session = (
+                                await self.session_store.get_by_call_id(call_id)
+                                if call_id
+                                else None
+                            )
+                            if (
+                                session
+                                and getattr(session, "external_platform", None)
+                                == "vicidial"
+                                and not bool(
+                                    getattr(session, "external_finalized", False)
+                                )
+                            ):
+                                disposition_payload = dict(
+                                    getattr(
+                                        session,
+                                        "external_disposition_payload",
+                                        {},
+                                    )
+                                    or {}
+                                )
+                                disposition_payload["workflow_committed"] = True
+                                disposition_payload["workflow_queued"] = False
+                                session.external_disposition_payload = disposition_payload
+                                await self._save_session(session)
+                                finalized = await self._finalize_vicidial_call(
+                                    session,
+                                    semantic=str(
+                                        retry_terminal.get("semantic") or "ai_hangup"
+                                    ),
+                                    operation_reason=str(
+                                        retry_terminal.get("operation_reason")
+                                        or "durable-dnc-retry"
+                                    ),
+                                )
+                                if not finalized:
+                                    logger.warning(
+                                        "VICIdial DNC completed but terminal retry was not confirmed",
+                                        action_id=action_id,
+                                        call_id=call_id,
+                                    )
+                        except Exception:
+                            logger.warning(
+                                "VICIdial DNC completed but terminal retry raised",
+                                action_id=action_id,
+                                call_id=action.get("call_id"),
+                                exc_info=True,
+                            )
+                    continue
+                error = result.error_code or result.message or "VICIdial rejected action"
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            attempts = int(action.get("attempt_count") or 0) + 1
+            retry_after = min(900.0, 15.0 * (2 ** min(attempts - 1, 6)))
+            store.retry_pending_action(
+                action_id,
+                error=str(error),
+                retry_after_seconds=retry_after,
+            )
+            logger.warning(
+                "Durable VICIdial action retry deferred",
+                action_id=action_id,
+                operation=operation,
+                attempt=attempts,
+                retry_after_seconds=retry_after,
+            )
+        return completed
+
+    async def _vicidial_action_retry_loop(self, interval_sec: float = 5.0) -> None:
+        """Continuously drain the durable VICIdial compliance-action outbox."""
+        logger.info("VICIdial action retry worker started")
+        try:
+            while True:
+                try:
+                    await self._retry_pending_vicidial_actions()
+                except Exception:
+                    logger.warning("VICIdial action retry pass failed", exc_info=True)
+                await asyncio.sleep(max(1.0, float(interval_sec)))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("VICIdial action retry worker crashed", exc_info=True)
+
     async def _outbound_scheduler_loop(self) -> None:
         """Background control-plane: lease leads and originate outbound calls."""
         logger.info("Outbound scheduler started")
@@ -2865,7 +2992,12 @@ class Engine:
 
         # Stop background loop tasks (warm/probe, retention) so they don't run
         # after shutdown begins.
-        for attr in ("_local_warm_task", "_pipeline_readiness_task", "_retention_cleanup_task"):
+        for attr in (
+            "_local_warm_task",
+            "_pipeline_readiness_task",
+            "_retention_cleanup_task",
+            "_vicidial_action_retry_task",
+        ):
             try:
                 t = getattr(self, attr, None)
                 if t and not t.done():
@@ -4366,7 +4498,13 @@ class Engine:
         await self._save_session(session)
         try:
             try:
-                workflow_ok = await commit_vicidial_disposition_workflow(session)
+                workflow_ok = await commit_vicidial_disposition_workflow(
+                    session,
+                    retry_terminal={
+                        "semantic": semantic,
+                        "operation_reason": operation_reason,
+                    },
+                )
             except Exception as exc:
                 workflow_ok = False
                 session.external_events.append({

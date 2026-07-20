@@ -1126,6 +1126,46 @@ def test_store_invalidates_mapping_readiness_after_connection_change(tmp_path):
     assert store.get_mapping("mapping-1")["last_verification"] is None
 
 
+def test_store_persists_pending_dnc_actions_across_instances(tmp_path):
+    db_path = str(tmp_path / "vicidial.db")
+    first_store = VicidialStore(db_path)
+    queued = first_store.enqueue_pending_action(
+        operation="dnc",
+        connection={**_connection(), "id": "connection-1"},
+        payload={
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+            "ignored": "not persisted",
+        },
+        call_id="ari-dnc-durable",
+        external_call_id="M4050908070000012345",
+    )
+
+    second_store = VicidialStore(db_path)
+    duplicate = second_store.enqueue_pending_action(
+        operation="dnc",
+        connection={**_connection(), "id": "connection-1"},
+        payload={
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+        },
+    )
+    due = second_store.list_pending_actions()
+    assert len(due) == 1
+    assert due[0]["id"] == queued["id"]
+    assert duplicate["id"] == queued["id"]
+    assert due[0]["operation"] == "dnc"
+    assert due[0]["connection"]["id"] == "connection-1"
+    assert due[0]["connection"]["username_env"] == "VICI_USER"
+    assert due[0]["payload"] == {
+        "phone_number": "13165551212",
+        "campaign_id": "TESTCAMP",
+    }
+
+    assert first_store.complete_pending_action(queued["id"]) is True
+    assert VicidialStore(db_path).list_pending_actions() == []
+
+
 class _SessionStore:
     def __init__(self, session):
         self.session = session
@@ -1184,6 +1224,54 @@ async def test_vicidial_transfer_uses_api_and_marks_session_without_ari(monkeypa
     assert store.session.external_finalized is True
     assert store.session.transfer_active is True
     assert store.session.transfer_destination == "SALESLINE"
+
+
+@pytest.mark.asyncio
+async def test_vicidial_transfer_cannot_race_terminal_finalization(monkeypatch):
+    session = CallSession(call_id="ari-transfer-race", caller_channel_id="ari-transfer-race")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    store = _SessionStore(session)
+    context = ToolExecutionContext(call_id=session.call_id, session_store=store)
+    lock = vicidial_lifecycle_lock(session.call_id)
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def call_control(self, *_args, **_kwargs):
+            raise AssertionError("transfer control must not run after finalization starts")
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+    await lock.acquire()
+    try:
+        pending = asyncio.create_task(
+            execute_vicidial_transfer(
+                context=context,
+                destination={
+                    "type": "vicidial_ingroup",
+                    "target": "SALESLINE",
+                },
+            )
+        )
+        await asyncio.sleep(0)
+        assert pending.done() is False
+        session.external_finalizing = True
+    finally:
+        lock.release()
+
+    assert await pending == {
+        "status": "failed",
+        "message": "The VICIdial terminal workflow has already started",
+    }
+    assert session.external_finalized is False
+    assert bool(getattr(session, "transfer_active", False)) is False
 
 
 @pytest.mark.asyncio
@@ -1554,6 +1642,145 @@ async def test_dnc_workflow_retries_idempotent_write(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_exhausted_dnc_writes_are_durably_queued(monkeypatch):
+    session = CallSession(call_id="ari-dnc-queued", caller_channel_id="ari-dnc-queued")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        phone_number="13165551212",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = {**_connection(), "id": "connection-1"}
+    session.external_requested_disposition = "DNC"
+    session.external_disposition_label = "dnc"
+    session.external_disposition_payload = {
+        "phone_number": "13165551212",
+        "campaign_id": "TESTCAMP",
+    }
+    attempts = 0
+    queued = {}
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def add_dnc_phone(self, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            return VicidialApiResult(
+                False,
+                "add_dnc_phone",
+                "temporary failure",
+                error_code="timeout",
+            )
+
+    class Store:
+        def enqueue_pending_action(self, **kwargs):
+            queued.update(kwargs)
+            return {"id": "action-1", "status": "pending"}
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+    monkeypatch.setattr("src.tools.telephony.vicidial.DNC_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: Store()
+    )
+
+    assert await commit_vicidial_disposition_workflow(session) is False
+    assert attempts == 3
+    assert queued["operation"] == "dnc"
+    assert queued["connection"]["id"] == "connection-1"
+    assert queued["payload"]["phone_number"] == "13165551212"
+    assert queued["call_id"] == session.call_id
+    assert session.external_disposition_payload["workflow_queued"] is True
+    assert session.external_disposition_payload["workflow_queue_id"] == "action-1"
+    assert session.external_events[-1]["operation"] == "dnc_queue"
+    assert session.external_events[-1]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_engine_retries_and_completes_queued_dnc(monkeypatch):
+    action = {
+        "id": "action-1",
+        "operation": "dnc",
+        "connection": {**_connection(), "id": "connection-1"},
+        "payload": {
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+            "retry_terminal": {
+                "semantic": "ai_hangup",
+                "operation_reason": "hangup-tool",
+            },
+        },
+        "call_id": "ari-dnc-queued",
+        "external_call_id": "M4050908070000012345",
+        "attempt_count": 2,
+    }
+
+    class Store:
+        def __init__(self):
+            self.completed = []
+
+        def list_pending_actions(self, **_kwargs):
+            return [action]
+
+        def get_connection(self, connection_id):
+            assert connection_id == "connection-1"
+            return action["connection"]
+
+        def complete_pending_action(self, action_id):
+            self.completed.append(action_id)
+            return True
+
+        def retry_pending_action(self, *_args, **_kwargs):
+            raise AssertionError("successful DNC retry must not be deferred")
+
+    store = Store()
+
+    class Client:
+        def __init__(self, connection):
+            assert connection["id"] == "connection-1"
+
+        async def add_dnc_phone(self, **kwargs):
+            assert kwargs == {
+                "phone_number": "13165551212",
+                "campaign_id": "TESTCAMP",
+            }
+            return VicidialApiResult(True, "add_dnc_phone", "SUCCESS")
+
+    monkeypatch.setattr("src.core.vicidial_store.get_vicidial_store", lambda: store)
+    monkeypatch.setattr("src.integrations.vicidial.VicidialApiClient", Client)
+
+    session = CallSession(
+        call_id="ari-dnc-queued", caller_channel_id="ari-dnc-queued"
+    )
+    session.external_platform = "vicidial"
+    session.external_disposition_payload = {
+        "phone_number": "13165551212",
+        "campaign_id": "TESTCAMP",
+        "workflow_queued": True,
+        "workflow_queue_id": "action-1",
+    }
+    engine = SimpleNamespace(
+        session_store=_SessionStore(session),
+        _save_session=AsyncMock(),
+        _finalize_vicidial_call=AsyncMock(return_value=True),
+    )
+
+    assert await Engine._retry_pending_vicidial_actions(engine) == 1
+    assert store.completed == ["action-1"]
+    assert session.external_disposition_payload["workflow_committed"] is True
+    assert session.external_disposition_payload["workflow_queued"] is False
+    engine._finalize_vicidial_call.assert_awaited_once_with(
+        session,
+        semantic="ai_hangup",
+        operation_reason="hangup-tool",
+    )
+
+
+@pytest.mark.asyncio
 async def test_inbound_dnc_never_uses_closer_login_mode_as_action_campaign():
     session = CallSession(call_id="ari-dnc", caller_channel_id="ari-dnc")
     session.external_platform = "vicidial"
@@ -1921,7 +2148,7 @@ async def test_engine_defers_terminal_control_until_dnc_is_confirmed(monkeypatch
     async def save(saved_session):
         assert saved_session is session
 
-    async def fail_workflow(_session):
+    async def fail_workflow(_session, **_kwargs):
         return False
 
     monkeypatch.setattr(

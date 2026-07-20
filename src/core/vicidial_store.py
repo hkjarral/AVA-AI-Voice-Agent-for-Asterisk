@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -160,6 +160,26 @@ class VicidialStore:
                     ON vicidial_mappings(connection_id);
                 CREATE INDEX IF NOT EXISTS idx_vicidial_mappings_enabled
                     ON vicidial_mappings(enabled);
+
+                CREATE TABLE IF NOT EXISTS vicidial_pending_actions (
+                    id TEXT PRIMARY KEY,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    operation TEXT NOT NULL,
+                    connection_json TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    call_id TEXT,
+                    external_call_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vicidial_pending_actions_due
+                    ON vicidial_pending_actions(status, next_attempt_at);
                 """
             )
             # Additive migration for databases created by an earlier preview.
@@ -484,6 +504,170 @@ class VicidialStore:
                 "SELECT * FROM vicidial_connections WHERE id=?", (connection_id,)
             ).fetchone()
         return self._connection_dict(row) if row else None
+
+    @staticmethod
+    def _pending_action_dict(row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        data["connection"] = _decode(data.pop("connection_json", None), {})
+        data["payload"] = _decode(data.pop("payload_json", None), {})
+        data["attempt_count"] = int(data.get("attempt_count") or 0)
+        return data
+
+    def enqueue_pending_action(
+        self,
+        *,
+        operation: str,
+        connection: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        call_id: Optional[str] = None,
+        external_call_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Durably enqueue an idempotent VICIdial side effect for retry."""
+        normalized_operation = str(operation or "").strip().lower()
+        if normalized_operation != "dnc":
+            raise ValueError("Only idempotent VICIdial DNC actions may be queued")
+        action_payload = {
+            "phone_number": str(payload.get("phone_number") or "").strip(),
+            "campaign_id": str(payload.get("campaign_id") or "").strip(),
+        }
+        retry_terminal = payload.get("retry_terminal")
+        if isinstance(retry_terminal, Mapping):
+            action_payload["retry_terminal"] = {
+                "semantic": str(retry_terminal.get("semantic") or "ai_hangup")[:40],
+                "operation_reason": str(
+                    retry_terminal.get("operation_reason") or "durable-dnc-retry"
+                )[:120],
+            }
+        if not action_payload["phone_number"] or not action_payload["campaign_id"]:
+            raise ValueError("Queued VICIdial DNC requires phone and campaign")
+        connection_snapshot = {
+            key: connection.get(key)
+            for key in (
+                "id",
+                "base_url",
+                "agent_api_url",
+                "non_agent_api_url",
+                "source",
+                "username_env",
+                "password_env",
+                "verify_ssl",
+                "timeout_ms",
+                "timezone",
+            )
+            if connection.get(key) is not None
+        }
+        if not str(connection_snapshot.get("base_url") or "").strip():
+            raise ValueError("Queued VICIdial DNC requires a connection URL")
+        dedupe_material = {
+            "operation": normalized_operation,
+            "connection": str(
+                connection_snapshot.get("id")
+                or connection_snapshot.get("base_url")
+                or ""
+            ),
+            "payload": {
+                "phone_number": action_payload["phone_number"],
+                "campaign_id": action_payload["campaign_id"],
+            },
+        }
+        dedupe_key = hashlib.sha256(
+            json.dumps(
+                dedupe_material,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        action_id = str(uuid.uuid4())
+        now = _now()
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO vicidial_pending_actions (
+                    id,dedupe_key,operation,connection_json,payload_json,
+                    call_id,external_call_id,status,attempt_count,next_attempt_at,
+                    created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,'pending',0,?,?,?)
+                ON CONFLICT(dedupe_key) DO UPDATE SET
+                    connection_json=excluded.connection_json,
+                    payload_json=excluded.payload_json,
+                    call_id=COALESCE(excluded.call_id,vicidial_pending_actions.call_id),
+                    external_call_id=COALESCE(
+                        excluded.external_call_id,
+                        vicidial_pending_actions.external_call_id
+                    ),
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    action_id,
+                    dedupe_key,
+                    normalized_operation,
+                    _json(connection_snapshot, {}),
+                    _json(action_payload, {}),
+                    str(call_id or "").strip() or None,
+                    str(external_call_id or "").strip() or None,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM vicidial_pending_actions WHERE dedupe_key=?",
+                (dedupe_key,),
+            ).fetchone()
+        return self._pending_action_dict(row) if row else {}
+
+    def list_pending_actions(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return due pending actions in stable retry order."""
+        bounded_limit = max(1, min(int(limit or 20), 100))
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM vicidial_pending_actions
+                 WHERE status='pending' AND next_attempt_at<=?
+                 ORDER BY next_attempt_at, created_at, id
+                 LIMIT ?
+                """,
+                (_now(), bounded_limit),
+            ).fetchall()
+        return [self._pending_action_dict(row) for row in rows]
+
+    def retry_pending_action(
+        self,
+        action_id: str,
+        *,
+        error: str,
+        retry_after_seconds: float,
+    ) -> bool:
+        """Record a failed attempt and move its next retry into the future."""
+        now_dt = datetime.now(timezone.utc)
+        next_attempt = (
+            now_dt + timedelta(seconds=max(1.0, float(retry_after_seconds)))
+        ).isoformat()
+        with self._lock, self._connection() as conn:
+            cur = conn.execute(
+                """
+                UPDATE vicidial_pending_actions
+                   SET attempt_count=attempt_count+1,
+                       next_attempt_at=?,last_error=?,updated_at=?
+                 WHERE id=? AND status='pending'
+                """,
+                (next_attempt, str(error or "")[:500], now_dt.isoformat(), action_id),
+            )
+        return cur.rowcount > 0
+
+    def complete_pending_action(self, action_id: str) -> bool:
+        """Mark a queued action complete while retaining durable audit evidence."""
+        now = _now()
+        with self._lock, self._connection() as conn:
+            cur = conn.execute(
+                """
+                UPDATE vicidial_pending_actions
+                   SET status='completed',completed_at=?,last_error=NULL,updated_at=?
+                 WHERE id=? AND status='pending'
+                """,
+                (now, now, action_id),
+            )
+        return cur.rowcount > 0
 
     def save_connection(
         self, payload: Mapping[str, Any], connection_id: Optional[str] = None
