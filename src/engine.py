@@ -4811,13 +4811,24 @@ class Engine:
                 getattr(session, "external_requested_disposition", None)
                 or status_for(mapping, semantic, default_status)
             )
+            existing_label = str(
+                getattr(session, "external_disposition_label", None) or ""
+            ).strip().lower()
+            terminal_semantic = (
+                existing_label
+                if existing_label in {"dnc", "callback"}
+                else semantic
+            )
+            existing_payload = dict(
+                getattr(session, "external_disposition_payload", {}) or {}
+            )
             queued = get_vicidial_store().enqueue_pending_action(
                 operation="terminal",
                 connection=connection,
                 payload={
                     "requested_status": status,
                     "retry_terminal": {
-                        "semantic": semantic,
+                        "semantic": terminal_semantic,
                         "operation_reason": operation_reason,
                         "session": {
                             key: value
@@ -4836,8 +4847,9 @@ class Engine:
             if not action_id:
                 raise RuntimeError("VICIdial terminal retry queue returned no action ID")
             session.external_requested_disposition = status
-            session.external_disposition_label = semantic
+            session.external_disposition_label = terminal_semantic
             session.external_disposition_payload = {
+                **existing_payload,
                 "workflow_committed": True,
                 "workflow_queued": str(queued.get("status") or "") == "pending",
                 "workflow_queue_id": action_id,
@@ -4863,6 +4875,96 @@ class Engine:
                 exc_info=True,
             )
             return False
+
+    def _retain_vicidial_cleanup_retry(
+        self,
+        session: CallSession,
+        *,
+        semantic: str,
+        operation_reason: str,
+    ) -> bool:
+        """Ensure failed ordinary cleanup retains one durable terminal owner."""
+        pending_semantic = str(
+            getattr(session, "external_disposition_label", None) or ""
+        ).strip().lower()
+        payload = dict(getattr(session, "external_disposition_payload", {}) or {})
+        if pending_semantic in {"dnc", "callback"} and not bool(
+            payload.get("workflow_committed")
+        ):
+            try:
+                from src.core.vicidial_store import get_vicidial_store
+                from src.tools.telephony.vicidial import (
+                    queue_vicidial_disposition_workflow,
+                )
+
+                queue_vicidial_disposition_workflow(
+                    session,
+                    retry_terminal={
+                        "semantic": semantic,
+                        "operation_reason": operation_reason,
+                    },
+                )
+                action_id = str(
+                    dict(
+                        getattr(session, "external_disposition_payload", {}) or {}
+                    ).get("workflow_queue_id")
+                    or ""
+                ).strip()
+                action = (
+                    get_vicidial_store().get_pending_action(action_id)
+                    if action_id
+                    else None
+                )
+                if (
+                    action
+                    and str(action.get("status") or "") == "pending"
+                    and isinstance(
+                        dict(action.get("payload") or {}).get("retry_terminal"),
+                        dict,
+                    )
+                ):
+                    return True
+            except Exception:
+                logger.warning(
+                    "VICIdial compliance retry could not retain terminal ownership",
+                    call_id=session.call_id,
+                    workflow=pending_semantic,
+                    exc_info=True,
+                )
+        return self._queue_vicidial_terminal_retry(
+            session,
+            semantic=semantic,
+            operation_reason=operation_reason,
+        )
+
+    async def _finalize_vicidial_during_cleanup(
+        self,
+        session: CallSession,
+        *,
+        call_outcome: str,
+    ) -> bool:
+        """Finalize ordinary cleanup or retain its terminal work durably."""
+        semantic = "caller_hangup" if call_outcome == "caller_hangup" else "ai_hangup"
+        finalized = await self._finalize_vicidial_call(
+            session,
+            semantic=semantic,
+            operation_reason="call-cleanup",
+        )
+        if finalized:
+            return True
+        retained = self._retain_vicidial_cleanup_retry(
+            session,
+            semantic=semantic,
+            operation_reason="call-cleanup",
+        )
+        await self._save_session(session)
+        if not retained:
+            logger.error(
+                "VICIdial cleanup failed without a durable terminal retry owner",
+                call_id=session.call_id,
+                external_call_id=getattr(session, "external_call_id", None),
+            )
+        return False
 
     async def _finalize_vicidial_call_locked(
         self,
@@ -8350,10 +8452,9 @@ class Engine:
                 and not self._session_was_transferred(session)
             ):
                 try:
-                    await self._finalize_vicidial_call(
+                    await self._finalize_vicidial_during_cleanup(
                         session,
-                        semantic="caller_hangup" if call_outcome == "caller_hangup" else "ai_hangup",
-                        operation_reason="call-cleanup",
+                        call_outcome=call_outcome,
                     )
                 except Exception:
                     logger.warning(

@@ -126,6 +126,36 @@ def _queue_pending_workflow(
     return False
 
 
+def queue_vicidial_disposition_workflow(
+    session: Any,
+    *,
+    retry_terminal: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Durably retain a selected DNC/callback before acknowledging it."""
+    semantic = str(
+        getattr(session, "external_disposition_label", None) or ""
+    ).strip().lower()
+    if semantic not in {"dnc", "callback"}:
+        return False
+    payload = dict(getattr(session, "external_disposition_payload", {}) or {})
+    already_completed = _queue_pending_workflow(
+        session,
+        semantic=semantic,
+        connection=dict(getattr(session, "external_connection", {}) or {}),
+        payload=payload,
+        info=_session_info(session),
+        retry_terminal=retry_terminal,
+    )
+    retained_payload = dict(
+        getattr(session, "external_disposition_payload", {}) or {}
+    )
+    return bool(
+        already_completed
+        or retained_payload.get("workflow_committed")
+        or retained_payload.get("workflow_queued")
+    )
+
+
 async def commit_vicidial_disposition_workflow(
     session: Any,
     *,
@@ -708,9 +738,47 @@ class SetCallDispositionTool(Tool):
             "semantic": semantic,
             "status": status,
         })
+        if semantic in {"dnc", "callback"} and not queue_vicidial_disposition_workflow(
+            session
+        ):
+            session.external_requested_disposition = None
+            session.external_disposition_label = None
+            session.external_disposition_payload = {}
+            session.external_events.append({
+                "operation": "disposition_durability",
+                "success": False,
+                "semantic": semantic,
+                "message": (
+                    "VICIdial compliance request was not acknowledged because "
+                    "durable storage failed"
+                ),
+            })
+            await context.session_store.upsert_call(session)
+            return {
+                "status": "failed",
+                "message": (
+                    f"The {semantic} request could not be recorded safely. "
+                    "Please retry."
+                ),
+            }
         await context.session_store.upsert_call(session)
+        retained_payload = dict(
+            getattr(session, "external_disposition_payload", {}) or {}
+        )
+        if semantic in {"dnc", "callback"}:
+            durability = (
+                "confirmed in VICIdial"
+                if retained_payload.get("workflow_committed")
+                else "recorded durably for VICIdial"
+            )
+            message = (
+                f"{semantic.title()} request {durability}; the final call status "
+                "will be applied when the call ends."
+            )
+        else:
+            message = f"Disposition set to {semantic}; it will be applied when the call ends."
         return {
             "status": "success",
-            "message": f"Disposition set to {semantic}; it will be applied when the call ends.",
+            "message": message,
             "vicidial_status": status,
         }

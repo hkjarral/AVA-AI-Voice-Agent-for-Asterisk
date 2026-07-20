@@ -99,6 +99,14 @@ def _mapping(connection_id: str = "connection-1"):
     }
 
 
+def _use_durable_vicidial_store(monkeypatch, tmp_path) -> VicidialStore:
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    return store
+
+
 def _stored_mapping_revision(store: VicidialStore, mapping_id: str) -> str:
     mapping = store.get_mapping(mapping_id)
     assert mapping is not None
@@ -1885,7 +1893,10 @@ async def test_vicidial_transfer_cannot_race_terminal_finalization(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_vicidial_transfer_commits_pending_dnc_before_call_control(monkeypatch):
+async def test_vicidial_transfer_commits_pending_dnc_before_call_control(
+    monkeypatch, tmp_path
+):
+    _use_durable_vicidial_store(monkeypatch, tmp_path)
     session = CallSession(call_id="ari-dnc-transfer", caller_channel_id="ari-dnc-transfer")
     session.external_platform = "vicidial"
     session.external_session = VicidialSessionInfo(
@@ -2005,7 +2016,8 @@ async def test_vicidial_transfer_commits_pending_callback_before_call_control(
 
 
 @pytest.mark.asyncio
-async def test_pending_vicidial_dnc_cannot_be_overwritten():
+async def test_pending_vicidial_dnc_cannot_be_overwritten(monkeypatch, tmp_path):
+    retry_store = _use_durable_vicidial_store(monkeypatch, tmp_path)
     session = CallSession(call_id="ari-dnc-lock", caller_channel_id="ari-dnc-lock")
     session.external_platform = "vicidial"
     session.external_session = VicidialSessionInfo(
@@ -2037,10 +2049,18 @@ async def test_pending_vicidial_dnc_cannot_be_overwritten():
     assert session.external_requested_disposition == "DNC"
     assert session.external_disposition_label == "dnc"
     assert session.external_disposition_payload["phone_number"] == "13165551212"
+    queued_action = retry_store.get_pending_action(
+        session.external_disposition_payload["workflow_queue_id"]
+    )
+    assert queued_action["status"] == "pending"
+    assert queued_action["payload"]["phone_number"] == "13165551212"
 
 
 @pytest.mark.asyncio
-async def test_pending_vicidial_callback_cannot_be_overwritten_by_classification():
+async def test_pending_vicidial_callback_cannot_be_overwritten_by_classification(
+    monkeypatch, tmp_path
+):
+    retry_store = _use_durable_vicidial_store(monkeypatch, tmp_path)
     session = CallSession(
         call_id="ari-callback-lock", caller_channel_id="ari-callback-lock"
     )
@@ -2081,6 +2101,56 @@ async def test_pending_vicidial_callback_cannot_be_overwritten_by_classification
     assert session.external_requested_disposition == "CALLBK"
     assert session.external_disposition_label == "callback"
     assert session.external_disposition_payload["lead_id"] == "456"
+    queued_action = retry_store.get_pending_action(
+        session.external_disposition_payload["workflow_queue_id"]
+    )
+    assert queued_action["status"] == "pending"
+    assert queued_action["payload"]["lead_id"] == "456"
+
+
+@pytest.mark.asyncio
+async def test_compliance_disposition_is_not_acknowledged_without_durable_storage(
+    monkeypatch,
+):
+    session = CallSession(
+        call_id="ari-dnc-storage-failure",
+        caller_channel_id="ari-dnc-storage-failure",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        phone_number="13165551212",
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    session.external_connection = _connection()
+    context = ToolExecutionContext(
+        call_id=session.call_id,
+        session_store=_SessionStore(session),
+    )
+
+    class BrokenStore:
+        def enqueue_pending_action(self, **_kwargs):
+            raise OSError("durable store unavailable")
+
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: BrokenStore()
+    )
+
+    result = await SetCallDispositionTool().execute(
+        {"disposition": "dnc"}, context
+    )
+
+    assert result["status"] == "failed"
+    assert "could not be recorded safely" in result["message"]
+    assert session.external_requested_disposition is None
+    assert session.external_disposition_label is None
+    assert session.external_disposition_payload == {}
 
 
 @pytest.mark.asyncio
@@ -2145,7 +2215,7 @@ async def test_committed_callback_cannot_be_changed_or_replaced_with_dnc():
 
 
 @pytest.mark.asyncio
-async def test_dnc_supersedes_and_cancels_a_queued_callback(monkeypatch):
+async def test_dnc_supersedes_and_cancels_a_queued_callback(monkeypatch, tmp_path):
     session = CallSession(
         call_id="ari-callback-to-dnc", caller_channel_id="ari-callback-to-dnc"
     )
@@ -2167,33 +2237,36 @@ async def test_dnc_supersedes_and_cancels_a_queued_callback(monkeypatch):
         },
     }
     session.external_connection = _connection()
+    retry_store = _use_durable_vicidial_store(monkeypatch, tmp_path)
+    queued_callback = retry_store.enqueue_pending_action(
+        operation="callback",
+        connection=session.external_connection,
+        payload={
+            "lead_id": "456",
+            "campaign_id": "TESTCAMP",
+            "callback_datetime": "2026-07-21 10:00:00",
+            "callback_type": "ANYONE",
+            "requested_status": "CBACK",
+        },
+        call_id=session.call_id,
+        external_call_id="M4050908070000012345",
+    )
     session.external_requested_disposition = "CBACK"
     session.external_disposition_label = "callback"
     session.external_disposition_payload = {
         "lead_id": "456",
         "workflow_queued": True,
-        "workflow_queue_id": "callback-action-1",
+        "workflow_queue_id": queued_callback["id"],
     }
     store = _SessionStore(session)
     context = ToolExecutionContext(call_id=session.call_id, session_store=store)
-    canceled = []
-    monkeypatch.setattr(
-        "src.core.vicidial_store.get_vicidial_store",
-        lambda: SimpleNamespace(
-            get_pending_action=lambda _action_id: {
-                "status": "pending",
-                "workflow_completed": False,
-            },
-            cancel_pending_action=lambda action_id: canceled.append(action_id) or True
-        ),
-    )
-
     result = await SetCallDispositionTool().execute({"disposition": "dnc"}, context)
 
     assert result["status"] == "success"
-    assert canceled == ["callback-action-1"]
+    assert retry_store.get_pending_action(queued_callback["id"])["status"] == "canceled"
     assert session.external_disposition_label == "dnc"
-    assert "workflow_queue_id" not in session.external_disposition_payload
+    assert session.external_disposition_payload["workflow_queued"] is True
+    assert session.external_disposition_payload["workflow_queue_id"] != queued_callback["id"]
 
 
 @pytest.mark.asyncio
@@ -2255,7 +2328,10 @@ async def test_dnc_cannot_supersede_a_callback_with_completed_queued_workflow(
 
 
 @pytest.mark.asyncio
-async def test_compliance_dispositions_use_lifecycle_status_overrides():
+async def test_compliance_dispositions_use_lifecycle_status_overrides(
+    monkeypatch, tmp_path
+):
+    _use_durable_vicidial_store(monkeypatch, tmp_path)
     session = CallSession(
         call_id="ari-status-override", caller_channel_id="ari-status-override"
     )
@@ -2272,6 +2348,7 @@ async def test_compliance_dispositions_use_lifecycle_status_overrides():
         "dispositions": {**_mapping()["dispositions"], "dnc": "DNCOLD"},
         "statuses": {"dnc": "DNCNEW"},
     }
+    session.external_connection = _connection()
     store = _SessionStore(session)
     context = ToolExecutionContext(call_id=session.call_id, session_store=store)
 
@@ -2359,7 +2436,10 @@ def test_disposition_tool_schema_prioritizes_native_vicidial_callback():
 
 
 @pytest.mark.asyncio
-async def test_inbound_campaign_dnc_uses_mapped_dialing_campaign(monkeypatch):
+async def test_inbound_campaign_dnc_uses_mapped_dialing_campaign(
+    monkeypatch, tmp_path
+):
+    _use_durable_vicidial_store(monkeypatch, tmp_path)
     session = CallSession(call_id="ari-dnc", caller_channel_id="ari-dnc")
     session.external_platform = "vicidial"
     session.external_session = VicidialSessionInfo(
@@ -2987,7 +3067,10 @@ async def test_inbound_dnc_never_uses_closer_login_mode_as_action_campaign():
 
 
 @pytest.mark.asyncio
-async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypatch):
+async def test_callback_is_converted_to_vicidial_timezone_and_verified(
+    monkeypatch, tmp_path
+):
+    retry_store = _use_durable_vicidial_store(monkeypatch, tmp_path)
     session = CallSession(call_id="ari-callback", caller_channel_id="ari-callback")
     session.external_platform = "vicidial"
     session.external_session = VicidialSessionInfo(
@@ -3050,11 +3133,15 @@ async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypat
     assert store.session.external_disposition is None
     assert [event["operation"] for event in store.session.external_events] == [
         "disposition_selected",
+        "callback_queue",
     ]
+    queued_action_id = store.session.external_disposition_payload["workflow_queue_id"]
+    assert retry_store.get_pending_action(queued_action_id)["status"] == "pending"
 
     assert await commit_vicidial_disposition_workflow(store.session) is True
     assert [event["operation"] for event in store.session.external_events] == [
         "disposition_selected",
+        "callback_queue",
         "callback",
         "callback_verify",
     ]
@@ -3484,6 +3571,88 @@ async def test_stasis_start_exception_requests_forced_caller_hangup():
     engine._cleanup_call.assert_awaited_once_with(
         "ari-setup-failure", force_caller_hangup=True
     )
+
+
+@pytest.mark.asyncio
+async def test_ordinary_cleanup_retains_failed_vicidial_terminal_control():
+    session = CallSession(
+        call_id="ari-cleanup-retry",
+        caller_channel_id="ari-cleanup-retry",
+    )
+    session.external_platform = "vicidial"
+    engine = SimpleNamespace(
+        _finalize_vicidial_call=AsyncMock(return_value=False),
+        _retain_vicidial_cleanup_retry=Mock(return_value=True),
+        _save_session=AsyncMock(),
+    )
+
+    result = await Engine._finalize_vicidial_during_cleanup(
+        engine,
+        session,
+        call_outcome="caller_hangup",
+    )
+
+    assert result is False
+    engine._finalize_vicidial_call.assert_awaited_once_with(
+        session,
+        semantic="caller_hangup",
+        operation_reason="call-cleanup",
+    )
+    engine._retain_vicidial_cleanup_retry.assert_called_once_with(
+        session,
+        semantic="caller_hangup",
+        operation_reason="call-cleanup",
+    )
+    engine._save_session.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_attaches_terminal_retry_to_selected_dnc(
+    monkeypatch, tmp_path
+):
+    retry_store = _use_durable_vicidial_store(monkeypatch, tmp_path)
+    session = CallSession(
+        call_id="ari-cleanup-dnc",
+        caller_channel_id="ari-cleanup-dnc",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        phone_number="13165551212",
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    session.external_connection = _connection()
+    context = ToolExecutionContext(
+        call_id=session.call_id,
+        session_store=_SessionStore(session),
+    )
+    selected = await SetCallDispositionTool().execute(
+        {"disposition": "dnc"}, context
+    )
+    assert selected["status"] == "success"
+
+    terminal_queue = Mock(return_value=False)
+    engine = SimpleNamespace(_queue_vicidial_terminal_retry=terminal_queue)
+    retained = Engine._retain_vicidial_cleanup_retry(
+        engine,
+        session,
+        semantic="caller_hangup",
+        operation_reason="call-cleanup",
+    )
+
+    assert retained is True
+    terminal_queue.assert_not_called()
+    action = retry_store.get_pending_action(
+        session.external_disposition_payload["workflow_queue_id"]
+    )
+    assert action["payload"]["retry_terminal"]["semantic"] == "caller_hangup"
+    assert action["payload"]["retry_terminal"]["operation_reason"] == "call-cleanup"
 
 
 @pytest.mark.asyncio
