@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -20,6 +21,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from agents_store import AgentsStore
+from api.outbound import _detect_server_timezone
 from src.core.vicidial_store import (
     get_vicidial_store,
     vicidial_configuration_revision,
@@ -227,7 +229,11 @@ def _activity_start(range_name: str, now: Optional[datetime] = None) -> datetime
         current = current.replace(tzinfo=timezone.utc)
     current = current.astimezone(timezone.utc)
     if range_name == "today":
-        local_now = current.astimezone()
+        try:
+            activity_timezone = ZoneInfo(_detect_server_timezone())
+        except Exception:
+            activity_timezone = timezone.utc
+        local_now = current.astimezone(activity_timezone)
         return local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(
             timezone.utc
         )

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from src.core.models import CallSession
+from src.core.vicidial_lifecycle import vicidial_lifecycle_lock
 from src.core.vicidial_store import (
     VicidialStore,
     vicidial_configuration_revision,
@@ -1406,6 +1407,41 @@ async def test_disposition_is_allowlisted_and_deferred_until_hangup():
     assert store.session.external_finalized is False
 
 
+@pytest.mark.asyncio
+async def test_disposition_cannot_race_terminal_finalization():
+    session = CallSession(call_id="ari-race", caller_channel_id="ari-race")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    store = _SessionStore(session)
+    context = ToolExecutionContext(call_id=session.call_id, session_store=store)
+    lock = vicidial_lifecycle_lock(session.call_id)
+
+    await lock.acquire()
+    try:
+        pending = asyncio.create_task(
+            SetCallDispositionTool().execute({"disposition": "sale"}, context)
+        )
+        await asyncio.sleep(0)
+        assert pending.done() is False
+        session.external_finalizing = True
+    finally:
+        lock.release()
+
+    result = await pending
+    assert result == {
+        "status": "failed",
+        "message": "The VICIdial terminal workflow has already started",
+    }
+    assert session.external_requested_disposition is None
+    assert session.external_events == []
+
+
 def test_disposition_tool_schema_mandates_dnc_compliance_action():
     definition = SetCallDispositionTool().definition
 
@@ -1670,6 +1706,67 @@ async def test_callback_retry_reuses_verified_existing_record(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_useronly_callback_verification_requires_current_remote_agent(
+    monkeypatch,
+):
+    session = CallSession(
+        call_id="ari-useronly-callback",
+        caller_channel_id="ari-useronly-callback",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        lead_id="456",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    session.external_requested_disposition = "CALLBK"
+    session.external_disposition_label = "callback"
+    session.external_disposition_payload = {
+        "lead_id": "456",
+        "campaign_id": "TESTCAMP",
+        "callback_datetime": "2026-07-19 18:30:00",
+        "callback_type": "USERONLY",
+        "callback_user": "9001",
+    }
+    updates = []
+
+    class Client:
+        def __init__(self, _connection):
+            self.lookup_count = 0
+
+        async def update_lead_callback(self, **kwargs):
+            updates.append(kwargs)
+            return VicidialApiResult(True, "update_lead", "SUCCESS")
+
+        async def lead_callback_info(self, **_kwargs):
+            self.lookup_count += 1
+            row = {
+                "lead_id": "456",
+                "callback_type": "CURRENT",
+                "recipient": "USERONLY",
+                "callback_status": "ACTIVE",
+                "lead_status": "CALLBK",
+                "campaign_id": "TESTCAMP",
+                "callback_date": "2026-07-19 18:30:00",
+                "user": "9002" if self.lookup_count == 1 else "9001",
+            }
+            return VicidialApiResult(
+                True, "lead_callback_info", "verified", rows=[row]
+            )
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+
+    assert await commit_vicidial_disposition_workflow(session) is True
+    assert len(updates) == 1
+    assert updates[0]["callback_user"] == "9001"
+    assert session.external_disposition_payload["workflow_committed"] is True
+
+
+@pytest.mark.asyncio
 async def test_callback_retry_does_not_mutate_when_preflight_lookup_fails(
     monkeypatch,
 ):
@@ -1776,6 +1873,29 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
         event for event in session.external_events if event["operation"] == "hangup"
     )
     assert hangup_event["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_stasis_start_exception_requests_forced_caller_hangup():
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(
+        send_command=AsyncMock(return_value={}),
+        answer_channel=AsyncMock(side_effect=RuntimeError("answer failed")),
+    )
+    engine.session_store = SimpleNamespace(
+        get_by_call_id=AsyncMock(return_value=None),
+    )
+    engine._cleanup_call = AsyncMock()
+
+    await Engine._handle_caller_stasis_start_hybrid(
+        engine,
+        "ari-setup-failure",
+        {"caller": {"name": "VICIdial", "number": "M4050908070000012345"}},
+    )
+
+    engine._cleanup_call.assert_awaited_once_with(
+        "ari-setup-failure", force_caller_hangup=True
+    )
 
 
 @pytest.mark.asyncio

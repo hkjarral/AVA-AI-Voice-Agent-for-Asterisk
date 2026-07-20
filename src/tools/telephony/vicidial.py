@@ -94,6 +94,8 @@ async def commit_vicidial_disposition_workflow(session: Any) -> bool:
         "campaign_id": str(payload.get("campaign_id") or info.campaign_id or ""),
         "callback_date": str(payload.get("callback_datetime") or ""),
     }
+    if str(payload.get("callback_type") or "ANYONE").upper() == "USERONLY":
+        expected["user"] = str(payload.get("callback_user") or info.agent_user or "")
 
     # A previous update may have succeeded even when its response or the first
     # verification timed out. Read before mutating on every retry so we do not
@@ -328,11 +330,27 @@ class SetCallDispositionTool(Tool):
     async def execute(
         self, parameters: Dict[str, Any], context: ToolExecutionContext
     ) -> Dict[str, Any]:
-        session = await context.get_session()
+        from src.core.vicidial_lifecycle import vicidial_lifecycle_lock
+
+        async with vicidial_lifecycle_lock(context.call_id):
+            session = await context.get_session()
+            return await self._execute_locked(parameters, context, session)
+
+    async def _execute_locked(
+        self,
+        parameters: Dict[str, Any],
+        context: ToolExecutionContext,
+        session: Any,
+    ) -> Dict[str, Any]:
         if getattr(session, "external_platform", None) != "vicidial":
             return {"status": "failed", "message": "Disposition is only available on VICIdial calls"}
         if bool(getattr(session, "external_finalized", False)):
             return {"status": "failed", "message": "The VICIdial call is already finalized"}
+        if bool(getattr(session, "external_finalizing", False)):
+            return {
+                "status": "failed",
+                "message": "The VICIdial terminal workflow has already started",
+            }
 
         mapping = dict(getattr(session, "external_mapping", {}) or {})
         connection = dict(getattr(session, "external_connection", {}) or {})

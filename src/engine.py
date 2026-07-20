@@ -4308,6 +4308,24 @@ class Engine:
         semantic: str,
         operation_reason: str,
     ) -> bool:
+        """Serialize terminal control with disposition selection for this call."""
+        from src.core.vicidial_lifecycle import vicidial_lifecycle_lock
+
+        async with vicidial_lifecycle_lock(session.call_id):
+            return await Engine._finalize_vicidial_call_locked(
+                self,
+                session,
+                semantic=semantic,
+                operation_reason=operation_reason,
+            )
+
+    async def _finalize_vicidial_call_locked(
+        self,
+        session: CallSession,
+        *,
+        semantic: str,
+        operation_reason: str,
+    ) -> bool:
         """Ask ViciDial to end and disposition its owned customer call."""
         if getattr(session, "external_platform", None) != "vicidial":
             return False
@@ -5038,7 +5056,7 @@ class Engine:
             logger.error("🎯 HYBRID ARI - Failed to handle caller StasisStart", 
                         caller_channel_id=caller_channel_id, 
                         error=str(e), exc_info=True)
-            await self._cleanup_call(caller_channel_id)
+            await self._cleanup_call(caller_channel_id, force_caller_hangup=True)
 
     async def _handle_local_stasis_start_hybrid(self, local_channel_id: str, channel: dict):
         """Handle Local channel entering Stasis - Hybrid ARI approach."""
@@ -7602,7 +7620,9 @@ class Engine:
         except Exception:
             logger.debug("ChannelTalkingFinished handler failed", ari_event=event, exc_info=True)
 
-    async def _cleanup_call(self, channel_or_call_id: str) -> None:
+    async def _cleanup_call(
+        self, channel_or_call_id: str, *, force_caller_hangup: bool = False
+    ) -> None:
         """Shared cleanup for StasisEnd/ChannelDestroyed paths."""
         resolved_call_id = None  # Track for finally block cleanup
         try:
@@ -7888,12 +7908,30 @@ class Engine:
             
             # Hang up caller channel ONLY if not transferred
             if getattr(session, "external_platform", None) == "vicidial":
-                logger.info(
-                    "Skipping caller ARI hangup for VICIdial-owned call",
-                    call_id=call_id,
-                    external_call_id=getattr(session, "external_call_id", None),
-                    finalized=bool(getattr(session, "external_finalized", False)),
-                )
+                if force_caller_hangup and not bool(
+                    getattr(session, "external_finalized", False)
+                ):
+                    try:
+                        await self.ari_client.hangup_channel(session.caller_channel_id)
+                        logger.warning(
+                            "Forced caller hangup after failed VICIdial Stasis setup",
+                            call_id=call_id,
+                            external_call_id=getattr(session, "external_call_id", None),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Forced VICIdial setup-failure hangup did not complete",
+                            call_id=call_id,
+                            channel_id=session.caller_channel_id,
+                            exc_info=True,
+                        )
+                else:
+                    logger.info(
+                        "Skipping caller ARI hangup for VICIdial-owned call",
+                        call_id=call_id,
+                        external_call_id=getattr(session, "external_call_id", None),
+                        finalized=bool(getattr(session, "external_finalized", False)),
+                    )
             elif not transfer_active:
                 try:
                     await self.ari_client.hangup_channel(session.caller_channel_id)

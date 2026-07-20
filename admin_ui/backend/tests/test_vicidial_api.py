@@ -950,3 +950,25 @@ def test_activity_reports_when_summary_rows_are_truncated(monkeypatch, tmp_path)
     assert body["truncated"] is True
     assert body["summary"]["handled"] == vicidial_api.ACTIVITY_SUMMARY_MAX_ROWS
     assert "metrics use the most recent records" in body["scope_note"]
+
+
+def test_today_activity_uses_configured_server_timezone(monkeypatch):
+    monkeypatch.setattr(
+        vicidial_api, "_detect_server_timezone", lambda: "America/Phoenix"
+    )
+    now = datetime(2026, 7, 20, 2, 0, tzinfo=timezone.utc)
+
+    assert vicidial_api._activity_start("today", now) == datetime(
+        2026, 7, 19, 7, 0, tzinfo=timezone.utc
+    )
+
+
+def test_today_activity_falls_back_to_utc_for_invalid_timezone(monkeypatch):
+    monkeypatch.setattr(
+        vicidial_api, "_detect_server_timezone", lambda: "Not/A-Timezone"
+    )
+    now = datetime(2026, 7, 20, 2, 0, tzinfo=timezone.utc)
+
+    assert vicidial_api._activity_start("today", now) == datetime(
+        2026, 7, 20, 0, 0, tzinfo=timezone.utc
+    )
