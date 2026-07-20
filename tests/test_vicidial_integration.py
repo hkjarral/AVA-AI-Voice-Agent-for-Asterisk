@@ -1083,6 +1083,53 @@ def test_real_call_readiness_does_not_bypass_pbx_gate(tmp_path):
     assert verification["ready"] is False
 
 
+def test_reconciled_hangup_is_delivery_evidence_not_control_readiness(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection({
+        **_connection(),
+        "name": "Lab",
+        "username_env": "VICI_USER",
+        "password_env": "VICI_PASS",
+    }, "connection-1")
+    store.save_mapping(
+        {**_mapping(connection["id"]), "direction": "outbound"},
+        "mapping-1",
+    )
+    store.record_verification(
+        kind="mapping",
+        record_id="mapping-1",
+        result={"configuration_ready": True, "pbx_ready": True},
+    )
+    mapping_revision = _stored_mapping_revision(store, "mapping-1")
+
+    store.record_real_call_verification(
+        mapping_id="mapping-1",
+        mapping_revision=mapping_revision,
+        direction="outbound",
+        external_call_id="M4050908070000012345",
+        status="XFER",
+        operation="terminal_reconcile",
+    )
+
+    verification = store.get_mapping("mapping-1")["last_verification"]
+    assert verification["real_calls"]["outbound"]["delivery_verified"] is True
+    assert verification["real_calls"]["outbound"]["verified"] is False
+    assert verification["real_call"]["verified"] is False
+    assert verification["ready"] is False
+
+    store.record_real_call_verification(
+        mapping_id="mapping-1",
+        mapping_revision=mapping_revision,
+        direction="outbound",
+        external_call_id="M4050908070000012346",
+        status="AIHU",
+        operation="hangup",
+    )
+    verification = store.get_mapping("mapping-1")["last_verification"]
+    assert verification["real_calls"]["outbound"]["verified"] is True
+    assert verification["ready"] is True
+
+
 def test_real_call_evidence_rejects_older_mapping_revision(tmp_path):
     store = VicidialStore(str(tmp_path / "vicidial.db"))
     connection = store.save_connection({

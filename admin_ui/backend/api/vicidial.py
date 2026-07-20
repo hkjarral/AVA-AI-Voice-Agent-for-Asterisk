@@ -25,6 +25,7 @@ from api.outbound import _detect_server_timezone
 from src.core.vicidial_store import (
     get_vicidial_store,
     vicidial_configuration_revision,
+    vicidial_terminal_control_verified,
 )
 from src.integrations.vicidial import VicidialApiClient, remote_agent_user_range
 
@@ -654,7 +655,9 @@ async def verify_mapping(mapping_id: str):
         else [configured_direction]
     )
     live_call_ready = all(
-        bool(dict(real_calls.get(direction) or {}).get("verified"))
+        vicidial_terminal_control_verified(
+            dict(real_calls.get(direction) or {})
+        )
         for direction in required_directions
     )
     trusted_endpoint = str(mapping.get("trusted_endpoint") or "").strip()

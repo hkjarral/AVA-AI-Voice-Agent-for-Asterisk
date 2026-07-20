@@ -35,6 +35,7 @@ _REVISION_IGNORED_FIELDS = {
     "name",
     "updated_at",
 }
+_TERMINAL_CONTROL_OPERATIONS = {"hangup", "transfer"}
 
 
 def _now() -> str:
@@ -73,6 +74,14 @@ def vicidial_configuration_revision(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def vicidial_terminal_control_verified(evidence: Mapping[str, Any]) -> bool:
+    """Return whether real-call evidence proves AAVA terminal API control."""
+    operation = str(dict(evidence or {}).get("operation") or "").strip().lower()
+    return bool(dict(evidence or {}).get("verified")) and (
+        operation in _TERMINAL_CONTROL_OPERATIONS
+    )
 
 
 class VicidialStore:
@@ -1191,7 +1200,15 @@ class VicidialStore:
             # a pre-request mapping snapshot and may be stale after API/PBX awaits.
             # Using only the value read inside this transaction also avoids
             # resurrecting evidence cleared by a concurrent mapping edit.
-            real_calls = dict(current_real_calls)
+            real_calls = {
+                direction: {
+                    **dict(evidence or {}),
+                    "verified": vicidial_terminal_control_verified(
+                        dict(evidence or {})
+                    ),
+                }
+                for direction, evidence in dict(current_real_calls).items()
+            }
 
             configured_direction = str(row["direction"] or "both").strip().lower()
             required_directions = (
@@ -1200,7 +1217,9 @@ class VicidialStore:
                 else [configured_direction]
             )
             live_call_ready = all(
-                bool(dict(real_calls.get(direction) or {}).get("verified"))
+                vicidial_terminal_control_verified(
+                    dict(real_calls.get(direction) or {})
+                )
                 for direction in required_directions
             )
             merged["real_calls"] = real_calls
@@ -1269,13 +1288,34 @@ class VicidialStore:
             real_calls = verification.get("real_calls")
             if not isinstance(real_calls, dict):
                 real_calls = {}
-            real_calls[normalized_direction] = {
-                "verified": True,
-                "verified_at": _now(),
-                "external_call_id": str(external_call_id or "").strip(),
-                "status": validate_status(status),
-                "operation": str(operation or "hangup").strip(),
-            }
+            normalized_operation = str(operation or "hangup").strip().lower()
+            now = _now()
+            control_verified = normalized_operation in _TERMINAL_CONTROL_OPERATIONS
+            previous_evidence = dict(real_calls.get(normalized_direction) or {})
+            if (
+                not control_verified
+                and vicidial_terminal_control_verified(previous_evidence)
+            ):
+                evidence = {
+                    **previous_evidence,
+                    "delivery_verified": True,
+                    "last_delivery_at": now,
+                    "last_delivery_external_call_id": str(
+                        external_call_id or ""
+                    ).strip(),
+                    "last_delivery_status": validate_status(status),
+                    "last_delivery_operation": normalized_operation,
+                }
+            else:
+                evidence = {
+                    "verified": control_verified,
+                    "delivery_verified": True,
+                    "verified_at": now,
+                    "external_call_id": str(external_call_id or "").strip(),
+                    "status": validate_status(status),
+                    "operation": normalized_operation,
+                }
+            real_calls[normalized_direction] = evidence
             verification["real_calls"] = real_calls
             configured_direction = str(row["direction"] or "both").strip().lower()
             required_directions = (
@@ -1284,7 +1324,9 @@ class VicidialStore:
                 else [configured_direction]
             )
             live_call_ready = all(
-                bool(dict(real_calls.get(required) or {}).get("verified"))
+                vicidial_terminal_control_verified(
+                    dict(real_calls.get(required) or {})
+                )
                 for required in required_directions
             )
             verification["real_call"] = {
@@ -1297,7 +1339,6 @@ class VicidialStore:
                 and verification.get("pbx_ready")
                 and live_call_ready
             )
-            now = _now()
             conn.execute(
                 """
                 UPDATE vicidial_mappings
