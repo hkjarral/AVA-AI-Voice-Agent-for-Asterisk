@@ -742,7 +742,10 @@ class VicidialApiClient:
                 if resolved is not None:
                     candidates.append(resolved)
 
-            unique = {candidate.external_call_id: candidate for candidate in candidates}
+            unique = {
+                (candidate.external_call_id, candidate.agent_user): candidate
+                for candidate in candidates
+            }
             if len(unique) == 1:
                 return next(iter(unique.values())), evidence
             if len(unique) > 1:

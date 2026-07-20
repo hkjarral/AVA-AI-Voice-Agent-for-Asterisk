@@ -4357,6 +4357,19 @@ class Engine:
                     "message": f"VICIdial disposition workflow failed: {type(exc).__name__}",
                 })
             if not workflow_ok:
+                pending_workflow = str(
+                    getattr(session, "external_disposition_label", None) or ""
+                ).strip().lower()
+                if pending_workflow in {"dnc", "callback"}:
+                    session.external_events.append({
+                        "operation": "disposition_workflow",
+                        "success": False,
+                        "message": (
+                            f"Pending {pending_workflow} workflow was not confirmed; "
+                            "terminal control deferred for retry"
+                        ),
+                    })
+                    return False
                 status = status_for(mapping, "ai_failure", "AIFAIL")
                 session.external_events.append({
                     "operation": "disposition_workflow",

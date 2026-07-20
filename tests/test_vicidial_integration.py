@@ -722,6 +722,51 @@ async def test_customer_name_scan_fails_closed_when_multiple_agents_match(monkey
 
 
 @pytest.mark.asyncio
+async def test_customer_name_scan_rejects_same_call_reported_by_multiple_users(
+    monkeypatch,
+):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    client = VicidialApiClient(_connection())
+    call_id = "V7190228450000000008"
+
+    async def agent_status(_user):
+        return VicidialApiResult(
+            success=True,
+            function="agent_status",
+            message="ok",
+            data={
+                "status": "INCALL",
+                "callerid": call_id,
+                "campaign_id": "TESTCAMP",
+            },
+        )
+
+    async def callid_info(_call_id):
+        return VicidialApiResult(
+            success=True,
+            function="callid_info",
+            message="ok",
+            data={
+                "call_id": call_id,
+                "call_type": "OUT",
+                "campaign_id": "TESTCAMP",
+            },
+        )
+
+    monkeypatch.setattr(client, "agent_status", agent_status)
+    monkeypatch.setattr(client, "callid_info", callid_info)
+    info, evidence = await client.resolve_remote_agent_session(
+        call_id="Customer Display Name",
+        mapping={"id": "map-1", **_mapping(), "number_of_lines": 2},
+        attempts=1,
+    )
+
+    assert info is None
+    assert len(evidence) == 4
+
+
+@pytest.mark.asyncio
 async def test_customer_name_scan_rejects_wrong_campaign(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
     monkeypatch.setenv("VICI_PASS", "secret")
@@ -993,6 +1038,7 @@ def test_readiness_merges_serialize_across_store_instances(tmp_path):
         try:
             verification_store.record_mapping_verification(
                 mapping_id="mapping-1",
+                mapping_revision=mapping_revision,
                 result={"configuration_ready": True, "pbx_ready": True},
             )
         except Exception as exc:  # pragma: no cover - asserted through errors
@@ -1423,6 +1469,55 @@ async def test_inbound_campaign_dnc_uses_mapped_dialing_campaign(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dnc_workflow_retries_idempotent_write(monkeypatch):
+    session = CallSession(call_id="ari-dnc-retry", caller_channel_id="ari-dnc-retry")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        phone_number="13165551212",
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dnc_scope": "campaign",
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    session.external_connection = _connection()
+    session.external_requested_disposition = "DNC"
+    session.external_disposition_label = "dnc"
+    session.external_disposition_payload = {
+        "phone_number": "13165551212",
+        "campaign_id": "TESTCAMP",
+    }
+    attempts = 0
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def add_dnc_phone(self, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            return VicidialApiResult(
+                attempts == 3,
+                "add_dnc_phone",
+                "SUCCESS" if attempts == 3 else "temporary failure",
+            )
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+    monkeypatch.setattr(
+        "src.tools.telephony.vicidial.DNC_RETRY_DELAY_SECONDS", 0
+    )
+
+    assert await commit_vicidial_disposition_workflow(session) is True
+    assert attempts == 3
+    assert [event["attempt"] for event in session.external_events] == [1, 2, 3]
+    assert session.external_disposition_payload["workflow_committed"] is True
+
+
+@pytest.mark.asyncio
 async def test_inbound_dnc_never_uses_closer_login_mode_as_action_campaign():
     session = CallSession(call_id="ari-dnc", caller_channel_id="ari-dnc")
     session.external_platform = "vicidial"
@@ -1681,6 +1776,54 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
         event for event in session.external_events if event["operation"] == "hangup"
     )
     assert hangup_event["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_engine_defers_terminal_control_until_dnc_is_confirmed(monkeypatch):
+    session = CallSession(
+        call_id="ari-dnc-finalize", caller_channel_id="ari-dnc-finalize"
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    session.external_requested_disposition = "DNC"
+    session.external_disposition_label = "dnc"
+    session.external_disposition_payload = {
+        "phone_number": "13165551212",
+        "campaign_id": "TESTCAMP",
+    }
+
+    async def save(saved_session):
+        assert saved_session is session
+
+    async def fail_workflow(_session):
+        return False
+
+    monkeypatch.setattr(
+        "src.tools.telephony.vicidial.commit_vicidial_disposition_workflow",
+        fail_workflow,
+    )
+    engine = SimpleNamespace(_save_session=save)
+
+    result = await Engine._finalize_vicidial_call(
+        engine,
+        session,
+        semantic="ai_hangup",
+        operation_reason="test",
+    )
+
+    assert result is False
+    assert session.external_finalized is False
+    assert session.external_finalizing is False
+    assert session.external_disposition_label == "dnc"
+    assert session.external_disposition_payload["phone_number"] == "13165551212"
+    assert session.external_events[-1]["operation"] == "disposition_workflow"
+    assert "terminal control deferred" in session.external_events[-1]["message"]
 
 
 @pytest.mark.asyncio

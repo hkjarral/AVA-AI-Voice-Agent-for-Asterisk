@@ -698,20 +698,54 @@ class VicidialStore:
             return cur.rowcount > 0
 
     def record_verification(
-        self, *, kind: str, record_id: str, result: Mapping[str, Any]
-    ) -> None:
+        self,
+        *,
+        kind: str,
+        record_id: str,
+        result: Mapping[str, Any],
+        expected_revision: Optional[str] = None,
+    ) -> bool:
         if kind not in {"connection", "mapping"}:
             raise ValueError("Verification kind must be connection or mapping")
         table = "vicidial_connections" if kind == "connection" else "vicidial_mappings"
         with self._lock, self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if expected_revision:
+                row = conn.execute(
+                    f"SELECT * FROM {table} WHERE id=?", (record_id,)
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"VICIdial {kind} does not exist")
+                if kind == "connection":
+                    current_revision = vicidial_configuration_revision(
+                        {}, self._connection_dict(row)
+                    )
+                else:
+                    current_mapping = self._mapping_dict(row)
+                    connection_row = conn.execute(
+                        "SELECT * FROM vicidial_connections WHERE id=?",
+                        (str(current_mapping.get("connection_id") or ""),),
+                    ).fetchone()
+                    if not connection_row:
+                        raise ValueError("VICIdial connection does not exist")
+                    current_revision = vicidial_configuration_revision(
+                        current_mapping, self._connection_dict(connection_row)
+                    )
+                if current_revision != expected_revision:
+                    return False
             conn.execute(
                 f"UPDATE {table} SET last_verification_json=?, last_verified_at=?, updated_at=? WHERE id=?",
                 (_json(dict(result), {}), _now(), _now(), record_id),
             )
+        return True
 
     def record_mapping_verification(
-        self, *, mapping_id: str, result: Mapping[str, Any]
-    ) -> Dict[str, Any]:
+        self,
+        *,
+        mapping_id: str,
+        mapping_revision: str,
+        result: Mapping[str, Any],
+    ) -> Optional[Dict[str, Any]]:
         """Atomically merge live-call evidence into a mapping verification result.
 
         ``BEGIN IMMEDIATE`` is required because Admin UI and ai-engine have
@@ -722,11 +756,22 @@ class VicidialStore:
         with self._lock, self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT direction,last_verification_json FROM vicidial_mappings WHERE id=?",
+                "SELECT * FROM vicidial_mappings WHERE id=?",
                 (mapping_id,),
             ).fetchone()
             if not row:
                 raise ValueError("VICIdial mapping does not exist")
+            current_mapping = self._mapping_dict(row)
+            connection_row = conn.execute(
+                "SELECT * FROM vicidial_connections WHERE id=?",
+                (str(current_mapping.get("connection_id") or ""),),
+            ).fetchone()
+            if not connection_row:
+                raise ValueError("VICIdial connection does not exist")
+            if vicidial_configuration_revision(
+                current_mapping, self._connection_dict(connection_row)
+            ) != str(mapping_revision or "").strip():
+                return None
 
             current = _decode(row["last_verification_json"], {})
             if not isinstance(current, dict):

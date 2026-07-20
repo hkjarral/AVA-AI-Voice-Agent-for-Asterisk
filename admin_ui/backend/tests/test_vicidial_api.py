@@ -454,6 +454,37 @@ def test_connection_verification_has_one_overall_deadline(monkeypatch, tmp_path)
     assert store.get_connection("connection-1")["last_verification"] == response.json()
 
 
+def test_connection_verification_discards_result_after_concurrent_edit(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    store.save_connection(_connection_payload(), "connection-1")
+
+    class _Client:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            store.save_connection(
+                {**_connection_payload(), "enabled": False}, "connection-1"
+            )
+            return {"ready": True}
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
+    response = client.post(
+        "/api/outbound/vicidial/connections/connection-1/verify"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "error": "VICIdial connection changed during verification; run it again",
+        "error_code": "configuration_changed",
+        "verification": {"stale": True},
+    }
+    assert store.get_connection("connection-1")["last_verification"] is None
+
+
 def test_mapping_verification_preserves_directional_live_call_evidence(
     monkeypatch, tmp_path
 ):
@@ -610,6 +641,56 @@ def test_mapping_verification_preserves_live_call_recorded_during_api_wait(
         "note": "Each configured direction requires a correlated call with confirmed VICIdial terminal control",
     }
     assert store.get_mapping("mapping-1")["last_verification"] == body
+
+
+def test_mapping_verification_discards_result_after_concurrent_edit(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    original = _mapping_payload(connection["id"])
+    store.save_mapping(original, "mapping-1")
+
+    class _Client:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            store.save_mapping(
+                {**original, "campaign_id": "CHANGED"}, "mapping-1"
+            )
+            return {
+                "ready": True,
+                "authentication": {
+                    "success": True,
+                    "rows": [{"campaign_id": "AVATEST"}],
+                },
+                "agent_visibility": {
+                    "success": True,
+                    "rows": [{"user": "9001", "status": "READY"}],
+                },
+            }
+
+        async def agent_status(self, agent_user):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ok",
+                data={"user": agent_user, "status": "READY"},
+            )
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
+    response = client.post("/api/outbound/vicidial/mappings/mapping-1/verify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["configuration_ready"] is False
+    assert body["pbx_ready"] is False
+    assert body["error_code"] == "configuration_changed"
+    assert body["verification"]["stale"] is True
+    assert store.get_mapping("mapping-1")["campaign_id"] == "CHANGED"
+    assert store.get_mapping("mapping-1")["last_verification"] is None
 
 
 def test_mapping_verification_rejects_live_row_without_vicidial_user(

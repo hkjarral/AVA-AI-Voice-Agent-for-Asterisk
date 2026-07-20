@@ -20,7 +20,10 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from agents_store import AgentsStore
-from src.core.vicidial_store import get_vicidial_store
+from src.core.vicidial_store import (
+    get_vicidial_store,
+    vicidial_configuration_revision,
+)
 from src.integrations.vicidial import VicidialApiClient, remote_agent_user_range
 
 router = APIRouter(prefix="/outbound/vicidial", tags=["outbound"])
@@ -395,10 +398,13 @@ async def verify_connection(connection_id: str):
     connection = _store().get_connection(connection_id)
     if not connection:
         raise HTTPException(status_code=404, detail="VICIdial connection not found")
+    connection_revision = vicidial_configuration_revision({}, connection)
     try:
-        async with asyncio.timeout(CONNECTION_VERIFICATION_MAX_SECONDS):
-            result = await VicidialApiClient(connection).verify_connection()
-    except TimeoutError:
+        result = await asyncio.wait_for(
+            VicidialApiClient(connection).verify_connection(),
+            timeout=CONNECTION_VERIFICATION_MAX_SECONDS,
+        )
+    except asyncio.TimeoutError:
         result = {
             "ready": False,
             "error": "VICIdial connection verification exceeded the overall deadline",
@@ -417,7 +423,19 @@ async def verify_connection(connection_id: str):
             "ready": False,
             "error": "VICIdial connection configuration is invalid",
         }
-    _store().record_verification(kind="connection", record_id=connection_id, result=result)
+    recorded = _store().record_verification(
+        kind="connection",
+        record_id=connection_id,
+        result=result,
+        expected_revision=connection_revision,
+    )
+    if not recorded:
+        return {
+            "ready": False,
+            "error": "VICIdial connection changed during verification; run it again",
+            "error_code": "configuration_changed",
+            "verification": {"stale": True},
+        }
     return result
 
 
@@ -514,27 +532,35 @@ async def verify_mapping(mapping_id: str):
     connection = _store().get_connection(str(mapping.get("connection_id") or ""))
     if not connection:
         raise HTTPException(status_code=422, detail="VICIdial connection is missing")
+    mapping_revision = vicidial_configuration_revision(mapping, connection)
 
     client = VicidialApiClient(connection)
     users = list(remote_agent_user_range(mapping))
     connection_result: Dict[str, Any] = {}
     status_results: Dict[str, Any] = {}
     verification_timed_out = False
+
+    async def collect_vicidial_state():
+        collected_connection = await client.verify_connection()
+        collected_statuses: Dict[str, Any] = {}
+        # agent_status is authoritative for whether each configured VICIdial user
+        # actually exists. logged_in_agents alone can include a stale or manually
+        # inserted live-agent row whose user is rejected by call-control APIs.
+        # Bound each burst so a large Remote Agent range does not overwhelm the
+        # dialer's legacy Non-Agent API; the surrounding deadline bounds all bursts.
+        for offset in range(0, len(users), 10):
+            batch_users = users[offset:offset + 10]
+            batch_results = await asyncio.gather(
+                *(client.agent_status(user) for user in batch_users)
+            )
+            collected_statuses.update(zip(batch_users, batch_results))
+        return collected_connection, collected_statuses
+
     try:
-        async with asyncio.timeout(MAPPING_VERIFICATION_MAX_SECONDS):
-            connection_result = await client.verify_connection()
-            # agent_status is authoritative for whether each configured VICIdial user
-            # actually exists. logged_in_agents alone can include a stale or manually
-            # inserted live-agent row whose user is rejected by call-control APIs.
-            # Bound each burst so a large Remote Agent range does not overwhelm the
-            # dialer's legacy Non-Agent API; the surrounding deadline bounds all bursts.
-            for offset in range(0, len(users), 10):
-                batch_users = users[offset:offset + 10]
-                batch_results = await asyncio.gather(*(
-                    client.agent_status(user) for user in batch_users
-                ))
-                status_results.update(zip(batch_users, batch_results))
-    except TimeoutError:
+        connection_result, status_results = await asyncio.wait_for(
+            collect_vicidial_state(), timeout=MAPPING_VERIFICATION_MAX_SECONDS
+        )
+    except asyncio.TimeoutError:
         verification_timed_out = True
         connection_result = {
             **connection_result,
@@ -680,7 +706,28 @@ async def verify_mapping(mapping_id: str):
     }
     if logged_agents:
         result["remote_agent"]["api"] = logged_agents
-    return _store().record_mapping_verification(mapping_id=mapping_id, result=result)
+    recorded = _store().record_mapping_verification(
+        mapping_id=mapping_id,
+        mapping_revision=mapping_revision,
+        result=result,
+    )
+    if recorded is None:
+        stale_result = dict(result)
+        stale_result.update(
+            {
+                "ready": False,
+                "configuration_ready": False,
+                "pbx_ready": False,
+                "error": "VICIdial mapping changed during verification; run it again",
+                "error_code": "configuration_changed",
+            }
+        )
+        stale_result["verification"] = {
+            **dict(result.get("verification") or {}),
+            "stale": True,
+        }
+        return stale_result
+    return recorded
 
 
 def _dialplan(mapping: Dict[str, Any]) -> str:

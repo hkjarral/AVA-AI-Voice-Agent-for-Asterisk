@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 import structlog
@@ -18,6 +19,8 @@ from src.tools.base import Tool, ToolCategory, ToolDefinition, ToolParameter
 from src.tools.context import ToolExecutionContext
 
 logger = structlog.get_logger(__name__)
+DNC_WRITE_ATTEMPTS = 3
+DNC_RETRY_DELAY_SECONDS = 0.25
 
 
 def _session_info(session: Any) -> VicidialSessionInfo:
@@ -62,15 +65,23 @@ async def commit_vicidial_disposition_workflow(session: Any) -> bool:
     client = VicidialApiClient(connection)
 
     if semantic == "dnc":
-        result = await client.add_dnc_phone(
-            phone_number=str(payload.get("phone_number") or info.phone_number or ""),
-            campaign_id=str(payload.get("campaign_id") or ""),
-        )
-        session.external_events.append({"operation": "dnc", **result.to_dict()})
-        if result.success:
-            payload["workflow_committed"] = True
-            session.external_disposition_payload = payload
-        return bool(result.success)
+        for attempt in range(1, DNC_WRITE_ATTEMPTS + 1):
+            result = await client.add_dnc_phone(
+                phone_number=str(payload.get("phone_number") or info.phone_number or ""),
+                campaign_id=str(payload.get("campaign_id") or ""),
+            )
+            session.external_events.append({
+                "operation": "dnc",
+                "attempt": attempt,
+                **result.to_dict(),
+            })
+            if result.success:
+                payload["workflow_committed"] = True
+                session.external_disposition_payload = payload
+                return True
+            if attempt < DNC_WRITE_ATTEMPTS:
+                await asyncio.sleep(DNC_RETRY_DELAY_SECONDS)
+        return False
 
     expected = {
         "lead_id": str(payload.get("lead_id") or info.lead_id or ""),
