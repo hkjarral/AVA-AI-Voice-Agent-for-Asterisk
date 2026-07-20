@@ -358,13 +358,19 @@ async def test_vicidial_provider_failure_uses_terminal_workflow(on_provider_fail
     """VICIdial-owned calls must be finalized through the dialer API."""
     engine = _make_engine(on_provider_failure)
     engine._stop_connection_audio = AsyncMock()
-    engine._finalize_vicidial_call = AsyncMock(return_value=True)
+    engine._queue_vicidial_terminal_retry = MagicMock(return_value=True)
+    engine._finalize_vicidial_call = AsyncMock(return_value=False)
     session = await _register_session(engine)
     session.external_platform = "vicidial"
     session.external_call_id = "M4050908070000012345"
 
     await engine._start_provider_session("call-1")
 
+    engine._queue_vicidial_terminal_retry.assert_called_once_with(
+        session,
+        semantic="ai_failure",
+        operation_reason="provider-start-failed",
+    )
     engine._finalize_vicidial_call.assert_awaited_once_with(
         session,
         semantic="ai_failure",

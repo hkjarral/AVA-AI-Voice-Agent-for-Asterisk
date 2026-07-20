@@ -550,14 +550,14 @@ class VicidialStore:
     ) -> Dict[str, Any]:
         """Durably enqueue a safely replayable VICIdial workflow for retry."""
         normalized_operation = str(operation or "").strip().lower()
-        if normalized_operation not in {"dnc", "callback"}:
+        if normalized_operation not in {"dnc", "callback", "terminal"}:
             raise ValueError("Unsupported VICIdial pending action")
         if normalized_operation == "dnc":
             action_payload = {
                 "phone_number": str(payload.get("phone_number") or "").strip(),
                 "campaign_id": str(payload.get("campaign_id") or "").strip(),
             }
-        else:
+        elif normalized_operation == "callback":
             action_payload = {
                 "lead_id": str(payload.get("lead_id") or "").strip(),
                 "campaign_id": str(payload.get("campaign_id") or "").strip(),
@@ -570,6 +570,8 @@ class VicidialStore:
                 "callback_user": str(payload.get("callback_user") or "").strip(),
                 "comments": str(payload.get("comments") or "")[:200],
             }
+        else:
+            action_payload = {}
         requested_status = str(payload.get("requested_status") or "").strip()
         if requested_status:
             action_payload["requested_status"] = requested_status
@@ -617,6 +619,14 @@ class VicidialStore:
         ):
             raise ValueError(
                 "Queued VICIdial callback requires lead, campaign, and date/time"
+            )
+        if normalized_operation == "terminal" and (
+            not str(call_id or "").strip()
+            or not requested_status
+            or not isinstance(action_payload.get("retry_terminal"), Mapping)
+        ):
+            raise ValueError(
+                "Queued VICIdial terminal control requires call identity, status, and retry state"
             )
         connection_snapshot = {
             key: connection.get(key)

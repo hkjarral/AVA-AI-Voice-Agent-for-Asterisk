@@ -1375,6 +1375,61 @@ def test_store_persists_sanitized_terminal_retry_identity(tmp_path):
     assert "metadata" not in terminal["session"]
 
 
+@pytest.mark.asyncio
+async def test_ai_failure_terminal_retry_is_durable_and_replayable(
+    tmp_path, monkeypatch
+):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    session = CallSession(
+        call_id="ari-provider-retry",
+        caller_channel_id="ari-provider-retry",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_mapping_revision = "revision-1"
+    session.external_connection = _connection()
+
+    assert Engine._queue_vicidial_terminal_retry(
+        SimpleNamespace(),
+        session,
+        semantic="ai_failure",
+        operation_reason="provider-start-failed",
+    ) is True
+    queued = store.list_pending_actions()
+    assert len(queued) == 1
+    action = queued[0]
+    assert action["operation"] == "terminal"
+    assert action["payload"]["requested_status"] == "AIFAIL"
+    assert action["payload"]["retry_terminal"]["semantic"] == "ai_failure"
+
+    finalizer = AsyncMock(return_value=True)
+    engine = SimpleNamespace(
+        session_store=_SessionStore(session),
+        _save_session=AsyncMock(),
+        _finalize_vicidial_call_locked=finalizer,
+        _execute_pending_vicidial_workflow=AsyncMock(),
+    )
+
+    await Engine._retry_pending_vicidial_action(engine, action, store)
+
+    engine._execute_pending_vicidial_workflow.assert_not_awaited()
+    finalizer.assert_awaited_once_with(
+        session,
+        semantic="ai_failure",
+        operation_reason="provider-start-failed",
+    )
+    assert store.get_pending_action(action["id"])["status"] == "completed"
+
+
 def test_store_migrates_pending_actions_created_before_workflow_state(tmp_path):
     db_path = str(tmp_path / "vicidial.db")
     with sqlite3.connect(db_path) as conn:

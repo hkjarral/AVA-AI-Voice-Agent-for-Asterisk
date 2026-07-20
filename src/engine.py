@@ -2099,17 +2099,18 @@ class Engine:
                 for key in ("username_env", "password_env"):
                     if live_connection.get(key):
                         connection[key] = live_connection[key]
-        if operation not in {"dnc", "callback"}:
+        if operation not in {"dnc", "callback", "terminal"}:
             raise ValueError(f"Unsupported queued VICIdial action: {operation}")
         if not bool(action.get("workflow_completed")):
-            workflow_ok = await self._execute_pending_vicidial_workflow(
-                action,
-                connection,
-            )
-            if not workflow_ok:
-                raise RuntimeError(
-                    f"VICIdial {operation} workflow was not confirmed"
+            if operation != "terminal":
+                workflow_ok = await self._execute_pending_vicidial_workflow(
+                    action,
+                    connection,
                 )
+                if not workflow_ok:
+                    raise RuntimeError(
+                        f"VICIdial {operation} workflow was not confirmed"
+                    )
             if not store.mark_pending_action_workflow_completed(action_id):
                 raise RuntimeError(
                     f"VICIdial {operation} retry record could not be advanced"
@@ -2146,9 +2147,17 @@ class Engine:
                 ).strip()
                 session.external_requested_disposition = str(
                     payload.get("requested_status")
-                    or ("DNC" if operation == "dnc" else "CALLBK")
+                    or (
+                        "DNC"
+                        if operation == "dnc"
+                        else "CALLBK" if operation == "callback" else "AIFAIL"
+                    )
                 )
-                session.external_disposition_label = operation
+                session.external_disposition_label = str(
+                    retry_terminal.get("semantic")
+                    if operation == "terminal"
+                    else operation
+                )
                 session.external_disposition_payload = {
                     key: value
                     for key, value in payload.items()
@@ -2183,8 +2192,14 @@ class Engine:
                 session_operation = str(
                     getattr(session, "external_disposition_label", None) or ""
                 ).strip().lower()
+                expected_session_operation = str(
+                    retry_terminal.get("semantic")
+                    if operation == "terminal"
+                    else operation
+                ).strip().lower()
                 if reconstructed_session or (
-                    session_action_id == action_id and session_operation == operation
+                    session_action_id == action_id
+                    and session_operation == expected_session_operation
                 ):
                     disposition_payload["workflow_committed"] = True
                     disposition_payload["workflow_queued"] = False
@@ -4604,6 +4619,89 @@ class Engine:
                 semantic=semantic,
                 operation_reason=operation_reason,
             )
+
+    def _queue_vicidial_terminal_retry(
+        self,
+        session: CallSession,
+        *,
+        semantic: str,
+        operation_reason: str,
+    ) -> bool:
+        """Durably retain terminal ownership before calling VICIdial."""
+        if getattr(session, "external_platform", None) != "vicidial":
+            return False
+        try:
+            from src.core.vicidial_store import get_vicidial_store
+            from src.integrations.vicidial import VicidialSessionInfo, status_for
+
+            raw_info = dict(getattr(session, "external_session", {}) or {})
+            info = VicidialSessionInfo(**{
+                key: value
+                for key, value in raw_info.items()
+                if key in VicidialSessionInfo.__dataclass_fields__
+            })
+            mapping = dict(getattr(session, "external_mapping", {}) or {})
+            connection = dict(getattr(session, "external_connection", {}) or {})
+            default_status = {
+                "ai_hangup": "AIHU",
+                "ai_failure": "AIFAIL",
+            }.get(semantic, "AICU")
+            status = str(
+                getattr(session, "external_requested_disposition", None)
+                or status_for(mapping, semantic, default_status)
+            )
+            queued = get_vicidial_store().enqueue_pending_action(
+                operation="terminal",
+                connection=connection,
+                payload={
+                    "requested_status": status,
+                    "retry_terminal": {
+                        "semantic": semantic,
+                        "operation_reason": operation_reason,
+                        "session": {
+                            key: value
+                            for key, value in info.to_dict().items()
+                            if key != "metadata" and value is not None
+                        },
+                        "mapping_revision": str(
+                            getattr(session, "external_mapping_revision", None) or ""
+                        ),
+                    },
+                },
+                call_id=session.call_id,
+                external_call_id=info.external_call_id or None,
+            )
+            action_id = str(queued.get("id") or "").strip()
+            if not action_id:
+                raise RuntimeError("VICIdial terminal retry queue returned no action ID")
+            session.external_requested_disposition = status
+            session.external_disposition_label = semantic
+            session.external_disposition_payload = {
+                "workflow_committed": True,
+                "workflow_queued": str(queued.get("status") or "") == "pending",
+                "workflow_queue_id": action_id,
+            }
+            session.external_events.append({
+                "operation": "terminal_queue",
+                "success": True,
+                "message": "VICIdial terminal control retained for durable retry",
+                "action_id": action_id,
+                "status": status,
+            })
+            return True
+        except Exception as exc:
+            session.external_events.append({
+                "operation": "terminal_queue",
+                "success": False,
+                "message": f"VICIdial terminal retry queue failed: {type(exc).__name__}",
+            })
+            logger.error(
+                "VICIdial terminal control could not be queued for retry",
+                call_id=session.call_id,
+                external_call_id=getattr(session, "external_call_id", None),
+                exc_info=True,
+            )
+            return False
 
     async def _finalize_vicidial_call_locked(
         self,
@@ -17520,6 +17618,12 @@ class Engine:
         # startup fails; use the same terminal workflow as every other
         # VICIdial-controlled call.
         if getattr(session, "external_platform", None) == "vicidial":
+            retry_queued = self._queue_vicidial_terminal_retry(
+                session,
+                semantic="ai_failure",
+                operation_reason="provider-start-failed",
+            )
+            await self._save_session(session)
             finalized = await self._finalize_vicidial_call(
                 session,
                 semantic="ai_failure",
@@ -17530,6 +17634,7 @@ class Engine:
                     "VICIdial provider-start failure could not be finalized",
                     call_id=session.call_id,
                     external_call_id=getattr(session, "external_call_id", None),
+                    retry_queued=retry_queued,
                 )
             return
 
