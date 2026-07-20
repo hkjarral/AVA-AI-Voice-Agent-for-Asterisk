@@ -587,8 +587,14 @@ async def verify_mapping(mapping_id: str):
         user for user in visible_users
         if status_checks.get(user, {}).get("status") == "READY"
     ]
+    connection_enabled = bool(connection.get("enabled"))
+    connection_result = {
+        **connection_result,
+        "administratively_enabled": connection_enabled,
+    }
     configuration_ready = bool(
-        connection_result.get("ready")
+        connection_enabled
+        and connection_result.get("ready")
         and campaign_found
         and agent_available
         and len(api_users) == len(users)

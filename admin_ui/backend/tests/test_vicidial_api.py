@@ -503,6 +503,50 @@ def test_mapping_verification_preserves_directional_live_call_evidence(
     assert "inbound" not in body["real_calls"]
 
 
+def test_mapping_verification_rejects_disabled_connection(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+    store.save_connection(
+        {**_connection_payload(), "enabled": False}, "connection-1"
+    )
+
+    class _Client:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            return {
+                "ready": True,
+                "authentication": {
+                    "success": True,
+                    "rows": [{"campaign_id": "AVATEST"}],
+                },
+                "agent_visibility": {
+                    "success": True,
+                    "rows": [{"user": "9001", "status": "READY"}],
+                },
+            }
+
+        async def agent_status(self, agent_user):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ok",
+                data={"user": agent_user, "status": "READY"},
+            )
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
+    response = client.post("/api/outbound/vicidial/mappings/mapping-1/verify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["configuration_ready"] is False
+    assert body["ready"] is False
+    assert body["connection"]["ready"] is True
+    assert body["connection"]["administratively_enabled"] is False
+
+
 def test_mapping_verification_preserves_live_call_recorded_during_api_wait(
     monkeypatch, tmp_path
 ):
