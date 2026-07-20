@@ -437,6 +437,52 @@ async def test_hydration_fails_closed_on_a_deleted_generated_route(
 
 
 @pytest.mark.asyncio
+async def test_hydration_fails_closed_on_a_superseded_generated_route(
+    monkeypatch, tmp_path
+):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection(
+        {
+            **_connection(),
+            "name": "Lab",
+            "username_env": "VICI_USER",
+            "password_env": "VICI_PASS",
+        },
+        "connection-1",
+    )
+    mapping = store.save_mapping(_mapping(connection["id"]), "mapping-1")
+    store.save_mapping(
+        {
+            **mapping,
+            "trusted_context": "from-vicidial-ra-new",
+            "conf_exten": "8372",
+        },
+        "mapping-1",
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    engine = Engine.__new__(Engine)
+    engine._read_channel_variable_result = AsyncMock(return_value=("", False))
+    engine._save_session = AsyncMock()
+    session = CallSession(
+        call_id="ari-superseded-route",
+        caller_channel_id="ari-superseded-route",
+    )
+
+    with pytest.raises(RuntimeError, match="Unable to read VICIdial ownership marker"):
+        await Engine._hydrate_vicidial_session(
+            engine,
+            session,
+            "ari-superseded-route",
+            dialplan_context="from-vicidial-ra",
+            dialplan_extension="8371",
+        )
+
+    assert session.external_platform == "vicidial"
+
+
+@pytest.mark.asyncio
 async def test_hydration_does_not_claim_ordinary_route_when_owner_read_fails(
     monkeypatch,
 ):
@@ -1065,6 +1111,85 @@ def test_recreated_exact_route_retires_deleted_mapping_tombstone(tmp_path):
     store.save_mapping(_mapping(connection["id"]), "mapping-2")
 
     assert store.list_route_tombstones() == []
+
+
+def test_mapping_edits_preserve_every_superseded_generated_route(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection(
+        {
+            **_connection(),
+            "name": "Lab",
+            "username_env": "VICI_USER",
+            "password_env": "VICI_PASS",
+        },
+        "connection-1",
+    )
+    original = store.save_mapping(_mapping(connection["id"]), "mapping-1")
+
+    second = store.save_mapping(
+        {
+            **original,
+            "trusted_context": "from-vicidial-ra-two",
+            "conf_exten": "8372",
+        },
+        "mapping-1",
+    )
+    store.save_mapping(
+        {
+            **second,
+            "trusted_context": "from-vicidial-ra-three",
+            "conf_exten": "8373",
+        },
+        "mapping-1",
+    )
+
+    assert [
+        (route["mapping_id"], route["trusted_context"], route["conf_exten"])
+        for route in store.list_route_tombstones()
+    ] == [
+        ("mapping-1", "from-vicidial-ra", "8371"),
+        ("mapping-1", "from-vicidial-ra-two", "8372"),
+    ]
+
+
+def test_store_migrates_single_route_tombstones_without_losing_protection(tmp_path):
+    db_path = str(tmp_path / "vicidial.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE vicidial_route_tombstones (
+                mapping_id TEXT PRIMARY KEY,
+                trusted_context TEXT NOT NULL,
+                conf_exten TEXT NOT NULL,
+                trusted_endpoint TEXT,
+                deleted_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO vicidial_route_tombstones VALUES (?,?,?,?,?)
+            """,
+            (
+                "mapping-legacy",
+                "from-vicidial-ra-old",
+                "8370",
+                "vicidial-ra-old",
+                "2026-07-20T00:00:00+00:00",
+            ),
+        )
+
+    store = VicidialStore(db_path)
+
+    assert store.list_route_tombstones() == [
+        {
+            "mapping_id": "mapping-legacy",
+            "trusted_context": "from-vicidial-ra-old",
+            "conf_exten": "8370",
+            "trusted_endpoint": "vicidial-ra-old",
+            "deleted_at": "2026-07-20T00:00:00+00:00",
+        }
+    ]
 
 
 def test_store_merges_directional_real_call_readiness(tmp_path):

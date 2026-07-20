@@ -171,11 +171,13 @@ class VicidialStore:
                     ON vicidial_mappings(enabled);
 
                 CREATE TABLE IF NOT EXISTS vicidial_route_tombstones (
-                    mapping_id TEXT PRIMARY KEY,
+                    id TEXT PRIMARY KEY,
+                    mapping_id TEXT NOT NULL,
                     trusted_context TEXT NOT NULL,
                     conf_exten TEXT NOT NULL,
                     trusted_endpoint TEXT,
-                    deleted_at TEXT NOT NULL
+                    deleted_at TEXT NOT NULL,
+                    UNIQUE(mapping_id, trusted_context, conf_exten)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_vicidial_route_tombstones_route
@@ -239,6 +241,60 @@ class VicidialStore:
                     """
                     ALTER TABLE vicidial_pending_actions
                     ADD COLUMN workflow_completed INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+
+            # Preview databases stored only one retired route per mapping.
+            # Normalize that table so every superseded generated route can
+            # remain fail-closed until the exact route is reused.
+            tombstone_columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(vicidial_route_tombstones)"
+                )
+            }
+            if "id" not in tombstone_columns:
+                conn.execute(
+                    "ALTER TABLE vicidial_route_tombstones "
+                    "RENAME TO vicidial_route_tombstones_legacy"
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE vicidial_route_tombstones (
+                        id TEXT PRIMARY KEY,
+                        mapping_id TEXT NOT NULL,
+                        trusted_context TEXT NOT NULL,
+                        conf_exten TEXT NOT NULL,
+                        trusted_endpoint TEXT,
+                        deleted_at TEXT NOT NULL,
+                        UNIQUE(mapping_id, trusted_context, conf_exten)
+                    )
+                    """
+                )
+                for row in conn.execute(
+                    "SELECT * FROM vicidial_route_tombstones_legacy"
+                ).fetchall():
+                    conn.execute(
+                        """
+                        INSERT INTO vicidial_route_tombstones (
+                            id,mapping_id,trusted_context,conf_exten,
+                            trusted_endpoint,deleted_at
+                        ) VALUES (?,?,?,?,?,?)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            row["mapping_id"],
+                            row["trusted_context"],
+                            row["conf_exten"],
+                            row["trusted_endpoint"],
+                            row["deleted_at"],
+                        ),
+                    )
+                conn.execute("DROP TABLE vicidial_route_tombstones_legacy")
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_vicidial_route_tombstones_route
+                        ON vicidial_route_tombstones(trusted_context, conf_exten)
                     """
                 )
 
@@ -913,22 +969,11 @@ class VicidialStore:
     def delete_connection(self, connection_id: str) -> bool:
         with self._lock, self._connection() as conn:
             now = _now()
-            conn.execute(
-                """
-                INSERT INTO vicidial_route_tombstones (
-                    mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
-                )
-                SELECT id,trusted_context,conf_exten,trusted_endpoint,?
-                  FROM vicidial_mappings
-                 WHERE connection_id=?
-                ON CONFLICT(mapping_id) DO UPDATE SET
-                    trusted_context=excluded.trusted_context,
-                    conf_exten=excluded.conf_exten,
-                    trusted_endpoint=excluded.trusted_endpoint,
-                    deleted_at=excluded.deleted_at
-                """,
-                (now, connection_id),
-            )
+            for row in conn.execute(
+                "SELECT * FROM vicidial_mappings WHERE connection_id=?",
+                (connection_id,),
+            ).fetchall():
+                self._preserve_route_tombstone(conn, dict(row), now)
             cur = conn.execute("DELETE FROM vicidial_connections WHERE id=?", (connection_id,))
             return cur.rowcount > 0
 
@@ -954,6 +999,39 @@ class VicidialStore:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _preserve_route_tombstone(
+        conn: sqlite3.Connection,
+        mapping: Mapping[str, Any],
+        retired_at: str,
+    ) -> None:
+        """Retain one generated route without replacing older retired routes."""
+        mapping_id = str(
+            mapping.get("id") or mapping.get("mapping_id") or ""
+        ).strip()
+        trusted_context = str(mapping.get("trusted_context") or "").strip()
+        conf_exten = str(mapping.get("conf_exten") or "").strip()
+        if not all((mapping_id, trusted_context, conf_exten)):
+            return
+        conn.execute(
+            """
+            INSERT INTO vicidial_route_tombstones (
+                id,mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
+            ) VALUES (?,?,?,?,?,?)
+            ON CONFLICT(mapping_id,trusted_context,conf_exten) DO UPDATE SET
+                trusted_endpoint=excluded.trusted_endpoint,
+                deleted_at=excluded.deleted_at
+            """,
+            (
+                str(uuid.uuid4()),
+                mapping_id,
+                trusted_context,
+                conf_exten,
+                str(mapping.get("trusted_endpoint") or "").strip() or None,
+                retired_at,
+            ),
+        )
 
     def get_mapping(self, mapping_id: str) -> Optional[Dict[str, Any]]:
         with self._lock, self._connection() as conn:
@@ -1027,6 +1105,13 @@ class VicidialStore:
                     if key != "name"
                 )
             )
+            if previous and (
+                str(previous.get("trusted_context") or "")
+                != data["trusted_context"]
+                or str(previous.get("conf_exten") or "")
+                != data["conf_exten"]
+            ):
+                self._preserve_route_tombstone(conn, previous, now)
             conn.execute(
                 """
                 INSERT INTO vicidial_mappings (
@@ -1089,22 +1174,11 @@ class VicidialStore:
     def delete_mapping(self, mapping_id: str) -> bool:
         with self._lock, self._connection() as conn:
             now = _now()
-            conn.execute(
-                """
-                INSERT INTO vicidial_route_tombstones (
-                    mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
-                )
-                SELECT id,trusted_context,conf_exten,trusted_endpoint,?
-                  FROM vicidial_mappings
-                 WHERE id=?
-                ON CONFLICT(mapping_id) DO UPDATE SET
-                    trusted_context=excluded.trusted_context,
-                    conf_exten=excluded.conf_exten,
-                    trusted_endpoint=excluded.trusted_endpoint,
-                    deleted_at=excluded.deleted_at
-                """,
-                (now, mapping_id),
-            )
+            mapping = conn.execute(
+                "SELECT * FROM vicidial_mappings WHERE id=?", (mapping_id,)
+            ).fetchone()
+            if mapping:
+                self._preserve_route_tombstone(conn, dict(mapping), now)
             cur = conn.execute("DELETE FROM vicidial_mappings WHERE id=?", (mapping_id,))
             return cur.rowcount > 0
 
