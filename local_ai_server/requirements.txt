@@ -7,7 +7,7 @@ sherpa-onnx==1.13.4
 faster-whisper==1.0.3
 kokoro==0.9.4
 torch==2.5.1
-torchaudio==2.5.1
+torchaudio==2.11.0
 transformers==4.27.4
 huggingface-hub==0.36.2
 # Note: numpy is used by both Piper TTS and Kroko/Sherpa STT (PCM16→float32 conversion)
