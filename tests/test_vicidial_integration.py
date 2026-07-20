@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -371,6 +372,75 @@ async def test_agent_status_correlation_uses_bounded_concurrency(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_agent_status_limit_is_shared_across_concurrent_calls(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    clients = [VicidialApiClient(_connection()) for _ in range(2)]
+    active = 0
+    peak = 0
+    call_info_started = 0
+    call_info_gate = asyncio.Event()
+
+    async def callid_info(call_id):
+        nonlocal call_info_started
+        call_info_started += 1
+        if call_info_started == len(clients):
+            call_info_gate.set()
+        await call_info_gate.wait()
+        return VicidialApiResult(
+            success=True,
+            function="callid_info",
+            message="ok",
+            data={
+                "call_id": call_id,
+                "call_type": "OUT",
+                "campaign_id": "TESTCAMP",
+                "phone": "13165551212",
+            },
+        )
+
+    async def agent_status(_user):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return VicidialApiResult(
+            success=True,
+            function="agent_status",
+            message="ok",
+            data={
+                "status": "READY",
+                "callerid": "",
+                "campaign_id": "TESTCAMP",
+                "phone_number": "13165551212",
+            },
+        )
+
+    for client in clients:
+        monkeypatch.setattr(client, "callid_info", callid_info)
+        monkeypatch.setattr(client, "agent_status", agent_status)
+
+    mapping = {
+        "id": "map-1",
+        **_mapping(),
+        "number_of_lines": 15,
+        "static_agent_user": None,
+    }
+    results = await asyncio.gather(*(
+        client.resolve_remote_agent_session(
+            call_id=f"M405090807000001234{index + 5}",
+            mapping=mapping,
+            attempts=1,
+        )
+        for index, client in enumerate(clients)
+    ))
+
+    assert all(info is None for info, _evidence in results)
+    assert 1 < peak <= 10
+
+
+@pytest.mark.asyncio
 async def test_correlation_retry_budget_runs_within_hard_deadline(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
     monkeypatch.setenv("VICI_PASS", "secret")
@@ -695,7 +765,7 @@ def test_store_merges_directional_real_call_readiness(tmp_path):
     store.record_verification(
         kind="mapping",
         record_id="mapping-1",
-        result={"configuration_ready": True},
+        result={"configuration_ready": True, "pbx_ready": True},
     )
 
     store.record_real_call_verification(
@@ -723,6 +793,113 @@ def test_store_merges_directional_real_call_readiness(tmp_path):
     assert verification["real_calls"]["outbound"]["status"] == "AIHU"
     assert verification["real_calls"]["inbound"]["status"] == "AICU"
     assert verification["real_call"]["verified"] is True
+    assert verification["ready"] is True
+
+
+def test_real_call_readiness_does_not_bypass_pbx_gate(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection({
+        **_connection(),
+        "name": "Lab",
+        "username_env": "VICI_USER",
+        "password_env": "VICI_PASS",
+    }, "connection-1")
+    mapping = {**_mapping(connection["id"]), "direction": "outbound"}
+    store.save_mapping(mapping, "mapping-1")
+    store.record_verification(
+        kind="mapping",
+        record_id="mapping-1",
+        result={"configuration_ready": True, "pbx_ready": False},
+    )
+
+    store.record_real_call_verification(
+        mapping_id="mapping-1",
+        direction="outbound",
+        external_call_id="M4050908070000012345",
+        status="AIHU",
+        operation="hangup",
+    )
+
+    verification = store.get_mapping("mapping-1")["last_verification"]
+    assert verification["configuration_ready"] is True
+    assert verification["pbx_ready"] is False
+    assert verification["real_call"]["verified"] is True
+    assert verification["ready"] is False
+
+
+def test_readiness_merges_serialize_across_store_instances(tmp_path):
+    db_path = str(tmp_path / "vicidial.db")
+    verification_store = VicidialStore(db_path)
+    call_store = VicidialStore(db_path)
+    connection = verification_store.save_connection({
+        **_connection(),
+        "name": "Lab",
+        "username_env": "VICI_USER",
+        "password_env": "VICI_PASS",
+    }, "connection-1")
+    mapping = {**_mapping(connection["id"]), "direction": "outbound"}
+    verification_store.save_mapping(mapping, "mapping-1")
+
+    update_reached = threading.Event()
+    release_update = threading.Event()
+    errors = []
+    original_connection = verification_store._connection
+
+    def traced_connection():
+        conn = original_connection()
+
+        def trace(statement):
+            if statement.strip().upper().startswith("UPDATE VICIDIAL_MAPPINGS"):
+                update_reached.set()
+                if not release_update.wait(timeout=2):
+                    raise RuntimeError("timed out waiting to release verification update")
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    verification_store._connection = traced_connection
+
+    def record_verification():
+        try:
+            verification_store.record_mapping_verification(
+                mapping_id="mapping-1",
+                result={"configuration_ready": True, "pbx_ready": True},
+            )
+        except Exception as exc:  # pragma: no cover - asserted through errors
+            errors.append(exc)
+
+    def record_call():
+        try:
+            call_store.record_real_call_verification(
+                mapping_id="mapping-1",
+                direction="outbound",
+                external_call_id="M4050908070000012345",
+                status="AIHU",
+                operation="hangup",
+            )
+        except Exception as exc:  # pragma: no cover - asserted through errors
+            errors.append(exc)
+
+    verification_thread = threading.Thread(target=record_verification)
+    call_thread = threading.Thread(target=record_call)
+    verification_thread.start()
+    assert update_reached.wait(timeout=2)
+    call_thread.start()
+    call_thread.join(timeout=0.05)
+    assert call_thread.is_alive()
+    release_update.set()
+    verification_thread.join(timeout=2)
+    call_thread.join(timeout=2)
+
+    assert not verification_thread.is_alive()
+    assert not call_thread.is_alive()
+    assert errors == []
+    verification = verification_store.get_mapping("mapping-1")["last_verification"]
+    assert verification["configuration_ready"] is True
+    assert verification["pbx_ready"] is True
+    assert verification["real_calls"]["outbound"]["external_call_id"] == (
+        "M4050908070000012345"
+    )
     assert verification["ready"] is True
 
 

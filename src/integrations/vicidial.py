@@ -15,6 +15,7 @@ import os
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 from urllib.parse import urljoin
+from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
@@ -27,6 +28,17 @@ _CALL_ID_RE = re.compile(r"^(?:Y|J|V|M|DC|S|LP|VH|XL)[A-Za-z0-9_.:-]+$")
 _ENV_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
 _REMOTE_AGENT_CORRELATION_MAX_SECONDS = 10.0
 _REMOTE_AGENT_STATUS_CONCURRENCY = 10
+_REMOTE_AGENT_STATUS_LIMITERS = WeakKeyDictionary()
+
+
+def _remote_agent_status_limiter() -> asyncio.Semaphore:
+    """Return the event-loop-wide limiter shared by all client instances."""
+    loop = asyncio.get_running_loop()
+    limiter = _REMOTE_AGENT_STATUS_LIMITERS.get(loop)
+    if limiter is None:
+        limiter = asyncio.Semaphore(_REMOTE_AGENT_STATUS_CONCURRENCY)
+        _REMOTE_AGENT_STATUS_LIMITERS[loop] = limiter
+    return limiter
 
 
 class VicidialIntegrationError(ValueError):
@@ -479,6 +491,11 @@ class VicidialApiClient:
             ),
         )
         correlation_deadline = loop.time() + correlation_timeout
+        status_limiter = _remote_agent_status_limiter()
+
+        async def limited_agent_status(user: str) -> VicidialApiResult:
+            async with status_limiter:
+                return await self.agent_status(user)
 
         async def within_deadline(factory: Any) -> Any:
             remaining = correlation_deadline - loop.time()
@@ -493,15 +510,10 @@ class VicidialApiClient:
             remaining = correlation_deadline - loop.time()
             if remaining <= 0:
                 return None
-            semaphore = asyncio.Semaphore(_REMOTE_AGENT_STATUS_CONCURRENCY)
-
-            async def fetch(user: str) -> VicidialApiResult:
-                async with semaphore:
-                    return await self.agent_status(user)
 
             try:
                 return await asyncio.wait_for(
-                    asyncio.gather(*(fetch(user) for user in users)),
+                    asyncio.gather(*(limited_agent_status(user) for user in users)),
                     timeout=remaining,
                 )
             except asyncio.TimeoutError:
@@ -655,7 +667,7 @@ class VicidialApiClient:
             fallback = str(mapping.get("static_agent_user") or "").strip()
             if line_count == 1 and fallback and fallback in allowed_users:
                 agent_result = await within_deadline(
-                    lambda: self.agent_status(fallback)
+                    lambda: limited_agent_status(fallback)
                 )
                 if agent_result is None:
                     return correlation_timed_out()

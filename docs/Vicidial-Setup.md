@@ -441,6 +441,10 @@ row from making an uncreated VICIdial user look ready. Both standalone connectio
 VICIdial API work in one mapping check share a 30-second deadline; a timeout is saved and shown as
 **Needs attention** instead of leaving the Admin UI waiting through every request timeout.
 
+During live-call admission, all simultaneous Remote Agent correlations in the AAVA engine share a
+10-request `agent_status` limit. This protects the legacy VICIdial API when several mapped lines
+ring at once; mappings with large user ranges should still be sized and load-tested conservatively.
+
 ### AAVA-handled activity
 
 The **Remote Agent activity** section is a read-only view over AAVA Call History. It provides

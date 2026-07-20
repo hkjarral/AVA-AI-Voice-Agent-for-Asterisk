@@ -683,8 +683,15 @@ class VicidialStore:
     def record_mapping_verification(
         self, *, mapping_id: str, result: Mapping[str, Any]
     ) -> Dict[str, Any]:
-        """Atomically merge live-call evidence into a mapping verification result."""
+        """Atomically merge live-call evidence into a mapping verification result.
+
+        ``BEGIN IMMEDIATE`` is required because Admin UI and ai-engine have
+        separate process-local locks and SQLite connections. Acquiring the
+        database write reservation before the read serializes both services'
+        readiness read-modify-write cycles.
+        """
         with self._lock, self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT direction,last_verification_json FROM vicidial_mappings WHERE id=?",
                 (mapping_id,),
@@ -753,6 +760,7 @@ class VicidialStore:
         if normalized_direction not in {"inbound", "outbound"}:
             raise ValueError("Real-call direction must be inbound or outbound")
         with self._lock, self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT direction,last_verification_json FROM vicidial_mappings WHERE id=?",
                 (mapping_id,),
@@ -789,7 +797,9 @@ class VicidialStore:
                 "note": "Each configured direction requires a correlated call with confirmed VICIdial terminal control",
             }
             verification["ready"] = bool(
-                verification.get("configuration_ready") and live_call_ready
+                verification.get("configuration_ready")
+                and verification.get("pbx_ready")
+                and live_call_ready
             )
             now = _now()
             conn.execute(
