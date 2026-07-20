@@ -532,8 +532,9 @@ class SetCallDispositionTool(Tool):
                     name="callback_datetime",
                     type="string",
                     description=(
-                        "Required ISO date/time for a callback disposition. Confirm the "
-                        "caller's requested date, time, and timezone before calling the tool."
+                        "Required offset-aware ISO 8601 date/time for a callback disposition. "
+                        "Confirm the caller's requested date, time, and timezone before "
+                        "calling the tool."
                     ),
                 ),
                 ToolParameter(

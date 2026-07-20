@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 
@@ -125,12 +127,22 @@ def test_runtime_guidance_omits_unrelated_sections():
 
 
 @pytest.mark.unit
-def test_runtime_guidance_includes_vicidial_disposition_allowlist_and_compliance_rules():
+def test_runtime_guidance_includes_vicidial_disposition_allowlist_and_compliance_rules(
+    monkeypatch,
+):
     from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 20, 23, 30, 45, tzinfo=tz)
+
+    monkeypatch.setattr("src.tools.runtime_guidance.datetime", FixedDateTime)
 
     config = {
         "tools": {
             "vicidial": {
+                "timezone": "America/Chicago",
                 "dispositions": {
                     "sale": "SALE",
                     "dnc": "DNC",
@@ -148,5 +160,29 @@ def test_runtime_guidance_includes_vicidial_disposition_allowlist_and_compliance
     assert "do not refuse" in guidance
     assert "include `callback_datetime`" in guidance
     assert "native VICIdial callback" in guidance
+    assert "VICIdial callback timezone: `America/Chicago`" in guidance
+    assert "2026-07-20T23:30:45-05:00" in guidance
+    assert "relative requests such as today or tomorrow" in guidance
+    assert "offset-aware ISO 8601" in guidance
     assert "Do not use a calendar" in guidance
     assert "does not end the call" in guidance
+
+
+@pytest.mark.unit
+def test_runtime_guidance_requires_explicit_callback_clock_when_timezone_missing():
+    from src.tools.runtime_guidance import build_in_call_tool_runtime_guidance
+
+    guidance = build_in_call_tool_runtime_guidance(
+        {
+            "tools": {
+                "vicidial": {
+                    "dispositions": {"callback": "CALLBK"},
+                }
+            }
+        },
+        ["set_call_disposition"],
+    )
+
+    assert "timezone is unavailable" in guidance
+    assert "Do not infer relative dates" in guidance
+    assert "offset-aware ISO 8601" in guidance

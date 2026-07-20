@@ -4037,6 +4037,7 @@ def test_agent_runtime_resolution_preserves_vicidial_destinations():
     session = CallSession(call_id="ari-runtime", caller_channel_id="ari-runtime")
     session.external_platform = "vicidial"
     session.external_mapping = _mapping()
+    session.external_connection = _connection()
 
     Engine._resolve_session_tool_runtime(engine, session)
 
@@ -4054,3 +4055,7 @@ def test_agent_runtime_resolution_preserves_vicidial_destinations():
         "sale": "SALE",
         "dnc": "DNC",
     }
+    assert (
+        session.tool_runtime_config["tools"]["vicidial"]["timezone"]
+        == "America/Phoenix"
+    )

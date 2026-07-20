@@ -4464,6 +4464,8 @@ class Engine:
             for key, value in dict(mapping.get("dispositions") or {}).items()
             if str(key or "").strip() and str(value or "").strip()
         }
+        connection = dict(getattr(session, "external_connection", {}) or {})
+        vicidial["timezone"] = str(connection.get("timezone") or "UTC").strip() or "UTC"
         session.tool_runtime_config = runtime
 
         # Keep the diagnostic policy in agreement with the executable config.
