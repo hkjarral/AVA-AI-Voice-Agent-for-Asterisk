@@ -15,7 +15,7 @@ import uuid
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from src.integrations.vicidial import validate_status
+from src.integrations.vicidial import remote_agent_user_range, validate_status
 
 
 _ENV_REFERENCE_RE = re.compile(
@@ -982,19 +982,15 @@ class VicidialStore:
         now = _now()
         with self._lock, self._connection() as conn:
             if data["enabled"]:
-                start = int(data["user_start"])
-                end = start + int(data["number_of_lines"]) - 1
+                users = set(remote_agent_user_range(data))
                 for row in conn.execute(
                     "SELECT * FROM vicidial_mappings WHERE enabled=1 AND id<>?",
                     (mapping_id,),
                 ).fetchall():
                     other = self._mapping_dict(row)
                     if str(other.get("connection_id") or "") == data["connection_id"]:
-                        other_start = int(str(other.get("user_start") or "0"))
-                        other_end = (
-                            other_start + int(other.get("number_of_lines") or 1) - 1
-                        )
-                        if start <= other_end and other_start <= end:
+                        other_users = set(remote_agent_user_range(other))
+                        if users.intersection(other_users):
                             raise ValueError(
                                 "Remote Agent user range overlaps enabled mapping "
                                 f"{other.get('name')}"

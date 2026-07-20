@@ -473,9 +473,8 @@ class VicidialApiClient:
         must fail closed within ``_REMOTE_AGENT_CORRELATION_MAX_SECONDS``.
         """
         evidence: list[Dict[str, Any]] = []
-        start_user = int(str(mapping.get("user_start") or "0"))
         line_count = max(1, int(mapping.get("number_of_lines") or 1))
-        allowed_users = {str(start_user + index) for index in range(line_count)}
+        allowed_users = set(remote_agent_user_range(mapping))
         attempt_count = max(1, int(attempts))
         retry_delay = max(0.05, float(delay_seconds))
         loop = asyncio.get_running_loop()
@@ -773,6 +772,8 @@ def allowed_dispositions(mapping: Mapping[str, Any]) -> Dict[str, str]:
 
 
 def remote_agent_user_range(mapping: Mapping[str, Any]) -> Iterable[str]:
-    start = int(str(mapping.get("user_start") or "0"))
+    raw_start = str(mapping.get("user_start") or "0").strip()
+    start = int(raw_start)
+    width = len(raw_start)
     count = max(1, int(mapping.get("number_of_lines") or 1))
-    return (str(start + index) for index in range(count))
+    return (str(start + index).zfill(width) for index in range(count))

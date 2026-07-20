@@ -20,6 +20,7 @@ from src.integrations.vicidial import (
     VicidialApiResult,
     VicidialIntegrationError,
     VicidialSessionInfo,
+    remote_agent_user_range,
     validate_call_id,
 )
 from src.tools.context import ToolExecutionContext
@@ -104,6 +105,13 @@ def _stored_mapping_revision(store: VicidialStore, mapping_id: str) -> str:
     connection = store.get_connection(str(mapping.get("connection_id") or ""))
     assert connection is not None
     return vicidial_configuration_revision(mapping, connection)
+
+
+def test_remote_agent_user_range_preserves_leading_zero_width():
+    assert list(remote_agent_user_range({
+        "user_start": "09001",
+        "number_of_lines": 3,
+    })) == ["09001", "09002", "09003"]
 
 
 @pytest.mark.asyncio
@@ -490,6 +498,60 @@ async def test_non_agent_requests_include_headers_and_parse_dynamic_session(monk
     assert captures[0]["data"]["detail"] == "YES"
     assert captures[1]["data"]["header"] == "YES"
     assert captures[0]["data"]["pass"] == "secret"
+
+
+@pytest.mark.asyncio
+async def test_correlation_queries_zero_padded_remote_agent_users(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    client = VicidialApiClient(_connection())
+    queried_users = []
+
+    async def callid_info(call_id):
+        return VicidialApiResult(
+            success=True,
+            function="callid_info",
+            message="ok",
+            data={
+                "call_id": call_id,
+                "call_type": "OUT",
+                "campaign_id": "TESTCAMP",
+            },
+        )
+
+    async def agent_status(user):
+        queried_users.append(user)
+        return VicidialApiResult(
+            success=True,
+            function="agent_status",
+            message="ok",
+            data={
+                "status": "INCALL" if user == "09002" else "READY",
+                "callerid": (
+                    "M4050908070000012345" if user == "09002" else ""
+                ),
+                "campaign_id": "TESTCAMP",
+            },
+        )
+
+    monkeypatch.setattr(client, "callid_info", callid_info)
+    monkeypatch.setattr(client, "agent_status", agent_status)
+
+    info, _evidence = await client.resolve_remote_agent_session(
+        call_id="M4050908070000012345",
+        mapping={
+            "id": "map-1",
+            **_mapping(),
+            "user_start": "09001",
+            "number_of_lines": 2,
+            "static_agent_user": None,
+        },
+        attempts=1,
+    )
+
+    assert queried_users == ["09001", "09002"]
+    assert info is not None
+    assert info.agent_user == "09002"
 
 
 @pytest.mark.asyncio
