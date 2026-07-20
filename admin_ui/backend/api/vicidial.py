@@ -27,6 +27,7 @@ router = APIRouter(prefix="/outbound/vicidial", tags=["outbound"])
 logger = logging.getLogger(__name__)
 
 ACTIVITY_SUMMARY_MAX_ROWS = 5000
+CONNECTION_VERIFICATION_MAX_SECONDS = 30.0
 MAPPING_VERIFICATION_MAX_SECONDS = 30.0
 
 
@@ -395,7 +396,18 @@ async def verify_connection(connection_id: str):
     if not connection:
         raise HTTPException(status_code=404, detail="VICIdial connection not found")
     try:
-        result = await VicidialApiClient(connection).verify_connection()
+        async with asyncio.timeout(CONNECTION_VERIFICATION_MAX_SECONDS):
+            result = await VicidialApiClient(connection).verify_connection()
+    except TimeoutError:
+        result = {
+            "ready": False,
+            "error": "VICIdial connection verification exceeded the overall deadline",
+            "error_code": "verification_timeout",
+            "verification": {
+                "timed_out": True,
+                "timeout_seconds": CONNECTION_VERIFICATION_MAX_SECONDS,
+            },
+        }
     except ValueError:
         logger.warning(
             "Invalid VICIdial connection configuration",
@@ -661,8 +673,7 @@ async def verify_mapping(mapping_id: str):
     }
     if logged_agents:
         result["remote_agent"]["api"] = logged_agents
-    _store().record_verification(kind="mapping", record_id=mapping_id, result=result)
-    return result
+    return _store().record_mapping_verification(mapping_id=mapping_id, result=result)
 
 
 def _dialplan(mapping: Dict[str, Any]) -> str:
@@ -722,7 +733,9 @@ async def mapping_guidance(mapping_id: str):
     technology = str(mapping.get("pbx_technology") or "PJSIP").upper()
     direction = str(mapping.get("direction") or "both")
     remote_agent_campaign = (
-        "CLOSER" if direction == "inbound" else str(mapping.get("campaign_id") or "")
+        "CLOSER"
+        if direction == "inbound"
+        else str(mapping.get("campaign_id") or "<REQUIRED_REAL_CAMPAIGN>")
     )
     if setup_mode == "existing_endpoint":
         pbx_guidance: Dict[str, Any] = {

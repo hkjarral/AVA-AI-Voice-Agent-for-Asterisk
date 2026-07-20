@@ -437,9 +437,9 @@ report rows still belong in the deployment acceptance record.
 
 For multi-line mappings, **Run checks** calls `agent_status` for every user and separately requires
 all users to appear in `logged_in_agents`. This prevents a stale or manually inserted live-agent
-row from making an uncreated VICIdial user look ready. All VICIdial API work in one mapping check
-shares a 30-second deadline; a timeout is saved and shown as **Needs attention** instead of leaving
-the Admin UI waiting through every per-user request timeout.
+row from making an uncreated VICIdial user look ready. Both standalone connection checks and all
+VICIdial API work in one mapping check share a 30-second deadline; a timeout is saved and shown as
+**Needs attention** instead of leaving the Admin UI waiting through every request timeout.
 
 ### AAVA-handled activity
 

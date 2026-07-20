@@ -833,7 +833,7 @@ export const VicidialRemoteAgentsTab = () => {
         setBusy(`verify-${id}`);
         try {
             const response = await axios.post(`/api/outbound/vicidial/${kind}/${id}/verify`);
-            if (kind === 'mappings' && response.data?.verification?.timed_out)
+            if (response.data?.verification?.timed_out)
                 toast.warning('VICIdial API checks exceeded the 30-second verification deadline');
             else if (response.data?.ready)
                 toast.success(

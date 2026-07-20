@@ -229,6 +229,25 @@ def test_inbound_guidance_keeps_closer_login_separate_from_action_campaign(
     )
 
 
+def test_guidance_marks_missing_campaign_on_legacy_mapping(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE vicidial_mappings SET campaign_id=NULL WHERE id=?",
+            ("mapping-1",),
+        )
+
+    response = client.get("/api/outbound/vicidial/mappings/mapping-1/guidance")
+
+    assert response.status_code == 200
+    assert any(
+        "campaign <REQUIRED_REAL_CAMPAIGN>" in step
+        for step in response.json()["vicidial_steps"]
+    )
+
+
 def test_connection_rejects_inline_credential_defaults_and_sanitizes_preview_rows(
     monkeypatch, tmp_path
 ):
@@ -399,6 +418,34 @@ def test_connection_verification_does_not_expose_exception_details(monkeypatch, 
     assert stored == response.json()
 
 
+def test_connection_verification_has_one_overall_deadline(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    store.save_connection(_connection_payload(), "connection-1")
+
+    class _SlowClient:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            await asyncio.sleep(1)
+            raise AssertionError("connection verification deadline did not cancel request")
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _SlowClient)
+    monkeypatch.setattr(vicidial_api, "CONNECTION_VERIFICATION_MAX_SECONDS", 0.01)
+    response = client.post(
+        "/api/outbound/vicidial/connections/connection-1/verify"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": False,
+        "error": "VICIdial connection verification exceeded the overall deadline",
+        "error_code": "verification_timeout",
+        "verification": {"timed_out": True, "timeout_seconds": 0.01},
+    }
+    assert store.get_connection("connection-1")["last_verification"] == response.json()
+
+
 def test_mapping_verification_preserves_directional_live_call_evidence(
     monkeypatch, tmp_path
 ):
@@ -454,6 +501,61 @@ def test_mapping_verification_preserves_directional_live_call_evidence(
     assert body["real_call"]["required_directions"] == ["inbound", "outbound"]
     assert body["real_calls"]["outbound"]["verified"] is True
     assert "inbound" not in body["real_calls"]
+
+
+def test_mapping_verification_preserves_live_call_recorded_during_api_wait(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+
+    class _Client:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            store.record_real_call_verification(
+                mapping_id="mapping-1",
+                direction="outbound",
+                external_call_id="M4050908070000012345",
+                status="AIHU",
+                operation="hangup",
+            )
+            return {
+                "ready": True,
+                "authentication": {
+                    "success": True,
+                    "rows": [{"campaign_id": "AVATEST"}],
+                },
+                "agent_visibility": {
+                    "success": True,
+                    "rows": [{"user": "9001", "status": "READY"}],
+                },
+            }
+
+        async def agent_status(self, agent_user):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ok",
+                data={"user": agent_user, "status": "READY"},
+            )
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
+    response = client.post("/api/outbound/vicidial/mappings/mapping-1/verify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["real_calls"]["outbound"]["external_call_id"] == (
+        "M4050908070000012345"
+    )
+    assert body["real_call"] == {
+        "verified": False,
+        "required_directions": ["inbound", "outbound"],
+        "note": "Each configured direction requires a correlated call with confirmed VICIdial terminal control",
+    }
+    assert store.get_mapping("mapping-1")["last_verification"] == body
 
 
 def test_mapping_verification_rejects_live_row_without_vicidial_user(

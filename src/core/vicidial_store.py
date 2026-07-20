@@ -680,6 +680,65 @@ class VicidialStore:
                 (_json(dict(result), {}), _now(), _now(), record_id),
             )
 
+    def record_mapping_verification(
+        self, *, mapping_id: str, result: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Atomically merge live-call evidence into a mapping verification result."""
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT direction,last_verification_json FROM vicidial_mappings WHERE id=?",
+                (mapping_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("VICIdial mapping does not exist")
+
+            current = _decode(row["last_verification_json"], {})
+            if not isinstance(current, dict):
+                current = {}
+            current_real_calls = current.get("real_calls")
+            if not isinstance(current_real_calls, dict):
+                current_real_calls = {}
+
+            merged = dict(result)
+            # The database value is authoritative here. ``result`` was built from
+            # a pre-request mapping snapshot and may be stale after API/PBX awaits.
+            # Using only the value read inside this transaction also avoids
+            # resurrecting evidence cleared by a concurrent mapping edit.
+            real_calls = dict(current_real_calls)
+
+            configured_direction = str(row["direction"] or "both").strip().lower()
+            required_directions = (
+                ["inbound", "outbound"]
+                if configured_direction == "both"
+                else [configured_direction]
+            )
+            live_call_ready = all(
+                bool(dict(real_calls.get(direction) or {}).get("verified"))
+                for direction in required_directions
+            )
+            merged["real_calls"] = real_calls
+            merged["real_call"] = {
+                "verified": live_call_ready,
+                "required_directions": required_directions,
+                "note": "Each configured direction requires a correlated call with confirmed VICIdial terminal control",
+            }
+            merged["ready"] = bool(
+                merged.get("configuration_ready")
+                and merged.get("pbx_ready")
+                and live_call_ready
+            )
+
+            now = _now()
+            conn.execute(
+                """
+                UPDATE vicidial_mappings
+                   SET last_verification_json=?, last_verified_at=?, updated_at=?
+                 WHERE id=?
+                """,
+                (_json(merged, {}), now, now, mapping_id),
+            )
+        return merged
+
     def record_real_call_verification(
         self,
         *,
