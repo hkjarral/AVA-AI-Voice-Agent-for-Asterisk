@@ -148,6 +148,28 @@ async def execute_vicidial_transfer(
     if bool(getattr(session, "external_finalized", False)):
         return {"status": "failed", "message": "The VICIdial call is already finalized"}
 
+    # DNC is a compliance action, not merely a terminal status. Commit and
+    # verify it before transfer finalizes the Remote Agent session; cleanup
+    # intentionally skips calls already finalized by a successful transfer.
+    if str(getattr(session, "external_disposition_label", None) or "") == "dnc":
+        if not await commit_vicidial_disposition_workflow(session):
+            await context.session_store.upsert_call(session)
+            logger.warning(
+                "VICIdial transfer blocked because pending DNC could not be committed",
+                call_id=context.call_id,
+            )
+            return {
+                "status": "failed",
+                "message": (
+                    "The do-not-call request could not be confirmed, so the transfer "
+                    "was not started"
+                ),
+            }
+        # Persist the compliance result before attempting the terminal action.
+        # If transfer control then times out or raises, call history still
+        # records that VICIdial accepted the DNC request.
+        await context.session_store.upsert_call(session)
+
     mapping = dict(getattr(session, "external_mapping", {}) or {})
     connection = dict(getattr(session, "external_connection", {}) or {})
     transfer_type = str(destination.get("type") or "").strip().lower()
@@ -289,6 +311,25 @@ class SetCallDispositionTool(Tool):
                 "status": "failed",
                 "message": "Unknown disposition. Available values: " + ", ".join(
                     sorted(dispositions)
+                ),
+            }
+
+        existing_semantic = str(
+            getattr(session, "external_disposition_label", None) or ""
+        ).strip().lower()
+        if existing_semantic == "dnc":
+            if semantic != "dnc":
+                return {
+                    "status": "failed",
+                    "message": (
+                        "A do-not-call request is already selected and cannot be replaced"
+                    ),
+                }
+            return {
+                "status": "success",
+                "message": "Do-not-call disposition is already selected.",
+                "vicidial_status": str(
+                    getattr(session, "external_requested_disposition", None) or status
                 ),
             }
 

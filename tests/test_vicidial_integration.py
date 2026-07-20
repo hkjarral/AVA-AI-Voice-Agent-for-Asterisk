@@ -134,6 +134,9 @@ async def test_hydration_applies_authoritative_mapping_agent(monkeypatch):
     engine._read_channel_variable = AsyncMock(
         side_effect=lambda _channel_id, name: variables.get(name, "")
     )
+    engine._read_channel_variable_result = AsyncMock(
+        side_effect=lambda _channel_id, name: (variables.get(name, ""), True)
+    )
     engine._overlay_vicidial_tool_runtime = lambda _session: None
     engine._save_session = AsyncMock()
     session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
@@ -182,6 +185,9 @@ async def test_hydration_allows_empty_transport_call_id_for_status_correlation(
     }
     engine._read_channel_variable = AsyncMock(
         side_effect=lambda _channel_id, name: variables.get(name, "")
+    )
+    engine._read_channel_variable_result = AsyncMock(
+        side_effect=lambda _channel_id, name: (variables.get(name, ""), True)
     )
     engine._overlay_vicidial_tool_runtime = lambda _session: None
     engine._save_session = AsyncMock()
@@ -236,6 +242,9 @@ async def test_hydration_rejects_call_when_mapping_agent_cannot_be_applied(monke
     engine._read_channel_variable = AsyncMock(
         side_effect=lambda _channel_id, name: variables.get(name, "")
     )
+    engine._read_channel_variable_result = AsyncMock(
+        side_effect=lambda _channel_id, name: (variables.get(name, ""), True)
+    )
     engine._overlay_vicidial_tool_runtime = lambda _session: None
     engine._save_session = AsyncMock()
     session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
@@ -271,12 +280,77 @@ async def test_hydration_marks_vicidial_owner_before_store_validation(
     engine._read_channel_variable = AsyncMock(
         side_effect=lambda _channel_id, name: variables.get(name, "")
     )
+    engine._read_channel_variable_result = AsyncMock(
+        side_effect=lambda _channel_id, name: (variables.get(name, ""), True)
+    )
     session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
 
     with pytest.raises(RuntimeError, match=expected_error):
         await Engine._hydrate_vicidial_session(engine, session, "ari-call")
 
     assert session.external_platform == "vicidial"
+
+
+@pytest.mark.asyncio
+async def test_hydration_fails_closed_when_owner_read_fails_on_trusted_route(
+    monkeypatch,
+):
+    mapping = {
+        "id": "map-1",
+        "enabled": True,
+        "trusted_context": "from-vicidial-ra",
+        "conf_exten": "8371",
+    }
+    store = SimpleNamespace(list_mappings=lambda: [mapping])
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    engine = Engine.__new__(Engine)
+    engine._read_channel_variable_result = AsyncMock(return_value=("", False))
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
+
+    with pytest.raises(RuntimeError, match="Unable to read VICIdial ownership marker"):
+        await Engine._hydrate_vicidial_session(
+            engine,
+            session,
+            "ari-call",
+            dialplan_context="from-vicidial-ra",
+            dialplan_extension="8371",
+        )
+
+    assert session.external_platform == "vicidial"
+    assert session.external_events[-1]["success"] is False
+    engine._save_session.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_hydration_does_not_claim_ordinary_route_when_owner_read_fails(
+    monkeypatch,
+):
+    mapping = {
+        "id": "map-1",
+        "enabled": True,
+        "trusted_context": "from-vicidial-ra",
+        "conf_exten": "8371",
+    }
+    store = SimpleNamespace(list_mappings=lambda: [mapping])
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    engine = Engine.__new__(Engine)
+    engine._read_channel_variable_result = AsyncMock(return_value=("", False))
+    session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
+
+    await Engine._hydrate_vicidial_session(
+        engine,
+        session,
+        "ari-call",
+        dialplan_context="from-internal",
+        dialplan_extension="100",
+    )
+
+    assert session.external_platform is None
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1080,96 @@ async def test_vicidial_transfer_uses_api_and_marks_session_without_ari(monkeypa
     assert store.session.external_finalized is True
     assert store.session.transfer_active is True
     assert store.session.transfer_destination == "SALESLINE"
+
+
+@pytest.mark.asyncio
+async def test_vicidial_transfer_commits_pending_dnc_before_call_control(monkeypatch):
+    session = CallSession(call_id="ari-dnc-transfer", caller_channel_id="ari-dnc-transfer")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        phone_number="13165551212",
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    session.external_connection = _connection()
+    store = _SessionStore(session)
+    context = ToolExecutionContext(
+        call_id=session.call_id,
+        caller_channel_id=session.caller_channel_id,
+        session_store=store,
+        ari_client=SimpleNamespace(),
+    )
+    operations = []
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def add_dnc_phone(self, **_kwargs):
+            operations.append("dnc")
+            return VicidialApiResult(True, "add_dnc_phone", "SUCCESS")
+
+        async def call_control(self, _info, **_kwargs):
+            operations.append("transfer")
+            return VicidialApiResult(True, "ra_call_control", "SUCCESS: transferred")
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+    selected = await SetCallDispositionTool().execute(
+        {"disposition": "dnc"}, context
+    )
+    transferred = await execute_vicidial_transfer(
+        context=context,
+        destination={
+            "type": "vicidial_ingroup",
+            "target": "SALESLINE",
+            "status": "AIXFR",
+        },
+    )
+
+    assert selected["status"] == "success"
+    assert transferred["status"] == "success"
+    assert operations == ["dnc", "transfer"]
+    assert session.external_disposition_payload["workflow_committed"] is True
+
+
+@pytest.mark.asyncio
+async def test_pending_vicidial_dnc_cannot_be_overwritten():
+    session = CallSession(call_id="ari-dnc-lock", caller_channel_id="ari-dnc-lock")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        phone_number="13165551212",
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    session.external_connection = _connection()
+    store = _SessionStore(session)
+    context = ToolExecutionContext(call_id=session.call_id, session_store=store)
+
+    selected = await SetCallDispositionTool().execute(
+        {"disposition": "dnc"}, context
+    )
+    replacement = await SetCallDispositionTool().execute(
+        {"disposition": "sale"}, context
+    )
+
+    assert selected["status"] == "success"
+    assert replacement == {
+        "status": "failed",
+        "message": "A do-not-call request is already selected and cannot be replaced",
+    }
+    assert session.external_requested_disposition == "DNC"
+    assert session.external_disposition_label == "dnc"
+    assert session.external_disposition_payload["phone_number"] == "13165551212"
 
 
 @pytest.mark.asyncio

@@ -4006,7 +4006,15 @@ class Engine:
                 reason="external-media-attach-retry-exhausted",
             )
 
-    async def _read_channel_variable(self, channel_id: str, name: str) -> str:
+    async def _read_channel_variable_result(
+        self, channel_id: str, name: str
+    ) -> Tuple[str, bool]:
+        """Return a channel variable and whether ARI completed the read.
+
+        A missing optional variable is a completed read with an empty value.
+        Transport/server failures are not equivalent: admission-sensitive
+        callers need to distinguish those failures and fail closed.
+        """
         try:
             response = await self.ari_client.send_command(
                 "GET",
@@ -4015,7 +4023,14 @@ class Engine:
                 tolerate_statuses=[404],
             )
             if isinstance(response, dict):
-                return str(response.get("value") or "").strip()
+                status = int(response.get("status") or 200)
+                if status >= 500:
+                    return "", False
+                if status == 404:
+                    return "", True
+                if status >= 400:
+                    return "", False
+                return str(response.get("value") or "").strip(), True
         except Exception:
             logger.debug(
                 "Channel variable read failed",
@@ -4023,7 +4038,20 @@ class Engine:
                 variable=name,
                 exc_info=True,
             )
-        return ""
+        return "", False
+
+    async def _read_channel_variable(self, channel_id: str, name: str) -> str:
+        value, _read_ok = await self._read_channel_variable_result(channel_id, name)
+        return value
+
+    @staticmethod
+    def _vicidial_route_matches_mapping(
+        mapping: Dict[str, Any], dialplan_context: str, dialplan_extension: str
+    ) -> bool:
+        if str(mapping.get("trusted_context") or "").strip() != dialplan_context:
+            return False
+        configured_extension = str(mapping.get("conf_exten") or "").strip()
+        return not dialplan_extension or configured_extension == dialplan_extension
 
     @staticmethod
     def _apply_vicidial_tool_policy(session: CallSession, names: List[str]) -> List[str]:
@@ -4111,11 +4139,52 @@ class Engine:
         session.tool_policy = policy
 
     async def _hydrate_vicidial_session(
-        self, session: CallSession, channel_id: str
+        self,
+        session: CallSession,
+        channel_id: str,
+        *,
+        dialplan_context: str = "",
+        dialplan_extension: str = "",
     ) -> None:
         """Resolve an admitted VICIdial Remote Agent leg into a call-local snapshot."""
-        owner = (await self._read_channel_variable(channel_id, "AAVA_CALL_OWNER")).lower()
+        dialplan_context = str(dialplan_context or "").strip()
+        dialplan_extension = str(dialplan_extension or "").strip()
+        owner_value, owner_read_ok = await self._read_channel_variable_result(
+            channel_id, "AAVA_CALL_OWNER"
+        )
+        owner = owner_value.lower()
         if owner != "vicidial":
+            trusted_route = False
+            if dialplan_context:
+                from src.core.vicidial_store import get_vicidial_store
+
+                store = get_vicidial_store()
+                trusted_route = any(
+                    self._vicidial_route_matches_mapping(
+                        mapping, dialplan_context, dialplan_extension
+                    )
+                    for mapping in store.list_mappings()
+                )
+            if trusted_route:
+                # The configured route is an independent admission signal. A
+                # missing marker or failed ARI read must not downgrade this leg
+                # into an ordinary AAVA call with unrestricted ownership.
+                session.external_platform = "vicidial"
+                session.external_events.append({
+                    "operation": "resolve",
+                    "success": False,
+                    "message": (
+                        "Unable to read VICIdial ownership marker"
+                        if not owner_read_ok
+                        else "Trusted VICIdial route did not provide its ownership marker"
+                    ),
+                })
+                await self._save_session(session)
+                if not owner_read_ok:
+                    raise RuntimeError("Unable to read VICIdial ownership marker")
+                raise RuntimeError(
+                    "Trusted VICIdial route did not provide its ownership marker"
+                )
             return
 
         # Ownership is confirmed by the trusted dialplan. Mark it before any
@@ -4123,6 +4192,10 @@ class Engine:
         # guard rejects stale or disabled VICIdial mappings/connections instead
         # of continuing as an ordinary AAVA call.
         session.external_platform = "vicidial"
+
+        from src.core.vicidial_store import get_vicidial_store
+
+        store = get_vicidial_store()
 
         mapping_id = await self._read_channel_variable(channel_id, "VICIDIAL_MAPPING_ID")
         external_call_id = await self._read_channel_variable(channel_id, "VICIDIAL_RA_CALL_ID")
@@ -4135,10 +4208,8 @@ class Engine:
             await self._save_session(session)
             raise RuntimeError("Trusted VICIdial dialplan did not provide a mapping identifier")
 
-        from src.core.vicidial_store import get_vicidial_store
         from src.integrations.vicidial import VicidialApiClient
 
-        store = get_vicidial_store()
         mapping = store.get_mapping(mapping_id)
         if not mapping or not mapping.get("enabled"):
             raise RuntimeError(f"VICIdial mapping {mapping_id!r} is missing or disabled")
@@ -4649,7 +4720,13 @@ class Engine:
             # transport call code with API-confirmed customer metadata so a
             # {caller_name} template can never speak the Y/V/M call identifier.
             try:
-                await self._hydrate_vicidial_session(session, caller_channel_id)
+                dialplan = dict(channel.get("dialplan") or {})
+                await self._hydrate_vicidial_session(
+                    session,
+                    caller_channel_id,
+                    dialplan_context=str(dialplan.get("context") or ""),
+                    dialplan_extension=str(dialplan.get("exten") or ""),
+                )
             except Exception:
                 logger.error(
                     "VICIdial Remote Agent hydration failed; rejecting the uncontrolled call",
