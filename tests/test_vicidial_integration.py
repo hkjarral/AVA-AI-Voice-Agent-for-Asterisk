@@ -87,7 +87,7 @@ def _mapping(connection_id: str = "connection-1"):
         "ai_agent": "demo_deepgram",
         "trusted_endpoint": "vicidial-ra",
         "pbx_trunk_name": "VICIdial RA",
-        "dispositions": {"sale": "SALE"},
+        "dispositions": {"sale": "SALE", "dnc": "DNC"},
         "statuses": {},
         "destinations": {
             "sales": {
@@ -112,6 +112,22 @@ def test_remote_agent_user_range_preserves_leading_zero_width():
         "user_start": "09001",
         "number_of_lines": 3,
     })) == ["09001", "09002", "09003"]
+
+
+def test_enabled_mapping_requires_dnc_but_disabled_draft_can_omit_it():
+    without_dnc = {
+        **_mapping(),
+        "dispositions": {"sale": "SALE"},
+    }
+
+    with pytest.raises(ValueError, match="require a dnc disposition"):
+        VicidialStore.validate_mapping(without_dnc)
+
+    disabled = VicidialStore.validate_mapping(
+        {**without_dnc, "enabled": False}
+    )
+    assert disabled["enabled"] is False
+    assert disabled["dispositions"] == {"sale": "SALE"}
 
 
 @pytest.mark.asyncio
@@ -3655,5 +3671,6 @@ def test_agent_runtime_resolution_preserves_vicidial_destinations():
     assert session.tool_policy["effective_destination_keys"] == ["sales"]
     assert session.tool_policy["effective_resource_keys"]["transfer"] == ["sales"]
     assert session.tool_runtime_config["tools"]["vicidial"]["dispositions"] == {
-        "sale": "SALE"
+        "sale": "SALE",
+        "dnc": "DNC",
     }

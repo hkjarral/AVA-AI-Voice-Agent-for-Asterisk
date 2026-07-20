@@ -421,6 +421,7 @@ class VicidialStore:
 
     @staticmethod
     def validate_mapping(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        enabled = bool(payload.get("enabled", True))
         name = str(payload.get("name") or "").strip()
         connection_id = str(payload.get("connection_id") or "").strip()
         user_start = str(payload.get("user_start") or "").strip()
@@ -518,6 +519,10 @@ class VicidialStore:
                 dispositions[semantic] = validate_status(
                     value, field_name=f"dispositions.{semantic}"
                 )
+        if enabled and "dnc" not in dispositions:
+            raise ValueError(
+                "Enabled mappings require a dnc disposition for stop-calling compliance"
+            )
         statuses: Dict[str, str] = {}
         default_statuses = {
             "ai_hangup": "AIHU",
@@ -556,7 +561,7 @@ class VicidialStore:
         return {
             "connection_id": connection_id,
             "name": name,
-            "enabled": bool(payload.get("enabled", True)),
+            "enabled": enabled,
             "direction": direction,
             "campaign_id": campaign_id,
             "closer_campaigns": closer_campaigns,

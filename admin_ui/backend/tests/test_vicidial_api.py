@@ -45,7 +45,7 @@ def _mapping_payload(connection_id):
         "sip_auth_username": "ava-auth",
         "sip_contact_user": "ava-contact",
         "sip_transport": "tcp",
-        "dispositions": {"sale": "SALE", "callback": "CALLBK"},
+        "dispositions": {"sale": "SALE", "dnc": "DNC", "callback": "CALLBK"},
         "statuses": {},
         "destinations": {
             "sales": {

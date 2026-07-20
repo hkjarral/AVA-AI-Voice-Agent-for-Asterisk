@@ -362,12 +362,14 @@ const DeferredMapKeyInput = ({
     title,
     ariaLabel,
     placeholder,
+    disabled = false,
 }: {
     value: string;
     onCommit: (value: string) => void;
     title: string;
     ariaLabel: string;
     placeholder: string;
+    disabled?: boolean;
 }) => {
     const [draft, setDraft] = useState(value);
 
@@ -378,6 +380,7 @@ const DeferredMapKeyInput = ({
             title={title}
             aria-label={ariaLabel}
             value={draft}
+            disabled={disabled}
             onChange={event => setDraft(event.target.value)}
             onBlur={() => {
                 onCommit(draft);
@@ -390,7 +393,7 @@ const DeferredMapKeyInput = ({
                     event.currentTarget.blur();
                 }
             }}
-            className={rowInputClass}
+            className={`${rowInputClass} disabled:cursor-not-allowed disabled:opacity-60`}
             placeholder={placeholder}
         />
     );
@@ -471,7 +474,7 @@ const mappingHelp = {
     sipTransport:
         'Transport used by the AAVA-side endpoint. UDP is the validated baseline; use TCP or TLS only when both PBXs are already configured for it.',
     dispositions:
-        'Business choices the AI may set during a call. Each friendly key maps to an existing VICIdial status of at most six characters.',
+        'Business choices the AI may set during a call. Each friendly key maps to an existing VICIdial status of at most six characters. DNC is required for stop-calling compliance and cannot be removed.',
     dispositionName:
         'Stable, lowercase Agent-facing choice such as sale or not_interested. This is the value used by the set_call_disposition tool.',
     dispositionStatus:
@@ -2012,6 +2015,7 @@ export const VicidialRemoteAgentsTab = () => {
                                         title={mappingHelp.dispositionName}
                                         ariaLabel="Disposition name"
                                         value={key}
+                                        disabled={key.trim().toLowerCase() === 'dnc'}
                                         onCommit={nextKey =>
                                             setMappingForm({
                                                 ...mappingForm,
@@ -2042,15 +2046,20 @@ export const VicidialRemoteAgentsTab = () => {
                                         placeholder="SALE"
                                     />
                                     <button
-                                        title={`Remove the ${key} disposition`}
+                                        title={
+                                            key.trim().toLowerCase() === 'dnc'
+                                                ? 'DNC is required for stop-calling compliance'
+                                                : `Remove the ${key} disposition`
+                                        }
                                         type="button"
                                         aria-label={`Remove ${key}`}
+                                        disabled={key.trim().toLowerCase() === 'dnc'}
                                         onClick={() => {
                                             const next = { ...(mappingForm.dispositions || {}) };
                                             delete next[key];
                                             setMappingForm({ ...mappingForm, dispositions: next });
                                         }}
-                                        className="rounded-md border p-2 text-destructive hover:bg-muted"
+                                        className="rounded-md border p-2 text-destructive hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         <Trash2 className="h-4 w-4" />
                                     </button>
