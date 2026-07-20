@@ -736,10 +736,16 @@ def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_p
 
     class _History:
         async def list_external_activity(
-            self, platform, start_date, end_date=None, max_rows=5000
+            self,
+            platform,
+            start_date,
+            end_date=None,
+            mapping_id=None,
+            max_rows=5000,
         ):
             assert platform == "vicidial"
             assert start_date < end_date
+            assert mapping_id == "mapping-1"
             assert max_rows == vicidial_api.ACTIVITY_SUMMARY_MAX_ROWS + 1
             return records
 
@@ -789,7 +795,15 @@ def test_activity_reports_when_summary_rows_are_truncated(monkeypatch, tmp_path)
     )
 
     class _History:
-        async def list_external_activity(self, platform, start_date, end_date=None, max_rows=5000):
+        async def list_external_activity(
+            self,
+            platform,
+            start_date,
+            end_date=None,
+            mapping_id=None,
+            max_rows=5000,
+        ):
+            assert mapping_id is None
             assert max_rows == vicidial_api.ACTIVITY_SUMMARY_MAX_ROWS + 1
             return [record] * max_rows
 

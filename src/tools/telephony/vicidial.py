@@ -148,24 +148,28 @@ async def execute_vicidial_transfer(
     if bool(getattr(session, "external_finalized", False)):
         return {"status": "failed", "message": "The VICIdial call is already finalized"}
 
-    # DNC is a compliance action, not merely a terminal status. Commit and
-    # verify it before transfer finalizes the Remote Agent session; cleanup
-    # intentionally skips calls already finalized by a successful transfer.
-    if str(getattr(session, "external_disposition_label", None) or "") == "dnc":
+    # DNC and callback are API workflows, not merely terminal statuses. Commit
+    # and verify either one before transfer finalizes the Remote Agent session;
+    # cleanup intentionally skips calls finalized by a successful transfer.
+    pending_workflow = str(
+        getattr(session, "external_disposition_label", None) or ""
+    ).strip().lower()
+    if pending_workflow in {"dnc", "callback"}:
         if not await commit_vicidial_disposition_workflow(session):
             await context.session_store.upsert_call(session)
             logger.warning(
-                "VICIdial transfer blocked because pending DNC could not be committed",
+                "VICIdial transfer blocked because pending workflow could not be committed",
                 call_id=context.call_id,
+                workflow=pending_workflow,
             )
             return {
                 "status": "failed",
                 "message": (
-                    "The do-not-call request could not be confirmed, so the transfer "
-                    "was not started"
+                    f"The {pending_workflow} request could not be confirmed, so the "
+                    "transfer was not started"
                 ),
             }
-        # Persist the compliance result before attempting the terminal action.
+        # Persist the workflow result before attempting the terminal action.
         # If transfer control then times out or raises, call history still
         # records that VICIdial accepted the DNC request.
         await context.session_store.upsert_call(session)

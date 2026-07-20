@@ -714,6 +714,7 @@ class CallHistoryStore:
         start_date: datetime,
         end_date: Optional[datetime] = None,
         max_rows: int = DEFAULT_EXTERNAL_ACTIVITY_MAX_ROWS,
+        mapping_id: Optional[str] = None,
     ) -> List[CallRecord]:
         """Return lightweight external-dialer records for bounded activity summaries.
 
@@ -728,6 +729,7 @@ class CallHistoryStore:
         normalized_platform = str(platform or "").strip().lower()
         if not normalized_platform:
             return []
+        normalized_mapping_id = str(mapping_id or "").strip()
         bounded_max_rows = max(1, min(int(max_rows), 50000))
 
         def _list_sync():
@@ -742,6 +744,14 @@ class CallHistoryStore:
                     if end_date:
                         conditions.append("start_time <= ?")
                         params.append(end_date.isoformat())
+                    if normalized_mapping_id:
+                        # Filter before LIMIT so activity from other mappings
+                        # cannot crowd the requested mapping out of the bounded
+                        # result set.
+                        conditions.append(
+                            "json_extract(external_metadata, '$.mapping_id') = ?"
+                        )
+                        params.append(normalized_mapping_id)
 
                     cursor = conn.cursor()
                     cursor.execute(

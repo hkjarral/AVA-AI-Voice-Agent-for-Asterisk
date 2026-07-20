@@ -164,10 +164,20 @@ async def test_external_activity_is_bounded_lightweight_and_keeps_mapping_metada
     assert rows[0].conversation_history == []
     assert rows[0].tool_calls == []
 
+    assert await store.save(
+        CallRecord(
+            call_id="vicidial-other-mapping",
+            start_time=now + timedelta(milliseconds=500),
+            end_time=now + timedelta(seconds=1),
+            external_platform="vicidial",
+            external_metadata={"mapping_id": "mapping-2"},
+        )
+    ) is True
     capped = await store.list_external_activity(
         "vicidial",
         start_date=now - timedelta(days=30),
         end_date=now + timedelta(seconds=1),
+        mapping_id="mapping-1",
         max_rows=1,
     )
     assert [record.call_id for record in capped] == ["vicidial-current"]

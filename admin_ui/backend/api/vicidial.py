@@ -448,6 +448,7 @@ async def vicidial_activity(
         "vicidial",
         start_date=_activity_start(range_name, now),
         end_date=now,
+        mapping_id=mapping_id,
         max_rows=ACTIVITY_SUMMARY_MAX_ROWS + 1,
     )
     truncated = len(records) > ACTIVITY_SUMMARY_MAX_ROWS

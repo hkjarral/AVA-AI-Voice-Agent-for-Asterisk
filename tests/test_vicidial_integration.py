@@ -1138,6 +1138,71 @@ async def test_vicidial_transfer_commits_pending_dnc_before_call_control(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_vicidial_transfer_commits_pending_callback_before_call_control(
+    monkeypatch,
+):
+    session = CallSession(
+        call_id="ari-callback-transfer", caller_channel_id="ari-callback-transfer"
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    session.external_requested_disposition = "CALLBK"
+    session.external_disposition_label = "callback"
+    session.external_disposition_payload = {
+        "lead_id": "456",
+        "campaign_id": "TESTCAMP",
+        "callback_datetime": "2026-07-21 10:00:00",
+        "callback_type": "ANYONE",
+    }
+    store = _SessionStore(session)
+    context = ToolExecutionContext(
+        call_id=session.call_id,
+        caller_channel_id=session.caller_channel_id,
+        session_store=store,
+        ari_client=SimpleNamespace(),
+    )
+    operations = []
+
+    async def commit(pending_session):
+        assert pending_session is session
+        operations.append("callback")
+        pending_session.external_disposition_payload["workflow_committed"] = True
+        return True
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def call_control(self, _info, **_kwargs):
+            operations.append("transfer")
+            return VicidialApiResult(True, "ra_call_control", "SUCCESS: transferred")
+
+    monkeypatch.setattr(
+        "src.tools.telephony.vicidial.commit_vicidial_disposition_workflow",
+        commit,
+    )
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+    result = await execute_vicidial_transfer(
+        context=context,
+        destination={
+            "type": "vicidial_ingroup",
+            "target": "SALESLINE",
+            "status": "AIXFR",
+        },
+    )
+
+    assert result["status"] == "success"
+    assert operations == ["callback", "transfer"]
+    assert session.external_disposition_payload["workflow_committed"] is True
+
+
+@pytest.mark.asyncio
 async def test_pending_vicidial_dnc_cannot_be_overwritten():
     session = CallSession(call_id="ari-dnc-lock", caller_channel_id="ari-dnc-lock")
     session.external_platform = "vicidial"
