@@ -327,6 +327,33 @@ async def test_rejected_admission_forces_cleanup_when_ari_hangup_fails():
 
 
 @pytest.mark.asyncio
+async def test_forced_vicidial_hangup_retry_owns_channel_until_accepted(
+    monkeypatch,
+):
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(
+        hangup_channel=AsyncMock(side_effect=[False, True])
+    )
+    engine._vicidial_forced_hangup_tasks = {}
+
+    async def no_delay(_seconds):
+        return None
+
+    monkeypatch.setattr("src.engine.asyncio.sleep", no_delay)
+
+    Engine._schedule_vicidial_forced_hangup_retry(
+        engine,
+        call_id="ari-rejected",
+        channel_id="ari-rejected",
+    )
+    task = engine._vicidial_forced_hangup_tasks["ari-rejected"]
+    await task
+
+    assert engine.ari_client.hangup_channel.await_count == 2
+    assert engine._vicidial_forced_hangup_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_hydration_rejects_stale_generated_dialplan(monkeypatch):
     mapping = {"id": "map-1", "enabled": True, **_mapping()}
     connection = {"id": "connection-1", "enabled": True, **_connection()}
@@ -1125,15 +1152,21 @@ def test_store_round_trip_and_connection_delete_cascades(tmp_path):
     assert connection["timezone"] == "America/Phoenix"
     assert store.delete_connection(connection["id"]) is True
     assert store.get_mapping(mapping["id"]) is None
+    retired_route = store.list_route_tombstones()[0]
     assert store.list_route_tombstones() == [
         {
+            "id": retired_route["id"],
             "mapping_id": "mapping-1",
             "trusted_context": "from-vicidial-ra",
             "conf_exten": "8371",
             "trusted_endpoint": "vicidial-ra",
-            "deleted_at": store.list_route_tombstones()[0]["deleted_at"],
+            "deleted_at": retired_route["deleted_at"],
         }
     ]
+
+    assert store.delete_route_tombstone(retired_route["id"]) is True
+    assert store.list_route_tombstones() == []
+    assert store.delete_route_tombstone(retired_route["id"]) is False
 
 
 def test_recreated_exact_route_retires_deleted_mapping_tombstone(tmp_path):
@@ -1224,8 +1257,10 @@ def test_store_migrates_single_route_tombstones_without_losing_protection(tmp_pa
 
     store = VicidialStore(db_path)
 
+    retired_route = store.list_route_tombstones()[0]
     assert store.list_route_tombstones() == [
         {
+            "id": retired_route["id"],
             "mapping_id": "mapping-legacy",
             "trusted_context": "from-vicidial-ra-old",
             "conf_exten": "8370",

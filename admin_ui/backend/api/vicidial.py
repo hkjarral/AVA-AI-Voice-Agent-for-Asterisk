@@ -451,6 +451,20 @@ async def list_mappings():
     return [_mapping_with_connection(mapping) for mapping in _store().list_mappings()]
 
 
+@router.get("/retired-routes")
+async def list_retired_routes():
+    """List removed mapping routes still protected from ordinary AAVA admission."""
+    return _store().list_route_tombstones()
+
+
+@router.delete("/retired-routes/{tombstone_id}")
+async def delete_retired_route(tombstone_id: str):
+    """Retire protection only after the operator removes the PBX dialplan stanza."""
+    if not _store().delete_route_tombstone(tombstone_id):
+        raise HTTPException(status_code=404, detail="Retired VICIdial route not found")
+    return {"deleted": True, "id": tombstone_id}
+
+
 @router.get("/asterisk/endpoints")
 async def list_asterisk_endpoints(
     technology: str = Query("PJSIP", pattern="^(?i:PJSIP|SIP)$"),

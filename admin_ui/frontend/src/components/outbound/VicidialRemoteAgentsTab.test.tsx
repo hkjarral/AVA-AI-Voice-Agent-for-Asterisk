@@ -60,11 +60,24 @@ const mapping = {
     },
 };
 
+let retiredRoutes: Array<{
+    id: string;
+    mapping_id: string;
+    trusted_context: string;
+    conf_exten: string;
+    trusted_endpoint: string;
+    deleted_at: string;
+}> = [];
+
 describe('VicidialRemoteAgentsTab tooltips', () => {
     beforeEach(() => {
+        retiredRoutes = [];
         vi.mocked(axios.get).mockImplementation(async url => {
             if (url === '/api/outbound/vicidial/connections') return { data: [connection] };
             if (url === '/api/outbound/vicidial/mappings') return { data: [mapping] };
+            if (url === '/api/outbound/vicidial/retired-routes') {
+                return { data: retiredRoutes };
+            }
             if (url === '/api/outbound/vicidial/activity') {
                 return {
                     data: {
@@ -405,6 +418,34 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         ).toEqual(['sale', 'not_interested', 'dnc', 'callback']);
         expect(screen.getByLabelText('dnc VICIdial status')).toHaveValue('DNC');
         expect(screen.getByLabelText('callback VICIdial status')).toHaveValue('CALLBK');
+    });
+
+    it('retires fail-closed route protection only after explicit PBX confirmation', async () => {
+        retiredRoutes.push({
+            id: 'retired-route-1',
+            mapping_id: 'mapping-old',
+            trusted_context: 'from-vicidial-ra-old',
+            conf_exten: '8370',
+            trusted_endpoint: 'vicidial-ra-old',
+            deleted_at: '2026-07-20T22:00:00+00:00',
+        });
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+        render(<VicidialRemoteAgentsTab />);
+
+        expect(await screen.findByText('Retired PBX routes')).toBeInTheDocument();
+        expect(screen.getByText('[from-vicidial-ra-old] / 8370')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm PBX route removed' }));
+
+        await waitFor(() =>
+            expect(axios.delete).toHaveBeenCalledWith(
+                '/api/outbound/vicidial/retired-routes/retired-route-1'
+            )
+        );
+        expect(confirm).toHaveBeenCalledWith(
+            expect.stringContaining('removed from the Asterisk dialplan')
+        );
+        confirm.mockRestore();
     });
 
     it('shows scoped Remote Agent metrics and deep-links recent calls', async () => {

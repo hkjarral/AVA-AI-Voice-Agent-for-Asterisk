@@ -609,7 +609,11 @@ Deleting an AAVA mapping does not edit Asterisk dialplan files. AAVA retains a f
 tombstone for the deleted generated context and extension, so a stale route cannot silently enter
 ordinary unrestricted call handling if its ownership marker cannot be read. Remove the generated
 context from the PBX as part of decommissioning. Recreating a mapping on the exact same context and
-extension makes the new active mapping authoritative and retires that tombstone.
+extension makes the new active mapping authoritative and retires that tombstone. Otherwise, after
+removing the exact context and extension from `extensions_custom.conf`, reloading Asterisk, and
+verifying that the route is absent, use **Call Scheduling → VICIdial Remote Agents → Retired PBX
+routes → Confirm PBX route removed**. Do not confirm this while the generated stanza is still active;
+confirmation deliberately removes AAVA's fail-closed protection so the route can be reused.
 
 ## Official references
 

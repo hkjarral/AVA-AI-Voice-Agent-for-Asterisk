@@ -68,6 +68,15 @@ type Mapping = {
     last_verification?: Verification;
 };
 
+type RetiredRoute = {
+    id: string;
+    mapping_id: string;
+    trusted_context: string;
+    conf_exten: string;
+    trusted_endpoint?: string | null;
+    deleted_at: string;
+};
+
 type Agent = { slug: string; display_name: string };
 
 type Verification = {
@@ -567,6 +576,7 @@ const renameKey = <T,>(
 export const VicidialRemoteAgentsTab = () => {
     const [connections, setConnections] = useState<Connection[]>([]);
     const [mappings, setMappings] = useState<Mapping[]>([]);
+    const [retiredRoutes, setRetiredRoutes] = useState<RetiredRoute[]>([]);
     const [agents, setAgents] = useState<Agent[]>([]);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState('');
@@ -611,13 +621,16 @@ export const VicidialRemoteAgentsTab = () => {
     const refresh = async () => {
         setLoading(true);
         try {
-            const [connectionsResponse, mappingsResponse, metaResponse] = await Promise.all([
-                axios.get('/api/outbound/vicidial/connections'),
-                axios.get('/api/outbound/vicidial/mappings'),
-                axios.get('/api/outbound/meta'),
-            ]);
+            const [connectionsResponse, mappingsResponse, retiredRoutesResponse, metaResponse] =
+                await Promise.all([
+                    axios.get('/api/outbound/vicidial/connections'),
+                    axios.get('/api/outbound/vicidial/mappings'),
+                    axios.get('/api/outbound/vicidial/retired-routes'),
+                    axios.get('/api/outbound/meta'),
+                ]);
             setConnections(connectionsResponse.data || []);
             setMappings(mappingsResponse.data || []);
+            setRetiredRoutes(retiredRoutesResponse.data || []);
             setAgents((metaResponse.data?.agents || []).filter((agent: Agent) => agent?.slug));
         } catch (error) {
             toast.error(describeApiError(error, 'Unable to load VICIdial setup'));
@@ -874,6 +887,25 @@ export const VicidialRemoteAgentsTab = () => {
             await refresh();
         } catch (error) {
             toast.error(describeApiError(error, 'Delete failed'));
+        }
+    };
+
+    const retireRouteProtection = async (route: RetiredRoute) => {
+        if (
+            !window.confirm(
+                `Confirm ${route.trusted_context},${route.conf_exten} has been removed from the Asterisk dialplan? This removes AAVA's fail-closed protection and allows the route to be reused outside VICIdial.`
+            )
+        )
+            return;
+        setBusy(`retire-route-${route.id}`);
+        try {
+            await axios.delete(`/api/outbound/vicidial/retired-routes/${route.id}`);
+            toast.success('Retired route protection removed');
+            await refresh();
+        } catch (error) {
+            toast.error(describeApiError(error, 'Unable to retire route protection'));
+        } finally {
+            setBusy('');
         }
     };
 
@@ -1210,6 +1242,49 @@ export const VicidialRemoteAgentsTab = () => {
                     })
                 )}
             </section>
+
+            {retiredRoutes.length > 0 && (
+                <section className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+                    <div className="flex items-center gap-2">
+                        <h3 className="font-semibold">Retired PBX routes</h3>
+                        <HelpTooltip
+                            ariaLabel="Help for retired PBX routes"
+                            content="AAVA keeps deleted or superseded VICIdial mapping routes fail-closed until you remove the matching stanza from the Asterisk dialplan. Confirm removal here only after reloading and verifying the PBX dialplan."
+                        />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                        Remove each matching stanza from{' '}
+                        <code>/etc/asterisk/extensions_custom.conf</code>, reload Asterisk, verify
+                        it is absent, then retire its protection here.
+                    </p>
+                    {retiredRoutes.map(route => (
+                        <div
+                            key={route.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-card p-3"
+                        >
+                            <div className="text-sm">
+                                <span className="font-mono">
+                                    [{route.trusted_context}] / {route.conf_exten}
+                                </span>
+                                {route.trusted_endpoint && (
+                                    <span className="text-muted-foreground">
+                                        {' '}
+                                        · endpoint {route.trusted_endpoint}
+                                    </span>
+                                )}
+                            </div>
+                            <button
+                                title="Use only after the exact generated context and extension have been removed from Asterisk and the dialplan has been reloaded"
+                                disabled={busy === `retire-route-${route.id}`}
+                                onClick={() => void retireRouteProtection(route)}
+                                className="rounded-md border border-amber-500/40 px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                            >
+                                Confirm PBX route removed
+                            </button>
+                        </div>
+                    ))}
+                </section>
+            )}
 
             <section
                 id="vicidial-activity"

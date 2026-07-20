@@ -547,6 +547,10 @@ class Engine:
         self._terminal_hangup_locks: Dict[str, asyncio.Lock] = {}
         self._terminal_hangup_started: Set[str] = set()
         self._terminal_fallback_tasks: Dict[str, asyncio.Task] = {}
+        # A rejected VICIdial leg may survive a failed ARI DELETE after the
+        # call session is cleaned up. Keep an independent owner retrying that
+        # exact channel until Asterisk accepts the hangup or reports it gone.
+        self._vicidial_forced_hangup_tasks: Dict[str, asyncio.Task] = {}
         # Local TTS farewells are a two-step exchange: execute hangup_call,
         # then wait for Local AI Server to synthesize the tool's farewell.
         # Keep that boundary separate from cleanup_after_tts so a stale
@@ -3241,6 +3245,14 @@ class Engine:
         sessions = await self.session_store.get_all_sessions()
         for session in sessions:
             await self._cleanup_call(session.call_id)
+        forced_hangup_tasks = list(
+            getattr(self, "_vicidial_forced_hangup_tasks", {}).values()
+        )
+        for forced_hangup_task in forced_hangup_tasks:
+            if not forced_hangup_task.done():
+                forced_hangup_task.cancel()
+        if forced_hangup_tasks:
+            await asyncio.gather(*forced_hangup_tasks, return_exceptions=True)
         await self.ari_client.disconnect()
         task = getattr(self, "_ari_listener_task", None)
         if task and not task.done():
@@ -4686,6 +4698,70 @@ class Engine:
                 caller_channel_id,
                 force_caller_hangup=True,
             )
+
+    def _schedule_vicidial_forced_hangup_retry(
+        self,
+        *,
+        call_id: str,
+        channel_id: str,
+    ) -> None:
+        """Keep ownership of a rejected VICIdial channel until ARI ends it."""
+        tasks = getattr(self, "_vicidial_forced_hangup_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._vicidial_forced_hangup_tasks = tasks
+        previous = tasks.get(channel_id)
+        if previous and not previous.done():
+            return
+
+        async def _retry() -> None:
+            delay_seconds = 1.0
+            attempt = 0
+            try:
+                while True:
+                    attempt += 1
+                    await asyncio.sleep(delay_seconds)
+                    try:
+                        accepted = bool(
+                            await self.ari_client.hangup_channel(channel_id)
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        accepted = False
+                        logger.debug(
+                            "Forced VICIdial hangup retry raised",
+                            call_id=call_id,
+                            channel_id=channel_id,
+                            attempt=attempt,
+                            exc_info=True,
+                        )
+                    if accepted:
+                        logger.info(
+                            "Forced VICIdial hangup retry completed",
+                            call_id=call_id,
+                            channel_id=channel_id,
+                            attempt=attempt,
+                        )
+                        return
+                    logger.warning(
+                        "Forced VICIdial hangup retry was not accepted",
+                        call_id=call_id,
+                        channel_id=channel_id,
+                        attempt=attempt,
+                        next_retry_seconds=min(delay_seconds * 2.0, 30.0),
+                    )
+                    delay_seconds = min(delay_seconds * 2.0, 30.0)
+            except asyncio.CancelledError:
+                return
+            finally:
+                if tasks.get(channel_id) is asyncio.current_task():
+                    tasks.pop(channel_id, None)
+
+        task = asyncio.create_task(
+            _retry(), name=f"vicidial-forced-hangup-{channel_id}"
+        )
+        tasks[channel_id] = task
 
     async def _finalize_vicidial_call(
         self,
@@ -8408,12 +8484,12 @@ class Engine:
                 if force_caller_hangup and not bool(
                     getattr(session, "external_finalized", False)
                 ):
+                    forced_hangup_succeeded = False
                     try:
-                        await self.ari_client.hangup_channel(session.caller_channel_id)
-                        logger.warning(
-                            "Forced caller hangup after failed VICIdial Stasis setup",
-                            call_id=call_id,
-                            external_call_id=getattr(session, "external_call_id", None),
+                        forced_hangup_succeeded = bool(
+                            await self.ari_client.hangup_channel(
+                                session.caller_channel_id
+                            )
                         )
                     except Exception:
                         logger.debug(
@@ -8421,6 +8497,22 @@ class Engine:
                             call_id=call_id,
                             channel_id=session.caller_channel_id,
                             exc_info=True,
+                        )
+                    if forced_hangup_succeeded:
+                        logger.warning(
+                            "Forced caller hangup after failed VICIdial Stasis setup",
+                            call_id=call_id,
+                            external_call_id=getattr(session, "external_call_id", None),
+                        )
+                    else:
+                        logger.error(
+                            "Forced VICIdial setup-failure hangup was not accepted; retaining retry owner",
+                            call_id=call_id,
+                            channel_id=session.caller_channel_id,
+                        )
+                        self._schedule_vicidial_forced_hangup_retry(
+                            call_id=call_id,
+                            channel_id=session.caller_channel_id,
                         )
                 else:
                     logger.info(

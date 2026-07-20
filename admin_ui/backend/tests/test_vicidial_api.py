@@ -157,6 +157,31 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     assert "fwconsole reload" in body["dialplan_install"]["freepbx_apply"]
 
 
+def test_retired_route_requires_explicit_operator_confirmation(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+
+    deleted = client.delete("/api/outbound/vicidial/mappings/mapping-1")
+    assert deleted.status_code == 200
+
+    listed = client.get("/api/outbound/vicidial/retired-routes")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    retired_route = listed.json()[0]
+    assert retired_route["trusted_context"] == "from-vicidial-ra"
+    assert retired_route["conf_exten"] == "8371"
+
+    confirmed = client.delete(
+        f"/api/outbound/vicidial/retired-routes/{retired_route['id']}"
+    )
+    assert confirmed.status_code == 200
+    assert client.get("/api/outbound/vicidial/retired-routes").json() == []
+    assert client.delete(
+        f"/api/outbound/vicidial/retired-routes/{retired_route['id']}"
+    ).status_code == 404
+
+
 def test_mapping_requires_operator_selected_endpoint_and_generated_trunk_name(
     monkeypatch, tmp_path
 ):

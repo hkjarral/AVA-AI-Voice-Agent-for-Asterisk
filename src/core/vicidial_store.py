@@ -998,12 +998,24 @@ class VicidialStore:
         with self._lock, self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
+                SELECT id,mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
                   FROM vicidial_route_tombstones
                  ORDER BY deleted_at,mapping_id
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def delete_route_tombstone(self, tombstone_id: str) -> bool:
+        """Retire fail-closed protection after the PBX route is confirmed removed."""
+        clean_id = str(tombstone_id or "").strip()
+        if not clean_id:
+            return False
+        with self._lock, self._connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM vicidial_route_tombstones WHERE id=?",
+                (clean_id,),
+            )
+            return cur.rowcount > 0
 
     @staticmethod
     def _preserve_route_tombstone(
