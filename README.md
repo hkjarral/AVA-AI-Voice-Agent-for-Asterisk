@@ -890,7 +890,7 @@ The `preflight.sh` script handles initial setup:
 ### Integrations & Early-Stage Features
 - **[Outbound Calling](docs/OUTBOUND_CALLING.md)** — `Alpha` — scheduled campaigns, voicemail drop, consent gate
 - **[FreeSWITCH (FS-PBX) Setup](docs/FS-PBX-Setup-Instructions.md)** — `Community` — community-maintained guide
-- **[ViciDial Setup](docs/Vicidial-Setup.md)** — `Community` — community-tested configuration notes
+- **[VICIdial Remote Agent Setup](docs/Vicidial-Setup.md)** — `Alpha` — VICIdial-owned calling with AAVA as a Remote Agent
 
 `Alpha` = usable but still hardening. `Community` = contributed and community-validated, not maintainer-tested on every release. Features without a label are stable.
 

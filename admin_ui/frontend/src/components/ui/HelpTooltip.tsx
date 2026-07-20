@@ -5,6 +5,7 @@ interface HelpTooltipProps {
     content: React.ReactNode;
     link?: string;
     linkText?: string;
+    ariaLabel?: string;
 }
 
 /**
@@ -19,7 +20,13 @@ interface HelpTooltipProps {
  * truncated tooltips opened from trigger icons near the top of any
  * scrolled container (the Provider edit modal was the canonical bug).
  */
-const HelpTooltip: React.FC<HelpTooltipProps> = ({ content, link, linkText = 'Learn more' }) => {
+const HelpTooltip: React.FC<HelpTooltipProps> = ({
+    content,
+    link,
+    linkText = 'Learn more',
+    ariaLabel = 'Show help',
+}) => {
+    const tooltipId = React.useId();
     const [isOpen, setIsOpen] = useState(false);
     const [placement, setPlacement] = useState<'top' | 'bottom'>('top');
     const [horizontalOffset, setHorizontalOffset] = useState<number>(-112);
@@ -58,7 +65,7 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({ content, link, linkText = 'Le
         const idealLeft = buttonCenterX - POPOVER_WIDTH / 2;
         const clampedLeft = Math.max(
             8, // 8px margin from viewport edge
-            Math.min(idealLeft, viewportW - POPOVER_WIDTH - 8),
+            Math.min(idealLeft, viewportW - POPOVER_WIDTH - 8)
         );
         // Convert to an offset relative to the button (which is `position:
         // relative` parent via .relative on the wrapper).
@@ -80,16 +87,11 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({ content, link, linkText = 'Le
         };
     }, [isOpen, recomputePlacement]);
 
-    const popoverPositionClasses =
-        placement === 'top'
-            ? 'mb-2 bottom-full'
-            : 'mt-2 top-full';
+    const popoverPositionClasses = placement === 'top' ? 'mb-2 bottom-full' : 'mt-2 top-full';
     // Arrow points toward the trigger: arrow on the BOTTOM of the popover
     // when popover sits ABOVE the trigger, and vice versa.
     const arrowPositionClasses =
-        placement === 'top'
-            ? '-bottom-1 border-r border-b'
-            : '-top-1 border-l border-t';
+        placement === 'top' ? '-bottom-1 border-r border-b' : '-top-1 border-l border-t';
 
     return (
         // Hover handlers on the wrapper so the popover stays open while
@@ -105,12 +107,22 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({ content, link, linkText = 'Le
             <button
                 ref={buttonRef}
                 type="button"
-                aria-label="Show help"
+                aria-label={ariaLabel}
                 aria-expanded={isOpen}
+                aria-describedby={isOpen ? tooltipId : undefined}
                 className="inline-flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
-                onClick={(e) => {
+                onFocus={() => setIsOpen(true)}
+                onBlur={event => {
+                    if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) {
+                        setIsOpen(false);
+                    }
+                }}
+                onClick={e => {
                     e.preventDefault();
-                    setIsOpen((prev) => !prev);
+                    setIsOpen(true);
+                }}
+                onKeyDown={event => {
+                    if (event.key === 'Escape') setIsOpen(false);
                 }}
             >
                 <HelpCircle className="w-4 h-4" />
@@ -118,6 +130,8 @@ const HelpTooltip: React.FC<HelpTooltipProps> = ({ content, link, linkText = 'Le
 
             {isOpen && (
                 <div
+                    id={tooltipId}
+                    role="tooltip"
                     ref={popoverRef}
                     className={`absolute z-50 w-64 p-3 text-sm bg-popover border border-border rounded-md shadow-lg ${popoverPositionClasses}`}
                     style={{ left: `${horizontalOffset}px` }}

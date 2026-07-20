@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { FormInput, FormSelect, FormSwitch } from './FormComponents';
 
@@ -42,5 +42,15 @@ describe('FormComponents — label association & error semantics', () => {
     it('falls back to aria-label when there is no visible label', () => {
         render(<FormInput aria-label="Search transcripts" />);
         expect(screen.getByLabelText('Search transcripts').tagName).toBe('INPUT');
+    });
+
+    it('exposes field help to keyboard users as an accessible tooltip', async () => {
+        render(<FormInput label="SIP port" tooltip="SIP signaling port on the VICIdial server." />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Help for SIP port' }));
+
+        expect(await screen.findByRole('tooltip')).toHaveTextContent(
+            'SIP signaling port on the VICIdial server.'
+        );
     });
 });

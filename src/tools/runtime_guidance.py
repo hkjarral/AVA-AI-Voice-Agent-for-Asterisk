@@ -8,7 +8,9 @@ to providers that otherwise only see tool schemas.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, Iterable, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def _normalize_text(value: Any) -> str:
@@ -18,6 +20,32 @@ def _normalize_text(value: Any) -> str:
 def _stringify_list(values: Iterable[Any]) -> str:
     rendered = [str(v).strip() for v in values if str(v or "").strip()]
     return ", ".join(rendered)
+
+
+def _build_vicidial_callback_clock_lines(vicidial_cfg: Dict[str, Any]) -> List[str]:
+    """Describe the dialer's local clock used to interpret callback values."""
+    timezone_name = str((vicidial_cfg or {}).get("timezone") or "").strip()
+    if not timezone_name:
+        return [
+            "- The VICIdial callback timezone is unavailable. Do not infer relative dates; "
+            "confirm an explicit date, time, and timezone and submit an offset-aware ISO "
+            "8601 `callback_datetime`.",
+        ]
+    try:
+        local_now = datetime.now(ZoneInfo(timezone_name))
+    except ZoneInfoNotFoundError:
+        return [
+            "- The configured VICIdial callback timezone is invalid. Do not infer relative "
+            "dates; confirm an explicit date, time, and timezone and submit an offset-aware "
+            "ISO 8601 `callback_datetime`.",
+        ]
+    return [
+        f"- VICIdial callback timezone: `{timezone_name}`.",
+        "- Current VICIdial-local date/time: "
+        f"`{local_now.isoformat(timespec='seconds')}`.",
+        "- Resolve relative requests such as today or tomorrow from this VICIdial-local "
+        "clock, then submit `callback_datetime` as an offset-aware ISO 8601 value.",
+    ]
 
 
 def _build_live_agent_lines(config: Dict[str, Any]) -> List[str]:
@@ -254,6 +282,29 @@ def build_in_call_tool_runtime_guidance(config: Dict[str, Any], allowed_tools: I
                     ]
                 )
             )
+
+    if "set_call_disposition" in allowed:
+        tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}
+        vicidial_cfg = (tools_cfg or {}).get("vicidial") or {}
+        dispositions = (vicidial_cfg or {}).get("dispositions") or {}
+        if isinstance(dispositions, dict) and dispositions:
+            disposition_lines = [
+                f"- `{str(name).strip()}` (VICIdial status `{str(status).strip()}`)"
+                for name, status in dispositions.items()
+                if str(name or "").strip() and str(status or "").strip()
+            ]
+            if disposition_lines:
+                lines = [
+                    "Configured VICIdial dispositions:",
+                    *disposition_lines,
+                    "- Use only one of these exact names with `set_call_disposition.disposition`.",
+                    "- A do-not-call, DNC, stop-calling, or remove-my-number request is a compliance request. If `dnc` is listed, call `set_call_disposition` with `disposition` set to `dnc` immediately; do not refuse or merely acknowledge it.",
+                    "- On this VICIdial-owned call, a request to be called back must create a native VICIdial callback: collect and confirm the callback date, time, and timezone, then call `set_call_disposition` with `disposition` set to `callback` and include `callback_datetime`.",
+                    *_build_vicidial_callback_clock_lines(vicidial_cfg),
+                    "- Do not use a calendar, appointment, or scheduling tool as a substitute for the VICIdial callback, even if one is available. Create a separate calendar appointment only when the caller explicitly requests one in addition to the callback.",
+                    "- `set_call_disposition` does not end the call. Call `hangup_call` as well only when the caller asks to end or the conversation is complete.",
+                ]
+                sections.append("\n".join(lines))
 
     if "leave_voicemail" in allowed:
         tools_cfg = (config or {}).get("tools") if isinstance(config, dict) else {}

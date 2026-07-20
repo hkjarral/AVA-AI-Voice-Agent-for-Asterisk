@@ -4,6 +4,25 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 
+def test_call_record_pre_migration_null_collections_keep_declared_types():
+    from src.core.call_history import CallRecord
+
+    record = CallRecord.from_dict(
+        {
+            "call_id": "pre-migration",
+            "pipeline_components": None,
+            "external_metadata": None,
+            "conversation_history": None,
+            "tool_calls": None,
+        }
+    )
+
+    assert record.pipeline_components == {}
+    assert record.external_metadata == {}
+    assert record.conversation_history == []
+    assert record.tool_calls == []
+
+
 @pytest.mark.asyncio
 async def test_agent_resource_tools_keep_canonical_call_history_names(tmp_path, monkeypatch):
     """Resource assignment changes config, not the existing audit/event schema."""
@@ -100,6 +119,111 @@ async def test_call_history_list_count_filter_parity(tmp_path, monkeypatch):
     counted = await store.count(caller_name="Ali")
     assert counted == len(listed) == 1
     assert listed[0].call_id == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_external_activity_is_bounded_lightweight_and_keeps_mapping_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "external-activity.db"))
+    now = datetime.now(timezone.utc)
+    for record in [
+        CallRecord(
+            call_id="vicidial-current",
+            caller_number="13164619284",
+            start_time=now,
+            end_time=now + timedelta(seconds=12),
+            external_platform="VICIDIAL",
+            external_metadata={"mapping_id": "mapping-1"},
+            conversation_history=[{"role": "user", "content": "sensitive"}],
+            tool_calls=[{"name": "test"}],
+        ),
+        CallRecord(
+            call_id="ordinary-call",
+            start_time=now,
+            end_time=now + timedelta(seconds=1),
+        ),
+        CallRecord(
+            call_id="vicidial-old",
+            start_time=now - timedelta(days=31),
+            end_time=now - timedelta(days=31) + timedelta(seconds=1),
+            external_platform="vicidial",
+        ),
+    ]:
+        assert await store.save(record) is True
+
+    rows = await store.list_external_activity(
+        "vicidial", start_date=now - timedelta(days=30), end_date=now + timedelta(seconds=1)
+    )
+
+    assert [record.call_id for record in rows] == ["vicidial-current"]
+    assert rows[0].external_metadata == {"mapping_id": "mapping-1"}
+    assert rows[0].conversation_history == []
+    assert rows[0].tool_calls == []
+
+    assert await store.save(
+        CallRecord(
+            call_id="vicidial-other-mapping",
+            start_time=now + timedelta(milliseconds=500),
+            end_time=now + timedelta(seconds=1),
+            external_platform="vicidial",
+            external_metadata={"mapping_id": "mapping-2"},
+        )
+    ) is True
+    capped = await store.list_external_activity(
+        "vicidial",
+        start_date=now - timedelta(days=30),
+        end_date=now + timedelta(seconds=1),
+        mapping_id="mapping-1",
+        max_rows=1,
+    )
+    assert [record.call_id for record in capped] == ["vicidial-current"]
+
+
+@pytest.mark.asyncio
+async def test_external_lifecycle_update_merges_late_retry_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("CALL_HISTORY_ENABLED", "true")
+    from src.core.call_history import CallHistoryStore, CallRecord
+
+    store = CallHistoryStore(db_path=str(tmp_path / "external-retry.db"))
+    now = datetime.now(timezone.utc)
+    assert await store.save(
+        CallRecord(
+            call_id="vicidial-late-retry",
+            start_time=now,
+            end_time=now + timedelta(seconds=5),
+            external_platform="vicidial",
+            external_disposition=None,
+            external_metadata={
+                "mapping_id": "mapping-1",
+                "events": [{"operation": "terminal_queue", "success": True}],
+                "finalized": False,
+            },
+        )
+    ) is True
+
+    assert await store.update_external_lifecycle(
+        "vicidial-late-retry",
+        external_disposition="AIHU",
+        external_metadata={
+            "events": [{"operation": "hangup", "success": True}],
+            "disposition_label": "ai_hangup",
+            "finalized": True,
+        },
+    ) is True
+
+    updated = await store.get_by_call_id("vicidial-late-retry")
+    assert updated is not None
+    assert updated.external_disposition == "AIHU"
+    assert updated.external_metadata["mapping_id"] == "mapping-1"
+    assert updated.external_metadata["finalized"] is True
+    assert [event["operation"] for event in updated.external_metadata["events"]] == [
+        "terminal_queue",
+        "hangup",
+    ]
 
 
 @pytest.mark.asyncio
@@ -217,4 +341,3 @@ async def test_store_warmup_initializes_off_loop(tmp_path, monkeypatch):
     # Initialized off-loop: subsequent persist sees a ready store, no sync init.
     assert store._initialized is True
     assert ch.get_call_history_store() is store
-

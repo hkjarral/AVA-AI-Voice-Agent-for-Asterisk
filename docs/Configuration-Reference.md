@@ -209,9 +209,9 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
 |----------|---------|-------------|
 | `AAVA_OUTBOUND_EXTENSION_IDENTITY` | `6789` | Extension identity for FreePBX routing (sets `AMPUSER` + `CALLERID(num)` on originate) |
 | `AAVA_OUTBOUND_AMD_CONTEXT` | `aava-outbound-amd` | Dialplan context name used for AMD hop (`continueInDialplan`) |
-| `AAVA_OUTBOUND_PBX_TYPE` | `freepbx` | PBX-specific channel vars: `freepbx` \| `vicidial` experimental/community-tested \| `generic` |
+| `AAVA_OUTBOUND_PBX_TYPE` | `freepbx` | PBX-specific AAVA Campaign channel vars: `freepbx` \| `generic`. Legacy `vicidial` remains readable for one migration release but cannot be newly selected in the UI; use Call Scheduling → VICIdial Remote Agents. |
 | `AAVA_OUTBOUND_DIAL_CONTEXT` | `from-internal` | Asterisk dialplan context for `Local/` channel origination |
-| `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for carrier selection (e.g. `911` in the experimental ViciDial notes) |
+| `AAVA_OUTBOUND_DIAL_PREFIX` | (empty) | Dial prefix prepended to phone number for AAVA Campaign carrier selection |
 | `AAVA_OUTBOUND_CHANNEL_TECH` | `auto` | Channel tech for extension probing: `auto` \| `pjsip` \| `sip` \| `local_only` |
 | `AAVA_OUTBOUND_ATTEMPT_STALE_SECONDS` | `120` | Shared startup/runtime timeout for attempts that never reach a live session; minimum `10` seconds |
 | `AAVA_OUTBOUND_LEAD_IMPORT_MAX_BYTES` | `10485760` | Maximum uploaded CSV or `.xlsx` lead file size in bytes |
@@ -226,6 +226,27 @@ Outbound calling is implemented as an **engine-driven scheduler + SQLite + ARI o
   - `${AMDSTATUS}` and `${AMDCAUSE}`
 
 See `docs/contributing/milestones/milestone-22-outbound-campaign-dialer.md` for the full snippet and smoke test checklist.
+
+## VICIdial Remote Agents (Alpha)
+
+VICIdial Remote Agents are separate from AAVA's native Outbound Campaign Dialer. VICIdial owns
+campaign origination, customer channels, reports, dispositions, DNC, callbacks, and transfers;
+AAVA supplies the mapped AI conversation. Configure connections and mappings under
+**Call Scheduling → VICIdial Remote Agents** and follow the
+[VICIdial Remote Agent Setup](Vicidial-Setup.md) acceptance sequence.
+
+The connection stores environment-variable names rather than credential values. The UI defaults
+to the following names, but a mapping may reference other valid environment-variable names:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VICIDIAL_API_USER` | (empty) | Dedicated least-privilege VICIdial API username referenced by the connection |
+| `VICIDIAL_API_PASS` | (empty) | Dedicated VICIdial API password referenced by the connection |
+| `VICIDIAL_DB_PATH` | `/app/data/operator/vicidial.db` | Shared SQLite store for connections, mappings, and readiness evidence |
+
+Recreate `ai_engine` and `admin_ui` after changing credential environment variables so both
+services receive the same values. Back up `vicidial.db` with the rest of `data/operator/`; it
+contains configuration and verification evidence, but never the referenced API password.
 
 ## Canonical persona and greeting
 

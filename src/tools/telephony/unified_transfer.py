@@ -479,6 +479,18 @@ class UnifiedTransferTool(Tool):
             type=transfer_type,
             target=target
         )
+
+        if transfer_type in {'vicidial_extension', 'vicidial_ingroup'}:
+            from .vicidial import execute_vicidial_transfer
+
+            return await execute_vicidial_transfer(
+                context=context,
+                destination={
+                    **dest_config,
+                    "type": transfer_type,
+                    "description": description,
+                },
+            )
         
         dialplan_context = self._resolve_dialplan_context(
             str(transfer_type or ""),

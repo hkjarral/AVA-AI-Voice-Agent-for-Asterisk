@@ -2,6 +2,48 @@
 
 This guide covers upgrading between major versions of Asterisk AI Voice Agent.
 
+## v7.4.1 to v7.5.0 (unreleased)
+
+The VICIdial integration now uses VICIdial's native Remote Agent lifecycle. VICIdial originates
+and owns customer calls; AAVA supplies the mapped AI conversation and requests terminal actions
+through the Agent and Non-Agent APIs.
+
+This replaces the experimental direct-origination setup that used
+`AAVA_OUTBOUND_PBX_TYPE=vicidial`, a VICIdial carrier context, and AAVA's own Call Scheduling
+campaign engine. That legacy value remains readable for one migration release, is hidden from
+new UI selection, and emits a startup warning. Do not rely on it beyond the next major release.
+
+### Before upgrading
+
+1. Back up `.env`, `data/operator/vicidial.db` if it already exists, the VICIdial database using
+   VICIdial's supported backup procedure, and the relevant Asterisk/FreePBX configuration.
+2. Record the existing VICIdial campaign, in-groups, statuses, carrier/DID routes, Remote Agent
+   users, Phone extension, SIP/RTP topology, and server timezone.
+3. Keep production carrier and DID routing under VICIdial. The new integration does not import,
+   replace, or directly modify those objects.
+
+### Migrate from direct origination
+
+1. Upgrade and rebuild/recreate `ai_engine` and `admin_ui` together.
+2. Create a dedicated least-privilege VICIdial API user and place its username/password in AAVA
+   environment variables.
+3. Create a dedicated VICIdial Phone, contiguous Remote Agent user range, and Remote Agent entry.
+4. Create the AAVA-facing FreePBX trunk/registration and verify at least two registration and
+   qualification cycles.
+5. In **Call Scheduling → VICIdial Remote Agents**, create the connection and mapping, then apply
+   the generated exact trusted dialplan context.
+6. Reproduce only valid VICIdial statuses, DNC/callback policy, and cold-transfer destinations in
+   the mapping allowlist. AAVA does not create missing production VICIdial statuses.
+7. Run one-line outbound and any configured inbound acceptance calls before enabling additional
+   lines. Verify VICIdial terminal records and Remote Agent return to `READY`, not only audio.
+8. After the Remote Agent path passes, change `AAVA_OUTBOUND_PBX_TYPE` to `freepbx` or `generic`
+   as appropriate and retire the old AAVA-native campaign that targeted VICIdial's carrier
+   dialplan.
+
+There is no automatic migration because the trusted SIP topology, VICIdial campaign ownership,
+API permissions, statuses, and compliance policies require operator verification. See
+[VICIdial Remote Agent Setup](Vicidial-Setup.md) for the complete setup and acceptance sequence.
+
 ## v7.3.x to v7.4.0
 
 v7.4 removes Contexts as a product and runtime model. Agents in

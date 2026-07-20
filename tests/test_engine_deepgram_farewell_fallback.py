@@ -1,8 +1,12 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.models import CallSession
+from src.core.session_store import SessionStore
+from src.engine import Engine
 from src.providers.deepgram import DeepgramProvider
 
 
@@ -21,6 +25,24 @@ def test_explicit_end_intent_plus_assistant_farewell_arms_fallback():
         text="Thanks for calling!",
     )
     assert state["farewell_seen"] is True
+
+
+def test_confirmed_assistant_farewell_protects_terminal_output():
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider._hangup_policy = {}
+    provider._farewell_fallback_state = {}
+    provider._farewell_fallback_audio_seen = False
+    provider._terminal_turn_suppressed = False
+    provider._hangup_pending = False
+
+    provider._track_farewell_fallback(
+        role="user", text="I think I got it. That's all. Thank you."
+    )
+    assert provider.terminal_output_protected is False
+
+    provider._track_farewell_fallback(role="assistant", text="Thanks for calling!")
+
+    assert provider.terminal_output_protected is True
 
 
 def test_split_user_closing_and_split_assistant_farewell_match_live_sequence():
@@ -120,6 +142,31 @@ async def test_provider_emits_hangup_ready_at_audio_boundary():
 
 
 @pytest.mark.asyncio
+async def test_engine_records_hangup_ready_as_agent_hangup():
+    engine = Engine.__new__(Engine)
+    engine.session_store = SessionStore()
+    engine._terminate_call_after_audio = AsyncMock(return_value=True)
+    session = CallSession(call_id="call-hangup-ready", caller_channel_id="caller")
+    await engine.session_store.upsert_call(session)
+
+    await engine.on_provider_event(
+        {
+            "type": "HangupReady",
+            "call_id": session.call_id,
+            "reason": "farewell_without_tool",
+            "had_audio": True,
+        }
+    )
+
+    engine._terminate_call_after_audio.assert_awaited_once_with(
+        session.call_id,
+        reason="hangup_ready:farewell_without_tool",
+        call_outcome="agent_hangup",
+        audio_already_drained=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_caller_audio_is_suppressed_after_terminal_turn():
     class _Websocket:
         def __init__(self):
@@ -136,6 +183,26 @@ async def test_caller_audio_is_suppressed_after_terminal_turn():
     await provider.send_audio(b"caller audio", sample_rate=8000, encoding="ulaw")
 
     assert provider.websocket.sent == []
+
+
+def test_releasing_terminal_protection_resumes_deepgram_input():
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider._hangup_fallback_task = None
+    provider._farewell_text_fallback_task = None
+    provider._hangup_pending = True
+    provider._terminal_turn_suppressed = True
+    provider._hangup_audio_started = True
+    provider._farewell_message = "Goodbye"
+    provider._farewell_fallback_state = {"pending": True, "farewell_seen": True}
+    provider._farewell_fallback_audio_seen = True
+
+    provider.release_terminal_output_protection()
+
+    assert provider.terminal_output_protected is False
+    assert provider._hangup_audio_started is False
+    assert provider._farewell_message is None
+    assert provider._farewell_fallback_state == {}
+    assert provider._farewell_fallback_audio_seen is False
 
 
 @pytest.mark.asyncio

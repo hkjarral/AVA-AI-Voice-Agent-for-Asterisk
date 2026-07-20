@@ -48,3 +48,25 @@ async def test_dialplan_target_exists_rejects_function_argument_injection():
         "chan-1", context="safe),SHELL(id", extension="s", priority=1
     )
     client.send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [({}, True), ({"status": 204}, True), ({"status": 500}, False), (None, False)],
+)
+async def test_set_channel_var_checks_ari_response_status(response, expected):
+    client = _client(response)
+
+    assert await client.set_channel_var("chan-1", "AI_AGENT", "demo") is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [({"status": 204}, True), ({"status": 404}, True), ({"status": 500}, False)],
+)
+async def test_hangup_channel_checks_ari_response_status(response, expected):
+    client = _client(response)
+
+    assert await client.hangup_channel("chan-1") is expected

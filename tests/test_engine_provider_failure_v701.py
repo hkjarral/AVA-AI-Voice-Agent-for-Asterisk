@@ -350,6 +350,35 @@ async def test_provider_failure_can_redirect_to_dialplan_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "on_provider_failure",
+    ["announce_hangup", "dialplan_redirect", "leave_open"],
+)
+async def test_vicidial_provider_failure_uses_terminal_workflow(on_provider_failure):
+    """VICIdial-owned calls use the finalizer's durable dialer workflow."""
+    engine = _make_engine(on_provider_failure)
+    engine._stop_connection_audio = AsyncMock()
+    engine._finalize_vicidial_call = AsyncMock(return_value=False)
+    session = await _register_session(engine)
+    session.external_platform = "vicidial"
+    session.external_call_id = "M4050908070000012345"
+
+    await engine._start_provider_session("call-1")
+
+    engine._finalize_vicidial_call.assert_awaited_once_with(
+        session,
+        semantic="ai_failure",
+        operation_reason="provider-start-failed",
+    )
+    engine._stop_connection_audio.assert_awaited_once_with(
+        session, reason="provider-start-failed"
+    )
+    engine.ari_client.continue_in_dialplan.assert_not_awaited()
+    engine.ari_client.play_sound.assert_not_awaited()
+    engine.ari_client.hangup_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_missing_provider_failure_redirect_target_announces_and_hangs_up():
     engine = _make_engine("dialplan_redirect")
     engine.ari_client.dialplan_target_exists.return_value = False

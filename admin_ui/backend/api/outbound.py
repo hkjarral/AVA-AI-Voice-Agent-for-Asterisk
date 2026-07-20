@@ -371,7 +371,7 @@ async def upload_recording_to_library(kind: str = Query("generic"), file: Upload
 def _detect_server_timezone() -> str:
     """
     Best-effort detection of server timezone as an IANA string.
-    Prefer explicit env var (TZ or AAVA_SERVER_TIMEZONE), then /etc/localtime symlink, then /etc/timezone.
+    Prefer the AAVA-specific override, then TZ, /etc/localtime, and /etc/timezone.
     """
     def _validate_iana(tz: str) -> Optional[str]:
         tz = (tz or "").strip()
@@ -388,17 +388,17 @@ def _detect_server_timezone() -> str:
             return None
 
     # Prefer configured `.env` (UI saves here), then container environment.
-    env_tz = _validate_iana(_dotenv_value("TZ") or "")
-    if env_tz:
-        return env_tz
-    # Standard Docker env var
-    env_tz = _validate_iana(os.getenv("TZ") or "")
-    if env_tz:
-        return env_tz
     env_tz = _validate_iana(_dotenv_value("AAVA_SERVER_TIMEZONE") or "")
     if env_tz:
         return env_tz
     env_tz = _validate_iana(os.getenv("AAVA_SERVER_TIMEZONE") or "")
+    if env_tz:
+        return env_tz
+    env_tz = _validate_iana(_dotenv_value("TZ") or "")
+    if env_tz:
+        return env_tz
+    # Standard Docker env var.
+    env_tz = _validate_iana(os.getenv("TZ") or "")
     if env_tz:
         return env_tz
 

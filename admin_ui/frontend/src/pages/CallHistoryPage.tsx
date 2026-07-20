@@ -10,7 +10,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { FullscreenPanel } from '../components/ui/FullscreenPanel';
 import { useConfirmDialog } from '../hooks/useConfirmDialog';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
     InCallToolGroup,
     PhaseToolGroup,
@@ -23,6 +23,7 @@ interface CallRecordSummary {
     call_id: string;
     caller_number: string | null;
     caller_name: string | null;
+    called_number?: string | null;
     start_time: string | null;
     end_time: string | null;
     duration_seconds: number;
@@ -37,6 +38,10 @@ interface CallRecordSummary {
     avg_turn_latency_ms: number;
     total_turns: number;
     barge_in_count: number;
+    external_platform?: string | null;
+    external_call_id?: string | null;
+    external_direction?: string | null;
+    external_disposition?: string | null;
 }
 
 interface CallRecordDetail extends CallRecordSummary {
@@ -49,6 +54,15 @@ interface CallRecordDetail extends CallRecordSummary {
     max_turn_latency_ms: number;
     caller_audio_format: string;
     codec_alignment_ok: boolean;
+    external_metadata?: {
+        mapping_id?: string | null;
+        mapping_name?: string | null;
+        finalized?: boolean;
+        requested_disposition?: string | null;
+        disposition_label?: string | null;
+        session?: Record<string, any>;
+        events?: Array<Record<string, any>>;
+    };
 }
 
 interface CallStats {
@@ -137,6 +151,9 @@ const outcomeLabel = (outcome: string): string => {
     return outcome.replace(/_/g, ' ');
 };
 
+const CALL_DETAILS_FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 // How a call was routed to its agent (engine writes call_records.routing_method).
 // Older calls predating the column have method === null and render nothing.
 const RoutingBadge = ({ method }: { method: string | null }) => {
@@ -155,6 +172,7 @@ const RoutingBadge = ({ method }: { method: string | null }) => {
 const CallHistoryPage = () => {
     const { confirm } = useConfirmDialog();
     const location = useLocation();
+    const navigate = useNavigate();
     const [calls, setCalls] = useState<CallRecordSummary[]>([]);
     const [stats, setStats] = useState<CallStats | null>(null);
     const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
@@ -166,6 +184,9 @@ const CallHistoryPage = () => {
     const [selectedCall, setSelectedCall] = useState<CallRecordDetail | null>(null);
     const [selectedCallLoading, setSelectedCallLoading] = useState(false);
     const [showStats, setShowStats] = useState(true);
+    const callDetailsDialogRef = useRef<HTMLDivElement>(null);
+    const modalCall = selectedCall ?? selectedCallSummary;
+    const callDetailsOpen = Boolean(modalCall);
 
     // Recording playback
     const [recordingInfo, setRecordingInfo] = useState<RecordingInfo | null>(null);
@@ -353,6 +374,86 @@ const CallHistoryPage = () => {
         }
     }, [cleanupAudio]);
 
+    const closeCallDetails = useCallback(() => {
+        cleanupAudio();
+        setRecordingInfo(null);
+        setSelectedCall(null);
+        setSelectedCallSummary(null);
+
+        const params = new URLSearchParams(location.search);
+        if (params.has('id')) {
+            params.delete('id');
+            const search = params.toString();
+            navigate(
+                {
+                    pathname: location.pathname,
+                    search: search ? `?${search}` : '',
+                    hash: location.hash,
+                },
+                { replace: true }
+            );
+        }
+    }, [cleanupAudio, location.hash, location.pathname, location.search, navigate]);
+
+    useEffect(() => {
+        if (!callDetailsOpen) return;
+        const dialog = callDetailsDialogRef.current;
+        if (!dialog) return;
+
+        const previouslyFocused = document.activeElement as HTMLElement | null;
+        const previousBodyOverflow = document.body.style.overflow;
+
+        const isTopmostModal = () => {
+            const dialogs = Array.from(
+                document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')
+            );
+            return dialogs[dialogs.length - 1] === dialog;
+        };
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (!isTopmostModal()) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeCallDetails();
+                return;
+            }
+            if (event.key !== 'Tab') return;
+
+            const focusable = Array.from(
+                dialog.querySelectorAll<HTMLElement>(CALL_DETAILS_FOCUSABLE_SELECTOR)
+            );
+            if (focusable.length === 0) {
+                event.preventDefault();
+                dialog.focus();
+                return;
+            }
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey) {
+                if (active === first || active === dialog || !dialog.contains(active)) {
+                    event.preventDefault();
+                    last.focus();
+                }
+            } else if (active === last || active === dialog || !dialog.contains(active)) {
+                event.preventDefault();
+                first.focus();
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        document.body.style.overflow = 'hidden';
+        dialog.focus();
+
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = previousBodyOverflow;
+            previouslyFocused?.focus?.();
+        };
+    }, [callDetailsOpen, closeCallDetails]);
+
     // Deep-link support: /history?id=<call_record_id>
     useEffect(() => {
         const id = new URLSearchParams(location.search).get('id');
@@ -432,10 +533,7 @@ const CallHistoryPage = () => {
             fetchCalls();
             fetchStats();
             if (selectedCall?.id === id || selectedCallSummary?.id === id) {
-                cleanupAudio();
-                setRecordingInfo(null);
-                setSelectedCall(null);
-                setSelectedCallSummary(null);
+                closeCallDetails();
             }
         } catch (err) {
             console.error('Failed to delete:', err);
@@ -526,8 +624,6 @@ const CallHistoryPage = () => {
     };
 
     const hasActiveFilters = Object.values(filters).some(v => v !== '') || transcriptSearch !== '';
-    const modalCall = selectedCall ?? selectedCallSummary;
-
     return (
         <div className="space-y-6">
             {/* Header */}
@@ -830,10 +926,20 @@ const CallHistoryPage = () => {
                             </thead>
                             <tbody className="divide-y divide-border">
                                 {calls.map((call) => (
-	                                    <tr 
+	                                    <tr
 	                                        key={call.id} 
-	                                        className="hover:bg-muted/30 cursor-pointer"
-	                                        onClick={() => openCallDetails(call)}
+	                                        className="hover:bg-muted/30 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+	                                        tabIndex={0}
+	                                        aria-label={`Open call details for ${call.caller_number || call.call_id}`}
+	                                        onClick={(event) => {
+	                                            event.currentTarget.focus();
+	                                            void openCallDetails(call);
+	                                        }}
+	                                        onKeyDown={(event) => {
+	                                            if (event.key !== 'Enter' && event.key !== ' ') return;
+	                                            event.preventDefault();
+	                                            void openCallDetails(call);
+	                                        }}
 	                                    >
                                         <td className="px-4 py-3">
                                             <div className="font-medium">{call.caller_number || 'Unknown'}</div>
@@ -916,11 +1022,18 @@ const CallHistoryPage = () => {
             {/* Call Detail Modal */}
             {modalCall && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                    <div
+                        ref={callDetailsDialogRef}
+                        tabIndex={-1}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="call-details-title"
+                        className="bg-card border rounded-lg w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col focus:outline-none"
+                    >
                         {/* Modal Header */}
                         <div className="flex items-center justify-between p-4 border-b">
                             <div>
-                                <h2 className="text-xl font-bold">Call Details</h2>
+                                <h2 id="call-details-title" className="text-xl font-bold">Call Details</h2>
                                 <p className="text-sm text-muted-foreground">{modalCall.call_id}</p>
                             </div>
                             <div className="flex items-center gap-2">
@@ -939,8 +1052,10 @@ const CallHistoryPage = () => {
                                     <Trash2 className="w-5 h-5" />
                                 </button>
                                 <button
-                                    onClick={() => { cleanupAudio(); setRecordingInfo(null); setSelectedCall(null); setSelectedCallSummary(null); }}
+                                    onClick={closeCallDetails}
                                     className="p-2 hover:bg-muted rounded-lg"
+                                    aria-label="Close call details"
+                                    title="Close call details"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
@@ -1097,6 +1212,33 @@ const CallHistoryPage = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {selectedCall?.external_platform && (
+                                <div>
+                                    <h3 className="font-semibold mb-2">External dialer</h3>
+                                    <div className="rounded-lg border border-border bg-card p-4">
+                                        <div className="grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
+                                            <div><div className="text-xs text-muted-foreground">Platform</div><div className="font-medium uppercase">{selectedCall.external_platform}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Call ID</div><div className="break-all font-mono text-xs">{selectedCall.external_call_id || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Direction</div><div className="font-medium capitalize">{selectedCall.external_direction || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Remote Agent</div><div className="font-mono">{selectedCall.external_metadata?.session?.agent_user || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Mapping</div><div className="font-medium">{selectedCall.external_metadata?.mapping_name || selectedCall.external_metadata?.mapping_id || '-'}</div></div>
+                                            <div><div className="text-xs text-muted-foreground">Disposition</div><div className="font-mono">{selectedCall.external_disposition || selectedCall.external_metadata?.requested_disposition || '-'}</div>{!selectedCall.external_disposition && selectedCall.external_metadata?.requested_disposition && <div className="text-[11px] text-amber-500">requested, not confirmed</div>}</div>
+                                        </div>
+                                        <div className="mt-3 text-xs text-muted-foreground">
+                                            Dialer lifecycle: {selectedCall.external_metadata?.finalized ? 'finalized' : 'not confirmed'} · API events: {selectedCall.external_metadata?.events?.length || 0}
+                                        </div>
+                                        {(selectedCall.external_metadata?.events?.length || 0) > 0 && (
+                                            <details className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+                                                <summary className="cursor-pointer text-xs font-medium">VICIdial API evidence</summary>
+                                                <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
+                                                    {JSON.stringify(selectedCall.external_metadata?.events, null, 2)}
+                                                </pre>
+                                            </details>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Transcript */}
                             <div>
