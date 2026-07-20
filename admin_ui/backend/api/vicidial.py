@@ -545,6 +545,15 @@ async def verify_mapping(mapping_id: str):
     connection_result: Dict[str, Any] = {}
     status_results: Dict[str, Any] = {}
     verification_timed_out = False
+    verification_deadline = (
+        asyncio.get_running_loop().time() + MAPPING_VERIFICATION_MAX_SECONDS
+    )
+
+    def remaining_verification_seconds() -> float:
+        return max(
+            0.0,
+            verification_deadline - asyncio.get_running_loop().time(),
+        )
 
     async def collect_vicidial_state():
         collected_connection = await client.verify_connection()
@@ -564,7 +573,7 @@ async def verify_mapping(mapping_id: str):
 
     try:
         connection_result, status_results = await asyncio.wait_for(
-            collect_vicidial_state(), timeout=MAPPING_VERIFICATION_MAX_SECONDS
+            collect_vicidial_state(), timeout=remaining_verification_seconds()
         )
     except asyncio.TimeoutError:
         verification_timed_out = True
@@ -649,21 +658,44 @@ async def verify_mapping(mapping_id: str):
         for direction in required_directions
     )
     trusted_endpoint = str(mapping.get("trusted_endpoint") or "").strip()
-    if trusted_endpoint:
-        pbx_endpoint = await _asterisk_endpoints(
-            str(mapping.get("pbx_technology") or "PJSIP"), trusted_endpoint
-        )
-    else:
-        pbx_endpoint = {
+    pbx_technology = str(mapping.get("pbx_technology") or "PJSIP").upper()
+
+    async def probe_pbx() -> Dict[str, Any]:
+        if trusted_endpoint:
+            return await _asterisk_endpoints(pbx_technology, trusted_endpoint)
+        return {
             "ari_connected": await _engine_health_ari_connected_compat(),
             "probe_available": False,
-            "technology": str(mapping.get("pbx_technology") or "PJSIP").upper(),
+            "technology": pbx_technology,
             "resource": None,
             "found": False,
             "state": None,
             "channel_count": 0,
             "ready": False,
             "note": "Select the exact Asterisk endpoint ID to enable ARI verification",
+        }
+
+    try:
+        remaining_seconds = remaining_verification_seconds()
+        if verification_timed_out or remaining_seconds <= 0:
+            raise asyncio.TimeoutError
+        pbx_endpoint = await asyncio.wait_for(
+            probe_pbx(),
+            timeout=remaining_seconds,
+        )
+    except asyncio.TimeoutError:
+        verification_timed_out = True
+        pbx_endpoint = {
+            "ari_connected": False,
+            "probe_available": False,
+            "technology": pbx_technology,
+            "resource": trusted_endpoint or None,
+            "found": False,
+            "state": None,
+            "channel_count": 0,
+            "ready": False,
+            "error_code": "verification_timeout",
+            "note": "PBX verification exceeded the mapping's overall deadline",
         }
     result: Dict[str, Any] = {
         # API and configuration checks cannot prove SIP registration, stable
@@ -743,6 +775,9 @@ def _dialplan(mapping: Dict[str, Any]) -> str:
     conf_exten = str(mapping.get("conf_exten") or "s")
     trusted_endpoint = str(mapping.get("trusted_endpoint") or "").strip()
     pbx_technology = str(mapping.get("pbx_technology") or "PJSIP").strip().upper()
+    # Asterisk exposes ``endpoint`` as a PJSIP-specific CHANNEL item. The
+    # ``pjsip`` item instead requires a signalling subtype such as ``call-id``;
+    # it is not the namespace for endpoint identity.
     endpoint_channel_item = "peername" if pbx_technology == "SIP" else "endpoint"
     lines = [
         f"[{context}]",

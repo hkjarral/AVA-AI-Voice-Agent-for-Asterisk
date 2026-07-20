@@ -800,6 +800,56 @@ def test_mapping_verification_has_one_overall_vicidial_deadline(monkeypatch, tmp
     } == {"verification_timeout"}
 
 
+def test_mapping_verification_deadline_also_bounds_pbx_probe(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
+
+    class _Client:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            return {
+                "ready": True,
+                "authentication": {
+                    "success": True,
+                    "rows": [{"campaign_id": "AVATEST"}],
+                },
+                "agent_visibility": {
+                    "success": True,
+                    "rows": [{"user": "9001", "status": "READY"}],
+                },
+            }
+
+        async def agent_status(self, agent_user):
+            return VicidialApiResult(
+                True,
+                "agent_status",
+                "ok",
+                data={"user": agent_user, "status": "READY"},
+            )
+
+    async def slow_pbx_probe(*_args, **_kwargs):
+        await asyncio.sleep(1)
+        raise AssertionError("the overall deadline did not cancel the PBX probe")
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _Client)
+    monkeypatch.setattr(vicidial_api, "_asterisk_endpoints", slow_pbx_probe)
+    monkeypatch.setattr(vicidial_api, "MAPPING_VERIFICATION_MAX_SECONDS", 0.01)
+
+    response = client.post("/api/outbound/vicidial/mappings/mapping-1/verify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["configuration_ready"] is True
+    assert body["pbx_ready"] is False
+    assert body["verification"] == {"timed_out": True, "timeout_seconds": 0.01}
+    assert body["pbx_endpoint"]["error_code"] == "verification_timeout"
+    assert body["pbx_endpoint"]["resource"] == "vicidial-ra"
+
+
 def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_path):
     client, store = _client(monkeypatch, tmp_path)
     connection = store.save_connection(_connection_payload(), "connection-1")
