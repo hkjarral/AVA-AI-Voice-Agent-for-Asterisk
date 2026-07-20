@@ -1695,6 +1695,53 @@ def test_store_persists_sanitized_terminal_retry_identity(tmp_path):
     assert "metadata" not in terminal["session"]
 
 
+def test_store_keeps_only_latest_pending_terminal_status_per_call(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = {**_connection(), "id": "connection-1"}
+    session_snapshot = {
+        "external_call_id": "M4050908070000012345",
+        "mapping_id": "map-1",
+        "agent_user": "9001",
+    }
+    first = store.enqueue_pending_action(
+        operation="terminal",
+        connection=connection,
+        payload={
+            "requested_status": "SALE",
+            "retry_terminal": {
+                "semantic": "sale",
+                "operation_reason": "first-hangup",
+                "session": session_snapshot,
+            },
+        },
+        call_id="ari-terminal-replaced",
+        external_call_id="M4050908070000012345",
+    )
+    replacement = store.enqueue_pending_action(
+        operation="terminal",
+        connection=connection,
+        payload={
+            "requested_status": "N",
+            "retry_terminal": {
+                "semantic": "not_interested",
+                "operation_reason": "replacement-hangup",
+                "session": session_snapshot,
+            },
+        },
+        call_id="ari-terminal-replaced",
+        external_call_id="M4050908070000012345",
+    )
+
+    assert replacement["id"] == first["id"]
+    assert replacement["payload"]["requested_status"] == "N"
+    assert replacement["payload"]["retry_terminal"]["semantic"] == (
+        "not_interested"
+    )
+    assert [action["id"] for action in store.list_pending_actions()] == [
+        first["id"]
+    ]
+
+
 @pytest.mark.asyncio
 async def test_ai_failure_terminal_retry_is_durable_and_replayable(
     tmp_path, monkeypatch
@@ -1748,6 +1795,44 @@ async def test_ai_failure_terminal_retry_is_durable_and_replayable(
         operation_reason="provider-start-failed",
     )
     assert store.get_pending_action(action["id"])["status"] == "completed"
+
+
+def test_terminal_retry_preserves_explicit_business_disposition(
+    tmp_path, monkeypatch
+):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    session = CallSession(
+        call_id="ari-sale-retry",
+        caller_channel_id="ari-sale-retry",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    session.external_requested_disposition = "SALE"
+    session.external_disposition_label = "sale"
+
+    assert Engine._queue_vicidial_terminal_retry(
+        SimpleNamespace(),
+        session,
+        semantic="ai_hangup",
+        operation_reason="hangup-tool",
+    ) is True
+
+    action = store.get_pending_action(
+        session.external_disposition_payload["workflow_queue_id"]
+    )
+    assert session.external_disposition_label == "sale"
+    assert action["payload"]["requested_status"] == "SALE"
+    assert action["payload"]["retry_terminal"]["semantic"] == "sale"
 
 
 def test_store_migrates_pending_actions_created_before_workflow_state(tmp_path):
@@ -3484,7 +3569,10 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
         assert saved_session is session
 
     monkeypatch.setattr("src.integrations.vicidial.VicidialApiClient", Client)
-    engine = SimpleNamespace(_save_session=save)
+    engine = SimpleNamespace(
+        _save_session=save,
+        _retain_vicidial_terminal_retry=Mock(return_value=True),
+    )
 
     result = await Engine._finalize_vicidial_call(
         engine,
@@ -3516,12 +3604,14 @@ async def test_engine_finalizer_uses_ai_failure_status_for_provider_failure(monk
     session.external_mapping = _mapping()
     session.external_connection = _connection()
     captured = {}
+    operations = []
 
     class Client:
         def __init__(self, _connection):
             pass
 
         async def call_control(self, _info, *, stage, status):
+            operations.append("control")
             captured.update({"stage": stage, "status": status})
             return VicidialApiResult(True, "ra_call_control", "SUCCESS")
 
@@ -3536,7 +3626,15 @@ async def test_engine_finalizer_uses_ai_failure_status_for_provider_failure(monk
         "src.tools.telephony.vicidial.commit_vicidial_disposition_workflow",
         successful_workflow,
     )
-    engine = SimpleNamespace(_save_session=save)
+
+    def retain_retry(*_args, **_kwargs):
+        operations.append("queue")
+        return True
+
+    engine = SimpleNamespace(
+        _save_session=save,
+        _retain_vicidial_terminal_retry=Mock(side_effect=retain_retry),
+    )
 
     result = await Engine._finalize_vicidial_call(
         engine,
@@ -3546,6 +3644,7 @@ async def test_engine_finalizer_uses_ai_failure_status_for_provider_failure(monk
     )
 
     assert result is True
+    assert operations == ["queue", "control"]
     assert captured == {"stage": "HANGUP", "status": "AIFAIL"}
     assert session.external_disposition == "AIFAIL"
 
@@ -3574,7 +3673,7 @@ async def test_stasis_start_exception_requests_forced_caller_hangup():
 
 
 @pytest.mark.asyncio
-async def test_ordinary_cleanup_retains_failed_vicidial_terminal_control():
+async def test_ordinary_cleanup_uses_durable_vicidial_finalizer_boundary():
     session = CallSession(
         call_id="ari-cleanup-retry",
         caller_channel_id="ari-cleanup-retry",
@@ -3582,8 +3681,6 @@ async def test_ordinary_cleanup_retains_failed_vicidial_terminal_control():
     session.external_platform = "vicidial"
     engine = SimpleNamespace(
         _finalize_vicidial_call=AsyncMock(return_value=False),
-        _retain_vicidial_cleanup_retry=Mock(return_value=True),
-        _save_session=AsyncMock(),
     )
 
     result = await Engine._finalize_vicidial_during_cleanup(
@@ -3598,12 +3695,6 @@ async def test_ordinary_cleanup_retains_failed_vicidial_terminal_control():
         semantic="caller_hangup",
         operation_reason="call-cleanup",
     )
-    engine._retain_vicidial_cleanup_retry.assert_called_once_with(
-        session,
-        semantic="caller_hangup",
-        operation_reason="call-cleanup",
-    )
-    engine._save_session.assert_awaited_once_with(session)
 
 
 @pytest.mark.asyncio
@@ -3639,7 +3730,7 @@ async def test_cleanup_attaches_terminal_retry_to_selected_dnc(
 
     terminal_queue = Mock(return_value=False)
     engine = SimpleNamespace(_queue_vicidial_terminal_retry=terminal_queue)
-    retained = Engine._retain_vicidial_cleanup_retry(
+    retained = Engine._retain_vicidial_terminal_retry(
         engine,
         session,
         semantic="caller_hangup",
@@ -3653,6 +3744,37 @@ async def test_cleanup_attaches_terminal_retry_to_selected_dnc(
     )
     assert action["payload"]["retry_terminal"]["semantic"] == "caller_hangup"
     assert action["payload"]["retry_terminal"]["operation_reason"] == "call-cleanup"
+
+
+def test_unconfirmed_compliance_never_falls_back_to_standalone_terminal_retry(
+    monkeypatch,
+):
+    session = CallSession(
+        call_id="ari-unretained-dnc",
+        caller_channel_id="ari-unretained-dnc",
+    )
+    session.external_platform = "vicidial"
+    session.external_disposition_label = "dnc"
+    session.external_disposition_payload = {
+        "phone_number": "13165551212",
+        "campaign_id": "TESTCAMP",
+    }
+    terminal_queue = Mock(return_value=True)
+    engine = SimpleNamespace(_queue_vicidial_terminal_retry=terminal_queue)
+    monkeypatch.setattr(
+        "src.tools.telephony.vicidial.queue_vicidial_disposition_workflow",
+        Mock(return_value=False),
+    )
+
+    retained = Engine._retain_vicidial_terminal_retry(
+        engine,
+        session,
+        semantic="ai_hangup",
+        operation_reason="hangup-tool",
+    )
+
+    assert retained is False
+    terminal_queue.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -3685,7 +3807,10 @@ async def test_engine_defers_terminal_control_until_dnc_is_confirmed(monkeypatch
         "src.tools.telephony.vicidial.commit_vicidial_disposition_workflow",
         fail_workflow,
     )
-    engine = SimpleNamespace(_save_session=save)
+    engine = SimpleNamespace(
+        _save_session=save,
+        _retain_vicidial_terminal_retry=Mock(return_value=False),
+    )
 
     result = await Engine._finalize_vicidial_call(
         engine,
@@ -3701,6 +3826,54 @@ async def test_engine_defers_terminal_control_until_dnc_is_confirmed(monkeypatch
     assert session.external_disposition_payload["phone_number"] == "13165551212"
     assert session.external_events[-1]["operation"] == "disposition_workflow"
     assert "terminal control deferred" in session.external_events[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_engine_retains_terminal_control_when_vicidial_api_raises(
+    monkeypatch, tmp_path
+):
+    retry_store = _use_durable_vicidial_store(monkeypatch, tmp_path)
+    session = CallSession(
+        call_id="ari-terminal-exception",
+        caller_channel_id="ari-terminal-exception",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def call_control(self, *_args, **_kwargs):
+            raise RuntimeError("VICIdial unavailable")
+
+    engine = Engine.__new__(Engine)
+    engine._save_session = AsyncMock()
+    monkeypatch.setattr("src.integrations.vicidial.VicidialApiClient", Client)
+
+    result = await Engine._finalize_vicidial_call(
+        engine,
+        session,
+        semantic="ai_hangup",
+        operation_reason="hangup-tool",
+    )
+
+    assert result is False
+    action_id = session.external_disposition_payload["workflow_queue_id"]
+    action = retry_store.get_pending_action(action_id)
+    assert action["operation"] == "terminal"
+    assert action["status"] == "pending"
+    assert action["payload"]["requested_status"] == "AIHU"
+    assert action["payload"]["retry_terminal"]["operation_reason"] == (
+        "hangup-tool"
+    )
+    assert session.external_finalizing is False
 
 
 @pytest.mark.asyncio
@@ -3788,7 +3961,10 @@ async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(mo
 
     monkeypatch.setattr("src.integrations.vicidial.VicidialApiClient", Client)
     monkeypatch.setattr("src.core.vicidial_store.get_vicidial_store", lambda: Store())
-    engine = SimpleNamespace(_save_session=save)
+    engine = SimpleNamespace(
+        _save_session=save,
+        _retain_vicidial_terminal_retry=Mock(return_value=True),
+    )
 
     result = await Engine._finalize_vicidial_call(
         engine,

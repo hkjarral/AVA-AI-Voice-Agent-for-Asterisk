@@ -4770,16 +4770,64 @@ class Engine:
         semantic: str,
         operation_reason: str,
     ) -> bool:
-        """Serialize terminal control with disposition selection for this call."""
+        """Serialize terminal control and retain it durably before the API call."""
         from src.core.vicidial_lifecycle import vicidial_lifecycle_lock
 
+        if getattr(session, "external_platform", None) != "vicidial":
+            return False
+        if bool(getattr(session, "external_finalized", False)):
+            return True
+
         async with vicidial_lifecycle_lock(session.call_id):
-            return await Engine._finalize_vicidial_call_locked(
-                self,
+            if bool(getattr(session, "external_finalized", False)):
+                return True
+
+            # Establish durable ownership before attempting terminal control.
+            # This single boundary covers AI hangup, caller cleanup, provider
+            # failure, and future callers without relying on each path to
+            # remember its own retry handling. For DNC/callback, the terminal
+            # snapshot is attached to the same outbox row so the compliance
+            # side effect must complete first.
+            retry_retained = self._retain_vicidial_terminal_retry(
                 session,
                 semantic=semantic,
                 operation_reason=operation_reason,
             )
+            await self._save_session(session)
+            try:
+                finalized = await Engine._finalize_vicidial_call_locked(
+                    self,
+                    session,
+                    semantic=semantic,
+                    operation_reason=operation_reason,
+                )
+            except Exception:
+                finalized = False
+                logger.error(
+                    "VICIdial terminal control raised; durable retry retained",
+                    call_id=session.call_id,
+                    operation_reason=operation_reason,
+                    retry_retained=retry_retained,
+                    exc_info=True,
+                )
+
+            # A preflight queue can fail while the direct API attempt succeeds,
+            # or a compliance workflow can become committed during the attempt.
+            # Re-evaluate once after failure so the newest safe state owns retry.
+            if not finalized and not retry_retained:
+                retry_retained = self._retain_vicidial_terminal_retry(
+                    session,
+                    semantic=semantic,
+                    operation_reason=operation_reason,
+                )
+                await self._save_session(session)
+            if not finalized and not retry_retained:
+                logger.error(
+                    "VICIdial terminal control failed without a durable retry owner",
+                    call_id=session.call_id,
+                    operation_reason=operation_reason,
+                )
+            return finalized
 
     def _queue_vicidial_terminal_retry(
         self,
@@ -4814,11 +4862,11 @@ class Engine:
             existing_label = str(
                 getattr(session, "external_disposition_label", None) or ""
             ).strip().lower()
-            terminal_semantic = (
-                existing_label
-                if existing_label in {"dnc", "callback"}
-                else semantic
-            )
+            # Preserve every explicit disposition label, not only compliance
+            # labels. The retry snapshot carries the requested VICIdial status,
+            # while Call History should continue to explain that SALE (for
+            # example) was selected rather than relabeling it as ai_hangup.
+            terminal_semantic = existing_label or semantic
             existing_payload = dict(
                 getattr(session, "external_disposition_payload", {}) or {}
             )
@@ -4876,14 +4924,14 @@ class Engine:
             )
             return False
 
-    def _retain_vicidial_cleanup_retry(
+    def _retain_vicidial_terminal_retry(
         self,
         session: CallSession,
         *,
         semantic: str,
         operation_reason: str,
     ) -> bool:
-        """Ensure failed ordinary cleanup retains one durable terminal owner."""
+        """Retain one durable terminal owner without bypassing compliance work."""
         pending_semantic = str(
             getattr(session, "external_disposition_label", None) or ""
         ).strip().lower()
@@ -4931,6 +4979,16 @@ class Engine:
                     workflow=pending_semantic,
                     exc_info=True,
                 )
+            # Never create a standalone terminal row while an unconfirmed DNC
+            # or callback is selected. That would let the retry worker end the
+            # call before applying the compliance side effect. A completed
+            # outbox row may have refreshed the live payload above, in which
+            # case a separate terminal row is now safe.
+            payload = dict(
+                getattr(session, "external_disposition_payload", {}) or {}
+            )
+            if not bool(payload.get("workflow_committed")):
+                return False
         return self._queue_vicidial_terminal_retry(
             session,
             semantic=semantic,
@@ -4943,28 +5001,14 @@ class Engine:
         *,
         call_outcome: str,
     ) -> bool:
-        """Finalize ordinary cleanup or retain its terminal work durably."""
+        """Finalize ordinary cleanup through the durable terminal boundary."""
         semantic = "caller_hangup" if call_outcome == "caller_hangup" else "ai_hangup"
         finalized = await self._finalize_vicidial_call(
             session,
             semantic=semantic,
             operation_reason="call-cleanup",
         )
-        if finalized:
-            return True
-        retained = self._retain_vicidial_cleanup_retry(
-            session,
-            semantic=semantic,
-            operation_reason="call-cleanup",
-        )
-        await self._save_session(session)
-        if not retained:
-            logger.error(
-                "VICIdial cleanup failed without a durable terminal retry owner",
-                call_id=session.call_id,
-                external_call_id=getattr(session, "external_call_id", None),
-            )
-        return False
+        return bool(finalized)
 
     async def _finalize_vicidial_call_locked(
         self,
@@ -17894,12 +17938,6 @@ class Engine:
         # startup fails; use the same terminal workflow as every other
         # VICIdial-controlled call.
         if getattr(session, "external_platform", None) == "vicidial":
-            retry_queued = self._queue_vicidial_terminal_retry(
-                session,
-                semantic="ai_failure",
-                operation_reason="provider-start-failed",
-            )
-            await self._save_session(session)
             finalized = await self._finalize_vicidial_call(
                 session,
                 semantic="ai_failure",
@@ -17910,7 +17948,6 @@ class Engine:
                     "VICIdial provider-start failure could not be finalized",
                     call_id=session.call_id,
                     external_call_id=getattr(session, "external_call_id", None),
-                    retry_queued=retry_queued,
                 )
             return
 

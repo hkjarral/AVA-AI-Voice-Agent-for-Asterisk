@@ -723,11 +723,20 @@ class VicidialStore:
                 or connection_snapshot.get("base_url")
                 or ""
             ),
-            "payload": {
-                key: value
-                for key, value in action_payload.items()
-                if key != "retry_terminal"
-            },
+            # One call can have only one terminal owner. A later disposition
+            # replaces the pending terminal payload in-place instead of leaving
+            # an older status runnable after an engine restart. Compliance
+            # actions retain payload-specific dedupe because their side effects
+            # have different idempotency rules.
+            "payload": (
+                {}
+                if normalized_operation == "terminal"
+                else {
+                    key: value
+                    for key, value in action_payload.items()
+                    if key != "retry_terminal"
+                }
+            ),
         }
         # Terminal control is call-specific even when the compliance side
         # effect itself is idempotent. Never let simultaneous DNC requests for

@@ -355,10 +355,9 @@ async def test_provider_failure_can_redirect_to_dialplan_once():
     ["announce_hangup", "dialplan_redirect", "leave_open"],
 )
 async def test_vicidial_provider_failure_uses_terminal_workflow(on_provider_failure):
-    """VICIdial-owned calls must be finalized through the dialer API."""
+    """VICIdial-owned calls use the finalizer's durable dialer workflow."""
     engine = _make_engine(on_provider_failure)
     engine._stop_connection_audio = AsyncMock()
-    engine._queue_vicidial_terminal_retry = MagicMock(return_value=True)
     engine._finalize_vicidial_call = AsyncMock(return_value=False)
     session = await _register_session(engine)
     session.external_platform = "vicidial"
@@ -366,11 +365,6 @@ async def test_vicidial_provider_failure_uses_terminal_workflow(on_provider_fail
 
     await engine._start_provider_session("call-1")
 
-    engine._queue_vicidial_terminal_retry.assert_called_once_with(
-        session,
-        semantic="ai_failure",
-        operation_reason="provider-start-failed",
-    )
     engine._finalize_vicidial_call.assert_awaited_once_with(
         session,
         semantic="ai_failure",
