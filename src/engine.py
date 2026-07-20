@@ -4035,6 +4035,7 @@ class Engine:
             "cancel_transfer",
             "live_agent_transfer",
             "check_extension_status",
+            "leave_voicemail",
             "voicemail",
             "blind_transfer",
             "set_call_disposition",

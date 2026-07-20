@@ -1212,7 +1212,7 @@ def test_vicidial_tool_policy_is_scoped_to_external_calls():
     ordinary.external_platform = "vicidial"
     tools = Engine._apply_vicidial_tool_policy(
         ordinary,
-        ["attended_transfer", "hangup_call"],
+        ["attended_transfer", "leave_voicemail", "hangup_call"],
     )
     assert tools == ["hangup_call"]
 
