@@ -90,6 +90,15 @@ async def commit_vicidial_disposition_workflow(session: Any) -> bool:
     verification = await client.lead_callback_info(
         lead_id=str(payload.get("lead_id") or info.lead_id or "")
     )
+    if not verification.success:
+        # An earlier update may already have succeeded even if its response was
+        # lost. Without a successful read we cannot prove absence, so retrying
+        # the mutation could create a duplicate scheduled callback.
+        session.external_events.append({
+            "operation": "callback_verify",
+            **verification.to_dict(),
+        })
+        return False
     matching_rows = [
         row
         for row in verification.rows

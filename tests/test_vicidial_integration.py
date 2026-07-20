@@ -1474,6 +1474,55 @@ async def test_callback_retry_reuses_verified_existing_record(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_callback_retry_does_not_mutate_when_preflight_lookup_fails(
+    monkeypatch,
+):
+    session = CallSession(
+        call_id="ari-callback-preflight", caller_channel_id="ari-callback-preflight"
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        lead_id="456",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    session.external_requested_disposition = "CALLBK"
+    session.external_disposition_label = "callback"
+    session.external_disposition_payload = {
+        "lead_id": "456",
+        "campaign_id": "TESTCAMP",
+        "callback_datetime": "2026-07-19 18:30:00",
+        "callback_type": "ANYONE",
+    }
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def update_lead_callback(self, **_kwargs):
+            raise AssertionError("failed preflight must not create another callback")
+
+        async def lead_callback_info(self, **_kwargs):
+            return VicidialApiResult(
+                False,
+                "lead_callback_info",
+                "request timed out",
+                error_code="timeout",
+            )
+
+    monkeypatch.setattr("src.tools.telephony.vicidial.VicidialApiClient", Client)
+
+    assert await commit_vicidial_disposition_workflow(session) is False
+    assert session.external_disposition_payload.get("workflow_committed") is not True
+    assert session.external_events[-1]["operation"] == "callback_verify"
+    assert session.external_events[-1]["error_code"] == "timeout"
+
+
+@pytest.mark.asyncio
 async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatch):
     session = CallSession(call_id="ari-3", caller_channel_id="ari-3")
     session.external_platform = "vicidial"
