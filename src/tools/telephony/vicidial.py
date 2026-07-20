@@ -73,6 +73,14 @@ def _queue_pending_workflow(
                 "operation_reason": str(
                     retry_terminal.get("operation_reason") or "durable-workflow-retry"
                 ),
+                "session": {
+                    key: value
+                    for key, value in info.to_dict().items()
+                    if key != "metadata" and value is not None
+                },
+                "mapping_revision": str(
+                    getattr(session, "external_mapping_revision", None) or ""
+                ),
             }
         queued = get_vicidial_store().enqueue_pending_action(
             operation=semantic,

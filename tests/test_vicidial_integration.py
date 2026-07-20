@@ -338,6 +338,46 @@ async def test_hydration_fails_closed_when_owner_read_fails_on_trusted_route(
 
 
 @pytest.mark.asyncio
+async def test_hydration_fails_closed_on_a_deleted_generated_route(
+    monkeypatch, tmp_path
+):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection(
+        {
+            **_connection(),
+            "name": "Lab",
+            "username_env": "VICI_USER",
+            "password_env": "VICI_PASS",
+        },
+        "connection-1",
+    )
+    store.save_mapping(_mapping(connection["id"]), "mapping-1")
+    assert store.delete_mapping("mapping-1") is True
+    assert store.list_mappings() == []
+    assert store.list_route_tombstones()[0]["trusted_context"] == (
+        "from-vicidial-ra"
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    engine = Engine.__new__(Engine)
+    engine._read_channel_variable_result = AsyncMock(return_value=("", False))
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="ari-deleted-route", caller_channel_id="ari-deleted-route")
+
+    with pytest.raises(RuntimeError, match="Unable to read VICIdial ownership marker"):
+        await Engine._hydrate_vicidial_session(
+            engine,
+            session,
+            "ari-deleted-route",
+            dialplan_context="from-vicidial-ra",
+            dialplan_extension="8371",
+        )
+
+    assert session.external_platform == "vicidial"
+
+
+@pytest.mark.asyncio
 async def test_hydration_does_not_claim_ordinary_route_when_owner_read_fails(
     monkeypatch,
 ):
@@ -883,6 +923,35 @@ def test_store_round_trip_and_connection_delete_cascades(tmp_path):
     assert connection["timezone"] == "America/Phoenix"
     assert store.delete_connection(connection["id"]) is True
     assert store.get_mapping(mapping["id"]) is None
+    assert store.list_route_tombstones() == [
+        {
+            "mapping_id": "mapping-1",
+            "trusted_context": "from-vicidial-ra",
+            "conf_exten": "8371",
+            "trusted_endpoint": "vicidial-ra",
+            "deleted_at": store.list_route_tombstones()[0]["deleted_at"],
+        }
+    ]
+
+
+def test_recreated_exact_route_retires_deleted_mapping_tombstone(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection(
+        {
+            **_connection(),
+            "name": "Lab",
+            "username_env": "VICI_USER",
+            "password_env": "VICI_PASS",
+        },
+        "connection-1",
+    )
+    store.save_mapping(_mapping(connection["id"]), "mapping-1")
+    assert store.delete_mapping("mapping-1") is True
+    assert len(store.list_route_tombstones()) == 1
+
+    store.save_mapping(_mapping(connection["id"]), "mapping-2")
+
+    assert store.list_route_tombstones() == []
 
 
 def test_store_merges_directional_real_call_readiness(tmp_path):
@@ -1150,6 +1219,7 @@ def test_store_persists_pending_dnc_actions_across_instances(tmp_path):
             "phone_number": "13165551212",
             "campaign_id": "TESTCAMP",
         },
+        call_id="ari-dnc-durable",
     )
     due = second_store.list_pending_actions()
     assert len(due) == 1
@@ -1166,6 +1236,40 @@ def test_store_persists_pending_dnc_actions_across_instances(tmp_path):
     assert first_store.complete_pending_action(queued["id"]) is True
     assert first_store.complete_pending_action(queued["id"]) is True
     assert VicidialStore(db_path).list_pending_actions() == []
+
+
+def test_store_persists_sanitized_terminal_retry_identity(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    queued = store.enqueue_pending_action(
+        operation="dnc",
+        connection={**_connection(), "id": "connection-1"},
+        payload={
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+            "requested_status": "DNCLST",
+            "retry_terminal": {
+                "semantic": "ai_hangup",
+                "operation_reason": "hangup-tool",
+                "mapping_revision": "revision-1",
+                "session": {
+                    "external_call_id": "M4050908070000012345",
+                    "mapping_id": "map-1",
+                    "agent_user": "9001",
+                    "campaign_id": "TESTCAMP",
+                    "phone_number": "13165551212",
+                    "metadata": {"secret": "must-not-persist"},
+                },
+            },
+        },
+        call_id="ari-terminal-durable",
+        external_call_id="M4050908070000012345",
+    )
+
+    terminal = queued["payload"]["retry_terminal"]
+    assert terminal["mapping_revision"] == "revision-1"
+    assert terminal["session"]["agent_user"] == "9001"
+    assert terminal["session"]["external_call_id"] == "M4050908070000012345"
+    assert "metadata" not in terminal["session"]
 
 
 def test_store_migrates_pending_actions_created_before_workflow_state(tmp_path):
@@ -1981,6 +2085,110 @@ async def test_pending_action_stays_open_until_terminal_retry_succeeds(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_missing_session_is_reconstructed_for_terminal_retry(monkeypatch):
+    action = {
+        "id": "action-reconstructed-1",
+        "operation": "dnc",
+        "connection": {**_connection(), "id": "connection-1"},
+        "payload": {
+            "phone_number": "13165551212",
+            "campaign_id": "TESTCAMP",
+            "requested_status": "DNCLST",
+            "retry_terminal": {
+                "semantic": "ai_hangup",
+                "operation_reason": "hangup-tool",
+                "mapping_revision": "revision-1",
+                "session": {
+                    "external_call_id": "M4050908070000012345",
+                    "mapping_id": "map-1",
+                    "agent_user": "9001",
+                    "campaign_id": "TESTCAMP",
+                    "phone_number": "13165551212",
+                    "direction": "outbound",
+                    "resolution_source": "callid_info",
+                },
+            },
+        },
+        "call_id": "ari-missing-session",
+        "external_call_id": "M4050908070000012345",
+        "workflow_completed": True,
+        "attempt_count": 0,
+        "status": "pending",
+    }
+
+    class Store:
+        def __init__(self):
+            self.completed = []
+            self.retried = []
+
+        def list_pending_actions(self, **_kwargs):
+            return [action]
+
+        def get_pending_action(self, _action_id):
+            return action
+
+        def get_connection(self, _connection_id):
+            return action["connection"]
+
+        def get_mapping(self, mapping_id):
+            assert mapping_id == "map-1"
+            return {"id": mapping_id, **_mapping()}
+
+        def complete_pending_action(self, action_id):
+            self.completed.append(action_id)
+            return True
+
+        def retry_pending_action(self, action_id, **kwargs):
+            self.retried.append((action_id, kwargs))
+            return True
+
+    class MissingSessionStore:
+        def __init__(self):
+            self.removed = []
+
+        async def get_by_call_id(self, _call_id):
+            return None
+
+        async def remove_call(self, call_id):
+            self.removed.append(call_id)
+
+    store = Store()
+    session_store = MissingSessionStore()
+    finalizer = AsyncMock(return_value=False)
+    engine = SimpleNamespace(
+        session_store=session_store,
+        _save_session=AsyncMock(),
+        _finalize_vicidial_call_locked=finalizer,
+        _execute_pending_vicidial_workflow=AsyncMock(),
+    )
+    engine._retry_pending_vicidial_action = (
+        lambda pending_action, pending_store: Engine._retry_pending_vicidial_action(
+            engine, pending_action, pending_store
+        )
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+
+    assert await Engine._retry_pending_vicidial_actions(engine) == 0
+    assert store.completed == []
+    assert store.retried[0][0] == action["id"]
+    reconstructed = finalizer.await_args.args[0]
+    assert reconstructed.external_requested_disposition == "DNCLST"
+    assert reconstructed.external_session["agent_user"] == "9001"
+    assert reconstructed.external_session["external_call_id"] == (
+        "M4050908070000012345"
+    )
+    assert session_store.removed == ["ari-missing-session"]
+
+    finalizer.return_value = True
+    store.retried.clear()
+    assert await Engine._retry_pending_vicidial_actions(engine) == 1
+    assert store.completed == [action["id"]]
+    assert session_store.removed == ["ari-missing-session", "ari-missing-session"]
+
+
+@pytest.mark.asyncio
 async def test_worker_skips_a_callback_canceled_after_due_list(monkeypatch):
     listed = {
         "id": "callback-canceled-1",
@@ -2345,10 +2553,11 @@ async def test_callback_preflight_failure_is_durably_queued(monkeypatch):
     assert queued["operation"] == "callback"
     assert queued["payload"]["lead_id"] == "456"
     assert queued["payload"]["requested_status"] == "CBNEW"
-    assert queued["payload"]["retry_terminal"] == {
-        "semantic": "ai_hangup",
-        "operation_reason": "hangup-tool",
-    }
+    terminal = queued["payload"]["retry_terminal"]
+    assert terminal["semantic"] == "ai_hangup"
+    assert terminal["operation_reason"] == "hangup-tool"
+    assert terminal["session"]["external_call_id"] == "M4050908070000012345"
+    assert terminal["session"]["agent_user"] == "9001"
     assert session.external_disposition_payload["workflow_queued"] is True
     assert session.external_disposition_payload["workflow_queue_id"] == "callback-action-1"
     assert session.external_events[-1]["operation"] == "callback_queue"

@@ -161,6 +161,17 @@ class VicidialStore:
                 CREATE INDEX IF NOT EXISTS idx_vicidial_mappings_enabled
                     ON vicidial_mappings(enabled);
 
+                CREATE TABLE IF NOT EXISTS vicidial_route_tombstones (
+                    mapping_id TEXT PRIMARY KEY,
+                    trusted_context TEXT NOT NULL,
+                    conf_exten TEXT NOT NULL,
+                    trusted_endpoint TEXT,
+                    deleted_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_vicidial_route_tombstones_route
+                    ON vicidial_route_tombstones(trusted_context, conf_exten);
+
                 CREATE TABLE IF NOT EXISTS vicidial_pending_actions (
                     id TEXT PRIMARY KEY,
                     dedupe_key TEXT NOT NULL UNIQUE,
@@ -564,12 +575,37 @@ class VicidialStore:
             action_payload["requested_status"] = requested_status
         retry_terminal = payload.get("retry_terminal")
         if isinstance(retry_terminal, Mapping):
-            action_payload["retry_terminal"] = {
+            terminal_payload: Dict[str, Any] = {
                 "semantic": str(retry_terminal.get("semantic") or "ai_hangup")[:40],
                 "operation_reason": str(
                     retry_terminal.get("operation_reason") or "durable-dnc-retry"
                 )[:120],
             }
+            terminal_session = retry_terminal.get("session")
+            if isinstance(terminal_session, Mapping):
+                terminal_payload["session"] = {
+                    key: str(terminal_session.get(key) or "").strip()
+                    for key in (
+                        "external_call_id",
+                        "mapping_id",
+                        "agent_user",
+                        "campaign_id",
+                        "lead_id",
+                        "list_id",
+                        "phone_number",
+                        "call_type",
+                        "vicidial_status",
+                        "direction",
+                        "resolution_source",
+                    )
+                    if terminal_session.get(key) is not None
+                }
+            mapping_revision = str(
+                retry_terminal.get("mapping_revision") or ""
+            ).strip()
+            if mapping_revision:
+                terminal_payload["mapping_revision"] = mapping_revision[:128]
+            action_payload["retry_terminal"] = terminal_payload
         if normalized_operation == "dnc" and (
             not action_payload["phone_number"] or not action_payload["campaign_id"]
         ):
@@ -613,7 +649,10 @@ class VicidialStore:
                 if key != "retry_terminal"
             },
         }
-        if normalized_operation == "callback":
+        # Terminal control is call-specific even when the compliance side
+        # effect itself is idempotent. Never let simultaneous DNC requests for
+        # the same number/campaign overwrite each other's retry snapshots.
+        if normalized_operation == "callback" or str(call_id or "").strip():
             dedupe_material["call_id"] = str(call_id or "").strip()
         dedupe_key = hashlib.sha256(
             json.dumps(
@@ -824,6 +863,23 @@ class VicidialStore:
 
     def delete_connection(self, connection_id: str) -> bool:
         with self._lock, self._connection() as conn:
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO vicidial_route_tombstones (
+                    mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
+                )
+                SELECT id,trusted_context,conf_exten,trusted_endpoint,?
+                  FROM vicidial_mappings
+                 WHERE connection_id=?
+                ON CONFLICT(mapping_id) DO UPDATE SET
+                    trusted_context=excluded.trusted_context,
+                    conf_exten=excluded.conf_exten,
+                    trusted_endpoint=excluded.trusted_endpoint,
+                    deleted_at=excluded.deleted_at
+                """,
+                (now, connection_id),
+            )
             cur = conn.execute("DELETE FROM vicidial_connections WHERE id=?", (connection_id,))
             return cur.rowcount > 0
 
@@ -837,6 +893,18 @@ class VicidialStore:
         with self._lock, self._connection() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._mapping_dict(row) for row in rows]
+
+    def list_route_tombstones(self) -> List[Dict[str, Any]]:
+        """Return deleted generated routes that must remain fail-closed."""
+        with self._lock, self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
+                  FROM vicidial_route_tombstones
+                 ORDER BY deleted_at,mapping_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_mapping(self, mapping_id: str) -> Optional[Dict[str, Any]]:
         with self._lock, self._connection() as conn:
@@ -953,6 +1021,15 @@ class VicidialStore:
                     str(exists["created_at"]) if exists else now, now,
                 ),
             )
+            # Reusing an exact route makes the active mapping authoritative and
+            # retires any fail-closed marker left by an earlier deletion.
+            conn.execute(
+                """
+                DELETE FROM vicidial_route_tombstones
+                 WHERE trusted_context=? AND conf_exten=?
+                """,
+                (data["trusted_context"], data["conf_exten"]),
+            )
             if material_changed:
                 conn.execute(
                     """
@@ -966,6 +1043,23 @@ class VicidialStore:
 
     def delete_mapping(self, mapping_id: str) -> bool:
         with self._lock, self._connection() as conn:
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO vicidial_route_tombstones (
+                    mapping_id,trusted_context,conf_exten,trusted_endpoint,deleted_at
+                )
+                SELECT id,trusted_context,conf_exten,trusted_endpoint,?
+                  FROM vicidial_mappings
+                 WHERE id=?
+                ON CONFLICT(mapping_id) DO UPDATE SET
+                    trusted_context=excluded.trusted_context,
+                    conf_exten=excluded.conf_exten,
+                    trusted_endpoint=excluded.trusted_endpoint,
+                    deleted_at=excluded.deleted_at
+                """,
+                (now, mapping_id),
+            )
             cur = conn.execute("DELETE FROM vicidial_mappings WHERE id=?", (mapping_id,))
             return cur.rowcount > 0
 

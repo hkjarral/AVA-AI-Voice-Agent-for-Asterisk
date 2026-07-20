@@ -435,8 +435,13 @@ creating a duplicate scheduled callback. A queued DNC selection supersedes and c
 not-yet-committed callback retry.
 
 For both DNC and callbacks, a successful side effect does not complete the durable record until
-the pending terminal request also succeeds or no active AAVA session remains to resume. This keeps
-a failed VICIdial HANGUP visible and retryable instead of losing it after the compliance action.
+the pending terminal request succeeds or VICIdial confirms the exact call is already terminal.
+This keeps a failed VICIdial HANGUP visible and retryable instead of losing it after the compliance
+action.
+The durable record includes the minimum sanitized VICIdial call identity needed to resume terminal
+control after the process-local AAVA session has already been cleaned up; it stores credential
+references rather than credential values. If VICIdial cannot confirm either HANGUP or an exact
+already-terminal call state, the record remains pending with bounded backoff.
 
 ### Readiness
 
@@ -595,6 +600,12 @@ headers.
 4. Disable/delete the FreePBX trunk registration.
 5. Revoke the dedicated API user and rotate its password.
 6. Leave production VICIdial carrier, lead, call-log, DNC, and callback data intact.
+
+Deleting an AAVA mapping does not edit Asterisk dialplan files. AAVA retains a fail-closed route
+tombstone for the deleted generated context and extension, so a stale route cannot silently enter
+ordinary unrestricted call handling if its ownership marker cannot be read. Remove the generated
+context from the PBX as part of decommissioning. Recreating a mapping on the exact same context and
+extension makes the new active mapping authoritative and retires that tombstone.
 
 ## Official references
 

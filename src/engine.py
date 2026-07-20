@@ -2102,6 +2102,56 @@ class Engine:
         call_id = str(action.get("call_id") or "").strip()
         if isinstance(retry_terminal, dict) and call_id:
             session = await self.session_store.get_by_call_id(call_id)
+            reconstructed_session = False
+            if session is None:
+                from src.integrations.vicidial import VicidialSessionInfo
+
+                terminal_session = dict(retry_terminal.get("session") or {})
+                required_terminal_fields = {
+                    "external_call_id",
+                    "mapping_id",
+                    "agent_user",
+                }
+                if not all(
+                    str(terminal_session.get(field) or "").strip()
+                    for field in required_terminal_fields
+                ):
+                    raise RuntimeError(
+                        "VICIdial terminal retry session snapshot is unavailable"
+                    )
+                session = CallSession(call_id=call_id, caller_channel_id=call_id)
+                session.external_platform = "vicidial"
+                session.external_connection = connection
+                mapping_id = str(terminal_session.get("mapping_id") or "").strip()
+                session.external_mapping = store.get_mapping(mapping_id) or {}
+                session.external_mapping_revision = str(
+                    retry_terminal.get("mapping_revision") or ""
+                ).strip()
+                session.external_requested_disposition = str(
+                    payload.get("requested_status")
+                    or ("DNC" if operation == "dnc" else "CALLBK")
+                )
+                session.external_disposition_label = operation
+                session.external_disposition_payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "retry_terminal"
+                }
+                session.external_disposition_payload.update(
+                    {
+                        "workflow_committed": True,
+                        "workflow_queued": False,
+                        "workflow_queue_id": action_id,
+                    }
+                )
+                session.external_session = VicidialSessionInfo(
+                    **{
+                        key: value
+                        for key, value in terminal_session.items()
+                        if key in VicidialSessionInfo.__dataclass_fields__
+                    }
+                ).to_dict()
+                reconstructed_session = True
             if (
                 session
                 and getattr(session, "external_platform", None) == "vicidial"
@@ -2116,21 +2166,27 @@ class Engine:
                 session_operation = str(
                     getattr(session, "external_disposition_label", None) or ""
                 ).strip().lower()
-                if session_action_id == action_id and session_operation == operation:
+                if reconstructed_session or (
+                    session_action_id == action_id and session_operation == operation
+                ):
                     disposition_payload["workflow_committed"] = True
                     disposition_payload["workflow_queued"] = False
                     session.external_disposition_payload = disposition_payload
                     await self._save_session(session)
-                    finalized = await self._finalize_vicidial_call_locked(
-                        session,
-                        semantic=str(
-                            retry_terminal.get("semantic") or "ai_hangup"
-                        ),
-                        operation_reason=str(
-                            retry_terminal.get("operation_reason")
-                            or "durable-workflow-retry"
-                        ),
-                    )
+                    try:
+                        finalized = await self._finalize_vicidial_call_locked(
+                            session,
+                            semantic=str(
+                                retry_terminal.get("semantic") or "ai_hangup"
+                            ),
+                            operation_reason=str(
+                                retry_terminal.get("operation_reason")
+                                or "durable-workflow-retry"
+                            ),
+                        )
+                    finally:
+                        if reconstructed_session:
+                            await self.session_store.remove_call(call_id)
                     if not finalized:
                         raise RuntimeError(
                             "VICIdial terminal retry was not confirmed"
@@ -4350,11 +4406,15 @@ class Engine:
                 from src.core.vicidial_store import get_vicidial_store
 
                 store = get_vicidial_store()
+                routes = list(store.list_mappings())
+                list_tombstones = getattr(store, "list_route_tombstones", None)
+                if callable(list_tombstones):
+                    routes.extend(list_tombstones())
                 trusted_route = any(
                     self._vicidial_route_matches_mapping(
                         mapping, dialplan_context, dialplan_extension
                     )
-                    for mapping in store.list_mappings()
+                    for mapping in routes
                 )
             if trusted_route:
                 # The configured route is an independent admission signal. A
