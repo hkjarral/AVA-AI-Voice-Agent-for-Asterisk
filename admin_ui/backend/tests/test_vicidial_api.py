@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import vicidial as vicidial_api
-from src.core.vicidial_store import VicidialStore
+from src.core.vicidial_store import VicidialStore, vicidial_configuration_revision
 from src.integrations.vicidial import VicidialApiResult
 from src.core.call_history import CallRecord
 
@@ -55,6 +55,14 @@ def _mapping_payload(connection_id):
             }
         },
     }
+
+
+def _stored_mapping_revision(store: VicidialStore, mapping_id: str) -> str:
+    mapping = store.get_mapping(mapping_id)
+    assert mapping is not None
+    connection = store.get_connection(str(mapping.get("connection_id") or ""))
+    assert connection is not None
+    return vicidial_configuration_revision(mapping, connection)
 
 
 def _client(monkeypatch, tmp_path):
@@ -454,6 +462,7 @@ def test_mapping_verification_preserves_directional_live_call_evidence(
     store.save_mapping(_mapping_payload(connection["id"]), "mapping-1")
     store.record_real_call_verification(
         mapping_id="mapping-1",
+        mapping_revision=_stored_mapping_revision(store, "mapping-1"),
         direction="outbound",
         external_call_id="M4050908070000012345",
         status="AIHU",
@@ -561,6 +570,7 @@ def test_mapping_verification_preserves_live_call_recorded_during_api_wait(
         async def verify_connection(self):
             store.record_real_call_verification(
                 mapping_id="mapping-1",
+                mapping_revision=_stored_mapping_revision(store, "mapping-1"),
                 direction="outbound",
                 external_call_id="M4050908070000012345",
                 status="AIHU",

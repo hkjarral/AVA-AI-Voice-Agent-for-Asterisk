@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.core.models import CallSession
-from src.core.vicidial_store import VicidialStore
+from src.core.vicidial_store import (
+    VicidialStore,
+    vicidial_configuration_revision,
+)
 from src.engine import Engine
 from src.integrations.vicidial import (
     VicidialApiClient,
@@ -91,6 +94,14 @@ def _mapping(connection_id: str = "connection-1"):
             }
         },
     }
+
+
+def _stored_mapping_revision(store: VicidialStore, mapping_id: str) -> str:
+    mapping = store.get_mapping(mapping_id)
+    assert mapping is not None
+    connection = store.get_connection(str(mapping.get("connection_id") or ""))
+    assert connection is not None
+    return vicidial_configuration_revision(mapping, connection)
 
 
 @pytest.mark.asyncio
@@ -841,9 +852,11 @@ def test_store_merges_directional_real_call_readiness(tmp_path):
         record_id="mapping-1",
         result={"configuration_ready": True, "pbx_ready": True},
     )
+    mapping_revision = _stored_mapping_revision(store, "mapping-1")
 
     store.record_real_call_verification(
         mapping_id="mapping-1",
+        mapping_revision=mapping_revision,
         direction="outbound",
         external_call_id="M4050908070000012345",
         status="AIHU",
@@ -856,6 +869,7 @@ def test_store_merges_directional_real_call_readiness(tmp_path):
 
     store.record_real_call_verification(
         mapping_id="mapping-1",
+        mapping_revision=mapping_revision,
         direction="inbound",
         external_call_id="M4050908070000012346",
         status="AICU",
@@ -888,6 +902,7 @@ def test_real_call_readiness_does_not_bypass_pbx_gate(tmp_path):
 
     store.record_real_call_verification(
         mapping_id="mapping-1",
+        mapping_revision=_stored_mapping_revision(store, "mapping-1"),
         direction="outbound",
         external_call_id="M4050908070000012345",
         status="AIHU",
@@ -899,6 +914,46 @@ def test_real_call_readiness_does_not_bypass_pbx_gate(tmp_path):
     assert verification["pbx_ready"] is False
     assert verification["real_call"]["verified"] is True
     assert verification["ready"] is False
+
+
+def test_real_call_evidence_rejects_older_mapping_revision(tmp_path):
+    store = VicidialStore(str(tmp_path / "vicidial.db"))
+    connection = store.save_connection({
+        **_connection(),
+        "name": "Lab",
+        "username_env": "VICI_USER",
+        "password_env": "VICI_PASS",
+    }, "connection-1")
+    original = {**_mapping(connection["id"]), "direction": "outbound"}
+    store.save_mapping(original, "mapping-1")
+    admitted_revision = _stored_mapping_revision(store, "mapping-1")
+
+    store.save_mapping(
+        {**original, "campaign_id": "CHANGED"},
+        "mapping-1",
+    )
+
+    assert store.record_real_call_verification(
+        mapping_id="mapping-1",
+        mapping_revision=admitted_revision,
+        direction="outbound",
+        external_call_id="M4050908070000012345",
+        status="AIHU",
+        operation="hangup",
+    ) is False
+    assert store.get_mapping("mapping-1")["last_verification"] is None
+
+    assert store.record_real_call_verification(
+        mapping_id="mapping-1",
+        mapping_revision=_stored_mapping_revision(store, "mapping-1"),
+        direction="outbound",
+        external_call_id="M4050908070000012346",
+        status="AIHU",
+        operation="hangup",
+    ) is True
+    assert store.get_mapping("mapping-1")["last_verification"]["real_calls"][
+        "outbound"
+    ]["external_call_id"] == "M4050908070000012346"
 
 
 def test_readiness_merges_serialize_across_store_instances(tmp_path):
@@ -913,6 +968,7 @@ def test_readiness_merges_serialize_across_store_instances(tmp_path):
     }, "connection-1")
     mapping = {**_mapping(connection["id"]), "direction": "outbound"}
     verification_store.save_mapping(mapping, "mapping-1")
+    mapping_revision = _stored_mapping_revision(verification_store, "mapping-1")
 
     update_reached = threading.Event()
     release_update = threading.Event()
@@ -946,6 +1002,7 @@ def test_readiness_merges_serialize_across_store_instances(tmp_path):
         try:
             call_store.record_real_call_verification(
                 mapping_id="mapping-1",
+                mapping_revision=mapping_revision,
                 direction="outbound",
                 external_call_id="M4050908070000012345",
                 status="AIHU",
@@ -1583,6 +1640,30 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_failed_vicidial_terminal_request_releases_retry_ownership():
+    engine = Engine.__new__(Engine)
+    engine.config = SimpleNamespace(audio_transport="audiosocket")
+    from src.core.session_store import SessionStore
+
+    engine.session_store = SessionStore()
+    engine.conversation_coordinator = None
+    engine._wait_for_call_audio_drain = AsyncMock(return_value=True)
+    engine._finalize_vicidial_call = AsyncMock(side_effect=[False, True])
+    session = CallSession(call_id="ari-terminal-retry", caller_channel_id="ari-terminal-retry")
+    session.external_platform = "vicidial"
+    await engine.session_store.upsert_call(session)
+
+    assert await engine._terminate_call_after_audio(
+        session.call_id, reason="first-attempt"
+    ) is False
+    assert session.call_id not in engine._terminal_hangup_started
+    assert await engine._terminate_call_after_audio(
+        session.call_id, reason="retry"
+    ) is True
+    assert engine._finalize_vicidial_call.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(monkeypatch):
     session = CallSession(call_id="ari-reconcile", caller_channel_id="ari-reconcile")
     session.external_platform = "vicidial"
@@ -1595,6 +1676,7 @@ async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(mo
     ).to_dict()
     session.external_mapping = _mapping()
     session.external_connection = _connection()
+    session.external_mapping_revision = "revision-1"
 
     class Client:
         def __init__(self, _connection):
@@ -1632,6 +1714,7 @@ async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(mo
     class Store:
         def record_real_call_verification(self, **kwargs):
             recorded.update(kwargs)
+            return True
 
     async def save(saved_session):
         assert saved_session is session
@@ -1653,6 +1736,7 @@ async def test_engine_reconciles_vicidial_terminal_status_after_caller_hangup(mo
     assert session.external_disposition_label == "vicidial_terminal"
     assert recorded == {
         "mapping_id": "map-1",
+        "mapping_revision": "revision-1",
         "direction": "outbound",
         "external_call_id": "M4050908070000012345",
         "status": "XFER",

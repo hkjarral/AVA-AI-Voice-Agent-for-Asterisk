@@ -232,13 +232,22 @@ async def execute_vicidial_transfer(
     try:
         from src.core.vicidial_store import get_vicidial_store
 
-        get_vicidial_store().record_real_call_verification(
+        recorded = get_vicidial_store().record_real_call_verification(
             mapping_id=info.mapping_id,
+            mapping_revision=str(
+                getattr(session, "external_mapping_revision", None) or ""
+            ),
             direction=info.direction,
             external_call_id=info.external_call_id,
             status=status,
             operation="transfer",
         )
+        if not recorded:
+            logger.info(
+                "Discarded VICIdial transfer evidence from stale mapping revision",
+                call_id=context.call_id,
+                mapping_id=info.mapping_id,
+            )
     except Exception:
         logger.warning(
             "VICIdial transfer completed but readiness evidence could not be recorded",

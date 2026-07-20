@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,14 @@ _ENV_REFERENCE_WITH_DEFAULT_RE = re.compile(
 _DIALPLAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _VICIDIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SIP_IDENTITY_RE = re.compile(r"^[A-Za-z0-9_.+@-]+$")
+_REVISION_IGNORED_FIELDS = {
+    "connection",
+    "created_at",
+    "last_verification",
+    "last_verified_at",
+    "name",
+    "updated_at",
+}
 
 
 def _now() -> str:
@@ -44,6 +53,26 @@ def _decode(value: Any, default: Any) -> Any:
         return parsed
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def vicidial_configuration_revision(
+    mapping: Mapping[str, Any], connection: Mapping[str, Any]
+) -> str:
+    """Return a stable revision for call-affecting mapping and connection state."""
+    payload = {
+        "mapping": {
+            key: value
+            for key, value in dict(mapping or {}).items()
+            if key not in _REVISION_IGNORED_FIELDS
+        },
+        "connection": {
+            key: value
+            for key, value in dict(connection or {}).items()
+            if key not in _REVISION_IGNORED_FIELDS
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class VicidialStore:
@@ -750,23 +779,39 @@ class VicidialStore:
         self,
         *,
         mapping_id: str,
+        mapping_revision: str,
         direction: str,
         external_call_id: str,
         status: str,
         operation: str,
-    ) -> None:
-        """Merge successful live-call evidence into mapping readiness state."""
+    ) -> bool:
+        """Merge live-call evidence only if its admitted configuration is current."""
         normalized_direction = str(direction or "").strip().lower()
         if normalized_direction not in {"inbound", "outbound"}:
             raise ValueError("Real-call direction must be inbound or outbound")
+        expected_revision = str(mapping_revision or "").strip()
+        if not expected_revision:
+            raise ValueError("Real-call mapping revision is required")
         with self._lock, self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT direction,last_verification_json FROM vicidial_mappings WHERE id=?",
+                "SELECT * FROM vicidial_mappings WHERE id=?",
                 (mapping_id,),
             ).fetchone()
             if not row:
                 raise ValueError("VICIdial mapping does not exist")
+            current_mapping = self._mapping_dict(row)
+            connection_row = conn.execute(
+                "SELECT * FROM vicidial_connections WHERE id=?",
+                (str(current_mapping.get("connection_id") or ""),),
+            ).fetchone()
+            if not connection_row:
+                raise ValueError("VICIdial connection does not exist")
+            current_connection = self._connection_dict(connection_row)
+            if vicidial_configuration_revision(
+                current_mapping, current_connection
+            ) != expected_revision:
+                return False
             verification = _decode(row["last_verification_json"], {})
             if not isinstance(verification, dict):
                 verification = {}
@@ -810,6 +855,7 @@ class VicidialStore:
                 """,
                 (_json(verification, {}), now, now, mapping_id),
             )
+        return True
 
 
 _store: Optional[VicidialStore] = None

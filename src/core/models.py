@@ -211,6 +211,7 @@ class CallSession:
     external_session: Dict[str, Any] = field(default_factory=dict)
     external_mapping: Dict[str, Any] = field(default_factory=dict)
     external_connection: Dict[str, Any] = field(default_factory=dict)
+    external_mapping_revision: Optional[str] = None
     external_events: List[Dict[str, Any]] = field(default_factory=list)
     external_requested_disposition: Optional[str] = None
     external_disposition: Optional[str] = None

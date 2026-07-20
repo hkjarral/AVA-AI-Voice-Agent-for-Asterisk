@@ -4193,7 +4193,10 @@ class Engine:
         # of continuing as an ordinary AAVA call.
         session.external_platform = "vicidial"
 
-        from src.core.vicidial_store import get_vicidial_store
+        from src.core.vicidial_store import (
+            get_vicidial_store,
+            vicidial_configuration_revision,
+        )
 
         store = get_vicidial_store()
 
@@ -4220,6 +4223,9 @@ class Engine:
         session.external_call_id = external_call_id
         session.external_mapping = copy.deepcopy(mapping)
         session.external_connection = copy.deepcopy(connection)
+        session.external_mapping_revision = vicidial_configuration_revision(
+            mapping, connection
+        )
         client = VicidialApiClient(connection)
         resolved, evidence = await client.resolve_remote_agent_session(
             call_id=external_call_id,
@@ -4454,13 +4460,22 @@ class Engine:
                 try:
                     from src.core.vicidial_store import get_vicidial_store
 
-                    get_vicidial_store().record_real_call_verification(
+                    recorded = get_vicidial_store().record_real_call_verification(
                         mapping_id=info.mapping_id,
+                        mapping_revision=str(
+                            getattr(session, "external_mapping_revision", None) or ""
+                        ),
                         direction=info.direction,
                         external_call_id=info.external_call_id,
                         status=confirmed_status,
                         operation=verification_operation,
                     )
+                    if not recorded:
+                        logger.info(
+                            "Discarded VICIdial readiness evidence from stale mapping revision",
+                            call_id=session.call_id,
+                            mapping_id=info.mapping_id,
+                        )
                 except Exception:
                     logger.warning(
                         "VICIdial call completed but readiness evidence could not be recorded",
@@ -12639,11 +12654,20 @@ class Engine:
                 transport=getattr(getattr(self, "config", None), "audio_transport", None),
             )
             if getattr(session, "external_platform", None) == "vicidial":
-                return await self._finalize_vicidial_call(
-                    session,
-                    semantic="ai_hangup",
-                    operation_reason=reason,
-                )
+                finalized = False
+                try:
+                    finalized = await self._finalize_vicidial_call(
+                        session,
+                        semantic="ai_hangup",
+                        operation_reason=reason,
+                    )
+                finally:
+                    if not finalized:
+                        # VICIdial still owns an active call. Release terminal
+                        # ownership so provider audio can resume and a later
+                        # tool, fallback, or cleanup request can retry.
+                        started.discard(call_id)
+                return finalized
             try:
                 await self.ari_client.hangup_channel(session.caller_channel_id)
                 return True
