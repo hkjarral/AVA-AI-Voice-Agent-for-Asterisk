@@ -27,6 +27,24 @@ def test_explicit_end_intent_plus_assistant_farewell_arms_fallback():
     assert state["farewell_seen"] is True
 
 
+def test_confirmed_assistant_farewell_protects_terminal_output():
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider._hangup_policy = {}
+    provider._farewell_fallback_state = {}
+    provider._farewell_fallback_audio_seen = False
+    provider._terminal_turn_suppressed = False
+    provider._hangup_pending = False
+
+    provider._track_farewell_fallback(
+        role="user", text="I think I got it. That's all. Thank you."
+    )
+    assert provider.terminal_output_protected is False
+
+    provider._track_farewell_fallback(role="assistant", text="Thanks for calling!")
+
+    assert provider.terminal_output_protected is True
+
+
 def test_split_user_closing_and_split_assistant_farewell_match_live_sequence():
     state = DeepgramProvider.next_farewell_fallback_state(
         {}, role="user", text="No. That's all. Thank you."

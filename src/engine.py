@@ -4170,6 +4170,32 @@ class Engine:
         session.external_session = resolved.to_dict()
         session.external_direction = resolved.direction
         session.is_outbound = resolved.direction == "outbound"
+
+        # The persisted mapping is the authoritative Agent selector once the
+        # VICIdial call has passed API correlation.  Generated dialplan may be
+        # older than a mapping edited in the UI; allowing its AI_AGENT value to
+        # win would silently route calls to the previously configured Agent.
+        # Fail closed if ARI cannot apply the current mapping instead of running
+        # an authenticated VICIdial call against the wrong Agent.
+        mapped_agent = str(mapping.get("ai_agent") or "").strip()
+        if not mapped_agent:
+            raise RuntimeError("VICIdial mapping has no AAVA Agent selector")
+        dialplan_agent = await self._read_channel_variable(channel_id, "AI_AGENT")
+        if not await self.ari_client.set_channel_var(
+            channel_id, "AI_AGENT", mapped_agent
+        ):
+            raise RuntimeError(
+                f"Unable to apply VICIdial mapping Agent {mapped_agent!r}"
+            )
+        if dialplan_agent != mapped_agent:
+            logger.info(
+                "VICIdial mapping overrode stale dialplan Agent",
+                call_id=session.call_id,
+                dialplan_agent=dialplan_agent or None,
+                mapped_agent=mapped_agent,
+                mapping_id=mapping_id,
+            )
+
         if resolved.phone_number:
             session.caller_number = resolved.phone_number
             session.caller_name = (
@@ -9617,6 +9643,33 @@ class Engine:
             if not self._provider_fallback_is_allowed(provider_name, allow):
                 return
 
+            provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
+            try:
+                terminal_output_protected = bool(
+                    getattr(provider, "terminal_output_protected", False)
+                )
+            except Exception:
+                terminal_output_protected = False
+            if terminal_output_protected:
+                session.barge_in_candidate_ms = 0
+                session.barge_start_ts = 0.0
+                protection_state = session.vad_state.setdefault(
+                    "provider_barge_in_protection", {}
+                )
+                now = time.time()
+                last_log_ts = float(
+                    protection_state.get("terminal_last_log_ts", 0.0) or 0.0
+                )
+                if now - last_log_ts >= 1.0:
+                    protection_state["terminal_last_log_ts"] = now
+                    logger.info(
+                        "Provider fallback suppressed during terminal farewell",
+                        call_id=call_id,
+                        provider=provider_name,
+                        source=source,
+                    )
+                return
+
             # Only relevant while streaming playback is active (agent is speaking).
             try:
                 if not self.streaming_playback_manager.is_stream_active(call_id):
@@ -9638,9 +9691,40 @@ class Engine:
                 ):
                     return
 
-            import time
-
             now = time.time()
+            # Keep provider-owned fallback aligned with every other barge-in
+            # path.  Without this guard, early Remote Agent media (ringback,
+            # answer supervision, or echo) can satisfy the local energy/VAD
+            # detector and cancel the initial greeting even though the
+            # configured greeting protection window is still active.
+            tts_started_ts = float(getattr(session, "tts_started_ts", 0.0) or 0.0)
+            if tts_started_ts > 0.0:
+                tts_elapsed_ms = max(0, int((now - tts_started_ts) * 1000))
+                initial_protect = int(getattr(cfg, "initial_protection_ms", 200))
+                if getattr(session, "conversation_state", None) == "greeting":
+                    greeting_protect = int(getattr(cfg, "greeting_protection_ms", 0))
+                    initial_protect = max(initial_protect, greeting_protect)
+                if tts_elapsed_ms < initial_protect:
+                    session.barge_in_candidate_ms = 0
+                    session.barge_start_ts = 0.0
+                    protection_state = session.vad_state.setdefault(
+                        "provider_barge_in_protection", {}
+                    )
+                    last_log_ts = float(
+                        protection_state.get("initial_last_log_ts", 0.0) or 0.0
+                    )
+                    if now - last_log_ts >= 1.0:
+                        protection_state["initial_last_log_ts"] = now
+                        logger.debug(
+                            "Provider fallback suppressed during initial TTS protection window",
+                            call_id=call_id,
+                            provider=provider_name,
+                            source=source,
+                            tts_elapsed_ms=tts_elapsed_ms,
+                            protection_ms=initial_protect,
+                        )
+                    return
+
             vad_result: Optional[VADResult] = None
             if self.vad_manager:
                 try:

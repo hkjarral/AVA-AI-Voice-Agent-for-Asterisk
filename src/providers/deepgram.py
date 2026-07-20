@@ -209,6 +209,16 @@ class DeepgramProvider(AIProviderInterface):
             end_markers=markers.get("end_call"),
             assistant_farewell_markers=markers.get("assistant_farewell"),
         )
+        if (
+            normalized_role == "assistant"
+            and self._farewell_fallback_state.get("pending")
+            and self._farewell_fallback_state.get("farewell_seen")
+        ):
+            # Once the assistant has committed to the terminal farewell, do
+            # not let line echo or residual end-intent audio cancel it.  The
+            # fallback emits HangupReady at AgentAudioDone, so this state has a
+            # bounded lifetime and does not alter normal conversational turns.
+            self._terminal_turn_suppressed = True
 
     def _consume_farewell_fallback(self) -> bool:
         state = self._farewell_fallback_state
@@ -221,6 +231,10 @@ class DeepgramProvider(AIProviderInterface):
             self._farewell_fallback_state = {}
             self._farewell_fallback_audio_seen = False
         return should_hangup
+
+    @property
+    def terminal_output_protected(self) -> bool:
+        return bool(self._terminal_turn_suppressed or self._hangup_pending)
 
     async def _emit_farewell_fallback_if_needed(self, *, had_audio: bool = True) -> bool:
         if not self.on_event or not self._consume_farewell_fallback():

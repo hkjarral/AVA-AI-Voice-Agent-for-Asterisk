@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -146,6 +147,125 @@ async def test_named_grok_instance_triggers_local_vad_fallback():
     )
 
     assert applied == [("call-grok3", "local_vad_fallback", "grok3:externalmedia")]
+
+
+@pytest.mark.asyncio
+async def test_provider_fallback_honors_greeting_protection_window():
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"deepgram": "deepgram"}
+    engine.config = SimpleNamespace(
+        default_provider="deepgram",
+        barge_in=SimpleNamespace(
+            enabled=True,
+            provider_fallback_enabled=True,
+            provider_fallback_providers=["deepgram"],
+            energy_threshold=1000,
+            min_ms=20,
+            cooldown_ms=500,
+            initial_protection_ms=200,
+            greeting_protection_ms=5000,
+        ),
+    )
+    engine.streaming_playback_manager = SimpleNamespace(
+        is_stream_active=lambda _call_id: True
+    )
+    engine.vad_manager = None
+    applied = []
+
+    async def apply(call_id, *, source, reason):
+        applied.append((call_id, source, reason))
+
+    engine._apply_barge_in_action = apply
+    session = SimpleNamespace(
+        call_id="call-deepgram-greeting",
+        provider_name="deepgram",
+        media_rx_confirmed=True,
+        conversation_state="greeting",
+        tts_started_ts=time.time() - 0.5,
+        vad_state={},
+        barge_in_candidate_ms=80,
+        barge_start_ts=time.time() - 0.1,
+        last_barge_in_ts=0.0,
+    )
+
+    await engine._maybe_provider_barge_in_fallback(
+        session,
+        pcm16=b"\xff\x7f" * 160,
+        pcm_rate_hz=16000,
+        audiosocket_wire=None,
+        source="externalmedia",
+    )
+
+    assert applied == []
+    assert session.barge_in_candidate_ms == 0
+    assert session.barge_start_ts == 0.0
+
+    session.tts_started_ts = time.time() - 6.0
+    await engine._maybe_provider_barge_in_fallback(
+        session,
+        pcm16=b"\xff\x7f" * 160,
+        pcm_rate_hz=16000,
+        audiosocket_wire=None,
+        source="externalmedia",
+    )
+
+    assert applied == [
+        (
+            "call-deepgram-greeting",
+            "local_vad_fallback",
+            "deepgram:externalmedia",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provider_fallback_does_not_interrupt_terminal_farewell():
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"deepgram": "deepgram"}
+    engine.config = SimpleNamespace(
+        default_provider="deepgram",
+        barge_in=SimpleNamespace(
+            enabled=True,
+            provider_fallback_enabled=True,
+            provider_fallback_providers=["deepgram"],
+            energy_threshold=1000,
+            min_ms=20,
+            cooldown_ms=500,
+        ),
+    )
+    engine._call_providers = {
+        "call-deepgram-farewell": SimpleNamespace(terminal_output_protected=True)
+    }
+    engine.streaming_playback_manager = SimpleNamespace(
+        is_stream_active=lambda _call_id: True
+    )
+    engine.vad_manager = None
+    engine._apply_barge_in_action = AsyncMock()
+    session = SimpleNamespace(
+        call_id="call-deepgram-farewell",
+        provider_name="deepgram",
+        media_rx_confirmed=True,
+        vad_state={},
+        barge_in_candidate_ms=80,
+        barge_start_ts=time.time() - 0.1,
+        last_barge_in_ts=0.0,
+    )
+
+    await engine._maybe_provider_barge_in_fallback(
+        session,
+        pcm16=b"\xff\x7f" * 160,
+        pcm_rate_hz=16000,
+        audiosocket_wire=None,
+        source="audiosocket",
+    )
+
+    engine._apply_barge_in_action.assert_not_awaited()
+    assert session.barge_in_candidate_ms == 0
+    assert session.barge_start_ts == 0.0
+    assert (
+        session.vad_state["provider_barge_in_protection"]["terminal_last_log_ts"]
+        > 0.0
+    )
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,16 @@ class AIProviderInterface(ABC):
         """
         return False
 
+    @property
+    def terminal_output_protected(self) -> bool:
+        """Whether the active terminal farewell must not be interrupted.
+
+        Providers may override this while a confirmed end-of-call response is
+        being spoken.  The engine uses it to reject echo/noise barge-in without
+        changing ordinary conversational interruption behavior.
+        """
+        return False
+
     # Optional: providers can override to describe codec/sample alignment characteristics.
     def describe_alignment(
         self,

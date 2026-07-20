@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -87,6 +88,111 @@ def _mapping(connection_id: str = "connection-1"):
             }
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_hydration_applies_authoritative_mapping_agent(monkeypatch):
+    mapping = {"id": "map-1", "enabled": True, **_mapping()}
+    mapping["ai_agent"] = "demo_google_live"
+    connection = {"id": "connection-1", "enabled": True, **_connection()}
+    store = SimpleNamespace(
+        get_mapping=lambda _mapping_id: mapping,
+        get_connection=lambda _connection_id: connection,
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+
+    resolved = VicidialSessionInfo(
+        external_call_id="V4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        lead_id="456",
+        list_id="101",
+        phone_number="13165551212",
+        call_type="OUT",
+        vicidial_status="XFER",
+        direction="outbound",
+        resolution_source="callid_info",
+        metadata={},
+    )
+    resolve = AsyncMock(return_value=(resolved, []))
+    monkeypatch.setattr(VicidialApiClient, "resolve_remote_agent_session", resolve)
+
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(set_channel_var=AsyncMock(return_value=True))
+    variables = {
+        "AAVA_CALL_OWNER": "vicidial",
+        "VICIDIAL_MAPPING_ID": "map-1",
+        "VICIDIAL_RA_CALL_ID": resolved.external_call_id,
+        "AI_AGENT": "demo_deepgram",
+    }
+    engine._read_channel_variable = AsyncMock(
+        side_effect=lambda _channel_id, name: variables.get(name, "")
+    )
+    engine._overlay_vicidial_tool_runtime = lambda _session: None
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
+
+    await Engine._hydrate_vicidial_session(engine, session, "ari-call")
+
+    engine.ari_client.set_channel_var.assert_awaited_once_with(
+        "ari-call", "AI_AGENT", "demo_google_live"
+    )
+    assert session.external_mapping["ai_agent"] == "demo_google_live"
+    assert session.external_session["agent_user"] == "9001"
+    assert session.caller_number == "13165551212"
+
+
+@pytest.mark.asyncio
+async def test_hydration_rejects_call_when_mapping_agent_cannot_be_applied(monkeypatch):
+    mapping = {"id": "map-1", "enabled": True, **_mapping()}
+    connection = {"id": "connection-1", "enabled": True, **_connection()}
+    store = SimpleNamespace(
+        get_mapping=lambda _mapping_id: mapping,
+        get_connection=lambda _connection_id: connection,
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    resolved = VicidialSessionInfo(
+        external_call_id="V4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        lead_id="456",
+        list_id="101",
+        phone_number="13165551212",
+        call_type="OUT",
+        vicidial_status="XFER",
+        direction="outbound",
+        resolution_source="callid_info",
+        metadata={},
+    )
+    monkeypatch.setattr(
+        VicidialApiClient,
+        "resolve_remote_agent_session",
+        AsyncMock(return_value=(resolved, [])),
+    )
+
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(set_channel_var=AsyncMock(return_value=False))
+    variables = {
+        "AAVA_CALL_OWNER": "vicidial",
+        "VICIDIAL_MAPPING_ID": "map-1",
+        "VICIDIAL_RA_CALL_ID": resolved.external_call_id,
+        "AI_AGENT": "stale-agent",
+    }
+    engine._read_channel_variable = AsyncMock(
+        side_effect=lambda _channel_id, name: variables.get(name, "")
+    )
+    engine._overlay_vicidial_tool_runtime = lambda _session: None
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
+
+    with pytest.raises(RuntimeError, match="Unable to apply VICIdial mapping Agent"):
+        await Engine._hydrate_vicidial_session(engine, session, "ari-call")
 
 
 @pytest.mark.asyncio
