@@ -355,8 +355,14 @@ class VicidialStore:
             for value in list(payload.get("closer_campaigns") or [])
             if str(value).strip()
         ]
-        if direction in {"outbound", "both"} and not campaign_id:
-            raise ValueError("VICIdial campaign ID is required for outbound mappings")
+        if not campaign_id:
+            raise ValueError(
+                "VICIdial action/outbound campaign ID is required for every mapping"
+            )
+        if campaign_id.upper() == "CLOSER":
+            raise ValueError(
+                "VICIdial action/outbound campaign ID must be a real campaign, not CLOSER"
+            )
         if direction in {"inbound", "both"} and not closer_campaigns:
             raise ValueError("At least one closer campaign is required for inbound mappings")
         for field_name, value in [

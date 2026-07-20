@@ -916,6 +916,37 @@ async def test_inbound_campaign_dnc_uses_mapped_dialing_campaign(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_inbound_dnc_never_uses_closer_login_mode_as_action_campaign():
+    session = CallSession(call_id="ari-dnc", caller_channel_id="ari-dnc")
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTINGROUP",
+        phone_number="13165551212",
+        direction="inbound",
+        metadata={"agent_status": {"campaign_id": "CLOSER"}},
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "campaign_id": None,
+        "dnc_scope": "campaign",
+        "dispositions": {**_mapping()["dispositions"], "dnc": "DNC"},
+    }
+    store = _SessionStore(session)
+    context = ToolExecutionContext(call_id="ari-dnc", session_store=store)
+
+    result = await SetCallDispositionTool().execute({"disposition": "dnc"}, context)
+
+    assert result == {
+        "status": "failed",
+        "message": "VICIdial phone/campaign data is unavailable for DNC",
+    }
+    assert session.external_disposition_payload == {}
+
+
+@pytest.mark.asyncio
 async def test_callback_is_converted_to_vicidial_timezone_and_verified(monkeypatch):
     session = CallSession(call_id="ari-callback", caller_channel_id="ari-callback")
     session.external_platform = "vicidial"

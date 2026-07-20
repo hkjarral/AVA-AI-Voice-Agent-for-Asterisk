@@ -125,6 +125,11 @@ Remote Agent. For an inbound-only Remote Agent, select VICIdial's `CLOSER` campa
 desired inbound groups. The installed VICIdial help defines `CLOSER` for inbound-only Remote
 Agents; it is a VICIdial mode, not an AAVA campaign that must be created.
 
+Every AAVA mapping also requires an **Action / outbound campaign ID**. For outbound and blended
+mappings this is the Remote Agent login campaign. For inbound-only mappings the Remote Agent still
+uses `CLOSER`, while this AAVA field must name the real campaign used for campaign-scoped DNC and
+native callback updates. Never enter `CLOSER` as the AAVA action campaign.
+
 For lab rows created with SQL, `closer_campaigns` must be an empty string when unused, not
 `NULL`. Use the UI in production.
 
@@ -269,7 +274,7 @@ Create the initial mapping. Values such as `4501`, `8600`, `support-vicidial`, a
 VICIdial or Asterisk environment:
 
 - Direction: outbound, inbound, or both
-- VICIdial campaign ID and any inbound/closer campaigns
+- real VICIdial action/outbound campaign ID and any inbound/closer campaigns
 - Starting Remote Agent user: the first user in a dedicated contiguous numeric range
 - Number of lines: `1`
 - Remote Agent extension: the VICIdial Phone login/`conf_exten` shared by all mapping lines
@@ -432,7 +437,9 @@ report rows still belong in the deployment acceptance record.
 
 For multi-line mappings, **Run checks** calls `agent_status` for every user and separately requires
 all users to appear in `logged_in_agents`. This prevents a stale or manually inserted live-agent
-row from making an uncreated VICIdial user look ready.
+row from making an uncreated VICIdial user look ready. All VICIdial API work in one mapping check
+shares a 30-second deadline; a timeout is saved and shown as **Needs attention** instead of leaving
+the Admin UI waiting through every per-user request timeout.
 
 ### AAVA-handled activity
 
@@ -542,8 +549,9 @@ headers.
 - Query `callid_info` and `agent_status` with the dedicated API user; the returned user must be in
   the mapping range and `agent_status.callerid` must exactly match.
 - For blended inbound calls, `callid_info.campaign_id` is the inbound group while
-  `agent_status.campaign_id` is the agent's login/outbound campaign. Configure the inbound group
-  under **Closer groups**; do not require those two campaign fields to be equal.
+  `agent_status.campaign_id` is the agent's login campaign (including `CLOSER` for inbound-only
+  agents). Configure the inbound group under **Closer groups** and the real lifecycle-action
+  campaign under **Action / outbound campaign ID**; do not require the API fields to be equal.
 
 ### One-way or no audio
 

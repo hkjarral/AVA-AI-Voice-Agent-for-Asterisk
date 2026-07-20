@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 import sqlite3
 
@@ -169,7 +170,7 @@ def test_mapping_requires_operator_selected_endpoint_and_generated_trunk_name(
     assert response.status_code == 200
 
 
-def test_mapping_requires_campaigns_for_each_selected_direction(monkeypatch, tmp_path):
+def test_mapping_requires_action_campaign_and_inbound_closer_group(monkeypatch, tmp_path):
     client, store = _client(monkeypatch, tmp_path)
     connection = store.save_connection(_connection_payload(), "connection-1")
 
@@ -179,21 +180,53 @@ def test_mapping_requires_campaigns_for_each_selected_direction(monkeypatch, tmp
     missing_outbound["closer_campaigns"] = []
     response = client.post("/api/outbound/vicidial/mappings", json=missing_outbound)
     assert response.status_code == 422
-    assert "campaign ID is required for outbound" in response.json()["detail"]
+    assert "action/outbound campaign ID is required" in response.json()["detail"]
+
+    inbound_with_reserved_closer = _mapping_payload(connection["id"])
+    inbound_with_reserved_closer["direction"] = "inbound"
+    inbound_with_reserved_closer["campaign_id"] = "CLOSER"
+    response = client.post(
+        "/api/outbound/vicidial/mappings", json=inbound_with_reserved_closer
+    )
+    assert response.status_code == 422
+    assert "real campaign, not CLOSER" in response.json()["detail"]
 
     missing_inbound = _mapping_payload(connection["id"])
     missing_inbound["direction"] = "inbound"
-    missing_inbound["campaign_id"] = ""
     missing_inbound["closer_campaigns"] = []
     response = client.post("/api/outbound/vicidial/mappings", json=missing_inbound)
     assert response.status_code == 422
     assert "closer campaign is required for inbound" in response.json()["detail"]
 
-    valid_inbound = _mapping_payload(connection["id"])
-    valid_inbound["direction"] = "inbound"
-    valid_inbound["campaign_id"] = ""
-    response = client.post("/api/outbound/vicidial/mappings", json=valid_inbound)
+    inbound_without_action_campaign = _mapping_payload(connection["id"])
+    inbound_without_action_campaign["direction"] = "inbound"
+    inbound_without_action_campaign["campaign_id"] = ""
+    response = client.post(
+        "/api/outbound/vicidial/mappings", json=inbound_without_action_campaign
+    )
+    assert response.status_code == 422
+    assert "action/outbound campaign ID is required" in response.json()["detail"]
+
+
+def test_inbound_guidance_keeps_closer_login_separate_from_action_campaign(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    payload = _mapping_payload(connection["id"])
+    payload["direction"] = "inbound"
+    mapping = store.save_mapping(payload, "mapping-1")
+
+    response = client.get(
+        f"/api/outbound/vicidial/mappings/{mapping['id']}/guidance"
+    )
+
     assert response.status_code == 200
+    steps = response.json()["vicidial_steps"]
+    assert any("campaign CLOSER" in step for step in steps)
+    assert any(
+        "action campaign AVATEST remains the real campaign" in step for step in steps
+    )
 
 
 def test_connection_rejects_inline_credential_defaults_and_sanitizes_preview_rows(
@@ -480,6 +513,54 @@ def test_mapping_verification_rejects_live_row_without_vicidial_user(
         "status": None,
         "error_code": "api_error",
     }
+
+
+def test_mapping_verification_has_one_overall_vicidial_deadline(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    payload = _mapping_payload(connection["id"])
+    payload.update({"number_of_lines": 2, "static_agent_user": None})
+    store.save_mapping(payload, "mapping-1")
+
+    class _SlowClient:
+        def __init__(self, _connection):
+            pass
+
+        async def verify_connection(self):
+            return {
+                "ready": True,
+                "authentication": {
+                    "success": True,
+                    "rows": [{"campaign_id": "AVATEST"}],
+                },
+                "agent_visibility": {
+                    "success": True,
+                    "rows": [
+                        {"user": "9001", "status": "READY"},
+                        {"user": "9002", "status": "READY"},
+                    ],
+                },
+            }
+
+        async def agent_status(self, _agent_user):
+            await asyncio.sleep(1)
+            raise AssertionError("verification deadline did not cancel slow status request")
+
+    monkeypatch.setattr(vicidial_api, "VicidialApiClient", _SlowClient)
+    monkeypatch.setattr(vicidial_api, "MAPPING_VERIFICATION_MAX_SECONDS", 0.01)
+    response = client.post("/api/outbound/vicidial/mappings/mapping-1/verify")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["configuration_ready"] is False
+    assert body["verification"] == {"timed_out": True, "timeout_seconds": 0.01}
+    assert body["connection"]["error_code"] == "verification_timeout"
+    assert body["remote_agent"]["unverified_users"] == ["9001", "9002"]
+    assert {
+        check["error_code"]
+        for check in body["remote_agent"]["status_checks"].values()
+    } == {"verification_timeout"}
 
 
 def test_activity_summarizes_only_aava_handled_vicidial_calls(monkeypatch, tmp_path):

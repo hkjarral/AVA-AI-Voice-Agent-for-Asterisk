@@ -74,6 +74,10 @@ type Verification = {
     ready?: boolean;
     configuration_ready?: boolean;
     pbx_ready?: boolean;
+    verification?: {
+        timed_out?: boolean;
+        timeout_seconds?: number;
+    };
     pbx_endpoint?: {
         ari_connected?: boolean | null;
         probe_available?: boolean;
@@ -293,6 +297,12 @@ const statusLabel = (mapping: Mapping) => {
     if (!mapping.agent_available)
         return { label: 'Agent unavailable', tone: 'text-destructive', ok: false };
     if (!check) return { label: 'Not verified', tone: 'text-amber-500', ok: false };
+    if (check.verification?.timed_out)
+        return {
+            label: 'Needs attention — verification timed out',
+            tone: 'text-destructive',
+            ok: false,
+        };
     if (!check.configuration_ready)
         return { label: 'Needs attention', tone: 'text-destructive', ok: false };
     if (!check.pbx_ready) {
@@ -430,7 +440,7 @@ const mappingHelp = {
         'Limits which VICIdial calls this mapping accepts. Both requires a successful real outbound and inbound/closer call before Ready.',
     agent: 'Active AAVA Agent that supplies the prompt, provider or pipeline, voice, and tools for calls admitted by this mapping.',
     campaign:
-        'Existing VICIdial outbound campaign ID used for Remote Agent login, outbound correlation, dispositions, and native callbacks.',
+        'Required real VICIdial campaign used for DNC and native callbacks. Outbound and blended Remote Agents also use it for login and correlation. Inbound-only Remote Agents still log into CLOSER; never enter CLOSER here.',
     closerCampaigns:
         'Comma-separated VICIdial inbound-group IDs accepted by this mapping. These are required for inbound/closer or blended calls.',
     userStart:
@@ -771,11 +781,8 @@ export const VicidialRemoteAgentsTab = () => {
     };
 
     const saveMapping = async () => {
-        if (
-            (mappingForm.direction === 'outbound' || mappingForm.direction === 'both') &&
-            !mappingForm.campaign_id.trim()
-        ) {
-            toast.error('Enter the VICIdial campaign ID for outbound calls');
+        if (!mappingForm.campaign_id.trim()) {
+            toast.error('Enter the real VICIdial action/outbound campaign ID');
             return;
         }
         if (
@@ -826,7 +833,9 @@ export const VicidialRemoteAgentsTab = () => {
         setBusy(`verify-${id}`);
         try {
             const response = await axios.post(`/api/outbound/vicidial/${kind}/${id}/verify`);
-            if (response.data?.ready)
+            if (kind === 'mappings' && response.data?.verification?.timed_out)
+                toast.warning('VICIdial API checks exceeded the 30-second verification deadline');
+            else if (response.data?.ready)
                 toast.success(
                     kind === 'mappings'
                         ? 'Remote Agent mapping is ready'
@@ -1656,12 +1665,14 @@ export const VicidialRemoteAgentsTab = () => {
                         options={agentOptions}
                     />
                     <FormInput
-                        label="VICIdial campaign ID"
+                        label="Action / outbound campaign ID"
                         tooltip={mappingHelp.campaign}
                         value={mappingForm.campaign_id}
                         onChange={e =>
                             setMappingForm({ ...mappingForm, campaign_id: e.target.value })
                         }
+                        placeholder="Real campaign ID — never CLOSER"
+                        required
                     />
                     <FormInput
                         label="Closer campaigns"

@@ -213,7 +213,7 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
             'Mapping name',
             'Call direction',
             'AAVA Agent',
-            'VICIdial campaign ID',
+            'Action / outbound campaign ID',
             'Closer campaigns',
             'Starting Remote Agent user',
             'Number of lines',
@@ -251,6 +251,12 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(await screen.findByRole('tooltip')).toHaveTextContent(
             'Statuses used automatically for hangup, transfer, failure, DNC, and callback outcomes.'
         );
+        fireEvent.click(lifecycleHelp);
+
+        fireEvent.click(
+            screen.getByRole('button', { name: 'Help for Action / outbound campaign ID' })
+        );
+        expect(await screen.findByText(/never enter CLOSER here/)).toBeInTheDocument();
     });
 
     it('keeps focus while editing disposition and destination names', async () => {
@@ -318,6 +324,23 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         ).toBeInTheDocument();
     });
 
+    it('surfaces a saved mapping verification timeout', async () => {
+        const previousConfigurationReady = mapping.last_verification.configuration_ready;
+        Object.assign(mapping.last_verification, {
+            configuration_ready: false,
+            verification: { timed_out: true, timeout_seconds: 30 },
+        });
+        try {
+            render(<VicidialRemoteAgentsTab />);
+            expect(
+                await screen.findByText('Needs attention — verification timed out')
+            ).toBeInTheDocument();
+        } finally {
+            mapping.last_verification.configuration_ready = previousConfigurationReady;
+            Reflect.deleteProperty(mapping.last_verification, 'verification');
+        }
+    });
+
     it('provides contextual help throughout the generated setup guide', async () => {
         render(<VicidialRemoteAgentsTab />);
         await screen.findByText('VICIdial Lab');
@@ -374,6 +397,7 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Add mapping' }));
 
         expect(screen.getByLabelText('Remote Agent extension')).toHaveValue('');
+        expect(screen.getByLabelText('Action / outbound campaign ID')).toBeRequired();
         expect(screen.getByLabelText('PBX trunk name')).toHaveValue('');
         expect(screen.getByLabelText('Asterisk endpoint ID')).toHaveValue('');
         expect(

@@ -37,17 +37,13 @@ def _dialing_campaign_id(
 
     ``callid_info.campaign_id`` is an inbound group for inbound/blended calls,
     not a valid dialing campaign for campaign-scoped DNC or ``update_lead``.
-    The Remote Agent mapping owns the actual campaign in that direction.
+    The Remote Agent mapping owns the explicit action campaign in that direction.
+    Never fall back to ``agent_status.campaign_id`` because an inbound-only
+    Remote Agent reports the reserved ``CLOSER`` login mode there.
     Outbound calls already report the dialing campaign directly.
     """
     if str(info.direction or "").strip().lower() == "inbound":
-        configured = str(mapping.get("campaign_id") or "").strip()
-        if configured:
-            return configured
-        agent_status = dict((info.metadata or {}).get("agent_status") or {})
-        agent_campaign = str(agent_status.get("campaign_id") or "").strip()
-        if agent_campaign:
-            return agent_campaign
+        return str(mapping.get("campaign_id") or "").strip()
     return str(info.campaign_id or mapping.get("campaign_id") or "").strip()
 
 

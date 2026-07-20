@@ -27,6 +27,7 @@ router = APIRouter(prefix="/outbound/vicidial", tags=["outbound"])
 logger = logging.getLogger(__name__)
 
 ACTIVITY_SUMMARY_MAX_ROWS = 5000
+MAPPING_VERIFICATION_MAX_SECONDS = 30.0
 
 
 class VicidialConnectionRequest(BaseModel):
@@ -502,31 +503,55 @@ async def verify_mapping(mapping_id: str):
         raise HTTPException(status_code=422, detail="VICIdial connection is missing")
 
     client = VicidialApiClient(connection)
-    connection_result = await client.verify_connection()
+    users = list(remote_agent_user_range(mapping))
+    connection_result: Dict[str, Any] = {}
+    status_results: Dict[str, Any] = {}
+    verification_timed_out = False
+    try:
+        async with asyncio.timeout(MAPPING_VERIFICATION_MAX_SECONDS):
+            connection_result = await client.verify_connection()
+            # agent_status is authoritative for whether each configured VICIdial user
+            # actually exists. logged_in_agents alone can include a stale or manually
+            # inserted live-agent row whose user is rejected by call-control APIs.
+            # Bound each burst so a large Remote Agent range does not overwhelm the
+            # dialer's legacy Non-Agent API; the surrounding deadline bounds all bursts.
+            for offset in range(0, len(users), 10):
+                batch_users = users[offset:offset + 10]
+                batch_results = await asyncio.gather(*(
+                    client.agent_status(user) for user in batch_users
+                ))
+                status_results.update(zip(batch_users, batch_results))
+    except TimeoutError:
+        verification_timed_out = True
+        connection_result = {
+            **connection_result,
+            "ready": False,
+            "error": "VICIdial mapping verification exceeded the overall deadline",
+            "error_code": "verification_timeout",
+        }
+
     campaigns = connection_result.get("authentication") or {}
     campaign_rows = list(campaigns.get("rows") or [])
     campaign_id = str(mapping.get("campaign_id") or "").strip()
-    campaign_found = not campaign_id or any(
+    campaign_found = any(
         str(row.get("campaign_id") or "").strip() == campaign_id
         for row in campaign_rows
     )
     agent_available = bool(_active_agent(str(mapping.get("ai_agent") or "")))
 
-    users = list(remote_agent_user_range(mapping))
-    status_results = []
-    # agent_status is authoritative for whether each configured VICIdial user
-    # actually exists. logged_in_agents alone can include a stale or manually
-    # inserted live-agent row whose user is rejected by call-control APIs.
-    # Bound each burst so a large Remote Agent range does not overwhelm the
-    # dialer's legacy Non-Agent API.
-    for offset in range(0, len(users), 10):
-        status_results.extend(await asyncio.gather(*(
-            client.agent_status(user)
-            for user in users[offset:offset + 10]
-        )))
     status_checks: Dict[str, Dict[str, Any]] = {}
     api_users: List[str] = []
-    for user, status_result in zip(users, status_results):
+    for user in users:
+        status_result = status_results.get(user)
+        if status_result is None:
+            status_checks[user] = {
+                "success": False,
+                "status": None,
+                "error_code": (
+                    "verification_timeout" if verification_timed_out else "not_checked"
+                ),
+            }
+            continue
         status_data = dict(status_result.data or {})
         status = str(status_data.get("status") or "").strip().upper()
         status_checks[user] = {
@@ -594,6 +619,10 @@ async def verify_mapping(mapping_id: str):
         # READY state, media, or disposition. Only a real acceptance call may
         # promote a mapping to ready.
         "ready": bool(configuration_ready and pbx_endpoint.get("ready") and live_call_ready),
+        "verification": {
+            "timed_out": verification_timed_out,
+            "timeout_seconds": MAPPING_VERIFICATION_MAX_SECONDS,
+        },
         "configuration_ready": configuration_ready,
         "pbx_ready": bool(pbx_endpoint.get("ready")),
         "pbx_endpoint": pbx_endpoint,
@@ -691,6 +720,10 @@ async def mapping_guidance(mapping_id: str):
         mapping.get("sip_contact_user") or mapping.get("conf_exten") or ""
     ).strip()
     technology = str(mapping.get("pbx_technology") or "PJSIP").upper()
+    direction = str(mapping.get("direction") or "both")
+    remote_agent_campaign = (
+        "CLOSER" if direction == "inbound" else str(mapping.get("campaign_id") or "")
+    )
     if setup_mode == "existing_endpoint":
         pbx_guidance: Dict[str, Any] = {
             "setup_mode": setup_mode,
@@ -755,8 +788,8 @@ async def mapping_guidance(mapping_id: str):
             f"Create/verify Phone {mapping.get('conf_exten')} with protocol SIP and a unique conf_secret.",
             f"Create every VICIdial user in the contiguous range {user_range}; agent_status must recognize each user before enabling {mapping.get('number_of_lines')} line(s).",
             f"All {mapping.get('number_of_lines')} Remote Agent line(s) share Phone/conf_exten {mapping.get('conf_exten')}; do not create incremented SIP Phones for the additional users.",
-            f"Create/verify Remote Agent with conf_exten {mapping.get('conf_exten')}, On-Hook Agent=N for classic outbound mode, and campaign {mapping.get('campaign_id') or 'CLOSER (inbound only)' }.",
-            "For a both-direction mapping, set the outbound campaign Allow Inbound and Blended=Y and select the same inbound groups on the campaign and Remote Agent. Inbound-only Remote Agents use campaign CLOSER plus their inbound groups.",
+            f"Create/verify Remote Agent with conf_exten {mapping.get('conf_exten')}, On-Hook Agent=N for classic outbound mode, and campaign {remote_agent_campaign}.",
+            f"For a both-direction mapping, set the outbound campaign Allow Inbound and Blended=Y and select the same inbound groups on the campaign and Remote Agent. Inbound-only Remote Agents use campaign CLOSER plus their inbound groups; the mapping's action campaign {mapping.get('campaign_id') or '<REQUIRED_REAL_CAMPAIGN>'} remains the real campaign used for DNC and native callbacks.",
             "For the first outbound acceptance test, use a measured Drop Call Seconds window (30 seconds in the validated lab); 5 seconds can expire before Remote Agent delivery. Tune it for production policy after measuring.",
             "For SQL-created lab records, keep closer_campaigns as an empty string rather than NULL.",
             "Grant the dedicated API user only the functions required by the readiness report.",
