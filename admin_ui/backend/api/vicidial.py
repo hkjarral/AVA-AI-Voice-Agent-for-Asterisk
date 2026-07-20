@@ -768,7 +768,7 @@ async def verify_mapping(mapping_id: str):
     return recorded
 
 
-def _dialplan(mapping: Dict[str, Any]) -> str:
+def _dialplan(mapping: Dict[str, Any], mapping_revision: str) -> str:
     context = str(mapping.get("trusted_context") or "from-vicidial-ra")
     mapping_id = str(mapping.get("id") or "")
     agent = str(mapping.get("ai_agent") or "")
@@ -793,6 +793,7 @@ def _dialplan(mapping: Dict[str, Any]) -> str:
         " same => n,Set(__AAVA_CALL_OWNER=vicidial)",
         " same => n,Set(__VICIDIAL_RA_CALL_ID=${CALLERID(name)})",
         f" same => n,Set(__VICIDIAL_MAPPING_ID={mapping_id})",
+        f" same => n,Set(__VICIDIAL_MAPPING_REVISION={mapping_revision})",
         f" same => n,Set(__AI_AGENT={agent})",
         " same => n,Answer()",
         " same => n,Stasis(asterisk-ai-voice-agent)",
@@ -809,6 +810,7 @@ async def mapping_guidance(mapping_id: str):
     connection = _store().get_connection(str(mapping.get("connection_id") or ""))
     if not connection:
         raise HTTPException(status_code=422, detail="VICIdial connection is missing")
+    mapping_revision = vicidial_configuration_revision(mapping, connection)
 
     topology = str(connection.get("topology") or "lan_vpn")
     remote_agent_users = list(remote_agent_user_range(mapping))
@@ -908,7 +910,7 @@ async def mapping_guidance(mapping_id: str):
             ),
         ],
         "freepbx_trunk": pbx_guidance,
-        "dialplan": _dialplan(mapping),
+        "dialplan": _dialplan(mapping, mapping_revision),
         "dialplan_install": {
             "path": "/etc/asterisk/extensions_custom.conf",
             "freepbx_apply": "Use FreePBX Apply Config or run fwconsole reload",

@@ -580,6 +580,31 @@ class SetCallDispositionTool(Tool):
                     "another disposition"
                 ),
             }
+        existing_payload = dict(
+            getattr(session, "external_disposition_payload", {}) or {}
+        )
+        if existing_semantic == "callback" and bool(
+            existing_payload.get("workflow_committed")
+        ):
+            if semantic == "callback":
+                return {
+                    "status": "success",
+                    "message": (
+                        "The scheduled callback is already committed and cannot be "
+                        "changed on this call."
+                    ),
+                    "vicidial_status": str(
+                        getattr(session, "external_requested_disposition", None)
+                        or status
+                    ),
+                }
+            return {
+                "status": "failed",
+                "message": (
+                    "A scheduled callback is already committed and cannot be "
+                    "replaced with DNC on this call."
+                ),
+            }
 
         info = _session_info(session)
         payload: Dict[str, Any] = {}
@@ -620,10 +645,7 @@ class SetCallDispositionTool(Tool):
 
         if existing_semantic == "callback" and semantic in {"callback", "dnc"}:
             queued_action_id = str(
-                dict(
-                    getattr(session, "external_disposition_payload", {}) or {}
-                ).get("workflow_queue_id")
-                or ""
+                existing_payload.get("workflow_queue_id") or ""
             ).strip()
             if queued_action_id:
                 try:
@@ -650,10 +672,13 @@ class SetCallDispositionTool(Tool):
                                     or status
                                 ),
                             }
-                        if not retry_store.complete_pending_action(queued_action_id):
-                            raise RuntimeError(
-                                "committed callback retry could not be closed"
-                            )
+                        return {
+                            "status": "failed",
+                            "message": (
+                                "A scheduled callback is already committed and cannot "
+                                "be replaced with DNC on this call."
+                            ),
+                        }
                     elif queued_action and queued_action.get("status") == "pending":
                         if not retry_store.cancel_pending_action(queued_action_id):
                             raise RuntimeError(

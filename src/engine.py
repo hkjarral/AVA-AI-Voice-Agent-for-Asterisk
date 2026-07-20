@@ -4452,6 +4452,9 @@ class Engine:
         store = get_vicidial_store()
 
         mapping_id = await self._read_channel_variable(channel_id, "VICIDIAL_MAPPING_ID")
+        dialplan_mapping_revision = await self._read_channel_variable(
+            channel_id, "VICIDIAL_MAPPING_REVISION"
+        )
         external_call_id = await self._read_channel_variable(channel_id, "VICIDIAL_RA_CALL_ID")
         if not mapping_id:
             session.external_events.append({
@@ -4477,6 +4480,21 @@ class Engine:
         session.external_mapping_revision = vicidial_configuration_revision(
             mapping, connection
         )
+        if dialplan_mapping_revision != session.external_mapping_revision:
+            session.external_events.append({
+                "operation": "resolve",
+                "success": False,
+                "message": (
+                    "Trusted VICIdial dialplan is stale; regenerate and reinstall "
+                    "the mapping setup guide"
+                    if dialplan_mapping_revision
+                    else "Trusted VICIdial dialplan did not provide its mapping revision"
+                ),
+            })
+            await self._save_session(session)
+            raise RuntimeError(
+                "Trusted VICIdial dialplan mapping revision is missing or stale"
+            )
         client = VicidialApiClient(connection)
         resolved, evidence = await client.resolve_remote_agent_session(
             call_id=external_call_id,

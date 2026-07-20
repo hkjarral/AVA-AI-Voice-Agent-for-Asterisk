@@ -674,6 +674,36 @@ class VicidialStore:
                 ON CONFLICT(dedupe_key) DO UPDATE SET
                     connection_json=excluded.connection_json,
                     payload_json=excluded.payload_json,
+                    status=CASE
+                        WHEN vicidial_pending_actions.status='canceled'
+                        THEN 'pending'
+                        ELSE vicidial_pending_actions.status
+                    END,
+                    workflow_completed=CASE
+                        WHEN vicidial_pending_actions.status='canceled'
+                        THEN 0
+                        ELSE vicidial_pending_actions.workflow_completed
+                    END,
+                    attempt_count=CASE
+                        WHEN vicidial_pending_actions.status='canceled'
+                        THEN 0
+                        ELSE vicidial_pending_actions.attempt_count
+                    END,
+                    next_attempt_at=CASE
+                        WHEN vicidial_pending_actions.status='canceled'
+                        THEN excluded.next_attempt_at
+                        ELSE vicidial_pending_actions.next_attempt_at
+                    END,
+                    last_error=CASE
+                        WHEN vicidial_pending_actions.status='canceled'
+                        THEN NULL
+                        ELSE vicidial_pending_actions.last_error
+                    END,
+                    completed_at=CASE
+                        WHEN vicidial_pending_actions.status='canceled'
+                        THEN NULL
+                        ELSE vicidial_pending_actions.completed_at
+                    END,
                     call_id=COALESCE(excluded.call_id,vicidial_pending_actions.call_id),
                     external_call_id=COALESCE(
                         excluded.external_call_id,

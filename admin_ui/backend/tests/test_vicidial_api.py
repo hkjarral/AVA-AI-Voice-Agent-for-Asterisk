@@ -131,6 +131,10 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     assert "exten => 8371,1" in body["dialplan"]
     assert '${CHANNEL(endpoint)}' in body["dialplan"]
     assert "Set(__AAVA_CALL_OWNER=vicidial)" in body["dialplan"]
+    assert (
+        f"Set(__VICIDIAL_MAPPING_REVISION={_stored_mapping_revision(_store, mapping_id)})"
+        in body["dialplan"]
+    )
     assert "Set(__AI_AGENT=demo_deepgram)" in body["dialplan"]
     assert body["freepbx_trunk"]["secret"] == "<VICIDIAL_PHONE_CONF_SECRET>"
     assert body["freepbx_trunk"]["name"] == "Support VICIdial"

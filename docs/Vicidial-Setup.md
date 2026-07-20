@@ -354,14 +354,18 @@ exten => 8371,1,NoOp(VICIdial Remote Agent call: ${CALLERID(all)})
  same => n,Set(__AAVA_CALL_OWNER=vicidial)
  same => n,Set(__VICIDIAL_RA_CALL_ID=${CALLERID(name)})
  same => n,Set(__VICIDIAL_MAPPING_ID=<mapping UUID>)
+ same => n,Set(__VICIDIAL_MAPPING_REVISION=<generated mapping revision>)
  same => n,Set(__AI_AGENT=demo_deepgram)
  same => n,Answer()
  same => n,Stasis(asterisk-ai-voice-agent)
  same => n,Hangup()
 ```
 
-Always use the generated mapping UUID. Do not copy the placeholder above. When the SIP leg carries
-a valid VICIdial call ID, AAVA confirms it with `callid_info` and exact
+Always use the complete generated stanza; do not copy the placeholders above. The mapping revision
+binds admission to the current connection and mapping. After changing either record, regenerate
+this context, replace the installed stanza, and reload the Asterisk dialplan. Calls from a stale
+stanza are rejected. When the SIP leg carries a valid VICIdial call ID, AAVA confirms it with
+`callid_info` and exact
 `agent_status.callerid` correlation. If the leg carries a customer display name instead, AAVA uses
 the bounded mapped-user lookup described above. Failed or ambiguous correlation is rejected; the
 call does not continue as an uncontrolled ordinary AAVA call.
