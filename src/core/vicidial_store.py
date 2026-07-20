@@ -18,7 +18,10 @@ from src.integrations.vicidial import validate_status
 
 
 _ENV_REFERENCE_RE = re.compile(
-    r"^(?:[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\})$"
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})$"
+)
+_ENV_REFERENCE_WITH_DEFAULT_RE = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*):-.*\}$"
 )
 _DIALPLAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _VICIDIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -154,6 +157,34 @@ class VicidialStore:
                 if column_name not in mapping_columns:
                     conn.execute(
                         f"ALTER TABLE vicidial_mappings ADD COLUMN {column_name} {definition}"
+                    )
+
+            # Preview builds accepted ${NAME:-literal} credential references.
+            # Strip any persisted inline default so connection reads can never
+            # disclose it and runtime authentication remains environment-only.
+            for row in conn.execute(
+                "SELECT id, username_env, password_env FROM vicidial_connections"
+            ).fetchall():
+                username_env = str(row["username_env"] or "")
+                password_env = str(row["password_env"] or "")
+                username_match = _ENV_REFERENCE_WITH_DEFAULT_RE.fullmatch(username_env)
+                password_match = _ENV_REFERENCE_WITH_DEFAULT_RE.fullmatch(password_env)
+                if username_match or password_match:
+                    conn.execute(
+                        """
+                        UPDATE vicidial_connections
+                           SET username_env=?, password_env=?
+                         WHERE id=?
+                        """,
+                        (
+                            f"${{{username_match.group(1)}}}"
+                            if username_match
+                            else username_env,
+                            f"${{{password_match.group(1)}}}"
+                            if password_match
+                            else password_env,
+                            row["id"],
+                        ),
                     )
 
     @staticmethod
@@ -530,22 +561,37 @@ class VicidialStore:
                 start = int(data["user_start"])
                 end = start + int(data["number_of_lines"]) - 1
                 for row in conn.execute(
-                    "SELECT * FROM vicidial_mappings WHERE connection_id=? AND enabled=1 AND id<>?",
-                    (data["connection_id"], mapping_id),
+                    "SELECT * FROM vicidial_mappings WHERE enabled=1 AND id<>?",
+                    (mapping_id,),
                 ).fetchall():
                     other = self._mapping_dict(row)
-                    other_start = int(str(other.get("user_start") or "0"))
-                    other_end = other_start + int(other.get("number_of_lines") or 1) - 1
-                    if start <= other_end and other_start <= end:
-                        raise ValueError(
-                            f"Remote Agent user range overlaps enabled mapping {other.get('name')}"
+                    if str(other.get("connection_id") or "") == data["connection_id"]:
+                        other_start = int(str(other.get("user_start") or "0"))
+                        other_end = (
+                            other_start + int(other.get("number_of_lines") or 1) - 1
                         )
-                    if str(other.get("conf_exten") or "") == data["conf_exten"]:
+                        if start <= other_end and other_start <= end:
+                            raise ValueError(
+                                "Remote Agent user range overlaps enabled mapping "
+                                f"{other.get('name')}"
+                            )
+                    if (
+                        str(other.get("trusted_context") or "")
+                        == data["trusted_context"]
+                        and str(other.get("conf_exten") or "")
+                        == data["conf_exten"]
+                    ):
                         raise ValueError(
-                            f"Remote Agent extension is already used by enabled mapping {other.get('name')}"
+                            "Asterisk dialplan context and extension are already used by "
+                            f"enabled mapping {other.get('name')}"
                         )
                     endpoint = str(data.get("trusted_endpoint") or "")
-                    if endpoint and endpoint == str(other.get("trusted_endpoint") or ""):
+                    if (
+                        endpoint
+                        and endpoint == str(other.get("trusted_endpoint") or "")
+                        and data["pbx_technology"]
+                        == str(other.get("pbx_technology") or "PJSIP").upper()
+                    ):
                         raise ValueError(
                             f"Asterisk endpoint is already used by enabled mapping {other.get('name')}"
                         )

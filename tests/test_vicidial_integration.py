@@ -148,6 +148,52 @@ async def test_hydration_applies_authoritative_mapping_agent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hydration_allows_empty_transport_call_id_for_status_correlation(
+    monkeypatch,
+):
+    mapping = {"id": "map-1", "enabled": True, **_mapping()}
+    connection = {"id": "connection-1", "enabled": True, **_connection()}
+    store = SimpleNamespace(
+        get_mapping=lambda _mapping_id: mapping,
+        get_connection=lambda _connection_id: connection,
+    )
+    monkeypatch.setattr(
+        "src.core.vicidial_store.get_vicidial_store", lambda: store
+    )
+    resolved = VicidialSessionInfo(
+        external_call_id="V4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        campaign_id="TESTCAMP",
+        direction="outbound",
+        resolution_source="mapped_agent_status_scan",
+    )
+    resolve = AsyncMock(return_value=(resolved, []))
+    monkeypatch.setattr(VicidialApiClient, "resolve_remote_agent_session", resolve)
+
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(set_channel_var=AsyncMock(return_value=True))
+    variables = {
+        "AAVA_CALL_OWNER": "vicidial",
+        "VICIDIAL_MAPPING_ID": "map-1",
+        "VICIDIAL_RA_CALL_ID": "",
+        "AI_AGENT": "demo_deepgram",
+    }
+    engine._read_channel_variable = AsyncMock(
+        side_effect=lambda _channel_id, name: variables.get(name, "")
+    )
+    engine._overlay_vicidial_tool_runtime = lambda _session: None
+    engine._save_session = AsyncMock()
+    session = CallSession(call_id="ari-call", caller_channel_id="ari-call")
+
+    await Engine._hydrate_vicidial_session(engine, session, "ari-call")
+
+    resolve.assert_awaited_once_with(call_id="", mapping=mapping)
+    assert session.external_call_id == resolved.external_call_id
+    assert session.external_session["resolution_source"] == "mapped_agent_status_scan"
+
+
+@pytest.mark.asyncio
 async def test_hydration_rejects_call_when_mapping_agent_cannot_be_applied(monkeypatch):
     mapping = {"id": "map-1", "enabled": True, **_mapping()}
     connection = {"id": "connection-1", "enabled": True, **_connection()}
@@ -322,6 +368,36 @@ async def test_agent_status_correlation_uses_bounded_concurrency(monkeypatch):
     assert info is not None
     assert info.agent_user == "9001"
     assert 1 < peak <= 10
+
+
+@pytest.mark.asyncio
+async def test_correlation_retry_budget_runs_within_hard_deadline(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    connection = {**_connection(), "timeout_ms": 250}
+    client = VicidialApiClient(connection)
+    request_count = 0
+
+    async def callid_info(_call_id):
+        nonlocal request_count
+        request_count += 1
+        return VicidialApiResult(
+            success=False,
+            function="callid_info",
+            message="not ready",
+        )
+
+    monkeypatch.setattr(client, "callid_info", callid_info)
+    info, evidence = await client.resolve_remote_agent_session(
+        call_id="M4050908070000012345",
+        mapping={"id": "map-1", **_mapping(), "static_agent_user": None},
+        attempts=4,
+        delay_seconds=0.2,
+    )
+
+    assert info is None
+    assert request_count == 4
+    assert [item["function"] for item in evidence] == ["callid_info"] * 4
 
 
 @pytest.mark.asyncio

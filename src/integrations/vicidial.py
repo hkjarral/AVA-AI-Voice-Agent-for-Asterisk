@@ -454,16 +454,28 @@ class VicidialApiClient:
         attempts: int = 5,
         delay_seconds: float = 0.5,
     ) -> tuple[Optional[VicidialSessionInfo], list[Dict[str, Any]]]:
+        """Correlate one trusted Remote Agent leg within a hard admission deadline.
+
+        ``attempts`` and ``delay_seconds`` are best-effort retry controls. They
+        may not all be consumed when VICIdial is slow because customer calls
+        must fail closed within ``_REMOTE_AGENT_CORRELATION_MAX_SECONDS``.
+        """
         evidence: list[Dict[str, Any]] = []
         start_user = int(str(mapping.get("user_start") or "0"))
         line_count = max(1, int(mapping.get("number_of_lines") or 1))
         allowed_users = {str(start_user + index) for index in range(line_count)}
+        attempt_count = max(1, int(attempts))
+        retry_delay = max(0.05, float(delay_seconds))
         loop = asyncio.get_running_loop()
+        retry_delay_budget = retry_delay * (attempt_count - 1)
         correlation_timeout = max(
             0.5,
             min(
                 _REMOTE_AGENT_CORRELATION_MAX_SECONDS,
-                (self.timeout_ms / 1000.0) * 2,
+                max(
+                    (self.timeout_ms / 1000.0) * 2,
+                    retry_delay_budget + 0.5,
+                ),
             ),
         )
         correlation_deadline = loop.time() + correlation_timeout
@@ -505,6 +517,13 @@ class VicidialApiClient:
                 ).to_dict()
             )
             return None, evidence
+
+        async def retry_pause() -> bool:
+            remaining = correlation_deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(retry_delay, remaining))
+            return correlation_deadline - loop.time() > 0
 
         def build_session(
             external_call_id: str,
@@ -584,7 +603,7 @@ class VicidialApiClient:
         # ``user`` is commonly VDAD for outbound auto calls, so the Remote
         # Agent identity comes from agent_status instead.
         if external_call_id:
-            for index in range(max(1, attempts)):
+            for index in range(attempt_count):
                 result = await within_deadline(
                     lambda: self.callid_info(external_call_id)
                 )
@@ -630,8 +649,8 @@ class VicidialApiClient:
                         return next(iter(unique_users.values())), evidence
                     if len(unique_users) > 1:
                         return None, evidence
-                if index + 1 < attempts:
-                    await asyncio.sleep(max(0.05, delay_seconds))
+                if index + 1 < attempt_count and not await retry_pause():
+                    return correlation_timed_out()
 
             fallback = str(mapping.get("static_agent_user") or "").strip()
             if line_count == 1 and fallback and fallback in allowed_users:
@@ -673,7 +692,7 @@ class VicidialApiClient:
         # only through the mapped agent range. Every candidate must be active,
         # carry a valid VICIdial code, be confirmed by callid_info, and match
         # the mapping's campaign/direction. Exactly one candidate is required.
-        for index in range(max(1, attempts)):
+        for index in range(attempt_count):
             candidates: list[VicidialSessionInfo] = []
             users = sorted(allowed_users, key=int)
             agent_results = await agent_status_batch(users)
@@ -716,8 +735,8 @@ class VicidialApiClient:
                 return next(iter(unique.values())), evidence
             if len(unique) > 1:
                 return None, evidence
-            if index + 1 < attempts:
-                await asyncio.sleep(max(0.05, delay_seconds))
+            if index + 1 < attempt_count and not await retry_pause():
+                return correlation_timed_out()
         return None, evidence
 
 

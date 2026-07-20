@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -195,6 +196,28 @@ def test_mapping_requires_campaigns_for_each_selected_direction(monkeypatch, tmp
     assert response.status_code == 200
 
 
+def test_connection_rejects_inline_credential_defaults_and_sanitizes_preview_rows(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    payload = _connection_payload()
+    payload["password_env"] = "${VICIDIAL_API_PASS:-inline-secret}"
+
+    response = client.post("/api/outbound/vicidial/connections", json=payload)
+    assert response.status_code == 422
+    assert "environment-variable names or ${NAME}" in response.json()["detail"]
+    assert "inline-secret" not in response.text
+
+    connection = store.save_connection(_connection_payload(), "connection-1")
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE vicidial_connections SET password_env=? WHERE id=?",
+            ("${VICIDIAL_API_PASS:-legacy-secret}", connection["id"]),
+        )
+    reopened = VicidialStore(store.db_path)
+    assert reopened.get_connection(connection["id"])["password_env"] == "${VICIDIAL_API_PASS}"
+
+
 def test_enabled_mapping_rejects_overlapping_users_and_reused_endpoint(monkeypatch, tmp_path):
     client, store = _client(monkeypatch, tmp_path)
     connection = store.save_connection(_connection_payload(), "connection-1")
@@ -220,6 +243,58 @@ def test_enabled_mapping_rejects_overlapping_users_and_reused_endpoint(monkeypat
             "user_start": "9100",
             "static_agent_user": "9100",
             "conf_exten": "8400",
+        }
+    )
+    response = client.post("/api/outbound/vicidial/mappings", json=reused_endpoint)
+    assert response.status_code == 422
+    assert "endpoint is already used" in response.json()["detail"]
+
+
+def test_global_asterisk_collisions_are_rejected_across_connections(
+    monkeypatch, tmp_path
+):
+    client, store = _client(monkeypatch, tmp_path)
+    first_connection = store.save_connection(_connection_payload(), "connection-1")
+    second_payload = _connection_payload()
+    second_payload["name"] = "Second VICIdial"
+    second_connection = store.save_connection(second_payload, "connection-2")
+    store.save_mapping(_mapping_payload(first_connection["id"]), "mapping-1")
+
+    same_users_distinct_pbx = _mapping_payload(second_connection["id"])
+    same_users_distinct_pbx.update(
+        {
+            "name": "Independent server",
+            "trusted_context": "from-vicidial-ra-2",
+            "conf_exten": "8471",
+            "trusted_endpoint": "vicidial-ra-2",
+        }
+    )
+    response = client.post(
+        "/api/outbound/vicidial/mappings", json=same_users_distinct_pbx
+    )
+    assert response.status_code == 200
+
+    reused_dialplan = _mapping_payload(second_connection["id"])
+    reused_dialplan.update(
+        {
+            "name": "Reused dialplan",
+            "user_start": "9200",
+            "static_agent_user": "9200",
+            "trusted_endpoint": "vicidial-ra-3",
+        }
+    )
+    response = client.post("/api/outbound/vicidial/mappings", json=reused_dialplan)
+    assert response.status_code == 422
+    assert "dialplan context and extension" in response.json()["detail"]
+
+    reused_endpoint = _mapping_payload(second_connection["id"])
+    reused_endpoint.update(
+        {
+            "name": "Reused endpoint",
+            "user_start": "9300",
+            "static_agent_user": "9300",
+            "trusted_context": "from-vicidial-ra-3",
+            "conf_exten": "8571",
         }
     )
     response = client.post("/api/outbound/vicidial/mappings", json=reused_endpoint)

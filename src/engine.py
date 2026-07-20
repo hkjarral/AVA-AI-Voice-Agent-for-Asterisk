@@ -4125,16 +4125,14 @@ class Engine:
 
         mapping_id = await self._read_channel_variable(channel_id, "VICIDIAL_MAPPING_ID")
         external_call_id = await self._read_channel_variable(channel_id, "VICIDIAL_RA_CALL_ID")
-        if not mapping_id or not external_call_id:
+        if not mapping_id:
             session.external_events.append({
                 "operation": "resolve",
                 "success": False,
-                "message": "Trusted dialplan did not provide mapping ID and VICIdial call ID",
+                "message": "Trusted dialplan did not provide a VICIdial mapping ID",
             })
             await self._save_session(session)
-            raise RuntimeError(
-                "Trusted VICIdial dialplan did not provide mapping and call identifiers"
-            )
+            raise RuntimeError("Trusted VICIdial dialplan did not provide a mapping identifier")
 
         from src.core.vicidial_store import get_vicidial_store
         from src.integrations.vicidial import VicidialApiClient

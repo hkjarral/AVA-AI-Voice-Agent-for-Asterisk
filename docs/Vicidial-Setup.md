@@ -290,10 +290,12 @@ outbound registration will renew. **Run checks** reports endpoint state as onlin
 unknown. A successful real call remains the end-to-end proof of signaling, media, routing, and
 VICIdial lifecycle behavior.
 
-Within one API connection, enabled mappings may not overlap Remote Agent user ranges, reuse the
-same Remote Agent extension, or reuse the same trusted endpoint. One connection can therefore
-describe several independent endpoint profiles, but AAVA does not automatically fail calls over
-between them.
+Remote Agent user ranges are VICIdial-server-local, so enabled mappings may reuse the same user
+numbers on different API connections but may not overlap them within one connection. Asterisk
+routing is shared by the AAVA host: enabled mappings across all connections must use a unique
+trusted-context plus Remote-Agent-extension pair and a unique trusted endpoint within each channel
+technology. One connection can therefore describe several independent endpoint profiles, but AAVA
+does not automatically fail calls over between them.
 
 The one-line fallback still requires `agent_status.callerid` to exactly match the live VICIdial
 call ID. It does not trust a static user without call correlation and is not used for multi-line
