@@ -3012,6 +3012,55 @@ async def test_engine_finalizer_does_not_claim_failed_vicidial_hangup(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_engine_finalizer_uses_ai_failure_status_for_provider_failure(monkeypatch):
+    session = CallSession(
+        call_id="ari-provider-failure",
+        caller_channel_id="ari-provider-failure",
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+    ).to_dict()
+    session.external_mapping = _mapping()
+    session.external_connection = _connection()
+    captured = {}
+
+    class Client:
+        def __init__(self, _connection):
+            pass
+
+        async def call_control(self, _info, *, stage, status):
+            captured.update({"stage": stage, "status": status})
+            return VicidialApiResult(True, "ra_call_control", "SUCCESS")
+
+    async def save(saved_session):
+        assert saved_session is session
+
+    async def successful_workflow(_session, **_kwargs):
+        return True
+
+    monkeypatch.setattr("src.integrations.vicidial.VicidialApiClient", Client)
+    monkeypatch.setattr(
+        "src.tools.telephony.vicidial.commit_vicidial_disposition_workflow",
+        successful_workflow,
+    )
+    engine = SimpleNamespace(_save_session=save)
+
+    result = await Engine._finalize_vicidial_call(
+        engine,
+        session,
+        semantic="ai_failure",
+        operation_reason="provider-start-failed",
+    )
+
+    assert result is True
+    assert captured == {"stage": "HANGUP", "status": "AIFAIL"}
+    assert session.external_disposition == "AIFAIL"
+
+
+@pytest.mark.asyncio
 async def test_stasis_start_exception_requests_forced_caller_hangup():
     engine = Engine.__new__(Engine)
     engine.ari_client = SimpleNamespace(

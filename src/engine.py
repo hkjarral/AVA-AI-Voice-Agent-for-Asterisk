@@ -4643,10 +4643,14 @@ class Engine:
         })
         mapping = dict(getattr(session, "external_mapping", {}) or {})
         connection = dict(getattr(session, "external_connection", {}) or {})
+        default_status = {
+            "ai_hangup": "AIHU",
+            "ai_failure": "AIFAIL",
+        }.get(semantic, "AICU")
         status = str(getattr(session, "external_requested_disposition", None) or status_for(
             mapping,
             semantic,
-            "AIHU" if semantic == "ai_hangup" else "AICU",
+            default_status,
         ))
         session.external_finalizing = True
         await self._save_session(session)
@@ -17510,6 +17514,25 @@ class Engine:
         session.provider_failure_action_started = True
         await self._save_session(session)
         await self._stop_connection_audio(session, reason="provider-start-failed")
+
+        # VICIdial owns the customer leg and its final disposition. Never
+        # redirect or hang up that leg directly through ARI when AAVA provider
+        # startup fails; use the same terminal workflow as every other
+        # VICIdial-controlled call.
+        if getattr(session, "external_platform", None) == "vicidial":
+            finalized = await self._finalize_vicidial_call(
+                session,
+                semantic="ai_failure",
+                operation_reason="provider-start-failed",
+            )
+            if not finalized:
+                logger.error(
+                    "VICIdial provider-start failure could not be finalized",
+                    call_id=session.call_id,
+                    external_call_id=getattr(session, "external_call_id", None),
+                )
+            return
+
         on_failure = getattr(self.config, "on_provider_failure", "announce_hangup")
 
         if on_failure == "leave_open":
