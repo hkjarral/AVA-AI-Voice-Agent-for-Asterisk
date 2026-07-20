@@ -185,6 +185,26 @@ async def test_caller_audio_is_suppressed_after_terminal_turn():
     assert provider.websocket.sent == []
 
 
+def test_releasing_terminal_protection_resumes_deepgram_input():
+    provider = DeepgramProvider.__new__(DeepgramProvider)
+    provider._hangup_fallback_task = None
+    provider._farewell_text_fallback_task = None
+    provider._hangup_pending = True
+    provider._terminal_turn_suppressed = True
+    provider._hangup_audio_started = True
+    provider._farewell_message = "Goodbye"
+    provider._farewell_fallback_state = {"pending": True, "farewell_seen": True}
+    provider._farewell_fallback_audio_seen = True
+
+    provider.release_terminal_output_protection()
+
+    assert provider.terminal_output_protected is False
+    assert provider._hangup_audio_started is False
+    assert provider._farewell_message is None
+    assert provider._farewell_fallback_state == {}
+    assert provider._farewell_fallback_audio_seen is False
+
+
 @pytest.mark.asyncio
 async def test_caller_transcript_is_not_forwarded_or_persisted_after_terminal_turn():
     class _Websocket:

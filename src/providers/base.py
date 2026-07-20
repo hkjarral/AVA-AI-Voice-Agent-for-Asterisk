@@ -59,6 +59,14 @@ class AIProviderInterface(ABC):
         """
         return False
 
+    def release_terminal_output_protection(self) -> None:
+        """Resume ordinary provider input after a terminal action is rejected.
+
+        Providers that suppress caller input while a farewell or hangup is in
+        progress should override this hook and clear that provider-local state.
+        """
+        return None
+
     # Optional: providers can override to describe codec/sample alignment characteristics.
     def describe_alignment(
         self,

@@ -354,6 +354,14 @@ class SetCallDispositionTool(Tool):
                     getattr(session, "external_requested_disposition", None) or status
                 ),
             }
+        if existing_semantic == "callback" and semantic not in {"callback", "dnc"}:
+            return {
+                "status": "failed",
+                "message": (
+                    "A callback is already selected and cannot be replaced by "
+                    "another disposition"
+                ),
+            }
 
         info = _session_info(session)
         payload: Dict[str, Any] = {}

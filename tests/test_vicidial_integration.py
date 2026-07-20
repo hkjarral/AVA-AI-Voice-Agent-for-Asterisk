@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -1295,6 +1295,50 @@ async def test_pending_vicidial_dnc_cannot_be_overwritten():
 
 
 @pytest.mark.asyncio
+async def test_pending_vicidial_callback_cannot_be_overwritten_by_classification():
+    session = CallSession(
+        call_id="ari-callback-lock", caller_channel_id="ari-callback-lock"
+    )
+    session.external_platform = "vicidial"
+    session.external_session = VicidialSessionInfo(
+        external_call_id="M4050908070000012345",
+        mapping_id="map-1",
+        agent_user="9001",
+        lead_id="456",
+        campaign_id="TESTCAMP",
+    ).to_dict()
+    session.external_mapping = {
+        **_mapping(),
+        "dispositions": {**_mapping()["dispositions"], "callback": "CALLBK"},
+    }
+    session.external_connection = _connection()
+    store = _SessionStore(session)
+    context = ToolExecutionContext(call_id=session.call_id, session_store=store)
+
+    selected = await SetCallDispositionTool().execute(
+        {
+            "disposition": "callback",
+            "callback_datetime": "2026-07-21T10:00:00-07:00",
+        },
+        context,
+    )
+    replacement = await SetCallDispositionTool().execute(
+        {"disposition": "sale"}, context
+    )
+
+    assert selected["status"] == "success"
+    assert replacement == {
+        "status": "failed",
+        "message": (
+            "A callback is already selected and cannot be replaced by another disposition"
+        ),
+    }
+    assert session.external_requested_disposition == "CALLBK"
+    assert session.external_disposition_label == "callback"
+    assert session.external_disposition_payload["lead_id"] == "456"
+
+
+@pytest.mark.asyncio
 async def test_disposition_is_allowlisted_and_deferred_until_hangup():
     session = CallSession(call_id="ari-2", caller_channel_id="ari-2")
     session.external_platform = "vicidial"
@@ -1649,8 +1693,10 @@ async def test_failed_vicidial_terminal_request_releases_retry_ownership():
     engine.conversation_coordinator = None
     engine._wait_for_call_audio_drain = AsyncMock(return_value=True)
     engine._finalize_vicidial_call = AsyncMock(side_effect=[False, True])
+    provider = SimpleNamespace(release_terminal_output_protection=Mock())
     session = CallSession(call_id="ari-terminal-retry", caller_channel_id="ari-terminal-retry")
     session.external_platform = "vicidial"
+    engine._call_providers = {session.call_id: provider}
     await engine.session_store.upsert_call(session)
 
     assert await engine._terminate_call_after_audio(
@@ -1661,6 +1707,7 @@ async def test_failed_vicidial_terminal_request_releases_retry_ownership():
         session.call_id, reason="retry"
     ) is True
     assert engine._finalize_vicidial_call.await_count == 2
+    provider.release_terminal_output_protection.assert_called_once_with()
 
 
 @pytest.mark.asyncio

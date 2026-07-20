@@ -12663,9 +12663,25 @@ class Engine:
                     )
                 finally:
                     if not finalized:
-                        # VICIdial still owns an active call. Release terminal
-                        # ownership so provider audio can resume and a later
-                        # tool, fallback, or cleanup request can retry.
+                        # VICIdial still owns an active call. Release both the
+                        # engine and provider terminal guards so caller audio
+                        # resumes and a later tool or cleanup request can retry.
+                        provider = (getattr(self, "_call_providers", {}) or {}).get(
+                            call_id
+                        )
+                        release_provider = getattr(
+                            provider, "release_terminal_output_protection", None
+                        )
+                        if callable(release_provider):
+                            try:
+                                release_provider()
+                            except Exception:
+                                logger.warning(
+                                    "Failed to release provider terminal protection",
+                                    call_id=call_id,
+                                    provider=type(provider).__name__,
+                                    exc_info=True,
+                                )
                         started.discard(call_id)
                 return finalized
             try:
