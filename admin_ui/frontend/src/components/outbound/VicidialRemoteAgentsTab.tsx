@@ -267,7 +267,12 @@ const emptyMapping = {
     sip_auth_username: '',
     sip_contact_user: '',
     sip_transport: 'udp' as const,
-    dispositions: { sale: 'SALE', not_interested: 'NI' } as Record<string, string>,
+    dispositions: {
+        sale: 'SALE',
+        not_interested: 'NI',
+        dnc: 'DNC',
+        callback: 'CALLBK',
+    } as Record<string, string>,
     statuses: {
         ai_hangup: 'AIHU',
         caller_hangup: 'AICU',
@@ -766,6 +771,20 @@ export const VicidialRemoteAgentsTab = () => {
     };
 
     const saveMapping = async () => {
+        if (
+            (mappingForm.direction === 'outbound' || mappingForm.direction === 'both') &&
+            !mappingForm.campaign_id.trim()
+        ) {
+            toast.error('Enter the VICIdial campaign ID for outbound calls');
+            return;
+        }
+        if (
+            (mappingForm.direction === 'inbound' || mappingForm.direction === 'both') &&
+            !String(mappingForm.closer_campaigns || '').trim()
+        ) {
+            toast.error('Enter at least one closer campaign for inbound calls');
+            return;
+        }
         if (!mappingForm.trusted_endpoint.trim()) {
             toast.error('Enter the exact Asterisk endpoint ID before saving the mapping');
             return;

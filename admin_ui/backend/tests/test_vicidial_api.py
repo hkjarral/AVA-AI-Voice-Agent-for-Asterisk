@@ -28,6 +28,7 @@ def _mapping_payload(connection_id):
         "name": "AVA Remote Agent",
         "direction": "both",
         "campaign_id": "AVATEST",
+        "closer_campaigns": ["AVAIN"],
         "user_start": "9001",
         "number_of_lines": 1,
         "conf_exten": "8371",
@@ -118,6 +119,7 @@ def test_vicidial_crud_and_guidance_are_typed(monkeypatch, tmp_path):
     assert any("agent_status" in step for step in body["vicidial_steps"])
     assert any("share Phone/conf_exten 8371" in step for step in body["vicidial_steps"])
     assert "exten => 8371,1" in body["dialplan"]
+    assert '${CHANNEL(endpoint)}' in body["dialplan"]
     assert "Set(__AAVA_CALL_OWNER=vicidial)" in body["dialplan"]
     assert "Set(__AI_AGENT=demo_deepgram)" in body["dialplan"]
     assert body["freepbx_trunk"]["secret"] == "<VICIDIAL_PHONE_CONF_SECRET>"
@@ -163,6 +165,33 @@ def test_mapping_requires_operator_selected_endpoint_and_generated_trunk_name(
     existing_endpoint["pbx_setup_mode"] = "existing_endpoint"
     existing_endpoint["pbx_trunk_name"] = ""
     response = client.post("/api/outbound/vicidial/mappings", json=existing_endpoint)
+    assert response.status_code == 200
+
+
+def test_mapping_requires_campaigns_for_each_selected_direction(monkeypatch, tmp_path):
+    client, store = _client(monkeypatch, tmp_path)
+    connection = store.save_connection(_connection_payload(), "connection-1")
+
+    missing_outbound = _mapping_payload(connection["id"])
+    missing_outbound["direction"] = "outbound"
+    missing_outbound["campaign_id"] = ""
+    missing_outbound["closer_campaigns"] = []
+    response = client.post("/api/outbound/vicidial/mappings", json=missing_outbound)
+    assert response.status_code == 422
+    assert "campaign ID is required for outbound" in response.json()["detail"]
+
+    missing_inbound = _mapping_payload(connection["id"])
+    missing_inbound["direction"] = "inbound"
+    missing_inbound["campaign_id"] = ""
+    missing_inbound["closer_campaigns"] = []
+    response = client.post("/api/outbound/vicidial/mappings", json=missing_inbound)
+    assert response.status_code == 422
+    assert "closer campaign is required for inbound" in response.json()["detail"]
+
+    valid_inbound = _mapping_payload(connection["id"])
+    valid_inbound["direction"] = "inbound"
+    valid_inbound["campaign_id"] = ""
+    response = client.post("/api/outbound/vicidial/mappings", json=valid_inbound)
     assert response.status_code == 200
 
 
@@ -223,6 +252,7 @@ def test_sip_requires_existing_endpoint_mode_and_preserves_existing_configuratio
     assert "no PBX mutation" in trunk["configuration"]
     assert "secret" not in trunk
     assert "registration" not in trunk
+    assert '${CHANNEL(peername)}' in guidance.json()["dialplan"]
 
 
 def test_lists_sanitized_asterisk_endpoints(monkeypatch, tmp_path):

@@ -83,9 +83,9 @@ def _dump(model: BaseModel) -> Dict[str, Any]:
 def _store():
     try:
         return get_vicidial_store()
-    except Exception:
+    except Exception as exc:
         logger.exception("VICIdial store unavailable")
-        raise HTTPException(status_code=500, detail="VICIdial store unavailable")
+        raise HTTPException(status_code=500, detail="VICIdial store unavailable") from exc
 
 
 def _active_agent(slug: str) -> Optional[Dict[str, Any]]:
@@ -111,9 +111,9 @@ def _call_history_store():
         from src.core.call_history import get_call_history_store
 
         return get_call_history_store()
-    except Exception:
+    except Exception as exc:
         logger.exception("Call History unavailable for VICIdial activity")
-        raise HTTPException(status_code=500, detail="Call History unavailable")
+        raise HTTPException(status_code=500, detail="Call History unavailable") from exc
 
 
 async def _engine_health_ari_connected_compat() -> Optional[bool]:
@@ -399,7 +399,6 @@ async def verify_connection(connection_id: str):
         logger.warning(
             "Invalid VICIdial connection configuration",
             exc_info=True,
-            extra={"connection_id": connection_id},
         )
         result = {
             "ready": False,
@@ -643,13 +642,15 @@ def _dialplan(mapping: Dict[str, Any]) -> str:
     agent = str(mapping.get("ai_agent") or "")
     conf_exten = str(mapping.get("conf_exten") or "s")
     trusted_endpoint = str(mapping.get("trusted_endpoint") or "").strip()
+    pbx_technology = str(mapping.get("pbx_technology") or "PJSIP").strip().upper()
+    endpoint_channel_item = "peername" if pbx_technology == "SIP" else "endpoint"
     lines = [
         f"[{context}]",
         f"exten => {conf_exten},1,NoOp(VICIdial Remote Agent call: ${{CALLERID(all)}})",
     ]
     if trusted_endpoint:
         lines.extend([
-            f' same => n,GotoIf($["${{CHANNEL(endpoint)}}"="{trusted_endpoint}"]?trusted:reject)',
+            f' same => n,GotoIf($["${{CHANNEL({endpoint_channel_item})}}"="{trusted_endpoint}"]?trusted:reject)',
             " same => n(reject),Hangup(21)",
             " same => n(trusted),NoOp(Trusted VICIdial endpoint accepted)",
         ])

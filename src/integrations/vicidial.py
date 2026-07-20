@@ -25,6 +25,8 @@ logger = structlog.get_logger(__name__)
 _STATUS_RE = re.compile(r"^[A-Za-z0-9_-]{1,6}$")
 _CALL_ID_RE = re.compile(r"^(?:Y|J|V|M|DC|S|LP|VH|XL)[A-Za-z0-9_.:-]+$")
 _ENV_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
+_REMOTE_AGENT_CORRELATION_MAX_SECONDS = 10.0
+_REMOTE_AGENT_STATUS_CONCURRENCY = 10
 
 
 class VicidialIntegrationError(ValueError):
@@ -456,6 +458,53 @@ class VicidialApiClient:
         start_user = int(str(mapping.get("user_start") or "0"))
         line_count = max(1, int(mapping.get("number_of_lines") or 1))
         allowed_users = {str(start_user + index) for index in range(line_count)}
+        loop = asyncio.get_running_loop()
+        correlation_timeout = max(
+            0.5,
+            min(
+                _REMOTE_AGENT_CORRELATION_MAX_SECONDS,
+                (self.timeout_ms / 1000.0) * 2,
+            ),
+        )
+        correlation_deadline = loop.time() + correlation_timeout
+
+        async def within_deadline(factory: Any) -> Any:
+            remaining = correlation_deadline - loop.time()
+            if remaining <= 0:
+                return None
+            try:
+                return await asyncio.wait_for(factory(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+
+        async def agent_status_batch(users: Iterable[str]) -> Optional[List[VicidialApiResult]]:
+            remaining = correlation_deadline - loop.time()
+            if remaining <= 0:
+                return None
+            semaphore = asyncio.Semaphore(_REMOTE_AGENT_STATUS_CONCURRENCY)
+
+            async def fetch(user: str) -> VicidialApiResult:
+                async with semaphore:
+                    return await self.agent_status(user)
+
+            try:
+                return await asyncio.wait_for(
+                    asyncio.gather(*(fetch(user) for user in users)),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                return None
+
+        def correlation_timed_out() -> tuple[None, list[Dict[str, Any]]]:
+            evidence.append(
+                VicidialApiResult(
+                    success=False,
+                    function="remote_agent_correlation",
+                    message="VICIdial Remote Agent correlation deadline exceeded",
+                    error_code="correlation_timeout",
+                ).to_dict()
+            )
+            return None, evidence
 
         def build_session(
             external_call_id: str,
@@ -536,12 +585,19 @@ class VicidialApiClient:
         # Agent identity comes from agent_status instead.
         if external_call_id:
             for index in range(max(1, attempts)):
-                result = await self.callid_info(external_call_id)
+                result = await within_deadline(
+                    lambda: self.callid_info(external_call_id)
+                )
+                if result is None:
+                    return correlation_timed_out()
                 evidence.append(result.to_dict())
                 if result.success:
                     candidates: list[VicidialSessionInfo] = []
-                    for user in sorted(allowed_users, key=int):
-                        agent_result = await self.agent_status(user)
+                    users = sorted(allowed_users, key=int)
+                    agent_results = await agent_status_batch(users)
+                    if agent_results is None:
+                        return correlation_timed_out()
+                    for user, agent_result in zip(users, agent_results):
                         evidence.append(agent_result.to_dict())
                         agent_state = str(
                             agent_result.data.get("status") or ""
@@ -579,7 +635,11 @@ class VicidialApiClient:
 
             fallback = str(mapping.get("static_agent_user") or "").strip()
             if line_count == 1 and fallback and fallback in allowed_users:
-                agent_result = await self.agent_status(fallback)
+                agent_result = await within_deadline(
+                    lambda: self.agent_status(fallback)
+                )
+                if agent_result is None:
+                    return correlation_timed_out()
                 evidence.append(agent_result.to_dict())
                 fallback_call_id = str(
                     agent_result.data.get("callerid")
@@ -590,7 +650,11 @@ class VicidialApiClient:
                     # The preceding exact path already queried callid_info. The
                     # fallback remains deliberately limited to a one-line map
                     # and never admits a different call identifier.
-                    result = await self.callid_info(external_call_id)
+                    result = await within_deadline(
+                        lambda: self.callid_info(external_call_id)
+                    )
+                    if result is None:
+                        return correlation_timed_out()
                     evidence.append(result.to_dict())
                     if result.success:
                         resolved = build_session(
@@ -611,8 +675,11 @@ class VicidialApiClient:
         # the mapping's campaign/direction. Exactly one candidate is required.
         for index in range(max(1, attempts)):
             candidates: list[VicidialSessionInfo] = []
-            for user in sorted(allowed_users, key=int):
-                agent_result = await self.agent_status(user)
+            users = sorted(allowed_users, key=int)
+            agent_results = await agent_status_batch(users)
+            if agent_results is None:
+                return correlation_timed_out()
+            for user, agent_result in zip(users, agent_results):
                 evidence.append(agent_result.to_dict())
                 agent_state = str(agent_result.data.get("status") or "").strip().upper()
                 candidate_call_id = str(
@@ -626,7 +693,11 @@ class VicidialApiClient:
                     candidate_call_id = validate_call_id(candidate_call_id)
                 except VicidialIntegrationError:
                     continue
-                call_result = await self.callid_info(candidate_call_id)
+                call_result = await within_deadline(
+                    lambda: self.callid_info(candidate_call_id)
+                )
+                if call_result is None:
+                    return correlation_timed_out()
                 evidence.append(call_result.to_dict())
                 if not call_result.success:
                     continue

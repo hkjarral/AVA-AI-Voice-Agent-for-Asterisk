@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -71,6 +72,7 @@ def _mapping(connection_id: str = "connection-1"):
         "name": "Lab RA",
         "direction": "both",
         "campaign_id": "TESTCAMP",
+        "closer_campaigns": ["TESTINGROUP"],
         "user_start": "9001",
         "number_of_lines": 1,
         "conf_exten": "8371",
@@ -266,6 +268,63 @@ async def test_non_agent_requests_include_headers_and_parse_dynamic_session(monk
 
 
 @pytest.mark.asyncio
+async def test_agent_status_correlation_uses_bounded_concurrency(monkeypatch):
+    monkeypatch.setenv("VICI_USER", "apiuser")
+    monkeypatch.setenv("VICI_PASS", "secret")
+    client = VicidialApiClient(_connection())
+    active = 0
+    peak = 0
+
+    async def callid_info(_call_id):
+        return VicidialApiResult(
+            success=True,
+            function="callid_info",
+            message="ok",
+            data={
+                "call_type": "OUT",
+                "campaign_id": "TESTCAMP",
+                "phone": "13165551212",
+            },
+        )
+
+    async def agent_status(user):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return VicidialApiResult(
+            success=True,
+            function="agent_status",
+            message="ok",
+            data={
+                "status": "INCALL" if user == "9001" else "READY",
+                "callerid": "M4050908070000012345" if user == "9001" else "",
+                "campaign_id": "TESTCAMP",
+                "phone_number": "13165551212",
+            },
+        )
+
+    monkeypatch.setattr(client, "callid_info", callid_info)
+    monkeypatch.setattr(client, "agent_status", agent_status)
+
+    info, _evidence = await client.resolve_remote_agent_session(
+        call_id="M4050908070000012345",
+        mapping={
+            "id": "map-1",
+            **_mapping(),
+            "number_of_lines": 25,
+            "static_agent_user": None,
+        },
+        attempts=1,
+    )
+
+    assert info is not None
+    assert info.agent_user == "9001"
+    assert 1 < peak <= 10
+
+
+@pytest.mark.asyncio
 async def test_installed_agent_status_callerid_must_match(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
     monkeypatch.setenv("VICI_PASS", "secret")
@@ -392,19 +451,35 @@ async def test_customer_name_on_sip_leg_resolves_by_unique_mapped_agent(monkeypa
 async def test_customer_name_scan_fails_closed_when_multiple_agents_match(monkeypatch):
     monkeypatch.setenv("VICI_USER", "apiuser")
     monkeypatch.setenv("VICI_PASS", "secret")
-    bodies = iter([
-        "status|callerid|campaign_id\nQUEUE|V7190228450000000008|TESTCAMP",
-        "call_id|call_type|campaign_id|user\n"
-        "V7190228450000000008|OUT|TESTCAMP|9001",
-        "status|callerid|campaign_id\nINCALL|V7190228450000000009|TESTCAMP",
-        "call_id|call_type|campaign_id|user\n"
-        "V7190228450000000009|OUT|TESTCAMP|9002",
-    ])
+    client = VicidialApiClient(_connection())
 
-    def factory(**_kwargs):
-        return _Session({}, next(bodies))
+    async def agent_status(user):
+        suffix = "8" if user == "9001" else "9"
+        return VicidialApiResult(
+            success=True,
+            function="agent_status",
+            message="ok",
+            data={
+                "status": "QUEUE" if user == "9001" else "INCALL",
+                "callerid": f"V719022845000000000{suffix}",
+                "campaign_id": "TESTCAMP",
+            },
+        )
 
-    client = VicidialApiClient(_connection(), session_factory=factory)
+    async def callid_info(call_id):
+        return VicidialApiResult(
+            success=True,
+            function="callid_info",
+            message="ok",
+            data={
+                "call_id": call_id,
+                "call_type": "OUT",
+                "campaign_id": "TESTCAMP",
+            },
+        )
+
+    monkeypatch.setattr(client, "agent_status", agent_status)
+    monkeypatch.setattr(client, "callid_info", callid_info)
     info, evidence = await client.resolve_remote_agent_session(
         call_id="Customer Display Name",
         mapping={"id": "map-1", **_mapping(), "number_of_lines": 2},

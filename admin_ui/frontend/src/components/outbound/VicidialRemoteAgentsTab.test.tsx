@@ -376,6 +376,11 @@ describe('VicidialRemoteAgentsTab tooltips', () => {
         expect(screen.getByLabelText('Remote Agent extension')).toHaveValue('');
         expect(screen.getByLabelText('PBX trunk name')).toHaveValue('');
         expect(screen.getByLabelText('Asterisk endpoint ID')).toHaveValue('');
+        expect(
+            screen.getAllByLabelText('Disposition name').map(input => input.getAttribute('value'))
+        ).toEqual(['sale', 'not_interested', 'dnc', 'callback']);
+        expect(screen.getByLabelText('dnc VICIdial status')).toHaveValue('DNC');
+        expect(screen.getByLabelText('callback VICIdial status')).toHaveValue('CALLBK');
     });
 
     it('shows scoped Remote Agent metrics and deep-links recent calls', async () => {

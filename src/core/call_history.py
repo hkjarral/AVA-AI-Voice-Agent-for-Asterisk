@@ -111,9 +111,10 @@ class CallRecord:
                     data[key] = json.loads(data[key])
                 except json.JSONDecodeError:
                     data[key] = [] if key in _list_fields else {}
-            elif data.get(key) is None and key in _list_fields:
-                # NULL columns (existing rows pre-migration) — surface as empty list.
-                data[key] = []
+            elif data.get(key) is None:
+                # NULL columns on pre-migration rows must retain their declared
+                # collection type instead of overriding dataclass defaults with None.
+                data[key] = [] if key in _list_fields else {}
         
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 

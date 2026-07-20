@@ -4,6 +4,25 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 
+def test_call_record_pre_migration_null_collections_keep_declared_types():
+    from src.core.call_history import CallRecord
+
+    record = CallRecord.from_dict(
+        {
+            "call_id": "pre-migration",
+            "pipeline_components": None,
+            "external_metadata": None,
+            "conversation_history": None,
+            "tool_calls": None,
+        }
+    )
+
+    assert record.pipeline_components == {}
+    assert record.external_metadata == {}
+    assert record.conversation_history == []
+    assert record.tool_calls == []
+
+
 @pytest.mark.asyncio
 async def test_agent_resource_tools_keep_canonical_call_history_names(tmp_path, monkeypatch):
     """Resource assignment changes config, not the existing audit/event schema."""
