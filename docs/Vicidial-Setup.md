@@ -427,7 +427,16 @@ as well as the final call status.
 The `callback` choice appears only when explicitly allowlisted. Offset-aware ISO times are
 converted to the configured VICIdial timezone; naive times are treated as VICIdial-local time.
 AAVA creates the callback with `update_lead`, queries `lead_callback_info`, and requires an exact
-active callback match before requesting terminal HANGUP with the callback status.
+active callback match before requesting terminal HANGUP with the callback status. If a transient
+API failure prevents that confirmation, AAVA stores the callback workflow in the same bounded,
+credential-reference-only retry queue used for DNC. Every callback retry reads and verifies the
+expected active row before attempting `update_lead`, which prevents an ambiguous timeout from
+creating a duplicate scheduled callback. A queued DNC selection supersedes and cancels a pending,
+not-yet-committed callback retry.
+
+For both DNC and callbacks, a successful side effect does not complete the durable record until
+the pending terminal request also succeeds or no active AAVA session remains to resume. This keeps
+a failed VICIdial HANGUP visible and retryable instead of losing it after the compliance action.
 
 ### Readiness
 

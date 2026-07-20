@@ -170,6 +170,7 @@ class VicidialStore:
                     call_id TEXT,
                     external_call_id TEXT,
                     status TEXT NOT NULL DEFAULT 'pending',
+                    workflow_completed INTEGER NOT NULL DEFAULT 0,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     next_attempt_at TEXT NOT NULL,
                     last_error TEXT,
@@ -207,6 +208,19 @@ class VicidialStore:
                     conn.execute(
                         f"ALTER TABLE vicidial_mappings ADD COLUMN {column_name} {definition}"
                     )
+            pending_action_columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(vicidial_pending_actions)"
+                )
+            }
+            if "workflow_completed" not in pending_action_columns:
+                conn.execute(
+                    """
+                    ALTER TABLE vicidial_pending_actions
+                    ADD COLUMN workflow_completed INTEGER NOT NULL DEFAULT 0
+                    """
+                )
 
             # Preview builds accepted ${NAME:-literal} credential references.
             # Strip any persisted inline default so connection reads can never
@@ -510,6 +524,7 @@ class VicidialStore:
         data = dict(row)
         data["connection"] = _decode(data.pop("connection_json", None), {})
         data["payload"] = _decode(data.pop("payload_json", None), {})
+        data["workflow_completed"] = bool(data.get("workflow_completed"))
         data["attempt_count"] = int(data.get("attempt_count") or 0)
         return data
 
@@ -522,14 +537,31 @@ class VicidialStore:
         call_id: Optional[str] = None,
         external_call_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Durably enqueue an idempotent VICIdial side effect for retry."""
+        """Durably enqueue a safely replayable VICIdial workflow for retry."""
         normalized_operation = str(operation or "").strip().lower()
-        if normalized_operation != "dnc":
-            raise ValueError("Only idempotent VICIdial DNC actions may be queued")
-        action_payload = {
-            "phone_number": str(payload.get("phone_number") or "").strip(),
-            "campaign_id": str(payload.get("campaign_id") or "").strip(),
-        }
+        if normalized_operation not in {"dnc", "callback"}:
+            raise ValueError("Unsupported VICIdial pending action")
+        if normalized_operation == "dnc":
+            action_payload = {
+                "phone_number": str(payload.get("phone_number") or "").strip(),
+                "campaign_id": str(payload.get("campaign_id") or "").strip(),
+            }
+        else:
+            action_payload = {
+                "lead_id": str(payload.get("lead_id") or "").strip(),
+                "campaign_id": str(payload.get("campaign_id") or "").strip(),
+                "callback_datetime": str(
+                    payload.get("callback_datetime") or ""
+                ).strip(),
+                "callback_type": str(
+                    payload.get("callback_type") or "ANYONE"
+                ).strip().upper(),
+                "callback_user": str(payload.get("callback_user") or "").strip(),
+                "comments": str(payload.get("comments") or "")[:200],
+            }
+        requested_status = str(payload.get("requested_status") or "").strip()
+        if requested_status:
+            action_payload["requested_status"] = requested_status
         retry_terminal = payload.get("retry_terminal")
         if isinstance(retry_terminal, Mapping):
             action_payload["retry_terminal"] = {
@@ -538,8 +570,18 @@ class VicidialStore:
                     retry_terminal.get("operation_reason") or "durable-dnc-retry"
                 )[:120],
             }
-        if not action_payload["phone_number"] or not action_payload["campaign_id"]:
+        if normalized_operation == "dnc" and (
+            not action_payload["phone_number"] or not action_payload["campaign_id"]
+        ):
             raise ValueError("Queued VICIdial DNC requires phone and campaign")
+        if normalized_operation == "callback" and (
+            not action_payload["lead_id"]
+            or not action_payload["campaign_id"]
+            or not action_payload["callback_datetime"]
+        ):
+            raise ValueError(
+                "Queued VICIdial callback requires lead, campaign, and date/time"
+            )
         connection_snapshot = {
             key: connection.get(key)
             for key in (
@@ -557,7 +599,7 @@ class VicidialStore:
             if connection.get(key) is not None
         }
         if not str(connection_snapshot.get("base_url") or "").strip():
-            raise ValueError("Queued VICIdial DNC requires a connection URL")
+            raise ValueError("Queued VICIdial action requires a connection URL")
         dedupe_material = {
             "operation": normalized_operation,
             "connection": str(
@@ -566,10 +608,13 @@ class VicidialStore:
                 or ""
             ),
             "payload": {
-                "phone_number": action_payload["phone_number"],
-                "campaign_id": action_payload["campaign_id"],
+                key: value
+                for key, value in action_payload.items()
+                if key != "retry_terminal"
             },
         }
+        if normalized_operation == "callback":
+            dedupe_material["call_id"] = str(call_id or "").strip()
         dedupe_key = hashlib.sha256(
             json.dumps(
                 dedupe_material,
@@ -631,6 +676,15 @@ class VicidialStore:
             ).fetchall()
         return [self._pending_action_dict(row) for row in rows]
 
+    def get_pending_action(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """Return the current durable action state, including terminal rows."""
+        with self._lock, self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM vicidial_pending_actions WHERE id=?",
+                (action_id,),
+            ).fetchone()
+        return self._pending_action_dict(row) if row else None
+
     def retry_pending_action(
         self,
         action_id: str,
@@ -655,8 +709,36 @@ class VicidialStore:
             )
         return cur.rowcount > 0
 
+    def mark_pending_action_workflow_completed(self, action_id: str) -> bool:
+        """Record that the queued side effect succeeded before terminal control."""
+        now = _now()
+        with self._lock, self._connection() as conn:
+            cur = conn.execute(
+                """
+                UPDATE vicidial_pending_actions
+                   SET workflow_completed=1,last_error=NULL,updated_at=?
+                 WHERE id=? AND status='pending'
+                """,
+                (now, action_id),
+            )
+        return cur.rowcount > 0
+
+    def cancel_pending_action(self, action_id: str) -> bool:
+        """Cancel a queued workflow that was superseded before it ran."""
+        now = _now()
+        with self._lock, self._connection() as conn:
+            cur = conn.execute(
+                """
+                UPDATE vicidial_pending_actions
+                   SET status='canceled',updated_at=?
+                 WHERE id=? AND status='pending' AND workflow_completed=0
+                """,
+                (now, action_id),
+            )
+        return cur.rowcount > 0
+
     def complete_pending_action(self, action_id: str) -> bool:
-        """Mark a queued action complete while retaining durable audit evidence."""
+        """Idempotently mark an action complete and retain durable audit evidence."""
         now = _now()
         with self._lock, self._connection() as conn:
             cur = conn.execute(
@@ -667,7 +749,13 @@ class VicidialStore:
                 """,
                 (now, now, action_id),
             )
-        return cur.rowcount > 0
+            if cur.rowcount > 0:
+                return True
+            row = conn.execute(
+                "SELECT status FROM vicidial_pending_actions WHERE id=?",
+                (action_id,),
+            ).fetchone()
+        return bool(row and str(row[0]) == "completed")
 
     def save_connection(
         self, payload: Mapping[str, Any], connection_id: Optional[str] = None

@@ -2032,105 +2032,164 @@ class Engine:
         except Exception:
             logger.debug("Pipeline readiness refresh loop exited", exc_info=True)
 
+    async def _execute_pending_vicidial_workflow(
+        self,
+        action: Dict[str, Any],
+        connection: Dict[str, Any],
+    ) -> bool:
+        """Replay one queued workflow through the normal verification path."""
+        from src.integrations.vicidial import VicidialSessionInfo
+        from src.tools.telephony.vicidial import (
+            commit_vicidial_disposition_workflow,
+        )
+
+        payload = dict(action.get("payload") or {})
+        call_id = str(action.get("call_id") or action.get("id") or "pending-action")
+        operation = str(action.get("operation") or "").strip().lower()
+        replay = CallSession(call_id=call_id, caller_channel_id=call_id)
+        replay.external_platform = "vicidial"
+        replay.external_connection = connection
+        replay.external_mapping = {}
+        replay.external_disposition_label = operation
+        replay.external_requested_disposition = str(
+            payload.get("requested_status")
+            or ("DNC" if operation == "dnc" else "CALLBK")
+        )
+        replay.external_disposition_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"requested_status", "retry_terminal"}
+        }
+        replay.external_session = VicidialSessionInfo(
+            external_call_id=str(action.get("external_call_id") or ""),
+            mapping_id="",
+            agent_user=str(payload.get("callback_user") or ""),
+            campaign_id=str(payload.get("campaign_id") or "") or None,
+            lead_id=str(payload.get("lead_id") or "") or None,
+            phone_number=str(payload.get("phone_number") or "") or None,
+        ).to_dict()
+        return await commit_vicidial_disposition_workflow(
+            replay,
+            queue_on_failure=False,
+        )
+
+    async def _retry_pending_vicidial_action(self, action: Dict[str, Any], store: Any) -> None:
+        """Run one current action while its per-call lifecycle lock is held."""
+        action_id = str(action.get("id") or "").strip()
+        operation = str(action.get("operation") or "").strip().lower()
+        connection = dict(action.get("connection") or {})
+        payload = dict(action.get("payload") or {})
+        connection_id = str(connection.get("id") or "").strip()
+        if connection_id:
+            connection = store.get_connection(connection_id) or connection
+        if operation not in {"dnc", "callback"}:
+            raise ValueError(f"Unsupported queued VICIdial action: {operation}")
+        if not bool(action.get("workflow_completed")):
+            workflow_ok = await self._execute_pending_vicidial_workflow(
+                action,
+                connection,
+            )
+            if not workflow_ok:
+                raise RuntimeError(
+                    f"VICIdial {operation} workflow was not confirmed"
+                )
+            if not store.mark_pending_action_workflow_completed(action_id):
+                raise RuntimeError(
+                    f"VICIdial {operation} retry record could not be advanced"
+                )
+
+        retry_terminal = payload.get("retry_terminal")
+        call_id = str(action.get("call_id") or "").strip()
+        if isinstance(retry_terminal, dict) and call_id:
+            session = await self.session_store.get_by_call_id(call_id)
+            if (
+                session
+                and getattr(session, "external_platform", None) == "vicidial"
+                and not bool(getattr(session, "external_finalized", False))
+            ):
+                disposition_payload = dict(
+                    getattr(session, "external_disposition_payload", {}) or {}
+                )
+                session_action_id = str(
+                    disposition_payload.get("workflow_queue_id") or ""
+                ).strip()
+                session_operation = str(
+                    getattr(session, "external_disposition_label", None) or ""
+                ).strip().lower()
+                if session_action_id == action_id and session_operation == operation:
+                    disposition_payload["workflow_committed"] = True
+                    disposition_payload["workflow_queued"] = False
+                    session.external_disposition_payload = disposition_payload
+                    await self._save_session(session)
+                    finalized = await self._finalize_vicidial_call_locked(
+                        session,
+                        semantic=str(
+                            retry_terminal.get("semantic") or "ai_hangup"
+                        ),
+                        operation_reason=str(
+                            retry_terminal.get("operation_reason")
+                            or "durable-workflow-retry"
+                        ),
+                    )
+                    if not finalized:
+                        raise RuntimeError(
+                            "VICIdial terminal retry was not confirmed"
+                        )
+                else:
+                    logger.info(
+                        "Skipped stale VICIdial terminal retry after disposition replacement",
+                        action_id=action_id,
+                        call_id=call_id,
+                        queued_operation=operation,
+                        current_operation=session_operation,
+                    )
+
+        if not store.complete_pending_action(action_id):
+            raise RuntimeError("VICIdial retry record could not be completed")
+
     async def _retry_pending_vicidial_actions(self) -> int:
-        """Retry due idempotent VICIdial compliance actions from durable storage."""
+        """Retry durable workflows and their required terminal control."""
+        from src.core.vicidial_lifecycle import vicidial_lifecycle_lock
         from src.core.vicidial_store import get_vicidial_store
-        from src.integrations.vicidial import VicidialApiClient
 
         store = get_vicidial_store()
         completed = 0
-        for action in store.list_pending_actions(limit=20):
-            action_id = str(action.get("id") or "").strip()
-            operation = str(action.get("operation") or "").strip().lower()
-            connection = dict(action.get("connection") or {})
-            payload = dict(action.get("payload") or {})
-            connection_id = str(connection.get("id") or "").strip()
-            if connection_id:
-                connection = store.get_connection(connection_id) or connection
+        for listed_action in store.list_pending_actions(limit=20):
+            action_id = str(listed_action.get("id") or "").strip()
+            call_id = str(listed_action.get("call_id") or "").strip()
+            action = listed_action
             try:
-                if operation != "dnc":
-                    raise ValueError(f"Unsupported queued VICIdial action: {operation}")
-                result = await VicidialApiClient(connection).add_dnc_phone(
-                    phone_number=str(payload.get("phone_number") or ""),
-                    campaign_id=str(payload.get("campaign_id") or ""),
+                if call_id:
+                    async with vicidial_lifecycle_lock(call_id):
+                        current = store.get_pending_action(action_id)
+                        if not current or current.get("status") != "pending":
+                            continue
+                        action = current
+                        await self._retry_pending_vicidial_action(action, store)
+                else:
+                    await self._retry_pending_vicidial_action(action, store)
+                completed += 1
+                logger.info(
+                    "Durable VICIdial action completed",
+                    action_id=action_id,
+                    operation=action.get("operation"),
+                    call_id=action.get("call_id"),
+                    external_call_id=action.get("external_call_id"),
                 )
-                if result.success:
-                    store.complete_pending_action(action_id)
-                    completed += 1
-                    logger.info(
-                        "Durable VICIdial action completed",
-                        action_id=action_id,
-                        operation=operation,
-                        call_id=action.get("call_id"),
-                        external_call_id=action.get("external_call_id"),
-                    )
-                    retry_terminal = payload.get("retry_terminal")
-                    if isinstance(retry_terminal, dict):
-                        try:
-                            call_id = str(action.get("call_id") or "").strip()
-                            session = (
-                                await self.session_store.get_by_call_id(call_id)
-                                if call_id
-                                else None
-                            )
-                            if (
-                                session
-                                and getattr(session, "external_platform", None)
-                                == "vicidial"
-                                and not bool(
-                                    getattr(session, "external_finalized", False)
-                                )
-                            ):
-                                disposition_payload = dict(
-                                    getattr(
-                                        session,
-                                        "external_disposition_payload",
-                                        {},
-                                    )
-                                    or {}
-                                )
-                                disposition_payload["workflow_committed"] = True
-                                disposition_payload["workflow_queued"] = False
-                                session.external_disposition_payload = disposition_payload
-                                await self._save_session(session)
-                                finalized = await self._finalize_vicidial_call(
-                                    session,
-                                    semantic=str(
-                                        retry_terminal.get("semantic") or "ai_hangup"
-                                    ),
-                                    operation_reason=str(
-                                        retry_terminal.get("operation_reason")
-                                        or "durable-dnc-retry"
-                                    ),
-                                )
-                                if not finalized:
-                                    logger.warning(
-                                        "VICIdial DNC completed but terminal retry was not confirmed",
-                                        action_id=action_id,
-                                        call_id=call_id,
-                                    )
-                        except Exception:
-                            logger.warning(
-                                "VICIdial DNC completed but terminal retry raised",
-                                action_id=action_id,
-                                call_id=action.get("call_id"),
-                                exc_info=True,
-                            )
-                    continue
-                error = result.error_code or result.message or "VICIdial rejected action"
+                continue
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             attempts = int(action.get("attempt_count") or 0) + 1
             retry_after = min(900.0, 15.0 * (2 ** min(attempts - 1, 6)))
             store.retry_pending_action(
                 action_id,
-                error=str(error),
+                error=error,
                 retry_after_seconds=retry_after,
             )
             logger.warning(
                 "Durable VICIdial action retry deferred",
                 action_id=action_id,
-                operation=operation,
+                operation=action.get("operation"),
                 attempt=attempts,
                 retry_after_seconds=retry_after,
             )
@@ -4626,6 +4685,26 @@ class Engine:
                         session.external_disposition_label = semantic
                 else:
                     session.external_disposition_label = "vicidial_terminal"
+                queued_action_id = str(
+                    dict(
+                        getattr(session, "external_disposition_payload", {}) or {}
+                    ).get("workflow_queue_id")
+                    or ""
+                ).strip()
+                if queued_action_id:
+                    try:
+                        from src.core.vicidial_store import get_vicidial_store
+
+                        get_vicidial_store().complete_pending_action(
+                            queued_action_id
+                        )
+                    except Exception:
+                        logger.warning(
+                            "VICIdial terminal control succeeded but its retry record was not completed",
+                            call_id=session.call_id,
+                            action_id=queued_action_id,
+                            exc_info=True,
+                        )
                 try:
                     from src.core.vicidial_store import get_vicidial_store
 

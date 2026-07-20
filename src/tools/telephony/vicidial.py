@@ -50,10 +50,79 @@ def _dialing_campaign_id(
     return str(info.campaign_id or mapping.get("campaign_id") or "").strip()
 
 
+def _queue_pending_workflow(
+    session: Any,
+    *,
+    semantic: str,
+    connection: Dict[str, Any],
+    payload: Dict[str, Any],
+    info: VicidialSessionInfo,
+    retry_terminal: Optional[Dict[str, str]],
+) -> bool:
+    """Persist a safely replayable workflow; return true if already completed."""
+    try:
+        from src.core.vicidial_store import get_vicidial_store
+
+        queued_payload = dict(payload)
+        queued_payload["requested_status"] = str(
+            getattr(session, "external_requested_disposition", None) or ""
+        )
+        if retry_terminal:
+            queued_payload["retry_terminal"] = {
+                "semantic": str(retry_terminal.get("semantic") or "ai_hangup"),
+                "operation_reason": str(
+                    retry_terminal.get("operation_reason") or "durable-workflow-retry"
+                ),
+            }
+        queued = get_vicidial_store().enqueue_pending_action(
+            operation=semantic,
+            connection=connection,
+            payload=queued_payload,
+            call_id=str(getattr(session, "call_id", None) or "") or None,
+            external_call_id=info.external_call_id or None,
+        )
+        action_id = str(queued.get("id") or "").strip()
+        if not action_id:
+            raise RuntimeError("VICIdial retry queue did not return an action ID")
+        if str(queued.get("status") or "") == "completed":
+            payload["workflow_committed"] = True
+            session.external_disposition_payload = payload
+            session.external_events.append({
+                "operation": f"{semantic}_queue",
+                "success": True,
+                "message": f"An identical queued {semantic} action was already completed",
+                "action_id": action_id,
+            })
+            return True
+        payload["workflow_queued"] = True
+        payload["workflow_queue_id"] = action_id
+        session.external_disposition_payload = payload
+        session.external_events.append({
+            "operation": f"{semantic}_queue",
+            "success": True,
+            "message": f"{semantic.title()} action queued durably for retry",
+            "action_id": action_id,
+        })
+    except Exception as exc:
+        session.external_events.append({
+            "operation": f"{semantic}_queue",
+            "success": False,
+            "message": f"{semantic.title()} retry queue failed: {type(exc).__name__}",
+        })
+        logger.error(
+            "VICIdial workflow retries exhausted and durable queueing failed",
+            call_id=getattr(session, "call_id", None),
+            workflow=semantic,
+            exc_info=True,
+        )
+    return False
+
+
 async def commit_vicidial_disposition_workflow(
     session: Any,
     *,
     retry_terminal: Optional[Dict[str, str]] = None,
+    queue_on_failure: bool = True,
 ) -> bool:
     """Commit and verify a pending DNC/callback side effect before hangup."""
     semantic = str(getattr(session, "external_disposition_label", None) or "").strip()
@@ -85,10 +154,12 @@ async def commit_vicidial_disposition_workflow(
                     try:
                         from src.core.vicidial_store import get_vicidial_store
 
-                        get_vicidial_store().complete_pending_action(queued_action_id)
+                        get_vicidial_store().mark_pending_action_workflow_completed(
+                            queued_action_id
+                        )
                     except Exception:
                         logger.warning(
-                            "VICIdial DNC succeeded but its retry record was not completed",
+                            "VICIdial DNC succeeded but its retry record was not advanced",
                             call_id=getattr(session, "call_id", None),
                             action_id=queued_action_id,
                             exc_info=True,
@@ -98,55 +169,14 @@ async def commit_vicidial_disposition_workflow(
                 return True
             if attempt < DNC_WRITE_ATTEMPTS:
                 await asyncio.sleep(DNC_RETRY_DELAY_SECONDS)
-        try:
-            from src.core.vicidial_store import get_vicidial_store
-
-            queued_payload = dict(payload)
-            if retry_terminal:
-                queued_payload["retry_terminal"] = {
-                    "semantic": str(retry_terminal.get("semantic") or "ai_hangup"),
-                    "operation_reason": str(
-                        retry_terminal.get("operation_reason") or "durable-dnc-retry"
-                    ),
-                }
-            queued = get_vicidial_store().enqueue_pending_action(
-                operation="dnc",
+        if queue_on_failure:
+            return _queue_pending_workflow(
+                session,
+                semantic=semantic,
                 connection=connection,
-                payload=queued_payload,
-                call_id=str(getattr(session, "call_id", None) or "") or None,
-                external_call_id=info.external_call_id or None,
-            )
-            if not str(queued.get("id") or "").strip():
-                raise RuntimeError("VICIdial DNC retry queue did not return an action ID")
-            if str(queued.get("status") or "") == "completed":
-                payload["workflow_committed"] = True
-                session.external_disposition_payload = payload
-                session.external_events.append({
-                    "operation": "dnc_queue",
-                    "success": True,
-                    "message": "An identical queued DNC action was already completed",
-                    "action_id": queued.get("id"),
-                })
-                return True
-            payload["workflow_queued"] = True
-            payload["workflow_queue_id"] = queued.get("id")
-            session.external_disposition_payload = payload
-            session.external_events.append({
-                "operation": "dnc_queue",
-                "success": True,
-                "message": "DNC action queued durably for retry",
-                "action_id": queued.get("id"),
-            })
-        except Exception as exc:
-            session.external_events.append({
-                "operation": "dnc_queue",
-                "success": False,
-                "message": f"DNC retry queue failed: {type(exc).__name__}",
-            })
-            logger.error(
-                "VICIdial DNC retries exhausted and durable queueing failed",
-                call_id=getattr(session, "call_id", None),
-                exc_info=True,
+                payload=payload,
+                info=info,
+                retry_terminal=retry_terminal,
             )
         return False
 
@@ -178,6 +208,15 @@ async def commit_vicidial_disposition_workflow(
             "operation": "callback_verify",
             **verification.to_dict(),
         })
+        if queue_on_failure:
+            return _queue_pending_workflow(
+                session,
+                semantic=semantic,
+                connection=connection,
+                payload=payload,
+                info=info,
+                retry_terminal=retry_terminal,
+            )
         return False
     matching_rows = [
         row
@@ -198,6 +237,15 @@ async def commit_vicidial_disposition_workflow(
         )
         session.external_events.append({"operation": "callback", **result.to_dict()})
         if not result.success:
+            if queue_on_failure:
+                return _queue_pending_workflow(
+                    session,
+                    semantic=semantic,
+                    connection=connection,
+                    payload=payload,
+                    info=info,
+                    retry_terminal=retry_terminal,
+                )
             return False
         verification = await client.lead_callback_info(
             lead_id=str(payload.get("lead_id") or info.lead_id or "")
@@ -222,6 +270,30 @@ async def commit_vicidial_disposition_workflow(
     if verification.success:
         payload["workflow_committed"] = True
         session.external_disposition_payload = payload
+        queued_action_id = str(payload.get("workflow_queue_id") or "").strip()
+        if queued_action_id:
+            try:
+                from src.core.vicidial_store import get_vicidial_store
+
+                get_vicidial_store().mark_pending_action_workflow_completed(
+                    queued_action_id
+                )
+            except Exception:
+                logger.warning(
+                    "VICIdial callback succeeded but its retry record was not advanced",
+                    call_id=getattr(session, "call_id", None),
+                    action_id=queued_action_id,
+                    exc_info=True,
+                )
+    elif queue_on_failure:
+        return _queue_pending_workflow(
+            session,
+            semantic=semantic,
+            connection=connection,
+            payload=payload,
+            info=info,
+            retry_terminal=retry_terminal,
+        )
     return bool(verification.success)
 
 
@@ -331,6 +403,24 @@ async def _execute_vicidial_transfer_locked(
     session.transfer_destination = target
     session.call_outcome = "transferred"
     await context.session_store.upsert_call(session)
+    queued_action_id = str(
+        dict(getattr(session, "external_disposition_payload", {}) or {}).get(
+            "workflow_queue_id"
+        )
+        or ""
+    ).strip()
+    if queued_action_id:
+        try:
+            from src.core.vicidial_store import get_vicidial_store
+
+            get_vicidial_store().complete_pending_action(queued_action_id)
+        except Exception:
+            logger.warning(
+                "VICIdial transfer succeeded but its retry record was not completed",
+                call_id=context.call_id,
+                action_id=queued_action_id,
+                exc_info=True,
+            )
     try:
         from src.core.vicidial_store import get_vicidial_store
 
@@ -453,6 +543,8 @@ class SetCallDispositionTool(Tool):
                     sorted(dispositions)
                 ),
             }
+        if semantic in {"dnc", "callback"}:
+            status = status_for(mapping, semantic, status)
 
         existing_semantic = str(
             getattr(session, "external_disposition_label", None) or ""
@@ -517,6 +609,62 @@ class SetCallDispositionTool(Tool):
                 "callback_user": info.agent_user,
                 "comments": str(parameters.get("comments") or "")[:200],
             }
+
+        if existing_semantic == "callback" and semantic in {"callback", "dnc"}:
+            queued_action_id = str(
+                dict(
+                    getattr(session, "external_disposition_payload", {}) or {}
+                ).get("workflow_queue_id")
+                or ""
+            ).strip()
+            if queued_action_id:
+                try:
+                    from src.core.vicidial_store import get_vicidial_store
+
+                    retry_store = get_vicidial_store()
+                    queued_action = retry_store.get_pending_action(queued_action_id)
+                    if queued_action and bool(
+                        queued_action.get("workflow_completed")
+                    ):
+                        if semantic == "callback":
+                            return {
+                                "status": "success",
+                                "message": (
+                                    "The scheduled callback is already committed and "
+                                    "cannot be changed on this call."
+                                ),
+                                "vicidial_status": str(
+                                    getattr(
+                                        session,
+                                        "external_requested_disposition",
+                                        None,
+                                    )
+                                    or status
+                                ),
+                            }
+                        if not retry_store.complete_pending_action(queued_action_id):
+                            raise RuntimeError(
+                                "committed callback retry could not be closed"
+                            )
+                    elif queued_action and queued_action.get("status") == "pending":
+                        if not retry_store.cancel_pending_action(queued_action_id):
+                            raise RuntimeError(
+                                "pending callback retry could not be canceled"
+                            )
+                except Exception:
+                    logger.warning(
+                        "VICIdial callback retry could not be closed before replacement",
+                        call_id=context.call_id,
+                        action_id=queued_action_id,
+                        exc_info=True,
+                    )
+                    return {
+                        "status": "failed",
+                        "message": (
+                            "The pending VICIdial callback could not be safely replaced. "
+                            "Please retry."
+                        ),
+                    }
 
         session.external_requested_disposition = status
         session.external_disposition_label = semantic
