@@ -4657,6 +4657,36 @@ class Engine:
             resolution_source=resolved.resolution_source,
         )
 
+    async def _reject_vicidial_admission(
+        self,
+        session: CallSession,
+        caller_channel_id: str,
+    ) -> None:
+        """Reject an uncontrolled VICIdial leg and clean up failed ARI hangups."""
+        session.error_message = "VICIdial Remote Agent correlation failed"
+        session.call_outcome = "failed"
+        await self._save_session(session)
+        hangup_succeeded = False
+        try:
+            hangup_succeeded = bool(
+                await self.ari_client.hangup_channel(caller_channel_id)
+            )
+        except Exception:
+            logger.warning(
+                "Failed to hang up rejected VICIdial channel",
+                call_id=caller_channel_id,
+                exc_info=True,
+            )
+        if not hangup_succeeded:
+            logger.warning(
+                "Rejected VICIdial hangup was not accepted; forcing call cleanup",
+                call_id=caller_channel_id,
+            )
+            await self._cleanup_call(
+                caller_channel_id,
+                force_caller_hangup=True,
+            )
+
     async def _finalize_vicidial_call(
         self,
         session: CallSession,
@@ -5254,17 +5284,10 @@ class Engine:
                     exc_info=True,
                 )
                 if getattr(session, "external_platform", None) == "vicidial":
-                    session.error_message = "VICIdial Remote Agent correlation failed"
-                    session.call_outcome = "failed"
-                    await self._save_session(session)
-                    try:
-                        await self.ari_client.hangup_channel(caller_channel_id)
-                    except Exception:
-                        logger.warning(
-                            "Failed to hang up rejected VICIdial channel",
-                            call_id=caller_channel_id,
-                            exc_info=True,
-                        )
+                    await self._reject_vicidial_admission(
+                        session,
+                        caller_channel_id,
+                    )
                     return
 
             # P1: Resolve Audio Profile (profiles.* + contexts.* + channel var overrides)

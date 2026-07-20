@@ -284,6 +284,33 @@ async def test_hydration_rejects_call_when_mapping_agent_cannot_be_applied(monke
 
 
 @pytest.mark.asyncio
+async def test_rejected_admission_forces_cleanup_when_ari_hangup_fails():
+    engine = Engine.__new__(Engine)
+    engine.ari_client = SimpleNamespace(
+        hangup_channel=AsyncMock(return_value=False)
+    )
+    engine._save_session = AsyncMock()
+    engine._cleanup_call = AsyncMock()
+    session = CallSession(
+        call_id="ari-rejected",
+        caller_channel_id="ari-rejected",
+    )
+    session.external_platform = "vicidial"
+
+    await Engine._reject_vicidial_admission(
+        engine,
+        session,
+        "ari-rejected",
+    )
+
+    assert session.call_outcome == "failed"
+    engine._cleanup_call.assert_awaited_once_with(
+        "ari-rejected",
+        force_caller_hangup=True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_hydration_rejects_stale_generated_dialplan(monkeypatch):
     mapping = {"id": "map-1", "enabled": True, **_mapping()}
     connection = {"id": "connection-1", "enabled": True, **_connection()}

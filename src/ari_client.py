@@ -504,8 +504,8 @@ class ARIClient:
         logger.info("Answering channel", channel_id=channel_id)
         await self.send_command("POST", f"channels/{channel_id}/answer")
 
-    async def hangup_channel(self, channel_id: str):
-        """Hang up a channel."""
+    async def hangup_channel(self, channel_id: str) -> bool:
+        """Hang up a channel and report whether ARI accepted the request."""
         logger.info("Hanging up channel", channel_id=channel_id)
         # A 404 here is the normal post-StasisEnd race: caller disconnected first,
         # Asterisk destroyed the channel, and our cleanup hangup arrives a beat later.
@@ -516,6 +516,11 @@ class ARIClient:
                 "Hangup no-op: channel already destroyed (expected post-StasisEnd race)",
                 channel_id=channel_id,
             )
+            return True
+        if not isinstance(response, dict):
+            return False
+        status = response.get("status")
+        return status is None or int(status) < 400
 
     async def execute_application(self, channel_id: str, app_name: str, app_data: str) -> bool:
         """Execute an Asterisk application on a channel."""
@@ -608,8 +613,13 @@ class ARIClient:
                 f"channels/{channel_id}/variable",
                 data={"variable": variable, "value": value},
             )
-            # Some ARI implementations return {} on success.
-            return resp is not None
+            # Some ARI implementations return {} on success. send_command()
+            # also returns a status dictionary for HTTP/transport failures, so
+            # non-None alone is not a success signal.
+            if not isinstance(resp, dict):
+                return False
+            status = resp.get("status")
+            return status is None or int(status) < 400
         except Exception:
             logger.error("Failed to set channel variable", channel_id=channel_id, variable=variable, exc_info=True)
             return False
