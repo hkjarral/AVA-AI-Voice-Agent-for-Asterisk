@@ -67,8 +67,9 @@ def test_update_recover_help_documents_operator_choices() -> None:
 def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     script = _script()
 
-    assert "AGENT_VERSION=${version}" in script
-    assert "install-cli.sh" in script
+    assert "releases/download/${version}" in script
+    assert "mktemp -d /tmp/aava-cli-install.XXXXXXXXXX" in script
+    assert "SHA256SUMS" in script
     assert "install_branch_cli()" in script
     assert "git clone --quiet --depth 1 --single-branch --branch" in script
     assert "golang:1.22-bookworm" in script
@@ -81,33 +82,55 @@ def test_update_recover_release_bootstrap_fetches_pinned_installer(tmp_path: Pat
     fake_bin.mkdir()
     log = tmp_path / "commands.log"
     (fake_bin / "curl").write_text(
-        "#!/bin/sh\n"
-        "printf 'curl %s\\n' \"$*\" >>\"$AAVA_TEST_LOG\"\n"
-        "printf 'exit 0\\n'\n",
+        "#!/bin/bash\n"
+        "out=''\n"
+        "url=''\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=\"$2\"; shift 2 ;;\n"
+        "    http*) url=\"$1\"; shift ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "printf 'curl %s %s\\n' \"$url\" \"$out\" >>\"$AAVA_TEST_LOG\"\n"
+        "case \"$url\" in\n"
+        "  */SHA256SUMS) printf 'abc123  agent-linux-amd64\\n' >\"$out\" ;;\n"
+        "  *) printf 'binary\\n' >\"$out\" ;;\n"
+        "esac\n",
         encoding="utf-8",
     )
-    (fake_bin / "bash").write_text(
+    (fake_bin / "sha256sum").write_text(
         "#!/bin/sh\n"
-        "printf 'bash AGENT_VERSION=%s INSTALL_DIR=%s\\n' \"$AGENT_VERSION\" \"$INSTALL_DIR\" >>\"$AAVA_TEST_LOG\"\n"
-        "cat >/dev/null\n",
+        "printf 'abc123  %s\\n' \"$1\"\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "uname").write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  -s) printf 'Linux\\n' ;;\n"
+        "  -m) printf 'x86_64\\n' ;;\n"
+        "  *) /usr/bin/uname \"$@\" ;;\n"
+        "esac\n",
         encoding="utf-8",
     )
     (fake_bin / "curl").chmod(0o755)
-    (fake_bin / "bash").chmod(0o755)
+    (fake_bin / "sha256sum").chmod(0o755)
+    (fake_bin / "uname").chmod(0o755)
 
     harness = f"""
-set -euo pipefail
-export AAVA_TEST_LOG={log}
-source "$SOURCE"
+    set -euo pipefail
+    export AAVA_TEST_LOG={log}
+    source "$SOURCE"
 AGENT_BIN="{tmp_path}/install/agent"
 install_release_cli v7.4.2
 """
     _run_bash_harness(harness, tmp_path)
 
     commands = log.read_text(encoding="utf-8")
-    assert "/v7.4.2/scripts/install-cli.sh" in commands
+    assert "/releases/download/v7.4.2/agent-linux-amd64" in commands
+    assert "/releases/download/v7.4.2/SHA256SUMS" in commands
     assert "/main/scripts/install-cli.sh" not in commands
-    assert f"bash AGENT_VERSION=v7.4.2 INSTALL_DIR={tmp_path}/install" in commands
+    assert (tmp_path / "install" / "agent").read_text(encoding="utf-8") == "binary\n"
 
 
 def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> None:
@@ -182,7 +205,7 @@ def test_update_recover_preflights_runtime_dependencies() -> None:
     script = _script()
 
     main = script.split("main() {", 1)[1]
-    for command in ("bash", "git", "python3", "stat", "mktemp", "chown", "chmod", "install", "date", "sed", "tee", "cp"):
+    for command in ("bash", "git", "python3", "stat", "mktemp", "chown", "chmod", "install", "date", "awk", "sed", "tr", "tee", "cp"):
         assert f"need_cmd {command}" in main
     assert "need_cmd find" not in main
     assert "need_cmd sort" not in main

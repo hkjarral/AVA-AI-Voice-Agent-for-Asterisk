@@ -26,6 +26,7 @@ REPO=""
 RECOVERY_DIR=""
 TRAVERSAL_STATE=""
 TEMP_HOME=""
+TEMP_CLI_DIR=""
 SETPRIV_BIN=""
 TARGET_UID=""
 TARGET_GID=""
@@ -660,22 +661,72 @@ resolve_latest_release() {
   printf '%s\n' "${latest}"
 }
 
+download_url() {
+  local url="$1"
+  local dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "${dest}" "${url}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${dest}" "${url}"
+  else
+    die "curl or wget is required to download release assets"
+  fi
+}
+
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${path}" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${path}" | awk '{print $1}'
+  else
+    die "sha256sum or shasum is required to verify release assets"
+  fi
+}
+
+release_binary_name() {
+  local os arch platform
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  case "${os}" in
+    linux) platform="linux" ;;
+    *) die "release CLI recovery supports Linux hosts only, got OS: ${os}" ;;
+  esac
+  case "${arch}" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) die "unsupported architecture for release CLI recovery: ${arch}" ;;
+  esac
+  printf 'agent-%s-%s\n' "${platform}" "${arch}"
+}
+
 install_release_cli() {
   local version="$1"
   local install_dir
-  local installer_url
+  local binary_name base_url binary_path sums_path expected actual
   install_dir="$(dirname "${AGENT_BIN}")"
-  installer_url="https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${version}/scripts/install-cli.sh"
+  binary_name="$(release_binary_name)"
+  base_url="https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/download/${version}"
+  TEMP_CLI_DIR="$(mktemp -d /tmp/aava-cli-install.XXXXXXXXXX)" || die "failed to create private CLI install directory"
+  chmod 0700 "${TEMP_CLI_DIR}" || die "failed to secure private CLI install directory"
+  binary_path="${TEMP_CLI_DIR}/${binary_name}"
+  sums_path="${TEMP_CLI_DIR}/SHA256SUMS"
+
   log "==> Installing agent CLI ${version} to ${AGENT_BIN}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${installer_url}" \
-      | env "AGENT_VERSION=${version}" "INSTALL_DIR=${install_dir}" bash
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO- "${installer_url}" \
-      | env "AGENT_VERSION=${version}" "INSTALL_DIR=${install_dir}" bash
-  else
-    die "curl or wget is required to install the release CLI"
-  fi
+  download_url "${base_url}/${binary_name}" "${binary_path}" \
+    || die "failed to download release CLI asset ${binary_name}"
+  download_url "${base_url}/SHA256SUMS" "${sums_path}" \
+    || die "failed to download release CLI checksums"
+  expected="$(awk -v name="${binary_name}" '$2 == name || $2 == "*" name { print $1; exit }' "${sums_path}")"
+  [ -n "${expected}" ] || die "checksum for ${binary_name} not found in SHA256SUMS"
+  actual="$(sha256_file "${binary_path}")"
+  [ "${expected}" = "${actual}" ] || die "checksum mismatch for ${binary_name}"
+
+  mkdir -p -- "${install_dir}" || die "failed to create CLI install directory for ${AGENT_BIN}"
+  install -m 0755 "${binary_path}" "${AGENT_BIN}" \
+    || die "failed to install release CLI to ${AGENT_BIN}"
+  rm -rf -- "${TEMP_CLI_DIR}"
+  TEMP_CLI_DIR=""
 }
 
 install_branch_cli() {
@@ -803,6 +854,9 @@ cleanup() {
   fi
   if [ -n "${TEMP_HOME}" ]; then
     rm -rf -- "${TEMP_HOME}" 2>/dev/null || true
+  fi
+  if [ -n "${TEMP_CLI_DIR}" ]; then
+    rm -rf -- "${TEMP_CLI_DIR}" 2>/dev/null || true
   fi
   if [ -n "${RECOVERY_DIR}" ] && [ -d "${RECOVERY_DIR}" ] && [ ! -L "${RECOVERY_DIR}" ] \
     && [ -n "${TARGET_UID}" ] && [ -n "${TARGET_GID}" ]; then
@@ -1007,7 +1061,9 @@ main() {
   need_cmd chmod
   need_cmd install
   need_cmd date
+  need_cmd awk
   need_cmd sed
+  need_cmd tr
   need_cmd tee
   need_cmd cp
   command -v realpath >/dev/null 2>&1 || need_cmd readlink
