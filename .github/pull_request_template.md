@@ -39,8 +39,8 @@ For telephony changes, include:
 - [ ] Draft opened after a coherent vertical slice was ready to review
 - [ ] One Codex draft review was requested, CodeRabbit completed, and both were assessed together
 - [ ] Review fixes were pushed as a cohesive batch
-- [ ] Final head is frozen and the `full-ci` gate has passed
-- [ ] Final `@codex review` and `@coderabbitai full review` completed on the frozen head
+- [ ] Final head is frozen, the PR is ready, and the final CI gate has passed
+- [ ] Final Codex ready-state review and `@coderabbitai full review` completed on the frozen head
 - [ ] All actionable conversations are resolved
 
 See the [pull-request workflow](../docs/contributing/PULL_REQUEST_WORKFLOW.md) for the expected review and CI sequence.

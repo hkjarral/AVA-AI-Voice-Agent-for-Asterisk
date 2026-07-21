@@ -22,7 +22,7 @@ Report a finding only when it is introduced or exposed by the PR, has a concrete
 1. Open a draft only after a coherent vertical slice is ready to evaluate.
 2. At the first draft checkpoint, request one Codex review and wait for CodeRabbit. Assess both reviewers together and make one cohesive fix batch.
 3. Continue implementation without retriggering either reviewer on every push. CodeRabbit is configured to pause after its first reviewed draft commit.
-4. At final freeze, apply the `full-ci` label, request `@codex review` and `@coderabbitai full review` once, and do not push while those reviews are pending.
+4. At final freeze, mark the draft ready. The transition runs final CI and triggers Codex; request `@coderabbitai full review` once, and do not push while either review is pending. Use `full-ci` only when final validation must run without leaving draft state.
 5. Triage both final reviews together. If fixes are required, make one final cohesive batch and rerun the final gate before merge.
 
 See [the pull-request workflow](docs/contributing/PULL_REQUEST_WORKFLOW.md) for commands, CI behavior, and merge requirements.

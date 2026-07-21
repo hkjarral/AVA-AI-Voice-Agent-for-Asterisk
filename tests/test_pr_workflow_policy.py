@@ -36,7 +36,7 @@ def test_ci_has_fast_draft_and_final_validation_gate() -> None:
 
     pull_request = workflow["on"]["pull_request"]
     assert "labeled" in pull_request["types"]
-    assert "ready_for_review" not in pull_request["types"]
+    assert "ready_for_review" in pull_request["types"]
 
     image_condition = workflow["jobs"]["image-size"]["if"]
     assert "full-ci" in image_condition
@@ -64,7 +64,7 @@ def test_path_scoped_docker_workflows_wait_for_final_validation() -> None:
         workflow = _load_yaml(workflows / filename)
         pull_request = workflow["on"]["pull_request"]
         assert "labeled" in pull_request["types"]
-        assert "ready_for_review" not in pull_request["types"]
+        assert "ready_for_review" in pull_request["types"]
 
         condition = workflow["jobs"][job_name]["if"]
         assert "full-ci" in condition

@@ -16,7 +16,7 @@ on:
       - '.github/workflows/trivy.yml'
   pull_request:
     branches: [ "main", "staging" ]
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths:
       - 'Dockerfile'
       - 'requirements.txt'
