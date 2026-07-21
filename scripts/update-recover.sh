@@ -29,7 +29,6 @@ SETPRIV_BIN=""
 TARGET_UID=""
 TARGET_GID=""
 TARGET_GROUPS=""
-UPDATER_GROUPS=""
 TARGET_HOME=""
 UNMERGED_COPIED="false"
 
@@ -152,19 +151,6 @@ compute_target_groups() {
   TARGET_GROUPS="${TARGET_GROUPS:-${TARGET_GID}}"
 }
 
-compute_updater_groups() {
-  local docker_gid
-  ensure_owner_context
-  UPDATER_GROUPS="${TARGET_GROUPS}"
-  if [ -S /var/run/docker.sock ]; then
-    docker_gid="$(stat -c '%g' /var/run/docker.sock)" || die "failed to read Docker socket GID"
-    case ",${UPDATER_GROUPS}," in
-      *,"${docker_gid}",*) ;;
-      *) UPDATER_GROUPS="${UPDATER_GROUPS},${docker_gid}" ;;
-    esac
-  fi
-}
-
 ensure_owner_context() {
   if [ -z "${TARGET_UID}" ]; then
     TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
@@ -193,6 +179,87 @@ run_as_checkout_owner_home() {
     "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
       /usr/bin/env "HOME=${TARGET_HOME}" "$@"
   fi
+}
+
+safe_chown_tree() {
+  local path="$1"
+  python3 - "${path}" "${TARGET_UID}" "${TARGET_GID}" <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+uid = int(sys.argv[2])
+gid = int(sys.argv[3])
+
+st = os.lstat(root)
+if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+    raise SystemExit(f"refusing unsafe ownership root: {root}")
+
+for dirpath, dirnames, filenames, dirfd in os.fwalk(root, topdown=True, follow_symlinks=False):
+    os.fchown(dirfd, uid, gid)
+    keep = []
+    for name in list(dirnames):
+        try:
+            child = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        os.chown(name, uid, gid, dir_fd=dirfd, follow_symlinks=False)
+        if stat.S_ISDIR(child.st_mode):
+            keep.append(name)
+    dirnames[:] = keep
+    for name in filenames:
+        try:
+            os.chown(name, uid, gid, dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+PY
+}
+
+safe_chown_tracked_paths() {
+  local tracked_list="$1"
+  python3 - "${REPO}" "${TARGET_UID}" "${TARGET_GID}" "${tracked_list}" <<'PY'
+import os
+import stat
+import sys
+
+repo = sys.argv[1]
+uid = int(sys.argv[2])
+gid = int(sys.argv[3])
+tracked_list = sys.argv[4]
+
+root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    with open(tracked_list, "rb") as fh:
+        rels = [entry.decode("utf-8", "surrogateescape") for entry in fh.read().split(b"\0") if entry]
+    for rel in rels:
+        parts = rel.split("/")
+        if rel.startswith("/") or any(part in ("", ".", "..") for part in parts):
+            raise SystemExit(f"refusing unsafe tracked path: {rel}")
+        parent_fd = os.dup(root_fd)
+        try:
+            for index, part in enumerate(parts):
+                last = index == len(parts) - 1
+                try:
+                    child = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    break
+                os.chown(part, uid, gid, dir_fd=parent_fd, follow_symlinks=False)
+                if not last:
+                    if not stat.S_ISDIR(child.st_mode):
+                        raise SystemExit(f"refusing non-directory tracked parent: {rel}")
+                    next_fd = os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=parent_fd,
+                    )
+                    os.close(parent_fd)
+                    parent_fd = next_fd
+        finally:
+            os.close(parent_fd)
+finally:
+    os.close(root_fd)
+PY
 }
 
 parse_args() {
@@ -698,7 +765,7 @@ repair_metadata_ownership() {
     die "refusing Git metadata repair outside ${expected_git_dir} (gitdir=${git_dir})"
   fi
 
-  chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${expected_git_dir}" \
+  safe_chown_tree "${expected_git_dir}" \
     || die "failed to repair .git ownership"
 
   if [ -L "${REPO}/.agent" ]; then
@@ -706,7 +773,7 @@ repair_metadata_ownership() {
   fi
   if [ -e "${REPO}/.agent" ]; then
     [ -d "${REPO}/.agent" ] || die "refusing non-directory .agent state"
-    chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${REPO}/.agent" \
+    safe_chown_tree "${REPO}/.agent" \
       || die "failed to repair .agent ownership"
   fi
 
@@ -716,32 +783,7 @@ repair_metadata_ownership() {
     rm -f -- "${tracked_list}"
     die "failed to enumerate tracked checkout paths"
   }
-  (
-    set -o pipefail
-    while IFS= read -r -d '' tracked_rel; do
-      case "${tracked_rel}" in
-        ""|/*|../*|*/../*|*/..)
-          printf 'Refusing unsafe tracked path: %s\n' "${tracked_rel}" >&2
-          exit 2
-          ;;
-      esac
-      tracked_path="${REPO}/${tracked_rel}"
-      tracked_parent="${tracked_path%/*}"
-      while [ "${tracked_parent}" != "${REPO}" ]; do
-        if [ -L "${tracked_parent}" ]; then
-          printf 'Refusing symlinked tracked parent: %s\n' "${tracked_parent}" >&2
-          exit 2
-        fi
-        if [ -e "${tracked_parent}" ]; then
-          printf '%s\0' "${tracked_parent}"
-        fi
-        tracked_parent="${tracked_parent%/*}"
-      done
-      if [ -e "${tracked_path}" ] || [ -L "${tracked_path}" ]; then
-        printf '%s\0' "${tracked_path}"
-      fi
-    done <"${tracked_list}" | sort -zu | xargs -0 -r chown --no-dereference "${TARGET_UID}:${TARGET_GID}" --
-  ) || {
+  safe_chown_tracked_paths "${tracked_list}" || {
     rm -f -- "${tracked_list}"
     die "failed to repair tracked checkout ownership"
   }
@@ -789,7 +831,6 @@ prepare_updater_state_dirs() {
 
 prepare_owner_execution() {
   ensure_owner_context
-  compute_updater_groups
   if [ "${TARGET_UID}" = "0" ]; then
     return 0
   fi
@@ -820,7 +861,7 @@ run_as_owner() {
     if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
       update_home="${TARGET_HOME}"
     fi
-    "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${UPDATER_GROUPS}" \
+    "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
       /usr/bin/env "HOME=${update_home}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
   fi
 }
@@ -939,14 +980,13 @@ main() {
   [ "${EUID}" -eq 0 ] || die "run this script with sudo/root so it can repair bounded metadata and install the CLI"
   need_cmd bash
   need_cmd git
+  need_cmd python3
   need_cmd stat
   need_cmd mktemp
   need_cmd chown
   need_cmd chmod
   need_cmd install
   need_cmd date
-  need_cmd sort
-  need_cmd xargs
   need_cmd sed
   need_cmd tee
   need_cmd cp

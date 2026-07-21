@@ -169,10 +169,10 @@ def test_update_recover_repair_is_bounded() -> None:
     assert "refusing symlinked recovery state" in script
     assert 'mktemp -d "${recovery_base}/aava-update-recovery-${ts}.XXXXXX"' in script
     assert "refusing automatic repair for linked, symlinked, or missing .git metadata" in script
-    assert 'chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${expected_git_dir}"' in script
-    assert 'chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${REPO}/.agent"' in script
+    assert 'safe_chown_tree "${expected_git_dir}"' in script
+    assert 'safe_chown_tree "${REPO}/.agent"' in script
     assert "git_repo ls-files -z" in script
-    assert "Refusing symlinked tracked parent" in script
+    assert 'safe_chown_tracked_paths "${tracked_list}"' in script
     assert not re.search(r"chown\s+-R[^\n]*\"\$\{REPO\}\"", script)
     assert "rm -rf -- \"${REPO}\"" not in script
 
@@ -181,9 +181,11 @@ def test_update_recover_preflights_runtime_dependencies() -> None:
     script = _script()
 
     main = script.split("main() {", 1)[1]
-    for command in ("bash", "git", "stat", "mktemp", "chown", "chmod", "install", "date", "sort", "xargs", "sed", "tee", "cp"):
+    for command in ("bash", "git", "python3", "stat", "mktemp", "chown", "chmod", "install", "date", "sed", "tee", "cp"):
         assert f"need_cmd {command}" in main
     assert "need_cmd find" not in main
+    assert "need_cmd sort" not in main
+    assert "need_cmd xargs" not in main
     assert "command -v realpath >/dev/null 2>&1 || need_cmd readlink" in main
 
 
@@ -341,9 +343,8 @@ def test_update_recover_runs_as_checkout_owner_with_docker_socket_group() -> Non
 
     assert "setpriv is required to inspect and update checkout as owner" in script
     assert '--reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}"' in script
-    assert '--reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${UPDATER_GROUPS}"' in script
-    assert 'docker_gid="$(stat -c' in script
-    assert 'UPDATER_GROUPS="${UPDATER_GROUPS},${docker_gid}"' in script
+    assert "UPDATER_GROUPS" not in script
+    assert 'docker_gid="$(stat -c' not in script
     assert 'HOME=${update_home}' in script
     assert 'chmod a+x -- "${parent}"' in script
     assert 'chmod "${mode}" -- "${parent}"' in script
