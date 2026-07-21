@@ -3,8 +3,9 @@
 #
 # This script intentionally wraps the supported `agent update` path. It repairs
 # only bounded metadata ownership that older updater paths commonly left behind,
-# captures diagnostics/backups first, installs the requested CLI, and then lets
-# the CLI perform the real update, database snapshots, Docker changes, and check.
+# repairs enough Git metadata for safe inspection, captures diagnostics/backups,
+# installs the requested CLI, and then lets the CLI perform the real update,
+# database snapshots, Docker changes, and check.
 
 set -Eeuo pipefail
 
@@ -62,14 +63,15 @@ Local-change policies:
   ask        Prompt in an interactive terminal if tracked code changes are present
   retain     Stash tracked local changes and reapply them after the update; may conflict
   overwrite  Discard tracked source-code edits after preserving recovery patches
-  abort      Stop if tracked local changes are present
+  abort      Stop before update if tracked local changes are present
 
 Safety:
   The script captures diagnostics, tracked-change patches, and a best-effort
-  config/data backup before repair or update. It never recursively chowns the
-  whole checkout; ownership repair is limited to .git, .agent, and Git-tracked
-  files/parents. Untracked runtime/operator files are not removed unless the
-  underlying updater is explicitly run with a compatible untracked-stash policy.
+  config/data backup before update. It may repair .git ownership before it can
+  inspect local changes; later ownership repair is limited to .agent and
+  Git-tracked files/parents. Untracked runtime/operator files are not removed
+  unless the underlying updater is explicitly run with a compatible
+  untracked-stash policy.
 USAGE
 }
 
@@ -504,7 +506,7 @@ copy_unmerged_files() {
 }
 
 capture_preupdate_artifacts() {
-  log "==> Preserving local state before repair"
+  log "==> Preserving local state before update"
   git_repo status --short >/dev/null || die "failed to inspect checkout changes; update not attempted"
   if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
     copy_unmerged_files
@@ -740,13 +742,13 @@ checkout_value() {
   esac
 }
 
-repair_metadata_ownership() {
+repair_git_metadata_ownership() {
   if [ "${SKIP_REPAIR}" = "true" ]; then
     log "==> Skipping ownership repair"
     return 0
   fi
 
-  log "==> Repairing bounded checkout metadata ownership"
+  log "==> Repairing bounded Git metadata ownership"
   TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
   TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
 
@@ -759,7 +761,14 @@ repair_metadata_ownership() {
 
   safe_chown_tree "${expected_git_dir}" \
     || die "failed to repair .git ownership"
+}
 
+repair_checkout_ownership() {
+  if [ "${SKIP_REPAIR}" = "true" ]; then
+    return 0
+  fi
+
+  log "==> Repairing bounded checkout ownership"
   if [ -L "${REPO}/.agent" ]; then
     die "refusing symlinked .agent state"
   fi
@@ -856,6 +865,25 @@ run_as_owner() {
     "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
       /usr/bin/env "HOME=${update_home}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
   fi
+}
+
+check_owner_docker_access() {
+  local docker_sock user_name
+  docker_sock="${DOCKER_SOCK:-/var/run/docker.sock}"
+  if [ "${TARGET_UID:-0}" = "0" ] || [ ! -S "${docker_sock}" ]; then
+    return 0
+  fi
+
+  if run_as_checkout_owner_home test -r "${docker_sock}" \
+    && run_as_checkout_owner_home test -w "${docker_sock}"; then
+    return 0
+  fi
+
+  user_name="$(getent passwd "${TARGET_UID}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
+  if [ -n "${user_name}" ]; then
+    die "checkout owner ${user_name} cannot access ${docker_sock}; add that user to the Docker socket group, re-login/restart the service session, then rerun recovery"
+  fi
+  die "checkout owner UID ${TARGET_UID} cannot access ${docker_sock}; grant that account Docker socket access, then rerun recovery"
 }
 
 confirm_update() {
@@ -989,12 +1017,14 @@ main() {
   prepare_recovery_dir
 
   prepare_owner_execution
-  repair_metadata_ownership
-  prepare_updater_state_dirs
+  repair_git_metadata_ownership
   capture_diagnostics
   prompt_local_changes_if_needed
   capture_preupdate_artifacts
   install_target_cli
+  repair_checkout_ownership
+  prepare_updater_state_dirs
+  check_owner_docker_access
   run_plan
   if [ "${PLAN_ONLY}" = "true" ]; then
     log "Plan written to ${RECOVERY_DIR}/update-plan.json"

@@ -98,11 +98,12 @@ curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-As
   | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
 ```
 
-The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It captures
-diagnostics, binary-safe tracked-change patches, and a best-effort pre-update copy of
-operator config/data under `/var/tmp/aava-update-recovery-*` before it repairs or
-updates anything. The `agent update` command still creates its normal update backup and
-SQLite snapshots during the actual upgrade.
+The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It may first
+repair `.git` ownership so the checkout owner can inspect the repository safely. It then
+captures diagnostics, binary-safe tracked-change patches, and a best-effort pre-update
+copy of operator config/data under `/var/tmp/aava-update-recovery-*` before broader
+checkout repair or update. The `agent update` command still creates its normal update
+backup and SQLite snapshots during the actual upgrade.
 
 If tracked local source-code edits are present, the script asks what to do in the SSH
 terminal:
@@ -111,7 +112,9 @@ terminal:
   local code where possible, but conflicts can still require manual resolution.
 - `overwrite`: discard tracked source-code edits after preserving patches in the
   recovery directory. Use this only when you accept losing local code modifications.
-- `abort`: stop before changing the checkout.
+- `abort`: stop before applying an update. The script may already have made the
+  checkout owner able to traverse the checkout path and read `.git` metadata so it can
+  make that decision safely.
 
 For non-interactive recovery, pass the decision explicitly:
 
@@ -154,6 +157,11 @@ git config --global --add safe.directory "$(pwd)"
 # Use the same identity that will run the recovery command. If that is root:
 sudo git config --global --add safe.directory "$(pwd)"
 ```
+
+The recovery script runs the updater as the checkout owner. If that account cannot
+access the Docker socket, the script stops with a remediation message instead of
+temporarily granting Docker access. Add the checkout owner to the Docker socket group,
+restart the login/service session so group membership is visible, then rerun recovery.
 
 #### If the host `agent` CLI recovery also fails
 
