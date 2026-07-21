@@ -135,14 +135,20 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
         "printf '#!/bin/sh\\n' >\"$out/agent\"\n",
         encoding="utf-8",
     )
+    (fake_bin / "chown").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (fake_bin / "git").chmod(0o755)
     (fake_bin / "docker").chmod(0o755)
+    (fake_bin / "chown").chmod(0o755)
 
     harness = f"""
 set -euo pipefail
 export AAVA_TEST_LOG={log}
 source "$SOURCE"
 git_repo() {{ printf 'https://example.invalid/fork.git\\n'; }}
+TARGET_UID=0
+TARGET_GID=0
+TARGET_GROUPS=0
+TARGET_HOME=/tmp
 REMOTE=origin
 AGENT_BIN="{agent_bin}"
 install_branch_cli codex/update-recovery-script
@@ -161,7 +167,7 @@ def test_update_recover_repair_is_bounded() -> None:
     script = _script()
 
     assert "refusing symlinked recovery state" in script
-    assert 'mktemp -d "${recovery_base}/${ts}.XXXXXX"' in script
+    assert 'mktemp -d "${recovery_base}/aava-update-recovery-${ts}.XXXXXX"' in script
     assert "refusing automatic repair for linked, symlinked, or missing .git metadata" in script
     assert 'chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${expected_git_dir}"' in script
     assert 'chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${REPO}/.agent"' in script
@@ -209,30 +215,33 @@ set -euo pipefail
 export AAVA_TEST_LOG={log}
 source "$SOURCE"
 REPO="{repo}"
+TARGET_UID=1234
+TARGET_GID=2345
 SKIP_REPAIR=true
-prepare_recovery_dir
-printf 'recovery=%s\\n' "$RECOVERY_DIR"
+prepare_updater_state_dirs
 """
-    result = _run_bash_harness(harness, tmp_path)
+    _run_bash_harness(harness, tmp_path)
 
     commands = log.read_text(encoding="utf-8")
     assert "chown --no-dereference 1234:2345" in commands
     assert f"{repo}/.agent" in commands
-    assert f"{repo}/.agent/update-recovery" in commands
-    assert "recovery=" in result.stdout
+    assert f"{repo}/.agent/updates" in commands
+    assert f"{repo}/.agent/update-backups" in commands
 
 
-def test_update_recover_rejects_symlinked_recovery_state(tmp_path: Path) -> None:
+def test_update_recover_rejects_symlinked_updater_state(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".agent").mkdir()
-    (repo / ".agent" / "update-recovery").symlink_to(tmp_path)
+    (repo / ".agent" / "update-backups").symlink_to(tmp_path)
 
     harness = f"""
 set -euo pipefail
 source "$SOURCE"
 REPO="{repo}"
-prepare_recovery_dir
+TARGET_UID=1234
+TARGET_GID=2345
+prepare_updater_state_dirs
 """
     result = _run_bash_harness_unchecked(harness, tmp_path)
 
@@ -330,13 +339,21 @@ run_update
 def test_update_recover_runs_as_checkout_owner_with_docker_socket_group() -> None:
     script = _script()
 
-    assert "setpriv is required to run the update as checkout owner" in script
+    assert "setpriv is required to inspect and update checkout as owner" in script
     assert '--reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}"' in script
     assert 'docker_gid="$(stat -c' in script
     assert 'TARGET_GROUPS="${TARGET_GROUPS},${docker_gid}"' in script
-    assert 'HOME=${TEMP_HOME}' in script
+    assert 'HOME=${update_home}' in script
     assert 'chmod a+x -- "${parent}"' in script
     assert 'chmod "${mode}" -- "${parent}"' in script
+
+
+def test_update_recover_uses_checkout_home_for_branch_updates() -> None:
+    script = _script()
+
+    assert "run_as_checkout_owner_home git clone" in script
+    assert 'if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then' in script
+    assert 'update_home="${TARGET_HOME}"' in script
 
 
 def test_update_recover_can_pass_untracked_stash_when_requested() -> None:

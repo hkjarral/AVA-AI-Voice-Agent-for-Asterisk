@@ -29,6 +29,7 @@ SETPRIV_BIN=""
 TARGET_UID=""
 TARGET_GID=""
 TARGET_GROUPS=""
+TARGET_HOME=""
 UNMERGED_COPIED="false"
 
 usage() {
@@ -129,6 +130,61 @@ require_plain_recovery_dir() {
   fi
   if [ -e "${path}" ] && [ ! -d "${path}" ]; then
     die "refusing non-directory recovery state: ${path}"
+  fi
+}
+
+compute_target_groups() {
+  local user_name docker_gid
+  if [ -n "${TARGET_GROUPS}" ]; then
+    return 0
+  fi
+  if [ -z "${TARGET_UID}" ]; then
+    TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
+  fi
+  if [ -z "${TARGET_GID}" ]; then
+    TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
+  fi
+  user_name="$(getent passwd "${TARGET_UID}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
+  if [ -n "${user_name}" ]; then
+    TARGET_GROUPS="$(id -G "${user_name}" 2>/dev/null | tr ' ' ',' || true)"
+  fi
+  TARGET_GROUPS="${TARGET_GROUPS:-${TARGET_GID}}"
+  if [ -S /var/run/docker.sock ]; then
+    docker_gid="$(stat -c '%g' /var/run/docker.sock)" || die "failed to read Docker socket GID"
+    case ",${TARGET_GROUPS}," in
+      *,"${docker_gid}",*) ;;
+      *) TARGET_GROUPS="${TARGET_GROUPS},${docker_gid}" ;;
+    esac
+  fi
+}
+
+ensure_owner_context() {
+  if [ -z "${TARGET_UID}" ]; then
+    TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
+  fi
+  if [ -z "${TARGET_GID}" ]; then
+    TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
+  fi
+  if [ -z "${TARGET_HOME}" ]; then
+    TARGET_HOME="$(getent passwd "${TARGET_UID}" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
+  fi
+  if [ -z "${TARGET_HOME}" ] || [ ! -d "${TARGET_HOME}" ]; then
+    TARGET_HOME="/tmp"
+  fi
+  compute_target_groups
+  if [ "${TARGET_UID}" != "0" ]; then
+    SETPRIV_BIN="${SETPRIV_BIN:-$(command -v setpriv || true)}"
+    [ -n "${SETPRIV_BIN}" ] || die "setpriv is required to inspect and update checkout as owner UID ${TARGET_UID}; install util-linux and retry"
+  fi
+}
+
+run_as_checkout_owner_home() {
+  ensure_owner_context
+  if [ "${TARGET_UID}" = "0" ]; then
+    "$@"
+  else
+    "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
+      /usr/bin/env "HOME=${TARGET_HOME}" "$@"
   fi
 }
 
@@ -268,7 +324,13 @@ detect_repo() {
 }
 
 git_repo() {
-  git -c "safe.directory=${REPO}" --git-dir="${REPO}/.git" --work-tree="${REPO}" "$@"
+  run_as_checkout_owner_home git \
+    -c "safe.directory=${REPO}" \
+    -c core.fsmonitor=false \
+    -c core.hooksPath=/dev/null \
+    --git-dir="${REPO}/.git" \
+    --work-tree="${REPO}" \
+    "$@"
 }
 
 capture_command() {
@@ -301,24 +363,15 @@ capture_git_remotes() {
 }
 
 prepare_recovery_dir() {
-  local agent_dir recovery_base ts
-  agent_dir="${REPO}/.agent"
-  recovery_base="${agent_dir}/update-recovery"
-  require_plain_recovery_dir "${agent_dir}"
-  mkdir -p -- "${agent_dir}" || die "failed to create updater state directory: ${agent_dir}"
-  require_plain_recovery_dir "${agent_dir}"
-  require_plain_recovery_dir "${recovery_base}"
-  mkdir -p -- "${recovery_base}" || die "failed to create recovery state directory: ${recovery_base}"
-  require_plain_recovery_dir "${recovery_base}"
+  local recovery_base ts
+  recovery_base="/var/tmp"
+  [ -d "${recovery_base}" ] || recovery_base="/tmp"
   ts="$(date -u +%Y%m%d_%H%M%S)"
-  RECOVERY_DIR="$(mktemp -d "${recovery_base}/${ts}.XXXXXX")" || die "failed to create recovery directory under ${recovery_base}"
+  RECOVERY_DIR="$(mktemp -d "${recovery_base}/aava-update-recovery-${ts}.XXXXXX")" \
+    || die "failed to create recovery directory under ${recovery_base}"
   require_plain_recovery_dir "${RECOVERY_DIR}"
-  TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
-  TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
-  chown --no-dereference "${TARGET_UID}:${TARGET_GID}" \
-    "${agent_dir}" "${recovery_base}" "${RECOVERY_DIR}" \
-    || die "failed to hand recovery metadata to checkout owner"
-  chmod 0750 -- "${agent_dir}" "${recovery_base}" "${RECOVERY_DIR}" 2>/dev/null || true
+  chmod 0700 -- "${RECOVERY_DIR}" 2>/dev/null || true
+  ensure_owner_context
 }
 
 capture_diagnostics() {
@@ -560,8 +613,10 @@ install_branch_cli() {
   [ -n "${remote_url}" ] || die "failed to resolve remote ${REMOTE} for CLI source"
 
   tmp_src="$(mktemp -d /tmp/aava-cli-src.XXXXXXXXXX)" || die "failed to create temporary CLI source directory"
+  chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}" \
+    || die "failed to hand temporary CLI source directory to checkout owner"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
-  git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${remote_url}" "${tmp_src}/repo" \
+  run_as_checkout_owner_home git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${remote_url}" "${tmp_src}/repo" \
     || die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   mkdir -p -- "${tmp_src}/out"
   docker run --rm \
@@ -686,28 +741,6 @@ repair_metadata_ownership() {
   rm -f -- "${tracked_list}"
 }
 
-compute_target_groups() {
-  local user_name docker_gid
-  if [ -z "${TARGET_UID}" ]; then
-    TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
-  fi
-  if [ -z "${TARGET_GID}" ]; then
-    TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
-  fi
-  user_name="$(getent passwd "${TARGET_UID}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
-  if [ -n "${user_name}" ]; then
-    TARGET_GROUPS="$(id -G "${user_name}" 2>/dev/null | tr ' ' ',' || true)"
-  fi
-  TARGET_GROUPS="${TARGET_GROUPS:-${TARGET_GID}}"
-  if [ -S /var/run/docker.sock ]; then
-    docker_gid="$(stat -c '%g' /var/run/docker.sock)" || die "failed to read Docker socket GID"
-    case ",${TARGET_GROUPS}," in
-      *,"${docker_gid}",*) ;;
-      *) TARGET_GROUPS="${TARGET_GROUPS},${docker_gid}" ;;
-    esac
-  fi
-}
-
 cleanup() {
   local status=$?
   if [ -n "${TRAVERSAL_STATE}" ] && [ -f "${TRAVERSAL_STATE}" ]; then
@@ -721,16 +754,37 @@ cleanup() {
   if [ -n "${TEMP_HOME}" ]; then
     rm -rf -- "${TEMP_HOME}" 2>/dev/null || true
   fi
+  if [ -n "${RECOVERY_DIR}" ] && [ -d "${RECOVERY_DIR}" ] && [ ! -L "${RECOVERY_DIR}" ] \
+    && [ -n "${TARGET_UID}" ] && [ -n "${TARGET_GID}" ]; then
+    chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${RECOVERY_DIR}" 2>/dev/null || true
+    chmod 0750 -- "${RECOVERY_DIR}" 2>/dev/null || true
+  fi
   exit "${status}"
 }
 
+prepare_updater_state_dirs() {
+  local agent_dir updates_dir backups_dir
+  agent_dir="${REPO}/.agent"
+  updates_dir="${agent_dir}/updates"
+  backups_dir="${agent_dir}/update-backups"
+  require_plain_recovery_dir "${agent_dir}"
+  mkdir -p -- "${agent_dir}" || die "failed to create updater state directory: ${agent_dir}"
+  require_plain_recovery_dir "${agent_dir}"
+  require_plain_recovery_dir "${updates_dir}"
+  require_plain_recovery_dir "${backups_dir}"
+  mkdir -p -- "${updates_dir}" "${backups_dir}" || die "failed to create updater runtime directories"
+  require_plain_recovery_dir "${updates_dir}"
+  require_plain_recovery_dir "${backups_dir}"
+  chown --no-dereference "${TARGET_UID}:${TARGET_GID}" "${agent_dir}" "${updates_dir}" "${backups_dir}" \
+    || die "failed to hand updater runtime metadata to checkout owner"
+  chmod 0750 -- "${agent_dir}" "${updates_dir}" "${backups_dir}" 2>/dev/null || true
+}
+
 prepare_owner_execution() {
-  compute_target_groups
+  ensure_owner_context
   if [ "${TARGET_UID}" = "0" ]; then
     return 0
   fi
-  SETPRIV_BIN="$(command -v setpriv || true)"
-  [ -n "${SETPRIV_BIN}" ] || die "setpriv is required to run the update as checkout owner UID ${TARGET_UID}; install util-linux and retry"
 
   TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || die "failed to create temporary HOME"
   chmod 0700 -- "${TEMP_HOME}"
@@ -753,8 +807,13 @@ run_as_owner() {
   if [ "${TARGET_UID:-0}" = "0" ]; then
     (cd "${REPO}" && "$@")
   else
+    local update_home
+    update_home="${TEMP_HOME}"
+    if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
+      update_home="${TARGET_HOME}"
+    fi
     "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
-      /usr/bin/env "HOME=${TEMP_HOME}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
+      /usr/bin/env "HOME=${update_home}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
   fi
 }
 
@@ -886,14 +945,15 @@ main() {
   command -v realpath >/dev/null 2>&1 || need_cmd readlink
 
   detect_repo
-  prepare_recovery_dir
   trap cleanup EXIT
+  prepare_recovery_dir
 
   capture_diagnostics
   prompt_local_changes_if_needed
   capture_preupdate_artifacts
   install_target_cli
   repair_metadata_ownership
+  prepare_updater_state_dirs
   prepare_owner_execution
   run_plan
   if [ "${PLAN_ONLY}" = "true" ]; then

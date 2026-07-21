@@ -100,7 +100,7 @@ curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-As
 
 The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It captures
 diagnostics, binary-safe tracked-change patches, and a best-effort pre-update copy of
-operator config/data under `.agent/update-recovery/<timestamp>/` before it repairs or
+operator config/data under `/var/tmp/aava-update-recovery-*` before it repairs or
 updates anything. The `agent update` command still creates its normal update backup and
 SQLite snapshots during the actual upgrade.
 
@@ -171,7 +171,7 @@ Use the exact failure to choose the next safe action:
 |---|---|
 | `unknown flag: --local-changes` | The old CLI is still running. Re-run the pinned `update-recover.sh` command above so it installs the selected release CLI, then invoke `/usr/local/bin/agent` by absolute path if manual recovery is still needed. |
 | `detected dubious ownership` | Add only the current checkout to `safe.directory` for the same user that runs `agent`; this is a trust check, not a permissions repair. |
-| `.git/FETCH_HEAD: Permission denied` or another `.git` write failure | Re-run the pinned `update-recover.sh` command above and keep the generated `.agent/update-recovery/<timestamp>/` directory. Do not run the CLI directly as root or recursively change ownership. |
+| `.git/FETCH_HEAD: Permission denied` or another `.git` write failure | Re-run the pinned `update-recover.sh` command above and keep the generated `/var/tmp/aava-update-recovery-*` directory. Do not run the CLI directly as root or recursively change ownership. |
 | `working tree has local changes` or `local-change policy` | Re-run with an explicit `--local-changes=retain`, `overwrite`, or `abort`; use `retain` unless the tracked edits are already preserved and intentionally disposable. |
 | merge, index, or stash conflict | Follow the conflict procedure below before retrying. Do not delete the stash or use `git reset --hard`. |
 | Docker image or Compose failure | Keep the updater backup and follow the service-specific recovery below; do not delete operator databases. |
@@ -181,7 +181,7 @@ printed by the script. It contains the attempted plan, stderr, full update log,
 Git status, and pre-update preservation files:
 
 ```bash
-sudo find /opt/Asterisk-AI-Voice-Agent/.agent/update-recovery -maxdepth 1 -type d | sort | tail -n 3
+sudo find /var/tmp -maxdepth 1 -type d -name 'aava-update-recovery-*' | sort | tail -n 3
 ```
 
 The CLI creates its backup before changing the checkout. If the command reports a
