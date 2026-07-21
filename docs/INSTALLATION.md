@@ -94,8 +94,9 @@ depend on the failing Admin UI planner container:
 
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
+AAVA_REPO=/path/to/Asterisk-AI-Voice-Agent
 curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
-  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
+  | sudo bash -s -- --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui
 ```
 
 The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It may first
@@ -121,8 +122,9 @@ For non-interactive recovery, pass the decision explicitly:
 
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
+AAVA_REPO=/path/to/Asterisk-AI-Voice-Agent
 curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
-  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes retain --yes
+  | sudo bash -s -- --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes retain --yes
 ```
 
 Use `overwrite` only when the operator accepts that tracked local code changes will be
@@ -130,8 +132,9 @@ discarded:
 
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
+AAVA_REPO=/path/to/Asterisk-AI-Voice-Agent
 curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
-  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes overwrite
+  | sudo bash -s -- --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes overwrite
 ```
 
 Untracked files are left alone by default. If Git reports that untracked files would be

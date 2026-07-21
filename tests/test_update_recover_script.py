@@ -434,6 +434,8 @@ RECOVERY_DIR="{recovery}"
     printf 'origin\\thttps://user:token@example.invalid/repo.git (fetch)\\n'
     printf 'origin\\thttps://example.invalid/repo.git?access_token=secret123&foo=bar (fetch)\\n'
     printf 'origin\\thttps://example.invalid/repo.git?foo=bar&private-token=secret456 (fetch)\\n'
+    printf 'origin\\thttps://example.invalid/repo.git?ACCESS_TOKEN=secret789&foo=bar (fetch)\\n'
+    printf 'origin\\tssh://user:token@example.invalid/repo.git (fetch)\\n'
     printf 'origin\\thttps://user:token@example.invalid/repo.git (push)\\n'
   fi
 }}
@@ -445,9 +447,12 @@ capture_git_remotes
     assert "user:token" not in remotes
     assert "secret123" not in remotes
     assert "secret456" not in remotes
+    assert "secret789" not in remotes
     assert "https://[redacted]@example.invalid/repo.git" in remotes
+    assert "ssh://[redacted]@example.invalid/repo.git" in remotes
     assert "access_token=[redacted]" in remotes
     assert "private-token=[redacted]" in remotes
+    assert "ACCESS_TOKEN=[redacted]" in remotes
 
 
 def test_update_recover_branch_clone_failure_redacts_remote_query(tmp_path: Path) -> None:
@@ -505,7 +510,7 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     update = main.index("run_update")
 
     assert owner < git_repair < tracked_repair < diagnostics < prompt < preserve < install
-    assert preserve < agent_repair < updater_state < docker_check < update
+    assert install < agent_repair < updater_state < docker_check < update
     assert "staged-tracked.patch" in script
     assert "unstaged-tracked.patch" in script
     assert "pre-update-files" in script
@@ -684,14 +689,16 @@ check_owner_docker_access
         sock_path.unlink(missing_ok=True)
 
 
-def test_update_recover_uses_checkout_home_for_branch_updates() -> None:
+def test_update_recover_uses_checkout_home_for_updates() -> None:
     script = _script()
+    run_as_owner = script.split("run_as_owner() {", 1)[1].split("\n}", 1)[0]
 
     assert 'run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig"' in script
     assert "aava-recovery-origin:" in script
     assert '[include]\\n\\tpath = "%s"\\n' in script
-    assert 'if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then' in script
-    assert 'update_home="${TARGET_HOME}"' in script
+    assert 'update_home="${TARGET_HOME}"' in run_as_owner
+    assert 'update_home="${TEMP_HOME}"' not in run_as_owner
+    assert 'if ! is_release_ref "${REF}"' not in run_as_owner
 
 
 def test_update_recover_keeps_recovery_artifacts_owner_only() -> None:

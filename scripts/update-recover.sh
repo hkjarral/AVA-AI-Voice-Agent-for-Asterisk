@@ -125,8 +125,8 @@ resolve_existing_path() {
 
 redact_remote_url() {
   sed -E \
-    -e 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g' \
-    -e 's#([?&]([Aa]ccess[_-]?[Tt]oken|[Aa]uth[_-]?[Tt]oken|[Bb]earer[_-]?[Tt]oken|[Cc]lient[_-]?[Ss]ecret|[Oo]auth[_-]?[Tt]oken|[Pp]assword|[Pp]rivate[_-]?[Tt]oken|[Rr]efresh[_-]?[Tt]oken|[Tt]oken)=)[^&#[:space:]]+#\1[redacted]#g'
+    -e 's#([[:alpha:]][[:alnum:].+.-]*://)[^/@[:space:]]+@#\1[redacted]@#g' \
+    -e 's#([?&](([Aa][Cc][Cc][Ee][Ss][Ss]|[Aa][Uu][Tt][Hh]|[Bb][Ee][Aa][Rr][Ee][Rr]|[Oo][Aa][Uu][Tt][Hh]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Rr][Ee][Ff][Rr][Ee][Ss][Hh])[_-]?[Tt][Oo][Kk][Ee][Nn]|[Cc][Ll][Ii][Ee][Nn][Tt][_-]?[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Tt][Oo][Kk][Ee][Nn])=)[^&#[:space:]]+#\1[redacted]#g'
 }
 
 require_plain_recovery_dir() {
@@ -1028,10 +1028,7 @@ run_as_owner() {
     (cd "${REPO}" && "$@")
   else
     local update_home
-    update_home="${TEMP_HOME}"
-    if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
-      update_home="${TARGET_HOME}"
-    fi
+    update_home="${TARGET_HOME}"
     "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
       /usr/bin/env "HOME=${update_home}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
   fi
