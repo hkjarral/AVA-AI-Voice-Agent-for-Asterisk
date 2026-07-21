@@ -54,7 +54,7 @@ Options:
   --plan-only                  Stop after installing CLI, repairing metadata, and writing a plan
   --no-repair                  Skip bounded ownership repair
   --skip-check                 Pass --skip-check to agent update
-  --stash-untracked            Include untracked files in the updater stash
+  --stash-untracked            Include untracked files in retain-mode updater stash
   -h, --help                   Show this help
 
 Local-change policies:
@@ -67,7 +67,8 @@ Safety:
   The script captures diagnostics, tracked-change patches, and a best-effort
   config/data backup before repair or update. It never recursively chowns the
   whole checkout; ownership repair is limited to .git, .agent, and Git-tracked
-  files/parents. Untracked runtime/operator files are not removed.
+  files/parents. Untracked runtime/operator files are not removed unless the
+  underlying updater is explicitly run with a compatible untracked-stash policy.
 USAGE
 }
 
@@ -224,6 +225,9 @@ validate_args() {
     true|false) ;;
     *) die "--stash-untracked state must be true or false" ;;
   esac
+  if [ "${STASH_UNTRACKED}" = "true" ] && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
+    die "--stash-untracked cannot be combined with --local-changes=overwrite; use retain or preserve untracked files manually first"
+  fi
   case "${AGENT_BIN}" in
     /*/agent|/agent) ;;
     *) die "--agent-bin must be an absolute path ending in /agent" ;;

@@ -131,8 +131,9 @@ curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-As
 ```
 
 Untracked files are left alone by default. If Git reports that untracked files would be
-overwritten by checkout or merge, inspect them first; if they are safe to preserve in
-Git's stash, re-run with `--stash-untracked`.
+overwritten by checkout or merge, inspect them first. Use `--stash-untracked` only with
+`--local-changes retain`; it is rejected with `overwrite` because overwrite mode is for
+discarding local source edits, and the underlying updater would clean untracked files.
 
 For `main` or an advanced branch target, the script does not substitute the latest
 published CLI. It resolves the checkout's configured remote, clones the exact selected

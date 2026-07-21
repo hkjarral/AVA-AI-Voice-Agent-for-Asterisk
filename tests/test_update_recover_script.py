@@ -27,6 +27,22 @@ def _run_bash_harness(script: str, tmp_path: Path) -> subprocess.CompletedProces
     )
 
 
+def _run_bash_harness_unchecked(script: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    source = tmp_path / "update-recover-source.sh"
+    source.write_text(_script().replace('\nmain "$@"\n', "\n"), encoding="utf-8")
+    return subprocess.run(
+        ["/bin/bash", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "SCRIPT": str(SCRIPT),
+            "SOURCE": str(source),
+        },
+    )
+
+
 def test_update_recover_script_has_valid_bash_syntax() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
 
@@ -43,7 +59,7 @@ def test_update_recover_help_documents_operator_choices() -> None:
     assert "retain     Stash tracked local changes" in result.stdout
     assert "overwrite  Discard tracked source-code edits" in result.stdout
     assert "--plan-only" in result.stdout
-    assert "--stash-untracked" in result.stdout
+    assert "Include untracked files in retain-mode updater stash" in result.stdout
     assert "never recursively chowns the" in result.stdout
 
 
@@ -270,3 +286,17 @@ def test_update_recover_can_pass_untracked_stash_when_requested() -> None:
     assert "--stash-untracked" in script
     assert 'if [ "${STASH_UNTRACKED}" = "true" ]; then' in script
     assert "args+=(--stash-untracked)" in script
+
+
+def test_update_recover_rejects_overwrite_with_untracked_stash(tmp_path: Path) -> None:
+    harness = """
+set -euo pipefail
+source "$SOURCE"
+LOCAL_CHANGES=overwrite
+STASH_UNTRACKED=true
+validate_args
+"""
+    result = _run_bash_harness_unchecked(harness, tmp_path)
+
+    assert result.returncode == 2
+    assert "--stash-untracked cannot be combined with --local-changes=overwrite" in result.stderr
