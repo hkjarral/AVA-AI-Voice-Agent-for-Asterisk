@@ -61,7 +61,7 @@ def test_update_recover_help_documents_operator_choices() -> None:
     assert "overwrite  Discard tracked source-code edits" in result.stdout
     assert "--plan-only" in result.stdout
     assert "Include untracked files in retain-mode updater stash" in result.stdout
-    assert "later ownership repair is limited" in result.stdout
+    assert "Git-tracked path" in result.stdout
 
 
 def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
@@ -197,6 +197,7 @@ def test_update_recover_repair_is_bounded() -> None:
     assert 'safe_chown_tree "${REPO}/.agent"' in script
     assert "git_repo ls-files -z" in script
     assert 'safe_chown_tracked_paths "${tracked_list}"' in script
+    assert "TEMP_BRANCH_CLI_DIR" in script
     assert not re.search(r"chown\s+-R[^\n]*\"\$\{REPO\}\"", script)
     assert "rm -rf -- \"${REPO}\"" not in script
 
@@ -304,17 +305,18 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
 
     owner = main.index("prepare_owner_execution")
     git_repair = main.index("repair_git_metadata_ownership")
+    tracked_repair = main.index("repair_tracked_paths_ownership")
     updater_state = main.index("prepare_updater_state_dirs")
     diagnostics = main.index("capture_diagnostics")
     prompt = main.index("prompt_local_changes_if_needed")
     preserve = main.index("capture_preupdate_artifacts")
     install = main.index("install_target_cli")
-    checkout_repair = main.index("repair_checkout_ownership")
+    agent_repair = main.index("repair_agent_state_ownership")
     docker_check = main.index("check_owner_docker_access")
     update = main.index("run_update")
 
-    assert owner < git_repair < diagnostics < prompt < preserve < install
-    assert preserve < checkout_repair < updater_state < docker_check < update
+    assert owner < git_repair < tracked_repair < diagnostics < prompt < preserve < install
+    assert preserve < agent_repair < updater_state < docker_check < update
     assert "staged-tracked.patch" in script
     assert "unstaged-tracked.patch" in script
     assert "pre-update-files" in script

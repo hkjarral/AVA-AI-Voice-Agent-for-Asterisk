@@ -99,11 +99,12 @@ curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-As
 ```
 
 The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It may first
-repair `.git` ownership so the checkout owner can inspect the repository safely. It then
-captures diagnostics, binary-safe tracked-change patches, and a best-effort pre-update
-copy of operator config/data under `/var/tmp/aava-update-recovery-*` before broader
-checkout repair or update. The `agent update` command still creates its normal update
-backup and SQLite snapshots during the actual upgrade.
+repair `.git` and Git-tracked path ownership so the checkout owner can inspect the
+repository safely, including tracked files left root-owned by older update attempts. It
+then captures diagnostics, binary-safe tracked-change patches, and a best-effort
+pre-update copy of operator config/data under `/var/tmp/aava-update-recovery-*` before
+updater-state repair or update. The `agent update` command still creates its normal
+update backup and SQLite snapshots during the actual upgrade.
 
 If tracked local source-code edits are present, the script asks what to do in the SSH
 terminal:
@@ -113,8 +114,8 @@ terminal:
 - `overwrite`: discard tracked source-code edits after preserving patches in the
   recovery directory. Use this only when you accept losing local code modifications.
 - `abort`: stop before applying an update. The script may already have made the
-  checkout owner able to traverse the checkout path and read `.git` metadata so it can
-  make that decision safely.
+  checkout owner able to traverse the checkout path and read `.git` plus tracked-file
+  metadata so it can make that decision safely.
 
 For non-interactive recovery, pass the decision explicitly:
 
@@ -147,8 +148,8 @@ The script repairs only `.git`, `.agent`, and Git-tracked files/parents. It does
 recursively `chown` the whole checkout, because production checkouts can legitimately
 contain runtime files owned by Asterisk or another service account. If Git metadata is
 linked outside the checkout, `.agent` is a symlink, a tracked parent is a symlink, or
-the checkout owner cannot be determined, the script stops before ownership repair or
-update. If Git reports *dubious ownership*, add only this checkout as safe using the
+the checkout owner cannot be determined, the script stops before updater-state repair
+or update. If Git reports *dubious ownership*, add only this checkout as safe using the
 path printed by Git; `safe.directory` does not fix a real write-permission failure:
 
 ```bash

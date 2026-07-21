@@ -27,6 +27,7 @@ RECOVERY_DIR=""
 TRAVERSAL_STATE=""
 TEMP_HOME=""
 TEMP_CLI_DIR=""
+TEMP_BRANCH_CLI_DIR=""
 SETPRIV_BIN=""
 TARGET_UID=""
 TARGET_GID=""
@@ -68,11 +69,11 @@ Local-change policies:
 
 Safety:
   The script captures diagnostics, tracked-change patches, and a best-effort
-  config/data backup before update. It may repair .git ownership before it can
-  inspect local changes; later ownership repair is limited to .agent and
-  Git-tracked files/parents. Untracked runtime/operator files are not removed
-  unless the underlying updater is explicitly run with a compatible
-  untracked-stash policy.
+  config/data backup before update. It may repair .git and Git-tracked path
+  ownership before it can inspect local changes; later ownership repair is
+  limited to .agent. Untracked runtime/operator files are not removed unless
+  the underlying updater is explicitly run with a compatible untracked-stash
+  policy.
 USAGE
 }
 
@@ -740,6 +741,7 @@ install_branch_cli() {
   [ -n "${remote_url}" ] || die "failed to resolve remote ${REMOTE} for CLI source"
 
   tmp_src="$(mktemp -d /tmp/aava-cli-src.XXXXXXXXXX)" || die "failed to create temporary CLI source directory"
+  TEMP_BRANCH_CLI_DIR="${tmp_src}"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}" \
     || die "failed to hand temporary CLI source directory to checkout owner"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
@@ -762,6 +764,7 @@ install_branch_cli() {
   install -m 0755 "${tmp_src}/out/agent" "${AGENT_BIN}" \
     || die "failed to install selected-ref CLI to ${AGENT_BIN}"
   rm -rf -- "${tmp_src}"
+  TEMP_BRANCH_CLI_DIR=""
 }
 
 install_target_cli() {
@@ -814,21 +817,12 @@ repair_git_metadata_ownership() {
     || die "failed to repair .git ownership"
 }
 
-repair_checkout_ownership() {
+repair_tracked_paths_ownership() {
   if [ "${SKIP_REPAIR}" = "true" ]; then
     return 0
   fi
 
-  log "==> Repairing bounded checkout ownership"
-  if [ -L "${REPO}/.agent" ]; then
-    die "refusing symlinked .agent state"
-  fi
-  if [ -e "${REPO}/.agent" ]; then
-    [ -d "${REPO}/.agent" ] || die "refusing non-directory .agent state"
-    safe_chown_tree "${REPO}/.agent" \
-      || die "failed to repair .agent ownership"
-  fi
-
+  log "==> Repairing bounded tracked checkout ownership"
   local tracked_list
   tracked_list="$(mktemp)" || die "failed to create tracked ownership scan"
   git_repo ls-files -z >"${tracked_list}" || {
@@ -840,6 +834,22 @@ repair_checkout_ownership() {
     die "failed to repair tracked checkout ownership"
   }
   rm -f -- "${tracked_list}"
+}
+
+repair_agent_state_ownership() {
+  if [ "${SKIP_REPAIR}" = "true" ]; then
+    return 0
+  fi
+
+  log "==> Repairing bounded updater state ownership"
+  if [ -L "${REPO}/.agent" ]; then
+    die "refusing symlinked .agent state"
+  fi
+  if [ -e "${REPO}/.agent" ]; then
+    [ -d "${REPO}/.agent" ] || die "refusing non-directory .agent state"
+    safe_chown_tree "${REPO}/.agent" \
+      || die "failed to repair .agent ownership"
+  fi
 }
 
 cleanup() {
@@ -857,6 +867,9 @@ cleanup() {
   fi
   if [ -n "${TEMP_CLI_DIR}" ]; then
     rm -rf -- "${TEMP_CLI_DIR}" 2>/dev/null || true
+  fi
+  if [ -n "${TEMP_BRANCH_CLI_DIR}" ]; then
+    rm -rf -- "${TEMP_BRANCH_CLI_DIR}" 2>/dev/null || true
   fi
   if [ -n "${RECOVERY_DIR}" ] && [ -d "${RECOVERY_DIR}" ] && [ ! -L "${RECOVERY_DIR}" ] \
     && [ -n "${TARGET_UID}" ] && [ -n "${TARGET_GID}" ]; then
@@ -1074,11 +1087,12 @@ main() {
 
   prepare_owner_execution
   repair_git_metadata_ownership
+  repair_tracked_paths_ownership
   capture_diagnostics
   prompt_local_changes_if_needed
   capture_preupdate_artifacts
   install_target_cli
-  repair_checkout_ownership
+  repair_agent_state_ownership
   prepare_updater_state_dirs
   check_owner_docker_access
   run_plan
