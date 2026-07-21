@@ -7,7 +7,7 @@ For release-specific behavior changes, also read the [v7.4 migration notes](MIGR
 
 Choose the path that best fits your experience level:
 
-## Upgrade to v7.4.1 (Existing Checkout)
+## Upgrade to v7.4.2 (Existing Checkout)
 
 This section is for operators upgrading an existing repo checkout (not a fresh install).
 
@@ -35,8 +35,8 @@ Run these commands from your actual checkout path. Do not assume it is `/root/..
 ```bash
 cd /path/to/AVA-AI-Voice-Agent-for-Asterisk
 git status --short
-git diff --binary > ../aava-pre-v741-working-tree.patch
-git diff --binary --cached > ../aava-pre-v741-staged.patch
+git diff --binary > ../aava-pre-v742-working-tree.patch
+git diff --binary --cached > ../aava-pre-v742-staged.patch
 ```
 
 Back up at least:
@@ -69,7 +69,7 @@ Preferred CLI path:
 
 ```bash
 git fetch origin --prune --tags
-agent update --ref v7.4.1 --include-ui --local-changes=retain
+agent update --ref v7.4.2 --include-ui --local-changes=retain
 ```
 
 Replace `retain` with your explicit `overwrite` or `abort` decision. In an interactive
@@ -93,8 +93,9 @@ Run the host recovery script from an SSH shell on the AAVA server. This path doe
 depend on the failing Admin UI planner container:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/update-recover.sh \
-  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref v7.4.1 --include-ui
+AAVA_RECOVERY_REF=v7.4.2
+curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
+  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
 ```
 
 The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It captures
@@ -115,16 +116,18 @@ terminal:
 For non-interactive recovery, pass the decision explicitly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/update-recover.sh \
-  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref v7.4.1 --include-ui --local-changes retain --yes
+AAVA_RECOVERY_REF=v7.4.2
+curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
+  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes retain --yes
 ```
 
 Use `overwrite` only when the operator accepts that tracked local code changes will be
 discarded:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/update-recover.sh \
-  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref v7.4.1 --include-ui --local-changes overwrite
+AAVA_RECOVERY_REF=v7.4.2
+curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
+  | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes overwrite
 ```
 
 Untracked files are left alone by default. If Git reports that untracked files would be
@@ -165,30 +168,24 @@ Use the exact failure to choose the next safe action:
 
 | CLI output | Recovery |
 |---|---|
-| `unknown flag: --local-changes` | The old CLI is still running. Repeat the target-release install command above and invoke `/usr/local/bin/agent` by absolute path. |
+| `unknown flag: --local-changes` | The old CLI is still running. Re-run the pinned `update-recover.sh` command above so it installs the selected release CLI, then invoke `/usr/local/bin/agent` by absolute path if manual recovery is still needed. |
 | `detected dubious ownership` | Add only the current checkout to `safe.directory` for the same user that runs `agent`; this is a trust check, not a permissions repair. |
-| `.git/FETCH_HEAD: Permission denied` or another `.git` write failure | Preserve the patch, then rerun the guarded checkout-owner recovery block above. Do not run the CLI directly as root or recursively change ownership. |
+| `.git/FETCH_HEAD: Permission denied` or another `.git` write failure | Re-run the pinned `update-recover.sh` command above and keep the generated `.agent/update-recovery/<timestamp>/` directory. Do not run the CLI directly as root or recursively change ownership. |
 | `working tree has local changes` or `local-change policy` | Re-run with an explicit `--local-changes=retain`, `overwrite`, or `abort`; use `retain` unless the tracked edits are already preserved and intentionally disposable. |
 | merge, index, or stash conflict | Follow the conflict procedure below before retrying. Do not delete the stash or use `git reset --hard`. |
 | Docker image or Compose failure | Keep the updater backup and follow the service-specific recovery below; do not delete operator databases. |
 
-To capture the full CLI error for support or an issue without losing its exit status,
-set the log path and `pipefail`, then replace the final `agent update` command inside the
-guarded subshell above with this equivalent pipeline:
+To capture the full CLI error for support or an issue, keep the recovery directory
+printed by the script. It contains the attempted plan, stderr, full update log,
+Git status, and pre-update preservation files:
 
 ```bash
-AAVA_RECOVERY_LOG="$(dirname "$AAVA_REPO")/aava-update-recovery.log"
-set -o pipefail
-sudo "$AAVA_SETPRIV" --reuid="$AAVA_UID" --regid="$AAVA_GID" \
-  --groups="$AAVA_GROUPS" /usr/bin/env HOME="$AAVA_HOME" \
-  /bin/sh -c 'cd "$1" && shift && exec "$@"' \
-  sh "$AAVA_REPO" /usr/local/bin/agent update --ref v7.4.0 --include-ui \
-  --local-changes=retain --self-update=false 2>&1 | sudo tee "$AAVA_RECOVERY_LOG"
+sudo find /opt/Asterisk-AI-Voice-Agent/.agent/update-recovery -maxdepth 1 -type d | sort | tail -n 3
 ```
 
 The CLI creates its backup before changing the checkout. If the command reports a
-backup path or a preserved stash, include those paths in the support report but do not
-upload `.env`, database files, credentials, or other secrets.
+backup path, recovery directory, or preserved stash, include those paths in the support
+report but do not upload `.env`, database files, credentials, or other secrets.
 
 #### If an earlier update left a merge or stash conflict
 

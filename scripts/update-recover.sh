@@ -37,8 +37,9 @@ Usage:
   sudo bash scripts/update-recover.sh [options]
 
 Recommended for a stuck release upgrade:
-  curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/update-recover.sh \
-    | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref v7.4.1 --include-ui
+  AAVA_RECOVERY_REF=v7.4.2
+  curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
+    | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
 
 Options:
   --repo PATH                  AAVA checkout path (default: current Git checkout, then /opt/Asterisk-AI-Voice-Agent)
@@ -285,6 +286,11 @@ prepare_recovery_dir() {
   ts="$(date -u +%Y%m%d_%H%M%S)"
   RECOVERY_DIR="${REPO}/.agent/update-recovery/${ts}"
   mkdir -p -- "${RECOVERY_DIR}" || die "failed to create recovery directory: ${RECOVERY_DIR}"
+  TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
+  TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
+  chown --no-dereference "${TARGET_UID}:${TARGET_GID}" \
+    "${REPO}/.agent" "${REPO}/.agent/update-recovery" "${RECOVERY_DIR}" \
+    || die "failed to hand recovery metadata to checkout owner"
   chmod 0750 -- "${REPO}/.agent" "${REPO}/.agent/update-recovery" "${RECOVERY_DIR}" 2>/dev/null || true
 }
 
@@ -501,13 +507,15 @@ resolve_latest_release() {
 install_release_cli() {
   local version="$1"
   local install_dir
+  local installer_url
   install_dir="$(dirname "${AGENT_BIN}")"
+  installer_url="https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${version}/scripts/install-cli.sh"
   log "==> Installing agent CLI ${version} to ${AGENT_BIN}"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+    curl -fsSL "${installer_url}" \
       | env "AGENT_VERSION=${version}" "INSTALL_DIR=${install_dir}" bash
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+    wget -qO- "${installer_url}" \
       | env "AGENT_VERSION=${version}" "INSTALL_DIR=${install_dir}" bash
   else
     die "curl or wget is required to install the release CLI"
@@ -540,6 +548,8 @@ install_branch_cli() {
     golang:1.22-bookworm \
     bash -c 'go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags "-X main.version=$AAVA_CLI_VERSION" -o /out/agent ./cmd/agent' \
     || die "failed to build CLI from selected ref"
+  mkdir -p -- "$(dirname "${AGENT_BIN}")" \
+    || die "failed to create CLI install directory for ${AGENT_BIN}"
   install -m 0755 "${tmp_src}/out/agent" "${AGENT_BIN}" \
     || die "failed to install selected-ref CLI to ${AGENT_BIN}"
   rm -rf -- "${tmp_src}"
