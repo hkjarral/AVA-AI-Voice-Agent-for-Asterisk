@@ -278,13 +278,16 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     script = _script()
     main = script.split("main() {", 1)[1]
 
+    owner = main.index("prepare_owner_execution")
+    repair = main.index("repair_metadata_ownership")
+    updater_state = main.index("prepare_updater_state_dirs")
+    diagnostics = main.index("capture_diagnostics")
     prompt = main.index("prompt_local_changes_if_needed")
     preserve = main.index("capture_preupdate_artifacts")
     install = main.index("install_target_cli")
-    repair = main.index("repair_metadata_ownership")
     update = main.index("run_update")
 
-    assert prompt < preserve < install < repair < update
+    assert owner < repair < updater_state < diagnostics < prompt < preserve < install < update
     assert "staged-tracked.patch" in script
     assert "unstaged-tracked.patch" in script
     assert "pre-update-files" in script

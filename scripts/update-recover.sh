@@ -754,16 +754,8 @@ repair_metadata_ownership() {
     die "refusing automatic repair for linked, symlinked, or missing .git metadata"
   fi
 
-  local expected_git_dir git_dir_raw git_dir
+  local expected_git_dir
   expected_git_dir="$(resolve_existing_path "${REPO}/.git")" || die "failed to resolve .git directory"
-  git_dir_raw="$(git_repo rev-parse --git-dir)" || die "failed to inspect Git metadata"
-  case "${git_dir_raw}" in
-    /*) git_dir="$(resolve_existing_path "${git_dir_raw}")" ;;
-    *) git_dir="$(resolve_existing_path "${REPO}/${git_dir_raw}")" ;;
-  esac
-  if [ "${git_dir}" != "${expected_git_dir}" ]; then
-    die "refusing Git metadata repair outside ${expected_git_dir} (gitdir=${git_dir})"
-  fi
 
   safe_chown_tree "${expected_git_dir}" \
     || die "failed to repair .git ownership"
@@ -996,13 +988,13 @@ main() {
   trap cleanup EXIT
   prepare_recovery_dir
 
+  prepare_owner_execution
+  repair_metadata_ownership
+  prepare_updater_state_dirs
   capture_diagnostics
   prompt_local_changes_if_needed
   capture_preupdate_artifacts
   install_target_cli
-  repair_metadata_ownership
-  prepare_updater_state_dirs
-  prepare_owner_execution
   run_plan
   if [ "${PLAN_ONLY}" = "true" ]; then
     log "Plan written to ${RECOVERY_DIR}/update-plan.json"
