@@ -1101,10 +1101,14 @@ run_plan() {
   if [ "${STASH_UNTRACKED}" = "true" ]; then
     args+=(--stash-untracked)
   fi
-  if ! run_as_owner "${AGENT_BIN}" "${args[@]}" >"${RECOVERY_DIR}/update-plan.json" 2>"${RECOVERY_DIR}/update-plan.err"; then
+  local plan_err_raw="${RECOVERY_DIR}/update-plan.err.raw"
+  if ! run_as_owner "${AGENT_BIN}" "${args[@]}" >"${RECOVERY_DIR}/update-plan.json" 2>"${plan_err_raw}"; then
+    redact_remote_url <"${plan_err_raw}" >"${RECOVERY_DIR}/update-plan.err" || true
+    rm -f -- "${plan_err_raw}"
     cat "${RECOVERY_DIR}/update-plan.err" >&2 || true
     die "update plan failed; diagnostics are in ${RECOVERY_DIR}"
   fi
+  rm -f -- "${plan_err_raw}"
 }
 
 run_update() {
@@ -1130,7 +1134,7 @@ run_update() {
   : >"${RECOVERY_DIR}/agent-update.log"
   chown "${TARGET_UID}:${TARGET_GID}" "${RECOVERY_DIR}/agent-update.log" 2>/dev/null || true
   set +e
-  run_as_owner "${AGENT_BIN}" "${args[@]}" 2>&1 | tee "${RECOVERY_DIR}/agent-update.log"
+  run_as_owner "${AGENT_BIN}" "${args[@]}" 2>&1 | redact_remote_url | tee "${RECOVERY_DIR}/agent-update.log"
   local rc=${PIPESTATUS[0]}
   set -e
   if [ "${rc}" -ne 0 ]; then

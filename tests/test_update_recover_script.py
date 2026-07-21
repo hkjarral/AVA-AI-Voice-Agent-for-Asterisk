@@ -563,6 +563,71 @@ run_update
     assert "--stash-untracked" in calls[1]
 
 
+def test_update_recover_redacts_failed_plan_output_and_artifact(tmp_path: Path) -> None:
+    recovery = tmp_path / "recovery"
+    recovery.mkdir()
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+run_as_owner() {{
+  printf 'fatal: unable to access https://example.invalid/repo.git?access_token=secret123&x=1\\n' >&2
+  return 9
+}}
+RECOVERY_DIR="{recovery}"
+AGENT_BIN=/usr/local/bin/agent
+REMOTE=origin
+REF=v7.4.2
+CHECKOUT_MODE=auto
+INCLUDE_UI=true
+LOCAL_CHANGES=retain
+SKIP_CHECK=false
+STASH_UNTRACKED=false
+run_plan
+"""
+    result = _run_bash_harness(harness, tmp_path, check=False)
+
+    assert result.returncode == 2
+    assert "secret123" not in result.stderr
+    assert "access_token=[redacted]" in result.stderr
+    assert not (recovery / "update-plan.err.raw").exists()
+    plan_err = (recovery / "update-plan.err").read_text(encoding="utf-8")
+    assert "secret123" not in plan_err
+    assert "access_token=[redacted]" in plan_err
+
+
+def test_update_recover_redacts_update_output_and_log(tmp_path: Path) -> None:
+    recovery = tmp_path / "recovery"
+    recovery.mkdir()
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+run_as_owner() {{
+  printf 'fatal: unable to access https://example.invalid/repo.git?private-token=secret456&x=1\\n'
+  return 7
+}}
+RECOVERY_DIR="{recovery}"
+TARGET_UID="$(id -u)"
+TARGET_GID="$(id -g)"
+AGENT_BIN=/usr/local/bin/agent
+REMOTE=origin
+REF=v7.4.2
+CHECKOUT_MODE=auto
+INCLUDE_UI=true
+LOCAL_CHANGES=retain
+SKIP_CHECK=false
+STASH_UNTRACKED=false
+run_update
+"""
+    result = _run_bash_harness(harness, tmp_path, check=False)
+
+    assert result.returncode == 2
+    assert "secret456" not in result.stdout
+    assert "private-token=[redacted]" in result.stdout
+    update_log = (recovery / "agent-update.log").read_text(encoding="utf-8")
+    assert "secret456" not in update_log
+    assert "private-token=[redacted]" in update_log
+
+
 def test_update_recover_validates_installed_cli_as_checkout_owner() -> None:
     script = _script()
     install_target_cli = script.split("install_target_cli() {", 1)[1].split("\n}", 1)[0]
