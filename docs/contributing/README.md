@@ -30,6 +30,7 @@ Welcome to Asterisk AI Voice Agent development! This directory contains everythi
 - **[Testing From Source](testing-from-source.md)** - Run the stack from a source checkout
 - **[Debugging Guide](debugging-guide.md)** - Debug with logs, RCA scripts, and agent CLI
 - **[Code Style](code-style.md)** - Project conventions and best practices
+- **[Pull Request and CI Workflow](PULL_REQUEST_WORKFLOW.md)** - Draft checkpoints, bot reviews, final CI, and merge gates
 
 ### Technical Deep Dives
 
@@ -70,7 +71,7 @@ Technical specs for each provider:
 2. Create a feature branch from the latest `main` (one branch per PR)
 3. Make changes following our code style
 4. Test with real calls using `agent rca`
-5. Submit PR with testing evidence
+5. Submit a draft PR with testing evidence and follow the [review and CI workflow](PULL_REQUEST_WORKFLOW.md)
 
 ### Using Agent CLI
 

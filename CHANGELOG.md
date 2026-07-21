@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Direct AAVA origination through VICIdial carrier dialplans is deprecated:** new deployments must use the Remote Agent integration. The Admin UI no longer offers `AAVA_OUTBOUND_PBX_TYPE=vicidial` as a new selection; an existing value remains visible and readable for one migration release and emits a runtime warning. Existing AAVA Campaign routing for FreePBX and generic Asterisk is unchanged.
+- **Pull-request validation now uses staged review and CI gates:** draft PRs receive fast tests and one early CodeRabbit/Codex checkpoint, superseded workflow runs are canceled, and Docker image-size builds move to ready-for-review or explicit `full-ci` validation. A stable aggregate `PR gate`, final-head review guidance, and documented squash-merge workflow reduce repetitive review/CI cycles without weakening tests, CodeQL, secret checks, or protected-branch validation.
 
 ## [7.4.1] - 2026-07-18
 

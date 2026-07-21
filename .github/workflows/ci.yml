@@ -5,6 +5,12 @@ on:
     branches: [ main, staging ]
   pull_request:
     branches: [ main, staging ]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -175,6 +181,21 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   image-size:
     name: Check Docker Image Sizes
+    # Drafts get the fast test/lint/compile suite on each push. Docker builds run
+    # at the final review stage, or earlier when a maintainer applies `full-ci`.
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request' &&
+        (
+          contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+          (
+            github.event.pull_request.draft == false &&
+            github.event.action != 'labeled'
+          )
+        )
+      )
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -274,3 +295,68 @@ jobs:
       - name: Run CLI tests
         working-directory: cli
         run: go test ./...
+
+  # Branch protection requires this stable aggregate check instead of every
+  # implementation job. Drafts may skip the Docker build; ready/full-ci PRs,
+  # protected-branch pushes, and manual runs require it to pass.
+  pr-gate:
+    name: PR gate
+    if: always()
+    needs:
+      - build
+      - admin-backend-tests
+      - admin-frontend-tests
+      - image-size
+      - cli-cross-compile
+    runs-on: ubuntu-latest
+    env:
+      BUILD_RESULT: ${{ needs.build.result }}
+      BACKEND_RESULT: ${{ needs.admin-backend-tests.result }}
+      FRONTEND_RESULT: ${{ needs.admin-frontend-tests.result }}
+      IMAGE_SIZE_RESULT: ${{ needs.image-size.result }}
+      CLI_RESULT: ${{ needs.cli-cross-compile.result }}
+      FINAL_VALIDATION_REQUIRED: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+    steps:
+      - name: Verify required jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          failed=0
+          for entry in \
+            "Core tests=${BUILD_RESULT}" \
+            "Admin backend=${BACKEND_RESULT}" \
+            "Admin frontend=${FRONTEND_RESULT}" \
+            "CLI=${CLI_RESULT}"; do
+            name="${entry%%=*}"
+            result="${entry#*=}"
+            if [ "$result" != "success" ]; then
+              echo "::error::${name} finished with ${result}"
+              failed=1
+            fi
+          done
+
+          if [ "$FINAL_VALIDATION_REQUIRED" = "true" ]; then
+            if [ "$IMAGE_SIZE_RESULT" != "success" ]; then
+              echo "::error::Docker image-size validation is required but finished with ${IMAGE_SIZE_RESULT}"
+              failed=1
+            fi
+          elif [ "$IMAGE_SIZE_RESULT" != "success" ] && [ "$IMAGE_SIZE_RESULT" != "skipped" ]; then
+            echo "::error::Optional Docker image-size validation finished with ${IMAGE_SIZE_RESULT}"
+            failed=1
+          fi
+
+          {
+            echo "## PR gate"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Core tests | ${BUILD_RESULT} |"
+            echo "| Admin backend | ${BACKEND_RESULT} |"
+            echo "| Admin frontend | ${FRONTEND_RESULT} |"
+            echo "| CLI | ${CLI_RESULT} |"
+            echo "| Docker image sizes | ${IMAGE_SIZE_RESULT} |"
+            echo "| Final validation required | ${FINAL_VALIDATION_REQUIRED} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$failed"

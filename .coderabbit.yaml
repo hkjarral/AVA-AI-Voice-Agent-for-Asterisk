@@ -1,0 +1,9 @@
+# Review draft PRs once they contain a coherent checkpoint, then pause automatic
+# incremental reviews while implementation continues. Maintainers request a
+# final full review explicitly after the PR is frozen.
+reviews:
+  auto_review:
+    enabled: true
+    drafts: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 1

@@ -16,6 +16,7 @@ on:
       - '.github/workflows/trivy.yml'
   pull_request:
     branches: [ "main", "staging" ]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths:
       - 'Dockerfile'
       - 'requirements.txt'
@@ -28,9 +29,20 @@ on:
     - cron: '0 7 * * 1'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scan:
     name: Scan Docker Image
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci') ||
+      (
+        github.event.pull_request.draft == false &&
+        github.event.action != 'labeled'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read

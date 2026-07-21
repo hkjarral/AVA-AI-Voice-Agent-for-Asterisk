@@ -34,6 +34,17 @@ For telephony changes, include:
 - Brief call behavior summary (any issues, notable findings):
   - 
 
+## Review Checkpoints
+
+- [ ] Draft opened after a coherent vertical slice was ready to review
+- [ ] Codex and CodeRabbit draft feedback was assessed together (or not needed)
+- [ ] Review fixes were pushed as a cohesive batch
+- [ ] Final head is frozen and the `full-ci` gate has passed
+- [ ] Final `@codex review` and `@coderabbitai full review` completed on the frozen head
+- [ ] All actionable conversations are resolved
+
+See the [pull-request workflow](../docs/contributing/PULL_REQUEST_WORKFLOW.md) for the expected review and CI sequence.
+
 ## Documentation
 
 Which docs were updated (if any)?
@@ -43,5 +54,6 @@ Which docs were updated (if any)?
 - [ ] `docs/TOOL_CALLING_GUIDE.md`
 - [ ] Provider/tool-specific docs
 - [ ] `docs/DEVELOPER_ONBOARDING.md` / other onboarding content
+- [ ] `CHANGELOG.md`
 
 If no docs were needed, explain why.

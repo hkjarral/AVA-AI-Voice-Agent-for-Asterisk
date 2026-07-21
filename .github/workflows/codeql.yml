@@ -13,6 +13,10 @@ on:
     # Run weekly on Monday at 6am UTC
     - cron: '0 6 * * 1'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze Python Code
