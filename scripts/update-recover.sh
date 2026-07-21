@@ -861,6 +861,8 @@ install_branch_cli() {
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out" \
     || die "failed to hand temporary CLI build directories to checkout owner"
   clone_err="${tmp_src}/git-clone.err"
+  : >"${clone_err}" || die "failed to create temporary Git clone diagnostics"
+  chmod 0600 "${clone_err}" || die "failed to secure temporary Git clone diagnostics"
   clone_url="aava-recovery-origin:"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
   if ! run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig" \

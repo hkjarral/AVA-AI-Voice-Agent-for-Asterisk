@@ -289,6 +289,8 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'mkdir -p -- "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
     assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
+    assert ': >"${clone_err}"' in install_branch
+    assert 'chmod 0600 "${clone_err}"' in install_branch
 
 
 def test_update_recover_repair_is_bounded() -> None:
