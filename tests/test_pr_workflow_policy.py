@@ -11,6 +11,7 @@ CONCURRENT_WORKFLOWS = (
     "catalog-url-check.yml",
     "trivy.yml",
     "local-ai-gpu-build.yml",
+    "regression-hardening.yml",
 )
 
 
@@ -25,6 +26,7 @@ def test_pr_workflows_cancel_superseded_runs() -> None:
     for filename in CONCURRENT_WORKFLOWS:
         workflow = _load_yaml(workflows / filename)
         concurrency = workflow["concurrency"]
+        assert "github.event_name" in concurrency["group"]
         assert "github.event.pull_request.number || github.ref" in concurrency["group"]
         assert concurrency["cancel-in-progress"] == "true"
 
