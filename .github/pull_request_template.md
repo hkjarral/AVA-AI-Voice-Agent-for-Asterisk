@@ -37,7 +37,7 @@ For telephony changes, include:
 ## Review Checkpoints
 
 - [ ] Draft opened after a coherent vertical slice was ready to review
-- [ ] Codex and CodeRabbit draft feedback was assessed together (or not needed)
+- [ ] One Codex draft review was requested, CodeRabbit completed, and both were assessed together
 - [ ] Review fixes were pushed as a cohesive batch
 - [ ] Final head is frozen and the `full-ci` gate has passed
 - [ ] Final `@codex review` and `@coderabbitai full review` completed on the frozen head

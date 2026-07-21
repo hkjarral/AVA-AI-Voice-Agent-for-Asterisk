@@ -190,10 +190,7 @@ jobs:
         github.event_name == 'pull_request' &&
         (
           contains(github.event.pull_request.labels.*.name, 'full-ci') ||
-          (
-            github.event.pull_request.draft == false &&
-            github.event.action != 'labeled'
-          )
+          github.event.pull_request.draft == false
         )
       )
     runs-on: ubuntu-latest

@@ -38,6 +38,7 @@ def test_ci_has_fast_draft_and_final_validation_gate() -> None:
     image_condition = workflow["jobs"]["image-size"]["if"]
     assert "full-ci" in image_condition
     assert "github.event.pull_request.draft == false" in image_condition
+    assert "github.event.action != 'labeled'" not in image_condition
 
     gate = workflow["jobs"]["pr-gate"]
     assert gate["name"] == "PR gate"
@@ -64,6 +65,7 @@ def test_path_scoped_docker_workflows_wait_for_final_validation() -> None:
         condition = workflow["jobs"][job_name]["if"]
         assert "full-ci" in condition
         assert "github.event.pull_request.draft == false" in condition
+        assert "github.event.action != 'labeled'" not in condition
 
 
 def test_coderabbit_reviews_one_draft_checkpoint_then_pauses() -> None:
