@@ -75,6 +75,13 @@ This document summarizes the utilities under `scripts/` and when to use them.
   - Usage: `./scripts/setup-vertex.sh [project-id]`
   - Full guide: [docs/Provider-Vertex-Setup.md](../docs/Provider-Vertex-Setup.md)
 
+## Update Recovery
+
+- `scripts/update-recover.sh`
+  - Host-side recovery for Admin UI update planner failures, stale updater images, mixed `.git`/`.agent` ownership, and local tracked source edits that need an explicit retain/overwrite/abort decision.
+  - Captures diagnostics, tracked-change patches, conflicted-file copies when a previous merge is unresolved, and a best-effort config/data backup before repair. Ownership repair is bounded to `.git`, `.agent`, and Git-tracked files/parents; it does not recursively chown the whole checkout.
+  - Usage: `sudo bash scripts/update-recover.sh --repo /opt/Asterisk-AI-Voice-Agent --ref v7.4.1 --include-ui`
+
 ## Admin UI URL and Catalog Maintenance
 
 These stdlib-only utilities validate the Admin UI's external URLs and maintain

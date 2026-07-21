@@ -1,0 +1,867 @@
+#!/usr/bin/env bash
+# Recover AAVA installations when the Admin UI update planner cannot run.
+#
+# This script intentionally wraps the supported `agent update` path. It repairs
+# only bounded metadata ownership that older updater paths commonly left behind,
+# captures diagnostics/backups first, installs the requested CLI, and then lets
+# the CLI perform the real update, database snapshots, Docker changes, and check.
+
+set -Eeuo pipefail
+
+REPO_DEFAULT="/opt/Asterisk-AI-Voice-Agent"
+REMOTE="origin"
+REF="latest"
+LOCAL_CHANGES="ask"
+CHECKOUT_MODE="auto"
+INCLUDE_UI="true"
+AGENT_BIN="/usr/local/bin/agent"
+YES="false"
+PLAN_ONLY="false"
+SKIP_REPAIR="false"
+SKIP_CHECK="false"
+STASH_UNTRACKED="false"
+
+REPO=""
+RECOVERY_DIR=""
+TRAVERSAL_STATE=""
+TEMP_HOME=""
+SETPRIV_BIN=""
+TARGET_UID=""
+TARGET_GID=""
+TARGET_GROUPS=""
+UNMERGED_COPIED="false"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  sudo bash scripts/update-recover.sh [options]
+
+Recommended for a stuck release upgrade:
+  curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/update-recover.sh \
+    | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref v7.4.1 --include-ui
+
+Options:
+  --repo PATH                  AAVA checkout path (default: current Git checkout, then /opt/Asterisk-AI-Voice-Agent)
+  --ref REF                    Target release tag or branch (default: latest published release)
+  --remote NAME                Git remote to update from (default: origin)
+  --local-changes POLICY       ask, retain, overwrite, or abort (default: ask)
+  --include-ui                 Rebuild/restart Admin UI if needed (default)
+  --no-include-ui              Exclude Admin UI rebuild/restart
+  --checkout auto|true|false   Allow branch checkout; auto=false for release tags, true for branches
+  --agent-bin PATH             Agent CLI path to install/run (default: /usr/local/bin/agent)
+  --yes                        Do not ask for the final confirmation
+  --plan-only                  Stop after installing CLI, repairing metadata, and writing a plan
+  --no-repair                  Skip bounded ownership repair
+  --skip-check                 Pass --skip-check to agent update
+  --stash-untracked            Include untracked files in the updater stash
+  -h, --help                   Show this help
+
+Local-change policies:
+  ask        Prompt in an interactive terminal if tracked code changes are present
+  retain     Stash tracked local changes and reapply them after the update; may conflict
+  overwrite  Discard tracked source-code edits after preserving recovery patches
+  abort      Stop if tracked local changes are present
+
+Safety:
+  The script captures diagnostics, tracked-change patches, and a best-effort
+  config/data backup before repair or update. It never recursively chowns the
+  whole checkout; ownership repair is limited to .git, .agent, and Git-tracked
+  files/parents. Untracked runtime/operator files are not removed.
+USAGE
+}
+
+log() {
+  printf '%s\n' "$*"
+}
+
+die() {
+  log "ERROR: $*" >&2
+  exit 2
+}
+
+warn() {
+  log "WARN: $*" >&2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+is_release_ref() {
+  [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+normalize_release_ref() {
+  local ref="$1"
+  if [[ "$ref" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    printf 'v%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+strip_trailing_slashes() {
+  local path="$1"
+  while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
+    path="${path%/}"
+  done
+  printf '%s\n' "$path"
+}
+
+resolve_existing_path() {
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -e -- "$1"
+  else
+    readlink -f -- "$1"
+  fi
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ "$#" -ge 2 ] || die "--repo requires a path"
+        REPO="$2"
+        shift 2
+        ;;
+      --ref)
+        [ "$#" -ge 2 ] || die "--ref requires a tag or branch"
+        REF="$2"
+        shift 2
+        ;;
+      --remote)
+        [ "$#" -ge 2 ] || die "--remote requires a name"
+        REMOTE="$2"
+        shift 2
+        ;;
+      --local-changes)
+        [ "$#" -ge 2 ] || die "--local-changes requires ask, retain, overwrite, or abort"
+        LOCAL_CHANGES="$2"
+        shift 2
+        ;;
+      --include-ui)
+        INCLUDE_UI="true"
+        shift
+        ;;
+      --no-include-ui)
+        INCLUDE_UI="false"
+        shift
+        ;;
+      --checkout)
+        [ "$#" -ge 2 ] || die "--checkout requires auto, true, or false"
+        CHECKOUT_MODE="$2"
+        shift 2
+        ;;
+      --agent-bin)
+        [ "$#" -ge 2 ] || die "--agent-bin requires a path"
+        AGENT_BIN="$2"
+        shift 2
+        ;;
+      --yes)
+        YES="true"
+        shift
+        ;;
+      --plan-only)
+        PLAN_ONLY="true"
+        shift
+        ;;
+      --no-repair)
+        SKIP_REPAIR="true"
+        shift
+        ;;
+      --skip-check)
+        SKIP_CHECK="true"
+        shift
+        ;;
+      --stash-untracked)
+        STASH_UNTRACKED="true"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown option: $1"
+        ;;
+    esac
+  done
+}
+
+validate_args() {
+  LOCAL_CHANGES="$(printf '%s' "${LOCAL_CHANGES}" | tr '[:upper:]' '[:lower:]')"
+  CHECKOUT_MODE="$(printf '%s' "${CHECKOUT_MODE}" | tr '[:upper:]' '[:lower:]')"
+  case "${LOCAL_CHANGES}" in
+    ask|retain|overwrite|abort) ;;
+    *) die "--local-changes must be ask, retain, overwrite, or abort" ;;
+  esac
+  case "${CHECKOUT_MODE}" in
+    auto|true|false) ;;
+    *) die "--checkout must be auto, true, or false" ;;
+  esac
+  case "${INCLUDE_UI}" in
+    true|false) ;;
+    *) die "--include-ui state must be true or false" ;;
+  esac
+  case "${YES}" in
+    true|false) ;;
+    *) die "--yes state must be true or false" ;;
+  esac
+  case "${PLAN_ONLY}" in
+    true|false) ;;
+    *) die "--plan-only state must be true or false" ;;
+  esac
+  case "${SKIP_REPAIR}" in
+    true|false) ;;
+    *) die "--no-repair state must be true or false" ;;
+  esac
+  case "${SKIP_CHECK}" in
+    true|false) ;;
+    *) die "--skip-check state must be true or false" ;;
+  esac
+  case "${STASH_UNTRACKED}" in
+    true|false) ;;
+    *) die "--stash-untracked state must be true or false" ;;
+  esac
+  case "${AGENT_BIN}" in
+    /*/agent|/agent) ;;
+    *) die "--agent-bin must be an absolute path ending in /agent" ;;
+  esac
+  [ -n "${REMOTE}" ] || die "--remote cannot be empty"
+  [ -n "${REF}" ] || die "--ref cannot be empty"
+}
+
+detect_repo() {
+  local candidate
+  if [ -n "${REPO}" ]; then
+    candidate="${REPO}"
+  elif [ -d ".git" ]; then
+    candidate="$(pwd)"
+  elif [ -d "${REPO_DEFAULT}/.git" ]; then
+    candidate="${REPO_DEFAULT}"
+  else
+    die "could not detect the AAVA checkout; pass --repo /path/to/Asterisk-AI-Voice-Agent"
+  fi
+  candidate="$(strip_trailing_slashes "${candidate}")"
+  [ -d "${candidate}" ] || die "repo path does not exist: ${candidate}"
+  REPO="$(cd "${candidate}" && pwd -P)" || die "cannot enter repo path: ${candidate}"
+  [ -d "${REPO}/.git" ] || die "automatic recovery requires a normal checkout with a .git directory: ${REPO}"
+}
+
+git_repo() {
+  git -c "safe.directory=${REPO}" --git-dir="${REPO}/.git" --work-tree="${REPO}" "$@"
+}
+
+capture_command() {
+  local name="$1"
+  shift
+  {
+    printf '$'
+    printf ' %q' "$@"
+    printf '\n'
+    "$@"
+  } >"${RECOVERY_DIR}/${name}.log" 2>&1 || true
+}
+
+capture_git() {
+  local name="$1"
+  shift
+  {
+    printf '$ git'
+    printf ' %q' "$@"
+    printf '\n'
+    git_repo "$@"
+  } >"${RECOVERY_DIR}/${name}.log" 2>&1 || true
+}
+
+prepare_recovery_dir() {
+  if [ -L "${REPO}/.agent" ]; then
+    die "refusing symlinked updater state: ${REPO}/.agent"
+  fi
+  if [ -e "${REPO}/.agent" ] && [ ! -d "${REPO}/.agent" ]; then
+    die "refusing non-directory updater state: ${REPO}/.agent"
+  fi
+  local ts
+  ts="$(date -u +%Y%m%d_%H%M%S)"
+  RECOVERY_DIR="${REPO}/.agent/update-recovery/${ts}"
+  mkdir -p -- "${RECOVERY_DIR}" || die "failed to create recovery directory: ${RECOVERY_DIR}"
+  chmod 0750 -- "${REPO}/.agent" "${REPO}/.agent/update-recovery" "${RECOVERY_DIR}" 2>/dev/null || true
+}
+
+capture_diagnostics() {
+  log "==> Capturing diagnostics"
+  {
+    printf 'timestamp_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'repo=%s\n' "${REPO}"
+    printf 'remote=%s\n' "${REMOTE}"
+    printf 'ref=%s\n' "${REF}"
+    printf 'include_ui=%s\n' "${INCLUDE_UI}"
+    printf 'checkout_mode=%s\n' "${CHECKOUT_MODE}"
+    printf 'local_changes=%s\n' "${LOCAL_CHANGES}"
+    printf 'uname=%s\n' "$(uname -a)"
+    printf 'euid=%s\n' "$(id -u)"
+  } >"${RECOVERY_DIR}/recovery.env"
+
+  capture_command uname uname -a
+  capture_command id id
+  capture_command df df -h "${REPO}"
+  capture_command repo-ownership ls -ldn "${REPO}" "${REPO}/.git" "${REPO}/.agent"
+  capture_git status status --short --branch
+  capture_git rev-parse rev-parse HEAD
+  capture_git remotes remote -v
+  capture_git stash-list stash list
+  if command -v docker >/dev/null 2>&1; then
+    capture_command docker-ps docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+  fi
+}
+
+copy_unmerged_files() {
+  if [ "${UNMERGED_COPIED}" = "true" ]; then
+    return 0
+  fi
+  local conflict_dir list_file rel src dst
+  conflict_dir="${RECOVERY_DIR}/unmerged-files"
+  list_file="${RECOVERY_DIR}/unmerged-tracked-files.txt"
+  mkdir -p -- "${conflict_dir}"
+  git_repo diff --name-only --diff-filter=U -z >"${list_file}.nul" \
+    || die "failed to enumerate unmerged tracked files"
+  : >"${list_file}"
+  while IFS= read -r -d '' rel; do
+    case "${rel}" in
+      ""|/*|../*|*/../*|*/..)
+        die "refusing unsafe unmerged path: ${rel}"
+        ;;
+    esac
+    printf '%s\n' "${rel}" >>"${list_file}"
+    src="${REPO}/${rel}"
+    dst="${conflict_dir}/${rel}"
+    if [ -e "${src}" ] || [ -L "${src}" ]; then
+      mkdir -p -- "$(dirname "${dst}")"
+      cp -a -- "${src}" "${dst}"
+    fi
+  done <"${list_file}.nul"
+  UNMERGED_COPIED="true"
+}
+
+capture_preupdate_artifacts() {
+  log "==> Preserving local state before repair"
+  git_repo status --short >/dev/null || die "failed to inspect checkout changes; update not attempted"
+  if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
+    copy_unmerged_files
+  fi
+  if ! git_repo diff --binary --cached >"${RECOVERY_DIR}/staged-tracked.patch"; then
+    if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
+      warn "Could not create a staged binary patch because the checkout has unmerged paths; conflicted files are copied to ${RECOVERY_DIR}/unmerged-files."
+      git_repo diff --cached >"${RECOVERY_DIR}/staged-tracked.diff" 2>"${RECOVERY_DIR}/staged-tracked.diff.err" || true
+      copy_unmerged_files
+    else
+      die "failed to preserve staged tracked edits; update not attempted"
+    fi
+  fi
+  if ! git_repo diff --binary >"${RECOVERY_DIR}/unstaged-tracked.patch"; then
+    if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
+      warn "Could not create an unstaged binary patch because the checkout has unmerged paths; conflicted files are copied to ${RECOVERY_DIR}/unmerged-files."
+      git_repo diff >"${RECOVERY_DIR}/unstaged-tracked.diff" 2>"${RECOVERY_DIR}/unstaged-tracked.diff.err" || true
+      copy_unmerged_files
+    else
+      die "failed to preserve unstaged tracked edits; update not attempted"
+    fi
+  fi
+  git_repo status --porcelain --untracked-files=all >"${RECOVERY_DIR}/git-status-porcelain.txt" \
+    || die "failed to save checkout status; update not attempted"
+
+  local backup_dir
+  backup_dir="${RECOVERY_DIR}/pre-update-files"
+  mkdir -p -- "${backup_dir}/config" "${backup_dir}/data/operator" "${backup_dir}/data"
+  for rel in ".env" "config/ai-agent.yaml" "config/ai-agent.local.yaml" "config/users.json"; do
+    if [ -e "${REPO}/${rel}" ] || [ -L "${REPO}/${rel}" ]; then
+      mkdir -p -- "${backup_dir}/$(dirname "${rel}")"
+      cp -a -- "${REPO}/${rel}" "${backup_dir}/${rel}"
+    fi
+  done
+  if [ -d "${REPO}/config/contexts" ]; then
+    cp -a -- "${REPO}/config/contexts" "${backup_dir}/config/contexts"
+  fi
+  for rel in "data/operator/agents.db" "data/operator/agents.db-wal" "data/operator/agents.db-shm" \
+             "data/call_history.db" "data/call_history.db-wal" "data/call_history.db-shm"; do
+    if [ -e "${REPO}/${rel}" ]; then
+      mkdir -p -- "${backup_dir}/$(dirname "${rel}")"
+      cp -a -- "${REPO}/${rel}" "${backup_dir}/${rel}"
+    fi
+  done
+}
+
+tracked_dirty_files() {
+  git_repo status --porcelain --untracked-files=no
+}
+
+has_unmerged_paths() {
+  local unmerged
+  unmerged="$(git_repo diff --name-only --diff-filter=U 2>/dev/null || true)"
+  [ -n "${unmerged}" ]
+}
+
+prompt_local_changes_if_needed() {
+  local dirty
+  dirty="$(tracked_dirty_files)"
+  if [ -z "${dirty}" ]; then
+    if [ "${LOCAL_CHANGES}" = "ask" ]; then
+      LOCAL_CHANGES="abort"
+    fi
+    return 0
+  fi
+
+  log "Tracked local changes were found:"
+  printf '%s\n' "${dirty}" | sed -n '1,25p'
+  if [ "$(printf '%s\n' "${dirty}" | wc -l | tr -d ' ')" -gt 25 ]; then
+    log "... additional paths omitted; full status is in ${RECOVERY_DIR}/git-status-porcelain.txt"
+  fi
+  if has_unmerged_paths; then
+    warn "Unmerged paths are present from a previous failed update or manual merge."
+    case "${LOCAL_CHANGES}" in
+      retain)
+        die "cannot retain unmerged paths with stash; resolve them manually or re-run with --local-changes=overwrite"
+        ;;
+      ask)
+        warn "Retain is disabled for this checkout; choose overwrite to reset conflicted tracked files, or abort."
+        ;;
+    esac
+  fi
+
+  case "${LOCAL_CHANGES}" in
+    retain)
+      warn "Retain mode will stash and reapply tracked source edits; conflicts may require manual resolution."
+      return 0
+      ;;
+    overwrite)
+      warn "Overwrite mode will discard tracked source-code edits after preserving patches in ${RECOVERY_DIR}."
+      return 0
+      ;;
+    abort)
+      die "tracked local changes are present and --local-changes=abort was selected"
+      ;;
+    ask) ;;
+  esac
+
+  [ -r /dev/tty ] || die "tracked local changes are present; re-run with --local-changes=retain, overwrite, or abort"
+  while true; do
+    {
+      printf '\nChoose how to handle tracked local changes:\n'
+      if has_unmerged_paths; then
+        printf '  r) retain    unavailable while unmerged paths are present\n'
+      else
+        printf '  r) retain    stash and reapply after update (may conflict)\n'
+      fi
+      printf '  o) overwrite discard tracked source-code edits after preserving patches\n'
+      printf '  a) abort     stop before changing the checkout\n'
+      printf 'Selection [a]: '
+    } >/dev/tty
+    local answer
+    IFS= read -r answer </dev/tty || answer=""
+    answer="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
+    case "${answer}" in
+      r|retain)
+        if has_unmerged_paths; then
+          printf 'Retain is unavailable while unmerged paths are present.\n' >/dev/tty
+          continue
+        fi
+        LOCAL_CHANGES="retain"
+        return 0
+        ;;
+      o|overwrite)
+        LOCAL_CHANGES="overwrite"
+        warn "Tracked source-code edits will be discarded by the updater; recovery patches are in ${RECOVERY_DIR}."
+        return 0
+        ;;
+      ""|a|abort)
+        die "update aborted by operator before changing the checkout"
+        ;;
+      *)
+        printf 'Unrecognized selection: %s\n' "${answer}" >/dev/tty
+        ;;
+    esac
+  done
+}
+
+resolve_latest_release() {
+  local latest=""
+  if command -v curl >/dev/null 2>&1; then
+    latest="$(curl -fsSL https://api.github.com/repos/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/latest \
+      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  elif command -v wget >/dev/null 2>&1; then
+    latest="$(wget -qO- https://api.github.com/repos/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/latest \
+      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  else
+    die "curl or wget is required to resolve --ref latest"
+  fi
+  [ -n "${latest}" ] || die "failed to resolve latest published release"
+  printf '%s\n' "${latest}"
+}
+
+install_release_cli() {
+  local version="$1"
+  local install_dir
+  install_dir="$(dirname "${AGENT_BIN}")"
+  log "==> Installing agent CLI ${version} to ${AGENT_BIN}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+      | env "AGENT_VERSION=${version}" "INSTALL_DIR=${install_dir}" bash
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh \
+      | env "AGENT_VERSION=${version}" "INSTALL_DIR=${install_dir}" bash
+  else
+    die "curl or wget is required to install the release CLI"
+  fi
+}
+
+install_branch_cli() {
+  local ref="$1"
+  need_cmd docker
+  local remote_url tmp_src
+  remote_url="$(git_repo ls-remote --get-url "${REMOTE}" 2>/dev/null || true)"
+  if [ -z "${remote_url}" ]; then
+    remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
+  fi
+  [ -n "${remote_url}" ] || die "failed to resolve remote ${REMOTE} for CLI source"
+
+  tmp_src="$(mktemp -d /tmp/aava-cli-src.XXXXXXXXXX)" || die "failed to create temporary CLI source directory"
+  log "==> Building agent CLI from ${REMOTE}/${ref}"
+  git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${remote_url}" "${tmp_src}/repo" \
+    || die "failed to fetch selected CLI source ${ref} from ${remote_url}"
+  mkdir -p -- "${tmp_src}/out"
+  docker run --rm \
+    -v "${tmp_src}/repo/cli:/src:ro" \
+    -v "${tmp_src}/out:/out" \
+    -w /src \
+    -e HOME=/tmp \
+    -e GOCACHE=/tmp/go-build \
+    -e GOMODCACHE=/tmp/go-mod \
+    -e "AAVA_CLI_VERSION=${ref}" \
+    golang:1.22-bookworm \
+    bash -c 'go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags "-X main.version=$AAVA_CLI_VERSION" -o /out/agent ./cmd/agent' \
+    || die "failed to build CLI from selected ref"
+  install -m 0755 "${tmp_src}/out/agent" "${AGENT_BIN}" \
+    || die "failed to install selected-ref CLI to ${AGENT_BIN}"
+  rm -rf -- "${tmp_src}"
+}
+
+install_target_cli() {
+  if [ "${REF}" = "latest" ]; then
+    REF="$(resolve_latest_release)"
+  fi
+  if is_release_ref "${REF}"; then
+    REF="$(normalize_release_ref "${REF}")"
+    install_release_cli "${REF}"
+  else
+    install_branch_cli "${REF}"
+  fi
+  "${AGENT_BIN}" version >"${RECOVERY_DIR}/agent-version.log" 2>&1 \
+    || die "installed agent CLI is not runnable: ${AGENT_BIN}"
+}
+
+checkout_value() {
+  case "${CHECKOUT_MODE}" in
+    true|false)
+      printf '%s\n' "${CHECKOUT_MODE}"
+      ;;
+    auto)
+      if is_release_ref "${REF}"; then
+        printf 'false\n'
+      else
+        printf 'true\n'
+      fi
+      ;;
+  esac
+}
+
+repair_metadata_ownership() {
+  if [ "${SKIP_REPAIR}" = "true" ]; then
+    log "==> Skipping ownership repair"
+    return 0
+  fi
+
+  log "==> Repairing bounded checkout metadata ownership"
+  TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
+  TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
+
+  if [ -L "${REPO}/.git" ] || [ ! -d "${REPO}/.git" ]; then
+    die "refusing automatic repair for linked, symlinked, or missing .git metadata"
+  fi
+
+  local expected_git_dir git_dir_raw git_dir
+  expected_git_dir="$(resolve_existing_path "${REPO}/.git")" || die "failed to resolve .git directory"
+  git_dir_raw="$(git_repo rev-parse --git-dir)" || die "failed to inspect Git metadata"
+  case "${git_dir_raw}" in
+    /*) git_dir="$(resolve_existing_path "${git_dir_raw}")" ;;
+    *) git_dir="$(resolve_existing_path "${REPO}/${git_dir_raw}")" ;;
+  esac
+  if [ "${git_dir}" != "${expected_git_dir}" ]; then
+    die "refusing Git metadata repair outside ${expected_git_dir} (gitdir=${git_dir})"
+  fi
+
+  chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${expected_git_dir}" \
+    || die "failed to repair .git ownership"
+
+  if [ -L "${REPO}/.agent" ]; then
+    die "refusing symlinked .agent state"
+  fi
+  if [ -e "${REPO}/.agent" ]; then
+    [ -d "${REPO}/.agent" ] || die "refusing non-directory .agent state"
+    chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${REPO}/.agent" \
+      || die "failed to repair .agent ownership"
+  fi
+
+  local tracked_list
+  tracked_list="$(mktemp)" || die "failed to create tracked ownership scan"
+  git_repo ls-files -z >"${tracked_list}" || {
+    rm -f -- "${tracked_list}"
+    die "failed to enumerate tracked checkout paths"
+  }
+  (
+    set -o pipefail
+    while IFS= read -r -d '' tracked_rel; do
+      case "${tracked_rel}" in
+        ""|/*|../*|*/../*|*/..)
+          printf 'Refusing unsafe tracked path: %s\n' "${tracked_rel}" >&2
+          exit 2
+          ;;
+      esac
+      tracked_path="${REPO}/${tracked_rel}"
+      tracked_parent="${tracked_path%/*}"
+      while [ "${tracked_parent}" != "${REPO}" ]; do
+        if [ -L "${tracked_parent}" ]; then
+          printf 'Refusing symlinked tracked parent: %s\n' "${tracked_parent}" >&2
+          exit 2
+        fi
+        if [ -e "${tracked_parent}" ]; then
+          printf '%s\0' "${tracked_parent}"
+        fi
+        tracked_parent="${tracked_parent%/*}"
+      done
+      if [ -e "${tracked_path}" ] || [ -L "${tracked_path}" ]; then
+        printf '%s\0' "${tracked_path}"
+      fi
+    done <"${tracked_list}" | sort -zu | xargs -0 -r chown --no-dereference "${TARGET_UID}:${TARGET_GID}" --
+  ) || {
+    rm -f -- "${tracked_list}"
+    die "failed to repair tracked checkout ownership"
+  }
+  rm -f -- "${tracked_list}"
+}
+
+compute_target_groups() {
+  local user_name docker_gid
+  if [ -z "${TARGET_UID}" ]; then
+    TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
+  fi
+  if [ -z "${TARGET_GID}" ]; then
+    TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
+  fi
+  user_name="$(getent passwd "${TARGET_UID}" 2>/dev/null | cut -d: -f1 | head -n 1 || true)"
+  if [ -n "${user_name}" ]; then
+    TARGET_GROUPS="$(id -G "${user_name}" 2>/dev/null | tr ' ' ',' || true)"
+  fi
+  TARGET_GROUPS="${TARGET_GROUPS:-${TARGET_GID}}"
+  if [ -S /var/run/docker.sock ]; then
+    docker_gid="$(stat -c '%g' /var/run/docker.sock)" || die "failed to read Docker socket GID"
+    case ",${TARGET_GROUPS}," in
+      *,"${docker_gid}",*) ;;
+      *) TARGET_GROUPS="${TARGET_GROUPS},${docker_gid}" ;;
+    esac
+  fi
+}
+
+cleanup() {
+  local status=$?
+  if [ -n "${TRAVERSAL_STATE}" ] && [ -f "${TRAVERSAL_STATE}" ]; then
+    while IFS="$(printf '\t')" read -r mode parent; do
+      if [ -n "${mode}" ] && [ -n "${parent}" ]; then
+        chmod "${mode}" -- "${parent}" 2>/dev/null || true
+      fi
+    done <"${TRAVERSAL_STATE}"
+    rm -f -- "${TRAVERSAL_STATE}" 2>/dev/null || true
+  fi
+  if [ -n "${TEMP_HOME}" ]; then
+    rm -rf -- "${TEMP_HOME}" 2>/dev/null || true
+  fi
+  exit "${status}"
+}
+
+prepare_owner_execution() {
+  compute_target_groups
+  if [ "${TARGET_UID}" = "0" ]; then
+    return 0
+  fi
+  SETPRIV_BIN="$(command -v setpriv || true)"
+  [ -n "${SETPRIV_BIN}" ] || die "setpriv is required to run the update as checkout owner UID ${TARGET_UID}; install util-linux and retry"
+
+  TEMP_HOME="$(mktemp -d /tmp/aava-update-home.XXXXXXXXXX)" || die "failed to create temporary HOME"
+  chmod 0700 -- "${TEMP_HOME}"
+  chown "${TARGET_UID}:${TARGET_GID}" "${TEMP_HOME}"
+
+  TRAVERSAL_STATE="$(mktemp)" || die "failed to create traversal restore state"
+  local parent mode
+  parent="$(dirname "${REPO}")"
+  while [ "${parent}" != "/" ]; do
+    if ! "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" test -x "${parent}"; then
+      mode="$(stat -c '%a' "${parent}")" || die "failed to read mode for ${parent}"
+      printf '%s\t%s\n' "${mode}" "${parent}" >>"${TRAVERSAL_STATE}"
+      chmod a+x -- "${parent}" || die "failed to make updater parent traversable: ${parent}"
+    fi
+    parent="$(dirname "${parent}")"
+  done
+}
+
+run_as_owner() {
+  if [ "${TARGET_UID:-0}" = "0" ]; then
+    (cd "${REPO}" && "$@")
+  else
+    "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
+      /usr/bin/env "HOME=${TEMP_HOME}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
+  fi
+}
+
+confirm_update() {
+  if [ "${YES}" = "true" ] || [ "${PLAN_ONLY}" = "true" ]; then
+    return 0
+  fi
+  [ -r /dev/tty ] || die "non-interactive recovery requires --yes after reviewing ${RECOVERY_DIR}/update-plan.json"
+  {
+    printf '\nReady to update:\n'
+    printf '  Repo:          %s\n' "${REPO}"
+    printf '  Target ref:    %s\n' "${REF}"
+    printf '  Include UI:    %s\n' "${INCLUDE_UI}"
+    printf '  Checkout:      %s\n' "$(checkout_value)"
+    printf '  Local changes: %s\n' "${LOCAL_CHANGES}"
+    printf '  Recovery dir:  %s\n' "${RECOVERY_DIR}"
+    printf '\nContinue with agent update? [y/N]: '
+  } >/dev/tty
+  local answer
+  IFS= read -r answer </dev/tty || answer=""
+  answer="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
+  case "${answer}" in
+    y|yes) ;;
+    *) die "update aborted by operator before applying changes" ;;
+  esac
+}
+
+run_plan() {
+  local checkout
+  checkout="$(checkout_value)"
+  log "==> Computing update plan"
+  local args=(
+    update
+    --self-update=false
+    --plan
+    --plan-json
+    --remote="${REMOTE}"
+    --ref="${REF}"
+    --checkout="${checkout}"
+    --include-ui="${INCLUDE_UI}"
+    --local-changes="${LOCAL_CHANGES}"
+  )
+  if [ "${SKIP_CHECK}" = "true" ]; then
+    args+=(--skip-check)
+  fi
+  if [ "${STASH_UNTRACKED}" = "true" ]; then
+    args+=(--stash-untracked)
+  fi
+  if ! run_as_owner "${AGENT_BIN}" "${args[@]}" >"${RECOVERY_DIR}/update-plan.json" 2>"${RECOVERY_DIR}/update-plan.err"; then
+    cat "${RECOVERY_DIR}/update-plan.err" >&2 || true
+    die "update plan failed; diagnostics are in ${RECOVERY_DIR}"
+  fi
+}
+
+run_update() {
+  local checkout
+  checkout="$(checkout_value)"
+  log "==> Running agent update"
+  local args=(
+    update
+    --self-update=false
+    --remote="${REMOTE}"
+    --ref="${REF}"
+    --checkout="${checkout}"
+    --include-ui="${INCLUDE_UI}"
+    --local-changes="${LOCAL_CHANGES}"
+  )
+  if [ "${SKIP_CHECK}" = "true" ]; then
+    args+=(--skip-check)
+  fi
+  if [ "${STASH_UNTRACKED}" = "true" ]; then
+    args+=(--stash-untracked)
+  fi
+
+  : >"${RECOVERY_DIR}/agent-update.log"
+  chown "${TARGET_UID}:${TARGET_GID}" "${RECOVERY_DIR}/agent-update.log" 2>/dev/null || true
+  set +e
+  run_as_owner "${AGENT_BIN}" "${args[@]}" 2>&1 | tee "${RECOVERY_DIR}/agent-update.log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    die "agent update failed; review ${RECOVERY_DIR}/agent-update.log and CLI recovery output above"
+  fi
+}
+
+print_restore_guidance() {
+  cat <<EOF
+
+==> Recovery completed
+Recovery directory:
+  ${RECOVERY_DIR}
+
+Useful files:
+  ${RECOVERY_DIR}/agent-update.log
+  ${RECOVERY_DIR}/update-plan.json
+  ${RECOVERY_DIR}/pre-update-files/
+  ${RECOVERY_DIR}/staged-tracked.patch
+  ${RECOVERY_DIR}/unstaged-tracked.patch
+
+Restore guidance:
+  - The agent updater also printed its own backup directory when it ran.
+  - To restore operator config from this script's pre-update copy, inspect:
+      ${RECOVERY_DIR}/pre-update-files/
+  - If --local-changes=overwrite was used, tracked source-code edits were discarded
+    by the updater. The preserved patches above can be inspected or reapplied manually.
+  - Untracked runtime/operator files were not removed by this script.
+EOF
+}
+
+main() {
+  parse_args "$@"
+  validate_args
+
+  [ "$(uname -s)" = "Linux" ] || die "this recovery script supports Linux AAVA/Asterisk Docker deployments only"
+  [ "${EUID}" -eq 0 ] || die "run this script with sudo/root so it can repair bounded metadata and install the CLI"
+  need_cmd bash
+  need_cmd git
+  need_cmd stat
+  need_cmd find
+  need_cmd sort
+  need_cmd xargs
+  need_cmd sed
+  need_cmd tee
+  need_cmd cp
+  command -v realpath >/dev/null 2>&1 || need_cmd readlink
+
+  detect_repo
+  prepare_recovery_dir
+  trap cleanup EXIT
+
+  capture_diagnostics
+  prompt_local_changes_if_needed
+  capture_preupdate_artifacts
+  install_target_cli
+  repair_metadata_ownership
+  prepare_owner_execution
+  run_plan
+  if [ "${PLAN_ONLY}" = "true" ]; then
+    log "Plan written to ${RECOVERY_DIR}/update-plan.json"
+    exit 0
+  fi
+  confirm_update
+  run_update
+  print_restore_guidance
+}
+
+main "$@"
