@@ -341,8 +341,9 @@ def test_update_recover_runs_as_checkout_owner_with_docker_socket_group() -> Non
 
     assert "setpriv is required to inspect and update checkout as owner" in script
     assert '--reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}"' in script
+    assert '--reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${UPDATER_GROUPS}"' in script
     assert 'docker_gid="$(stat -c' in script
-    assert 'TARGET_GROUPS="${TARGET_GROUPS},${docker_gid}"' in script
+    assert 'UPDATER_GROUPS="${UPDATER_GROUPS},${docker_gid}"' in script
     assert 'HOME=${update_home}' in script
     assert 'chmod a+x -- "${parent}"' in script
     assert 'chmod "${mode}" -- "${parent}"' in script

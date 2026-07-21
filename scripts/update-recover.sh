@@ -29,6 +29,7 @@ SETPRIV_BIN=""
 TARGET_UID=""
 TARGET_GID=""
 TARGET_GROUPS=""
+UPDATER_GROUPS=""
 TARGET_HOME=""
 UNMERGED_COPIED="false"
 
@@ -134,7 +135,7 @@ require_plain_recovery_dir() {
 }
 
 compute_target_groups() {
-  local user_name docker_gid
+  local user_name
   if [ -n "${TARGET_GROUPS}" ]; then
     return 0
   fi
@@ -149,11 +150,17 @@ compute_target_groups() {
     TARGET_GROUPS="$(id -G "${user_name}" 2>/dev/null | tr ' ' ',' || true)"
   fi
   TARGET_GROUPS="${TARGET_GROUPS:-${TARGET_GID}}"
+}
+
+compute_updater_groups() {
+  local docker_gid
+  ensure_owner_context
+  UPDATER_GROUPS="${TARGET_GROUPS}"
   if [ -S /var/run/docker.sock ]; then
     docker_gid="$(stat -c '%g' /var/run/docker.sock)" || die "failed to read Docker socket GID"
-    case ",${TARGET_GROUPS}," in
+    case ",${UPDATER_GROUPS}," in
       *,"${docker_gid}",*) ;;
-      *) TARGET_GROUPS="${TARGET_GROUPS},${docker_gid}" ;;
+      *) UPDATER_GROUPS="${UPDATER_GROUPS},${docker_gid}" ;;
     esac
   fi
 }
@@ -782,6 +789,7 @@ prepare_updater_state_dirs() {
 
 prepare_owner_execution() {
   ensure_owner_context
+  compute_updater_groups
   if [ "${TARGET_UID}" = "0" ]; then
     return 0
   fi
@@ -812,7 +820,7 @@ run_as_owner() {
     if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
       update_home="${TARGET_HOME}"
     fi
-    "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
+    "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${UPDATER_GROUPS}" \
       /usr/bin/env "HOME=${update_home}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
   fi
 }
