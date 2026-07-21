@@ -1050,6 +1050,28 @@ if failed:
 PY
 }
 
+secure_updater_state_dirs() {
+  python3 - "${TARGET_UID}" "${TARGET_GID}" "$@" <<'PY'
+import os
+import stat
+import sys
+
+uid = int(sys.argv[1])
+gid = int(sys.argv[2])
+
+for path in sys.argv[3:]:
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise SystemExit(f"refusing unsafe updater state directory: {path}")
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, 0o750)
+    finally:
+        os.close(fd)
+PY
+}
+
 cleanup() {
   local status=$?
   local restore_failed="false"
@@ -1097,9 +1119,8 @@ prepare_updater_state_dirs() {
   mkdir -p -- "${updates_dir}" "${backups_dir}" || die "failed to create updater runtime directories"
   require_plain_recovery_dir "${updates_dir}"
   require_plain_recovery_dir "${backups_dir}"
-  chown --no-dereference "${TARGET_UID}:${TARGET_GID}" "${agent_dir}" "${updates_dir}" "${backups_dir}" \
+  secure_updater_state_dirs "${agent_dir}" "${updates_dir}" "${backups_dir}" \
     || die "failed to hand updater runtime metadata to checkout owner"
-  chmod 0750 -- "${agent_dir}" "${updates_dir}" "${backups_dir}" 2>/dev/null || true
 }
 
 prepare_owner_execution() {

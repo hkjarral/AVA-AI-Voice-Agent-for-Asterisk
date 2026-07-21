@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -478,45 +479,27 @@ def test_update_recover_preflights_runtime_dependencies() -> None:
 
 
 def test_update_recover_hands_new_metadata_to_checkout_owner_with_no_repair(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
     repo = tmp_path / "repo"
     repo.mkdir()
-    log = tmp_path / "commands.log"
-    (fake_bin / "stat").write_text(
-        "#!/bin/sh\n"
-        "case \"$2\" in\n"
-        "  %u) printf '1234\\n' ;;\n"
-        "  %g) printf '2345\\n' ;;\n"
-        "  *) /usr/bin/stat \"$@\" ;;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    (fake_bin / "chown").write_text(
-        "#!/bin/sh\n"
-        "printf 'chown %s\\n' \"$*\" >>\"$AAVA_TEST_LOG\"\n",
-        encoding="utf-8",
-    )
-    (fake_bin / "stat").chmod(0o755)
-    (fake_bin / "chown").chmod(0o755)
+    uid = os.getuid()
+    gid = os.getgid()
 
     harness = f"""
 set -euo pipefail
-export AAVA_TEST_LOG={log}
 source "$SOURCE"
 REPO="{repo}"
-TARGET_UID=1234
-TARGET_GID=2345
+TARGET_UID={uid}
+TARGET_GID={gid}
 SKIP_REPAIR=true
 prepare_updater_state_dirs
 """
     _run_bash_harness(harness, tmp_path)
 
-    commands = log.read_text(encoding="utf-8")
-    assert "chown --no-dereference 1234:2345" in commands
-    assert f"{repo}/.agent" in commands
-    assert f"{repo}/.agent/updates" in commands
-    assert f"{repo}/.agent/update-backups" in commands
+    for path in (repo / ".agent", repo / ".agent" / "updates", repo / ".agent" / "update-backups"):
+        st = path.stat()
+        assert stat.S_IMODE(st.st_mode) == 0o750
+        assert st.st_uid == uid
+        assert st.st_gid == gid
 
 
 def test_update_recover_rejects_symlinked_updater_state(tmp_path: Path) -> None:
