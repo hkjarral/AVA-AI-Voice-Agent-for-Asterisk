@@ -277,6 +277,19 @@ install_branch_cli codex/update-recovery-script
     assert agent_bin.exists()
 
 
+def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> None:
+    script = _script()
+    start = script.index("install_branch_cli() {")
+    end = script.index("\ninstall_target_cli() {", start)
+    install_branch = script[start:end]
+
+    assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}"' not in install_branch
+    assert 'chmod 0711 "${tmp_src}"' in install_branch
+    assert 'mkdir -p -- "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
+    assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
+    assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
+
+
 def test_update_recover_repair_is_bounded() -> None:
     script = _script()
 
@@ -419,10 +432,35 @@ def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     assert "trap 'signal_exit 130' INT" in script
     assert "trap 'signal_exit 143' TERM" in script
     assert "trap 'signal_exit 129' HUP" in script
+    assert "restore_traversal_modes()" in script
+    assert 'getattr(os, "O_NOFOLLOW", 0)' in script
+    assert "os.fchmod(fd, mode)" in script
     assert "failed to restore traversal permissions" in script
     assert 'state file retained at ${TRAVERSAL_STATE}' in script
     assert 'elif [ "${status}" -eq 0 ]; then' in script
     assert "status=2" in script
+
+
+def test_update_recover_restore_traversal_modes_does_not_follow_symlinks(tmp_path: Path) -> None:
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real_dir.chmod(0o755)
+    link = tmp_path / "link"
+    link.symlink_to(real_dir, target_is_directory=True)
+    state = tmp_path / "restore.tsv"
+    state.write_text(f"700\t{link}\n", encoding="utf-8")
+
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+TRAVERSAL_STATE="{state}"
+restore_traversal_modes
+"""
+    result = _run_bash_harness(harness, tmp_path, check=False)
+
+    assert result.returncode == 1
+    assert "failed to restore traversal permissions 700" in result.stderr
+    assert oct(real_dir.stat().st_mode & 0o777) == "0o755"
 
 
 def test_update_recover_preflights_runtime_dependencies() -> None:
@@ -732,7 +770,7 @@ def test_update_recover_runs_as_checkout_owner_without_adding_docker_socket_grou
     assert "check_owner_docker_access" in script
     assert 'HOME=${update_home}' in script
     assert 'chmod a+x -- "${parent}"' in script
-    assert 'chmod "${mode}" -- "${parent}"' in script
+    assert 'os.fchmod(fd, mode)' in script
 
 
 def test_update_recover_fails_fast_when_owner_cannot_access_docker_socket(tmp_path: Path) -> None:

@@ -833,8 +833,6 @@ install_branch_cli() {
 
   tmp_src="$(mktemp -d /tmp/aava-cli-src.XXXXXXXXXX)" || die "failed to create temporary CLI source directory"
   TEMP_BRANCH_CLI_DIR="${tmp_src}"
-  chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}" \
-    || die "failed to hand temporary CLI source directory to checkout owner"
   : >"${tmp_src}/gitconfig" || die "failed to create temporary Git URL rewrite config"
   if [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
     owner_gitconfig="${TARGET_HOME}/.gitconfig"
@@ -853,10 +851,15 @@ install_branch_cli() {
   printf '[url "%s"]\n\tinsteadOf = aava-recovery-origin:\n' "${escaped_remote_url}" >>"${tmp_src}/gitconfig" \
     || die "failed to write temporary Git URL rewrite config"
   append_repo_local_auth_git_config "${tmp_src}/gitconfig"
-  chmod 0600 "${tmp_src}/gitconfig" \
+  chmod 0400 "${tmp_src}/gitconfig" \
     || die "failed to secure temporary Git URL rewrite config"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/gitconfig" \
     || die "failed to hand temporary Git URL rewrite config to checkout owner"
+  chmod 0711 "${tmp_src}" || die "failed to make temporary CLI source directory traversable"
+  mkdir -p -- "${tmp_src}/repo" "${tmp_src}/out" \
+    || die "failed to create temporary CLI build directories"
+  chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out" \
+    || die "failed to hand temporary CLI build directories to checkout owner"
   clone_err="${tmp_src}/git-clone.err"
   clone_url="aava-recovery-origin:"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
@@ -868,7 +871,6 @@ install_branch_cli() {
     fi
     die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   fi
-  mkdir -p -- "${tmp_src}/out"
   docker run --rm \
     -v "${tmp_src}/repo/cli:/src:ro,Z" \
     -v "${tmp_src}/out:/out:Z" \
@@ -1018,18 +1020,44 @@ for dirpath, dirnames, filenames, dirfd in os.fwalk(root, topdown=True, follow_s
 PY
 }
 
+restore_traversal_modes() {
+  python3 - "${TRAVERSAL_STATE}" <<'PY'
+import os
+import sys
+
+state_path = sys.argv[1]
+failed = False
+
+with open(state_path, "r", encoding="utf-8") as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        mode_text, path = line.split("\t", 1)
+        try:
+            mode = int(mode_text, 8)
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fchmod(fd, mode)
+            finally:
+                os.close(fd)
+        except Exception as exc:
+            print(f"WARN: failed to restore traversal permissions {mode_text} on {path}: {exc}", file=sys.stderr)
+            failed = True
+
+if failed:
+    raise SystemExit(1)
+PY
+}
+
 cleanup() {
   local status=$?
   local restore_failed="false"
   if [ -n "${TRAVERSAL_STATE}" ] && [ -f "${TRAVERSAL_STATE}" ]; then
-    while IFS="$(printf '\t')" read -r mode parent; do
-      if [ -n "${mode}" ] && [ -n "${parent}" ]; then
-        if ! chmod "${mode}" -- "${parent}" 2>/dev/null; then
-          warn "failed to restore traversal permissions ${mode} on ${parent}; state file retained at ${TRAVERSAL_STATE}"
-          restore_failed="true"
-        fi
-      fi
-    done <"${TRAVERSAL_STATE}"
+    if ! restore_traversal_modes; then
+      warn "failed to restore one or more traversal permissions; state file retained at ${TRAVERSAL_STATE}"
+      restore_failed="true"
+    fi
     if [ "${restore_failed}" = "false" ]; then
       rm -f -- "${TRAVERSAL_STATE}" 2>/dev/null || true
     elif [ "${status}" -eq 0 ]; then
