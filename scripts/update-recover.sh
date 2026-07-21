@@ -646,6 +646,10 @@ prompt_local_changes_if_needed() {
         return 0
         ;;
       o|overwrite)
+        if [ "${STASH_UNTRACKED}" = "true" ]; then
+          printf 'Overwrite is unavailable with --stash-untracked; re-run without --stash-untracked or choose retain/abort.\n' >/dev/tty
+          continue
+        fi
         LOCAL_CHANGES="overwrite"
         warn "Tracked source-code edits will be discarded by the updater; recovery patches are in ${RECOVERY_DIR}."
         return 0
@@ -746,7 +750,7 @@ install_release_cli() {
 install_branch_cli() {
   local ref="$1"
   need_cmd docker
-  local remote_url tmp_src clone_err clone_url escaped_remote_url
+  local remote_url tmp_src clone_err clone_url escaped_remote_url owner_gitconfig xdg_gitconfig escaped_include
   remote_url="$(git_repo ls-remote --get-url "${REMOTE}" 2>/dev/null || true)"
   if [ -z "${remote_url}" ]; then
     remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
@@ -757,9 +761,20 @@ install_branch_cli() {
   TEMP_BRANCH_CLI_DIR="${tmp_src}"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}" \
     || die "failed to hand temporary CLI source directory to checkout owner"
+  owner_gitconfig="${TARGET_HOME}/.gitconfig"
+  xdg_gitconfig="${TARGET_HOME}/.config/git/config"
+  : >"${tmp_src}/gitconfig" || die "failed to create temporary Git URL rewrite config"
+  for owner_gitconfig in "${owner_gitconfig}" "${xdg_gitconfig}"; do
+    if [ -f "${owner_gitconfig}" ]; then
+      escaped_include="${owner_gitconfig//\\/\\\\}"
+      escaped_include="${escaped_include//\"/\\\"}"
+      printf '[include]\n\tpath = "%s"\n' "${escaped_include}" >>"${tmp_src}/gitconfig" \
+        || die "failed to include checkout-owner Git config"
+    fi
+  done
   escaped_remote_url="${remote_url//\\/\\\\}"
   escaped_remote_url="${escaped_remote_url//\"/\\\"}"
-  printf '[url "%s"]\n\tinsteadOf = aava-recovery-origin:\n' "${escaped_remote_url}" >"${tmp_src}/gitconfig" \
+  printf '[url "%s"]\n\tinsteadOf = aava-recovery-origin:\n' "${escaped_remote_url}" >>"${tmp_src}/gitconfig" \
     || die "failed to write temporary Git URL rewrite config"
   chmod 0600 "${tmp_src}/gitconfig" \
     || die "failed to secure temporary Git URL rewrite config"
@@ -806,7 +821,7 @@ install_target_cli() {
   else
     install_branch_cli "${REF}"
   fi
-  "${AGENT_BIN}" version >"${RECOVERY_DIR}/agent-version.log" 2>&1 \
+  run_as_checkout_owner_home "${AGENT_BIN}" version >"${RECOVERY_DIR}/agent-version.log" 2>&1 \
     || die "installed agent CLI is not runnable: ${AGENT_BIN}"
 }
 

@@ -19,7 +19,13 @@ def _run_bash_harness(
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     source = tmp_path / "update-recover-source.sh"
-    source.write_text(_script().replace('\nmain "$@"\n', "\n"), encoding="utf-8")
+    original = _script()
+    patched = original.replace('\nmain "$@"\n', "\n")
+    assert patched != original, (
+        'failed to strip the `main "$@"` invocation from update-recover.sh; '
+        "refusing to source it unpatched"
+    )
+    source.write_text(patched, encoding="utf-8")
     return subprocess.run(
         ["/bin/bash", "-c", script],
         check=check,
@@ -181,10 +187,19 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
     fake_bin.mkdir()
     log = tmp_path / "commands.log"
     agent_bin = tmp_path / "agent-bin" / "agent"
+    target_home = tmp_path / "home"
+    target_home.mkdir()
+    (target_home / ".gitconfig").write_text("[credential]\n\thelper = store\n", encoding="utf-8")
     (fake_bin / "git").write_text(
         "#!/bin/bash\n"
         "printf 'git %s\\n' \"$*\" >>\"$AAVA_TEST_LOG\"\n"
-        "printf 'git_config_global %s\\n' \"$GIT_CONFIG_GLOBAL\" >>\"$AAVA_TEST_LOG\"\n"
+        "printf 'git_config_global %s\\n' \"${GIT_CONFIG_GLOBAL:-}\" >>\"$AAVA_TEST_LOG\"\n"
+        "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q '^\\[include\\]' \"$GIT_CONFIG_GLOBAL\"; then\n"
+        "  printf 'git_config_has_include yes\\n' >>\"$AAVA_TEST_LOG\"\n"
+        "fi\n"
+        "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q '^\\[url ' \"$GIT_CONFIG_GLOBAL\"; then\n"
+        "  printf 'git_config_has_rewrite yes\\n' >>\"$AAVA_TEST_LOG\"\n"
+        "fi\n"
         "if [ \"$1\" = clone ]; then\n"
         "  dest=\"${@: -1}\"\n"
         "  mkdir -p \"$dest/cli\"\n"
@@ -217,7 +232,7 @@ git_repo() {{ printf 'https://example.invalid/fork.git\\n'; }}
 TARGET_UID=0
 TARGET_GID=0
 TARGET_GROUPS=0
-TARGET_HOME=/tmp
+TARGET_HOME="{target_home}"
 REMOTE=origin
 AGENT_BIN="{agent_bin}"
 install_branch_cli codex/update-recovery-script
@@ -228,7 +243,9 @@ install_branch_cli codex/update-recovery-script
     assert "--branch codex/update-recovery-script" in commands
     assert "aava-recovery-origin:" in commands
     assert "https://example.invalid/fork.git" not in commands
-    assert "git_config_global " in commands
+    assert re.search(r"git_config_global \S", commands)
+    assert "git_config_has_include yes" in commands
+    assert "git_config_has_rewrite yes" in commands
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
     assert ":/src:ro,Z" in commands
@@ -419,6 +436,7 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert "git_repo_preserve_diff" in script
     assert "-u GIT_EXTERNAL_DIFF -u GIT_DIFF_OPTS git" in script
     assert "--no-ext-diff --no-textconv" in script
+    assert "Overwrite is unavailable with --stash-untracked" in script
 
 
 def test_update_recover_plan_and_update_pass_owner_args_in_order(tmp_path: Path) -> None:
@@ -464,6 +482,14 @@ run_update
     assert "--remote=origin" in calls[1]
     assert "--plan-json" not in calls[1]
     assert "--stash-untracked" in calls[1]
+
+
+def test_update_recover_validates_installed_cli_as_checkout_owner() -> None:
+    script = _script()
+    install_target_cli = script.split("install_target_cli() {", 1)[1].split("\n}", 1)[0]
+
+    assert 'run_as_checkout_owner_home "${AGENT_BIN}" version' in install_target_cli
+    assert not re.search(r'^\s*"\$\{AGENT_BIN\}" version', install_target_cli, re.MULTILINE)
 
 
 def test_update_recover_runs_as_checkout_owner_without_adding_docker_socket_group() -> None:
@@ -519,6 +545,7 @@ def test_update_recover_uses_checkout_home_for_branch_updates() -> None:
 
     assert 'run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig"' in script
     assert "aava-recovery-origin:" in script
+    assert '[include]\\n\\tpath = "%s"\\n' in script
     assert 'if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then' in script
     assert 'update_home="${TARGET_HOME}"' in script
 
