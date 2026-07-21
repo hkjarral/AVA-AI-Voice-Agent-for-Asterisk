@@ -413,6 +413,17 @@ git_repo() {
     "$@"
 }
 
+git_repo_preserve_diff() {
+  run_as_checkout_owner_home /usr/bin/env -u GIT_EXTERNAL_DIFF -u GIT_DIFF_OPTS git \
+    -c "safe.directory=${REPO}" \
+    -c core.fsmonitor=false \
+    -c core.hooksPath=/dev/null \
+    -c diff.external= \
+    --git-dir="${REPO}/.git" \
+    --work-tree="${REPO}" \
+    diff --binary --no-ext-diff --no-textconv "$@"
+}
+
 capture_command() {
   local name="$1"
   shift
@@ -515,19 +526,19 @@ capture_preupdate_artifacts() {
   if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
     copy_unmerged_files
   fi
-  if ! git_repo diff --binary --cached >"${RECOVERY_DIR}/staged-tracked.patch"; then
+  if ! git_repo_preserve_diff --cached >"${RECOVERY_DIR}/staged-tracked.patch"; then
     if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
       warn "Could not create a staged binary patch because the checkout has unmerged paths; conflicted files are copied to ${RECOVERY_DIR}/unmerged-files."
-      git_repo diff --cached >"${RECOVERY_DIR}/staged-tracked.diff" 2>"${RECOVERY_DIR}/staged-tracked.diff.err" || true
+      git_repo diff --no-ext-diff --no-textconv --cached >"${RECOVERY_DIR}/staged-tracked.diff" 2>"${RECOVERY_DIR}/staged-tracked.diff.err" || true
       copy_unmerged_files
     else
       die "failed to preserve staged tracked edits; update not attempted"
     fi
   fi
-  if ! git_repo diff --binary >"${RECOVERY_DIR}/unstaged-tracked.patch"; then
+  if ! git_repo_preserve_diff >"${RECOVERY_DIR}/unstaged-tracked.patch"; then
     if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
       warn "Could not create an unstaged binary patch because the checkout has unmerged paths; conflicted files are copied to ${RECOVERY_DIR}/unmerged-files."
-      git_repo diff >"${RECOVERY_DIR}/unstaged-tracked.diff" 2>"${RECOVERY_DIR}/unstaged-tracked.diff.err" || true
+      git_repo diff --no-ext-diff --no-textconv >"${RECOVERY_DIR}/unstaged-tracked.diff" 2>"${RECOVERY_DIR}/unstaged-tracked.diff.err" || true
       copy_unmerged_files
     else
       die "failed to preserve unstaged tracked edits; update not attempted"
@@ -580,7 +591,7 @@ prompt_local_changes_if_needed() {
   log "Tracked local changes were found:"
   printf '%s\n' "${dirty}" | sed -n '1,25p'
   if [ "$(printf '%s\n' "${dirty}" | wc -l | tr -d ' ')" -gt 25 ]; then
-    log "... additional paths omitted; full status is in ${RECOVERY_DIR}/git-status-porcelain.txt"
+    log "... additional paths omitted; current status is in ${RECOVERY_DIR}/status.log"
   fi
   if has_unmerged_paths; then
     warn "Unmerged paths are present from a previous failed update or manual merge."
@@ -735,7 +746,7 @@ install_release_cli() {
 install_branch_cli() {
   local ref="$1"
   need_cmd docker
-  local remote_url tmp_src
+  local remote_url tmp_src clone_err clone_url escaped_remote_url
   remote_url="$(git_repo ls-remote --get-url "${REMOTE}" 2>/dev/null || true)"
   if [ -z "${remote_url}" ]; then
     remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
@@ -746,9 +757,25 @@ install_branch_cli() {
   TEMP_BRANCH_CLI_DIR="${tmp_src}"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}" \
     || die "failed to hand temporary CLI source directory to checkout owner"
+  escaped_remote_url="${remote_url//\\/\\\\}"
+  escaped_remote_url="${escaped_remote_url//\"/\\\"}"
+  printf '[url "%s"]\n\tinsteadOf = aava-recovery-origin:\n' "${escaped_remote_url}" >"${tmp_src}/gitconfig" \
+    || die "failed to write temporary Git URL rewrite config"
+  chmod 0600 "${tmp_src}/gitconfig" \
+    || die "failed to secure temporary Git URL rewrite config"
+  chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/gitconfig" \
+    || die "failed to hand temporary Git URL rewrite config to checkout owner"
+  clone_err="${tmp_src}/git-clone.err"
+  clone_url="aava-recovery-origin:"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
-  run_as_checkout_owner_home git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${remote_url}" "${tmp_src}/repo" \
-    || die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
+  if ! run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig" \
+    git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${tmp_src}/repo" \
+    2>"${clone_err}"; then
+    if [ -s "${clone_err}" ]; then
+      redact_remote_url <"${clone_err}" >&2 || true
+    fi
+    die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
+  fi
   mkdir -p -- "${tmp_src}/out"
   docker run --rm \
     -v "${tmp_src}/repo/cli:/src:ro,Z" \
@@ -854,6 +881,51 @@ repair_agent_state_ownership() {
   fi
 }
 
+secure_recovery_artifacts() {
+  python3 - "${RECOVERY_DIR}" "${TARGET_UID}" "${TARGET_GID}" <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+uid = int(sys.argv[2])
+gid = int(sys.argv[3])
+
+root_st = os.lstat(root)
+if stat.S_ISLNK(root_st.st_mode) or not stat.S_ISDIR(root_st.st_mode):
+    raise SystemExit(f"refusing unsafe recovery artifact root: {root}")
+
+for dirpath, dirnames, filenames, dirfd in os.fwalk(root, topdown=True, follow_symlinks=False):
+    os.fchown(dirfd, uid, gid)
+    os.fchmod(dirfd, 0o700)
+
+    keep = []
+    for name in list(dirnames):
+        try:
+            child = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        os.chown(name, uid, gid, dir_fd=dirfd, follow_symlinks=False)
+        if stat.S_ISDIR(child.st_mode):
+            keep.append(name)
+    dirnames[:] = keep
+
+    for name in filenames:
+        try:
+            child = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        os.chown(name, uid, gid, dir_fd=dirfd, follow_symlinks=False)
+        if not stat.S_ISREG(child.st_mode):
+            continue
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), dir_fd=dirfd)
+        try:
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+PY
+}
+
 cleanup() {
   local status=$?
   if [ -n "${TRAVERSAL_STATE}" ] && [ -f "${TRAVERSAL_STATE}" ]; then
@@ -875,8 +947,7 @@ cleanup() {
   fi
   if [ -n "${RECOVERY_DIR}" ] && [ -d "${RECOVERY_DIR}" ] && [ ! -L "${RECOVERY_DIR}" ] \
     && [ -n "${TARGET_UID}" ] && [ -n "${TARGET_GID}" ]; then
-    chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${RECOVERY_DIR}" 2>/dev/null || true
-    chmod 0750 -- "${RECOVERY_DIR}" 2>/dev/null || true
+    secure_recovery_artifacts 2>/dev/null || true
   fi
   exit "${status}"
 }

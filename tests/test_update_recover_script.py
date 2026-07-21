@@ -184,6 +184,7 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
     (fake_bin / "git").write_text(
         "#!/bin/bash\n"
         "printf 'git %s\\n' \"$*\" >>\"$AAVA_TEST_LOG\"\n"
+        "printf 'git_config_global %s\\n' \"$GIT_CONFIG_GLOBAL\" >>\"$AAVA_TEST_LOG\"\n"
         "if [ \"$1\" = clone ]; then\n"
         "  dest=\"${@: -1}\"\n"
         "  mkdir -p \"$dest/cli\"\n"
@@ -225,7 +226,9 @@ install_branch_cli codex/update-recovery-script
 
     commands = log.read_text(encoding="utf-8")
     assert "--branch codex/update-recovery-script" in commands
-    assert "https://example.invalid/fork.git" in commands
+    assert "aava-recovery-origin:" in commands
+    assert "https://example.invalid/fork.git" not in commands
+    assert "git_config_global " in commands
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
     assert ":/src:ro,Z" in commands
@@ -351,6 +354,44 @@ capture_git_remotes
     assert "private-token=[redacted]" in remotes
 
 
+def test_update_recover_branch_clone_failure_redacts_remote_query(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "git").write_text(
+        "#!/bin/bash\n"
+        "if [ \"$1\" = clone ]; then\n"
+        "  cat \"$GIT_CONFIG_GLOBAL\" >&2\n"
+        "  exit 1\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "chown").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake_bin / "git").chmod(0o755)
+    (fake_bin / "docker").chmod(0o755)
+    (fake_bin / "chown").chmod(0o755)
+    agent_bin = tmp_path / "agent-bin" / "agent"
+
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+git_repo() {{ printf 'https://example.invalid/repo.git?access_token=secret123&foo=bar\\n'; }}
+TARGET_UID=0
+TARGET_GID=0
+TARGET_GROUPS=0
+TARGET_HOME=/tmp
+REMOTE=origin
+AGENT_BIN="{agent_bin}"
+install_branch_cli feature/ref
+"""
+    result = _run_bash_harness(harness, tmp_path, check=False)
+
+    assert result.returncode == 2
+    assert "secret123" not in result.stderr
+    assert "access_token=[redacted]" in result.stderr
+    assert not agent_bin.exists()
+
+
 def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     script = _script()
     main = script.split("main() {", 1)[1]
@@ -375,6 +416,9 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert "Tracked source-code edits will be discarded" in script
     assert "copy_unmerged_files" in script
     assert "Retain is disabled for this checkout" in script
+    assert "git_repo_preserve_diff" in script
+    assert "-u GIT_EXTERNAL_DIFF -u GIT_DIFF_OPTS git" in script
+    assert "--no-ext-diff --no-textconv" in script
 
 
 def test_update_recover_plan_and_update_pass_owner_args_in_order(tmp_path: Path) -> None:
@@ -473,9 +517,20 @@ check_owner_docker_access
 def test_update_recover_uses_checkout_home_for_branch_updates() -> None:
     script = _script()
 
-    assert "run_as_checkout_owner_home git clone" in script
+    assert 'run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig"' in script
+    assert "aava-recovery-origin:" in script
     assert 'if ! is_release_ref "${REF}" && [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then' in script
     assert 'update_home="${TARGET_HOME}"' in script
+
+
+def test_update_recover_keeps_recovery_artifacts_owner_only() -> None:
+    script = _script()
+
+    assert "secure_recovery_artifacts()" in script
+    assert "os.fchmod(dirfd, 0o700)" in script
+    assert "os.fchmod(fd, 0o600)" in script
+    assert "chmod 0750 -- \"${RECOVERY_DIR}\"" not in script
+    assert "chown -R --no-dereference \"${TARGET_UID}:${TARGET_GID}\" \"${RECOVERY_DIR}\"" not in script
 
 
 def test_update_recover_can_pass_untracked_stash_when_requested() -> None:
