@@ -124,7 +124,9 @@ resolve_existing_path() {
 }
 
 redact_remote_url() {
-  sed -E 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g'
+  sed -E \
+    -e 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g' \
+    -e 's#([?&]([Aa]ccess[_-]?[Tt]oken|[Aa]uth[_-]?[Tt]oken|[Bb]earer[_-]?[Tt]oken|[Cc]lient[_-]?[Ss]ecret|[Oo]auth[_-]?[Tt]oken|[Pp]assword|[Pp]rivate[_-]?[Tt]oken|[Rr]efresh[_-]?[Tt]oken|[Tt]oken)=)[^&#[:space:]]+#\1[redacted]#g'
 }
 
 require_plain_recovery_dir() {
@@ -650,10 +652,10 @@ prompt_local_changes_if_needed() {
 resolve_latest_release() {
   local latest=""
   if command -v curl >/dev/null 2>&1; then
-    latest="$(curl -fsSL https://api.github.com/repos/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/latest \
+    latest="$(curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://api.github.com/repos/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/latest \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
   elif command -v wget >/dev/null 2>&1; then
-    latest="$(wget -qO- https://api.github.com/repos/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/latest \
+    latest="$(wget -q --timeout=60 --tries=3 -O- https://api.github.com/repos/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/latest \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
   else
     die "curl or wget is required to resolve --ref latest"
@@ -666,9 +668,9 @@ download_url() {
   local url="$1"
   local dest="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "${dest}" "${url}"
+    curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 -o "${dest}" "${url}"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${dest}" "${url}"
+    wget -q --timeout=60 --tries=3 -O "${dest}" "${url}"
   else
     die "curl or wget is required to download release assets"
   fi
@@ -749,8 +751,8 @@ install_branch_cli() {
     || die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   mkdir -p -- "${tmp_src}/out"
   docker run --rm \
-    -v "${tmp_src}/repo/cli:/src:ro" \
-    -v "${tmp_src}/out:/out" \
+    -v "${tmp_src}/repo/cli:/src:ro,Z" \
+    -v "${tmp_src}/out:/out:Z" \
     -w /src \
     -e HOME=/tmp \
     -e GOCACHE=/tmp/go-build \
@@ -1082,7 +1084,7 @@ main() {
   command -v realpath >/dev/null 2>&1 || need_cmd readlink
 
   detect_repo
-  trap cleanup EXIT
+  trap cleanup EXIT INT TERM HUP
   prepare_recovery_dir
 
   prepare_owner_execution

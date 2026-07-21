@@ -12,28 +12,17 @@ def _script() -> str:
     return SCRIPT.read_text(encoding="utf-8")
 
 
-def _run_bash_harness(script: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_bash_harness(
+    script: str,
+    tmp_path: Path,
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     source = tmp_path / "update-recover-source.sh"
     source.write_text(_script().replace('\nmain "$@"\n', "\n"), encoding="utf-8")
     return subprocess.run(
         ["/bin/bash", "-c", script],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={
-            "PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
-            "SCRIPT": str(SCRIPT),
-            "SOURCE": str(source),
-        },
-    )
-
-
-def _run_bash_harness_unchecked(script: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
-    source = tmp_path / "update-recover-source.sh"
-    source.write_text(_script().replace('\nmain "$@"\n', "\n"), encoding="utf-8")
-    return subprocess.run(
-        ["/bin/bash", "-c", script],
-        check=False,
+        check=check,
         capture_output=True,
         text=True,
         env={
@@ -133,6 +122,60 @@ install_release_cli v7.4.2
     assert (tmp_path / "install" / "agent").read_text(encoding="utf-8") == "binary\n"
 
 
+def test_update_recover_release_bootstrap_rejects_checksum_mismatch(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "commands.log"
+    (fake_bin / "curl").write_text(
+        "#!/bin/bash\n"
+        "out=''\n"
+        "url=''\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=\"$2\"; shift 2 ;;\n"
+        "    http*) url=\"$1\"; shift ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "printf 'curl %s %s\\n' \"$url\" \"$out\" >>\"$AAVA_TEST_LOG\"\n"
+        "case \"$url\" in\n"
+        "  */SHA256SUMS) printf 'expected123  agent-linux-amd64\\n' >\"$out\" ;;\n"
+        "  *) printf 'tampered\\n' >\"$out\" ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "sha256sum").write_text(
+        "#!/bin/sh\n"
+        "printf 'actual456  %s\\n' \"$1\"\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "uname").write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  -s) printf 'Linux\\n' ;;\n"
+        "  -m) printf 'x86_64\\n' ;;\n"
+        "  *) /usr/bin/uname \"$@\" ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "curl").chmod(0o755)
+    (fake_bin / "sha256sum").chmod(0o755)
+    (fake_bin / "uname").chmod(0o755)
+
+    harness = f"""
+    set -euo pipefail
+    export AAVA_TEST_LOG={log}
+    source "$SOURCE"
+AGENT_BIN="{tmp_path}/install/agent"
+install_release_cli v7.4.2
+"""
+    result = _run_bash_harness(harness, tmp_path, check=False)
+
+    assert result.returncode == 2
+    assert "checksum mismatch for agent-linux-amd64" in result.stderr
+    assert not (tmp_path / "install" / "agent").exists()
+
+
 def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -153,6 +196,7 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
         "for arg in \"$@\"; do\n"
         "  case \"$arg\" in\n"
         "    *:/out) out=\"${arg%:/out}\" ;;\n"
+        "    *:/out:*) out=\"${arg%%:/out:*}\" ;;\n"
         "  esac\n"
         "done\n"
         "mkdir -p \"$out\"\n"
@@ -184,6 +228,8 @@ install_branch_cli codex/update-recovery-script
     assert "https://example.invalid/fork.git" in commands
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
+    assert ":/src:ro,Z" in commands
+    assert ":/out:Z" in commands
     assert agent_bin.exists()
 
 
@@ -270,7 +316,7 @@ TARGET_UID=1234
 TARGET_GID=2345
 prepare_updater_state_dirs
 """
-    result = _run_bash_harness_unchecked(harness, tmp_path)
+    result = _run_bash_harness(harness, tmp_path, check=False)
 
     assert result.returncode == 2
     assert "refusing symlinked recovery state" in result.stderr
@@ -284,9 +330,11 @@ def test_update_recover_redacts_credentials_from_remote_diagnostics(tmp_path: Pa
 set -euo pipefail
 source "$SOURCE"
 RECOVERY_DIR="{recovery}"
-git_repo() {{
+    git_repo() {{
   if [ "$1" = remote ] && [ "$2" = -v ]; then
     printf 'origin\\thttps://user:token@example.invalid/repo.git (fetch)\\n'
+    printf 'origin\\thttps://example.invalid/repo.git?access_token=secret123&foo=bar (fetch)\\n'
+    printf 'origin\\thttps://example.invalid/repo.git?foo=bar&private-token=secret456 (fetch)\\n'
     printf 'origin\\thttps://user:token@example.invalid/repo.git (push)\\n'
   fi
 }}
@@ -296,7 +344,11 @@ capture_git_remotes
 
     remotes = (recovery / "remotes.log").read_text(encoding="utf-8")
     assert "user:token" not in remotes
+    assert "secret123" not in remotes
+    assert "secret456" not in remotes
     assert "https://[redacted]@example.invalid/repo.git" in remotes
+    assert "access_token=[redacted]" in remotes
+    assert "private-token=[redacted]" in remotes
 
 
 def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
@@ -410,7 +462,7 @@ DOCKER_SOCK="{sock_path}"
 run_as_checkout_owner_home() {{ return 1; }}
 check_owner_docker_access
 """
-        result = _run_bash_harness_unchecked(harness, tmp_path)
+        result = _run_bash_harness(harness, tmp_path, check=False)
 
         assert result.returncode == 2
         assert f"checkout owner UID 1234 cannot access {sock_path}" in result.stderr
@@ -443,7 +495,7 @@ LOCAL_CHANGES=overwrite
 STASH_UNTRACKED=true
 validate_args
 """
-    result = _run_bash_harness_unchecked(harness, tmp_path)
+    result = _run_bash_harness(harness, tmp_path, check=False)
 
     assert result.returncode == 2
     assert "--stash-untracked cannot be combined with --local-changes=overwrite" in result.stderr
