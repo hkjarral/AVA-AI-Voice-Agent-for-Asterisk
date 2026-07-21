@@ -339,7 +339,9 @@ def test_update_recover_tracked_repair_preserves_runtime_parent_ownership(tmp_pa
             str(repo),
             "1234",
             "2345",
+            "2345",
             str(tracked_list),
+            "",
         ],
         check=True,
         capture_output=True,
@@ -354,6 +356,59 @@ def test_update_recover_tracked_repair_preserves_runtime_parent_ownership(tmp_pa
     assert "data" not in chown_calls
     assert "models" not in chown_calls
     assert "secrets" not in chown_calls
+
+
+def test_update_recover_grants_and_records_protected_root_access(tmp_path: Path) -> None:
+    script = _script()
+    start = script.index("safe_chown_tracked_paths() {")
+    heredoc_start = script.index("<<'PY'\n", start) + len("<<'PY'\n")
+    heredoc_end = script.index("\nPY\n}", heredoc_start)
+    python_source = script[heredoc_start:heredoc_end]
+    instrumented_source = python_source.replace(
+        "import os\n",
+        "import os\n"
+        "import json\n"
+        "_chmod_calls = []\n"
+        "_real_chmod = os.chmod\n"
+        "def _ignore_chown(name, uid, gid, *, dir_fd=None, follow_symlinks=True):\n"
+        "    return None\n"
+        "def _record_chmod(name, mode, *, dir_fd=None, follow_symlinks=True):\n"
+        "    _chmod_calls.append([os.fsdecode(name), mode])\n"
+        "    _real_chmod(name, mode, dir_fd=dir_fd, follow_symlinks=follow_symlinks)\n"
+        "os.chown = _ignore_chown\n"
+        "os.chmod = _record_chmod\n",
+        1,
+    )
+    instrumented_source += "\nprint(json.dumps(_chmod_calls))\n"
+
+    repo = tmp_path / "repo"
+    (repo / "data").mkdir(parents=True, mode=0o700)
+    (repo / "data" / "call_history.db").write_text("", encoding="utf-8")
+    (repo / "data").chmod(0o700)
+    tracked_list = tmp_path / "tracked.z"
+    tracked_list.write_bytes(b"data/call_history.db\0")
+    traversal_state = tmp_path / "restore.tsv"
+
+    result = subprocess.run(
+        [
+            "python3",
+            "-c",
+            instrumented_source,
+            str(repo),
+            "1234",
+            "2345",
+            "2345",
+            str(tracked_list),
+            str(traversal_state),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    chmod_calls = json.loads(result.stdout)
+    assert ["data", 0o705] in chmod_calls
+    assert traversal_state.read_text(encoding="utf-8") == f"700\t{repo / 'data'}\n"
 
 
 def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
@@ -374,8 +429,10 @@ def test_update_recover_preflights_runtime_dependencies() -> None:
     script = _script()
 
     main = script.split("main() {", 1)[1]
-    for command in ("bash", "git", "python3", "stat", "mktemp", "chown", "chmod", "install", "date", "awk", "sed", "tr", "tee", "cp"):
+    for command in ("bash", "git", "stat", "mktemp", "chown", "chmod", "install", "date", "awk", "sed", "tr", "tee", "cp"):
         assert f"need_cmd {command}" in main
+    assert "need_python3" in main
+    assert "Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y python3" in script
     assert "need_cmd find" not in main
     assert "need_cmd sort" not in main
     assert "need_cmd xargs" not in main

@@ -94,6 +94,10 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+need_python3() {
+  command -v python3 >/dev/null 2>&1 || die "required command not found: python3; install it first (Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y python3; RHEL/CentOS/Fedora: sudo dnf install -y python3, or sudo yum install -y python3)"
+}
+
 is_release_ref() {
   [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
@@ -236,7 +240,7 @@ PY
 
 safe_chown_tracked_paths() {
   local tracked_list="$1"
-  python3 - "${REPO}" "${TARGET_UID}" "${TARGET_GID}" "${tracked_list}" <<'PY'
+  python3 - "${REPO}" "${TARGET_UID}" "${TARGET_GID}" "${TARGET_GROUPS}" "${tracked_list}" "${TRAVERSAL_STATE}" <<'PY'
 import os
 import stat
 import sys
@@ -244,8 +248,38 @@ import sys
 repo = sys.argv[1]
 uid = int(sys.argv[2])
 gid = int(sys.argv[3])
-tracked_list = sys.argv[4]
+groups = {int(group) for group in sys.argv[4].split(",") if group}
+tracked_list = sys.argv[5]
+traversal_state = sys.argv[6]
 protected_roots = {"data", "models", "secrets"}
+adjusted_protected_dirs = set()
+
+
+def owner_can_read_execute(st):
+    if uid == 0:
+        return True
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid == uid and (mode & 0o500) == 0o500:
+        return True
+    if st.st_gid in groups and (mode & 0o050) == 0o050:
+        return True
+    return (mode & 0o005) == 0o005
+
+
+def ensure_protected_dir_access(name, dir_fd, st, display_rel):
+    if owner_can_read_execute(st) or display_rel in adjusted_protected_dirs:
+        return
+    if not traversal_state:
+        raise SystemExit(f"protected tracked directory remains inaccessible to checkout owner: {display_rel}")
+    original_mode = stat.S_IMODE(st.st_mode)
+    display_path = os.path.join(repo, display_rel)
+    with open(traversal_state, "a", encoding="utf-8") as fh:
+        fh.write(f"{original_mode:o}\t{display_path}\n")
+    os.chmod(name, original_mode | 0o005, dir_fd=dir_fd, follow_symlinks=False)
+    updated = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    if not owner_can_read_execute(updated):
+        raise SystemExit(f"failed to make protected tracked directory readable by checkout owner: {display_rel}")
+    adjusted_protected_dirs.add(display_rel)
 
 root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
 try:
@@ -269,6 +303,13 @@ try:
                 if not last:
                     if not stat.S_ISDIR(child.st_mode):
                         raise SystemExit(f"refusing non-directory tracked parent: {rel}")
+                    if protected_subtree:
+                        ensure_protected_dir_access(
+                            part,
+                            parent_fd,
+                            child,
+                            "/".join(parts[: index + 1]),
+                        )
                     next_fd = os.open(
                         part,
                         os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
@@ -1204,7 +1245,7 @@ main() {
   [ "${EUID}" -eq 0 ] || die "run this script with sudo/root so it can repair bounded metadata and install the CLI"
   need_cmd bash
   need_cmd git
-  need_cmd python3
+  need_python3
   need_cmd stat
   need_cmd mktemp
   need_cmd chown

@@ -94,12 +94,15 @@ depend on the failing Admin UI planner container:
 
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
-AAVA_REPO=/path/to/Asterisk-AI-Voice-Agent
+AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
   | sudo bash -s -- --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui
 ```
 
-The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts. It may first
+The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts and
+requires host `python3` for bounded ownership repair. Install it first if this is
+a minimal host (`sudo apt-get install -y python3`, `sudo dnf install -y python3`,
+or `sudo yum install -y python3`). It may first
 repair `.git` and Git-tracked path ownership so the checkout owner can inspect the
 repository safely, including tracked files left root-owned by older update attempts. It
 then captures diagnostics, binary-safe tracked-change patches, and a best-effort
@@ -122,7 +125,7 @@ For non-interactive recovery, pass the decision explicitly:
 
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
-AAVA_REPO=/path/to/Asterisk-AI-Voice-Agent
+AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
   | sudo bash -s -- --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes retain --yes
 ```
@@ -132,7 +135,7 @@ discarded:
 
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
-AAVA_REPO=/path/to/Asterisk-AI-Voice-Agent
+AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
 curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
   | sudo bash -s -- --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes overwrite
 ```
