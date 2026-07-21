@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -266,6 +267,70 @@ def test_update_recover_repair_is_bounded() -> None:
     assert "TEMP_BRANCH_CLI_DIR" in script
     assert not re.search(r"chown\s+-R[^\n]*\"\$\{REPO\}\"", script)
     assert "rm -rf -- \"${REPO}\"" not in script
+
+
+def test_update_recover_tracked_repair_preserves_runtime_parent_ownership(tmp_path: Path) -> None:
+    script = _script()
+    start = script.index("safe_chown_tracked_paths() {")
+    heredoc_start = script.index("<<'PY'\n", start) + len("<<'PY'\n")
+    heredoc_end = script.index("\nPY\n}", heredoc_start)
+    python_source = script[heredoc_start:heredoc_end]
+    instrumented_source = python_source.replace(
+        "import os\n",
+        "import os\n"
+        "import json\n"
+        "_chown_calls = []\n"
+        "def _record_chown(name, uid, gid, *, dir_fd=None, follow_symlinks=True):\n"
+        "    _chown_calls.append(os.fsdecode(name))\n"
+        "os.chown = _record_chown\n",
+        1,
+    )
+    instrumented_source += "\nprint(json.dumps(_chown_calls))\n"
+
+    repo = tmp_path / "repo"
+    for path in (
+        repo / "src",
+        repo / "data",
+        repo / "models",
+        repo / "secrets",
+    ):
+        path.mkdir(parents=True)
+    for path in (
+        repo / "src" / "engine.py",
+        repo / "data" / ".gitkeep",
+        repo / "models" / "registry.json",
+        repo / "secrets" / ".gitkeep",
+    ):
+        path.write_text("", encoding="utf-8")
+
+    tracked_list = tmp_path / "tracked.z"
+    tracked_list.write_bytes(
+        b"src/engine.py\0data/.gitkeep\0models/registry.json\0secrets/.gitkeep\0"
+    )
+
+    result = subprocess.run(
+        [
+            "python3",
+            "-c",
+            instrumented_source,
+            str(repo),
+            "1234",
+            "2345",
+            str(tracked_list),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    chown_calls = json.loads(result.stdout)
+    assert "src" in chown_calls
+    assert "engine.py" in chown_calls
+    assert ".gitkeep" in chown_calls
+    assert "registry.json" in chown_calls
+    assert "data" not in chown_calls
+    assert "models" not in chown_calls
+    assert "secrets" not in chown_calls
 
 
 def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:

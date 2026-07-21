@@ -233,6 +233,7 @@ repo = sys.argv[1]
 uid = int(sys.argv[2])
 gid = int(sys.argv[3])
 tracked_list = sys.argv[4]
+protected_roots = {"data", "models", "secrets"}
 
 root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
 try:
@@ -242,6 +243,7 @@ try:
         parts = rel.split("/")
         if rel.startswith("/") or any(part in ("", ".", "..") for part in parts):
             raise SystemExit(f"refusing unsafe tracked path: {rel}")
+        protected_subtree = parts[0] in protected_roots
         parent_fd = os.dup(root_fd)
         try:
             for index, part in enumerate(parts):
@@ -250,7 +252,8 @@ try:
                     child = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
                 except FileNotFoundError:
                     break
-                os.chown(part, uid, gid, dir_fd=parent_fd, follow_symlinks=False)
+                if not (protected_subtree and not last):
+                    os.chown(part, uid, gid, dir_fd=parent_fd, follow_symlinks=False)
                 if not last:
                     if not stat.S_ISDIR(child.st_mode):
                         raise SystemExit(f"refusing non-directory tracked parent: {rel}")
