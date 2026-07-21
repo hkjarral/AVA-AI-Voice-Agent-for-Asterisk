@@ -762,6 +762,24 @@ install_release_cli() {
   TEMP_CLI_DIR=""
 }
 
+append_repo_local_auth_git_config() {
+  local config_file="$1"
+  local key key_lc value
+
+  while IFS= read -r key; do
+    [ -n "${key}" ] || continue
+    key_lc="$(printf '%s' "${key}" | tr '[:upper:]' '[:lower:]')"
+    case "${key_lc}" in
+      http.*.extraheader|http.*.proxy|http.*.sslcainfo|http.*.sslcapath|http.*.sslcert|http.*.sslkey|http.*.sslverify|credential.helper|credential.*)
+        while IFS= read -r value; do
+          git config --file "${config_file}" --add "${key}" "${value}" \
+            || die "failed to copy checkout-local Git auth config"
+        done < <(git_repo config --get-all "${key}" 2>/dev/null || true)
+        ;;
+    esac
+  done < <(git_repo config --name-only --get-regexp '^(http\..*\.|credential\.)' 2>/dev/null || true)
+}
+
 install_branch_cli() {
   local ref="$1"
   need_cmd docker
@@ -793,6 +811,7 @@ install_branch_cli() {
   escaped_remote_url="${escaped_remote_url//\"/\\\"}"
   printf '[url "%s"]\n\tinsteadOf = aava-recovery-origin:\n' "${escaped_remote_url}" >>"${tmp_src}/gitconfig" \
     || die "failed to write temporary Git URL rewrite config"
+  append_repo_local_auth_git_config "${tmp_src}/gitconfig"
   chmod 0600 "${tmp_src}/gitconfig" \
     || die "failed to secure temporary Git URL rewrite config"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/gitconfig" \
@@ -1215,12 +1234,12 @@ main() {
   install_target_cli
   repair_agent_state_ownership
   prepare_updater_state_dirs
-  check_owner_docker_access
   run_plan
   if [ "${PLAN_ONLY}" = "true" ]; then
     log "Plan written to ${RECOVERY_DIR}/update-plan.json"
     exit 0
   fi
+  check_owner_docker_access
   confirm_update
   run_update
   print_restore_guidance

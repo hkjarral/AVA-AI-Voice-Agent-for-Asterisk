@@ -229,7 +229,27 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
 set -euo pipefail
 export AAVA_TEST_LOG={log}
 source "$SOURCE"
-git_repo() {{ printf 'https://example.invalid/fork.git\\n'; }}
+git_repo() {{
+  case "$*" in
+    "ls-remote --get-url origin")
+      printf 'https://example.invalid/fork.git\\n'
+      ;;
+    "config --name-only --get-regexp "*)
+      printf 'http.https://example.invalid/.extraHeader\\n'
+      printf 'credential.helper\\n'
+      printf 'core.fsmonitor\\n'
+      ;;
+    "config --get-all http.https://example.invalid/.extraHeader")
+      printf 'AUTHORIZATION: bearer localtoken\\n'
+      ;;
+    "config --get-all credential.helper")
+      printf 'store --file=/home/owner/.git-credentials\\n'
+      ;;
+    "config --get-all core.fsmonitor")
+      printf 'unsafe-helper\\n'
+      ;;
+  esac
+}}
 TARGET_UID=0
 TARGET_GID=0
 TARGET_GROUPS=0
@@ -247,6 +267,9 @@ install_branch_cli codex/update-recovery-script
     assert re.search(r"git_config_global \S", commands)
     assert "git_config_has_include yes" in commands
     assert "git_config_has_rewrite yes" in commands
+    assert "--add http.https://example.invalid/.extraHeader AUTHORIZATION: bearer localtoken" in commands
+    assert "--add credential.helper store --file=/home/owner/.git-credentials" in commands
+    assert "unsafe-helper" not in commands
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
     assert ":/src:ro,Z" in commands
@@ -507,10 +530,11 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     install = main.index("install_target_cli")
     agent_repair = main.index("repair_agent_state_ownership")
     docker_check = main.index("check_owner_docker_access")
+    plan = main.index("run_plan")
     update = main.index("run_update")
 
     assert owner < git_repair < tracked_repair < diagnostics < prompt < preserve < install
-    assert install < agent_repair < updater_state < docker_check < update
+    assert install < agent_repair < updater_state < plan < docker_check < update
     assert "staged-tracked.patch" in script
     assert "unstaged-tracked.patch" in script
     assert "pre-update-files" in script
