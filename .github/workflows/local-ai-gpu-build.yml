@@ -5,7 +5,7 @@ on:
   schedule:
     - cron: "30 8 * * 1"
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - "local_ai_server/Dockerfile.gpu"
       - "local_ai_server/requirements*.txt"

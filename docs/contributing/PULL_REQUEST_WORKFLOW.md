@@ -18,9 +18,9 @@ This workflow keeps feedback early while avoiding a full review and Docker build
 | Stage | Trigger | Required work |
 | --- | --- | --- |
 | Draft / fast | Every PR push | Core Python tests and coverage, Admin backend tests, Admin frontend lint/tests/build, secret scan, source compilation, CLI cross-compile/tests, CodeQL |
-| Final | Ready-for-review PR, `full-ci` label, manual run, or protected-branch push | Everything above plus Docker image builds and size budgets |
+| Final | Explicit `full-ci` label, non-draft PR open/update, manual run, or protected-branch push | Everything above plus Docker image builds and size budgets |
 
-The stable `PR gate` check aggregates the CI jobs. It accepts an intentionally skipped Docker job on an ordinary draft, but requires that job to pass for a ready or `full-ci` PR. A canceled or failed dependency fails the gate.
+The stable `PR gate` check aggregates the CI jobs. It accepts an intentionally skipped Docker job on an ordinary draft, but requires that job to pass for a non-draft or `full-ci` PR. A canceled or failed dependency fails the gate. Applying `full-ci` before marking a draft ready is mandatory; the ready transition itself is not a workflow trigger, avoiding a duplicate full run on the same commit.
 
 Path-scoped security and image workflows continue to run when their files change. All PR workflows use per-PR concurrency so a newer commit cancels a superseded run instead of consuming runner time in parallel.
 

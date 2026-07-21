@@ -5,7 +5,7 @@ on:
     branches: [ main, staging ]
   pull_request:
     branches: [ main, staging ]
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 concurrency:
@@ -182,7 +182,7 @@ jobs:
   image-size:
     name: Check Docker Image Sizes
     # Drafts get the fast test/lint/compile suite on each push. Docker builds run
-    # at the final review stage, or earlier when a maintainer applies `full-ci`.
+    # for non-draft PR activity, or earlier when a maintainer applies `full-ci`.
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
