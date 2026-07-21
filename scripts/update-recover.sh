@@ -167,8 +167,8 @@ ensure_owner_context() {
   if [ -z "${TARGET_HOME}" ]; then
     TARGET_HOME="$(getent passwd "${TARGET_UID}" 2>/dev/null | cut -d: -f6 | head -n 1 || true)"
   fi
-  if [ -z "${TARGET_HOME}" ] || [ ! -d "${TARGET_HOME}" ]; then
-    TARGET_HOME="/tmp"
+  if [ -n "${TARGET_HOME}" ] && [ ! -d "${TARGET_HOME}" ]; then
+    TARGET_HOME=""
   fi
   compute_target_groups
   if [ "${TARGET_UID}" != "0" ]; then
@@ -177,13 +177,25 @@ ensure_owner_context() {
   fi
 }
 
+owner_execution_home() {
+  if [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
+    printf '%s\n' "${TARGET_HOME}"
+  elif [ -n "${TEMP_HOME}" ]; then
+    printf '%s\n' "${TEMP_HOME}"
+  else
+    die "temporary owner HOME is not prepared"
+  fi
+}
+
 run_as_checkout_owner_home() {
   ensure_owner_context
   if [ "${TARGET_UID}" = "0" ]; then
     "$@"
   else
+    local owner_home
+    owner_home="$(owner_execution_home)"
     "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
-      /usr/bin/env "HOME=${TARGET_HOME}" "$@"
+      /usr/bin/env "HOME=${owner_home}" "$@"
   fi
 }
 
@@ -764,17 +776,19 @@ install_branch_cli() {
   TEMP_BRANCH_CLI_DIR="${tmp_src}"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}" \
     || die "failed to hand temporary CLI source directory to checkout owner"
-  owner_gitconfig="${TARGET_HOME}/.gitconfig"
-  xdg_gitconfig="${TARGET_HOME}/.config/git/config"
   : >"${tmp_src}/gitconfig" || die "failed to create temporary Git URL rewrite config"
-  for owner_gitconfig in "${owner_gitconfig}" "${xdg_gitconfig}"; do
-    if [ -f "${owner_gitconfig}" ]; then
-      escaped_include="${owner_gitconfig//\\/\\\\}"
-      escaped_include="${escaped_include//\"/\\\"}"
-      printf '[include]\n\tpath = "%s"\n' "${escaped_include}" >>"${tmp_src}/gitconfig" \
-        || die "failed to include checkout-owner Git config"
-    fi
-  done
+  if [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then
+    owner_gitconfig="${TARGET_HOME}/.gitconfig"
+    xdg_gitconfig="${TARGET_HOME}/.config/git/config"
+    for owner_gitconfig in "${owner_gitconfig}" "${xdg_gitconfig}"; do
+      if [ -f "${owner_gitconfig}" ]; then
+        escaped_include="${owner_gitconfig//\\/\\\\}"
+        escaped_include="${escaped_include//\"/\\\"}"
+        printf '[include]\n\tpath = "%s"\n' "${escaped_include}" >>"${tmp_src}/gitconfig" \
+          || die "failed to include checkout-owner Git config"
+      fi
+    done
+  fi
   escaped_remote_url="${remote_url//\\/\\\\}"
   escaped_remote_url="${escaped_remote_url//\"/\\\"}"
   printf '[url "%s"]\n\tinsteadOf = aava-recovery-origin:\n' "${escaped_remote_url}" >>"${tmp_src}/gitconfig" \
@@ -1028,7 +1042,7 @@ run_as_owner() {
     (cd "${REPO}" && "$@")
   else
     local update_home
-    update_home="${TARGET_HOME}"
+    update_home="$(owner_execution_home)"
     "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" \
       /usr/bin/env "HOME=${update_home}" /bin/sh -c 'cd "$1" && shift && exec "$@"' sh "${REPO}" "$@"
   fi

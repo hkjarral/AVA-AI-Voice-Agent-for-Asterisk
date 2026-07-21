@@ -696,9 +696,22 @@ def test_update_recover_uses_checkout_home_for_updates() -> None:
     assert 'run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig"' in script
     assert "aava-recovery-origin:" in script
     assert '[include]\\n\\tpath = "%s"\\n' in script
-    assert 'update_home="${TARGET_HOME}"' in run_as_owner
-    assert 'update_home="${TEMP_HOME}"' not in run_as_owner
+    assert "owner_execution_home()" in script
+    assert 'update_home="$(owner_execution_home)"' in run_as_owner
+    assert 'TARGET_HOME="/tmp"' not in script
     assert 'if ! is_release_ref "${REF}"' not in run_as_owner
+
+
+def test_update_recover_uses_private_home_when_owner_home_is_missing() -> None:
+    script = _script()
+    ensure_owner = script.split("ensure_owner_context() {", 1)[1].split("\n}", 1)[0]
+    owner_home = script.split("owner_execution_home() {", 1)[1].split("\n}", 1)[0]
+    install_branch = script.split("install_branch_cli() {", 1)[1].split("\n}", 1)[0]
+
+    assert 'TARGET_HOME=""' in ensure_owner
+    assert 'printf \'%s\\n\' "${TEMP_HOME}"' in owner_home
+    assert 'die "temporary owner HOME is not prepared"' in owner_home
+    assert 'if [ -n "${TARGET_HOME}" ] && [ -d "${TARGET_HOME}" ]; then' in install_branch
 
 
 def test_update_recover_keeps_recovery_artifacts_owner_only() -> None:
