@@ -118,6 +118,20 @@ resolve_existing_path() {
   fi
 }
 
+redact_remote_url() {
+  sed -E 's#(https?://)[^/@[:space:]]+@#\1[redacted]@#g'
+}
+
+require_plain_recovery_dir() {
+  local path="$1"
+  if [ -L "${path}" ]; then
+    die "refusing symlinked recovery state: ${path}"
+  fi
+  if [ -e "${path}" ] && [ ! -d "${path}" ]; then
+    die "refusing non-directory recovery state: ${path}"
+  fi
+}
+
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -279,23 +293,32 @@ capture_git() {
   } >"${RECOVERY_DIR}/${name}.log" 2>&1 || true
 }
 
+capture_git_remotes() {
+  {
+    printf '$ git remote -v\n'
+    git_repo remote -v | redact_remote_url
+  } >"${RECOVERY_DIR}/remotes.log" 2>&1 || true
+}
+
 prepare_recovery_dir() {
-  if [ -L "${REPO}/.agent" ]; then
-    die "refusing symlinked updater state: ${REPO}/.agent"
-  fi
-  if [ -e "${REPO}/.agent" ] && [ ! -d "${REPO}/.agent" ]; then
-    die "refusing non-directory updater state: ${REPO}/.agent"
-  fi
-  local ts
+  local agent_dir recovery_base ts
+  agent_dir="${REPO}/.agent"
+  recovery_base="${agent_dir}/update-recovery"
+  require_plain_recovery_dir "${agent_dir}"
+  mkdir -p -- "${agent_dir}" || die "failed to create updater state directory: ${agent_dir}"
+  require_plain_recovery_dir "${agent_dir}"
+  require_plain_recovery_dir "${recovery_base}"
+  mkdir -p -- "${recovery_base}" || die "failed to create recovery state directory: ${recovery_base}"
+  require_plain_recovery_dir "${recovery_base}"
   ts="$(date -u +%Y%m%d_%H%M%S)"
-  RECOVERY_DIR="${REPO}/.agent/update-recovery/${ts}"
-  mkdir -p -- "${RECOVERY_DIR}" || die "failed to create recovery directory: ${RECOVERY_DIR}"
+  RECOVERY_DIR="$(mktemp -d "${recovery_base}/${ts}.XXXXXX")" || die "failed to create recovery directory under ${recovery_base}"
+  require_plain_recovery_dir "${RECOVERY_DIR}"
   TARGET_UID="$(stat -c '%u' "${REPO}")" || die "failed to read checkout owner UID"
   TARGET_GID="$(stat -c '%g' "${REPO}")" || die "failed to read checkout owner GID"
   chown --no-dereference "${TARGET_UID}:${TARGET_GID}" \
-    "${REPO}/.agent" "${REPO}/.agent/update-recovery" "${RECOVERY_DIR}" \
+    "${agent_dir}" "${recovery_base}" "${RECOVERY_DIR}" \
     || die "failed to hand recovery metadata to checkout owner"
-  chmod 0750 -- "${REPO}/.agent" "${REPO}/.agent/update-recovery" "${RECOVERY_DIR}" 2>/dev/null || true
+  chmod 0750 -- "${agent_dir}" "${recovery_base}" "${RECOVERY_DIR}" 2>/dev/null || true
 }
 
 capture_diagnostics() {
@@ -318,7 +341,7 @@ capture_diagnostics() {
   capture_command repo-ownership ls -ldn "${REPO}" "${REPO}/.git" "${REPO}/.agent"
   capture_git status status --short --branch
   capture_git rev-parse rev-parse HEAD
-  capture_git remotes remote -v
+  capture_git_remotes
   capture_git stash-list stash list
   if command -v docker >/dev/null 2>&1; then
     capture_command docker-ps docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
@@ -539,7 +562,7 @@ install_branch_cli() {
   tmp_src="$(mktemp -d /tmp/aava-cli-src.XXXXXXXXXX)" || die "failed to create temporary CLI source directory"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
   git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${remote_url}" "${tmp_src}/repo" \
-    || die "failed to fetch selected CLI source ${ref} from ${remote_url}"
+    || die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   mkdir -p -- "${tmp_src}/out"
   docker run --rm \
     -v "${tmp_src}/repo/cli:/src:ro" \
@@ -850,7 +873,11 @@ main() {
   need_cmd bash
   need_cmd git
   need_cmd stat
-  need_cmd find
+  need_cmd mktemp
+  need_cmd chown
+  need_cmd chmod
+  need_cmd install
+  need_cmd date
   need_cmd sort
   need_cmd xargs
   need_cmd sed

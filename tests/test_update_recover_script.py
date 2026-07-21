@@ -160,7 +160,8 @@ install_branch_cli codex/update-recovery-script
 def test_update_recover_repair_is_bounded() -> None:
     script = _script()
 
-    assert "refusing symlinked updater state" in script
+    assert "refusing symlinked recovery state" in script
+    assert 'mktemp -d "${recovery_base}/${ts}.XXXXXX"' in script
     assert "refusing automatic repair for linked, symlinked, or missing .git metadata" in script
     assert 'chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${expected_git_dir}"' in script
     assert 'chown -R --no-dereference "${TARGET_UID}:${TARGET_GID}" "${REPO}/.agent"' in script
@@ -168,6 +169,16 @@ def test_update_recover_repair_is_bounded() -> None:
     assert "Refusing symlinked tracked parent" in script
     assert not re.search(r"chown\s+-R[^\n]*\"\$\{REPO\}\"", script)
     assert "rm -rf -- \"${REPO}\"" not in script
+
+
+def test_update_recover_preflights_runtime_dependencies() -> None:
+    script = _script()
+
+    main = script.split("main() {", 1)[1]
+    for command in ("bash", "git", "stat", "mktemp", "chown", "chmod", "install", "date", "sort", "xargs", "sed", "tee", "cp"):
+        assert f"need_cmd {command}" in main
+    assert "need_cmd find" not in main
+    assert "command -v realpath >/dev/null 2>&1 || need_cmd readlink" in main
 
 
 def test_update_recover_hands_new_metadata_to_checkout_owner_with_no_repair(tmp_path: Path) -> None:
@@ -211,6 +222,47 @@ printf 'recovery=%s\\n' "$RECOVERY_DIR"
     assert "recovery=" in result.stdout
 
 
+def test_update_recover_rejects_symlinked_recovery_state(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "update-recovery").symlink_to(tmp_path)
+
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+REPO="{repo}"
+prepare_recovery_dir
+"""
+    result = _run_bash_harness_unchecked(harness, tmp_path)
+
+    assert result.returncode == 2
+    assert "refusing symlinked recovery state" in result.stderr
+
+
+def test_update_recover_redacts_credentials_from_remote_diagnostics(tmp_path: Path) -> None:
+    recovery = tmp_path / "recovery"
+    recovery.mkdir()
+
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+RECOVERY_DIR="{recovery}"
+git_repo() {{
+  if [ "$1" = remote ] && [ "$2" = -v ]; then
+    printf 'origin\\thttps://user:token@example.invalid/repo.git (fetch)\\n'
+    printf 'origin\\thttps://user:token@example.invalid/repo.git (push)\\n'
+  fi
+}}
+capture_git_remotes
+"""
+    _run_bash_harness(harness, tmp_path)
+
+    remotes = (recovery / "remotes.log").read_text(encoding="utf-8")
+    assert "user:token" not in remotes
+    assert "https://[redacted]@example.invalid/repo.git" in remotes
+
+
 def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     script = _script()
     main = script.split("main() {", 1)[1]
@@ -238,7 +290,8 @@ def test_update_recover_plan_and_update_pass_owner_args_in_order(tmp_path: Path)
 set -euo pipefail
 source "$SOURCE"
 run_as_owner() {{
-  printf '%s\\n' "$*" >>"{log}"
+  printf 'CALL\\n' >>"{log}"
+  printf '<%s>\\n' "$@" >>"{log}"
 }}
 RECOVERY_DIR="{recovery}"
 AGENT_BIN=/usr/local/bin/agent
@@ -254,15 +307,22 @@ run_update
 """
     _run_bash_harness(harness, tmp_path)
 
-    calls = log.read_text(encoding="utf-8").splitlines()
+    sections = log.read_text(encoding="utf-8").split("CALL\n")
+    calls = [
+        [line[1:-1] for line in section.splitlines() if line.startswith("<")]
+        for section in sections
+        if section.strip()
+    ]
     assert len(calls) == 2
-    assert calls[0].startswith("/usr/local/bin/agent update --self-update=false --plan --plan-json")
+    assert calls[0][:4] == ["/usr/local/bin/agent", "update", "--self-update=false", "--plan"]
+    assert "--plan-json" in calls[0]
     assert "--ref=v7.4.2" in calls[0]
     assert "--checkout=false" in calls[0]
     assert "--include-ui=true" in calls[0]
     assert "--local-changes=retain" in calls[0]
-    assert "--skip-check --stash-untracked" in calls[0]
-    assert calls[1].startswith("/usr/local/bin/agent update --self-update=false --remote=origin")
+    assert calls[0][-2:] == ["--skip-check", "--stash-untracked"]
+    assert calls[1][:3] == ["/usr/local/bin/agent", "update", "--self-update=false"]
+    assert "--remote=origin" in calls[1]
     assert "--plan-json" not in calls[1]
     assert "--stash-untracked" in calls[1]
 
