@@ -943,13 +943,21 @@ PY
 
 cleanup() {
   local status=$?
+  local restore_failed="false"
   if [ -n "${TRAVERSAL_STATE}" ] && [ -f "${TRAVERSAL_STATE}" ]; then
     while IFS="$(printf '\t')" read -r mode parent; do
       if [ -n "${mode}" ] && [ -n "${parent}" ]; then
-        chmod "${mode}" -- "${parent}" 2>/dev/null || true
+        if ! chmod "${mode}" -- "${parent}" 2>/dev/null; then
+          warn "failed to restore traversal permissions ${mode} on ${parent}; state file retained at ${TRAVERSAL_STATE}"
+          restore_failed="true"
+        fi
       fi
     done <"${TRAVERSAL_STATE}"
-    rm -f -- "${TRAVERSAL_STATE}" 2>/dev/null || true
+    if [ "${restore_failed}" = "false" ]; then
+      rm -f -- "${TRAVERSAL_STATE}" 2>/dev/null || true
+    elif [ "${status}" -eq 0 ]; then
+      status=2
+    fi
   fi
   if [ -n "${TEMP_HOME}" ]; then
     rm -rf -- "${TEMP_HOME}" 2>/dev/null || true
@@ -965,6 +973,10 @@ cleanup() {
     secure_recovery_artifacts 2>/dev/null || true
   fi
   exit "${status}"
+}
+
+signal_exit() {
+  exit "$1"
 }
 
 prepare_updater_state_dirs() {
@@ -1170,7 +1182,10 @@ main() {
   command -v realpath >/dev/null 2>&1 || need_cmd readlink
 
   detect_repo
-  trap cleanup EXIT INT TERM HUP
+  trap cleanup EXIT
+  trap 'signal_exit 130' INT
+  trap 'signal_exit 143' TERM
+  trap 'signal_exit 129' HUP
   prepare_recovery_dir
 
   prepare_owner_execution

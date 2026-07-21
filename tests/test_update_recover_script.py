@@ -268,6 +268,20 @@ def test_update_recover_repair_is_bounded() -> None:
     assert "rm -rf -- \"${REPO}\"" not in script
 
 
+def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
+    script = _script()
+
+    assert "signal_exit()" in script
+    assert "trap cleanup EXIT" in script
+    assert "trap 'signal_exit 130' INT" in script
+    assert "trap 'signal_exit 143' TERM" in script
+    assert "trap 'signal_exit 129' HUP" in script
+    assert "failed to restore traversal permissions" in script
+    assert 'state file retained at ${TRAVERSAL_STATE}' in script
+    assert 'elif [ "${status}" -eq 0 ]; then' in script
+    assert "status=2" in script
+
+
 def test_update_recover_preflights_runtime_dependencies() -> None:
     script = _script()
 
