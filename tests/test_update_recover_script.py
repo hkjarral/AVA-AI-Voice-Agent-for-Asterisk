@@ -314,6 +314,29 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'pin_branch_cli_output "${tmp_src}/out/agent" "${tmp_src}/agent.pinned"' in install_branch
 
 
+def test_update_recover_canonicalizes_relative_branch_cli_remote(tmp_path: Path) -> None:
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    origin = tmp_path / "aava-origin.git"
+
+    harness = f"""
+set -euo pipefail
+source "$SOURCE"
+REPO="{repo}"
+canonicalize_standalone_remote_url ../aava-origin.git
+canonicalize_standalone_remote_url https://example.invalid/repo.git
+canonicalize_standalone_remote_url git@example.invalid:repo.git
+"""
+    result = _run_bash_harness(harness, tmp_path)
+
+    lines = result.stdout.splitlines()
+    assert lines == [
+        str(origin),
+        "https://example.invalid/repo.git",
+        "git@example.invalid:repo.git",
+    ]
+
+
 def test_update_recover_repair_is_bounded() -> None:
     script = _script()
 
@@ -527,7 +550,13 @@ def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_r
         "    return None\n"
         "def _ignore_chown(name, uid, gid, *, dir_fd=None, follow_symlinks=True):\n"
         "    return None\n"
-        "os.chown = _ignore_chown\n",
+        "os.chown = _ignore_chown\n"
+        "_real_exists = os.path.exists\n"
+        "def _fake_exists(path):\n"
+        "    if os.fsdecode(path).startswith('/proc/self/fd/'):\n"
+        "        return True\n"
+        "    return _real_exists(path)\n"
+        "os.path.exists = _fake_exists\n",
         1,
     )
     instrumented_source = instrumented_source.replace(
@@ -571,8 +600,10 @@ def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_r
     )
 
     run_calls = json.loads(result.stdout)
-    assert ["getfacl", "-p", str(repo / "secrets")] in run_calls
-    assert ["setfacl", "-m", f"u:{synthetic_uid}:rx", str(repo / "secrets")] in run_calls
+    getfacl_calls = [call for call in run_calls if call[:2] == ["getfacl", "--omit-header"]]
+    setfacl_calls = [call for call in run_calls if call[:3] == ["setfacl", "-m", f"u:{synthetic_uid}:rx"]]
+    assert getfacl_calls and getfacl_calls[0][2].startswith("/proc/self/fd/")
+    assert setfacl_calls and setfacl_calls[0][3].startswith("/proc/self/fd/")
     assert traversal_state.read_text(encoding="utf-8").startswith(f"acl\t{repo / 'secrets'}\t")
     assert stat.S_IMODE((repo / "secrets").stat().st_mode) & 0o005 == 0
 
@@ -588,7 +619,7 @@ def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     assert "restore_traversal_modes()" in script
     assert 'getattr(os, "O_NOFOLLOW", 0)' in script
     assert "os.fchmod(fd, mode)" in script
-    assert 'subprocess.run(["setfacl", "--restore", acl_snapshot], check=True)' in script
+    assert 'subprocess.run(["setfacl", "--set-file", acl_snapshot, path], check=True)' in script
     assert "failed to restore traversal permissions" in script
     assert 'state file retained at ${TRAVERSAL_STATE}' in script
     assert 'elif [ "${status}" -eq 0 ]; then' in script

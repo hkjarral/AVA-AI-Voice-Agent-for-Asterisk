@@ -284,17 +284,20 @@ def mode_with_owner_access(st):
     raise SystemExit("internal error: protected directory requires ACL access")
 
 
-def grant_acl_access(display_path):
+def grant_acl_access(dir_fd, display_path):
     if not shutil.which("getfacl") or not shutil.which("setfacl"):
         raise SystemExit(
             "protected tracked directory requires per-user ACL access; install the acl package "
             f"or make checkout owner a member of its owning group: {display_path}"
         )
+    fd_path = f"/proc/self/fd/{dir_fd}"
+    if not os.path.exists(fd_path):
+        raise SystemExit("per-user ACL recovery requires /proc/self/fd support")
     acl_snapshot = f"{traversal_state}.acl.{len(adjusted_protected_dirs)}"
     snapshot_fd = os.open(acl_snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(snapshot_fd, "wb") as fh:
-        subprocess.run(["getfacl", "-p", display_path], stdout=fh, check=True)
-    subprocess.run(["setfacl", "-m", f"u:{uid}:rx", display_path], check=True)
+        subprocess.run(["getfacl", "--omit-header", fd_path], stdout=fh, check=True)
+    subprocess.run(["setfacl", "-m", f"u:{uid}:rx", fd_path], check=True)
     with open(traversal_state, "a", encoding="utf-8") as fh:
         fh.write(f"acl\t{display_path}\t{acl_snapshot}\n")
 
@@ -307,9 +310,16 @@ def ensure_protected_dir_access(name, dir_fd, st, display_rel):
     original_mode = stat.S_IMODE(st.st_mode)
     display_path = os.path.join(repo, display_rel)
     if st.st_uid != uid and st.st_gid not in groups:
-        grant_acl_access(display_path)
-        adjusted_protected_dirs.add(display_rel)
-        return
+        acl_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+        try:
+            acl_st = os.fstat(acl_fd)
+            if not stat.S_ISDIR(acl_st.st_mode) or (acl_st.st_dev, acl_st.st_ino) != (st.st_dev, st.st_ino):
+                raise SystemExit(f"refusing changed protected tracked directory: {display_rel}")
+            grant_acl_access(acl_fd, display_path)
+            adjusted_protected_dirs.add(display_rel)
+            return
+        finally:
+            os.close(acl_fd)
     with open(traversal_state, "a", encoding="utf-8") as fh:
         fh.write(f"{original_mode:o}\t{display_path}\n")
     os.chmod(name, mode_with_owner_access(st), dir_fd=dir_fd, follow_symlinks=False)
@@ -984,6 +994,27 @@ append_repo_local_auth_git_config() {
   done < <(git_repo config --name-only --get-regexp '^(http\..*\.|credential\.)' 2>/dev/null || true)
 }
 
+canonicalize_standalone_remote_url() {
+  local remote_url="$1"
+  python3 - "${REPO}" "${remote_url}" <<'PY'
+import os
+import re
+import sys
+
+repo, remote_url = sys.argv[1:3]
+
+if (
+    os.path.isabs(remote_url)
+    or "://" in remote_url
+    or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", remote_url)
+    or re.match(r"^[^/@:]+@[^/]+:", remote_url)
+):
+    print(remote_url)
+else:
+    print(os.path.abspath(os.path.join(repo, remote_url)))
+PY
+}
+
 install_branch_cli() {
   local ref="$1"
   need_cmd docker
@@ -993,6 +1024,8 @@ install_branch_cli() {
     remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
   fi
   [ -n "${remote_url}" ] || die "failed to resolve remote ${REMOTE} for CLI source"
+  remote_url="$(canonicalize_standalone_remote_url "${remote_url}")" \
+    || die "failed to canonicalize remote ${REMOTE} for CLI source"
 
   tmp_src="$(mktemp -d /tmp/aava-cli-src.XXXXXXXXXX)" || die "failed to create temporary CLI source directory"
   TEMP_BRANCH_CLI_DIR="${tmp_src}"
@@ -1205,7 +1238,7 @@ with open(state_path, "r", encoding="utf-8") as fh:
         try:
             if fields[0] == "acl":
                 _, path, acl_snapshot = fields
-                subprocess.run(["setfacl", "--restore", acl_snapshot], check=True)
+                subprocess.run(["setfacl", "--set-file", acl_snapshot, path], check=True)
                 os.unlink(acl_snapshot)
                 continue
             mode_text, path = fields
