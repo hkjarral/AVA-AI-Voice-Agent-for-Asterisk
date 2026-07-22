@@ -13,7 +13,12 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Seque
 
 import aiohttp
 
-from ..audio import convert_pcm16le_to_target_format, mulaw_to_pcm16le, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    mulaw_to_pcm16le,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, GoogleProviderConfig
 from ..logging_config import get_logger
 from .base import LLMComponent, LLMResponse, STTComponent, TTSComponent
@@ -265,7 +270,7 @@ class GoogleSTTAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged = _merge_dicts(self._pipeline_defaults, runtime_options)
-        return {
+        options = {
             "encoding": merged.get("encoding", "LINEAR16"),
             "language_code": merged.get("language_code", self._provider_defaults.stt_language_code),
             "model": merged.get("model"),
@@ -274,6 +279,7 @@ class GoogleSTTAdapter(STTComponent):
             "config_overrides": dict(merged.get("config_overrides") or merged.get("config") or {}),
             "request_overrides": dict(merged.get("request_overrides") or merged.get("request") or {}),
         }
+        return options
 
 
 class GoogleLLMAdapter(LLMComponent):
@@ -388,7 +394,7 @@ class GoogleLLMAdapter(LLMComponent):
                 sys_instr = getattr(self._app_config.llm, "prompt", None) or None
             except Exception:
                 sys_instr = None
-        return {
+        options = {
             "model": merged.get("model", self._provider_defaults.llm_model),
             "temperature": merged.get("temperature", 0.7),
             "top_p": merged.get("top_p"),
@@ -399,6 +405,7 @@ class GoogleLLMAdapter(LLMComponent):
             "request_overrides": dict(merged.get("request_overrides") or merged.get("request") or {}),
             "timeout_sec": float(merged.get("timeout_sec", 10.0)),
         }
+        return options
 
     def _build_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         contents = context.get("google_contents")
@@ -598,7 +605,7 @@ class GoogleTTSAdapter(TTSComponent):
         merged = _merge_dicts(self._pipeline_defaults, runtime_options)
         target_format = merged.get("format") or merged.get("target_format") or {}
         source_format = merged.get("source_format") or {}
-        return {
+        options = {
             "voice_name": merged.get("voice", self._provider_defaults.tts_voice_name),
             "language_code": merged.get("language_code", self._provider_defaults.stt_language_code),
             "audio_encoding": (merged.get("audio_encoding") or source_format.get("encoding") or self._provider_defaults.tts_audio_encoding).upper(),
@@ -622,6 +629,10 @@ class GoogleTTSAdapter(TTSComponent):
                 "output_resampler", self._provider_defaults.output_resampler
             ),
         }
+        options["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=options.get("output_resampler")
+        )[0]
+        return options
 
     @staticmethod
     def _convert_audio(
@@ -653,7 +664,7 @@ class GoogleTTSAdapter(TTSComponent):
 
 
 __all__ = [
-    "GoogleSTTAdapter",
     "GoogleLLMAdapter",
+    "GoogleSTTAdapter",
     "GoogleTTSAdapter",
 ]

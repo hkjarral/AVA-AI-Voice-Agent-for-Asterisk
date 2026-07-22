@@ -23,7 +23,11 @@ from urllib.parse import urlparse
 import aiohttp
 import websockets
 
-from ..audio import convert_pcm16le_to_target_format, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, OpenAIProviderConfig
 from ..logging_config import get_logger
 from .base import LLMComponent, STTComponent, TTSComponent, LLMResponse
@@ -1159,6 +1163,9 @@ class OpenAITTSAdapter(TTSComponent):
                 ),
             ),
         }
+        merged["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=merged.get("output_resampler")
+        )[0]
         return merged
 
     @staticmethod

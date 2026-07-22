@@ -24,6 +24,39 @@ _PCM_SAMPLE_WIDTH = 2
 _BANDLIMITED_STATE_TAG = "bandlimited_fir_v1"
 _BANDLIMITED_FILTER_TAPS = 255
 _BANDLIMITED_CUTOFF_FRACTION_OF_TARGET = 0.45
+OUTPUT_RESAMPLER_MODES = frozenset({"linear", "bandlimited"})
+
+
+def resolve_output_resampler_policy(
+    *,
+    profile_mode: Optional[str] = "linear",
+    provider_mode: Optional[str] = "inherit",
+    pipeline_mode: Optional[str] = None,
+    environment_mode: Optional[str] = None,
+) -> tuple[str, str]:
+    """Resolve the effective output downsampler and report its source.
+
+    Precedence is environment, pipeline, provider, profile, then the legacy
+    compatibility default. Inherit and blank values fall through. Invalid
+    values fail closed to linear; persisted configuration rejects them earlier,
+    while this runtime fallback protects against a malformed environment
+    override.
+    """
+    for source, raw_value in (
+        ("environment", environment_mode),
+        ("pipeline", pipeline_mode),
+        ("provider", provider_mode),
+        ("profile", profile_mode),
+    ):
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip().lower()
+        if not value or value == "inherit":
+            continue
+        if value in OUTPUT_RESAMPLER_MODES:
+            return value, source
+        return "linear", f"{source}-invalid-fallback"
+    return "linear", "compatibility-default"
 
 
 @lru_cache(maxsize=16)

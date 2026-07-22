@@ -3,7 +3,7 @@ import HelpTooltip from '../../ui/HelpTooltip';
 
 interface OutputResamplerFieldProps {
     value?: string;
-    onChange: (value: 'linear' | 'bandlimited') => void;
+    onChange: (value: 'inherit' | 'linear' | 'bandlimited') => void;
     sourceRate?: number;
     targetRate?: number;
 }
@@ -25,6 +25,7 @@ const OutputResamplerField: React.FC<OutputResamplerFieldProps> = ({
                         <>
                             Controls conversion from provider-native audio to the lower Asterisk target rate.
                             <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                                <li><strong>Inherit</strong> uses the Agent's Audio Profile.</li>
                                 <li><strong>Compatibility</strong> preserves the existing linear converter.</li>
                                 <li><strong>Alias-safe</strong> removes frequencies that cannot fit in 8 kHz telephony before downsampling, reducing “shh/sss” artifacts.</li>
                                 <li>It has no effect when source and target rates already match.</li>
@@ -35,9 +36,10 @@ const OutputResamplerField: React.FC<OutputResamplerFieldProps> = ({
             </div>
             <select
                 className="w-full p-2 rounded border border-input bg-background"
-                value={value || 'linear'}
-                onChange={(event) => onChange(event.target.value as 'linear' | 'bandlimited')}
+                value={value || 'inherit'}
+                onChange={(event) => onChange(event.target.value as 'inherit' | 'linear' | 'bandlimited')}
             >
+                <option value="inherit">Inherit from Audio Profile (recommended)</option>
                 <option value="linear">Compatibility (current behavior)</option>
                 <option value="bandlimited">Alias-safe (recommended for 16/24 kHz → 8 kHz)</option>
             </select>

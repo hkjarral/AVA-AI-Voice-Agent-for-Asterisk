@@ -293,9 +293,14 @@ class StreamingPlaybackManager:
         except Exception:
             self.diag_post_secs = 2
         try:
-            self.diag_out_dir = str(self.streaming_config.get('diag_out_dir', '/tmp/ai-engine-taps') or '/tmp/ai-engine-taps')
+            self.diag_out_dir = str(
+                self.streaming_config.get(
+                    'diag_out_dir', '/app/data/diagnostics/audio-taps'
+                )
+                or '/app/data/diagnostics/audio-taps'
+            )
         except Exception:
-            self.diag_out_dir = '/tmp/ai-engine-taps'
+            self.diag_out_dir = '/app/data/diagnostics/audio-taps'
         if self.diag_enable_taps:
             try:
                 os.makedirs(self.diag_out_dir, mode=0o700, exist_ok=True)
@@ -445,13 +450,20 @@ class StreamingPlaybackManager:
             # that exact stream before allocating replacement per-call queues.
             # Otherwise the old producer's finally block can wake later and
             # delete the replacement stream's jitter/remainder/gating state.
-            cleanup_deadline = asyncio.get_running_loop().time() + 3.0
+            cleanup_timeout_sec = max(3.0, (self.provider_grace_ms / 1000.0) + 1.0)
+            cleanup_deadline = (
+                asyncio.get_running_loop().time() + cleanup_timeout_sec
+            )
             while True:
                 existing_info = self.active_streams.get(call_id)
                 if not existing_info:
                     break
                 existing = str(existing_info.get('stream_id') or '')
-                if existing and self.is_stream_active(call_id, existing):
+                if (
+                    existing
+                    and call_id not in self._cleanup_in_progress
+                    and self.is_stream_active(call_id, existing)
+                ):
                     logger.debug(
                         "Streaming already active for call",
                         call_id=call_id,
@@ -3423,7 +3435,13 @@ class StreamingPlaybackManager:
     @staticmethod
     def _is_interrupted_end_reason(reason: Any) -> bool:
         normalized = str(reason or "").strip().lower()
-        return any(token in normalized for token in ("barge", "interrupt", "cancel"))
+        return normalized in {
+            "barge-in",
+            "barge_in",
+            "cancelled",
+            "canceled",
+            "interrupted",
+        }
 
     async def _cleanup_stream(self, call_id: str, stream_id: str) -> None:
         """Clean up streaming resources."""
@@ -3639,7 +3657,11 @@ class StreamingPlaybackManager:
                 if self.provider_grace_ms and not interrupted:
                     await asyncio.sleep(self.provider_grace_ms / 1000.0)
             except Exception:
-                pass
+                logger.debug(
+                    "Provider grace wait skipped due to error",
+                    call_id=call_id,
+                    exc_info=True,
+                )
 
             # A replacement is not expected because start_streaming_playback()
             # waits for stale cleanup, but retain an ownership check across the

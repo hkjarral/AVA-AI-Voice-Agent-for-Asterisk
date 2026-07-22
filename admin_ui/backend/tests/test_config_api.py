@@ -128,3 +128,28 @@ def test_profile_usage_guard_allows_new_or_unreferenced_profile(tmp_path, monkey
     }
 
     config._assert_in_use_audio_profiles_unchanged(old, new)
+
+
+def test_profile_usage_guard_fails_closed_when_agent_store_is_invalid(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "agents.db"
+    db_path.write_text("not a sqlite database", encoding="utf-8")
+    monkeypatch.setenv("AGENTS_DB_PATH", str(db_path))
+    old = {
+        "profiles": {
+            "default": "telephony_ulaw_8k",
+            "telephony_ulaw_8k": {"transport_out": {"encoding": "ulaw"}},
+        }
+    }
+    new = {
+        "profiles": {
+            "default": "telephony_ulaw_8k",
+            "telephony_ulaw_8k": {"transport_out": {"encoding": "slin"}},
+        }
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        config._assert_in_use_audio_profiles_unchanged(old, new)
+
+    assert exc_info.value.status_code == 503

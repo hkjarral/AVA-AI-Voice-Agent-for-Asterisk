@@ -14,6 +14,13 @@ const mocks = vi.hoisted(() => ({
         profiles: {
             default: 'telephony_ulaw_8k',
             telephony_ulaw_8k: {
+                output_resampler: 'linear',
+                internal_rate_hz: 8000,
+                provider_pref: { output_sample_rate_hz: 8000 },
+                transport_out: { encoding: 'ulaw', sample_rate_hz: 8000 },
+            },
+            telephony_enhanced_8k: {
+                output_resampler: 'bandlimited',
                 internal_rate_hz: 8000,
                 provider_pref: { output_sample_rate_hz: 8000 },
                 transport_out: { encoding: 'ulaw', sample_rate_hz: 8000 },
@@ -61,6 +68,8 @@ describe('ProfilesPage audio contract safety', () => {
         render(<ProfilesPage />);
 
         expect(await screen.findByText('Provider Native · 8 kHz Wire')).toBeInTheDocument();
+        expect(screen.getByText('Enhanced Telephony')).toBeInTheDocument();
+        expect(screen.getByText('Alias-safe')).toBeInTheDocument();
         expect(screen.getByText('Experimental Wideband')).toBeInTheDocument();
         expect(await screen.findByText('Used By Agents')).toBeInTheDocument();
         expect(screen.getByText('Ava Demo')).toBeInTheDocument();

@@ -201,3 +201,13 @@ def test_invalid_environment_policy_fails_back_to_linear(
     monkeypatch.setenv(env_name, "not-a-mode")
     provider = factory()
     assert provider._output_resampler_mode == "linear"
+
+
+def test_elevenlabs_null_output_resampler_fails_closed(monkeypatch):
+    monkeypatch.delenv("AAVA_ELEVENLABS_OUTPUT_RESAMPLER", raising=False)
+    config = ElevenLabsAgentConfig(agent_id="agent-test", output_resampler=None)
+
+    provider = ElevenLabsAgentProvider(config, None)
+
+    assert provider._output_resampler_mode == "linear"
+    assert provider._output_resampler_source == "profile"

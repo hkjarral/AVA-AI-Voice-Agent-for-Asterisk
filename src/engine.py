@@ -56,7 +56,7 @@ from .logging_config import get_logger, configure_logging
 from .live_status_publisher import LiveStatusPublisher, live_status_component
 from .rtp_server import RTPServer
 from .audio.audiosocket_server import AudioSocketServer
-from .audio.resampler import resample_audio
+from .audio.resampler import resample_audio, resolve_output_resampler_policy
 from .providers.base import AIProviderInterface
 from .providers.deepgram import DeepgramProvider
 from .providers.local import LocalProvider
@@ -6012,7 +6012,7 @@ class Engine:
                     ok = await self.ari_client.record_bridge(
                         bridge_id,
                         name=rec_name,
-                        format="wav",
+                        recording_format="wav",
                         if_exists="overwrite",
                         max_duration_seconds=360,
                         max_silence_seconds=0,
@@ -14150,10 +14150,15 @@ class Engine:
                 greeting_source = "error"
             
             # Final pass: ensure greeting can safely reference template variables.
-            if greeting and self._pipeline_output_allowed(
-                call_id, session, stage="greeting-start"
-            ):
-                greeting = self._apply_prompt_template_substitution(greeting, session)
+            if greeting:
+                if not self._pipeline_output_allowed(
+                    call_id, session, stage="greeting-start"
+                ):
+                    greeting = ""
+                else:
+                    greeting = self._apply_prompt_template_substitution(
+                        greeting, session
+                    )
 
             # Bound pipeline greeting handoff just like monolithic providers.
             # This background watchdog still fires if a TTS async generator hangs
@@ -17382,6 +17387,39 @@ class Engine:
 
         return transport_fmt, transport_rate, remediation
 
+    def _apply_pipeline_output_resampler_policy(
+        self,
+        session: CallSession,
+        resolution: PipelineResolution,
+    ) -> None:
+        """Bind profile-driven output policy to a per-call pipeline."""
+        if resolution.tts_options.get("_output_resampler_resolved"):
+            return
+        transport = getattr(session, "transport_profile", None)
+        profile_mode = getattr(transport, "output_resampler", "linear")
+        pipeline_mode = resolution.tts_options.get("output_resampler", "inherit")
+        adapter = resolution.tts_adapter
+        provider_config = getattr(adapter, "_provider_defaults", None)
+        if provider_config is None:
+            provider_config = getattr(adapter, "_provider_config", None)
+        provider_mode = getattr(provider_config, "output_resampler", "inherit")
+        mode, source = resolve_output_resampler_policy(
+            profile_mode=profile_mode,
+            provider_mode=provider_mode,
+            pipeline_mode=pipeline_mode,
+        )
+        resolution.tts_options["output_resampler"] = mode
+        resolution.tts_options["output_resampler_source"] = source
+        resolution.tts_options["_output_resampler_resolved"] = True
+        logger.info(
+            "Pipeline output resampler policy resolved",
+            call_id=session.call_id,
+            pipeline=resolution.pipeline_name,
+            profile=getattr(transport, "profile_name", None),
+            mode=mode,
+            source=source,
+        )
+
     async def _assign_pipeline_to_session(
         self,
         session: CallSession,
@@ -17445,6 +17483,8 @@ class Engine:
                     session, pipeline_name, "pipeline resolution returned no result"
                 )
             return None
+
+        self._apply_pipeline_output_resampler_policy(session, resolution)
  
         component_summary = resolution.component_summary()
         updated = False
@@ -17614,6 +17654,55 @@ class Engine:
                     setattr(cfg, "target_sample_rate_hz", target_rate)
         except Exception:
             logger.debug("Failed applying provider overrides", call_id=session.call_id, exc_info=True)
+
+        # Resolve output downsampling for this call. Provider instances are
+        # call-owned, so concurrent Agents can safely select different profiles
+        # without mutating a shared provider template.
+        try:
+            transport = getattr(session, "transport_profile", None)
+            if transport and hasattr(provider, "_output_resampler_mode"):
+                provider_mode = (
+                    cfg.get("output_resampler", "inherit")
+                    if isinstance(cfg, dict)
+                    else getattr(cfg, "output_resampler", "inherit")
+                )
+                env_name = getattr(
+                    provider, "_output_resampler_environment_variable", None
+                )
+                mode, source = resolve_output_resampler_policy(
+                    profile_mode=getattr(transport, "output_resampler", "linear"),
+                    provider_mode=provider_mode,
+                    environment_mode=os.getenv(env_name) if env_name else None,
+                )
+                previous_mode = getattr(provider, "_output_resampler_mode", None)
+                provider._output_resampler_mode = mode
+                provider._output_resampler_source = source
+                if previous_mode != mode:
+                    for state_name in (
+                        "_output_resample_state",
+                        "_resample_state_out",
+                    ):
+                        if hasattr(provider, state_name):
+                            setattr(provider, state_name, None)
+                if hasattr(provider, "_output_resampler_logged"):
+                    provider._output_resampler_logged = False
+                logger.info(
+                    "Output resampler policy resolved",
+                    call_id=session.call_id,
+                    provider=getattr(session, "provider_name", None),
+                    profile=getattr(transport, "profile_name", None),
+                    mode=mode,
+                    source=source,
+                )
+        except Exception:
+            logger.warning(
+                "Failed resolving per-call output resampler; retaining compatibility mode",
+                call_id=session.call_id,
+                exc_info=True,
+            )
+            if hasattr(provider, "_output_resampler_mode"):
+                provider._output_resampler_mode = "linear"
+                provider._output_resampler_source = "resolution-error-fallback"
 
         # LocalProvider uses an explicit initial greeting helper.
         try:

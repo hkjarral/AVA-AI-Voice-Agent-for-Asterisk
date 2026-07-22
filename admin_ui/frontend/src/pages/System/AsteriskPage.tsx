@@ -69,7 +69,7 @@ const CONFIG_CHECK_LABELS: Record<string, { label: string; fixHint: string }> = 
     },
     recording_spool: {
         label: 'Diagnostic Recording Spool',
-        fixHint: 'Create the ARI recording directory with Asterisk ownership:\n\nsudo install -d -o asterisk -g asterisk -m 0770 /var/spool/asterisk/recording',
+        fixHint: 'Create the resolved ARI recording path shown in Details with Asterisk ownership:\n\nsudo install -d -o asterisk -g asterisk -m 0770 <resolved-recording-path>',
     },
 };
 

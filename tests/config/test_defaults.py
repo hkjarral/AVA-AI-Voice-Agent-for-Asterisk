@@ -281,7 +281,7 @@ class TestApplyDiagnosticDefaults:
         assert streaming['diag_enable_taps'] is False
         assert streaming['diag_pre_secs'] == 1
         assert streaming['diag_post_secs'] == 1
-        assert streaming['diag_out_dir'] == '/tmp/ai-engine-taps'
+        assert streaming['diag_out_dir'] == '/app/data/diagnostics/audio-taps'
         assert streaming['logging_level'] == 'info'
     
     def test_env_overrides_egress_swap_mode(self, monkeypatch):

@@ -120,6 +120,18 @@ or unreadable. There is no live YAML persona fallback in v7.4.
 
 Audio profiles control the call’s negotiated sample rates/encodings (telephony wire format, provider input/output format, and internal pacing). They are defined under `profiles:` in `config/ai-agent.yaml`.
 
+The shipped `telephony_ulaw_8k` profile retains compatibility downsampling.
+`telephony_enhanced_8k` is an opt-in profile with the same stable 8 kHz wire
+contract plus alias-safe provider-output downsampling. It reduces sibilant hiss
+when a provider emits 16 or 24 kHz PCM; native 8 kHz output is unchanged. To
+roll back a test, assign the Agent back to `telephony_ulaw_8k`.
+
+The profile field is `output_resampler: linear | bandlimited`. Provider and
+pipeline fields default to `inherit`. Narrow overrides resolve in this order:
+full-agent environment override, pipeline override, provider override, audio
+profile, then the compatibility default. Existing profiles without this field
+continue to use `linear`.
+
 Highest priority first:
 
 1. **Dialplan override**: `AI_AUDIO_PROFILE` (if set)

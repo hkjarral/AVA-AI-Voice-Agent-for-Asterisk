@@ -265,6 +265,13 @@ def test_low_water_grace_does_not_rearm_after_expiry_without_audio():
     assert "low_water_deadline" not in info
 
 
+def test_interrupted_end_reason_requires_known_exact_value():
+    assert StreamingPlaybackManager._is_interrupted_end_reason("barge-in")
+    assert StreamingPlaybackManager._is_interrupted_end_reason("cancelled")
+    assert not StreamingPlaybackManager._is_interrupted_end_reason(
+        "generic-task-cancellation-error"
+    )
+
 def test_low_water_expiry_resets_when_a_full_frame_arrives():
     mgr = make_manager(provider_grace_ms=200)
     call_id = "test-call-resumed-audio"

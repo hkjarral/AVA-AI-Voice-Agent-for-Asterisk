@@ -169,6 +169,7 @@ def normalize_profiles(config_data: Dict[str, Any]) -> None:
     # Inject default telephony profile if missing
     if 'telephony_ulaw_8k' not in profiles_block:
         profiles_block['telephony_ulaw_8k'] = {
+            'output_resampler': 'linear',
             'internal_rate_hz': 8000,
             'transport_out': {'encoding': 'ulaw', 'sample_rate_hz': 8000},
             'provider_pref': {
@@ -177,6 +178,24 @@ def normalize_profiles(config_data: Dict[str, Any]) -> None:
                 'preferred_chunk_ms': 20,
             },
             'idle_cutoff_ms': 1200,
+        }
+
+    # Opt-in enhanced profile: same stable 8 kHz telephony contract, with
+    # alias-safe downsampling when a provider emits 16/24 kHz audio. Existing
+    # profiles remain untouched so upgrades are backward compatible.
+    if 'telephony_enhanced_8k' not in profiles_block:
+        profiles_block['telephony_enhanced_8k'] = {
+            'output_resampler': 'bandlimited',
+            'internal_rate_hz': 8000,
+            'transport_out': {'encoding': 'ulaw', 'sample_rate_hz': 8000},
+            'provider_pref': {
+                'input_encoding': 'mulaw',
+                'input_sample_rate_hz': 8000,
+                'output_encoding': 'mulaw',
+                'output_sample_rate_hz': 8000,
+            },
+            'chunk_ms': 'auto',
+            'idle_cutoff_ms': 800,
         }
     
     # Provide default selector if not present

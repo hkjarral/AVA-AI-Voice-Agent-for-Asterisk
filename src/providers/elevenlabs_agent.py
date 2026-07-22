@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import audioop
-from ..audio.resampler import resample_audio
+from ..audio.resampler import resample_audio, resolve_output_resampler_policy
 import struct
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -102,17 +102,23 @@ class ElevenLabsAgentProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         # Audio resampling state
         self._resample_state_in = None  # For input resampling
         self._resample_state_out = None  # For output resampling
-        configured_output_resampler = os.getenv(
-            "AAVA_ELEVENLABS_OUTPUT_RESAMPLER",
-            getattr(config, "output_resampler", "linear"),
-        ).strip().lower()
-        if configured_output_resampler not in ("linear", "bandlimited"):
-            logger.warning(
-                "Invalid ElevenLabs output resampler %r; using compatibility default",
-                configured_output_resampler,
+        self._output_resampler_environment_variable = "AAVA_ELEVENLABS_OUTPUT_RESAMPLER"
+        configured_output_resampler, output_resampler_source = (
+            resolve_output_resampler_policy(
+                profile_mode="linear",
+                provider_mode=getattr(config, "output_resampler", "inherit"),
+                environment_mode=os.getenv(
+                    self._output_resampler_environment_variable
+                ),
             )
-            configured_output_resampler = "linear"
+        )
+        if output_resampler_source.endswith("invalid-fallback"):
+            logger.warning(
+                "Invalid ElevenLabs output resampler source %r; using compatibility default",
+                output_resampler_source,
+            )
         self._output_resampler_mode = configured_output_resampler
+        self._output_resampler_source = output_resampler_source
         self._output_resampler_logged = False
         
         # Turn latency tracking (Milestone 21 - Call History)

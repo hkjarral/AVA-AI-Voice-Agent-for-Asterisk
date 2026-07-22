@@ -50,6 +50,7 @@ from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
     resample_audio,
+    resolve_output_resampler_policy,
 )
 from ..config import GoogleProviderConfig
 from src.tools.telephony.hangup_policy import normalize_hangup_policy
@@ -230,18 +231,24 @@ class GoogleLiveProvider(AIProviderInterface):
         # Golden Baseline: Simple input buffer for 20ms chunking
         self._input_buffer = bytearray()
         self._output_resample_state: Optional[tuple] = None
-        configured_output_resampler = os.getenv(
-            "AAVA_GOOGLE_OUTPUT_RESAMPLER",
-            getattr(config, "output_resampler", "linear"),
-        ).strip().lower()
-        if configured_output_resampler not in ("linear", "bandlimited"):
+        self._output_resampler_environment_variable = "AAVA_GOOGLE_OUTPUT_RESAMPLER"
+        configured_output_resampler, output_resampler_source = (
+            resolve_output_resampler_policy(
+                profile_mode="linear",
+                provider_mode=getattr(config, "output_resampler", "inherit"),
+                environment_mode=os.getenv(
+                    self._output_resampler_environment_variable
+                ),
+            )
+        )
+        if output_resampler_source.endswith("invalid-fallback"):
             logger.warning(
                 "Invalid Google output resampler; using compatibility default",
-                configured=configured_output_resampler,
+                source=output_resampler_source,
                 fallback="linear",
             )
-            configured_output_resampler = "linear"
         self._output_resampler_mode = configured_output_resampler
+        self._output_resampler_source = output_resampler_source
         self._output_resampler_logged = False
         
         # Metrics tracking

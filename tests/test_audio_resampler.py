@@ -9,7 +9,52 @@ from src.audio import (
     mulaw_to_pcm16le,
     pcm16le_to_mulaw,
     resample_audio,
+    resolve_output_resampler_policy,
 )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, ("linear", "profile")),
+        ({"profile_mode": "bandlimited"}, ("bandlimited", "profile")),
+        (
+            {"profile_mode": "bandlimited", "provider_mode": "linear"},
+            ("linear", "provider"),
+        ),
+        (
+            {
+                "profile_mode": "linear",
+                "provider_mode": "bandlimited",
+                "pipeline_mode": "linear",
+            },
+            ("linear", "pipeline"),
+        ),
+        (
+            {
+                "profile_mode": "linear",
+                "provider_mode": "linear",
+                "pipeline_mode": "linear",
+                "environment_mode": "bandlimited",
+            },
+            ("bandlimited", "environment"),
+        ),
+        (
+            {
+                "profile_mode": "bandlimited",
+                "provider_mode": "inherit",
+                "pipeline_mode": "inherit",
+            },
+            ("bandlimited", "profile"),
+        ),
+        (
+            {"profile_mode": "bandlimited", "environment_mode": "invalid"},
+            ("linear", "environment-invalid-fallback"),
+        ),
+    ],
+)
+def test_output_resampler_policy_precedence(kwargs, expected):
+    assert resolve_output_resampler_policy(**kwargs) == expected
 
 
 def test_mulaw_round_trip_identity():

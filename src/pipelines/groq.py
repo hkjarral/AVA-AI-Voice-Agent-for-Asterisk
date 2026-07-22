@@ -22,7 +22,11 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Tuple
 
 import aiohttp
 
-from ..audio import convert_pcm16le_to_target_format, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, GroqSTTProviderConfig, GroqTTSProviderConfig
 from ..logging_config import get_logger
 from .base import STTComponent, TTSComponent
@@ -512,7 +516,7 @@ class GroqTTSAdapter(TTSComponent):
             ),
         }
 
-        return {
+        options = {
             "api_key": runtime_options.get("api_key", self._pipeline_defaults.get("api_key", self._provider_defaults.api_key)),
             "tts_base_url": runtime_options.get(
                 "tts_base_url",
@@ -547,6 +551,10 @@ class GroqTTSAdapter(TTSComponent):
                 ),
             ),
         }
+        options["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=options.get("output_resampler")
+        )[0]
+        return options
 
 
 __all__ = ["GroqSTTAdapter", "GroqTTSAdapter"]

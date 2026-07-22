@@ -376,12 +376,14 @@ const ElevenLabsProviderForm: React.FC<ElevenLabsProviderFormProps> = ({ config,
                         TTS output sample rate. 16000 Hz or 22050 Hz typical.
                     </p>
                 </div>
-                <OutputResamplerField
-                    value={config.output_resampler}
-                    sourceRate={config.output_sample_rate_hz || 16000}
-                    targetRate={config.target_sample_rate_hz || 8000}
-                    onChange={(value) => handleChange('output_resampler', value)}
-                />
+                <div className="md:col-span-2">
+                    <OutputResamplerField
+                        value={config.output_resampler}
+                        sourceRate={config.output_sample_rate_hz || 16000}
+                        targetRate={config.target_sample_rate_hz || 8000}
+                        onChange={(value) => handleChange('output_resampler', value)}
+                    />
+                </div>
             </div>
 
             <div className="flex items-center space-x-2">

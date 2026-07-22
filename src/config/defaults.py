@@ -124,7 +124,7 @@ def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
     - DIAG_ENABLE_TAPS: Enable diagnostic audio taps (default: false)
     - DIAG_TAP_PRE_SECS: Pre-event tap duration (default: 1)
     - DIAG_TAP_POST_SECS: Post-event tap duration (default: 1)
-    - DIAG_TAP_OUTPUT_DIR: Tap output directory (default: /tmp/ai-engine-taps)
+    - DIAG_TAP_OUTPUT_DIR: Tap output directory (default: /app/data/diagnostics/audio-taps)
     - STREAMING_LOG_LEVEL: Streaming log verbosity (default: info)
     
     Args:
@@ -160,7 +160,7 @@ def apply_diagnostic_defaults(config_data: Dict[str, Any]) -> None:
     streaming_cfg.setdefault('diag_enable_taps', False)
     streaming_cfg.setdefault('diag_pre_secs', 1)
     streaming_cfg.setdefault('diag_post_secs', 1)
-    streaming_cfg.setdefault('diag_out_dir', '/tmp/ai-engine-taps')
+    streaming_cfg.setdefault('diag_out_dir', '/app/data/diagnostics/audio-taps')
     if 'DIAG_ENABLE_TAPS' in os.environ:
         env_taps = os.environ['DIAG_ENABLE_TAPS']
         streaming_cfg['diag_enable_taps'] = env_taps.lower() in ('true', '1', 'yes')

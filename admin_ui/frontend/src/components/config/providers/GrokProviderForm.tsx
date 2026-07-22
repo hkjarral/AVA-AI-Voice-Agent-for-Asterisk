@@ -441,12 +441,14 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                             <code>8000</code> for telephony. Higher rates only if AudioSocket is configured wideband.
                         </p>
                     </div>
-                    <OutputResamplerField
-                        value={config.output_resampler}
-                        sourceRate={config.output_sample_rate_hz || 24000}
-                        targetRate={config.target_sample_rate_hz || 8000}
-                        onChange={(value) => handleChange('output_resampler', value)}
-                    />
+                    <div className="md:col-span-2">
+                        <OutputResamplerField
+                            value={config.output_resampler}
+                            sourceRate={config.output_sample_rate_hz || 24000}
+                            targetRate={config.target_sample_rate_hz || 8000}
+                            onChange={(value) => handleChange('output_resampler', value)}
+                        />
+                    </div>
                 </div>
             </div>
 

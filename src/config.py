@@ -203,7 +203,7 @@ class DeepgramProviderConfig(BaseModel):
     continuous_input: bool = Field(default=True)
     output_encoding: str = Field(default="mulaw")
     output_sample_rate_hz: int = Field(default=8000)
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     allow_output_autodetect: bool = Field(default=False)
     base_url: str = Field(default="https://api.deepgram.com")
     tts_voice: Optional[str] = None
@@ -278,7 +278,7 @@ class OpenAIProviderConfig(BaseModel):
     input_sample_rate_hz: int = Field(default=24000)
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     chunk_size_ms: int = Field(default=20)
     response_timeout_sec: float = Field(default=5.0)
     # Provider-specific farewell hangup delay (overrides global)
@@ -387,7 +387,7 @@ class GoogleProviderConfig(BaseModel):
     input_gain_max_db: float = Field(default=0.0)
     output_encoding: str = Field(default="linear16")  # Gemini Live outputs PCM16
     output_sample_rate_hz: int = Field(default=24000)  # Gemini Live native output rate
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     target_encoding: str = Field(default="ulaw")  # Target wire format for playback
     target_sample_rate_hz: int = Field(default=8000)  # Target wire sample rate
     # Google Live WebSocket endpoint (monolithic agent)
@@ -455,7 +455,7 @@ class GroqTTSProviderConfig(BaseModel):
     # Output format expected by downstream playback
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     chunk_size_ms: int = Field(default=20)
     request_timeout_sec: float = Field(default=15.0)
 
@@ -473,7 +473,7 @@ class ElevenLabsProviderConfig(BaseModel):
     base_url: str = Field(default="https://api.elevenlabs.io/v1")
     # Audio settings
     output_format: str = Field(default="ulaw_8000")  # ulaw_8000, mp3_44100, pcm_16000, etc.
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     # Voice settings
     stability: float = Field(default=0.5)
     similarity_boost: float = Field(default=0.75)
@@ -499,7 +499,7 @@ class CambAiProviderConfig(BaseModel):
     base_url: str = Field(default="https://client.camb.ai/apis")
     # Output format for streaming TTS
     output_format: str = Field(default="pcm_s16le")  # pcm_s16le for raw PCM
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     # Provider-specific farewell hangup delay (overrides global)
     farewell_hangup_delay_sec: Optional[float] = None
 
@@ -606,7 +606,7 @@ class AzureTTSProviderConfig(BaseModel):
     # Downstream encoding the engine expects (ulaw | pcm | slin16)
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     chunk_size_ms: int = Field(default=20)
     request_timeout_sec: float = Field(default=15.0)
     # Streaming: read response in chunks as they arrive instead of waiting for
@@ -706,7 +706,7 @@ class OpenAIRealtimeProviderConfig(BaseModel):
     input_gain_max_db: float = Field(default=0.0)
     output_encoding: str = Field(default="linear16")  # Provider emits PCM16 frames
     output_sample_rate_hz: int = Field(default=24000)
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     target_encoding: str = Field(default="ulaw")  # Downstream AudioSocket expectations
     target_sample_rate_hz: int = Field(default=8000)
     response_modalities: List[str] = Field(default_factory=lambda: ["text", "audio"])
@@ -759,7 +759,7 @@ class GrokProviderConfig(BaseModel):
     provider_input_sample_rate_hz: int = Field(default=8000)
     output_encoding: str = Field(default="linear16")  # xAI emits PCM16 in practice
     output_sample_rate_hz: int = Field(default=24000)  # xAI's actual native output rate
-    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
+    output_resampler: Literal["inherit", "linear", "bandlimited"] = Field(default="inherit")
     target_encoding: str = Field(default="ulaw")  # AudioSocket egress format
     target_sample_rate_hz: int = Field(default=8000)
     input_gain_target_rms: int = Field(default=0)
@@ -960,7 +960,9 @@ class StreamingConfig(BaseModel):
     diag_enable_taps: bool = Field(default=False)
     diag_pre_secs: int = Field(default=1, ge=0)
     diag_post_secs: int = Field(default=1, ge=0)
-    diag_out_dir: str = Field(default="/tmp/ai-engine-taps", min_length=1)
+    diag_out_dir: str = Field(
+        default="/app/data/diagnostics/audio-taps", min_length=1
+    )
     # Overlap LLM token streaming with TTS synthesis in modular pipelines.
     # Streams tokens → splits into sentences → synthesizes each sentence concurrently.
     pipeline_streaming_overlap: bool = Field(default=True)
@@ -1133,11 +1135,15 @@ class AppConfig(BaseModel):
     def _validate_audio_profile_contracts(self) -> "AppConfig":
         """Reject invalid audio-policy and Asterisk profile contracts."""
         allowed_resamplers = {"linear", "bandlimited"}
+        allowed_overrides = allowed_resamplers | {"inherit"}
 
-        def validate_resampler(location: str, value: Any) -> None:
-            if value not in allowed_resamplers:
+        def validate_resampler(
+            location: str, value: Any, *, allow_inherit: bool = False
+        ) -> None:
+            allowed = allowed_overrides if allow_inherit else allowed_resamplers
+            if value not in allowed:
                 raise ValueError(
-                    f"{location} must be 'linear' or 'bandlimited'; got {value!r}"
+                    f"{location} must be one of {sorted(allowed)!r}; got {value!r}"
                 )
 
         # ``providers`` remains intentionally open-ended for third-party
@@ -1148,6 +1154,7 @@ class AppConfig(BaseModel):
                 validate_resampler(
                     f"providers.{provider_name}.output_resampler",
                     provider_config.get("output_resampler"),
+                    allow_inherit=True,
                 )
 
         # Per-pipeline TTS options are the narrow rollback/canary override.
@@ -1158,6 +1165,7 @@ class AppConfig(BaseModel):
                 validate_resampler(
                     f"pipelines.{pipeline_name}.options.tts.output_resampler",
                     tts_options.get("output_resampler"),
+                    allow_inherit=True,
                 )
             if isinstance(tts_options, dict) and "streaming_overlap" in tts_options:
                 overlap_value = tts_options.get("streaming_overlap")
@@ -1226,6 +1234,11 @@ class AppConfig(BaseModel):
         for profile_name, raw_profile in self.profiles.items():
             if profile_name == "default" or not isinstance(raw_profile, dict):
                 continue
+            if "output_resampler" in raw_profile:
+                validate_resampler(
+                    f"profiles.{profile_name}.output_resampler",
+                    raw_profile.get("output_resampler"),
+                )
             validate_pair(profile_name, "transport_out", raw_profile.get("transport_out"))
             provider_pref = raw_profile.get("provider_pref")
             if isinstance(provider_pref, dict):

@@ -17,7 +17,11 @@ from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 import aiohttp
 
-from ..audio import resample_audio, pcm16le_to_mulaw
+from ..audio import (
+    resample_audio,
+    pcm16le_to_mulaw,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, CambAiProviderConfig
 from ..logging_config import get_logger
 from .base import TTSComponent
@@ -242,6 +246,9 @@ class CambAiTTSAdapter(TTSComponent):
             ),
         }
 
+        merged["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=merged.get("output_resampler")
+        )[0]
         return merged
 
     def _chunk_audio(self, audio: bytes, chunk_ms: int = 20) -> list:

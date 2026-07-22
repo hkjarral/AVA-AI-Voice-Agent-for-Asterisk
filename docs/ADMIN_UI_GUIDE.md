@@ -49,7 +49,7 @@ Configure full-agent providers and their settings (model, voice, API version, et
 Configure modular STT/LLM/TTS pipelines for mix-and-match provider combinations.
 
 #### Audio Profiles
-Transport and codec settings selected globally, by Agent, or with `AI_AUDIO_PROFILE`. Profiles like `telephony_ulaw_8k`, `openai_realtime_24k`, and `wideband_pcm_16k` control how audio is encoded and transmitted.
+Transport, codec, and output-downsampling settings selected globally, by Agent, or with `AI_AUDIO_PROFILE`. Use `telephony_ulaw_8k` for the compatibility baseline or opt an Agent into `telephony_enhanced_8k` for alias-safe 16/24 kHz-to-8 kHz downsampling. The Profiles page labels the enhanced profile and shows its effective downsampling mode; rollback is simply assigning the Agent back to `telephony_ulaw_8k`.
 
 #### Tools
 Enable/disable AI-powered actions (transfers, hangup, email, voicemail) and configure the global inventory. **Save & Apply** publishes built-in and managed HTTP tool changes to new calls without restarting the engine; active calls retain their captured generation.

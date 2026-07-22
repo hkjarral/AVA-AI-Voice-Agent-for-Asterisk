@@ -63,7 +63,7 @@ class ElevenLabsAgentConfig:
     # Audio output configuration (from ElevenLabs)
     output_encoding: str = "pcm16"
     output_sample_rate_hz: int = 16000  # ElevenLabs output
-    output_resampler: str = "linear"
+    output_resampler: str = "inherit"
     
     # Target format for telephony output
     target_encoding: str = "ulaw"
@@ -110,7 +110,7 @@ class ElevenLabsAgentConfig:
             provider_input_sample_rate_hz=data.get("provider_input_sample_rate_hz", 16000),
             output_encoding=data.get("output_encoding", "pcm16"),
             output_sample_rate_hz=data.get("output_sample_rate_hz", 16000),
-            output_resampler=data.get("output_resampler", "linear"),
+            output_resampler=data.get("output_resampler", "inherit"),
             target_encoding=data.get("target_encoding", "ulaw"),
             target_sample_rate_hz=data.get("target_sample_rate_hz", 8000),
             voice_id=data.get("voice_id", "21m00Tcm4TlvDq8ikWAM"),

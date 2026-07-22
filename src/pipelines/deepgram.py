@@ -20,7 +20,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import aiohttp
 import websockets
 
-from ..audio import convert_pcm16le_to_target_format, mulaw_to_pcm16le, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format,
+    mulaw_to_pcm16le,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, DeepgramProviderConfig
 from ..logging_config import get_logger
 from .base import STREAMING_STT_FORMAT_ALIASES, STTComponent, TTSComponent
@@ -756,6 +761,9 @@ class DeepgramTTSAdapter(TTSComponent):
             "encoding": source_cfg.get("encoding", "linear16"),
             "sample_rate": int(source_cfg.get("sample_rate", default_source_rate)),
         }
+        merged["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=merged.get("output_resampler")
+        )[0]
         return merged
 
     def _build_tts_request(

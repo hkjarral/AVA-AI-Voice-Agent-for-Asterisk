@@ -61,6 +61,7 @@ class AudioProfile:
     internal_rate_hz: int
     transport_out: Dict[str, Any]
     provider_pref: Dict[str, Any]
+    output_resampler: str = "linear"
     chunk_ms: str | int = "auto"
     idle_cutoff_ms: int = 1200
 
@@ -189,6 +190,8 @@ class TransportProfile:
     internal_rate: int
     chunk_ms: int
     idle_cutoff_ms: int
+    output_resampler: str = "linear"
+    output_resampler_source: str = "profile"
     context: Optional[str] = None
     remediation: Optional[str] = None
 
@@ -244,6 +247,7 @@ class TransportOrchestrator:
                     internal_rate_hz=profile_dict.get('internal_rate_hz', 8000),
                     transport_out=profile_dict.get('transport_out', {}),
                     provider_pref=profile_dict.get('provider_pref', {}),
+                    output_resampler=profile_dict.get('output_resampler', 'linear'),
                     chunk_ms=profile_dict.get('chunk_ms', 'auto'),
                     idle_cutoff_ms=profile_dict.get('idle_cutoff_ms', 1200),
                 )
@@ -595,6 +599,8 @@ class TransportOrchestrator:
             internal_rate=profile.internal_rate_hz,
             chunk_ms=chunk_ms,
             idle_cutoff_ms=profile.idle_cutoff_ms,
+            output_resampler=profile.output_resampler,
+            output_resampler_source=f"profile:{profile.name}",
             context=context_name,  # Propagate context for greeting/prompt injection
         )
         

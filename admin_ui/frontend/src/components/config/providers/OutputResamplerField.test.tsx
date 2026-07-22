@@ -8,7 +8,7 @@ import OutputResamplerField from './OutputResamplerField';
 
 
 describe('OutputResamplerField', () => {
-    it('defaults to compatibility mode and explains a no-op path', () => {
+    it('defaults to profile inheritance and explains a no-op path', () => {
         render(
             <OutputResamplerField
                 sourceRate={8000}
@@ -17,7 +17,8 @@ describe('OutputResamplerField', () => {
             />
         );
 
-        expect(screen.getByRole('combobox')).toHaveValue('linear');
+        expect(screen.getByRole('combobox')).toHaveValue('inherit');
+        expect(screen.getByRole('option', { name: /inherit from audio profile/i })).toBeInTheDocument();
         expect(screen.getByText(/currently a no-op/i)).toBeInTheDocument();
     });
 

@@ -149,6 +149,7 @@ const ProfilesPage = () => {
 	const handleAddProfile = () => {
 		setEditingProfile('new_profile');
 		setProfileForm({
+			output_resampler: 'linear',
 			chunk_ms: 'auto',
 			idle_cutoff_ms: 600,
 			internal_rate_hz: 8000,
@@ -236,10 +237,11 @@ const ProfilesPage = () => {
 
     const getAgentsUsingProfile = (profileName: string) => agents
         .filter((agent) => agent?.audio_profile === profileName)
-        .map((agent) => agent?.name || agent?.slug || agent?.id)
+        .map((agent) => agent?.display_name || agent?.name || agent?.slug || agent?.id)
         .filter(Boolean);
 
-    const getProfileSupport = (profileName: string, profile: any): 'ga' | 'experimental' | 'provider-native' | 'custom' => {
+    const getProfileSupport = (profileName: string, profile: any): 'ga' | 'enhanced' | 'experimental' | 'provider-native' | 'custom' => {
+        if (profileName === 'telephony_enhanced_8k') return 'enhanced';
         if (profileName === 'telephony_ulaw_8k' || profileName === 'telephony_responsive') return 'ga';
         const wireRate = Number(profile?.transport_out?.sample_rate_hz || 0);
         if (wireRate > 8000) return 'experimental';
@@ -253,6 +255,7 @@ const ProfilesPage = () => {
         const descriptions: Record<string, string> = {
             'telephony_responsive': 'GA 8 kHz telephony transport with adaptive timing',
             'telephony_ulaw_8k': 'GA 8 kHz telephony transport matching G.711 μ-law',
+            'telephony_enhanced_8k': 'Opt-in 8 kHz telephony with alias-safe downsampling for clearer 16/24 kHz provider audio',
             'wideband_pcm_16k': 'Experimental 16 kHz wire transport; requires an end-to-end wideband call path',
             'openai_realtime_24k': 'Experimental profile with 24 kHz provider-native processing and an 8 kHz Asterisk wire leg'
         };
@@ -470,12 +473,16 @@ const ProfilesPage = () => {
                                                     'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold',
                                                     support === 'ga'
                                                         ? 'bg-green-500/15 text-green-700 dark:text-green-300'
+                                                        : support === 'enhanced'
+                                                            ? 'bg-blue-500/15 text-blue-700 dark:text-blue-300'
                                                         : support === 'experimental' || support === 'provider-native'
                                                             ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
                                                             : 'bg-secondary text-muted-foreground'
                                                 ].join(' ')}>
                                                     {support === 'ga'
                                                         ? 'GA Telephony'
+                                                        : support === 'enhanced'
+                                                            ? 'Enhanced Telephony'
                                                         : support === 'experimental'
                                                             ? 'Experimental Wideband'
                                                             : support === 'provider-native'
@@ -533,7 +540,7 @@ const ProfilesPage = () => {
 	                                    </div>
 	                                </div>
 
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
                                     <div className="bg-secondary/30 p-2 rounded-md">
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Internal Rate</span>
                                         <p className="text-foreground font-mono">{profile.internal_rate_hz || 8000} Hz</p>
@@ -550,14 +557,20 @@ const ProfilesPage = () => {
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Transport Out</span>
                                         <p className="text-foreground font-mono">{profile.transport_out?.encoding || 'slin'}</p>
                                     </div>
+                                    <div className="bg-secondary/30 p-2 rounded-md">
+                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block">Downsampling</span>
+                                        <p className="text-foreground font-mono">
+                                            {profile.output_resampler === 'bandlimited' ? 'Alias-safe' : 'Compatibility'}
+                                        </p>
+                                    </div>
                                 </div>
 
                                 {agentsUsing.length > 0 && (
                                     <div className="mt-3">
                                         <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block mb-2">Used By Agents</span>
                                         <div className="flex flex-wrap gap-1.5">
-                                            {agentsUsing.map((agent) => (
-                                                <span key={agent} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
+                                            {agentsUsing.map((agent, index) => (
+                                                <span key={`${agent}-${index}`} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
                                                     {agent}
                                                 </span>
                                             ))}
@@ -654,6 +667,16 @@ const ProfilesPage = () => {
                                 value={profileForm.internal_rate_hz || 8000}
                                 onChange={(e) => updateProfileField('internal_rate_hz', parseInt(e.target.value))}
                                 tooltip="Processing sample rate (8000, 16000, 24000)."
+                            />
+                            <FormSelect
+                                label="Output Downsampling"
+                                value={profileForm.output_resampler || 'linear'}
+                                onChange={(e) => updateProfileField('output_resampler', e.target.value)}
+                                options={[
+                                    { value: 'linear', label: 'Compatibility' },
+                                    { value: 'bandlimited', label: 'Alias-safe' }
+                                ]}
+                                tooltip="Controls conversion from provider-native 16/24 kHz audio to the lower Asterisk rate. Alias-safe removes frequencies that cannot fit in 8 kHz telephony and reduces sibilant hiss."
                             />
                         </div>
                     </div>

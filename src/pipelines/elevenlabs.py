@@ -7,8 +7,11 @@ API Reference: https://elevenlabs.io/docs/api-reference/text-to-speech
 """
 from __future__ import annotations
 
-import audioop
-from ..audio.resampler import resample_audio
+from ..audio.resampler import (
+    pcm16le_to_mulaw,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 import time
 import uuid
 from typing import Any, AsyncIterator, Callable, Dict, Optional
@@ -174,13 +177,13 @@ class ElevenLabsTTSAdapter(TTSComponent):
                     resampled, _ = resample_audio(
                         raw_audio, 16000, 8000, mode=merged["output_resampler"]
                     )
-                    converted = audioop.lin2ulaw(resampled, 2)
+                    converted = pcm16le_to_mulaw(resampled)
                 elif output_format == "pcm_24000":
                     # Convert PCM16 24kHz to μ-law 8kHz
                     resampled, _ = resample_audio(
                         raw_audio, 24000, 8000, mode=merged["output_resampler"]
                     )
-                    converted = audioop.lin2ulaw(resampled, 2)
+                    converted = pcm16le_to_mulaw(resampled)
                 else:
                     # For other formats, assume it's already usable or skip conversion
                     logger.warning(
@@ -253,7 +256,9 @@ class ElevenLabsTTSAdapter(TTSComponent):
                 ),
             ),
         }
-        
+        merged["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=merged.get("output_resampler")
+        )[0]
         return merged
 
     def _chunk_audio(self, audio: bytes, chunk_ms: int = 20) -> list:

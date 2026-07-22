@@ -82,7 +82,9 @@ Response:
 {
   "type": "mode_ready",
   "mode": "stt",
-  "call_id": "1234-5678"
+  "call_id": "1234-5678",
+  "segment_energy_threshold": null,
+  "segment_silence_ms": null
 }
 ```
 
@@ -95,6 +97,8 @@ Notes:
   Omit either field to inherit the Local AI Server environment/default. These
   controls apply only to Whisper-family utterance segmentation and let one
   pipeline be tuned or rolled back without changing every local pipeline.
+- `mode_ready` echoes the effective per-session segmenter fields. `null` means
+  that field was reset and the Local AI Server environment/default applies.
 - If you never call `set_mode`, the default is `full`.
 
 ---

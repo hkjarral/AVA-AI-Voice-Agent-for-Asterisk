@@ -90,6 +90,9 @@ describe('modular STT audio contract', () => {
         };
         expect(normalizeSttOptions('local_stt', source)).toMatchObject(source);
         expect(normalizeSttOptions('deepgram_stt', source)).not.toHaveProperty(
+            'segment_energy_threshold'
+        );
+        expect(normalizeSttOptions('deepgram_stt', source)).not.toHaveProperty(
             'segment_silence_ms'
         );
     });

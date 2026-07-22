@@ -226,6 +226,11 @@ class TestNormalizeProfiles:
         assert profile['internal_rate_hz'] == 8000
         assert profile['transport_out']['encoding'] == 'ulaw'
         assert profile['idle_cutoff_ms'] == 1200
+        assert profile['output_resampler'] == 'linear'
+
+        enhanced = config_data['profiles']['telephony_enhanced_8k']
+        assert enhanced['transport_out'] == {'encoding': 'ulaw', 'sample_rate_hz': 8000}
+        assert enhanced['output_resampler'] == 'bandlimited'
     
     def test_sets_default_profile_selector(self):
         """Should set default profile selector if missing."""
@@ -248,6 +253,7 @@ class TestNormalizeProfiles:
         # Should preserve custom profile and add default
         assert 'custom_profile' in config_data['profiles']
         assert 'telephony_ulaw_8k' in config_data['profiles']
+        assert 'telephony_enhanced_8k' in config_data['profiles']
     
     def test_preserves_existing_default_selector(self):
         """Should preserve existing default selector."""

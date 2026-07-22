@@ -2182,7 +2182,18 @@ check_asterisk_config() {
     fi
 
     # --- ARI diagnostic recording spool ---
-    local recording_spool="/var/spool/asterisk/recording"
+    local astspooldir="/var/spool/asterisk"
+    local asterisk_conf="${ASTERISK_DIR:-/etc/asterisk}/asterisk.conf"
+    local configured_astspooldir=""
+    if [ -r "$asterisk_conf" ]; then
+        configured_astspooldir="$(sed -nE 's~^[[:space:]]*astspooldir[[:space:]]*(=>|=)[[:space:]]*([^;#]+).*~\2~p' "$asterisk_conf" | head -n 1)"
+        configured_astspooldir="${configured_astspooldir%${configured_astspooldir##*[![:space:]]}}"
+        configured_astspooldir="${configured_astspooldir#${configured_astspooldir%%[![:space:]]*}}"
+        if [ -n "$configured_astspooldir" ]; then
+            astspooldir="$configured_astspooldir"
+        fi
+    fi
+    local recording_spool="${astspooldir%/}/recording"
     local recording_spool_ok=false
     local recording_spool_detail="missing or not writable by Asterisk"
     local ast_uid="" ast_gid=""
@@ -2259,7 +2270,14 @@ _check_ast_module() {
     local output
     resolve_asterisk_binary || return 1
     output=$("$ASTERISK_BIN" -rx "module show like $mod_name" 2>/dev/null || true)
-    echo "$output" | grep -qiE "$mod_name.*Running"
+    echo "$output" | awk -v expected="${mod_name}.so" '
+        tolower($1) == tolower(expected) {
+            for (i = 2; i <= NF; i++) {
+                if (tolower($i) == "running") found = 1
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    '
 }
 
 # Helper: write the JSON manifest to data/asterisk_status.json

@@ -296,6 +296,59 @@ async def test_pipeline_hanging_greeting_stops_connection_audio_after_timeout(mo
 
 
 @pytest.mark.asyncio
+async def test_pipeline_greeting_is_not_synthesized_after_cleanup_gate(monkeypatch):
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {
+            "initial_greeting": "hello",
+            "prompt": "You are helpful",
+            "model": "gpt-4o",
+        },
+        "pipelines": {"gated": {}},
+        "active_pipeline": "gated",
+        "audio_transport": "audiosocket",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    tts = _RecordingTTS()
+    resolution = _StubResolution(tts_adapter=tts)
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+    original_gate = engine._pipeline_output_allowed
+
+    def gate(call_id, session, *, stage):
+        if stage == "greeting-start":
+            session.cleanup_in_progress = True
+        return original_gate(call_id, session, stage=stage)
+
+    monkeypatch.setattr(engine, "_pipeline_output_allowed", gate)
+
+    from src.core.models import CallSession
+
+    call_id = "call-greeting-cleanup-gate"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "gated"
+    await engine.session_store.upsert_call(session)
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.sleep(0.05)
+
+    assert not tts.started.is_set()
+    await engine._cleanup_call(call_id)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_runner_lifecycle(monkeypatch):
     # Minimal AppConfig, orchestrator presence is enough; we will stub its output
     config_data = {

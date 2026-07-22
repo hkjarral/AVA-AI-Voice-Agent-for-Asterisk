@@ -161,9 +161,9 @@ const OUTPUT_RESAMPLER_FIELD: SubtypeField = {
   label: 'Output Downsampling',
   type: 'combobox',
   required: false,
-  default: 'linear',
-  suggestions: ['linear', 'bandlimited'],
-  tooltip: 'linear preserves current behavior; bandlimited removes out-of-band energy before 16/24 kHz audio is reduced to 8 kHz telephony.',
+  default: 'inherit',
+  suggestions: ['inherit', 'linear', 'bandlimited'],
+  tooltip: 'inherit uses the Agent Audio Profile; linear preserves current behavior; bandlimited removes out-of-band energy before 16/24 kHz audio is reduced to 8 kHz telephony.',
 };
 
 const TTS_SUBTYPES: ProviderSubtype[] = [

@@ -732,7 +732,7 @@ class ARIClient:
         self,
         bridge_id: str,
         name: str,
-        format: str = "wav",
+        recording_format: str = "wav",
         if_exists: str = "overwrite",
         max_duration_seconds: int = 180,
         max_silence_seconds: int = 0,
@@ -750,12 +750,12 @@ class ARIClient:
                 "Starting ARI bridge recording",
                 bridge_id=bridge_id,
                 name=name,
-                format=format,
+                format=recording_format,
                 ifExists=if_exists,
             )
             payload = {
                 "name": str(name),
-                "format": str(format),
+                "format": str(recording_format),
                 "ifExists": str(if_exists),
                 "maxDurationSeconds": str(int(max_duration_seconds)),
                 "maxSilenceSeconds": str(int(max_silence_seconds)),

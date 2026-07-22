@@ -136,6 +136,7 @@ pipelines:
 profiles:
   default: telephony_ulaw_8k
   openai_realtime_24k:
+    output_resampler: linear
     chunk_ms: 20
     idle_cutoff_ms: 0
     internal_rate_hz: 24000
@@ -148,6 +149,7 @@ profiles:
       encoding: slin
       sample_rate_hz: 8000
   telephony_responsive:
+    output_resampler: linear
     chunk_ms: auto
     idle_cutoff_ms: 600
     internal_rate_hz: 8000
@@ -160,6 +162,20 @@ profiles:
       encoding: slin
       sample_rate_hz: 8000
   telephony_ulaw_8k:
+    output_resampler: linear
+    chunk_ms: auto
+    idle_cutoff_ms: 800
+    internal_rate_hz: 8000
+    provider_pref:
+      input_encoding: mulaw
+      input_sample_rate_hz: 8000
+      output_encoding: mulaw
+      output_sample_rate_hz: 8000
+    transport_out:
+      encoding: ulaw
+      sample_rate_hz: 8000
+  telephony_enhanced_8k:
+    output_resampler: bandlimited
     chunk_ms: auto
     idle_cutoff_ms: 800
     internal_rate_hz: 8000
@@ -172,6 +188,7 @@ profiles:
       encoding: ulaw
       sample_rate_hz: 8000
   wideband_pcm_16k:
+    output_resampler: linear
     chunk_ms: auto
     idle_cutoff_ms: 1200
     internal_rate_hz: 16000
@@ -536,7 +553,7 @@ streaming:
   connection_timeout_ms: 120000
   continuous_stream: true
   diag_enable_taps: true
-  diag_out_dir: /tmp/ai-engine-taps
+  diag_out_dir: /app/data/diagnostics/audio-taps
   diag_post_secs: 1
   diag_pre_secs: 1
   empty_backoff_ticks_max: 5

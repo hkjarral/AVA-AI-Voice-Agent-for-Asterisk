@@ -1,5 +1,6 @@
 import pytest
 from pydantic import ValidationError
+from types import SimpleNamespace
 
 from src.config import (
     AppConfig,
@@ -18,6 +19,9 @@ from src.pipelines.elevenlabs import ElevenLabsTTSAdapter
 from src.pipelines.google import GoogleTTSAdapter
 from src.pipelines.groq import GroqTTSAdapter
 from src.pipelines.openai import OpenAITTSAdapter
+from src.core.models import CallSession
+from src.core.transport_orchestrator import AudioProfile, TransportOrchestrator
+from src.engine import Engine
 
 
 def _app_config() -> AppConfig:
@@ -35,6 +39,7 @@ def test_audio_profile_accepts_ga_and_experimental_contracts():
     data["profiles"] = {
         "default": "telephony_ulaw_8k",
         "telephony_ulaw_8k": {
+            "output_resampler": "linear",
             "provider_pref": {
                 "input_encoding": "mulaw",
                 "input_sample_rate_hz": 8000,
@@ -44,6 +49,7 @@ def test_audio_profile_accepts_ga_and_experimental_contracts():
             "transport_out": {"encoding": "ulaw", "sample_rate_hz": 8000},
         },
         "wideband_pcm_16k": {
+            "output_resampler": "linear",
             "provider_pref": {
                 "input_encoding": "linear16",
                 "input_sample_rate_hz": 16000,
@@ -54,6 +60,23 @@ def test_audio_profile_accepts_ga_and_experimental_contracts():
         },
     }
     assert AppConfig(**data).profiles["default"] == "telephony_ulaw_8k"
+
+
+def test_audio_profile_accepts_enhanced_policy_but_not_inherit():
+    config = _app_config()
+    data = config.model_dump()
+    data["profiles"] = {
+        "default": "telephony_enhanced_8k",
+        "telephony_enhanced_8k": {"output_resampler": "bandlimited"},
+    }
+    assert (
+        AppConfig(**data).profiles["telephony_enhanced_8k"]["output_resampler"]
+        == "bandlimited"
+    )
+
+    data["profiles"]["telephony_enhanced_8k"]["output_resampler"] = "inherit"
+    with pytest.raises(ValidationError, match=r"profiles\.telephony_enhanced_8k\.output_resampler"):
+        AppConfig(**data)
 
 
 def test_audio_profile_rejects_impossible_telephony_encoding_rate_pair():
@@ -104,6 +127,21 @@ def test_app_config_rejects_unknown_pipeline_output_resampler():
         match=r"pipelines\.canary\.options\.tts\.output_resampler",
     ):
         AppConfig(**data)
+
+
+def test_provider_and_pipeline_accept_inherit_output_resampler():
+    config = _app_config()
+    data = config.model_dump()
+    data["providers"]["local"]["output_resampler"] = "inherit"
+    data["pipelines"] = {
+        "canary": {
+            "stt": "deepgram_stt",
+            "llm": "openai_llm",
+            "tts": "openai_tts",
+            "options": {"tts": {"output_resampler": "inherit"}},
+        }
+    }
+    AppConfig(**data)
 
 
 @pytest.mark.parametrize(
@@ -167,6 +205,125 @@ def test_pipeline_override_can_roll_back_provider_output_resampler(
         "tts", _app_config(), config, {"output_resampler": "linear"}
     )
     assert adapter._compose_options({})["output_resampler"] == "linear"
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "config"),
+    [
+        (OpenAITTSAdapter, OpenAIProviderConfig()),
+        (GoogleTTSAdapter, GoogleProviderConfig()),
+        (DeepgramTTSAdapter, DeepgramProviderConfig()),
+        (GroqTTSAdapter, GroqTTSProviderConfig()),
+        (ElevenLabsTTSAdapter, ElevenLabsProviderConfig()),
+        (CambAiTTSAdapter, CambAiProviderConfig()),
+        (AzureTTSAdapter, AzureTTSProviderConfig()),
+    ],
+)
+def test_modular_tts_adapter_standalone_inherit_falls_back_to_compatibility(
+    adapter_type, config
+):
+    adapter = adapter_type("tts", _app_config(), config)
+    assert adapter._compose_options({})["output_resampler"] == "linear"
+
+
+def test_transport_profile_carries_profile_output_resampler():
+    orchestrator = object.__new__(TransportOrchestrator)
+    orchestrator.audio_transport = "rtp"
+    profile = AudioProfile(
+        name="telephony_enhanced_8k",
+        internal_rate_hz=8000,
+        transport_out={"encoding": "ulaw", "sample_rate_hz": 8000},
+        provider_pref={
+            "input_encoding": "mulaw",
+            "input_sample_rate_hz": 8000,
+            "output_encoding": "mulaw",
+            "output_sample_rate_hz": 8000,
+        },
+        output_resampler="bandlimited",
+    )
+
+    transport = orchestrator._negotiate_formats(
+        profile, "openai_realtime", None, provider_config=None
+    )
+
+    assert transport.output_resampler == "bandlimited"
+    assert transport.output_resampler_source == "profile:telephony_enhanced_8k"
+
+
+def _session(call_id: str, profile_name: str, mode: str) -> CallSession:
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.transport_profile = SimpleNamespace(
+        profile_name=profile_name,
+        wire_encoding="ulaw",
+        wire_sample_rate=8000,
+        output_resampler=mode,
+    )
+    return session
+
+
+def test_full_provider_profile_resolution_is_isolated_per_call(monkeypatch):
+    monkeypatch.delenv("AAVA_TEST_OUTPUT_RESAMPLER", raising=False)
+    engine = object.__new__(Engine)
+
+    def provider():
+        return SimpleNamespace(
+            config=SimpleNamespace(output_resampler="inherit"),
+            _output_resampler_mode="linear",
+            _output_resampler_source="compatibility-default",
+            _output_resampler_environment_variable="AAVA_TEST_OUTPUT_RESAMPLER",
+            _output_resample_state=("prior",),
+            _output_resampler_logged=True,
+        )
+
+    compatibility = provider()
+    enhanced = provider()
+    engine._apply_provider_overrides(
+        compatibility, _session("call-linear", "telephony_ulaw_8k", "linear")
+    )
+    engine._apply_provider_overrides(
+        enhanced,
+        _session("call-enhanced", "telephony_enhanced_8k", "bandlimited"),
+    )
+
+    assert compatibility._output_resampler_mode == "linear"
+    assert compatibility._output_resampler_source == "profile"
+    assert enhanced._output_resampler_mode == "bandlimited"
+    assert enhanced._output_resampler_source == "profile"
+    assert enhanced._output_resample_state is None
+
+
+def test_pipeline_policy_precedence_and_call_isolation():
+    engine = object.__new__(Engine)
+    adapter = SimpleNamespace(
+        _provider_defaults=SimpleNamespace(output_resampler="inherit")
+    )
+
+    def resolution(call_id: str, pipeline_mode: str = "inherit"):
+        return SimpleNamespace(
+            pipeline_name="test_pipeline",
+            tts_adapter=adapter,
+            tts_options={"output_resampler": pipeline_mode},
+        )
+
+    compatibility = resolution("call-linear")
+    enhanced = resolution("call-enhanced")
+    rollback = resolution("call-rollback", "linear")
+    engine._apply_pipeline_output_resampler_policy(
+        _session("call-linear", "telephony_ulaw_8k", "linear"), compatibility
+    )
+    engine._apply_pipeline_output_resampler_policy(
+        _session("call-enhanced", "telephony_enhanced_8k", "bandlimited"),
+        enhanced,
+    )
+    engine._apply_pipeline_output_resampler_policy(
+        _session("call-rollback", "telephony_enhanced_8k", "bandlimited"),
+        rollback,
+    )
+
+    assert compatibility.tts_options["output_resampler"] == "linear"
+    assert enhanced.tts_options["output_resampler"] == "bandlimited"
+    assert rollback.tts_options["output_resampler"] == "linear"
+    assert rollback.tts_options["output_resampler_source"] == "pipeline"
 
 
 def test_openai_modular_conversion_passes_explicit_policy(monkeypatch):

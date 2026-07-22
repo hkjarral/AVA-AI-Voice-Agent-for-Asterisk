@@ -42,7 +42,11 @@ try:
 except ImportError:
     speechsdk = None
 
-from ..audio import convert_pcm16le_to_target_format as _to_target_format, resample_audio
+from ..audio import (
+    convert_pcm16le_to_target_format as _to_target_format,
+    resample_audio,
+    resolve_output_resampler_policy,
+)
 from ..config import AppConfig, AzureSTTProviderConfig, AzureTTSProviderConfig, validate_azure_region
 from ..logging_config import get_logger
 from .base import STTComponent, TTSComponent
@@ -510,7 +514,7 @@ class AzureSTTFastAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        return {
+        options = {
             "api_key": runtime_options.get(
                 "api_key",
                 self._pipeline_defaults.get("api_key", self._provider_defaults.api_key),
@@ -538,6 +542,7 @@ class AzureSTTFastAdapter(STTComponent):
                 )
             ),
         }
+        return options
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +805,7 @@ class AzureSTTRealtimeAdapter(STTComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        return {
+        options = {
             "api_key": runtime_options.get(
                 "api_key",
                 self._pipeline_defaults.get("api_key", self._provider_defaults.api_key),
@@ -838,6 +843,7 @@ class AzureSTTRealtimeAdapter(STTComponent):
                 )
             ),
         }
+        return options
 
 
 # ---------------------------------------------------------------------------
@@ -1113,7 +1119,7 @@ class AzureTTSAdapter(TTSComponent):
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
-        return {
+        options = {
             "api_key": runtime_options.get(
                 "api_key",
                 self._pipeline_defaults.get("api_key", self._provider_defaults.api_key),
@@ -1193,6 +1199,10 @@ class AzureTTSAdapter(TTSComponent):
                 ) or None
             ),
         }
+        options["output_resampler"] = resolve_output_resampler_policy(
+            provider_mode=options.get("output_resampler")
+        )[0]
+        return options
 
 
 __all__ = [

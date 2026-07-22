@@ -4,6 +4,24 @@ Validate audio quality and transport integrity across the maintainer-approved re
 
 ## Progress
 
+- **Profile-owned rollout decision (2026-07-22):** the candidate is now exposed
+  as the opt-in `telephony_enhanced_8k` Audio Profile rather than being enabled
+  provider by provider. It retains the stable 8 kHz telephony contract and
+  selects `bandlimited` output downsampling. Existing profiles remain on
+  `linear`; assigning an Agent back to `telephony_ulaw_8k` is the rollback.
+  Provider and pipeline controls default to `inherit`, with explicit values
+  retained only as narrower diagnostic overrides. Resolution is per call so
+  Agents using different profiles do not mutate shared state. The Admin UI
+  surfaces the enhanced profile and effective downsampling mode. Automated
+  verification is complete: 1,831 core tests passed with 18 skips, all 481
+  Admin backend tests and all 218 frontend tests passed, and the frontend lint,
+  production builds, source compilation, schema sync, shell syntax, and secret
+  scan gates are clean. The first draft CodeRabbit review was triaged as one
+  cohesive batch, including the pipeline greeting cleanup gate, stream cleanup
+  ownership/deadline, diagnostic path permissions, Asterisk module/spool
+  discovery, and protocol-contract corrections. Exact-head voiprnd deployment
+  remains in progress.
+
 - **Maintainer acceptance decision (2026-07-21):** Grok, OpenAI, Google, and
   Deepgram are accepted as good to go from the completed live-call evidence.
   Existing completed calls will serve as the golden dataset rather than adding
@@ -130,16 +148,19 @@ Validate audio quality and transport integrity across the maintainer-approved re
   an implementation item.
 - **Implementation state:** shared stateful 255-tap Blackman FIR primitive and
   explicit output policy are integrated for OpenAI, Google, Grok, and
-  ElevenLabs full agents. `linear` remains the compatibility default; each
-  provider has a config field and a provider-specific environment rollback/
-  canary override. Google now carries filter state across chunks and every
-  provider clears output history at response/call lifecycle boundaries.
+  ElevenLabs full agents. `linear` remains the compatibility default for old
+  profiles and `telephony_enhanced_8k` selects `bandlimited` per call. Provider
+  settings inherit the profile by default; explicit provider and environment
+  values remain narrower rollback/canary overrides. Google carries filter state
+  across chunks and every provider clears output history at response/call
+  lifecycle boundaries.
 - **Modular implementation state:** the same explicit `output_resampler` policy
   is now propagated through OpenAI, Google, Deepgram, Groq, ElevenLabs, CAMB AI,
   and Azure TTS adapters. Native 8 kHz paths remain no-ops. Full-response TTS
   resets at each synthesized utterance; Azure streaming retains FIR history
-  across network chunks and resets it for the next utterance. Provider config,
-  pipeline options, and runtime options support progressively narrower rollback.
+  across network chunks and resets it for the next utterance. Pipeline and
+  provider settings inherit the per-call profile by default and retain
+  progressively narrower explicit rollback overrides.
 - **Synthetic DSP/provider gate:** the focused suite passes 140/140 in the
   project AI-engine image, including irregular chunk-boundary equivalence,
   exact 24→8 kHz duration, >60 dB rejection of a 5 kHz alias source, <1 dB
@@ -154,10 +175,11 @@ Validate audio quality and transport integrity across the maintainer-approved re
   of unknown modes, provider inheritance, per-pipeline rollback, and explicit
   mode propagation at representative conversion boundaries. The full focused
   DSP/full-agent/modular policy plus Grok lifecycle run passes 79/79.
-- **Admin UI implementation and gate:** provider forms now expose an explicit
-  Compatibility/alias-safe output-downsampling selector with the active source
-  and target rates. Audio Profiles identify GA Telephony, Experimental Wideband,
-  and Custom contracts, show Agent usage, and block deletion while in use. The
+- **Admin UI implementation and gate:** provider forms now expose a
+  profile-inheritance/Compatibility/alias-safe output-downsampling selector with
+  the active source and target rates. Audio Profiles identify GA Telephony,
+  Enhanced Telephony, Experimental Wideband, and Custom contracts, show the
+  effective downsampling mode and Agent usage, and block deletion while in use. The
   dedicated audio-safety component/page tests pass, the complete frontend
   suite passes 218/218, and lint plus the production frontend build pass. Modular UI
   coverage includes OpenAI, Google, Deepgram, Groq, ElevenLabs, CAMB AI, and
@@ -374,7 +396,7 @@ Validate audio quality and transport integrity across the maintainer-approved re
     | ElevenLabs Agent | Full agent | AudioSocket | Stream | `telephony_ulaw_8k` |
     | Grok | Full agent | AudioSocket | Stream | `telephony_ulaw_8k` |
     | Local full agent | Full agent | AudioSocket | Stream | `telephony_ulaw_8k` |
-    | `local_hybrid` | Pipeline | ExternalMedia | File | `telephony_ulaw_8k` |
+    | `local_hybrid` | Pipeline | AudioSocket | Stream | `telephony_ulaw_8k` |
     | `hybrid_elevenlabs` | Pipeline | ExternalMedia | File | `telephony_ulaw_8k` |
     | `telnyx_hybrid` | Pipeline | ExternalMedia | File | `telephony_ulaw_8k` |
 
@@ -385,7 +407,10 @@ Validate audio quality and transport integrity across the maintainer-approved re
     configurations but are explicitly labeled **untested** and do not block
     this release.
   - Correct any row during inventory if the current published golden baseline says otherwise, and record the source and rationale.
-  - Targeted cross-transport lane, not a full Cartesian matrix: OpenAI as a native-24 kHz full agent, Deepgram as an 8 kHz full agent, `local_hybrid` as a local pipeline, and `hybrid_elevenlabs` as a cloud-TTS pipeline on their documented alternate supported transport.
+  - The original targeted cross-transport planning lane is historical. The
+    accepted Local Hybrid evidence uses AudioSocket/stream; OpenAI native-24 kHz,
+    Deepgram 8 kHz, and `hybrid_elevenlabs` alternate paths retain their recorded
+    tested or untested classifications above.
   - Experimental profile lane runs only after all GA rows pass: one verified wideband-capable trunk, Asterisk channel, endpoint, and provider path. A provider-native 24 kHz API alone does not qualify the telephony path as wideband.
 
 [x] **Use one deterministic call script and freeze acceptance criteria before candidate calls.**
@@ -413,15 +438,15 @@ Validate audio quality and transport integrity across the maintainer-approved re
     `1784695142.1077` and `1784695300.1083`, successfully created and archived
     mixed bridge WAVs alongside all four engine legs, completing the live
     artifact prerequisite for the current AudioSocket lane.
-- **Local Hybrid pacing control:** implementation is in progress for optional
+- **Local Hybrid pacing control (completed):** optional
   `pipelines.<name>.options.tts.streaming_overlap`. When absent it inherits the
   existing global setting, preserving every current pipeline; explicit `false`
   selects complete-response/serial playback only for the named pipeline. The
   backend rejects non-boolean values and the Admin UI exposes Inherit/Enabled/
-  Disabled with a latency-versus-continuity explanation. This control is for the
-  overlap-vs-serial A/B and is not yet a concluded audio fix.
-  Focused policy validation now passes 11/11 engine tests, 5/5 Admin API tests,
-  and 2/2 Pipeline Form tests; broad regression and live A/B gates remain.
+  Disabled with a latency-versus-continuity explanation. The control was
+  validated in focused and broad automated gates and exercised in the serial
+  A/B call below. It remains a scoped diagnostic/rollback control rather than a
+  global audio-quality default.
 - **Local Hybrid serial A/B:** call `1784687573.1011`, archived at
   `logs/archived/rca-20260722-023405`; FAIL for the frozen script. The explicit
   pipeline override resolved false on every turn and removed the overlap call's

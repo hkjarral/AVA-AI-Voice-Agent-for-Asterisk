@@ -41,6 +41,7 @@ from ..audio import (
     convert_pcm16le_to_target_format,
     mulaw_to_pcm16le,
     resample_audio,
+    resolve_output_resampler_policy,
 )
 from ..config import GrokProviderConfig
 
@@ -168,18 +169,24 @@ class GrokProvider(AIProviderInterface):
 
         self._input_resample_state: Optional[tuple] = None
         self._output_resample_state: Optional[tuple] = None
-        configured_output_resampler = os.getenv(
-            "AAVA_GROK_OUTPUT_RESAMPLER",
-            getattr(config, "output_resampler", "linear"),
-        ).strip().lower()
-        if configured_output_resampler not in ("linear", "bandlimited"):
+        self._output_resampler_environment_variable = "AAVA_GROK_OUTPUT_RESAMPLER"
+        configured_output_resampler, output_resampler_source = (
+            resolve_output_resampler_policy(
+                profile_mode="linear",
+                provider_mode=getattr(config, "output_resampler", "inherit"),
+                environment_mode=os.getenv(
+                    self._output_resampler_environment_variable
+                ),
+            )
+        )
+        if output_resampler_source.endswith("invalid-fallback"):
             logger.warning(
                 "Invalid Grok output resampler; using compatibility default",
-                configured=configured_output_resampler,
+                source=output_resampler_source,
                 fallback="linear",
             )
-            configured_output_resampler = "linear"
         self._output_resampler_mode = configured_output_resampler
+        self._output_resampler_source = output_resampler_source
         self._output_resampler_logged = False
         self._transcript_buffer: str = ""
         self._input_info_logged: bool = False

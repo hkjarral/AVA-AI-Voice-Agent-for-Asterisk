@@ -567,12 +567,14 @@ const OpenAIProviderForm: React.FC<OpenAIProviderFormProps> = ({ config, onChang
                                 Final sample rate. 8000 Hz for standard telephony.
                             </p>
                         </div>
-                        <OutputResamplerField
-                            value={config.output_resampler}
-                            sourceRate={config.source_format?.sample_rate || config.source_sample_rate_hz || 24000}
-                            targetRate={config.target_sample_rate_hz || 8000}
-                            onChange={(value) => handleChange('output_resampler', value)}
-                        />
+                        <div className="md:col-span-2">
+                            <OutputResamplerField
+                                value={config.output_resampler}
+                                sourceRate={config.source_format?.sample_rate || config.source_sample_rate_hz || 24000}
+                                targetRate={config.target_sample_rate_hz || 8000}
+                                onChange={(value) => handleChange('output_resampler', value)}
+                            />
+                        </div>
                         <div className="space-y-2">
                             <div className="flex items-center gap-1.5">
                                 <label className="text-sm font-medium">Chunk Size (ms)</label>

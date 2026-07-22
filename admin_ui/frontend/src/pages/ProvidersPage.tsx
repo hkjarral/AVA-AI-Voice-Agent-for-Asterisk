@@ -254,7 +254,7 @@ const ProvidersPage: React.FC = () => {
                 input_sample_rate_hz: 8000,
                 target_encoding: 'mulaw',
                 target_sample_rate_hz: 8000,
-                output_resampler: 'linear',
+                output_resampler: 'inherit',
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.',
                 turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 1000 }
@@ -272,7 +272,7 @@ const ProvidersPage: React.FC = () => {
                 input_sample_rate_hz: 8000,
                 output_encoding: 'mulaw',
                 output_sample_rate_hz: 8000,
-                output_resampler: 'linear',
+                output_resampler: 'inherit',
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.'
             },
@@ -286,7 +286,7 @@ const ProvidersPage: React.FC = () => {
                 input_sample_rate_hz: 8000,
                 target_encoding: 'ulaw',
                 target_sample_rate_hz: 8000,
-                output_resampler: 'linear',
+                output_resampler: 'inherit',
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.'
             },
@@ -308,7 +308,7 @@ const ProvidersPage: React.FC = () => {
                 output_sample_rate_hz: 24000,
                 target_encoding: 'ulaw',
                 target_sample_rate_hz: 8000,
-                output_resampler: 'linear',
+                output_resampler: 'inherit',
                 response_modalities: ['audio', 'text'],
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.',
@@ -325,7 +325,7 @@ const ProvidersPage: React.FC = () => {
                 input_sample_rate_hz: 8000,
                 target_encoding: 'ulaw',
                 target_sample_rate_hz: 8000,
-                output_resampler: 'linear'
+                output_resampler: 'inherit'
             },
             local_modular: {
                 // This adds local_stt, local_llm, local_tts
@@ -361,7 +361,7 @@ const ProvidersPage: React.FC = () => {
                 output_format: 'riff-8khz-16bit-mono-pcm',
                 target_encoding: 'mulaw',
                 target_sample_rate_hz: 8000,
-                output_resampler: 'linear',
+                output_resampler: 'inherit',
                 chunk_size_ms: 20,
                 request_timeout_sec: 15.0,
             }
