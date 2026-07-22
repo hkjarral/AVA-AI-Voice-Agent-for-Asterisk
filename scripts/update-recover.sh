@@ -262,15 +262,15 @@ protected_roots = {"data", "models", "secrets"}
 adjusted_protected_dirs = set()
 
 
-def owner_can_read_execute(st):
+def owner_can_read_write_execute(st):
     if uid == 0:
         return True
     mode = stat.S_IMODE(st.st_mode)
     if st.st_uid == uid:
-        return (mode & 0o500) == 0o500
+        return (mode & 0o700) == 0o700
     if st.st_gid in groups:
-        return (mode & 0o050) == 0o050
-    return (mode & 0o005) == 0o005
+        return (mode & 0o070) == 0o070
+    return (mode & 0o007) == 0o007
 
 
 def mode_with_owner_access(st):
@@ -278,13 +278,13 @@ def mode_with_owner_access(st):
     if uid == 0:
         return mode
     if st.st_uid == uid:
-        return mode | 0o500
+        return mode | 0o700
     if st.st_gid in groups:
-        return mode | 0o050
+        return mode | 0o070
     raise SystemExit("internal error: protected directory requires ACL access")
 
 
-def grant_acl_access(dir_fd, display_path):
+def grant_acl_access(dir_fd, display_path, st):
     if not shutil.which("getfacl") or not shutil.which("setfacl"):
         raise SystemExit(
             "protected tracked directory requires per-user ACL access; install the acl package "
@@ -297,13 +297,13 @@ def grant_acl_access(dir_fd, display_path):
     snapshot_fd = os.open(acl_snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(snapshot_fd, "wb") as fh:
         subprocess.run(["getfacl", "--omit-header", fd_path], stdout=fh, check=True)
-    subprocess.run(["setfacl", "-m", f"u:{uid}:rx", fd_path], check=True)
+    subprocess.run(["setfacl", "-m", f"u:{uid}:rwx", fd_path], check=True)
     with open(traversal_state, "a", encoding="utf-8") as fh:
-        fh.write(f"acl\t{display_path}\t{acl_snapshot}\n")
+        fh.write(f"acl\t{display_path}\t{acl_snapshot}\t{st.st_dev}\t{st.st_ino}\n")
 
 
 def ensure_protected_dir_access(name, dir_fd, st, display_rel):
-    if owner_can_read_execute(st) or display_rel in adjusted_protected_dirs:
+    if owner_can_read_write_execute(st) or display_rel in adjusted_protected_dirs:
         return
     if not traversal_state:
         raise SystemExit(f"protected tracked directory remains inaccessible to checkout owner: {display_rel}")
@@ -315,7 +315,7 @@ def ensure_protected_dir_access(name, dir_fd, st, display_rel):
             acl_st = os.fstat(acl_fd)
             if not stat.S_ISDIR(acl_st.st_mode) or (acl_st.st_dev, acl_st.st_ino) != (st.st_dev, st.st_ino):
                 raise SystemExit(f"refusing changed protected tracked directory: {display_rel}")
-            grant_acl_access(acl_fd, display_path)
+            grant_acl_access(acl_fd, display_path, acl_st)
             adjusted_protected_dirs.add(display_rel)
             return
         finally:
@@ -324,8 +324,8 @@ def ensure_protected_dir_access(name, dir_fd, st, display_rel):
         fh.write(f"{original_mode:o}\t{display_path}\n")
     os.chmod(name, mode_with_owner_access(st), dir_fd=dir_fd, follow_symlinks=False)
     updated = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-    if not owner_can_read_execute(updated):
-        raise SystemExit(f"failed to make protected tracked directory readable by checkout owner: {display_rel}")
+    if not owner_can_read_write_execute(updated):
+        raise SystemExit(f"failed to make protected tracked directory writable by checkout owner: {display_rel}")
     adjusted_protected_dirs.add(display_rel)
 
 root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
@@ -637,31 +637,84 @@ repo, rel, backup_dir = sys.argv[1:4]
 source = os.path.join(repo, rel)
 dest = os.path.join(backup_dir, rel)
 
+def open_regular_pinned(path, *, required):
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        if required:
+            raise
+        return None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"refusing unsafe SQLite source: {path}")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd_st = os.fstat(fd)
+        if not stat.S_ISREG(fd_st.st_mode) or (fd_st.st_dev, fd_st.st_ino) != (st.st_dev, st.st_ino):
+            raise SystemExit(f"refusing changed SQLite source: {path}")
+        return fd, fd_st
+    except Exception:
+        os.close(fd)
+        raise
+
+def link_pinned_source(fd, fd_st, target):
+    fd_path = f"/proc/self/fd/{fd}"
+    if not os.path.exists(fd_path):
+        raise SystemExit("SQLite recovery requires /proc/self/fd support")
+    try:
+        os.unlink(target)
+    except FileNotFoundError:
+        pass
+    os.link(fd_path, target, follow_symlinks=True)
+    linked = os.stat(target, follow_symlinks=False)
+    if (linked.st_dev, linked.st_ino) != (fd_st.st_dev, fd_st.st_ino):
+        raise SystemExit(f"refusing unpinned SQLite staging link: {target}")
+
 try:
-    st = os.lstat(source)
+    source_fd = open_regular_pinned(source, required=True)
 except FileNotFoundError:
     raise SystemExit(0)
 
-if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-    raise SystemExit(f"refusing unsafe SQLite source: {source}")
-
 os.makedirs(os.path.dirname(dest), exist_ok=True)
+stage_dir = os.path.join(backup_dir, ".sqlite-pinned")
+os.makedirs(stage_dir, mode=0o700, exist_ok=True)
+stage_base = os.path.join(stage_dir, rel.replace("/", "__"))
 tmp = dest + ".tmp"
+staged_paths = []
+opened = []
 try:
     os.unlink(tmp)
 except FileNotFoundError:
     pass
 
-src = sqlite3.connect("file:" + source + "?mode=ro", uri=True, timeout=30)
 try:
-    dst = sqlite3.connect(tmp)
+    for suffix, required in (("", True), ("-wal", False), ("-shm", False)):
+        pinned = source_fd if required else open_regular_pinned(source + suffix, required=False)
+        if pinned is None:
+            continue
+        fd, fd_st = pinned
+        opened.append(fd)
+        stage = stage_base + suffix
+        link_pinned_source(fd, fd_st, stage)
+        staged_paths.append(stage)
+
+    src = sqlite3.connect("file:" + stage_base + "?mode=ro", uri=True, timeout=30)
     try:
-        with dst:
-            src.backup(dst)
+        dst = sqlite3.connect(tmp)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            dst.close()
     finally:
-        dst.close()
+        src.close()
 finally:
-    src.close()
+    for fd in opened:
+        os.close(fd)
+    for path in staged_paths:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 os.replace(tmp, dest)
 PY
@@ -1225,6 +1278,7 @@ restore_traversal_modes() {
 import os
 import subprocess
 import sys
+import stat
 
 state_path = sys.argv[1]
 failed = False
@@ -1237,8 +1291,17 @@ with open(state_path, "r", encoding="utf-8") as fh:
         fields = line.split("\t")
         try:
             if fields[0] == "acl":
-                _, path, acl_snapshot = fields
-                subprocess.run(["setfacl", "--set-file", acl_snapshot, path], check=True)
+                _, path, acl_snapshot, dev_text, ino_text = fields
+                expected = (int(dev_text), int(ino_text))
+                fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    st = os.fstat(fd)
+                    if not stat.S_ISDIR(st.st_mode) or (st.st_dev, st.st_ino) != expected:
+                        raise RuntimeError("protected directory changed before ACL restore")
+                    fd_path = f"/proc/self/fd/{fd}"
+                    subprocess.run(["setfacl", "--set-file", acl_snapshot, fd_path], check=True)
+                finally:
+                    os.close(fd)
                 os.unlink(acl_snapshot)
                 continue
             mode_text, path = fields

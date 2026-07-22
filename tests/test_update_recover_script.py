@@ -385,6 +385,8 @@ def test_update_recover_tracked_repair_preserves_runtime_parent_ownership(tmp_pa
         repo / "secrets" / ".gitkeep",
     ):
         path.write_text("", encoding="utf-8")
+    for path in (repo / "data", repo / "models", repo / "secrets"):
+        path.chmod(0o777)
 
     tracked_list = tmp_path / "tracked.z"
     tracked_list.write_bytes(
@@ -470,7 +472,7 @@ def test_update_recover_grants_and_records_protected_root_access(tmp_path: Path)
     )
 
     chmod_calls = json.loads(result.stdout)
-    assert ["data", 0o750] in chmod_calls
+    assert ["data", 0o770] in chmod_calls
     assert traversal_state.read_text(encoding="utf-8") == f"700\t{repo / 'data'}\n"
 
 
@@ -500,7 +502,7 @@ def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> 
     repo = tmp_path / "repo"
     (repo / "models").mkdir(parents=True)
     (repo / "models" / "registry.json").write_text("", encoding="utf-8")
-    (repo / "models").chmod(0o707)
+    (repo / "models").chmod(0o700)
     models_stat = (repo / "models").stat()
     synthetic_uid = 1 if models_stat.st_uid != 1 else 2
     synthetic_gid = models_stat.st_gid
@@ -526,8 +528,8 @@ def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> 
     )
 
     chmod_calls = json.loads(result.stdout)
-    assert ["models", 0o757] in chmod_calls
-    assert traversal_state.read_text(encoding="utf-8") == f"707\t{repo / 'models'}\n"
+    assert ["models", 0o770] in chmod_calls
+    assert traversal_state.read_text(encoding="utf-8") == f"700\t{repo / 'models'}\n"
 
 
 def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_roots(tmp_path: Path) -> None:
@@ -601,10 +603,14 @@ def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_r
 
     run_calls = json.loads(result.stdout)
     getfacl_calls = [call for call in run_calls if call[:2] == ["getfacl", "--omit-header"]]
-    setfacl_calls = [call for call in run_calls if call[:3] == ["setfacl", "-m", f"u:{synthetic_uid}:rx"]]
+    setfacl_calls = [call for call in run_calls if call[:3] == ["setfacl", "-m", f"u:{synthetic_uid}:rwx"]]
     assert getfacl_calls and getfacl_calls[0][2].startswith("/proc/self/fd/")
     assert setfacl_calls and setfacl_calls[0][3].startswith("/proc/self/fd/")
-    assert traversal_state.read_text(encoding="utf-8").startswith(f"acl\t{repo / 'secrets'}\t")
+    acl_fields = traversal_state.read_text(encoding="utf-8").strip().split("\t")
+    assert acl_fields[:2] == ["acl", str(repo / "secrets")]
+    assert acl_fields[2].startswith(str(traversal_state) + ".acl.")
+    assert acl_fields[3].isdigit()
+    assert acl_fields[4].isdigit()
     assert stat.S_IMODE((repo / "secrets").stat().st_mode) & 0o005 == 0
 
 
@@ -619,7 +625,8 @@ def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     assert "restore_traversal_modes()" in script
     assert 'getattr(os, "O_NOFOLLOW", 0)' in script
     assert "os.fchmod(fd, mode)" in script
-    assert 'subprocess.run(["setfacl", "--set-file", acl_snapshot, path], check=True)' in script
+    assert 'subprocess.run(["setfacl", "--set-file", acl_snapshot, fd_path], check=True)' in script
+    assert '"protected directory changed before ACL restore"' in script
     assert "failed to restore traversal permissions" in script
     assert 'state file retained at ${TRAVERSAL_STATE}' in script
     assert 'elif [ "${status}" -eq 0 ]; then' in script
@@ -826,6 +833,12 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert 'UNMERGED_COPIED="false"' in script
     assert "backup_sqlite_snapshot" in script
     assert "src.backup(dst)" in script
+    assert "open_regular_pinned" in script
+    assert 'os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))' in script
+    assert "link_pinned_source" in script
+    assert 'os.link(fd_path, target, follow_symlinks=True)' in script
+    assert 'sqlite3.connect("file:" + stage_base + "?mode=ro", uri=True, timeout=30)' in script
+    assert 'sqlite3.connect("file:" + source + "?mode=ro"' not in script
     assert "data/operator/agents.db-wal" not in script
 
 
