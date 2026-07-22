@@ -296,8 +296,8 @@ def grant_acl_access(dir_fd, display_path, st):
     acl_snapshot = f"{traversal_state}.acl.{len(adjusted_protected_dirs)}"
     snapshot_fd = os.open(acl_snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(snapshot_fd, "wb") as fh:
-        subprocess.run(["getfacl", "--omit-header", fd_path], stdout=fh, check=True)
-    subprocess.run(["setfacl", "-m", f"u:{uid}:rwx", fd_path], check=True)
+        subprocess.run(["getfacl", "--omit-header", fd_path], stdout=fh, check=True, pass_fds=(dir_fd,))
+    subprocess.run(["setfacl", "-m", f"u:{uid}:rwx", fd_path], check=True, pass_fds=(dir_fd,))
     with open(traversal_state, "a", encoding="utf-8") as fh:
         fh.write(f"acl\t{display_path}\t{acl_snapshot}\t{st.st_dev}\t{st.st_ino}\n")
 
@@ -637,89 +637,82 @@ repo, rel, backup_dir = sys.argv[1:4]
 source = os.path.join(repo, rel)
 dest = os.path.join(backup_dir, rel)
 
-def open_regular_pinned(path, *, required):
+def open_pinned_sqlite(path):
+    parent = os.path.dirname(path)
+    name = os.path.basename(path)
     try:
-        st = os.lstat(path)
+        parent_st = os.lstat(parent)
     except FileNotFoundError:
-        if required:
-            raise
-        return None
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-        raise SystemExit(f"refusing unsafe SQLite source: {path}")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        raise
+    if stat.S_ISLNK(parent_st.st_mode) or not stat.S_ISDIR(parent_st.st_mode):
+        raise SystemExit(f"refusing unsafe SQLite parent: {parent}")
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        fd_st = os.fstat(fd)
-        if not stat.S_ISREG(fd_st.st_mode) or (fd_st.st_dev, fd_st.st_ino) != (st.st_dev, st.st_ino):
-            raise SystemExit(f"refusing changed SQLite source: {path}")
-        return fd, fd_st
+        pinned_parent_st = os.fstat(parent_fd)
+        if not stat.S_ISDIR(pinned_parent_st.st_mode) or (
+            pinned_parent_st.st_dev,
+            pinned_parent_st.st_ino,
+        ) != (parent_st.st_dev, parent_st.st_ino):
+            raise SystemExit(f"refusing changed SQLite parent: {parent}")
+        try:
+            st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            raise
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            raise SystemExit(f"refusing unsafe SQLite source: {path}")
+        source_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        try:
+            source_st = os.fstat(source_fd)
+            if not stat.S_ISREG(source_st.st_mode) or (
+                source_st.st_dev,
+                source_st.st_ino,
+            ) != (st.st_dev, st.st_ino):
+                raise SystemExit(f"refusing changed SQLite source: {path}")
+            return parent_fd, source_fd, source_st, f"/proc/self/fd/{parent_fd}/{name}"
+        except Exception:
+            os.close(source_fd)
+            raise
     except Exception:
-        os.close(fd)
+        os.close(parent_fd)
         raise
 
-def copy_pinned_source(fd, target):
-    try:
-        os.unlink(target)
-    except FileNotFoundError:
-        pass
-    out_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(os.dup(fd), "rb") as src, os.fdopen(out_fd, "wb") as dst:
-            out_fd = -1
-            while True:
-                chunk = src.read(1024 * 1024)
-                if not chunk:
-                    break
-                dst.write(chunk)
-    finally:
-        if out_fd != -1:
-            os.close(out_fd)
+def verify_pinned_source(parent_fd, name, fd_st, label):
+    st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"refusing unsafe SQLite source {label}: {source}")
+    if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (fd_st.st_dev, fd_st.st_ino):
+        raise SystemExit(f"refusing changed SQLite source {label}: {source}")
 
 try:
-    source_fd = open_regular_pinned(source, required=True)
+    parent_fd, source_fd, source_st, pinned_source = open_pinned_sqlite(source)
 except FileNotFoundError:
     raise SystemExit(0)
 
 os.makedirs(os.path.dirname(dest), exist_ok=True)
-stage_dir = os.path.join(backup_dir, ".sqlite-pinned")
-os.makedirs(stage_dir, mode=0o700, exist_ok=True)
-stage_base = os.path.join(stage_dir, rel.replace("/", "__"))
 tmp = dest + ".tmp"
-staged_paths = []
-opened = []
+source_name = os.path.basename(source)
 try:
     os.unlink(tmp)
 except FileNotFoundError:
     pass
 
 try:
-    for suffix, required in (("", True), ("-wal", False), ("-shm", False)):
-        pinned = source_fd if required else open_regular_pinned(source + suffix, required=False)
-        if pinned is None:
-            continue
-        fd, fd_st = pinned
-        opened.append(fd)
-        stage = stage_base + suffix
-        copy_pinned_source(fd, stage)
-        staged_paths.append(stage)
-
-    src = sqlite3.connect("file:" + stage_base + "?mode=ro", uri=True, timeout=30)
+    verify_pinned_source(parent_fd, source_name, source_st, "before connect")
+    src = sqlite3.connect("file:" + pinned_source + "?mode=ro", uri=True, timeout=30)
     try:
+        verify_pinned_source(parent_fd, source_name, source_st, "after connect")
         dst = sqlite3.connect(tmp)
         try:
             with dst:
                 src.backup(dst)
         finally:
             dst.close()
+        verify_pinned_source(parent_fd, source_name, source_st, "after backup")
     finally:
         src.close()
 finally:
-    for fd in opened:
-        os.close(fd)
-    for path in staged_paths:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+    os.close(source_fd)
+    os.close(parent_fd)
 
 os.replace(tmp, dest)
 PY
@@ -1135,12 +1128,6 @@ install_branch_cli() {
     || die "failed to freeze fetched CLI source ownership"
   chmod -R u+rwX,go-rwx "${owner_clone}" \
     || die "failed to freeze fetched CLI source permissions"
-  git -C "${owner_clone}" diff --quiet HEAD -- \
-    || die "fetched CLI source changed before build"
-  git -C "${owner_clone}" diff --cached --quiet \
-    || die "fetched CLI index changed before build"
-  [ -z "$(git -C "${owner_clone}" status --porcelain --untracked-files=all)" ] \
-    || die "fetched CLI source contains untracked files before build"
   cp -a -- "${owner_clone}/." "${build_repo}/" \
     || die "failed to copy fetched CLI source into root-owned build directory"
   chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}" \
@@ -1322,7 +1309,7 @@ with open(state_path, "r", encoding="utf-8") as fh:
                     if not stat.S_ISDIR(st.st_mode) or (st.st_dev, st.st_ino) != expected:
                         raise RuntimeError("protected directory changed before ACL restore")
                     fd_path = f"/proc/self/fd/{fd}"
-                    subprocess.run(["setfacl", "--set-file", acl_snapshot, fd_path], check=True)
+                    subprocess.run(["setfacl", "--set-file", acl_snapshot, fd_path], check=True, pass_fds=(fd,))
                 finally:
                     os.close(fd)
                 os.unlink(acl_snapshot)

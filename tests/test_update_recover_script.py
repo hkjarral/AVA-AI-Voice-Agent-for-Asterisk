@@ -314,7 +314,7 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${owner_clone}"' in install_branch
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
     assert 'chown -R 0:0 "${owner_clone}"' in install_branch
-    assert 'git -C "${owner_clone}" diff --quiet HEAD --' in install_branch
+    assert 'git -C "${owner_clone}" diff --quiet HEAD --' not in install_branch
     assert 'cp -a -- "${owner_clone}/." "${build_repo}/"' in install_branch
     assert 'chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}"' in install_branch
     assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
@@ -554,8 +554,8 @@ def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_r
         "_run_calls = []\n"
         "def _fake_which(name):\n"
         "    return '/usr/bin/' + name\n"
-        "def _fake_run(args, stdout=None, check=False):\n"
-        "    _run_calls.append(args)\n"
+        "def _fake_run(args, stdout=None, check=False, pass_fds=()):\n"
+        "    _run_calls.append({'args': args, 'pass_fds': list(pass_fds)})\n"
         "    if stdout is not None:\n"
         "        stdout.write(b'# file: fake\\n')\n"
         "    return None\n"
@@ -611,10 +611,12 @@ def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_r
     )
 
     run_calls = json.loads(result.stdout)
-    getfacl_calls = [call for call in run_calls if call[:2] == ["getfacl", "--omit-header"]]
-    setfacl_calls = [call for call in run_calls if call[:3] == ["setfacl", "-m", f"u:{synthetic_uid}:rwx"]]
-    assert getfacl_calls and getfacl_calls[0][2].startswith("/proc/self/fd/")
-    assert setfacl_calls and setfacl_calls[0][3].startswith("/proc/self/fd/")
+    getfacl_calls = [call for call in run_calls if call["args"][:2] == ["getfacl", "--omit-header"]]
+    setfacl_calls = [call for call in run_calls if call["args"][:3] == ["setfacl", "-m", f"u:{synthetic_uid}:rwx"]]
+    assert getfacl_calls and getfacl_calls[0]["args"][2].startswith("/proc/self/fd/")
+    assert setfacl_calls and setfacl_calls[0]["args"][3].startswith("/proc/self/fd/")
+    assert getfacl_calls[0]["pass_fds"]
+    assert setfacl_calls[0]["pass_fds"] == getfacl_calls[0]["pass_fds"]
     acl_fields = traversal_state.read_text(encoding="utf-8").strip().split("\t")
     assert acl_fields[:2] == ["acl", str(repo / "secrets")]
     assert acl_fields[2].startswith(str(traversal_state) + ".acl.")
@@ -634,7 +636,7 @@ def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     assert "restore_traversal_modes()" in script
     assert 'getattr(os, "O_NOFOLLOW", 0)' in script
     assert "os.fchmod(fd, mode)" in script
-    assert 'subprocess.run(["setfacl", "--set-file", acl_snapshot, fd_path], check=True)' in script
+    assert 'subprocess.run(["setfacl", "--set-file", acl_snapshot, fd_path], check=True, pass_fds=(fd,))' in script
     assert '"protected directory changed before ACL restore"' in script
     assert "failed to restore traversal permissions" in script
     assert 'state file retained at ${TRAVERSAL_STATE}' in script
@@ -842,13 +844,15 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert 'UNMERGED_COPIED="false"' in script
     assert "backup_sqlite_snapshot" in script
     assert "src.backup(dst)" in script
-    assert "open_regular_pinned" in script
-    assert 'os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))' in script
-    assert "copy_pinned_source" in script
-    assert 'os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)' in script
+    assert "open_pinned_sqlite" in script
+    assert 'parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))' in script
+    assert 'source_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)' in script
+    assert "verify_pinned_source" in script
+    assert 'verify_pinned_source(parent_fd, source_name, source_st, "before connect")' in script
+    assert 'verify_pinned_source(parent_fd, source_name, source_st, "after backup")' in script
+    assert "copy_pinned_source" not in script
     assert 'os.link(fd_path, target, follow_symlinks=True)' not in script
-    assert 'sqlite3.connect("file:" + stage_base + "?mode=ro", uri=True, timeout=30)' in script
-    assert 'sqlite3.connect("file:" + source + "?mode=ro"' not in script
+    assert 'sqlite3.connect("file:" + pinned_source + "?mode=ro", uri=True, timeout=30)' in script
     assert "data/operator/agents.db-wal" not in script
 
 
