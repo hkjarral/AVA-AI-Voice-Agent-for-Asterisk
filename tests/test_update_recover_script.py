@@ -73,6 +73,9 @@ def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     assert "golang:1.22-bookworm" in script
     assert "AAVA_CLI_VERSION=${ref}" in script
     assert "--self-update=false" in script
+    assert "pin_branch_cli_output" in script
+    assert 'install -m 0755 "${tmp_src}/agent.pinned" "${AGENT_BIN}"' in script
+    assert 'install -m 0755 "${tmp_src}/out/agent" "${AGENT_BIN}"' not in script
     assert "append_git_config_value" in script
     assert 'git config --file "${config_file}" --add "${key}" "${value}"' not in script
     assert 'AAVA_RECOVERY_STATUS=$?' in script
@@ -308,6 +311,7 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
     assert ': >"${clone_err}"' in install_branch
     assert 'chmod 0600 "${clone_err}"' in install_branch
+    assert 'pin_branch_cli_output "${tmp_src}/out/agent" "${tmp_src}/agent.pinned"' in install_branch
 
 
 def test_update_recover_repair_is_bounded() -> None:
@@ -418,6 +422,9 @@ def test_update_recover_grants_and_records_protected_root_access(tmp_path: Path)
     (repo / "data").mkdir(parents=True, mode=0o700)
     (repo / "data" / "call_history.db").write_text("", encoding="utf-8")
     (repo / "data").chmod(0o700)
+    data_stat = (repo / "data").stat()
+    synthetic_uid = 1 if data_stat.st_uid != 1 else 2
+    synthetic_gid = data_stat.st_gid
     tracked_list = tmp_path / "tracked.z"
     tracked_list.write_bytes(b"data/call_history.db\0")
     traversal_state = tmp_path / "restore.tsv"
@@ -428,9 +435,9 @@ def test_update_recover_grants_and_records_protected_root_access(tmp_path: Path)
             "-c",
             instrumented_source,
             str(repo),
-            "1234",
-            "2345",
-            "2345",
+            str(synthetic_uid),
+            str(synthetic_gid),
+            str(synthetic_gid),
             str(tracked_list),
             str(traversal_state),
         ],
@@ -440,7 +447,7 @@ def test_update_recover_grants_and_records_protected_root_access(tmp_path: Path)
     )
 
     chmod_calls = json.loads(result.stdout)
-    assert ["data", 0o705] in chmod_calls
+    assert ["data", 0o750] in chmod_calls
     assert traversal_state.read_text(encoding="utf-8") == f"700\t{repo / 'data'}\n"
 
 
@@ -500,6 +507,76 @@ def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> 
     assert traversal_state.read_text(encoding="utf-8") == f"707\t{repo / 'models'}\n"
 
 
+def test_update_recover_uses_acl_instead_of_world_access_for_foreign_protected_roots(tmp_path: Path) -> None:
+    script = _script()
+    start = script.index("safe_chown_tracked_paths() {")
+    heredoc_start = script.index("<<'PY'\n", start) + len("<<'PY'\n")
+    heredoc_end = script.index("\nPY\n}", heredoc_start)
+    python_source = script[heredoc_start:heredoc_end]
+    instrumented_source = python_source.replace(
+        "import os\n",
+        "import os\n"
+        "import json\n"
+        "_run_calls = []\n"
+        "def _fake_which(name):\n"
+        "    return '/usr/bin/' + name\n"
+        "def _fake_run(args, stdout=None, check=False):\n"
+        "    _run_calls.append(args)\n"
+        "    if stdout is not None:\n"
+        "        stdout.write(b'# file: fake\\n')\n"
+        "    return None\n"
+        "def _ignore_chown(name, uid, gid, *, dir_fd=None, follow_symlinks=True):\n"
+        "    return None\n"
+        "os.chown = _ignore_chown\n",
+        1,
+    )
+    instrumented_source = instrumented_source.replace(
+        "import shutil\n",
+        "import shutil\nshutil.which = _fake_which\n",
+        1,
+    )
+    instrumented_source = instrumented_source.replace(
+        "import subprocess\n",
+        "import subprocess\nsubprocess.run = _fake_run\n",
+        1,
+    )
+    instrumented_source += "\nprint(json.dumps(_run_calls))\n"
+
+    repo = tmp_path / "repo"
+    (repo / "secrets").mkdir(parents=True)
+    (repo / "secrets" / ".gitkeep").write_text("", encoding="utf-8")
+    (repo / "secrets").chmod(0o770)
+    secrets_stat = (repo / "secrets").stat()
+    synthetic_uid = 1 if secrets_stat.st_uid != 1 else 2
+    synthetic_gid = secrets_stat.st_gid + 1
+    tracked_list = tmp_path / "tracked.z"
+    tracked_list.write_bytes(b"secrets/.gitkeep\0")
+    traversal_state = tmp_path / "restore.tsv"
+
+    result = subprocess.run(
+        [
+            "python3",
+            "-c",
+            instrumented_source,
+            str(repo),
+            str(synthetic_uid),
+            str(synthetic_gid),
+            str(synthetic_gid),
+            str(tracked_list),
+            str(traversal_state),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    run_calls = json.loads(result.stdout)
+    assert ["getfacl", "-p", str(repo / "secrets")] in run_calls
+    assert ["setfacl", "-m", f"u:{synthetic_uid}:rx", str(repo / "secrets")] in run_calls
+    assert traversal_state.read_text(encoding="utf-8").startswith(f"acl\t{repo / 'secrets'}\t")
+    assert stat.S_IMODE((repo / "secrets").stat().st_mode) & 0o005 == 0
+
+
 def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     script = _script()
 
@@ -511,6 +588,7 @@ def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     assert "restore_traversal_modes()" in script
     assert 'getattr(os, "O_NOFOLLOW", 0)' in script
     assert "os.fchmod(fd, mode)" in script
+    assert 'subprocess.run(["setfacl", "--restore", acl_snapshot], check=True)' in script
     assert "failed to restore traversal permissions" in script
     assert 'state file retained at ${TRAVERSAL_STATE}' in script
     assert 'elif [ "${status}" -eq 0 ]; then' in script
@@ -535,7 +613,7 @@ restore_traversal_modes
     result = _run_bash_harness(harness, tmp_path, check=False)
 
     assert result.returncode == 1
-    assert "failed to restore traversal permissions 700" in result.stderr
+    assert "failed to restore traversal permissions from '700" in result.stderr
     assert oct(real_dir.stat().st_mode & 0o777) == "0o755"
 
 
@@ -715,6 +793,9 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert "Overwrite is unavailable with --stash-untracked" in script
     assert 'if [ "${LOCAL_CHANGES}" != "overwrite" ]; then' in script
     assert 'UNMERGED_COPIED="false"' in script
+    assert "backup_sqlite_snapshot" in script
+    assert "src.backup(dst)" in script
+    assert "data/operator/agents.db-wal" not in script
 
 
 def test_update_recover_plan_and_update_pass_owner_args_in_order(tmp_path: Path) -> None:

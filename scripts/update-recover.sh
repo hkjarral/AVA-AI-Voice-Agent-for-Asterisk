@@ -247,7 +247,9 @@ safe_chown_tracked_paths() {
   local tracked_list="$1"
   python3 - "${REPO}" "${TARGET_UID}" "${TARGET_GID}" "${TARGET_GROUPS}" "${tracked_list}" "${TRAVERSAL_STATE}" <<'PY'
 import os
+import shutil
 import stat
+import subprocess
 import sys
 
 repo = sys.argv[1]
@@ -279,7 +281,22 @@ def mode_with_owner_access(st):
         return mode | 0o500
     if st.st_gid in groups:
         return mode | 0o050
-    return mode | 0o005
+    raise SystemExit("internal error: protected directory requires ACL access")
+
+
+def grant_acl_access(display_path):
+    if not shutil.which("getfacl") or not shutil.which("setfacl"):
+        raise SystemExit(
+            "protected tracked directory requires per-user ACL access; install the acl package "
+            f"or make checkout owner a member of its owning group: {display_path}"
+        )
+    acl_snapshot = f"{traversal_state}.acl.{len(adjusted_protected_dirs)}"
+    snapshot_fd = os.open(acl_snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(snapshot_fd, "wb") as fh:
+        subprocess.run(["getfacl", "-p", display_path], stdout=fh, check=True)
+    subprocess.run(["setfacl", "-m", f"u:{uid}:rx", display_path], check=True)
+    with open(traversal_state, "a", encoding="utf-8") as fh:
+        fh.write(f"acl\t{display_path}\t{acl_snapshot}\n")
 
 
 def ensure_protected_dir_access(name, dir_fd, st, display_rel):
@@ -289,6 +306,10 @@ def ensure_protected_dir_access(name, dir_fd, st, display_rel):
         raise SystemExit(f"protected tracked directory remains inaccessible to checkout owner: {display_rel}")
     original_mode = stat.S_IMODE(st.st_mode)
     display_path = os.path.join(repo, display_rel)
+    if st.st_uid != uid and st.st_gid not in groups:
+        grant_acl_access(display_path)
+        adjusted_protected_dirs.add(display_rel)
+        return
     with open(traversal_state, "a", encoding="utf-8") as fh:
         fh.write(f"{original_mode:o}\t{display_path}\n")
     os.chmod(name, mode_with_owner_access(st), dir_fd=dir_fd, follow_symlinks=False)
@@ -593,6 +614,49 @@ copy_unmerged_files() {
   UNMERGED_COPIED="true"
 }
 
+backup_sqlite_snapshot() {
+  local rel="$1"
+  local backup_dir="$2"
+  python3 - "${REPO}" "${rel}" "${backup_dir}" <<'PY'
+import os
+import sqlite3
+import stat
+import sys
+
+repo, rel, backup_dir = sys.argv[1:4]
+source = os.path.join(repo, rel)
+dest = os.path.join(backup_dir, rel)
+
+try:
+    st = os.lstat(source)
+except FileNotFoundError:
+    raise SystemExit(0)
+
+if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+    raise SystemExit(f"refusing unsafe SQLite source: {source}")
+
+os.makedirs(os.path.dirname(dest), exist_ok=True)
+tmp = dest + ".tmp"
+try:
+    os.unlink(tmp)
+except FileNotFoundError:
+    pass
+
+src = sqlite3.connect("file:" + source + "?mode=ro", uri=True, timeout=30)
+try:
+    dst = sqlite3.connect(tmp)
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        dst.close()
+finally:
+    src.close()
+
+os.replace(tmp, dest)
+PY
+}
+
 capture_preupdate_artifacts() {
   log "==> Preserving local state before update"
   git_repo status --short >/dev/null || die "failed to inspect checkout changes; update not attempted"
@@ -634,12 +698,9 @@ capture_preupdate_artifacts() {
     rm -rf -- "${backup_dir}/config/contexts"
     cp -a -- "${REPO}/config/contexts" "${backup_dir}/config/contexts"
   fi
-  for rel in "data/operator/agents.db" "data/operator/agents.db-wal" "data/operator/agents.db-shm" \
-             "data/call_history.db" "data/call_history.db-wal" "data/call_history.db-shm"; do
-    if [ -e "${REPO}/${rel}" ]; then
-      mkdir -p -- "${backup_dir}/$(dirname "${rel}")"
-      cp -a -- "${REPO}/${rel}" "${backup_dir}/${rel}"
-    fi
+  for rel in "data/operator/agents.db" "data/call_history.db"; do
+    backup_sqlite_snapshot "${rel}" "${backup_dir}" \
+      || die "failed to create coherent SQLite snapshot for ${rel}"
   done
 }
 
@@ -822,6 +883,50 @@ install_release_cli() {
   TEMP_CLI_DIR=""
 }
 
+pin_branch_cli_output() {
+  local source="$1"
+  local dest="$2"
+  python3 - "${source}" "${dest}" <<'PY'
+import os
+import stat
+import sys
+
+source = sys.argv[1]
+dest = sys.argv[2]
+tmp = dest + ".tmp"
+no_follow = getattr(os, "O_NOFOLLOW", 0)
+
+st = os.lstat(source)
+if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+    raise SystemExit(f"refusing unsafe CLI build output: {source}")
+
+src_fd = os.open(source, os.O_RDONLY | no_follow)
+try:
+    src_st = os.fstat(src_fd)
+    if not stat.S_ISREG(src_st.st_mode) or (src_st.st_dev, src_st.st_ino) != (st.st_dev, st.st_ino):
+        raise SystemExit(f"refusing changed CLI build output: {source}")
+    dst_fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        while True:
+            chunk = os.read(src_fd, 1024 * 1024)
+            if not chunk:
+                break
+            os.write(dst_fd, chunk)
+        os.fsync(dst_fd)
+    finally:
+        os.close(dst_fd)
+    os.replace(tmp, dest)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    raise
+finally:
+    os.close(src_fd)
+PY
+}
+
 append_git_config_value() {
   local config_file="$1"
   local key="$2"
@@ -942,9 +1047,11 @@ install_branch_cli() {
     golang:1.22-bookworm \
     bash -c 'go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags "-X main.version=$AAVA_CLI_VERSION" -o /out/agent ./cmd/agent' \
     || die "failed to build CLI from selected ref"
+  pin_branch_cli_output "${tmp_src}/out/agent" "${tmp_src}/agent.pinned" \
+    || die "failed to pin selected-ref CLI build output"
   mkdir -p -- "$(dirname "${AGENT_BIN}")" \
     || die "failed to create CLI install directory for ${AGENT_BIN}"
-  install -m 0755 "${tmp_src}/out/agent" "${AGENT_BIN}" \
+  install -m 0755 "${tmp_src}/agent.pinned" "${AGENT_BIN}" \
     || die "failed to install selected-ref CLI to ${AGENT_BIN}"
   rm -rf -- "${tmp_src}"
   TEMP_BRANCH_CLI_DIR=""
@@ -1083,6 +1190,7 @@ PY
 restore_traversal_modes() {
   python3 - "${TRAVERSAL_STATE}" <<'PY'
 import os
+import subprocess
 import sys
 
 state_path = sys.argv[1]
@@ -1093,8 +1201,14 @@ with open(state_path, "r", encoding="utf-8") as fh:
         line = line.rstrip("\n")
         if not line:
             continue
-        mode_text, path = line.split("\t", 1)
+        fields = line.split("\t")
         try:
+            if fields[0] == "acl":
+                _, path, acl_snapshot = fields
+                subprocess.run(["setfacl", "--restore", acl_snapshot], check=True)
+                os.unlink(acl_snapshot)
+                continue
+            mode_text, path = fields
             mode = int(mode_text, 8)
             fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
             try:
@@ -1102,7 +1216,7 @@ with open(state_path, "r", encoding="utf-8") as fh:
             finally:
                 os.close(fd)
         except Exception as exc:
-            print(f"WARN: failed to restore traversal permissions {mode_text} on {path}: {exc}", file=sys.stderr)
+            print(f"WARN: failed to restore traversal permissions from {line!r}: {exc}", file=sys.stderr)
             failed = True
 
 if failed:
