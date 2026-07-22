@@ -20,7 +20,38 @@ Validate audio quality and transport integrity across the maintainer-approved re
   cohesive batch, including the pipeline greeting cleanup gate, stream cleanup
   ownership/deadline, diagnostic path permissions, Asterisk module/spool
   discovery, and protocol-contract corrections. Exact-head voiprnd deployment
-  remains in progress.
+  and the first profile-owned OpenAI/Google live canaries are complete.
+
+- **Profile-owned voiprnd canary and golden calls (2026-07-22):** commit
+  `644c061ee11357d33e7435d5f5943633fcb92aad` is deployed through the isolated
+  `/root/aava-pr-555` checkout. The AI Engine image is
+  `sha256:467414c16a09628731b03ed5e5588f8a7020b2016262c28dae66a58e03c64df9`
+  and the Admin UI image is
+  `sha256:480c7cef7da79c764dde5412f4df6a1e6ec501e863b68bf43ec7b1f007a3dc52`.
+  A reversible Compose override pins AI source mounts to that isolated checkout;
+  the dirty production source tree was not overwritten. Provider-specific
+  output-resampler environment canaries were removed, so these calls prove
+  profile inheritance rather than a hidden provider override. Existing defaults
+  remain unchanged and only `demo_openai` and `demo_google_live` were assigned
+  `telephony_enhanced_8k` for the canary.
+  - Google Live call `1784749299.1139`, archived at
+    `logs/archived/rca-20260722-194139`: **PASS**. Every one of seven response
+    starts logged `active_mode=bandlimited`, 24→8 kHz, `alias_safe=true`; media
+    RX, playback, four local-VAD barge-ins, agent hangup, and the post-call tool
+    completed normally. The caller rated the call great. Both the 73.94-second
+    MixMonitor recording and 71.04-second ARI bridge recording are archived.
+  - OpenAI Realtime call `1784749387.1145`, archived at
+    `logs/archived/rca-20260722-194307`: **PASS**. Every one of seven response
+    starts logged `active_mode=bandlimited`, 24→8 kHz, `alias_safe=true`; media
+    RX, playback, six provider-event barge-ins, agent hangup, and the post-call
+    tool completed normally. The caller rated the call great. Both the
+    91.20-second MixMonitor recording and 88.28-second ARI bridge recording are
+    archived. No call-scoped error or exception occurred in either golden call.
+  - Diagnostic follow-up: the legacy PCM tap accumulator reported zero bytes on
+    both full-agent paths even though diagnostics were enabled. Complete normal
+    and ARI bridge recordings succeeded, so this does not block the audio
+    candidate; PCM-tap coverage should be tracked as a separate observability
+    issue.
 
 - **Maintainer acceptance decision (2026-07-21):** Grok, OpenAI, Google, and
   Deepgram are accepted as good to go from the completed live-call evidence.
@@ -32,18 +63,20 @@ Validate audio quality and transport integrity across the maintainer-approved re
   investigated separately. The historical Local Full delivery failure remains
   archived and must not be relabeled as a pass.
 
-- **Implementation branch:** `codex/audio-transport-improvement`, synchronized
-  to `origin/main` at `981612c68c5de49232755e2f2305030bf338f401` in a clean,
-  separate worktree. The prior dirty worktree is untouched.
-- **Frozen voiprnd runtime:** AudioSocket, stream playback, `slin@8000`,
+- **Implementation branch:** `codex/audio-transport-improvement`, head
+  `644c061ee11357d33e7435d5f5943633fcb92aad`, based on `origin/main` at
+  `981612c68c5de49232755e2f2305030bf338f401` in a clean, separate worktree.
+  The prior dirty worktree is untouched.
+- **Pre-profile voiprnd runtime (historical):** AudioSocket, stream playback, `slin@8000`,
   `telephony_ulaw_8k`, diagnostics enabled, Local AI image
   `sha256:db5494e8fe6df15394668fddf20c3f9d4bf1e30717b20c779f4352f3b608044f`
-  and current generalized AI-engine candidate image
+  and then-current generalized AI-engine candidate image
   `sha256:545924b1d98ef490b44a2f63ac16c6d3171af5e271b77a67b013b5be82eb2f6a`.
-  OpenAI, Google, ElevenLabs, and Grok are independently canaried through
+  OpenAI, Google, ElevenLabs, and Grok were independently canaried through
   `AAVA_OPENAI_OUTPUT_RESAMPLER=bandlimited` and
-  their corresponding provider-scoped output-resampler flags; every other
-  provider retains the compatibility default until its own controlled batch.
+  their corresponding provider-scoped output-resampler flags. Those flags were
+  removed for the profile-owned deployment described above; this entry is kept
+  only as the historical pre-profile freeze point.
 - **OpenAI control/proof:** call `1784681097.971`, archived at
   `logs/archived/rca-20260722-004538`; clean 24→8 kHz bandlimited AudioSocket
   call. This proves the originate route and pilot but is not the generalized
