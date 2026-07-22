@@ -822,6 +822,45 @@ install_release_cli() {
   TEMP_CLI_DIR=""
 }
 
+append_git_config_value() {
+  local config_file="$1"
+  local key="$2"
+  python3 - "${config_file}" "${key}" 3<&0 <<'PY'
+import os
+import re
+import sys
+
+config_file = sys.argv[1]
+key = sys.argv[2]
+with os.fdopen(3, "r", encoding="utf-8") as value_fh:
+    value = value_fh.read()
+
+
+def quote_config_text(text):
+    if "\0" in text or "\n" in text or "\r" in text:
+        raise SystemExit("refusing multi-line Git config value")
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t") + '"'
+
+
+parts = key.split(".")
+if len(parts) < 2:
+    raise SystemExit(f"refusing invalid Git config key: {key}")
+
+section = parts[0]
+name = parts[-1]
+subsection = ".".join(parts[1:-1]) if len(parts) > 2 else None
+if not re.fullmatch(r"[A-Za-z0-9-]+", section) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", name):
+    raise SystemExit(f"refusing invalid Git config key: {key}")
+
+with open(config_file, "a", encoding="utf-8") as fh:
+    if subsection:
+        fh.write(f"[{section} {quote_config_text(subsection)}]\n")
+    else:
+        fh.write(f"[{section}]\n")
+    fh.write(f"\t{name} = {quote_config_text(value)}\n")
+PY
+}
+
 append_repo_local_auth_git_config() {
   local config_file="$1"
   local key key_lc value
@@ -832,7 +871,7 @@ append_repo_local_auth_git_config() {
     case "${key_lc}" in
       http.*.extraheader|http.*.proxy|http.*.sslcainfo|http.*.sslcapath|http.*.sslcert|http.*.sslkey|http.*.sslverify|credential.helper|credential.*)
         while IFS= read -r value; do
-          git config --file "${config_file}" --add "${key}" "${value}" \
+          printf '%s' "${value}" | append_git_config_value "${config_file}" "${key}" \
             || die "failed to copy checkout-local Git auth config"
         done < <(git_repo config --get-all "${key}" 2>/dev/null || true)
         ;;
@@ -1111,25 +1150,61 @@ finally:
 PY
 }
 
-secure_updater_state_dirs() {
-  python3 - "${TARGET_UID}" "${TARGET_GID}" "$@" <<'PY'
+prepare_updater_state_tree() {
+  python3 - "${REPO}" "${TARGET_UID}" "${TARGET_GID}" <<'PY'
 import os
 import stat
 import sys
 
-uid = int(sys.argv[1])
-gid = int(sys.argv[2])
+repo = sys.argv[1]
+uid = int(sys.argv[2])
+gid = int(sys.argv[3])
+no_follow = getattr(os, "O_NOFOLLOW", 0)
 
-for path in sys.argv[3:]:
-    st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
-        raise SystemExit(f"refusing unsafe updater state directory: {path}")
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+
+def open_verified_dir(name, parent_fd, display_path):
+    st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISLNK(st.st_mode):
+        raise SystemExit(f"refusing symlinked recovery state: {display_path}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise SystemExit(f"refusing non-directory recovery state: {display_path}")
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | no_follow, dir_fd=parent_fd)
     try:
-        os.fchown(fd, uid, gid)
-        os.fchmod(fd, 0o750)
-    finally:
+        fd_st = os.fstat(fd)
+        if (fd_st.st_dev, fd_st.st_ino) != (st.st_dev, st.st_ino):
+            raise SystemExit(f"refusing changed recovery state: {display_path}")
+        return fd
+    except Exception:
         os.close(fd)
+        raise
+
+
+repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | no_follow)
+try:
+    try:
+        os.mkdir(".agent", 0o750, dir_fd=repo_fd)
+    except FileExistsError:
+        pass
+    agent_fd = open_verified_dir(".agent", repo_fd, os.path.join(repo, ".agent"))
+    try:
+        os.fchown(agent_fd, uid, gid)
+        os.fchmod(agent_fd, 0o750)
+        for child in ("updates", "update-backups"):
+            display_path = os.path.join(repo, ".agent", child)
+            try:
+                os.mkdir(child, 0o750, dir_fd=agent_fd)
+            except FileExistsError:
+                pass
+            child_fd = open_verified_dir(child, agent_fd, display_path)
+            try:
+                os.fchown(child_fd, uid, gid)
+                os.fchmod(child_fd, 0o750)
+            finally:
+                os.close(child_fd)
+    finally:
+        os.close(agent_fd)
+finally:
+    os.close(repo_fd)
 PY
 }
 
@@ -1168,19 +1243,7 @@ signal_exit() {
 }
 
 prepare_updater_state_dirs() {
-  local agent_dir updates_dir backups_dir
-  agent_dir="${REPO}/.agent"
-  updates_dir="${agent_dir}/updates"
-  backups_dir="${agent_dir}/update-backups"
-  require_plain_recovery_dir "${agent_dir}"
-  mkdir -p -- "${agent_dir}" || die "failed to create updater state directory: ${agent_dir}"
-  require_plain_recovery_dir "${agent_dir}"
-  require_plain_recovery_dir "${updates_dir}"
-  require_plain_recovery_dir "${backups_dir}"
-  mkdir -p -- "${updates_dir}" "${backups_dir}" || die "failed to create updater runtime directories"
-  require_plain_recovery_dir "${updates_dir}"
-  require_plain_recovery_dir "${backups_dir}"
-  secure_updater_state_dirs "${agent_dir}" "${updates_dir}" "${backups_dir}" \
+  prepare_updater_state_tree \
     || die "failed to hand updater runtime metadata to checkout owner"
 }
 

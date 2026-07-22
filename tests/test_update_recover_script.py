@@ -73,6 +73,8 @@ def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     assert "golang:1.22-bookworm" in script
     assert "AAVA_CLI_VERSION=${ref}" in script
     assert "--self-update=false" in script
+    assert "append_git_config_value" in script
+    assert 'git config --file "${config_file}" --add "${key}" "${value}"' not in script
     assert 'AAVA_RECOVERY_STATUS=$?' in script
     assert '( exit "${AAVA_RECOVERY_STATUS}" )' in script
     assert installation.count('AAVA_RECOVERY_STATUS=$?') == 3
@@ -207,6 +209,12 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
         "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q '^\\[url ' \"$GIT_CONFIG_GLOBAL\"; then\n"
         "  printf 'git_config_has_rewrite yes\\n' >>\"$AAVA_TEST_LOG\"\n"
         "fi\n"
+        "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q 'localtoken' \"$GIT_CONFIG_GLOBAL\"; then\n"
+        "  printf 'git_config_has_auth yes\\n' >>\"$AAVA_TEST_LOG\"\n"
+        "fi\n"
+        "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q '/home/owner/.git-credentials' \"$GIT_CONFIG_GLOBAL\"; then\n"
+        "  printf 'git_config_has_credential yes\\n' >>\"$AAVA_TEST_LOG\"\n"
+        "fi\n"
         "if [ \"$1\" = clone ]; then\n"
         "  dest=\"${@: -1}\"\n"
         "  mkdir -p \"$dest/cli\"\n"
@@ -273,8 +281,11 @@ install_branch_cli codex/update-recovery-script
     assert re.search(r"git_config_global \S", commands)
     assert "git_config_has_include yes" in commands
     assert "git_config_has_rewrite yes" in commands
-    assert "--add http.https://example.invalid/.extraHeader AUTHORIZATION: bearer localtoken" in commands
-    assert "--add credential.helper store --file=/home/owner/.git-credentials" in commands
+    assert "git_config_has_auth yes" in commands
+    assert "git_config_has_credential yes" in commands
+    assert "AUTHORIZATION: bearer localtoken" not in commands
+    assert "--add http.https://example.invalid/.extraHeader" not in commands
+    assert "--add credential.helper" not in commands
     assert "unsafe-helper" not in commands
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
@@ -576,14 +587,27 @@ def test_update_recover_rejects_symlinked_updater_state(tmp_path: Path) -> None:
 set -euo pipefail
 source "$SOURCE"
 REPO="{repo}"
-TARGET_UID=1234
-TARGET_GID=2345
+TARGET_UID={os.getuid()}
+TARGET_GID={os.getgid()}
 prepare_updater_state_dirs
 """
     result = _run_bash_harness(harness, tmp_path, check=False)
 
     assert result.returncode == 2
     assert "refusing symlinked recovery state" in result.stderr
+
+
+def test_update_recover_creates_updater_state_children_through_pinned_dir() -> None:
+    script = _script()
+    start = script.index("prepare_updater_state_tree() {")
+    end = script.index("\ncleanup() {", start)
+    prepare_tree = script[start:end]
+
+    assert 'os.open(repo, os.O_RDONLY | os.O_DIRECTORY | no_follow)' in prepare_tree
+    assert 'os.mkdir(".agent", 0o750, dir_fd=repo_fd)' in prepare_tree
+    assert 'os.mkdir(child, 0o750, dir_fd=agent_fd)' in prepare_tree
+    assert 'mkdir -p -- "${updates_dir}" "${backups_dir}"' not in script
+    assert "secure_updater_state_dirs" not in script
 
 
 def test_update_recover_redacts_credentials_from_remote_diagnostics(tmp_path: Path) -> None:
