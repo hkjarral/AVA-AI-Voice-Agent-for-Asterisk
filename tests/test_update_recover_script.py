@@ -63,6 +63,7 @@ def test_update_recover_help_documents_operator_choices() -> None:
 
 def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     script = _script()
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
 
     assert "releases/download/${version}" in script
     assert "mktemp -d /tmp/aava-cli-install.XXXXXXXXXX" in script
@@ -72,6 +73,10 @@ def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     assert "golang:1.22-bookworm" in script
     assert "AAVA_CLI_VERSION=${ref}" in script
     assert "--self-update=false" in script
+    assert 'AAVA_RECOVERY_STATUS=$?' in script
+    assert '( exit "${AAVA_RECOVERY_STATUS}" )' in script
+    assert installation.count('AAVA_RECOVERY_STATUS=$?') == 3
+    assert installation.count('( exit "${AAVA_RECOVERY_STATUS}" )') == 3
 
 
 def test_update_recover_release_bootstrap_fetches_pinned_installer(tmp_path: Path) -> None:
@@ -286,7 +291,8 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
 
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}"' not in install_branch
     assert 'chmod 0711 "${tmp_src}"' in install_branch
-    assert 'mkdir -p -- "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
+    assert 'mkdir -m 0700 -- "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
+    assert 'chmod 0700 "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
     assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
     assert ': >"${clone_err}"' in install_branch
@@ -667,10 +673,12 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     agent_repair = main.index("repair_agent_state_ownership")
     docker_check = main.index("check_owner_docker_access")
     plan = main.index("run_plan")
+    confirm = main.index("confirm_update")
+    refresh = main.index("refresh_overwrite_artifacts_before_update")
     update = main.index("run_update")
 
     assert owner < git_repair < tracked_repair < diagnostics < prompt < preserve < install
-    assert install < agent_repair < updater_state < plan < docker_check < update
+    assert install < agent_repair < updater_state < plan < docker_check < confirm < refresh < update
     assert "staged-tracked.patch" in script
     assert "unstaged-tracked.patch" in script
     assert "pre-update-files" in script
@@ -681,6 +689,8 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert "-u GIT_EXTERNAL_DIFF -u GIT_DIFF_OPTS git" in script
     assert "--no-ext-diff --no-textconv" in script
     assert "Overwrite is unavailable with --stash-untracked" in script
+    assert 'if [ "${LOCAL_CHANGES}" != "overwrite" ]; then' in script
+    assert 'UNMERGED_COPIED="false"' in script
 
 
 def test_update_recover_plan_and_update_pass_owner_args_in_order(tmp_path: Path) -> None:

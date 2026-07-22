@@ -95,10 +95,13 @@ depend on the failing Admin UI planner container:
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
+AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
   curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&
   sudo bash "${AAVA_RECOVERY_SCRIPT}" --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui
+AAVA_RECOVERY_STATUS=$?
 rm -f "${AAVA_RECOVERY_SCRIPT:-}"
+( exit "${AAVA_RECOVERY_STATUS}" )
 ```
 
 The script supports Ubuntu/Debian and RHEL/CentOS-style Linux AAVA hosts and
@@ -128,10 +131,13 @@ For non-interactive recovery, pass the decision explicitly:
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
+AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
   curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&
   sudo bash "${AAVA_RECOVERY_SCRIPT}" --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes retain --yes
+AAVA_RECOVERY_STATUS=$?
 rm -f "${AAVA_RECOVERY_SCRIPT:-}"
+( exit "${AAVA_RECOVERY_STATUS}" )
 ```
 
 Use `overwrite` only when the operator accepts that tracked local code changes will be
@@ -140,10 +146,13 @@ discarded:
 ```bash
 AAVA_RECOVERY_REF=v7.4.2
 AAVA_REPO=/path/to/AVA-AI-Voice-Agent-for-Asterisk
+AAVA_RECOVERY_STATUS=0
 AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
   curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&
   sudo bash "${AAVA_RECOVERY_SCRIPT}" --repo "${AAVA_REPO}" --ref "${AAVA_RECOVERY_REF}" --include-ui --local-changes overwrite
+AAVA_RECOVERY_STATUS=$?
 rm -f "${AAVA_RECOVERY_SCRIPT:-}"
+( exit "${AAVA_RECOVERY_STATUS}" )
 ```
 
 Untracked files are left alone by default. If Git reports that untracked files would be

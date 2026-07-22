@@ -42,10 +42,13 @@ Usage:
 
 Recommended for a stuck release upgrade:
   AAVA_RECOVERY_REF=v7.4.2
+  AAVA_RECOVERY_STATUS=0
   AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
     curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&
     sudo bash "${AAVA_RECOVERY_SCRIPT}" --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
+  AAVA_RECOVERY_STATUS=$?
   rm -f "${AAVA_RECOVERY_SCRIPT:-}"
+  ( exit "${AAVA_RECOVERY_STATUS}" )
 
 Options:
   --repo PATH                  AAVA checkout path (default: current Git checkout, then /opt/Asterisk-AI-Voice-Agent)
@@ -568,6 +571,7 @@ copy_unmerged_files() {
   local conflict_dir list_file rel src dst
   conflict_dir="${RECOVERY_DIR}/unmerged-files"
   list_file="${RECOVERY_DIR}/unmerged-tracked-files.txt"
+  rm -rf -- "${conflict_dir}" "${list_file}" "${list_file}.nul"
   mkdir -p -- "${conflict_dir}"
   git_repo diff --name-only --diff-filter=U -z >"${list_file}.nul" \
     || die "failed to enumerate unmerged tracked files"
@@ -592,6 +596,7 @@ copy_unmerged_files() {
 capture_preupdate_artifacts() {
   log "==> Preserving local state before update"
   git_repo status --short >/dev/null || die "failed to inspect checkout changes; update not attempted"
+  UNMERGED_COPIED="false"
   if has_unmerged_paths && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
     copy_unmerged_files
   fi
@@ -626,6 +631,7 @@ capture_preupdate_artifacts() {
     fi
   done
   if [ -d "${REPO}/config/contexts" ]; then
+    rm -rf -- "${backup_dir}/config/contexts"
     cp -a -- "${REPO}/config/contexts" "${backup_dir}/config/contexts"
   fi
   for rel in "data/operator/agents.db" "data/operator/agents.db-wal" "data/operator/agents.db-shm" \
@@ -869,8 +875,8 @@ install_branch_cli() {
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/gitconfig" \
     || die "failed to hand temporary Git URL rewrite config to checkout owner"
   chmod 0711 "${tmp_src}" || die "failed to make temporary CLI source directory traversable"
-  mkdir -p -- "${tmp_src}/repo" "${tmp_src}/out" \
-    || die "failed to create temporary CLI build directories"
+  mkdir -m 0700 -- "${tmp_src}/repo" "${tmp_src}/out" \
+    || die "failed to create private CLI build directories"
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out" \
     || die "failed to hand temporary CLI build directories to checkout owner"
   clone_err="${tmp_src}/git-clone.err"
@@ -1315,6 +1321,14 @@ run_update() {
   fi
 }
 
+refresh_overwrite_artifacts_before_update() {
+  if [ "${LOCAL_CHANGES}" != "overwrite" ]; then
+    return 0
+  fi
+  log "==> Refreshing preserved local state before overwrite"
+  capture_preupdate_artifacts
+}
+
 print_restore_guidance() {
   cat <<EOF
 
@@ -1384,6 +1398,7 @@ main() {
   fi
   check_owner_docker_access
   confirm_update
+  refresh_overwrite_artifacts_before_update
   run_update
   print_restore_guidance
 }
