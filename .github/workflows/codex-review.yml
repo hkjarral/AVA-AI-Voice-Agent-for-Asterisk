@@ -1,0 +1,144 @@
+name: Codex Targeted Review
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Targeted Codex review
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.label.name == 'codex-review'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${INPUT_PR_NUMBER}"
+          else
+            PR_NUMBER="${EVENT_PR_NUMBER}"
+          fi
+
+          if [ -z "${PR_NUMBER}" ]; then
+            echo "Unable to resolve pull request number" >&2
+            exit 1
+          fi
+
+          PR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          {
+            echo "number=${PR_NUMBER}"
+            echo "base_ref=$(printf '%s' "${PR_JSON}" | jq -r '.base.ref')"
+            echo "base_sha=$(printf '%s' "${PR_JSON}" | jq -r '.base.sha')"
+            echo "head_sha=$(printf '%s' "${PR_JSON}" | jq -r '.head.sha')"
+            echo "title=$(printf '%s' "${PR_JSON}" | jq -r '.title')"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout pull request merge commit
+        uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ steps.pr.outputs.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch review refs
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "${BASE_REF}" \
+            "+refs/pull/${PR_NUMBER}/head"
+
+      - name: Validate OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "OPENAI_API_KEY repository secret is required for Codex Targeted Review." >&2
+            exit 1
+          fi
+
+      - name: Run targeted Codex review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          sandbox: read-only
+          effort: medium
+          prompt: |
+            You are reviewing PR #${{ steps.pr.outputs.number }} for ${{ github.repository }}.
+
+            PR title: ${{ steps.pr.outputs.title }}
+            Base SHA: ${{ steps.pr.outputs.base_sha }}
+            Head SHA: ${{ steps.pr.outputs.head_sha }}
+
+            Review only the changes introduced by this PR:
+              git diff --stat ${{ steps.pr.outputs.base_sha }}...${{ steps.pr.outputs.head_sha }}
+              git diff ${{ steps.pr.outputs.base_sha }}...${{ steps.pr.outputs.head_sha }}
+
+            Follow the repository's AGENTS.md review guidance.
+
+            Scope:
+            - Report only blocking or high-confidence issues in correctness, security, data loss, migration/rollback safety, authorization, concurrency/idempotency, compatibility, or missing tests for changed behavior.
+            - Do not report style, naming, formatting, optional refactors, preference-based maintainability, or speculative issues.
+            - Do not repeat comments that are already resolved or not introduced by this PR.
+            - Prefer no findings over low-confidence findings.
+
+            Output format:
+            - If no blocking findings exist, respond exactly with: "No blocking Codex findings."
+            - Otherwise list findings first, ordered by severity, with file and line references when possible.
+            - Keep the response concise.
+
+      - name: Post review comment
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          CODEX_OUTCOME: ${{ steps.run_codex.outcome }}
+          CODEX_RESULT: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            const outcome = process.env.CODEX_OUTCOME;
+            const result = process.env.CODEX_RESULT || "";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const body = outcome === "success"
+              ? `### Codex targeted review\n\n${result}\n\n---\nTriggered by the opt-in Codex Targeted Review workflow. Run: ${runUrl}`
+              : `### Codex targeted review\n\nCodex review did not complete successfully. Check the workflow run before relying on this result.\n\nRun: ${runUrl}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });

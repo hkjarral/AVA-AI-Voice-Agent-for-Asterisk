@@ -6,12 +6,11 @@ This workflow keeps feedback early while avoiding a full review and Docker build
 
 1. Create a focused branch from the latest `main` and build a coherent vertical slice.
 2. Open a **draft** pull request. Fast tests, lint, compilation, secret checks, CLI builds, and CodeQL run on every push. Superseded runs for the same PR are canceled.
-3. At the first useful checkpoint, comment `@codex review`. CodeRabbit reviews drafts automatically and pauses after its first reviewed commit. Wait for both reviewers, triage their comments together, and push one cohesive fix batch.
-4. Continue implementation and local testing. Do not request a new bot review for every push.
-5. When the implementation and documentation are complete, freeze the PR head and mark the draft ready. The ready transition runs final CI and triggers the final Codex review. Apply `full-ci` instead only when final validation must run while the PR remains a draft.
-6. On that frozen ready head, comment `@coderabbitai full review` once. Do not push while either final review is pending.
-7. Review both results together. Address only current, actionable findings. If a final fix is required, push one cohesive batch; the ready PR reruns final CI automatically. Request another final review only when the change materially invalidates the prior result.
-8. Mark the PR ready after the final checks pass and all actionable conversations are resolved. Squash-merge it into `main`.
+3. Continue implementation and local testing. Do not request a bot review for every push.
+4. When the implementation and documentation are complete, freeze the PR head and mark the draft ready. The ready transition runs final CI. Apply `full-ci` instead only when final validation must run while the PR remains a draft.
+5. On that frozen ready head, comment `@coderabbitai full review` once. If a Codex review is useful, add the `codex-review` label or run the **Codex Targeted Review** workflow manually for the PR number. Do not push while either final review is pending.
+6. Review both results together. Address only current, actionable findings. If a final fix is required, push one cohesive batch; the ready PR reruns final CI automatically. Request another final review only when the change materially invalidates the prior result.
+7. Mark the PR ready after the final checks pass and all actionable conversations are resolved. Squash-merge it into `main`.
 
 ## CI stages
 
@@ -26,16 +25,17 @@ Path-scoped security and image workflows continue to run when their files change
 
 ## Review commands
 
-- `@codex review` — request a Codex review at a coherent draft checkpoint; marking the PR ready triggers the final review.
+- `codex-review` label — run the opt-in Codex Targeted Review workflow. Use this only on a frozen head when a targeted AI review is useful.
+- **Codex Targeted Review** manual workflow — run the same opt-in Codex review by PR number from the Actions tab.
 - `@coderabbitai full review` — request a fresh CodeRabbit review of the frozen final diff.
 - `@coderabbitai pause` / `@coderabbitai resume` — override automatic CodeRabbit review behavior when needed.
 
-CodeRabbit and Codex reviews are initially advisory. The protected branch requires the consolidated CI gate, CodeQL, a pull request, and resolved conversations. Maintainers retain an emergency administrator bypass; force pushes and branch deletion remain blocked.
+CodeRabbit and Codex reviews are advisory. The protected branch requires the consolidated CI gate, CodeQL, a pull request, and resolved conversations. Maintainers retain an emergency administrator bypass; force pushes and branch deletion remain blocked.
 
 ## Maintainer checklist
 
 - Confirm the PR is linked to its issue and the changelog is current.
 - Confirm test evidence matches the risk, including call IDs for telephony changes.
-- Confirm the final reviews and final CI refer to the current head SHA.
+- Confirm the final reviews, if requested, and final CI refer to the current head SHA.
 - Resolve or explicitly defer every actionable conversation before merge.
 - Use squash merge so the protected branch receives one coherent commit.

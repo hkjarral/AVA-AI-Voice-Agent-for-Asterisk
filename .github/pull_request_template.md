@@ -37,10 +37,10 @@ For telephony changes, include:
 ## Review Checkpoints
 
 - [ ] Draft opened after a coherent vertical slice was ready to review
-- [ ] One Codex draft review was requested, CodeRabbit completed, and both were assessed together
 - [ ] Review fixes were pushed as a cohesive batch
 - [ ] Final head is frozen, the PR is ready, and the final CI gate has passed
-- [ ] Final Codex ready-state review and `@coderabbitai full review` completed on the frozen head
+- [ ] `@coderabbitai full review` completed on the frozen head
+- [ ] Optional `codex-review` label/manual workflow completed on the frozen head, if requested
 - [ ] All actionable conversations are resolved
 
 See the [pull-request workflow](../docs/contributing/PULL_REQUEST_WORKFLOW.md) for the expected review and CI sequence.
