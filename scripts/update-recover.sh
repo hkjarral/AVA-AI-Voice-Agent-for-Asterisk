@@ -959,7 +959,9 @@ pin_branch_cli_output() {
   local dest="$2"
   python3 - "${source}" "${dest}" <<'PY'
 import os
+import shutil
 import stat
+import subprocess
 import sys
 
 source = sys.argv[1]
@@ -1096,7 +1098,7 @@ install_branch_cli() {
   need_cmd docker
   need_cmd tar
   local remote_url tmp_src clone_err clone_url escaped_remote_url owner_gitconfig xdg_gitconfig escaped_include
-  local owner_clone build_repo build_out expected_oid actual_oid source_tar
+  local owner_clone verified_clone build_repo build_out expected_oid actual_oid source_tar
   remote_url="$(git_repo ls-remote --get-url "${REMOTE}" 2>/dev/null || true)"
   if [ -z "${remote_url}" ]; then
     remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
@@ -1131,6 +1133,7 @@ install_branch_cli() {
     || die "failed to hand temporary Git URL rewrite config to checkout owner"
   chmod 0711 "${tmp_src}" || die "failed to make temporary CLI source directory traversable"
   owner_clone="${tmp_src}/owner-clone"
+  verified_clone="${tmp_src}/verified-clone"
   build_repo="${tmp_src}/repo"
   build_out="${tmp_src}/out"
   mkdir -m 0700 -- "${owner_clone}" "${build_repo}" "${build_out}" \
@@ -1169,14 +1172,18 @@ install_branch_cli() {
     || die "failed to freeze fetched CLI source ownership"
   chmod -R u+rwX,go-rwx "${owner_clone}" \
     || die "failed to freeze fetched CLI source permissions"
-  actual_oid="$(git -C "${owner_clone}" rev-parse --verify HEAD^{commit})" \
+  (umask 077 && git clone --quiet --no-local --no-hardlinks -- "${owner_clone}" "${verified_clone}") \
+    || die "failed to copy fetched CLI source into root-controlled storage"
+  chmod -R u+rwX,go-rwx "${verified_clone}" \
+    || die "failed to secure verified CLI source storage"
+  actual_oid="$(git -C "${verified_clone}" rev-parse --verify HEAD^{commit})" \
     || die "failed to inspect fetched CLI source commit"
   [ "${actual_oid}" = "${expected_oid}" ] \
     || die "fetched CLI source ${actual_oid} does not match expected ${expected_oid} for ${ref}"
-  git -C "${owner_clone}" fsck --no-progress \
+  git -C "${verified_clone}" fsck --no-progress \
     || die "fetched CLI source failed Git object validation"
   source_tar="${tmp_src}/source.tar"
-  git -C "${owner_clone}" archive --format=tar --output="${source_tar}" "${expected_oid}^{commit}" \
+  git -C "${verified_clone}" archive --format=tar --output="${source_tar}" "${expected_oid}^{commit}" \
     || die "failed to archive validated CLI source"
   tar -C "${build_repo}" -xf "${source_tar}" \
     || die "failed to unpack validated CLI source into root-owned build directory"
@@ -1402,7 +1409,28 @@ if st.st_uid == uid:
 elif st.st_gid in groups:
     new_mode = mode | 0o010
 else:
-    new_mode = mode | 0o001
+    if not shutil.which("getfacl") or not shutil.which("setfacl"):
+        raise SystemExit(
+            "foreign-owned checkout ancestor requires per-user ACL access; install the acl package "
+            "or move the checkout under a directory traversable by the checkout owner"
+        )
+    if not os.path.isdir("/proc/self/fd"):
+        raise SystemExit("per-user traversal ACL recovery requires /proc/self/fd support")
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd_st = os.fstat(fd)
+        if not stat.S_ISDIR(fd_st.st_mode) or (fd_st.st_dev, fd_st.st_ino) != (st.st_dev, st.st_ino):
+            raise SystemExit(f"refusing changed traversal directory: {path}")
+        fd_path = f"/proc/self/fd/{fd}"
+        acl_snapshot = f"{traversal_state}.acl.{fd_st.st_dev}.{fd_st.st_ino}"
+        with open(acl_snapshot, "w", encoding="utf-8") as fh:
+            subprocess.run(["getfacl", "--omit-header", fd_path], stdout=fh, check=True, pass_fds=(fd,))
+        subprocess.run(["setfacl", "-m", f"u:{uid}:x", fd_path], check=True, pass_fds=(fd,))
+        with open(traversal_state, "a", encoding="utf-8") as fh:
+            fh.write(f"acl\t{path}\t{acl_snapshot}\t{fd_st.st_dev}\t{fd_st.st_ino}\n")
+    finally:
+        os.close(fd)
+    raise SystemExit(0)
 
 if new_mode == mode:
     raise SystemExit(0)

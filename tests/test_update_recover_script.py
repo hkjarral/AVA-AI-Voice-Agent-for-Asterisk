@@ -321,6 +321,7 @@ install_branch_cli codex/update-recovery-script
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
     assert "git ls-remote -- aava-recovery-origin:" in commands
+    assert " clone --quiet --no-local --no-hardlinks -- " in commands
     assert "git -C " in commands
     assert " archive --format=tar --output=" in commands
     assert "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa^{commit}" in commands
@@ -338,6 +339,7 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}"' not in install_branch
     assert 'chmod 0711 "${tmp_src}"' in install_branch
     assert 'owner_clone="${tmp_src}/owner-clone"' in install_branch
+    assert 'verified_clone="${tmp_src}/verified-clone"' in install_branch
     assert 'build_repo="${tmp_src}/repo"' in install_branch
     assert 'build_out="${tmp_src}/out"' in install_branch
     assert 'mkdir -m 0700 -- "${owner_clone}" "${build_repo}" "${build_out}"' in install_branch
@@ -347,9 +349,11 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chown -R 0:0 "${owner_clone}"' in install_branch
     assert 'git -C "${owner_clone}" diff --quiet HEAD --' not in install_branch
     assert 'git ls-remote -- "${clone_url}"' in install_branch
-    assert 'actual_oid="$(git -C "${owner_clone}" rev-parse --verify HEAD^{commit})"' in install_branch
-    assert 'git -C "${owner_clone}" fsck --no-progress' in install_branch
-    assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}" "${expected_oid}^{commit}"' in install_branch
+    assert 'git clone --quiet --no-local --no-hardlinks -- "${owner_clone}" "${verified_clone}"' in install_branch
+    assert 'actual_oid="$(git -C "${verified_clone}" rev-parse --verify HEAD^{commit})"' in install_branch
+    assert 'git -C "${verified_clone}" fsck --no-progress' in install_branch
+    assert 'git -C "${verified_clone}" archive --format=tar --output="${source_tar}" "${expected_oid}^{commit}"' in install_branch
+    assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}"' not in install_branch
     assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}" HEAD' not in install_branch
     assert 'tar -C "${build_repo}" -xf "${source_tar}"' in install_branch
     assert 'cp -a -- "${owner_clone}/." "${build_repo}/"' not in install_branch
@@ -1029,6 +1033,8 @@ def test_update_recover_runs_as_checkout_owner_without_adding_docker_socket_grou
     assert 'HOME=${update_home}' in script
     assert 'make_dir_traversable_for_owner "${parent}"' in script
     assert 'chmod a+x -- "${parent}"' not in script
+    assert "new_mode = mode | 0o001" not in script
+    assert 'subprocess.run(["setfacl", "-m", f"u:{uid}:x", fd_path], check=True, pass_fds=(fd,))' in script
     assert 'os.fchmod(fd, mode)' in script
     assert 'os.fchmod(fd, new_mode)' in script
 
