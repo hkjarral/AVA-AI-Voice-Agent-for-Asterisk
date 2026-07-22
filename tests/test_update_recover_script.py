@@ -427,6 +427,59 @@ def test_update_recover_grants_and_records_protected_root_access(tmp_path: Path)
     assert traversal_state.read_text(encoding="utf-8") == f"700\t{repo / 'data'}\n"
 
 
+def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> None:
+    script = _script()
+    start = script.index("safe_chown_tracked_paths() {")
+    heredoc_start = script.index("<<'PY'\n", start) + len("<<'PY'\n")
+    heredoc_end = script.index("\nPY\n}", heredoc_start)
+    python_source = script[heredoc_start:heredoc_end]
+    instrumented_source = python_source.replace(
+        "import os\n",
+        "import os\n"
+        "import json\n"
+        "_chmod_calls = []\n"
+        "_real_chmod = os.chmod\n"
+        "def _ignore_chown(name, uid, gid, *, dir_fd=None, follow_symlinks=True):\n"
+        "    return None\n"
+        "def _record_chmod(name, mode, *, dir_fd=None, follow_symlinks=True):\n"
+        "    _chmod_calls.append([os.fsdecode(name), mode])\n"
+        "    _real_chmod(name, mode, dir_fd=dir_fd, follow_symlinks=follow_symlinks)\n"
+        "os.chown = _ignore_chown\n"
+        "os.chmod = _record_chmod\n",
+        1,
+    )
+    instrumented_source += "\nprint(json.dumps(_chmod_calls))\n"
+
+    repo = tmp_path / "repo"
+    (repo / "models").mkdir(parents=True)
+    (repo / "models" / "registry.json").write_text("", encoding="utf-8")
+    (repo / "models").chmod(0o007)
+    tracked_list = tmp_path / "tracked.z"
+    tracked_list.write_bytes(b"models/registry.json\0")
+    traversal_state = tmp_path / "restore.tsv"
+
+    result = subprocess.run(
+        [
+            "python3",
+            "-c",
+            instrumented_source,
+            str(repo),
+            str(os.getuid()),
+            str(os.getgid()),
+            str(os.getgid()),
+            str(tracked_list),
+            str(traversal_state),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    chmod_calls = json.loads(result.stdout)
+    assert ["models", 0o507] in chmod_calls
+    assert traversal_state.read_text(encoding="utf-8") == f"7\t{repo / 'models'}\n"
+
+
 def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
     script = _script()
 
@@ -837,15 +890,15 @@ def test_update_recover_can_pass_untracked_stash_when_requested() -> None:
     assert "args+=(--stash-untracked)" in script
 
 
-def test_update_recover_rejects_overwrite_with_untracked_stash(tmp_path: Path) -> None:
+def test_update_recover_rejects_untracked_stash_without_retain(tmp_path: Path) -> None:
     harness = """
 set -euo pipefail
 source "$SOURCE"
-LOCAL_CHANGES=overwrite
+LOCAL_CHANGES=ask
 STASH_UNTRACKED=true
 validate_args
 """
     result = _run_bash_harness(harness, tmp_path, check=False)
 
     assert result.returncode == 2
-    assert "--stash-untracked cannot be combined with --local-changes=overwrite" in result.stderr
+    assert "--stash-untracked requires --local-changes=retain" in result.stderr

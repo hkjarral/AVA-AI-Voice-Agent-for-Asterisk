@@ -42,8 +42,10 @@ Usage:
 
 Recommended for a stuck release upgrade:
   AAVA_RECOVERY_REF=v7.4.2
-  curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" \
-    | sudo bash -s -- --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
+  AAVA_RECOVERY_SCRIPT="$(mktemp)" &&
+    curl -fsSL "https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/${AAVA_RECOVERY_REF}/scripts/update-recover.sh" -o "${AAVA_RECOVERY_SCRIPT}" &&
+    sudo bash "${AAVA_RECOVERY_SCRIPT}" --repo /opt/Asterisk-AI-Voice-Agent --ref "${AAVA_RECOVERY_REF}" --include-ui
+  rm -f "${AAVA_RECOVERY_SCRIPT:-}"
 
 Options:
   --repo PATH                  AAVA checkout path (default: current Git checkout, then /opt/Asterisk-AI-Voice-Agent)
@@ -259,11 +261,22 @@ def owner_can_read_execute(st):
     if uid == 0:
         return True
     mode = stat.S_IMODE(st.st_mode)
-    if st.st_uid == uid and (mode & 0o500) == 0o500:
-        return True
-    if st.st_gid in groups and (mode & 0o050) == 0o050:
-        return True
+    if st.st_uid == uid:
+        return (mode & 0o500) == 0o500
+    if st.st_gid in groups:
+        return (mode & 0o050) == 0o050
     return (mode & 0o005) == 0o005
+
+
+def mode_with_owner_access(st):
+    mode = stat.S_IMODE(st.st_mode)
+    if uid == 0:
+        return mode
+    if st.st_uid == uid:
+        return mode | 0o500
+    if st.st_gid in groups:
+        return mode | 0o050
+    return mode | 0o005
 
 
 def ensure_protected_dir_access(name, dir_fd, st, display_rel):
@@ -275,7 +288,7 @@ def ensure_protected_dir_access(name, dir_fd, st, display_rel):
     display_path = os.path.join(repo, display_rel)
     with open(traversal_state, "a", encoding="utf-8") as fh:
         fh.write(f"{original_mode:o}\t{display_path}\n")
-    os.chmod(name, original_mode | 0o005, dir_fd=dir_fd, follow_symlinks=False)
+    os.chmod(name, mode_with_owner_access(st), dir_fd=dir_fd, follow_symlinks=False)
     updated = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     if not owner_can_read_execute(updated):
         raise SystemExit(f"failed to make protected tracked directory readable by checkout owner: {display_rel}")
@@ -431,8 +444,8 @@ validate_args() {
     true|false) ;;
     *) die "--stash-untracked state must be true or false" ;;
   esac
-  if [ "${STASH_UNTRACKED}" = "true" ] && [ "${LOCAL_CHANGES}" = "overwrite" ]; then
-    die "--stash-untracked cannot be combined with --local-changes=overwrite; use retain or preserve untracked files manually first"
+  if [ "${STASH_UNTRACKED}" = "true" ] && [ "${LOCAL_CHANGES}" != "retain" ]; then
+    die "--stash-untracked requires --local-changes=retain; preserve untracked files manually first for other policies"
   fi
   case "${AGENT_BIN}" in
     /*/agent|/agent) ;;
