@@ -52,6 +52,13 @@ def _assert_in_use_audio_profiles_unchanged(
     if not changed_profiles:
         return
 
+    configured_default = old_profiles.get("default")
+    default_profile = (
+        configured_default
+        if isinstance(configured_default, str) and configured_default
+        else "telephony_ulaw_8k"
+    )
+
     db_path = Path(
         os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
     ).expanduser()
@@ -62,9 +69,14 @@ def _assert_in_use_audio_profiles_unchanged(
         db_uri = db_path.resolve().as_uri() + "?mode=ro"
         with sqlite3.connect(db_uri, uri=True) as conn:
             placeholders = ",".join("?" for _ in changed_profiles)
+            inheritance_clause = (
+                " OR audio_profile IS NULL OR TRIM(audio_profile) = ''"
+                if default_profile in changed_profiles
+                else ""
+            )
             rows = conn.execute(
                 "SELECT slug, display_name, audio_profile FROM agents "
-                f"WHERE audio_profile IN ({placeholders})",
+                f"WHERE audio_profile IN ({placeholders}){inheritance_clause}",
                 tuple(sorted(changed_profiles)),
             ).fetchall()
     except (OSError, sqlite3.Error) as exc:
@@ -83,9 +95,17 @@ def _assert_in_use_audio_profiles_unchanged(
     if rows:
         references: Dict[str, list[str]] = {}
         for slug, display_name, profile_name in rows:
-            references.setdefault(str(profile_name), []).append(
+            explicit_profile = (
+                profile_name.strip() if isinstance(profile_name, str) else ""
+            )
+            effective_profile = explicit_profile or default_profile
+            if effective_profile not in changed_profiles:
+                continue
+            references.setdefault(str(effective_profile), []).append(
                 str(display_name or slug)
             )
+        if not references:
+            return
         detail = "; ".join(
             f"{profile}: {', '.join(sorted(names))}"
             for profile, names in sorted(references.items())

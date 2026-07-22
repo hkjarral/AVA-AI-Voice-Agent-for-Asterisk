@@ -17,7 +17,7 @@ describe('OutputResamplerField', () => {
             />
         );
 
-        expect(screen.getByRole('combobox')).toHaveValue('inherit');
+        expect(screen.getByRole('combobox', { name: /output downsampling/i })).toHaveValue('inherit');
         expect(screen.getByRole('option', { name: /inherit from audio profile/i })).toBeInTheDocument();
         expect(screen.getByText(/currently a no-op/i)).toBeInTheDocument();
     });
@@ -34,7 +34,7 @@ describe('OutputResamplerField', () => {
         );
 
         expect(screen.getByText(/24000 Hz → 8000 Hz/i)).toBeInTheDocument();
-        fireEvent.change(screen.getByRole('combobox'), {
+        fireEvent.change(screen.getByRole('combobox', { name: /output downsampling/i }), {
             target: { value: 'bandlimited' },
         });
         expect(onChange).toHaveBeenCalledWith('bandlimited');

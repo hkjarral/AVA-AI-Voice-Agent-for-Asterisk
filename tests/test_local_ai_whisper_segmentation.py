@@ -81,6 +81,8 @@ async def test_whisper_segmenter_uses_per_session_silence_override(monkeypatch):
     server_mod = _load("server")
     session_mod = _load("session")
     instance, session, backend = _server_and_session(server_mod, session_mod)
+    instance.config.stt_segment_energy_threshold = 3000
+    session.stt_segment_energy_threshold = 1000
     session.stt_segment_silence_ms = 900
     now = 0.0
 

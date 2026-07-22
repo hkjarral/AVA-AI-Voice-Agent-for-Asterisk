@@ -235,10 +235,21 @@ const ProfilesPage = () => {
             .map(([name]) => name);
     };
 
-    const getAgentsUsingProfile = (profileName: string) => agents
-        .filter((agent) => agent?.audio_profile === profileName)
-        .map((agent) => agent?.display_name || agent?.name || agent?.slug || agent?.id)
-        .filter(Boolean);
+    const getAgentsUsingProfile = (profileName: string) => {
+        const configuredDefault = config.profiles?.default;
+        const defaultProfileName = typeof configuredDefault === 'string' && configuredDefault
+            ? configuredDefault
+            : 'telephony_ulaw_8k';
+        return agents
+            .filter((agent) => {
+                const explicitProfile = typeof agent?.audio_profile === 'string'
+                    ? agent.audio_profile.trim()
+                    : '';
+                return (explicitProfile || defaultProfileName) === profileName;
+            })
+            .map((agent) => agent?.display_name || agent?.name || agent?.slug || agent?.id)
+            .filter(Boolean);
+    };
 
     const getProfileSupport = (profileName: string, profile: any): 'ga' | 'enhanced' | 'experimental' | 'provider-native' | 'custom' => {
         if (profileName === 'telephony_enhanced_8k') return 'enhanced';

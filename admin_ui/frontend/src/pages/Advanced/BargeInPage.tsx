@@ -323,11 +323,12 @@ const BargeInPage = () => {
                                         onChange={(e) => {
                                             const value = Number.parseInt(e.target.value, 10);
                                             if (!Number.isFinite(value)) return;
+                                            const boundedValue = Math.min(5000, Math.max(40, value));
                                             updateBargeInConfig(
                                                 'provider_fallback_min_ms_by_provider',
                                                 {
                                                     ...providerFallbackMinByProvider,
-                                                    grok: value,
+                                                    grok: boundedValue,
                                                 }
                                             );
                                         }}

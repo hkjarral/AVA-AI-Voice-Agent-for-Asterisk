@@ -64,6 +64,34 @@ async def test_openai_output_uses_explicit_bandlimited_policy(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_preserves_filter_history_until_response_done():
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    provider = OpenAIRealtimeProvider(OpenAIRealtimeProviderConfig(), on_event)
+    provider._call_id = "openai-response-boundary"
+    provider._current_response_id = "response-1"
+    provider._in_audio_burst = True
+    provider._output_resample_state = (b"fir-history",)
+    provider._output_resampler_logged = True
+
+    await provider._emit_audio_done()
+
+    assert provider._output_resample_state == (b"fir-history",)
+    assert provider._output_resampler_logged is True
+
+    await provider._handle_event(
+        {"type": "response.done", "response": {"id": "response-1", "output": []}}
+    )
+
+    assert provider._output_resample_state is None
+    assert provider._output_resampler_logged is False
+    assert events[0]["type"] == "AgentAudioDone"
+
+
+@pytest.mark.asyncio
 async def test_google_output_uses_explicit_bandlimited_policy(monkeypatch):
     monkeypatch.delenv("AAVA_GOOGLE_OUTPUT_RESAMPLER", raising=False)
     calls = _record_resampler_mode(monkeypatch, google_module)

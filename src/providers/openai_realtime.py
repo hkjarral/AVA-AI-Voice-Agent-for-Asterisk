@@ -1928,7 +1928,12 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             # (moved from here for standardized measurement across providers)
             
             await self._emit_audio_done()
-            
+            # response.audio.done can fire once per audio segment. Preserve FIR
+            # history across those segment boundaries and reset it only when the
+            # complete response reaches a terminal event.
+            self._output_resample_state = None
+            self._output_resampler_logged = False
+
             # Only emit additional audio_done if this response actually had audio output
             # This prevents premature hangup when tool responses complete (no audio yet)
             # The farewell response will emit audio_done when IT completes with audio
@@ -2466,8 +2471,6 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                     self._pacer_task.cancel()
             except Exception:
                 logger.debug("Failed to pause pacer on AgentAudioDone", call_id=self._call_id, exc_info=True)
-            self._output_resample_state = None
-            self._output_resampler_logged = False
             self._first_output_chunk_logged = False
 
         # If a hangup was requested and we just finished emitting the farewell audio, trigger hangup now.
@@ -2631,6 +2634,8 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 self._pending_response = False
                 self._in_audio_burst = False
                 self._first_output_chunk_logged = False
+                self._output_resample_state = None
+                self._output_resampler_logged = False
                 # Send session update again and restart loops
                 await self._send_session_update()
                 self._log_session_assumptions()

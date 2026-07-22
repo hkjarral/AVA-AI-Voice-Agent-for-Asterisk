@@ -173,8 +173,10 @@ def normalize_profiles(config_data: Dict[str, Any]) -> None:
             'internal_rate_hz': 8000,
             'transport_out': {'encoding': 'ulaw', 'sample_rate_hz': 8000},
             'provider_pref': {
-                'input': {'encoding': 'mulaw', 'sample_rate_hz': 8000},
-                'output': {'encoding': 'mulaw', 'sample_rate_hz': 8000},
+                'input_encoding': 'mulaw',
+                'input_sample_rate_hz': 8000,
+                'output_encoding': 'mulaw',
+                'output_sample_rate_hz': 8000,
                 'preferred_chunk_ms': 20,
             },
             'idle_cutoff_ms': 1200,

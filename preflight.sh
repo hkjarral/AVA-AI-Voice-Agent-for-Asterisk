@@ -2195,7 +2195,7 @@ check_asterisk_config() {
     fi
     local recording_spool="${astspooldir%/}/recording"
     local recording_spool_ok=false
-    local recording_spool_detail="missing or not writable by Asterisk"
+    local recording_spool_detail="$recording_spool (missing or not writable by Asterisk)"
     local ast_uid="" ast_gid=""
     if id asterisk &>/dev/null; then
         ast_uid="$(id -u asterisk 2>/dev/null || true)"

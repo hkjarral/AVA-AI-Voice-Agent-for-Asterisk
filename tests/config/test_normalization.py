@@ -227,6 +227,13 @@ class TestNormalizeProfiles:
         assert profile['transport_out']['encoding'] == 'ulaw'
         assert profile['idle_cutoff_ms'] == 1200
         assert profile['output_resampler'] == 'linear'
+        assert profile['provider_pref'] == {
+            'input_encoding': 'mulaw',
+            'input_sample_rate_hz': 8000,
+            'output_encoding': 'mulaw',
+            'output_sample_rate_hz': 8000,
+            'preferred_chunk_ms': 20,
+        }
 
         enhanced = config_data['profiles']['telephony_enhanced_8k']
         assert enhanced['transport_out'] == {'encoding': 'ulaw', 'sample_rate_hz': 8000}

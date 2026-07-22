@@ -94,4 +94,19 @@ describe('ProfilesPage audio contract safety', () => {
         expect(axios.post).not.toHaveBeenCalled();
         consoleError.mockRestore();
     });
+
+    it('treats agents without an explicit profile as users of the configured default', async () => {
+        vi.mocked(axios.get).mockResolvedValue({
+            data: [{ slug: 'default-agent', display_name: 'Default Agent', audio_profile: null }],
+        });
+
+        render(<ProfilesPage />);
+
+        expect(await screen.findByText('Default Agent')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Delete profile telephony_ulaw_8k' }));
+
+        await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+        expect(mocks.confirm).not.toHaveBeenCalled();
+        expect(axios.post).not.toHaveBeenCalled();
+    });
 });

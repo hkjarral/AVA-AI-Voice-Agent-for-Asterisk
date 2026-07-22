@@ -14,12 +14,13 @@ const OutputResamplerField: React.FC<OutputResamplerFieldProps> = ({
     sourceRate,
     targetRate,
 }) => {
+    const selectId = React.useId();
     const downsampling = Number(sourceRate || 0) > Number(targetRate || 0);
 
     return (
         <div className="space-y-2">
             <div className="flex items-center gap-1.5">
-                <label className="text-sm font-medium">Output Downsampling</label>
+                <label htmlFor={selectId} className="text-sm font-medium">Output Downsampling</label>
                 <HelpTooltip
                     content={
                         <>
@@ -35,6 +36,7 @@ const OutputResamplerField: React.FC<OutputResamplerFieldProps> = ({
                 />
             </div>
             <select
+                id={selectId}
                 className="w-full p-2 rounded border border-input bg-background"
                 value={value || 'inherit'}
                 onChange={(event) => onChange(event.target.value as 'inherit' | 'linear' | 'bandlimited')}

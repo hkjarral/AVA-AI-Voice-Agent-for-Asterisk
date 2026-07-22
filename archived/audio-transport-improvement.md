@@ -12,11 +12,14 @@ Validate audio quality and transport integrity across the maintainer-approved re
   Provider and pipeline controls default to `inherit`, with explicit values
   retained only as narrower diagnostic overrides. Resolution is per call so
   Agents using different profiles do not mutate shared state. The Admin UI
-  surfaces the enhanced profile and effective downsampling mode. Automated
-  verification is complete: 1,831 core tests passed with 18 skips, all 481
-  Admin backend tests and all 218 frontend tests passed, and the frontend lint,
-  production builds, source compilation, schema sync, shell syntax, and secret
-  scan gates are clean. The first draft CodeRabbit review was triaged as one
+  surfaces the enhanced profile and effective downsampling mode. The
+  authoritative release result is the 2026-07-22 PR freeze gate recorded below.
+  The preceding draft checkpoint (2026-07-22, before the second review-fix
+  batch) passed 1,831 core tests with 18 skips, all 481 Admin backend tests, and
+  all 218 frontend tests; it is retained as historical evidence rather than the
+  release criterion. The frontend lint, production builds, source compilation,
+  schema sync, shell syntax, and secret scan gates were also clean. The first
+  draft CodeRabbit review was triaged as one
   cohesive batch, including the pipeline greeting cleanup gate, stream cleanup
   ownership/deadline, diagnostic path permissions, Asterisk module/spool
   discovery, and protocol-contract corrections. Exact-head voiprnd deployment
@@ -53,8 +56,9 @@ Validate audio quality and transport integrity across the maintainer-approved re
     candidate; PCM-tap coverage should be tracked as a separate observability
     issue.
 
-- **Maintainer acceptance decision (2026-07-21):** Grok, OpenAI, Google, and
-  Deepgram are accepted as good to go from the completed live-call evidence.
+- **Maintainer acceptance decision (finalized 2026-07-22):** Grok, OpenAI,
+  Google, Deepgram, and ElevenLabs are accepted as good to go from the completed
+  live-call evidence, including the ElevenLabs final lifecycle retest below.
   Existing completed calls will serve as the golden dataset rather than adding
   replacement calls solely for omitted script items. The experimental-profile
   lane is also accepted as already executed. Local Full,
@@ -63,8 +67,8 @@ Validate audio quality and transport integrity across the maintainer-approved re
   investigated separately. The historical Local Full delivery failure remains
   archived and must not be relabeled as a pass.
 
-- **Implementation branch:** `codex/audio-transport-improvement`, head
-  `644c061ee11357d33e7435d5f5943633fcb92aad`, based on `origin/main` at
+- **Implementation branch:** `codex/audio-transport-improvement`, tracked by
+  PR #555 and based on `origin/main` at
   `981612c68c5de49232755e2f2305030bf338f401` in a clean, separate worktree.
   The prior dirty worktree is untouched.
 - **Pre-profile voiprnd runtime (historical):** AudioSocket, stream playback, `slin@8000`,
@@ -238,14 +242,16 @@ Validate audio quality and transport integrity across the maintainer-approved re
   container-only failure was the committed-secrets test because the minimal
   runtime image does not contain `git`; running the same guard in the worktree
   passes with no findings. After the fail-closed lifecycle change and live
-  retest, the current worktree's complete Python suite passes 1,849 tests with
-  7 expected skips; only pytest temporary-directory cleanup warnings were
-  emitted. After the scoped ElevenLabs fallback and provider-boundary lifecycle
-  fixes, a fresh full development-dependency run passes 1,826 tests with 18
-  expected skips and one intentionally deselected clean-tree assertion. The
+  retest, the historical pre-ElevenLabs lifecycle run (2026-07-21) passed 1,849
+  tests with 7 expected skips; only pytest temporary-directory cleanup warnings
+  were emitted. After the scoped ElevenLabs fallback and provider-boundary
+  lifecycle fixes, the historical post-ElevenLabs development run (2026-07-22)
+  passed 1,826 tests with 18 expected skips and one intentionally deselected
+  clean-tree assertion. The
   committed-secrets guard passes independently in the host worktree, and
   `git diff --check` also passes.
-- **PR freeze gate (2026-07-21):** after synchronizing with current
+- **Historical initial PR freeze gate (2026-07-21):** after synchronizing with
+  then-current
   `origin/main`, the exact CI-oriented engine suite passes 1,728 tests with
   17 expected skips and 140 documented deselections; coverage is 44.16% against
   the 26% threshold. The complete Admin backend suite passes 480/480 and the
@@ -254,6 +260,14 @@ Validate audio quality and transport integrity across the maintainer-approved re
   guard pass. Fresh AI engine, Admin UI, and Local AI Server production images
   all build successfully from the branch. Existing frontend dependency-age,
   bundle-size, and test-framework warnings are unchanged and non-blocking.
+- **Authoritative PR freeze gate (2026-07-22, second review-fix batch):** the
+  CI-selected root suite passes 1,777 tests with 6 skips and 139 documented
+  deselections. The complete Admin backend suite passes 482/482 and the complete
+  frontend suite passes 219/219. Frontend lint remains within the repository's
+  existing warning budget with zero errors, the production build succeeds, and
+  Python compilation, shell syntax, and diff whitespace checks pass. These are
+  the release criteria for the next PR head; the older 1,849, 1,826, 1,831,
+  1,728, 481, and 480 results above are explicitly historical scoped runs.
 - **Generalized backend canary deployment (2026-07-21 21:10 PDT):** after a
   complete rollback archive at
   `/root/Asterisk-AI-Voice-Agent/backups/audio-transport-src-20260721-2112-complete.tar.gz`,
@@ -404,21 +418,21 @@ Validate audio quality and transport integrity across the maintainer-approved re
 - Out: a Cartesian test of unsupported transport/playback combinations; promoting 16/24 kHz wire profiles to GA; silently changing global VAD or resampling behavior from a single-provider result; representing explicitly untested integrations as validated; and the Call History transcript race tracked separately in [GitHub issue #554](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues/554).
 
 ## Action items
-[x] **Freeze a reproducible test baseline before the next call.**
+- [x] **Freeze a reproducible test baseline before the next call.**
   - Record the deployed Git SHA/image IDs, complete effective configuration, Agent-to-provider/pipeline assignments, environment overrides, Asterisk version/modules, trunk codec, endpoint codec, and post-call health.
   - Back up `.env`, `config/ai-agent*.yaml`, and the Agent store before changing test routing.
   - Confirm the issue #553 OpenAI bandlimited patch state and flag value explicitly; do not allow an unrecorded mixed build.
   - Keep `telephony_ulaw_8k`, AudioSocket `slin@8000`, and streaming `8000` as the GA control unless a documented golden pipeline requires ExternalMedia/file playback.
   - Change only the selected Agent/provider/pipeline between baseline calls. Never apply or restart during an active call, and restore the frozen baseline after each experimental lane.
 
-[x] **Create the authoritative audio-contract inventory and reconcile current configuration drift.**
+- [x] **Create the authoritative audio-contract inventory and reconcile current configuration drift.**
   - For every shipped integration, record: full agent versus modular stage, supported transport/playback combination, caller/trunk codec, Asterisk wire encoding/rate, engine working rate, provider input/output encoding/rate, target encoding/rate, conversion owner, and current golden-config source.
   - Start with the established release matrix: Google Live, OpenAI Realtime, Deepgram Voice Agent, ElevenLabs Agent, Grok, Local full agent, `local_hybrid`, `hybrid_elevenlabs`, and `telnyx_hybrid`.
   - Inventory newer or optional integrations such as CambAI, Azure STT/TTS, MiniMax, OpenAI modular STT/TTS, Groq stages, and other enabled pipeline permutations. Each must be classified as release-supported, experimental, unavailable for credentials/runtime reasons, or unsupported; no integration may be silently skipped.
   - Reconcile the misleading current golden selections `openai_realtime_24k` and `grok_24k`: provider-native 24 kHz is valid internally, but the GA telephony wire leg must resolve to the approved 8 kHz contract.
   - Identify duplicated conversion logic across `src/engine.py`, `src/audio/resampler.py`, full-agent adapters, pipeline adapters, and playback managers without changing it yet.
 
-[x] **Freeze the mandatory and targeted test matrix before execution.**
+- [x] **Freeze the mandatory and targeted test matrix before execution.**
   - Mandatory golden lane:
 
     | Integration | Mode | Golden transport | Playback | GA wire profile |
@@ -446,14 +460,14 @@ Validate audio quality and transport integrity across the maintainer-approved re
     tested or untested classifications above.
   - Experimental profile lane runs only after all GA rows pass: one verified wideband-capable trunk, Asterisk channel, endpoint, and provider path. A provider-native 24 kHz API alone does not qualify the telephony path as wideband.
 
-[x] **Use one deterministic call script and freeze acceptance criteria before candidate calls.**
+- [x] **Use one deterministic call script and freeze acceptance criteria before candidate calls.**
   - Exercise both directions with: sustained sibilants, ordinary conversation, three seven-digit sequences with varied cadence, one deliberately wrong-length sequence, silence, controlled barge-in, a long reply, and a complete farewell/hangup.
   - Run a control call on the frozen baseline first; derive and publish objective tolerances before comparing candidate behavior.
   - Require exact numeric capture/readback for the scripted sequences, no invented or reordered digits, intelligible caller input, no audible hiss/crackle/warble, clean barge-in, complete terminal speech, and maintainer subjective quality of at least “no regression.”
   - Require exact expected sample-duration conversion within one frame, no unexplained input/output frame loss, provider-to-enqueued ratio `1.000` for uncancelled output, no format-alignment errors, no clipping introduced by conversion, drift and underflow within the existing RCA baseline, and clean post-call lifecycle state.
   - Measure level, clipping, DC offset, discontinuities, spectral/alias energy, high-frequency energy near the 8 kHz Nyquist boundary, stream drift, underflows, latency, and transcript accuracy. Treat subjective listening and objective metrics as complementary gates.
 
-[x] **Verify diagnostics through the Admin UI before every test batch.**
+- [x] **Verify diagnostics through the Admin UI before every test batch.**
   - Confirm four per-leg taps are active and writable: caller inbound, caller sent to provider, agent received from provider, and agent sent to caller; also retain the Asterisk MixMonitor recording.
   - From **Advanced Settings → Streaming**, enable taps, save, apply/restart as instructed, and verify effective runtime status rather than trusting the saved checkbox.
   - Require the UI/backend to report whether taps are active, the effective output directory, whether a restart is pending, the running configuration generation, and a visible failure reason when Apply Changes fails.
@@ -471,6 +485,9 @@ Validate audio quality and transport integrity across the maintainer-approved re
     `1784695142.1077` and `1784695300.1083`, successfully created and archived
     mixed bridge WAVs alongside all four engine legs, completing the live
     artifact prerequisite for the current AudioSocket lane.
+
+### Supporting implementation and live-validation evidence
+
 - **Local Hybrid pacing control (completed):** optional
   `pipelines.<name>.options.tts.streaming_overlap`. When absent it inherits the
   existing global setting, preserving every current pipeline; explicit `false`
@@ -613,7 +630,7 @@ Validate audio quality and transport integrity across the maintainer-approved re
   It was destroyed pre-Stasis after 30 seconds and produced no AAVA media or
   recording evidence. Repeat when the call can be answered.
 
-[x] **Execute and analyze test calls in controlled batches.**
+- [x] **Execute and analyze test calls in controlled batches.**
   - Run full-agent golden calls first, then pipeline golden calls, then targeted cross-transport calls, and only then the experimental profile lane.
   - Stop a batch on the first unexplained regression; archive the call before changing any setting, compare it with the preceding control, and repeat only after documenting the hypothesis.
   - For each call, trace setup, effective profile resolution, provider negotiation, every conversion boundary, VAD/commit/cancel events, playback pacing, barge-in, hangup/drain, post-call hooks, and cleanup.
@@ -642,14 +659,14 @@ Validate audio quality and transport integrity across the maintainer-approved re
     are explicitly untested/non-blocking and will be investigated if users
     report issues. The live-call matrix is closed at this approved scope.
 
-[x] **Classify findings by layer before selecting a fix location.**
+- [x] **Classify findings by layer before selecting a fix location.**
   - Separate source/trunk limitations, Asterisk transport format, profile resolution, inbound conversion, provider negotiation, provider-native synthesis, outbound anti-aliasing/resampling, encoding, pacing/playback, VAD/cancellation, and observability defects.
   - Compare identical source material at each tap to locate where noise, digit loss, clipping, drift, or spectral artifacts first appear.
   - Prefer a provider-local policy when the defect is unique to one provider contract; prefer a shared primitive only when multiple providers/pipelines reproduce the same failure at the same engine boundary.
   - Do not infer that a clean output path proves clean input recognition, or that an OpenAI-specific result applies to Deepgram, Google, ElevenLabs, Grok, local, or modular pipelines.
   - Record unrelated findings as separate issues so they cannot expand or obscure the audio-transport change; issue #554 remains independent.
 
-[x] **Finalize and implement the approved backend architecture with evidence-gated activation.**
+- [x] **Finalize and implement the approved backend architecture with evidence-gated activation.**
   - Keep one explicit GA transport contract: Asterisk-facing telephony audio is 8 kHz unless an end-to-end wideband path is deliberately selected and validated.
   - Model provider-native input/output capabilities separately from the transport profile; a profile must not imply that Asterisk sends the provider’s native rate.
   - Prefer shared, stateful, chunk-safe codec/resampling primitives with provider adapters declaring native capabilities and selecting policy explicitly. Preserve provider-specific handling where protocols or cancellation semantics differ.
@@ -664,7 +681,7 @@ Validate audio quality and transport integrity across the maintainer-approved re
     provider swaps preserve this portable playback policy and the independent
     output-resampler policy.
 
-[x] **Design the Admin UI and backend configuration changes as part of the same architecture.**
+- [x] **Design the Admin UI and backend configuration changes as part of the same architecture.**
   - Replace ambiguous profile presentation with **GA Telephony 8 kHz** and clearly badged **Experimental Wideband** presets; retain an expert custom mode but validate its encoding/rate pairs.
   - Show an effective-path preview before save: caller/trunk → Asterisk wire → engine → provider input → provider output → engine target → caller, including every encoding, sample rate, and resampling boundary.
   - Distinguish provider-native rates from transport rates and explain why OpenAI/Grok can use 24 kHz internally while the GA wire leg remains 8 kHz.
@@ -680,7 +697,7 @@ Validate audio quality and transport integrity across the maintainer-approved re
     artifact exists.
   - Cover profile round trips, compatibility validation, active-Agent impact, restart classification, failed-apply rollback, diagnostics activation, accessibility, frontend tests, backend API tests, production build, and browser console/API checks.
 
-[x] **Close the implementation validation gate and prepare the review phase.**
+- [x] **Close the implementation validation gate and prepare the review phase.**
   - Update this document with every call ID, archive, finding, threshold, exception, and final architecture decision; link any newly filed issues.
   - Require every maintainer-approved release-validation row to pass on one
     frozen revision. Explicitly untested rows remain labeled untested and are
