@@ -292,6 +292,72 @@ def test_full_provider_profile_resolution_is_isolated_per_call(monkeypatch):
     assert enhanced._output_resample_state is None
 
 
+def test_full_provider_without_native_resampler_receives_profile_policy(monkeypatch):
+    """Generic full-agent providers (Deepgram) still need a per-call policy."""
+    monkeypatch.delenv("AAVA_TEST_OUTPUT_RESAMPLER", raising=False)
+    engine = object.__new__(Engine)
+    provider = SimpleNamespace(
+        config=SimpleNamespace(output_resampler="inherit"),
+    )
+
+    engine._apply_provider_overrides(
+        provider,
+        _session("call-deepgram", "telephony_enhanced_8k", "bandlimited"),
+    )
+
+    assert provider._output_resampler_mode == "bandlimited"
+    assert provider._output_resampler_source == "profile"
+
+
+def test_generic_full_agent_conversion_uses_resolved_policy_and_updates_rate(
+    monkeypatch,
+):
+    import src.engine as module
+
+    calls = []
+
+    def fake_resample(data, source_rate, target_rate, **kwargs):
+        calls.append((data, source_rate, target_rate, kwargs))
+        return b"converted", ("bandlimited-state",)
+
+    monkeypatch.setattr(module, "resample_audio", fake_resample)
+    engine = object.__new__(Engine)
+    engine._resample_state_provider_out = {}
+    engine._call_providers = {
+        "call-deepgram": SimpleNamespace(
+            _output_resampler_mode="bandlimited",
+            _output_resampler_source="profile",
+        )
+    }
+    session = _session(
+        "call-deepgram", "telephony_enhanced_8k", "bandlimited"
+    )
+    session.provider_name = "deepgram"
+
+    converted, playback_rate = engine._resample_full_agent_output(
+        call_id=session.call_id,
+        session=session,
+        chunk=b"pcm16",
+        encoding="linear16",
+        source_rate=16000,
+        target_rate=8000,
+    )
+
+    assert converted == b"converted"
+    assert playback_rate == 8000
+    assert calls == [
+        (
+            b"pcm16",
+            16000,
+            8000,
+            {"state": None, "mode": "bandlimited"},
+        )
+    ]
+    assert engine._resample_state_provider_out[session.call_id] == (
+        "bandlimited-state",
+    )
+
+
 def test_pipeline_policy_precedence_and_call_isolation():
     engine = object.__new__(Engine)
     adapter = SimpleNamespace(

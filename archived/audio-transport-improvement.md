@@ -15,6 +15,17 @@ Validate audio quality and transport integrity across the maintainer-approved re
   passed. Regression coverage locks both deployment defaults and the Admin UI
   classification.
 
+- **Codex Deepgram full-agent follow-up (2026-07-22):** generic full-agent
+  providers now receive the same per-call profile/provider output-resampler
+  resolution as providers with native conversion code. When Deepgram is
+  configured for PCM output above the 8 kHz wire rate, its existing Engine
+  conversion now uses `bandlimited` under `telephony_enhanced_8k`; the
+  post-conversion playback metadata records the actual wire rate so the
+  streaming manager cannot resample the buffer a second time. Deepgram's GA
+  native mu-law 8 kHz contract remains a no-op and is unchanged. The focused
+  resampler/provider suites passed 85 tests, and the complete draft core gate
+  passed 1,780 tests (6 skipped, 139 deselected).
+
 - **Profile-owned rollout decision (2026-07-22):** the candidate is now exposed
   as the opt-in `telephony_enhanced_8k` Audio Profile rather than being enabled
   provider by provider. It retains the stable 8 kHz telephony contract and

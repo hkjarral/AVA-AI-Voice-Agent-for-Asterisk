@@ -12391,32 +12391,33 @@ class Engine:
                     )
                 except Exception:
                     pass
-                # Use streaming config rate for provider audio, not transport_profile which can be
-                # corrupted by inbound audio detection (user's 8kHz vs provider's 16kHz)
-                wire_rate = getattr(self.config.streaming, "sample_rate", 16000) or rate or 16000
                 try:
-                    transport_encoding = self._canonicalize_encoding(session.transport_profile.format)
+                    # New TransportProfile instances are immutable per call, so use
+                    # their wire rate instead of the process-wide streaming default.
+                    wire_rate = int(session.transport_profile.wire_sample_rate)
                 except Exception:
-                    transport_encoding = ""
+                    wire_rate = int(
+                        getattr(self.config.streaming, "sample_rate", 16000)
+                        or rate
+                        or 16000
+                    )
                 out_chunk = chunk
+                playback_rate = rate
                 if enc in ("linear16", "pcm16", "slin", "slin16") and rate and wire_rate and rate != wire_rate:
                     try:
-                        prov_out_state = self._resample_state_provider_out.get(call_id)
-                        out_chunk, prov_out_state = resample_audio(chunk, rate, wire_rate, state=prov_out_state)
-                        self._resample_state_provider_out[call_id] = prov_out_state
-                        seq = self._provider_chunk_seq.get(call_id, 0) + 1
-                        self._provider_chunk_seq[call_id] = seq
-                        logger.info(
-                            "PROVIDER CHUNK",
+                        out_chunk, playback_rate = self._resample_full_agent_output(
                             call_id=call_id,
-                            seq=seq,
-                            size_bytes=len(chunk),
+                            session=session,
+                            chunk=chunk,
                             encoding=enc,
-                            sample_rate_hz=rate,
-                            approx_duration_ms=duration_ms,
+                            source_rate=rate,
+                            target_rate=wire_rate,
                         )
                     except Exception:
                         logger.debug("Provider chunk resample failed; passing original", call_id=call_id, exc_info=True)
+                fmt_entry["playback_encoding"] = enc
+                fmt_entry["playback_sample_rate"] = playback_rate
+                self._provider_stream_formats[call_id] = fmt_entry
                 # Do not slice μ-law in engine; StreamingPlaybackManager handles segmentation/pacing
 
                 # Guardrail: downstream_mode=file is not compatible with streaming/chunked AgentAudio.
@@ -12539,7 +12540,10 @@ class Engine:
                             session.audio_diagnostics["codec_remediation"] = remediation
                         
                         # Get source sample rate with fallback to provider's configured output rate
-                        source_sample_rate = fmt_info.get("sample_rate")
+                        source_sample_rate = (
+                            fmt_info.get("playback_sample_rate")
+                            or fmt_info.get("sample_rate")
+                        )
                         if not source_sample_rate:
                             # Fallback: use provider's configured output rate (prevents 8kHz default)
                             try:
@@ -12568,7 +12572,10 @@ class Engine:
                                 call_id,
                                 q,
                                 playback_type=playback_type,
-                                source_encoding=fmt_info.get("encoding"),
+                                source_encoding=(
+                                    fmt_info.get("playback_encoding")
+                                    or fmt_info.get("encoding")
+                                ),
                                 source_sample_rate=source_sample_rate,
                                 target_encoding=target_encoding,
                                 target_sample_rate=target_sample_rate,
@@ -12628,10 +12635,21 @@ class Engine:
                                 target_sample_rate = session.transport_profile.wire_sample_rate
                             if remediation:
                                 session.audio_diagnostics["codec_remediation"] = remediation
-                            src_encoding = fmt_info.get("encoding") or encoding
+                            src_encoding = (
+                                fmt_info.get("playback_encoding")
+                                or fmt_info.get("encoding")
+                                or encoding
+                            )
                             provider_obj = getattr(self, "_call_providers", {}).get(call_id) if provider_name else None
-                            src_rate = fmt_info.get("sample_rate") or sample_rate_int or (
-                                getattr(provider_obj, "_dg_output_rate", None) if provider_obj else None
+                            src_rate = (
+                                fmt_info.get("playback_sample_rate")
+                                or fmt_info.get("sample_rate")
+                                or sample_rate_int
+                                or (
+                                    getattr(provider_obj, "_dg_output_rate", None)
+                                    if provider_obj
+                                    else None
+                                )
                             )
                             
                             # DOWNSTREAM_MODE GATING: Check if streaming playback is allowed
@@ -12882,8 +12900,14 @@ class Engine:
                                 call_id,
                                 q2,
                                 playback_type=playback_type,
-                                source_encoding=fmt_info.get("encoding"),
-                                source_sample_rate=fmt_info.get("sample_rate"),
+                                source_encoding=(
+                                    fmt_info.get("playback_encoding")
+                                    or fmt_info.get("encoding")
+                                ),
+                                source_sample_rate=(
+                                    fmt_info.get("playback_sample_rate")
+                                    or fmt_info.get("sample_rate")
+                                ),
                                 target_encoding=target_encoding,
                                 target_sample_rate=target_sample_rate,
                             )
@@ -17660,7 +17684,7 @@ class Engine:
         # without mutating a shared provider template.
         try:
             transport = getattr(session, "transport_profile", None)
-            if transport and hasattr(provider, "_output_resampler_mode"):
+            if transport:
                 provider_mode = (
                     cfg.get("output_resampler", "inherit")
                     if isinstance(cfg, dict)
@@ -17700,9 +17724,8 @@ class Engine:
                 call_id=session.call_id,
                 exc_info=True,
             )
-            if hasattr(provider, "_output_resampler_mode"):
-                provider._output_resampler_mode = "linear"
-                provider._output_resampler_source = "resolution-error-fallback"
+            provider._output_resampler_mode = "linear"
+            provider._output_resampler_source = "resolution-error-fallback"
 
         # LocalProvider uses an explicit initial greeting helper.
         try:
@@ -17710,6 +17733,61 @@ class Engine:
                 provider.set_initial_greeting(greeting)
         except Exception:
             logger.debug("Provider set_initial_greeting failed", call_id=session.call_id, exc_info=True)
+
+    def _resample_full_agent_output(
+        self,
+        *,
+        call_id: str,
+        session: CallSession,
+        chunk: bytes,
+        encoding: str,
+        source_rate: int,
+        target_rate: int,
+    ) -> Tuple[bytes, int]:
+        """Convert full-agent PCM to the per-call wire rate using its resolved policy."""
+        canonical = self._canonicalize_encoding(encoding)
+        if (
+            canonical not in {"linear16", "pcm16", "slin", "slin16"}
+            or source_rate <= 0
+            or target_rate <= 0
+            or source_rate == target_rate
+        ):
+            return chunk, source_rate
+
+        call_providers = getattr(self, "_call_providers", None) or {}
+        provider = call_providers.get(call_id)
+        transport = getattr(session, "transport_profile", None)
+        mode = getattr(
+            provider,
+            "_output_resampler_mode",
+            getattr(transport, "output_resampler", "linear"),
+        )
+        source = getattr(provider, "_output_resampler_source", "profile-fallback")
+        state = self._resample_state_provider_out.get(call_id)
+        first_chunk = state is None
+        converted, state = resample_audio(
+            chunk,
+            source_rate,
+            target_rate,
+            state=state,
+            mode=mode,
+        )
+        self._resample_state_provider_out[call_id] = state
+
+        if first_chunk:
+            logger.info(
+                "Full-agent output resampler selected",
+                call_id=call_id,
+                provider=getattr(session, "provider_name", None),
+                profile=getattr(transport, "profile_name", None),
+                configured_mode=mode,
+                active_mode=mode,
+                policy_source=source,
+                source_rate=source_rate,
+                target_rate=target_rate,
+                alias_safe=(mode == "bandlimited" and source_rate > target_rate),
+            )
+        return converted, target_rate
 
     async def _start_provider_session(self, call_id: str) -> None:
         """Start the provider session for a call when media path is ready."""
