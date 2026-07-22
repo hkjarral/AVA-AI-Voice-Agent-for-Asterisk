@@ -69,7 +69,7 @@ def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     assert "mktemp -d /tmp/aava-cli-install.XXXXXXXXXX" in script
     assert "SHA256SUMS" in script
     assert "install_branch_cli()" in script
-    assert "git clone --quiet --depth 1 --single-branch --branch" in script
+    assert "git clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --branch" in script
     assert "golang:1.22-bookworm" in script
     assert "AAVA_CLI_VERSION=${ref}" in script
     assert "--self-update=false" in script
@@ -321,6 +321,7 @@ install_branch_cli codex/update-recovery-script
     assert "golang:1.22-bookworm" in commands
     assert "AAVA_CLI_VERSION=codex/update-recovery-script" in commands
     assert "git ls-remote -- aava-recovery-origin:" in commands
+    assert " clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --branch codex/update-recovery-script" in commands
     assert " clone --quiet --no-local --no-hardlinks -- " in commands
     assert "git -C " in commands
     assert " archive --format=tar --output=" in commands
@@ -349,6 +350,7 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chown -R 0:0 "${owner_clone}"' in install_branch
     assert 'git -C "${owner_clone}" diff --quiet HEAD --' not in install_branch
     assert 'git ls-remote -- "${clone_url}"' in install_branch
+    assert 'git clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${owner_clone}"' in install_branch
     assert 'git clone --quiet --no-local --no-hardlinks -- "${owner_clone}" "${verified_clone}"' in install_branch
     assert 'actual_oid="$(git -C "${verified_clone}" rev-parse --verify HEAD^{commit})"' in install_branch
     assert 'git -C "${verified_clone}" fsck --no-progress' in install_branch

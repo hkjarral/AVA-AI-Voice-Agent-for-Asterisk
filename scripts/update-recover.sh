@@ -1161,7 +1161,7 @@ install_branch_cli() {
   )" || die "failed to resolve selected CLI ref ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   [ -n "${expected_oid}" ] || die "selected CLI ref ${ref} resolved to an empty object id"
   if ! run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig" \
-    git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${owner_clone}" \
+    git clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${owner_clone}" \
     2>"${clone_err}"; then
     if [ -s "${clone_err}" ]; then
       redact_remote_url <"${clone_err}" >&2 || true
@@ -1391,7 +1391,9 @@ make_dir_traversable_for_owner() {
   local path="$1"
   python3 - "${path}" "${TARGET_UID}" "${TARGET_GROUPS}" "${TRAVERSAL_STATE}" <<'PY'
 import os
+import shutil
 import stat
+import subprocess
 import sys
 
 path = sys.argv[1]
