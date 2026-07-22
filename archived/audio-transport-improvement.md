@@ -4,6 +4,17 @@ Validate audio quality and transport integrity across the maintainer-approved re
 
 ## Progress
 
+- **Codex review hardening (2026-07-22):** the shipped configuration now keeps
+  diagnostic taps and mixed call recording disabled until an operator opts in;
+  runtime environment overrides and Admin UI/YAML persistence remain intact.
+  `format_wav` and the Asterisk recording spool are surfaced as optional
+  diagnostic capabilities instead of required voice-agent modules, so their
+  absence does not present a false core-readiness failure. The review-fix gate
+  passed 1,778 core tests (6 skipped, 139 deselected), 485 Admin backend tests,
+  and 220 frontend tests; frontend lint/build and Python compilation also
+  passed. Regression coverage locks both deployment defaults and the Admin UI
+  classification.
+
 - **Profile-owned rollout decision (2026-07-22):** the candidate is now exposed
   as the opt-in `telephony_enhanced_8k` Audio Profile rather than being enabled
   provider by provider. It retains the stable 8 kHz telephony contract and

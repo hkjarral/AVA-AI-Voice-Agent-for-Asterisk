@@ -10,7 +10,10 @@ Tests cover:
 """
 
 import os
+from pathlib import Path
+
 import pytest
+import yaml
 
 from src.config.defaults import (
     apply_transport_defaults,
@@ -283,6 +286,14 @@ class TestApplyDiagnosticDefaults:
         assert streaming['diag_post_secs'] == 1
         assert streaming['diag_out_dir'] == '/app/data/diagnostics/audio-taps'
         assert streaming['logging_level'] == 'info'
+
+    def test_bundled_config_keeps_diagnostic_taps_opt_in(self):
+        """The shipped config must not capture caller audio without opt-in."""
+        project_root = Path(__file__).resolve().parents[2]
+        with (project_root / 'config' / 'ai-agent.yaml').open(encoding='utf-8') as config_file:
+            bundled = yaml.safe_load(config_file)
+
+        assert bundled['streaming']['diag_enable_taps'] is False
     
     def test_env_overrides_egress_swap_mode(self, monkeypatch):
         """Should override egress swap mode from environment."""

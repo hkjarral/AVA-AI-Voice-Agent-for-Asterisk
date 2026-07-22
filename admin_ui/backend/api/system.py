@@ -5710,7 +5710,6 @@ _REQUIRED_MODULES = [
     "res_stasis",
     "chan_pjsip",
     "res_http_websocket",
-    "format_wav",
 ]
 
 

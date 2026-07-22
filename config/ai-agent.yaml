@@ -552,7 +552,9 @@ streaming:
   chunk_size_ms: 20
   connection_timeout_ms: 120000
   continuous_stream: true
-  diag_enable_taps: true
+  # Captures contain caller audio and consume persistent disk. Enable only for
+  # a bounded diagnostic session through the Admin UI or DIAG_ENABLE_TAPS.
+  diag_enable_taps: false
   diag_out_dir: /app/data/diagnostics/audio-taps
   diag_post_secs: 1
   diag_pre_secs: 1

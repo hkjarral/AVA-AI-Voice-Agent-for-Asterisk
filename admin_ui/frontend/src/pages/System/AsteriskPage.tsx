@@ -43,8 +43,12 @@ const MODULE_DESCRIPTIONS: Record<string, string> = {
     res_stasis: 'Stasis application framework',
     chan_pjsip: 'PJSIP channel driver',
     res_http_websocket: 'HTTP WebSocket support for ARI events',
-    format_wav: 'WAV writer required for ARI diagnostic recordings',
 };
+
+const OPTIONAL_DIAGNOSTIC_CHECK_KEYS = new Set([
+    'module_format_wav',
+    'recording_spool',
+]);
 
 const CONFIG_CHECK_LABELS: Record<string, { label: string; fixHint: string }> = {
     ari_enabled: {
@@ -101,6 +105,17 @@ const StatusBadge = ({ ok, label }: { ok: boolean; label?: string }) => (
     }`}>
         {ok ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
         {label || (ok ? 'OK' : 'Issue')}
+    </span>
+);
+
+const AvailabilityBadge = ({ available }: { available: boolean }) => (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
+        available
+            ? 'bg-green-500/10 text-green-500'
+            : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+    }`}>
+        {available ? <CheckCircle2 className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+        {available ? 'Available' : 'Unavailable'}
     </span>
 );
 
@@ -171,6 +186,13 @@ const AsteriskPage = () => {
     const manifest = status?.manifest;
     const mode = status?.mode;
     const appName = live?.app_name || 'asterisk-ai-voice-agent';
+    const manifestChecks = Object.entries(manifest?.checks || {});
+    const configurationChecks = manifestChecks.filter(
+        ([key]) => !OPTIONAL_DIAGNOSTIC_CHECK_KEYS.has(key)
+    );
+    const optionalDiagnosticChecks = manifestChecks.filter(
+        ([key]) => OPTIONAL_DIAGNOSTIC_CHECK_KEYS.has(key)
+    );
 
     return (
         <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -287,6 +309,64 @@ const AsteriskPage = () => {
                 </ConfigCard>
             </ConfigSection>
 
+            {/* Optional diagnostics capabilities (from manifest) */}
+            {manifest && optionalDiagnosticChecks.length > 0 && (
+                <ConfigSection
+                    title="Optional Diagnostics"
+                    description="Capabilities used only when diagnostic call recording is enabled"
+                >
+                    <ConfigCard>
+                        <div className="divide-y divide-border">
+                            {optionalDiagnosticChecks.map(([key, check]) => {
+                                const meta = CONFIG_CHECK_LABELS[key];
+                                const label = meta?.label || key.replace(/_/g, ' ');
+                                const fixHint = meta?.fixHint || '';
+                                return (
+                                    <div key={key} className="py-2.5 first:pt-0 last:pb-0">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                {key.startsWith('module_') ? (
+                                                    <Package className="w-4 h-4 text-muted-foreground" />
+                                                ) : (
+                                                    <FileText className="w-4 h-4 text-muted-foreground" />
+                                                )}
+                                                <div>
+                                                    <span className="text-sm font-medium">{label}</span>
+                                                    <p className="text-xs text-muted-foreground">{check.detail}</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <AvailabilityBadge available={check.ok} />
+                                                {!check.ok && fixHint && (
+                                                    <button
+                                                        onClick={() => toggleFix(key)}
+                                                        className="text-xs text-primary hover:underline"
+                                                    >
+                                                        {expandedFixes[key] ? 'Hide setup' : 'How to enable'}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {!check.ok && fixHint && expandedFixes[key] && (
+                                            <div className="mt-2 ml-7">
+                                                <div className="relative">
+                                                    <pre className="p-3 rounded-md bg-muted text-xs font-mono whitespace-pre-wrap overflow-x-auto">
+                                                        {fixHint}
+                                                    </pre>
+                                                    <div className="absolute top-2 right-2">
+                                                        <CopyButton text={fixHint} />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </ConfigCard>
+                </ConfigSection>
+            )}
+
             {/* App Registration */}
             <ConfigSection title="Application Registration" description="Whether the ARI application is registered and listening">
                 <ConfigCard>
@@ -316,9 +396,9 @@ const AsteriskPage = () => {
             {/* Configuration Checklist (from manifest) */}
             <ConfigSection title="Configuration Checklist" description="Asterisk config file checks from the last preflight run">
                 <ConfigCard>
-                    {manifest && manifest.checks && Object.keys(manifest.checks).length > 0 ? (
+                    {manifest && configurationChecks.length > 0 ? (
                         <div className="divide-y divide-border">
-                            {Object.entries(manifest.checks).map(([key, check]) => {
+                            {configurationChecks.map(([key, check]) => {
                                 const meta = CONFIG_CHECK_LABELS[key];
                                 const label = meta?.label || key.replace(/_/g, ' ').replace(/^module /, '');
                                 const isModule = key.startsWith('module_');
