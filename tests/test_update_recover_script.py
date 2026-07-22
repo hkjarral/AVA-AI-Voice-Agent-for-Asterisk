@@ -347,7 +347,8 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'chmod 0700 "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${owner_clone}"' in install_branch
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
-    assert 'chown -R 0:0 "${owner_clone}"' in install_branch
+    assert 'chown -R 0:0 "${owner_clone}"' not in install_branch
+    assert 'chmod -R u+rwX,go-rwx "${owner_clone}"' not in install_branch
     assert 'git -C "${owner_clone}" diff --quiet HEAD --' not in install_branch
     assert 'git ls-remote -- "${clone_url}"' in install_branch
     assert 'git clone --quiet --no-local --no-hardlinks --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${owner_clone}"' in install_branch
@@ -1107,6 +1108,8 @@ def test_update_recover_keeps_recovery_artifacts_owner_only() -> None:
     script = _script()
 
     assert "secure_recovery_artifacts()" in script
+    assert 'name == "pre-update-files"' in script
+    assert "backup_fd = os.open" in script
     assert "os.fchmod(dirfd, 0o700)" in script
     assert "os.fchmod(fd, 0o600)" in script
     assert "chmod 0750 -- \"${RECOVERY_DIR}\"" not in script

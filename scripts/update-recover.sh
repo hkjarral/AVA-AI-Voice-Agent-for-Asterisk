@@ -1176,10 +1176,6 @@ install_branch_cli() {
     fi
     die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   fi
-  chown -R 0:0 "${owner_clone}" \
-    || die "failed to freeze fetched CLI source ownership"
-  chmod -R u+rwX,go-rwx "${owner_clone}" \
-    || die "failed to freeze fetched CLI source permissions"
   (umask 077 && git clone --quiet --no-local --no-hardlinks -- "${owner_clone}" "${verified_clone}") \
     || die "failed to copy fetched CLI source into root-controlled storage"
   chmod -R u+rwX,go-rwx "${verified_clone}" \
@@ -1326,6 +1322,13 @@ for dirpath, dirnames, filenames, dirfd in os.fwalk(root, topdown=True, follow_s
         try:
             child = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
         except FileNotFoundError:
+            continue
+        if dirpath == root and name == "pre-update-files":
+            backup_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dirfd)
+            try:
+                os.fchmod(backup_fd, 0o700)
+            finally:
+                os.close(backup_fd)
             continue
         os.chown(name, uid, gid, dir_fd=dirfd, follow_symlinks=False)
         if stat.S_ISDIR(child.st_mode):
