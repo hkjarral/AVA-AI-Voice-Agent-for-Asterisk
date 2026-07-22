@@ -1,6 +1,7 @@
 import React from 'react';
 import { ExternalLink, Info } from 'lucide-react';
 import HelpTooltip from '../../ui/HelpTooltip';
+import OutputResamplerField from './OutputResamplerField';
 
 interface AzureProviderFormProps {
     config: any;
@@ -604,6 +605,12 @@ const AzureProviderForm: React.FC<AzureProviderFormProps> = ({ config, onChange 
                                 </select>
                             </div>
                         </div>
+                        <OutputResamplerField
+                            value={config.output_resampler}
+                            sourceRate={Number((config.output_format || '').match(/(8|16|24)khz/i)?.[1] || 8) * 1000}
+                            targetRate={config.target_sample_rate_hz || 8000}
+                            onChange={(value) => handleChange('output_resampler', value)}
+                        />
 
                         {/* Streaming */}
                         <div className="flex items-start gap-3 p-3 border rounded-md">

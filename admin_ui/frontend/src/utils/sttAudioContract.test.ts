@@ -82,4 +82,15 @@ describe('modular STT audio contract', () => {
         expect(options).not.toHaveProperty('stream_format');
         expect(options).not.toHaveProperty('sample_rate');
     });
+
+    it('keeps Local Whisper segmenter tuning only on local STT', () => {
+        const source = {
+            segment_energy_threshold: 800,
+            segment_silence_ms: 1200,
+        };
+        expect(normalizeSttOptions('local_stt', source)).toMatchObject(source);
+        expect(normalizeSttOptions('deepgram_stt', source)).not.toHaveProperty(
+            'segment_silence_ms'
+        );
+    });
 });

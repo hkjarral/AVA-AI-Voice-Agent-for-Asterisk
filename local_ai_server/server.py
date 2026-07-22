@@ -3675,12 +3675,12 @@ class LocalAIServer:
         if not pcm16:
             return []
 
-        # Keep a small preroll buffer so we don't clip initial phonemes.
+        # Keep a small preroll buffer so we don't clip initial phonemes. Preserve
+        # the prior buffer before inspecting the current frame: adding the frame
+        # to preroll first and then appending it to a new utterance duplicated
+        # the first 160 ms of every segmented utterance.
         preroll_max = int(PCM16_TARGET_RATE * 2 * (max(self.config.stt_segment_preroll_ms, 0) / 1000.0))
-        if preroll_max > 0:
-            session.stt_segment_preroll = (session.stt_segment_preroll + pcm16)[-preroll_max:]
-        else:
-            session.stt_segment_preroll = b""
+        prior_preroll = session.stt_segment_preroll
 
         try:
             rms = int(audioop.rms(pcm16, 2))
@@ -3688,13 +3688,19 @@ class LocalAIServer:
             rms = 0
 
         now = monotonic()
-        is_voice = rms >= int(self.config.stt_segment_energy_threshold)
+        session_energy_threshold = getattr(session, "stt_segment_energy_threshold", None)
+        energy_threshold = (
+            int(session_energy_threshold)
+            if session_energy_threshold is not None
+            else int(self.config.stt_segment_energy_threshold)
+        )
+        is_voice = rms >= energy_threshold
 
         if is_voice:
             session.stt_segment_last_voice_mono = now
             if not session.stt_segment_in_speech:
                 session.stt_segment_in_speech = True
-                session.stt_segment_buffer = session.stt_segment_preroll + pcm16
+                session.stt_segment_buffer = prior_preroll + pcm16
             else:
                 session.stt_segment_buffer += pcm16
         elif session.stt_segment_in_speech:
@@ -3702,13 +3708,25 @@ class LocalAIServer:
             session.stt_segment_buffer += pcm16
 
         if not session.stt_segment_in_speech:
+            if preroll_max > 0:
+                session.stt_segment_preroll = (prior_preroll + pcm16)[-preroll_max:]
+            else:
+                session.stt_segment_preroll = b""
             return []
 
         buf_len = len(session.stt_segment_buffer)
         buf_ms = (float(buf_len) / float(PCM16_TARGET_RATE * 2)) * 1000.0
         max_ms = float(max(250, int(self.config.stt_segment_max_ms)))
         min_ms = float(max(0, int(self.config.stt_segment_min_ms)))
-        silence_ms = float(max(0, int(self.config.stt_segment_silence_ms)))
+        session_silence_ms = getattr(session, "stt_segment_silence_ms", None)
+        silence_ms = float(
+            max(
+                0,
+                int(session_silence_ms)
+                if session_silence_ms is not None
+                else int(self.config.stt_segment_silence_ms),
+            )
+        )
         last_voice = float(session.stt_segment_last_voice_mono or 0.0)
         since_voice_ms = (now - last_voice) * 1000.0 if last_voice > 0.0 else 0.0
 

@@ -38,7 +38,9 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         () => config?.options?.llm?.tools_enabled !== undefined || Boolean(config?.options?.llm?.realtime_model) || config?.options?.llm?.aggregation_min_words !== undefined || config?.options?.llm?.aggregation_min_chars !== undefined
     );
     const [showSttExpert, setShowSttExpert] = useState<boolean>(
-        () => Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0
+        () => (Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0)
+            || config?.options?.stt?.segment_energy_threshold !== undefined
+            || config?.options?.stt?.segment_silence_ms !== undefined
     );
     const [showTtsExpert, setShowTtsExpert] = useState<boolean>(
         () => config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined
@@ -77,10 +79,12 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
         if ((Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0)
             || config?.options?.stt?.vad_silence_ms !== undefined
             || config?.options?.stt?.variant !== undefined
-            || config?.options?.stt?.vad_silence_timeout_ms !== undefined) {
+            || config?.options?.stt?.vad_silence_timeout_ms !== undefined
+            || config?.options?.stt?.segment_energy_threshold !== undefined
+            || config?.options?.stt?.segment_silence_ms !== undefined) {
             setShowSttExpert(true);
         }
-    }, [config?.options?.stt?.timestamp_granularities, config?.options?.stt?.vad_silence_ms, config?.options?.stt?.variant, config?.options?.stt?.vad_silence_timeout_ms]);
+    }, [config?.options?.stt?.timestamp_granularities, config?.options?.stt?.vad_silence_ms, config?.options?.stt?.variant, config?.options?.stt?.vad_silence_timeout_ms, config?.options?.stt?.segment_energy_threshold, config?.options?.stt?.segment_silence_ms]);
 
     useEffect(() => {
         if (config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined) {
@@ -220,6 +224,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const ttsKey = String(localConfig.tts || '').toLowerCase();
 
     const isOpenAIStt = sttKey.includes('openai');
+    const isLocalStt = sttKey.includes('local');
     const isOpenAILlm = llmKey.includes('openai');
     const isOpenAITts = ttsKey.includes('openai');
     const isGroqStt = sttKey.includes('groq');
@@ -244,6 +249,11 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                 : '';
 
     const guardrailModeValue = String(localConfig.options?.llm?.hangup_call_guardrail_mode || '');
+    const streamingOverlapValue = localConfig.options?.tts?.streaming_overlap === true
+        ? 'true'
+        : localConfig.options?.tts?.streaming_overlap === false
+            ? 'false'
+            : '';
     const guardrailMarkersValue = localConfig.options?.llm?.hangup_call_guardrail_markers?.end_call;
     const guardrailMarkersText = renderMarkerList(guardrailMarkersValue);
     const [guardrailMarkersDraft, setGuardrailMarkersDraft] = useState<string>(guardrailMarkersText);
@@ -580,7 +590,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                     </div>
                 )}
 
-                {(isOpenAIStt || isGroqStt || isAzureStt) && (
+                {(isOpenAIStt || isGroqStt || isAzureStt || isLocalStt) && (
                     <div className="space-y-3 border border-amber-300/40 rounded-lg p-4 bg-amber-500/5">
                         <FormSwitch
                             label="STT Expert Settings"
@@ -638,7 +648,72 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                     />
                                 </>
                             )}
+                            {isLocalStt && (
+                                <>
+                                    <FormInput
+                                        label="Local STT Energy Threshold"
+                                        type="number"
+                                        value={localConfig.options?.stt?.segment_energy_threshold ?? ''}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            updateRoleOptions('stt', {
+                                                segment_energy_threshold: value === '' ? undefined : parseInt(value, 10),
+                                            });
+                                        }}
+                                        placeholder="1200 (server default)"
+                                        tooltip="Per-pipeline Whisper speech threshold (0–32767). Lower values retain quieter phonemes but can admit noise."
+                                        min={0}
+                                        max={32767}
+                                        disabled={!showSttExpert}
+                                    />
+                                    <FormInput
+                                        label="Local STT End Silence (ms)"
+                                        type="number"
+                                        value={localConfig.options?.stt?.segment_silence_ms ?? ''}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            updateRoleOptions('stt', {
+                                                segment_silence_ms: value === '' ? undefined : parseInt(value, 10),
+                                            });
+                                        }}
+                                        placeholder="500 (server default)"
+                                        tooltip="Per-pipeline Whisper end-of-utterance silence (100–5000 ms). Longer values reduce phrase fragmentation but add turn latency."
+                                        min={100}
+                                        max={5000}
+                                        disabled={!showSttExpert}
+                                    />
+                                </>
+                            )}
                         </div>
+                    </div>
+                )}
+
+                {localConfig.tts && (
+                    <div className="space-y-3 border border-border rounded-lg p-4">
+                        <h4 className="font-semibold">TTS Playback Policy</h4>
+                        <FormSelect
+                            label="Streaming Overlap"
+                            value={streamingOverlapValue}
+                            onChange={(e) => {
+                                const value = String(e.target.value || '');
+                                if (!value) {
+                                    const next = { ...(localConfig.options?.tts || {}) };
+                                    delete next.streaming_overlap;
+                                    setRoleOptions('tts', next);
+                                    return;
+                                }
+                                updateRoleOptions('tts', { streaming_overlap: value === 'true' });
+                            }}
+                            tooltip="Inherit uses the global pipeline setting. Disable per pipeline to synthesize the complete response before playback; this can avoid sentence-boundary starvation at the cost of higher first-audio latency."
+                            options={[
+                                { value: '', label: 'Inherit global (default)' },
+                                { value: 'true', label: 'Enabled (lower latency)' },
+                                { value: 'false', label: 'Disabled (complete response)' },
+                            ]}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            This override affects only this pipeline. Leave it inherited unless diagnosing playback gaps.
+                        </p>
                     </div>
                 )}
 

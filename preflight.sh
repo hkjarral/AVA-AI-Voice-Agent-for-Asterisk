@@ -2158,6 +2158,7 @@ check_asterisk_config() {
     local mod_res_ari_ok=false mod_res_ari_detail="binary not available"
     local mod_res_stasis_ok=false mod_res_stasis_detail="binary not available"
     local mod_chan_pjsip_ok=false mod_chan_pjsip_detail="binary not available"
+    local mod_format_wav_ok=false mod_format_wav_detail="binary not available"
 
     if resolve_asterisk_binary; then
         _check_ast_module "app_audiosocket" && mod_audiosocket_ok=true && mod_audiosocket_detail="Running"
@@ -2172,14 +2173,55 @@ check_asterisk_config() {
         _check_ast_module "chan_pjsip" && mod_chan_pjsip_ok=true && mod_chan_pjsip_detail="Running"
         [ "$mod_chan_pjsip_ok" = false ] && mod_chan_pjsip_detail="Not loaded"
 
-        log_ok "Asterisk modules: audiosocket=$mod_audiosocket_detail, res_ari=$mod_res_ari_detail, res_stasis=$mod_res_stasis_detail, chan_pjsip=$mod_chan_pjsip_detail"
+        _check_ast_module "format_wav" && mod_format_wav_ok=true && mod_format_wav_detail="Running"
+        [ "$mod_format_wav_ok" = false ] && mod_format_wav_detail="Not loaded"
+
+        log_ok "Asterisk modules: audiosocket=$mod_audiosocket_detail, res_ari=$mod_res_ari_detail, res_stasis=$mod_res_stasis_detail, chan_pjsip=$mod_chan_pjsip_detail, format_wav=$mod_format_wav_detail"
     else
         log_info "Asterisk binary not in PATH — module checks skipped (will use ARI in Admin UI)"
     fi
 
+    # --- ARI diagnostic recording spool ---
+    local recording_spool="/var/spool/asterisk/recording"
+    local recording_spool_ok=false
+    local recording_spool_detail="missing or not writable by Asterisk"
+    local ast_uid="" ast_gid=""
+    if id asterisk &>/dev/null; then
+        ast_uid="$(id -u asterisk 2>/dev/null || true)"
+        ast_gid="$(id -g asterisk 2>/dev/null || true)"
+    fi
+    if [ "$APPLY_FIXES" = true ] && [ -n "$ast_uid" ] && [ -n "$ast_gid" ]; then
+        if sudo install -d -o "$ast_uid" -g "$ast_gid" -m 0770 "$recording_spool" 2>/dev/null; then
+            log_ok "Asterisk recording spool prepared: $recording_spool"
+        else
+            log_warn "Could not prepare Asterisk recording spool: $recording_spool"
+            FIX_CMDS+=("sudo install -d -o $ast_uid -g $ast_gid -m 0770 $recording_spool")
+        fi
+    fi
+    if [ -d "$recording_spool" ]; then
+        if id asterisk &>/dev/null && command -v sudo &>/dev/null; then
+            sudo -u asterisk test -w "$recording_spool" 2>/dev/null && recording_spool_ok=true
+        elif id asterisk &>/dev/null && command -v runuser &>/dev/null; then
+            runuser -u asterisk -- test -w "$recording_spool" 2>/dev/null && recording_spool_ok=true
+        elif [ "$(id -un 2>/dev/null || true)" = "asterisk" ] && [ -w "$recording_spool" ]; then
+            recording_spool_ok=true
+        fi
+    fi
+    if [ "$recording_spool_ok" = true ]; then
+        recording_spool_detail="$recording_spool is writable by Asterisk"
+        log_ok "Asterisk diagnostic recording spool: writable"
+    else
+        # Bridge recording is diagnostic-only. Keep its readiness visible in
+        # the manifest without making an otherwise healthy installation fail
+        # preflight merely because audio taps are disabled.
+        log_info "Optional Asterisk diagnostic recording spool is missing or not writable"
+        log_info "  Enable it with: sudo install -d -o asterisk -g asterisk -m 0770 $recording_spool"
+    fi
+
     # --- Build JSON checks object ---
     local ari_enabled_detail_e ari_user_detail_e http_enabled_detail_e dialplan_detail_e
-    local mod_audiosocket_detail_e mod_res_ari_detail_e mod_res_stasis_detail_e mod_chan_pjsip_detail_e
+    local mod_audiosocket_detail_e mod_res_ari_detail_e mod_res_stasis_detail_e mod_chan_pjsip_detail_e mod_format_wav_detail_e
+    local recording_spool_detail_e
     ari_enabled_detail_e=$(_json_escape "$ari_enabled_detail")
     ari_user_detail_e=$(_json_escape "$ari_user_detail")
     http_enabled_detail_e=$(_json_escape "$http_enabled_detail")
@@ -2188,6 +2230,8 @@ check_asterisk_config() {
     mod_res_ari_detail_e=$(_json_escape "$mod_res_ari_detail")
     mod_res_stasis_detail_e=$(_json_escape "$mod_res_stasis_detail")
     mod_chan_pjsip_detail_e=$(_json_escape "$mod_chan_pjsip_detail")
+    mod_format_wav_detail_e=$(_json_escape "$mod_format_wav_detail")
+    recording_spool_detail_e=$(_json_escape "$recording_spool_detail")
 
     local CHECKS
     CHECKS=$(cat <<JSONEOF
@@ -2199,7 +2243,9 @@ check_asterisk_config() {
     "module_app_audiosocket": { "ok": $mod_audiosocket_ok, "detail": "$mod_audiosocket_detail_e" },
     "module_res_ari": { "ok": $mod_res_ari_ok, "detail": "$mod_res_ari_detail_e" },
     "module_res_stasis": { "ok": $mod_res_stasis_ok, "detail": "$mod_res_stasis_detail_e" },
-    "module_chan_pjsip": { "ok": $mod_chan_pjsip_ok, "detail": "$mod_chan_pjsip_detail_e" }
+    "module_chan_pjsip": { "ok": $mod_chan_pjsip_ok, "detail": "$mod_chan_pjsip_detail_e" },
+    "module_format_wav": { "ok": $mod_format_wav_ok, "detail": "$mod_format_wav_detail_e" },
+    "recording_spool": { "ok": $recording_spool_ok, "detail": "$recording_spool_detail_e" }
 }
 JSONEOF
     )

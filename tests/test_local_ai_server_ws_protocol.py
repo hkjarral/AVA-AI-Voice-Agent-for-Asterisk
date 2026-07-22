@@ -43,6 +43,78 @@ class _FakeServer:
 
 
 @pytest.mark.asyncio
+async def test_set_mode_applies_scoped_whisper_segmenter_policy():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="seed")
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message=(
+            '{"type":"set_mode","mode":"stt","call_id":"call-policy",'
+            '"segment_energy_threshold":800,"segment_silence_ms":1200}'
+        ),
+    )
+
+    assert session.stt_segment_energy_threshold == 800
+    assert session.stt_segment_silence_ms == 1200
+    assert protocol._server.sent_payloads[-1] == {
+        "type": "mode_ready",
+        "mode": "stt",
+        "call_id": "call-policy",
+        "segment_energy_threshold": 800,
+        "segment_silence_ms": 1200,
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_mode_ignores_invalid_whisper_segmenter_policy(caplog):
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="seed")
+
+    with caplog.at_level("WARNING"):
+        await protocol.handle_json_message(
+            websocket=None,
+            session=session,
+            message=(
+                '{"type":"set_mode","mode":"stt","call_id":"call-invalid",'
+                '"segment_energy_threshold":true,"segment_silence_ms":50}'
+            ),
+        )
+
+    assert session.stt_segment_energy_threshold is None
+    assert session.stt_segment_silence_ms is None
+    assert caplog.text.count("Ignoring invalid Local STT session option") == 2
+
+
+@pytest.mark.asyncio
+async def test_set_mode_omission_restores_server_segmenter_defaults():
+    ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
+    protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())
+    session = session_mod.SessionContext(call_id="call-policy")
+    session.stt_segment_energy_threshold = 800
+    session.stt_segment_silence_ms = 1200
+
+    await protocol.handle_json_message(
+        websocket=None,
+        session=session,
+        message='{"type":"set_mode","mode":"stt","call_id":"call-defaults"}',
+    )
+
+    assert session.stt_segment_energy_threshold is None
+    assert session.stt_segment_silence_ms is None
+    assert protocol._server.sent_payloads[-1] == {
+        "type": "mode_ready",
+        "mode": "stt",
+        "call_id": "call-defaults",
+        "segment_energy_threshold": None,
+        "segment_silence_ms": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_ws_protocol_handles_barge_in_and_returns_ack():
     ws_protocol_mod, session_mod, _constants_mod = _load_ws_protocol_modules()
     protocol = ws_protocol_mod.WebSocketProtocol(_FakeServer())

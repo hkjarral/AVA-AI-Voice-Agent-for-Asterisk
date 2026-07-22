@@ -996,6 +996,7 @@ class AzureTTSAdapter(TTSComponent):
                 WAV_HEADER_SIZE = 44
                 header_buf = bytearray()
                 leftover_byte: bytes = b""
+                output_resample_state = None
 
                 first_chunk = True
                 async for raw_chunk in resp.content.iter_chunked(4096):
@@ -1047,7 +1048,13 @@ class AzureTTSAdapter(TTSComponent):
                         else:
                             source_rate = 8000
                         if source_rate != target_rate:
-                            audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
+                            audio_bytes, output_resample_state = resample_audio(
+                                audio_bytes,
+                                source_rate,
+                                target_rate,
+                                state=output_resample_state,
+                                mode=merged["output_resampler"],
+                            )
                         converted = _to_target_format(audio_bytes, target_encoding)
 
                     for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
@@ -1073,7 +1080,12 @@ class AzureTTSAdapter(TTSComponent):
         elif native_encoding in ("pcm16", "pcm"):
             # Resample if needed, then convert to target encoding
             if source_rate != target_rate:
-                audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
+                audio_bytes, _ = resample_audio(
+                    audio_bytes,
+                    source_rate,
+                    target_rate,
+                    mode=merged["output_resampler"],
+                )
             converted = _to_target_format(audio_bytes, target_encoding)
         else:
             # Unknown encoding — pass through as-is
@@ -1143,6 +1155,12 @@ class AzureTTSAdapter(TTSComponent):
                     "target_sample_rate_hz",
                     self._pipeline_defaults.get("target_sample_rate_hz", self._provider_defaults.target_sample_rate_hz),
                 )
+            ),
+            "output_resampler": runtime_options.get(
+                "output_resampler",
+                self._pipeline_defaults.get(
+                    "output_resampler", self._provider_defaults.output_resampler
+                ),
             ),
             "chunk_size_ms": int(
                 runtime_options.get(

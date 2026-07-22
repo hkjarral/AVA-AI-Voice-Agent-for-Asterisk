@@ -1,5 +1,7 @@
 import audioop
 import struct
+
+import numpy as np
 import pytest
 
 from src.audio import (
@@ -51,6 +53,14 @@ def test_downsample_24k_to_8k_exact_size():
     pcm_24k = b"\x00\x01" * 480  # 480 samples = 960 bytes
     out, _ = resample_audio(pcm_24k, 24000, 8000)
     assert len(out) == 320
+
+
+def test_bandlimited_downsample_24k_to_8k_exact_size():
+    """The opt-in FIR path preserves the 20 ms telephony frame duration."""
+    pcm_24k = b"\x00\x01" * 480
+    out, state = resample_audio(pcm_24k, 24000, 8000, mode="bandlimited")
+    assert len(out) == 320
+    assert state is not None
 
 
 def test_upsample_8k_to_24k_exact_size():
@@ -105,6 +115,89 @@ def test_stateful_and_stateless_produce_valid_equal_length_output():
     assert len(out_stateful) == len(out_stateless)
 
 
+def test_bandlimited_streaming_matches_one_shot_for_irregular_chunks():
+    """FIR history and decimation phase must make chunking sample-exact."""
+    rng = np.random.default_rng(20260721)
+    samples = rng.integers(-20000, 20001, size=2407, dtype=np.int16)
+    pcm = samples.astype("<i2", copy=False).tobytes()
+
+    one_shot, _ = resample_audio(pcm, 24000, 8000, mode="bandlimited")
+
+    state = None
+    chunks = []
+    offset = 0
+    for sample_count in (17, 301, 2, 479, 91, 603, 914):
+        chunk = pcm[offset * 2 : (offset + sample_count) * 2]
+        converted, state = resample_audio(
+            chunk,
+            24000,
+            8000,
+            state=state,
+            mode="bandlimited",
+        )
+        chunks.append(converted)
+        offset += sample_count
+
+    assert offset == len(samples)
+    assert b"".join(chunks) == one_shot
+
+
+def test_bandlimited_downsample_suppresses_above_nyquist_alias():
+    """A 5 kHz provider tone must not fold into the 8 kHz phone band at 3 kHz."""
+    source_rate = 24000
+    target_rate = 8000
+    duration_samples = source_rate // 2
+    positions = np.arange(duration_samples, dtype=np.float64)
+    tone = np.rint(
+        20000.0 * np.sin(2.0 * np.pi * 5000.0 * positions / source_rate)
+    ).astype("<i2")
+
+    legacy, _ = resample_audio(tone.tobytes(), source_rate, target_rate)
+    filtered, _ = resample_audio(
+        tone.tobytes(), source_rate, target_rate, mode="bandlimited"
+    )
+    # Ignore causal FIR startup while its zero-filled history is flushed.
+    legacy_samples = np.frombuffer(legacy, dtype="<i2").astype(np.float64)[256:]
+    filtered_samples = np.frombuffer(filtered, dtype="<i2").astype(np.float64)[256:]
+    legacy_rms = np.sqrt(np.mean(np.square(legacy_samples)))
+    filtered_rms = np.sqrt(np.mean(np.square(filtered_samples)))
+
+    attenuation_db = 20.0 * np.log10(max(filtered_rms, 1e-12) / legacy_rms)
+    assert attenuation_db < -60.0
+
+
+def test_bandlimited_downsample_preserves_telephone_passband_tone():
+    """A 3 kHz tone remains within 1 dB after alias-safe conversion."""
+    source_rate = 24000
+    target_rate = 8000
+    duration_samples = source_rate // 2
+    positions = np.arange(duration_samples, dtype=np.float64)
+    tone = np.rint(
+        20000.0 * np.sin(2.0 * np.pi * 3000.0 * positions / source_rate)
+    ).astype("<i2")
+
+    filtered, _ = resample_audio(
+        tone.tobytes(), source_rate, target_rate, mode="bandlimited"
+    )
+    filtered_samples = np.frombuffer(filtered, dtype="<i2").astype(np.float64)[256:]
+    filtered_rms = np.sqrt(np.mean(np.square(filtered_samples)))
+    expected_rms = 20000.0 / np.sqrt(2.0)
+    gain_db = 20.0 * np.log10(filtered_rms / expected_rms)
+
+    assert abs(gain_db) < 1.0
+
+
+def test_bandlimited_mode_falls_back_to_legacy_for_upsampling():
+    """The candidate must not change inbound/upstream sample-rate conversion."""
+    pcm = np.arange(-160, 160, dtype="<i2").tobytes()
+    legacy, legacy_state = resample_audio(pcm, 8000, 24000)
+    candidate, candidate_state = resample_audio(
+        pcm, 8000, 24000, mode="bandlimited"
+    )
+    assert candidate == legacy
+    assert candidate_state == legacy_state
+
+
 # ── Edge cases ────────────────────────────────────────────────────────
 
 
@@ -112,6 +205,11 @@ def test_empty_input_returns_empty():
     out, state = resample_audio(b"", 8000, 16000)
     assert out == b""
     assert state is None
+
+
+def test_resample_rejects_unknown_mode():
+    with pytest.raises(ValueError, match="Unsupported resample mode"):
+        resample_audio(b"\x00\x00" * 20, 24000, 8000, mode="unknown")
 
 
 def test_single_sample_upsample():

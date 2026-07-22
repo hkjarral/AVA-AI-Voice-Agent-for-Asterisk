@@ -1,6 +1,7 @@
 import React from 'react';
 import ProviderCredentialsCard, { applyCredentialPatch } from './ProviderCredentialsCard';
 import HelpTooltip from '../../ui/HelpTooltip';
+import OutputResamplerField from './OutputResamplerField';
 
 interface GrokProviderFormProps {
     config: any;
@@ -440,6 +441,12 @@ const GrokProviderForm: React.FC<GrokProviderFormProps> = ({ config, onChange, p
                             <code>8000</code> for telephony. Higher rates only if AudioSocket is configured wideband.
                         </p>
                     </div>
+                    <OutputResamplerField
+                        value={config.output_resampler}
+                        sourceRate={config.output_sample_rate_hz || 24000}
+                        targetRate={config.target_sample_rate_hz || 8000}
+                        onChange={(value) => handleChange('output_resampler', value)}
+                    />
                 </div>
             </div>
 

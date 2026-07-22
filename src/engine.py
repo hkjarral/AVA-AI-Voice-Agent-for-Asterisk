@@ -115,6 +115,27 @@ OUTBOUND_AMD_HUMAN_FIRST_DEFAULTS: Dict[str, int] = {
 }
 
 
+def _resolve_pipeline_streaming_overlap(
+    streaming_config: Any,
+    tts_options: Any,
+) -> Tuple[bool, str]:
+    """Resolve the pipeline TTS overlap policy and report its source.
+
+    The pipeline override is deliberately optional so existing configurations
+    retain the global behavior. AppConfig rejects non-boolean overrides at
+    load/apply time; the exact-type check here keeps direct test/runtime callers
+    fail-closed if they bypass config validation.
+    """
+    global_enabled = bool(
+        getattr(streaming_config, "pipeline_streaming_overlap", False)
+        if streaming_config
+        else False
+    )
+    if isinstance(tts_options, dict) and type(tts_options.get("streaming_overlap")) is bool:
+        return tts_options["streaming_overlap"], "pipeline"
+    return global_enabled, "global"
+
+
 def _outbound_attempt_stale_seconds() -> float:
     """Return one validated stale-attempt timeout for startup and runtime cleanup."""
     raw = str(
@@ -438,8 +459,15 @@ class Engine:
         # Captures are written under /tmp/ai-engine-captures/<call_id>/stream_name.wav,
         # which is what scripts/rca_collect.sh expects when building the "captures" bundle.
         capture_dir = "/tmp/ai-engine-captures"
-        # Use DIAG_ENABLE_TAPS as a generic switch for keeping capture files after calls complete.
-        keep_captures = os.getenv("DIAG_ENABLE_TAPS", "false").lower() in ("true", "1", "yes")
+        # Keep captures when diagnostics are enabled by the effective merged
+        # config or the compatibility environment switch. Looking only at
+        # DIAG_ENABLE_TAPS made Admin UI/YAML opt-in capture files disappear at
+        # cleanup even while runtime taps were active.
+        config_diag_taps = bool(getattr(config.streaming, "diag_enable_taps", False))
+        env_audio_diagnostics = os.getenv("AAVA_AUDIO_DIAGNOSTICS", "").lower() in (
+            "true", "1", "yes", "on"
+        )
+        keep_captures = config_diag_taps or env_audio_diagnostics
         self.audio_capture = AudioCaptureManager(base_dir=capture_dir, keep_files=keep_captures)
         logger.info(
             "Audio capture initialized",
@@ -3346,6 +3374,20 @@ class Engine:
         provider_kind = self._get_provider_kind(provider_name) or provider_name
         return provider_name in allow or provider_kind in allow
 
+    def _provider_fallback_min_ms(self, cfg, provider_name: str) -> int:
+        """Resolve a scoped fallback threshold without changing global VAD timing."""
+        default_ms = int(getattr(cfg, "min_ms", 250) or 250)
+        overrides = getattr(cfg, "provider_fallback_min_ms_by_provider", None) or {}
+        if not isinstance(overrides, dict):
+            return max(1, default_ms)
+        provider_kind = self._get_provider_kind(provider_name) or provider_name
+        has_override = provider_name in overrides or provider_kind in overrides
+        raw_value = overrides.get(provider_name, overrides.get(provider_kind, default_ms))
+        try:
+            return max(40 if has_override else 1, int(raw_value))
+        except (TypeError, ValueError):
+            return max(1, default_ms)
+
     def _assign_session_provider(self, session: CallSession, provider_name: str) -> None:
         session.provider_name = provider_name
         try:
@@ -5948,20 +5990,27 @@ class Engine:
             if not session.provider_session_active:
                 await self._ensure_provider_session_started(caller_channel_id)
 
-            # Start ARI channel recording on the AudioSocket channel (only when diagnostics enabled)
-            # Check if diagnostic taps are enabled
+            # Start one mixed bridge recording only after both caller and
+            # AudioSocket legs are attached. Asterisk rejects channel recording
+            # once the channel is in a bridge.
             diag_enabled = False
             try:
-                diag_enabled = bool(getattr(self.config.streaming, 'diag_enable_taps', False)) if hasattr(self.config, 'streaming') else False
+                # StreamingPlaybackManager owns the effective tap policy for
+                # this running generation (config plus compatibility env
+                # switch). Use the same decision for ARI recording so the two
+                # diagnostic paths cannot report contradictory states.
+                diag_enabled = bool(
+                    getattr(self.streaming_playback_manager, 'diag_enable_taps', False)
+                )
             except Exception:
                 pass
             
             if diag_enabled:
                 try:
                     ts = time.strftime("%Y%m%d-%H%M%S")
-                    rec_name = f"out-{caller_channel_id}-{ts}"
-                    ok = await self.ari_client.record_channel(
-                        audiosocket_channel_id,
+                    rec_name = f"call-{caller_channel_id}-{ts}"
+                    ok = await self.ari_client.record_bridge(
+                        bridge_id,
                         name=rec_name,
                         format="wav",
                         if_exists="overwrite",
@@ -5972,21 +6021,28 @@ class Engine:
                     )
                     if ok:
                         logger.info(
-                            "📼 ARI channel recording started on AudioSocket channel",
+                            "📼 ARI diagnostic bridge recording started",
                             audiosocket_channel_id=audiosocket_channel_id,
+                            bridge_id=bridge_id,
                             name=rec_name,
                         )
                     else:
-                        logger.debug(
-                            "ARI channel recording failed to start (diagnostic recording)",
+                        logger.warning(
+                            "ARI diagnostic bridge recording failed to start",
                             audiosocket_channel_id=audiosocket_channel_id,
+                            bridge_id=bridge_id,
                             name=rec_name,
                         )
                 except Exception:
-                    logger.debug("ARI channel recording start failed (diagnostic recording)", exc_info=True)
+                    logger.warning(
+                        "ARI diagnostic bridge recording start raised",
+                        audiosocket_channel_id=audiosocket_channel_id,
+                        bridge_id=bridge_id,
+                        exc_info=True,
+                    )
             else:
                 logger.debug(
-                    "ARI channel recording skipped (diag_enable_taps not enabled)",
+                    "ARI bridge recording skipped (diag_enable_taps not enabled)",
                     audiosocket_channel_id=audiosocket_channel_id,
                 )
         except Exception as exc:
@@ -8443,6 +8499,12 @@ class Engine:
                     logger.debug("Cleanup already in progress (in-memory guard)", call_id=call_id)
                     return
                 _cleanup_in_progress.add(call_id)
+                # Fail closed before the first cleanup await. Pipeline/provider
+                # operations retain this CallSession object and may finish an
+                # in-flight network request even after task cancellation. The
+                # session marker gives every late output boundary a durable
+                # signal that no new caller-facing work may start.
+                session.cleanup_in_progress = True
                 # Set TTL guard IMMEDIATELY to block late events (AAVA-148 fix)
                 import time as _time
                 _cleanup_completed_at[call_id] = _time.time()
@@ -8508,6 +8570,40 @@ class Engine:
                         call_id=call_id,
                         exc_info=True,
                     )
+
+            # Stop the dialog producer before tearing down playback or media.
+            # An in-flight LLM request can otherwise finish after the first
+            # stop_streaming_playback() call and create a new stream on a dead
+            # AudioSocket/bridge.  Cancel and await the runner first, then stop
+            # any stream it had already created.
+            try:
+                task = self._pipeline_tasks.pop(call_id, None)
+                if task:
+                    task.cancel()
+                    with contextlib.suppress(
+                        asyncio.CancelledError,
+                        asyncio.TimeoutError,
+                        Exception,
+                    ):
+                        await asyncio.wait_for(task, timeout=2.0)
+                q = self._pipeline_queues.pop(call_id, None)
+                if q:
+                    try:
+                        q.put_nowait(None)
+                    except Exception:
+                        pass
+                self._pipeline_transcript_queues.pop(call_id, None)
+                try:
+                    await self._disable_pipeline_talk_detect(session)
+                except Exception:
+                    logger.debug(
+                        "Pipeline talk detect disable failed",
+                        call_id=call_id,
+                        exc_info=True,
+                    )
+                self._pipeline_forced.pop(call_id, None)
+            except Exception:
+                logger.debug("Pipeline cleanup failed", call_id=call_id, exc_info=True)
 
             # Stop any active streaming playback.
             try:
@@ -8699,28 +8795,6 @@ class Engine:
                 self.audiosocket_channels.pop(session.caller_channel_id, None)
             if session.audiosocket_uuid:
                 self.uuidext_to_channel.pop(session.audiosocket_uuid, None)
-
-            # Cancel adapter pipeline runner, clear queue and forced flag
-            try:
-                task = self._pipeline_tasks.pop(call_id, None)
-                if task:
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                        await asyncio.wait_for(task, timeout=2.0)
-                q = self._pipeline_queues.pop(call_id, None)
-                if q:
-                    try:
-                        q.put_nowait(None)
-                    except Exception:
-                        pass
-                self._pipeline_transcript_queues.pop(call_id, None)
-                try:
-                    await self._disable_pipeline_talk_detect(session)
-                except Exception:
-                    logger.debug("Pipeline talk detect disable failed", call_id=call_id, exc_info=True)
-                self._pipeline_forced.pop(call_id, None)
-            except Exception:
-                logger.debug("Pipeline cleanup failed", call_id=call_id, exc_info=True)
 
             # Clear per-call resample states to prevent unbounded memory growth
             self._resample_state_provider_in.pop(call_id, None)
@@ -10697,7 +10771,7 @@ class Engine:
             last_barge_in_ts = float(getattr(session, "last_barge_in_ts", 0.0) or 0.0)
             in_cooldown = (now - last_barge_in_ts) * 1000 < cooldown_ms if last_barge_in_ts else False
 
-            min_ms = int(getattr(cfg, "min_ms", 250))
+            min_ms = self._provider_fallback_min_ms(cfg, provider_name)
             if local_energy_authoritative:
                 # Local full-agent speech consists of short telephony syllable
                 # bursts separated by natural sub-threshold gaps.  Reuse the
@@ -10825,6 +10899,24 @@ class Engine:
 
         first_barge_min = int(getattr(cfg, "local_first_barge_min_ms", 80) or 80)
         return max(40, min(base_min, first_barge_min))
+
+    @staticmethod
+    def _resolve_provider_output_suppress_ms(
+        cfg,
+        *,
+        source: str,
+        provider_kind: str,
+    ) -> int:
+        """Suppress only when local detection may race continuing provider audio.
+
+        An explicit provider interruption event is the authoritative boundary
+        for the old response. Suppressing after that boundary can mute the
+        provider's next response, including a short terminal farewell.
+        """
+        suppress_ms = int(getattr(cfg, "provider_output_suppress_ms", 0)) if cfg else 0
+        if source == "provider_event" or provider_kind == "grok":
+            return 0
+        return max(0, suppress_ms)
 
     async def _apply_barge_in_action(self, call_id: str, *, source: str, reason: str) -> None:
         """Apply platform-owned barge-in actions (flush local output only).
@@ -10958,14 +11050,13 @@ class Engine:
                 # by continued provider streaming of the previous sentence.
                 try:
                     cfg = getattr(self.config, "barge_in", None)
-                    suppress_ms = int(getattr(cfg, "provider_output_suppress_ms", 0)) if cfg else 0
                     provider = (getattr(self, "_call_providers", {}) or {}).get(call_id)
                     provider_kind = str(getattr(provider, "provider_kind", "") or "").lower()
-                    # Grok server_vad automatically interrupts the old response.
-                    # Suppressing unlabelled AgentAudio here drops the beginning of
-                    # the *new* response when xAI generates it inside this window.
-                    if provider_kind == "grok":
-                        suppress_ms = 0
+                    suppress_ms = self._resolve_provider_output_suppress_ms(
+                        cfg,
+                        source=source,
+                        provider_kind=provider_kind,
+                    )
                     if suppress_ms > 0:
                         sup = session.vad_state.setdefault("output_suppression", {})
                         prev_until = float(sup.get("until_ts", 0.0) or 0.0)
@@ -13710,6 +13801,14 @@ class Engine:
     async def _ensure_pipeline_runner(self, session: CallSession, *, forced: bool = False) -> None:
         """Create per-call queue and start pipeline runner if not already started."""
         call_id = session.call_id
+        if call_id in _cleanup_in_progress or bool(
+            getattr(session, "cleanup_in_progress", False)
+        ):
+            logger.info(
+                "Pipeline runner start suppressed after cleanup began",
+                call_id=call_id,
+            )
+            return
         if call_id in self._pipeline_tasks:
             if forced:
                 self._pipeline_forced[call_id] = True
@@ -13736,6 +13835,33 @@ class Engine:
         self._pipeline_tasks[call_id] = task
         logger.info("Pipeline runner started", call_id=call_id, pipeline=session.pipeline_name)
 
+    def _pipeline_output_allowed(
+        self,
+        call_id: str,
+        session: Optional[CallSession],
+        *,
+        stage: str,
+    ) -> bool:
+        """Fail closed when a pipeline tries to create output during cleanup.
+
+        Cancellation is advisory for network-backed adapters: a request can
+        finish after its owning task is cancelled. Check both the engine's
+        atomic cleanup guard and the session marker at the actual output
+        boundary so a late result cannot create playback, TTS, or tool work.
+        """
+        allowed = bool(
+            session
+            and call_id not in _cleanup_in_progress
+            and not bool(getattr(session, "cleanup_in_progress", False))
+        )
+        if not allowed:
+            logger.info(
+                "Pipeline output suppressed after cleanup began",
+                call_id=call_id,
+                stage=stage,
+            )
+        return allowed
+
     async def _pipeline_runner(self, call_id: str) -> None:
         """Minimal adapter-driven loop: STT -> LLM -> TTS -> file playback.
 
@@ -13744,7 +13870,9 @@ class Engine:
         """
         try:
             session = await self.session_store.get_by_call_id(call_id)
-            if not session:
+            if not self._pipeline_output_allowed(
+                call_id, session, stage="runner-initialization"
+            ):
                 return
             pipeline = self.pipeline_orchestrator.get_pipeline(call_id, getattr(session, 'pipeline_name', None))
             if not pipeline:
@@ -14022,7 +14150,9 @@ class Engine:
                 greeting_source = "error"
             
             # Final pass: ensure greeting can safely reference template variables.
-            if greeting:
+            if greeting and self._pipeline_output_allowed(
+                call_id, session, stage="greeting-start"
+            ):
                 greeting = self._apply_prompt_template_substitution(greeting, session)
 
             # Bound pipeline greeting handoff just like monolithic providers.
@@ -14382,6 +14512,10 @@ class Engine:
 
                 async def run_turn(transcript_text: str) -> None:
                     nonlocal conversation_history
+                    if not self._pipeline_output_allowed(
+                        call_id, session, stage="turn-start"
+                    ):
+                        return
                     response_text = ""
                     tool_calls = []
                     _streaming_handled = False  # Set True when streaming overlap played audio + recorded history
@@ -14465,7 +14599,10 @@ class Engine:
                     # call instead of text, generate_stream() yields nothing and we
                     # fall through to the serial path for tool execution.
                     _streaming_cfg = getattr(self.config, "streaming", None)
-                    _overlap_enabled = getattr(_streaming_cfg, "pipeline_streaming_overlap", False) if _streaming_cfg else False
+                    _overlap_enabled, _overlap_source = _resolve_pipeline_streaming_overlap(
+                        _streaming_cfg,
+                        pipeline.tts_options,
+                    )
                     _adapter_supports_streaming = getattr(pipeline.llm_adapter, "supports_streaming", False)
 
                     _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
@@ -14476,6 +14613,16 @@ class Engine:
                     else:
                         _use_streaming_pb = self.config.downstream_mode != "file"
 
+                    logger.info(
+                        "Pipeline streaming overlap policy resolved",
+                        call_id=call_id,
+                        pipeline=pipeline_label,
+                        enabled=_overlap_enabled,
+                        source=_overlap_source,
+                        adapter_supports_streaming=_adapter_supports_streaming,
+                        streaming_playback=_use_streaming_pb,
+                    )
+
                     if (
                         _overlap_enabled
                         and _adapter_supports_streaming
@@ -14485,6 +14632,7 @@ class Engine:
                             "Pipeline streaming overlap active",
                             call_id=call_id,
                             pipeline=pipeline_label,
+                            policy_source=_overlap_source,
                             tools_configured=bool((llm_options or {}).get("tools")),
                         )
                         _SENTENCE_RE = re.compile(r"[.!?]\s+")
@@ -14685,6 +14833,11 @@ class Engine:
                             logger.debug("LLM generate failed", call_id=call_id, exc_info=True)
                             return
 
+                        if not self._pipeline_output_allowed(
+                            call_id, session, stage="post-llm"
+                        ):
+                            return
+
                         # Handle structured LLM response with tool calls
                         if isinstance(llm_result, LLMResponse):
                             response_text = (llm_result.text or "").strip()
@@ -14802,6 +14955,10 @@ class Engine:
                                     context_for_llm,
                                     llm_options_no_tools,
                                 )
+                                if not self._pipeline_output_allowed(
+                                    call_id, session, stage="post-llm-retry"
+                                ):
+                                    return
                                 if isinstance(llm_result_retry, LLMResponse):
                                     response_text = (llm_result_retry.text or "").strip()
                                     tool_calls = llm_result_retry.tool_calls or []
@@ -14823,6 +14980,11 @@ class Engine:
                                 )
 
                     if not response_text and not tool_calls:
+                        return
+
+                    if not self._pipeline_output_allowed(
+                        call_id, session, stage="pre-output"
+                    ):
                         return
 
                     # Update conversation history (skip if streaming path already did this)

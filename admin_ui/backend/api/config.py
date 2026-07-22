@@ -6,6 +6,7 @@ import os
 import re
 import asyncio
 import glob
+import sqlite3
 import tempfile
 import sys
 import logging
@@ -24,6 +25,78 @@ MAX_BACKUPS = 5
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _assert_in_use_audio_profiles_unchanged(
+    old_config: Dict[str, Any],
+    new_config: Dict[str, Any],
+) -> None:
+    """Fail closed before mutating a profile referenced by an Agent.
+
+    Agent assignments live in a separate SQLite source of truth, so schema
+    validation alone cannot detect this cross-store dependency. Read the
+    existing database without creating or migrating it; a missing database is
+    an empty first-run store, while an unreadable existing database makes a
+    profile mutation unsafe.
+    """
+    old_profiles = old_config.get("profiles") or {}
+    new_profiles = new_config.get("profiles") or {}
+    if not isinstance(old_profiles, dict) or not isinstance(new_profiles, dict):
+        return
+
+    changed_profiles = {
+        name
+        for name in (set(old_profiles) | set(new_profiles)) - {"default"}
+        if old_profiles.get(name) != new_profiles.get(name)
+    }
+    if not changed_profiles:
+        return
+
+    db_path = Path(
+        os.getenv("AGENTS_DB_PATH", "/app/data/operator/agents.db")
+    ).expanduser()
+    if not db_path.exists():
+        return
+
+    try:
+        db_uri = db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
+            placeholders = ",".join("?" for _ in changed_profiles)
+            rows = conn.execute(
+                "SELECT slug, display_name, audio_profile FROM agents "
+                f"WHERE audio_profile IN ({placeholders})",
+                tuple(sorted(changed_profiles)),
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(
+            "Cannot verify Agent audio-profile usage before config save",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Cannot safely change audio profiles because Agent usage "
+                "could not be verified. Restore access to the Agent store and retry."
+            ),
+        ) from exc
+
+    if rows:
+        references: Dict[str, list[str]] = {}
+        for slug, display_name, profile_name in rows:
+            references.setdefault(str(profile_name), []).append(
+                str(display_name or slug)
+            )
+        detail = "; ".join(
+            f"{profile}: {', '.join(sorted(names))}"
+            for profile, names in sorted(references.items())
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot modify or delete an audio profile used by an Agent. "
+                f"Clone/migrate the Agent first ({detail})."
+            ),
+        )
 
 def _is_prefix(key: str, prefixes: tuple[str, ...]) -> bool:
     return any(key.startswith(p) for p in prefixes)
@@ -652,6 +725,11 @@ def persist_config_content(content: str) -> dict:
 
     # Snapshot current merged config for hot-reload comparison
     old_merged = _read_merged_config_dict()
+
+    # Audio profiles are referenced from the independent Agent store. Guard
+    # every persistence path (structured pages and Raw YAML), not only the
+    # frontend button flow, before writing the local override.
+    _assert_in_use_audio_profiles_unchanged(old_merged, new_parsed)
 
     # Convert desired merged config into a minimal local override (supports deletions).
     base = _read_base_config_dict()

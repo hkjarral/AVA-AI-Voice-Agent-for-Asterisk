@@ -204,14 +204,16 @@ class _LocalAdapterBase:
         )
         self._sessions[call_id] = session
 
-        await self._send_json(
-            session,
-            {
-                "type": "set_mode",
-                "mode": mode,
-                "call_id": call_id,
-            },
-        )
+        set_mode_payload: Dict[str, Any] = {
+            "type": "set_mode",
+            "mode": mode,
+            "call_id": call_id,
+        }
+        if mode == "stt":
+            for key in ("segment_energy_threshold", "segment_silence_ms"):
+                if merged.get(key) is not None:
+                    set_mode_payload[key] = merged[key]
+        await self._send_json(session, set_mode_payload)
         try:
             logger.info(
                 "Local adapter set_mode sent",

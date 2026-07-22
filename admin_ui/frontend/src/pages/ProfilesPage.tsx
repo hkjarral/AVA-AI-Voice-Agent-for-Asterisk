@@ -15,6 +15,9 @@ import { getCachedConfig, loadConfigYaml } from '../utils/configCache';
 const ProfilesPage = () => {
 	const { confirm } = useConfirmDialog();
 	const [config, setConfig] = useState<any>(() => getCachedConfig()?.config ?? {});
+	const [agents, setAgents] = useState<any[]>([]);
+	const [agentsLoading, setAgentsLoading] = useState(true);
+	const [agentsLoadFailed, setAgentsLoadFailed] = useState(false);
 	const [loading, setLoading] = useState(() => getCachedConfig() == null);
     const [error, setError] = useState<string | null>(null);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(() => getCachedConfig()?.yamlError ?? null);
@@ -28,7 +31,23 @@ const ProfilesPage = () => {
 
     useEffect(() => {
         fetchConfig();
+        fetchAgents();
     }, []);
+
+    const fetchAgents = async () => {
+        setAgentsLoading(true);
+        try {
+            const response = await axios.get<any[]>('/api/agents');
+            setAgents(Array.isArray(response.data) ? response.data : []);
+            setAgentsLoadFailed(false);
+        } catch (err) {
+            console.error('Failed to load Agents for audio-profile usage', err);
+            setAgents([]);
+            setAgentsLoadFailed(true);
+        } finally {
+            setAgentsLoading(false);
+        }
+    };
 
     const fetchConfig = async (force = false) => {
         try {
@@ -64,9 +83,13 @@ const ProfilesPage = () => {
             setApplyMethod(method);
             setPendingApply(true);
             setConfig(sanitized);
+            return true;
         } catch (err) {
             console.error('Failed to save config', err);
-            toast.error('Failed to save configuration');
+            toast.error('Failed to save configuration', {
+                description: (err as any)?.response?.data?.detail || (err as Error)?.message,
+            });
+            return false;
         }
     };
 
@@ -160,12 +183,30 @@ const ProfilesPage = () => {
 			toast.error(`Profile '${profileKey}' already exists`);
 			return;
 		}
+		if (!isNewProfile) {
+			if (agentsLoading || agentsLoadFailed) {
+				toast.error('Cannot safely modify this profile', {
+					description: 'Agent usage could not be verified. Reload the page and try again.',
+				});
+				return;
+			}
+			const agentsUsing = getAgentsUsingProfile(profileKey);
+			const currentProfile = config.profiles?.[profileKey] || {};
+			if (agentsUsing.length > 0 && JSON.stringify(profileForm) !== JSON.stringify(currentProfile)) {
+				toast.error(`Cannot modify '${profileKey}' while it is in use`, {
+					description: `Clone the profile, move Agent${agentsUsing.length === 1 ? '' : 's'} ${agentsUsing.join(', ')} to the clone, then edit it.`,
+				});
+				return;
+			}
+		}
 
-		const newConfig = { ...config };
-		if (!newConfig.profiles) newConfig.profiles = {};
+		const newConfig = {
+			...config,
+			profiles: { ...(config.profiles || {}) },
+		};
 		
 		newConfig.profiles[profileKey] = profileForm;
-		await saveConfig(newConfig);
+		if (!await saveConfig(newConfig)) return;
 		setEditingProfile(null);
 		setIsNewProfile(false);
 		setNewProfileName('');
@@ -193,13 +234,27 @@ const ProfilesPage = () => {
             .map(([name]) => name);
     };
 
+    const getAgentsUsingProfile = (profileName: string) => agents
+        .filter((agent) => agent?.audio_profile === profileName)
+        .map((agent) => agent?.name || agent?.slug || agent?.id)
+        .filter(Boolean);
+
+    const getProfileSupport = (profileName: string, profile: any): 'ga' | 'experimental' | 'provider-native' | 'custom' => {
+        if (profileName === 'telephony_ulaw_8k' || profileName === 'telephony_responsive') return 'ga';
+        const wireRate = Number(profile?.transport_out?.sample_rate_hz || 0);
+        if (wireRate > 8000) return 'experimental';
+        const providerRate = Number(profile?.provider_pref?.output_sample_rate_hz || profile?.internal_rate_hz || 0);
+        if (wireRate === 8000 && providerRate > 8000) return 'provider-native';
+        return 'custom';
+    };
+
     // Get profile description
     const getProfileDescription = (profileName: string) => {
         const descriptions: Record<string, string> = {
-            'telephony_responsive': 'Standard 8kHz μ-law for telephony with adaptive timing',
-            'telephony_ulaw_8k': '8kHz μ-law matching RTP codec directly',
-            'wideband_pcm_16k': '16kHz wideband for better audio quality',
-            'openai_realtime_24k': 'High-fidelity 24kHz for OpenAI Realtime API'
+            'telephony_responsive': 'GA 8 kHz telephony transport with adaptive timing',
+            'telephony_ulaw_8k': 'GA 8 kHz telephony transport matching G.711 μ-law',
+            'wideband_pcm_16k': 'Experimental 16 kHz wire transport; requires an end-to-end wideband call path',
+            'openai_realtime_24k': 'Experimental profile with 24 kHz provider-native processing and an 8 kHz Asterisk wire leg'
         };
         return descriptions[profileName] || 'Custom audio profile';
     };
@@ -227,8 +282,21 @@ const ProfilesPage = () => {
             toast.error('Cannot delete the last remaining audio profile');
             return;
         }
+		if (agentsLoading || agentsLoadFailed) {
+			toast.error(`Cannot safely delete '${profileName}'`, {
+				description: 'Agent usage could not be verified. Reload the page and try again.',
+			});
+			return;
+		}
 
         const contextsUsing = getContextsUsingProfile(profileName);
+        const agentsUsing = getAgentsUsingProfile(profileName);
+        if (agentsUsing.length > 0) {
+            toast.error(`Cannot delete '${profileName}'`, {
+                description: `Used by Agent${agentsUsing.length === 1 ? '' : 's'}: ${agentsUsing.join(', ')}. Move those Agents to another profile first.`,
+            });
+            return;
+        }
         const remainingProfiles = currentProfileKeys.filter((p) => p !== profileName);
         const fallbackDefault =
             (remainingProfiles.includes('telephony_ulaw_8k') ? 'telephony_ulaw_8k' : remainingProfiles[0]) || 'telephony_ulaw_8k';
@@ -275,7 +343,7 @@ const ProfilesPage = () => {
             newConfig.profiles.default = fallbackDefault;
         }
 
-        await saveConfig(newConfig);
+        if (!await saveConfig(newConfig)) return;
 
         if (editingProfile === profileName) {
             setEditingProfile(null);
@@ -331,6 +399,12 @@ const ProfilesPage = () => {
 					</button>
 				</div>
 			)}
+            {agentsLoadFailed && (
+                <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center">
+                    <AlertCircle className="w-5 h-5 mr-2" />
+                    Agent usage could not be verified. Editing and deleting existing profiles is disabled until this page is reloaded successfully.
+                </div>
+            )}
             {error && (
                 <div className="bg-red-500/15 border border-red-500/30 text-red-700 dark:text-red-400 p-4 rounded-md flex items-center justify-between">
                     <div className="flex items-center">
@@ -365,9 +439,10 @@ const ProfilesPage = () => {
 	                <div className="grid grid-cols-1 gap-4">
 	                    {profileKeys.map((profileName) => {
 	                        const profile = profiles[profileName];
-	                        const contextsUsing = getContextsUsingProfile(profileName);
+	                        const agentsUsing = getAgentsUsingProfile(profileName);
 	                        const isDefault = defaultProfile === profileName;
-                            const canDelete = profileKeys.length > 1;
+	                        const support = getProfileSupport(profileName, profile);
+                            const canDelete = profileKeys.length > 1 && !agentsLoading && !agentsLoadFailed;
 	                        
 	                        return (
 	                            <div 
@@ -391,6 +466,22 @@ const ProfilesPage = () => {
                                                         Default
                                                     </span>
                                                 )}
+                                                <span className={[
+                                                    'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold',
+                                                    support === 'ga'
+                                                        ? 'bg-green-500/15 text-green-700 dark:text-green-300'
+                                                        : support === 'experimental' || support === 'provider-native'
+                                                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                                            : 'bg-secondary text-muted-foreground'
+                                                ].join(' ')}>
+                                                    {support === 'ga'
+                                                        ? 'GA Telephony'
+                                                        : support === 'experimental'
+                                                            ? 'Experimental Wideband'
+                                                            : support === 'provider-native'
+                                                                ? 'Provider Native · 8 kHz Wire'
+                                                                : 'Custom'}
+                                                </span>
                                             </div>
                                             <p className="text-sm text-muted-foreground mt-1">
                                                 {getProfileDescription(profileName)}
@@ -424,7 +515,12 @@ const ProfilesPage = () => {
                                                     handleDeleteProfile(profileName);
                                                 }}
                                                 disabled={!canDelete}
-                                                title={!canDelete ? 'Cannot delete the last remaining audio profile' : undefined}
+                                                aria-label={`Delete profile ${profileName}`}
+                                                title={!canDelete
+                                                    ? agentsLoading || agentsLoadFailed
+                                                        ? 'Agent usage must be verified before deleting a profile'
+                                                        : 'Cannot delete the last remaining audio profile'
+                                                    : undefined}
                                                 className={[
                                                     "p-2 rounded-md",
                                                     canDelete
@@ -456,13 +552,13 @@ const ProfilesPage = () => {
                                     </div>
                                 </div>
 
-                                {contextsUsing.length > 0 && (
+                                {agentsUsing.length > 0 && (
                                     <div className="mt-3">
-                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block mb-2">Used By Contexts</span>
+                                        <span className="font-medium text-xs uppercase tracking-wider text-muted-foreground block mb-2">Used By Agents</span>
                                         <div className="flex flex-wrap gap-1.5">
-                                            {contextsUsing.map((ctx) => (
-                                                <span key={ctx} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
-                                                    {ctx}
+                                            {agentsUsing.map((agent) => (
+                                                <span key={agent} className="px-2 py-1 rounded-md text-xs bg-accent text-accent-foreground font-medium border border-accent-foreground/10">
+                                                    {agent}
                                                 </span>
                                             ))}
                                         </div>
@@ -493,8 +589,12 @@ const ProfilesPage = () => {
                                             handleDeleteProfile(editingProfile);
                                         }
                                     }}
-                                    disabled={!editingProfile || profileKeys.length <= 1}
-                                    title={profileKeys.length <= 1 ? 'Cannot delete the last remaining audio profile' : undefined}
+                                    disabled={!editingProfile || profileKeys.length <= 1 || agentsLoading || agentsLoadFailed}
+                                    title={agentsLoading || agentsLoadFailed
+                                        ? 'Agent usage must be verified before deleting a profile'
+                                        : profileKeys.length <= 1
+                                            ? 'Cannot delete the last remaining audio profile'
+                                            : undefined}
                                     className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 border border-destructive/30 text-destructive hover:bg-destructive/10 h-9 px-4 py-2 mr-auto"
                                 >
                                     Delete

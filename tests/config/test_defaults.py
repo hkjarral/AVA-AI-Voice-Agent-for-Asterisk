@@ -357,6 +357,55 @@ class TestApplyDiagnosticDefaults:
         apply_diagnostic_defaults(config_data)
         
         assert config_data['streaming']['logging_level'] == 'debug'
+
+    def test_preserves_yaml_values_when_environment_is_absent(self, monkeypatch):
+        """Admin UI/YAML diagnostics must survive config default application."""
+        for name in (
+            'DIAG_EGRESS_SWAP_MODE',
+            'DIAG_EGRESS_FORCE_MULAW',
+            'DIAG_ATTACK_MS',
+            'DIAG_ENABLE_TAPS',
+            'DIAG_TAP_PRE_SECS',
+            'DIAG_TAP_POST_SECS',
+            'DIAG_TAP_OUTPUT_DIR',
+            'STREAMING_LOG_LEVEL',
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        config_data = {
+            'streaming': {
+                'egress_swap_mode': 'auto',
+                'egress_force_mulaw': True,
+                'attack_ms': 25,
+                'diag_enable_taps': True,
+                'diag_pre_secs': 3,
+                'diag_post_secs': 4,
+                'diag_out_dir': '/var/tmp/aava-taps',
+                'logging_level': 'warning',
+            }
+        }
+
+        apply_diagnostic_defaults(config_data)
+
+        assert config_data['streaming'] == {
+            'egress_swap_mode': 'auto',
+            'egress_force_mulaw': True,
+            'attack_ms': 25,
+            'diag_enable_taps': True,
+            'diag_pre_secs': 3,
+            'diag_post_secs': 4,
+            'diag_out_dir': '/var/tmp/aava-taps',
+            'logging_level': 'warning',
+        }
+
+    def test_explicit_false_environment_disables_yaml_taps(self, monkeypatch):
+        """An explicit environment value remains the highest-priority rollback."""
+        monkeypatch.setenv('DIAG_ENABLE_TAPS', 'false')
+        config_data = {'streaming': {'diag_enable_taps': True}}
+
+        apply_diagnostic_defaults(config_data)
+
+        assert config_data['streaming']['diag_enable_taps'] is False
     
     def test_creates_streaming_block_if_missing(self):
         """Should create streaming block if it doesn't exist."""

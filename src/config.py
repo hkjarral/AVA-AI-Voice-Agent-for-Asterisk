@@ -203,6 +203,7 @@ class DeepgramProviderConfig(BaseModel):
     continuous_input: bool = Field(default=True)
     output_encoding: str = Field(default="mulaw")
     output_sample_rate_hz: int = Field(default=8000)
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     allow_output_autodetect: bool = Field(default=False)
     base_url: str = Field(default="https://api.deepgram.com")
     tts_voice: Optional[str] = None
@@ -277,6 +278,7 @@ class OpenAIProviderConfig(BaseModel):
     input_sample_rate_hz: int = Field(default=24000)
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     chunk_size_ms: int = Field(default=20)
     response_timeout_sec: float = Field(default=5.0)
     # Provider-specific farewell hangup delay (overrides global)
@@ -385,6 +387,7 @@ class GoogleProviderConfig(BaseModel):
     input_gain_max_db: float = Field(default=0.0)
     output_encoding: str = Field(default="linear16")  # Gemini Live outputs PCM16
     output_sample_rate_hz: int = Field(default=24000)  # Gemini Live native output rate
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     target_encoding: str = Field(default="ulaw")  # Target wire format for playback
     target_sample_rate_hz: int = Field(default=8000)  # Target wire sample rate
     # Google Live WebSocket endpoint (monolithic agent)
@@ -452,6 +455,7 @@ class GroqTTSProviderConfig(BaseModel):
     # Output format expected by downstream playback
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     chunk_size_ms: int = Field(default=20)
     request_timeout_sec: float = Field(default=15.0)
 
@@ -469,6 +473,7 @@ class ElevenLabsProviderConfig(BaseModel):
     base_url: str = Field(default="https://api.elevenlabs.io/v1")
     # Audio settings
     output_format: str = Field(default="ulaw_8000")  # ulaw_8000, mp3_44100, pcm_16000, etc.
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     # Voice settings
     stability: float = Field(default=0.5)
     similarity_boost: float = Field(default=0.75)
@@ -494,6 +499,7 @@ class CambAiProviderConfig(BaseModel):
     base_url: str = Field(default="https://client.camb.ai/apis")
     # Output format for streaming TTS
     output_format: str = Field(default="pcm_s16le")  # pcm_s16le for raw PCM
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     # Provider-specific farewell hangup delay (overrides global)
     farewell_hangup_delay_sec: Optional[float] = None
 
@@ -600,6 +606,7 @@ class AzureTTSProviderConfig(BaseModel):
     # Downstream encoding the engine expects (ulaw | pcm | slin16)
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     chunk_size_ms: int = Field(default=20)
     request_timeout_sec: float = Field(default=15.0)
     # Streaming: read response in chunks as they arrive instead of waiting for
@@ -699,6 +706,7 @@ class OpenAIRealtimeProviderConfig(BaseModel):
     input_gain_max_db: float = Field(default=0.0)
     output_encoding: str = Field(default="linear16")  # Provider emits PCM16 frames
     output_sample_rate_hz: int = Field(default=24000)
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     target_encoding: str = Field(default="ulaw")  # Downstream AudioSocket expectations
     target_sample_rate_hz: int = Field(default=8000)
     response_modalities: List[str] = Field(default_factory=lambda: ["text", "audio"])
@@ -751,6 +759,7 @@ class GrokProviderConfig(BaseModel):
     provider_input_sample_rate_hz: int = Field(default=8000)
     output_encoding: str = Field(default="linear16")  # xAI emits PCM16 in practice
     output_sample_rate_hz: int = Field(default=24000)  # xAI's actual native output rate
+    output_resampler: Literal["linear", "bandlimited"] = Field(default="linear")
     target_encoding: str = Field(default="ulaw")  # AudioSocket egress format
     target_sample_rate_hz: int = Field(default=8000)
     input_gain_target_rms: int = Field(default=0)
@@ -800,9 +809,22 @@ class BargeInConfig(BaseModel):
     post_tts_end_protection_ms: int = Field(default=250)
     # Extra protection during the first greeting turn
     greeting_protection_ms: int = Field(default=0)
-    # Provider-owned mode: local VAD fallback only for providers that don't emit explicit interruption events.
+    # Provider-owned mode: local VAD fallback for providers whose server-side
+    # interruption event may be disabled or unavailable for a given agent.
     provider_fallback_enabled: bool = Field(default=True)
-    provider_fallback_providers: List[str] = Field(default_factory=lambda: ["google_live", "deepgram", "grok"])
+    provider_fallback_providers: List[str] = Field(
+        default_factory=lambda: [
+            "google_live",
+            "deepgram",
+            "elevenlabs_agent",
+            "grok",
+        ]
+    )
+    # Optional per-provider reaction threshold. Keys may be provider instance
+    # names or canonical provider kinds. Unlisted providers retain min_ms.
+    provider_fallback_min_ms_by_provider: Dict[str, int] = Field(
+        default_factory=lambda: {"grok": 120}
+    )
     # Provider-owned mode: suppress outbound provider audio locally after barge-in so continuing provider audio
     # doesn't immediately restart streaming playback.
     provider_output_suppress_ms: int = Field(default=1200)
@@ -810,6 +832,20 @@ class BargeInConfig(BaseModel):
     # While suppressed, extend the suppression window when provider chunks keep arriving.
     # This prevents "tail resume" if a provider keeps streaming already-generated audio after barge-in.
     provider_output_suppress_chunk_extend_ms: int = Field(default=250)
+
+    @field_validator("provider_fallback_min_ms_by_provider")
+    @classmethod
+    def _validate_provider_fallback_minimums(
+        cls, value: Dict[str, int]
+    ) -> Dict[str, int]:
+        for provider_name, duration_ms in value.items():
+            if not str(provider_name).strip():
+                raise ValueError("provider fallback override names cannot be empty")
+            if not 40 <= int(duration_ms) <= 5000:
+                raise ValueError(
+                    "provider fallback minimums must be between 40 and 5000 ms"
+                )
+        return value
 
 
 class LLMConfig(BaseModel):
@@ -915,6 +951,16 @@ class StreamingConfig(BaseModel):
     egress_swap_mode: str = Field(default="auto")
     # When true, force outbound streaming audio to μ-law regardless of provider encoding.
     egress_force_mulaw: bool = Field(default=False)
+    # Diagnostic capture settings are part of the canonical model because
+    # engine call setup reads them after Pydantic validation. Leaving them as
+    # ignored YAML extras caused the playback manager (environment opt-in) and
+    # ARI recording path (validated config) to disagree about whether taps were
+    # active.
+    attack_ms: int = Field(default=0, ge=0)
+    diag_enable_taps: bool = Field(default=False)
+    diag_pre_secs: int = Field(default=1, ge=0)
+    diag_post_secs: int = Field(default=1, ge=0)
+    diag_out_dir: str = Field(default="/tmp/ai-engine-taps", min_length=1)
     # Overlap LLM token streaming with TTS synthesis in modular pipelines.
     # Streams tokens → splits into sentences → synthesizes each sentence concurrently.
     pipeline_streaming_overlap: bool = Field(default=True)
@@ -1082,6 +1128,125 @@ class AppConfig(BaseModel):
             logger.debug("Pipeline normalization failed (will be caught by Pydantic)", error=str(e))
             pass
         return data
+
+    @model_validator(mode="after")
+    def _validate_audio_profile_contracts(self) -> "AppConfig":
+        """Reject invalid audio-policy and Asterisk profile contracts."""
+        allowed_resamplers = {"linear", "bandlimited"}
+
+        def validate_resampler(location: str, value: Any) -> None:
+            if value not in allowed_resamplers:
+                raise ValueError(
+                    f"{location} must be 'linear' or 'bandlimited'; got {value!r}"
+                )
+
+        # ``providers`` remains intentionally open-ended for third-party
+        # adapters, so enforce this shared transport policy explicitly rather
+        # than relying on provider-specific Pydantic models being selected.
+        for provider_name, provider_config in self.providers.items():
+            if isinstance(provider_config, dict) and "output_resampler" in provider_config:
+                validate_resampler(
+                    f"providers.{provider_name}.output_resampler",
+                    provider_config.get("output_resampler"),
+                )
+
+        # Per-pipeline TTS options are the narrow rollback/canary override.
+        # Validate them at load/apply time so a typo cannot fail mid-call.
+        for pipeline_name, pipeline in self.pipelines.items():
+            tts_options = pipeline.options.get("tts")
+            if isinstance(tts_options, dict) and "output_resampler" in tts_options:
+                validate_resampler(
+                    f"pipelines.{pipeline_name}.options.tts.output_resampler",
+                    tts_options.get("output_resampler"),
+                )
+            if isinstance(tts_options, dict) and "streaming_overlap" in tts_options:
+                overlap_value = tts_options.get("streaming_overlap")
+                if type(overlap_value) is not bool:
+                    raise ValueError(
+                        "pipelines."
+                        f"{pipeline_name}.options.tts.streaming_overlap must be "
+                        f"true or false; got {overlap_value!r}"
+                    )
+            stt_options = pipeline.options.get("stt")
+            if isinstance(stt_options, dict):
+                for option_name, minimum, maximum in (
+                    ("segment_energy_threshold", 0, 32767),
+                    ("segment_silence_ms", 100, 5000),
+                ):
+                    if option_name not in stt_options:
+                        continue
+                    option_value = stt_options.get(option_name)
+                    if type(option_value) is not int or not minimum <= option_value <= maximum:
+                        raise ValueError(
+                            f"pipelines.{pipeline_name}.options.stt.{option_name} "
+                            f"must be an integer from {minimum} to {maximum}; "
+                            f"got {option_value!r}"
+                        )
+
+        if not self.profiles:
+            return self
+
+        default_profile = self.profiles.get("default")
+        if isinstance(default_profile, str) and default_profile not in self.profiles:
+            raise ValueError(
+                f"profiles.default references missing profile {default_profile!r}"
+            )
+
+        fixed_rates = {
+            "ulaw": 8000,
+            "mulaw": 8000,
+            "mu-law": 8000,
+            "alaw": 8000,
+            "a-law": 8000,
+            "slin": 8000,
+            "slin16": 16000,
+        }
+
+        def validate_pair(profile_name: str, section_name: str, section: Any) -> None:
+            if not isinstance(section, dict):
+                return
+            encoding = str(section.get("encoding") or "").strip().lower()
+            raw_rate = section.get("sample_rate_hz")
+            if not encoding or raw_rate is None:
+                return
+            try:
+                rate = int(raw_rate)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"profile {profile_name!r} {section_name}.sample_rate_hz "
+                    "must be an integer"
+                ) from exc
+            expected = fixed_rates.get(encoding)
+            if expected is not None and rate != expected:
+                raise ValueError(
+                    f"profile {profile_name!r} has unsupported {section_name} "
+                    f"pair {encoding}@{rate}; {encoding} requires {expected} Hz"
+                )
+
+        for profile_name, raw_profile in self.profiles.items():
+            if profile_name == "default" or not isinstance(raw_profile, dict):
+                continue
+            validate_pair(profile_name, "transport_out", raw_profile.get("transport_out"))
+            provider_pref = raw_profile.get("provider_pref")
+            if isinstance(provider_pref, dict):
+                validate_pair(
+                    profile_name,
+                    "provider_pref.input",
+                    {
+                        "encoding": provider_pref.get("input_encoding"),
+                        "sample_rate_hz": provider_pref.get("input_sample_rate_hz"),
+                    },
+                )
+                validate_pair(
+                    profile_name,
+                    "provider_pref.output",
+                    {
+                        "encoding": provider_pref.get("output_encoding"),
+                        "sample_rate_hz": provider_pref.get("output_sample_rate_hz"),
+                    },
+                )
+
+        return self
 
 def _generate_default_pipeline(config_data: Dict[str, Any]) -> None:
     """Populate a default pipeline entry when none are provided."""

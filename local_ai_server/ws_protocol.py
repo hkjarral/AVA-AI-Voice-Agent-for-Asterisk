@@ -108,9 +108,35 @@ class WebSocketProtocol:
             call_id = data.get("call_id")
             if call_id:
                 session.call_id = call_id
+            for key, minimum, maximum in (
+                ("segment_energy_threshold", 0, 32767),
+                ("segment_silence_ms", 100, 5000),
+            ):
+                raw_value = data.get(key)
+                if raw_value is None:
+                    # A repeated set_mode message without an override restores
+                    # the documented server-default behavior for this session.
+                    setattr(session, f"stt_{key}", None)
+                    continue
+                if type(raw_value) is not int or not minimum <= raw_value <= maximum:
+                    logging.warning(
+                        "Ignoring invalid Local STT session option %s=%r call_id=%s",
+                        key,
+                        raw_value,
+                        session.call_id,
+                    )
+                    setattr(session, f"stt_{key}", None)
+                    continue
+                setattr(session, f"stt_{key}", raw_value)
             await self._server._send_json(
                 websocket,
-                {"type": "mode_ready", "mode": session.mode, "call_id": session.call_id},
+                {
+                    "type": "mode_ready",
+                    "mode": session.mode,
+                    "call_id": session.call_id,
+                    "segment_energy_threshold": session.stt_segment_energy_threshold,
+                    "segment_silence_ms": session.stt_segment_silence_ms,
+                },
             )
             return
 

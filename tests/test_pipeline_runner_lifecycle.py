@@ -82,8 +82,52 @@ class _RecordingLLM(LLMComponent):
         return ""
 
 
+class _BlockingLLM(LLMComponent):
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def generate(self, call_id, transcript, context, options):
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return "late response after caller hangup"
+
+
+class _CancellationResistantLLM(LLMComponent):
+    """Model a provider request that completes after task cancellation."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def generate(self, call_id, transcript, context, options):
+        self.started.set()
+        while not self.release.is_set():
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                continue
+        return "late response after caller hangup"
+
+
 class _StubTTS(TTSComponent):
     async def synthesize(self, call_id, text, options):
+        yield b"ulaw-bytes"
+
+
+class _RecordingTTS(TTSComponent):
+    def __init__(self):
+        self.started = asyncio.Event()
+
+    async def synthesize(self, call_id, text, options):
+        self.started.set()
         yield b"ulaw-bytes"
 
 
@@ -306,6 +350,142 @@ async def test_pipeline_runner_lifecycle(monkeypatch):
     assert call_id not in engine._pipeline_tasks
     assert call_id not in engine._pipeline_queues
     assert call_id not in engine._pipeline_forced
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancels_inflight_pipeline_turn_before_bridge_teardown(monkeypatch):
+    """A late LLM result must not create playback after call cleanup starts."""
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"streaming": {}},
+        "active_pipeline": "streaming",
+        "audio_transport": "audiosocket",
+        "downstream_mode": "stream",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    llm = _BlockingLLM()
+    tts = _RecordingTTS()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=llm,
+        tts_adapter=tts,
+    )
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+
+    from src.core.models import CallSession
+
+    call_id = "call-cleanup-inflight-llm"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "streaming"
+    session.bridge_id = "bridge-cleanup-race"
+    await engine.session_store.upsert_call(session)
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+    await stt.results.put("goodbye this is final")
+    await asyncio.wait_for(llm.started.wait(), timeout=2)
+
+    async def release_llm_during_bridge_teardown(_bridge_id):
+        llm.release.set()
+        await asyncio.sleep(0.05)
+        return True
+
+    engine.ari_client.destroy_bridge = AsyncMock(side_effect=release_llm_during_bridge_teardown)
+    engine.streaming_playback_manager.start_streaming_playback = AsyncMock(
+        return_value="late-stream"
+    )
+
+    await engine._cleanup_call(call_id)
+
+    assert llm.cancelled.is_set()
+    assert not tts.started.is_set()
+    engine.streaming_playback_manager.start_streaming_playback.assert_not_awaited()
+    assert call_id not in engine._pipeline_tasks
+
+
+@pytest.mark.asyncio
+async def test_cleanup_suppresses_output_from_cancellation_resistant_llm(monkeypatch):
+    """A provider result that survives cancellation must still fail closed."""
+    config_data = {
+        "default_provider": "local",
+        "providers": {"local": {"enabled": True}},
+        "asterisk": {
+            "host": "127.0.0.1",
+            "port": 8088,
+            "username": "u",
+            "password": "p",
+            "app_name": "ai-voice-agent",
+        },
+        "llm": {"initial_greeting": "", "prompt": "You are helpful", "model": "gpt-4o"},
+        "pipelines": {"streaming": {}},
+        "active_pipeline": "streaming",
+        "audio_transport": "audiosocket",
+        "downstream_mode": "stream",
+    }
+    engine = Engine(AppConfig(**config_data))
+    engine.pipeline_orchestrator._started = True
+    stt = _ResultStreamingStubSTT()
+    llm = _CancellationResistantLLM()
+    tts = _RecordingTTS()
+    resolution = _StubResolution(
+        stt_adapter=stt,
+        stt_options={"streaming": True, "chunk_ms": 80},
+        llm_adapter=llm,
+        tts_adapter=tts,
+    )
+    monkeypatch.setattr(
+        engine.pipeline_orchestrator,
+        "get_pipeline",
+        lambda *args, **kwargs: resolution,
+    )
+
+    from src.core.models import CallSession
+
+    call_id = "call-cleanup-resistant-llm"
+    session = CallSession(call_id=call_id, caller_channel_id=call_id)
+    session.pipeline_name = "streaming"
+    await engine.session_store.upsert_call(session)
+    engine.ari_client.set_channel_var = AsyncMock(return_value=True)
+    engine.ari_client.hangup_channel = AsyncMock(return_value=True)
+    engine.streaming_playback_manager.start_streaming_playback = AsyncMock(
+        return_value="late-stream"
+    )
+
+    await engine._ensure_pipeline_runner(session, forced=True)
+    await asyncio.wait_for(stt.started.wait(), timeout=2)
+    await stt.results.put("explain the project in detail")
+    await asyncio.wait_for(llm.started.wait(), timeout=2)
+
+    cleanup_task = asyncio.create_task(engine._cleanup_call(call_id))
+    for _ in range(100):
+        if session.cleanup_in_progress:
+            break
+        await asyncio.sleep(0.01)
+    assert session.cleanup_in_progress is True
+    # Return the provider result only after cleanup has acquired ownership.
+    # Whether cancellation has propagated yet is intentionally irrelevant.
+    llm.release.set()
+    await asyncio.wait_for(cleanup_task, timeout=3)
+
+    assert not tts.started.is_set()
+    engine.streaming_playback_manager.start_streaming_playback.assert_not_awaited()
+    assert call_id not in engine._pipeline_tasks
 
 
 @pytest.mark.asyncio

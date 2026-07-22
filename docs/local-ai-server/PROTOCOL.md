@@ -90,6 +90,11 @@ Notes:
 
 - Supported modes: `full`, `stt`, `llm`, `tts`.
 - `call_id` is optional but useful for correlating events.
+- For modular Local STT, `set_mode` may include per-session
+  `segment_energy_threshold` (0–32767) and `segment_silence_ms` (100–5000).
+  Omit either field to inherit the Local AI Server environment/default. These
+  controls apply only to Whisper-family utterance segmentation and let one
+  pipeline be tuned or rolled back without changing every local pipeline.
 - If you never call `set_mode`, the default is `full`.
 
 ---

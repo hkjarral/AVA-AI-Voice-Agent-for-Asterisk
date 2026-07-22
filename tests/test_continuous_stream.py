@@ -7,7 +7,8 @@ from src.core.streaming_playback_manager import StreamingPlaybackManager
 
 
 class Dummy:
-    pass
+    async def clear_gating_token(self, *_args, **_kwargs):
+        return None
 
 
 def make_manager(**overrides):
@@ -154,6 +155,96 @@ async def test_start_segment_gating_baselines_actual_playback_position():
     assert (
         mgr.active_streams[call_id]['real_tx_bytes_segment_baseline'] == 8_000
     )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_cleanup_skips_provider_tail_grace(monkeypatch):
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-barge-cleanup"
+    stream_id = "stream:resp:test-call-barge-cleanup:1"
+    mgr.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "end_reason": "barge-in",
+        "start_time": time.time(),
+    }
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        "src.core.streaming_playback_manager.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await mgr._cleanup_stream(call_id, stream_id)
+
+    assert sleeps == []
+    assert call_id not in mgr.active_streams
+
+
+@pytest.mark.asyncio
+async def test_natural_cleanup_keeps_single_provider_tail_grace(monkeypatch):
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-natural-cleanup"
+    stream_id = "stream:resp:test-call-natural-cleanup:1"
+    mgr.active_streams[call_id] = {
+        "stream_id": stream_id,
+        "end_reason": "provider-complete",
+        "start_time": time.time(),
+    }
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(
+        "src.core.streaming_playback_manager.asyncio.sleep",
+        fake_sleep,
+    )
+
+    await mgr._cleanup_stream(call_id, stream_id)
+    await mgr._cleanup_stream(call_id, stream_id)
+
+    assert sleeps == [0.2]
+    assert call_id not in mgr.active_streams
+
+
+@pytest.mark.asyncio
+async def test_old_cleanup_cannot_remove_replacement_stream(monkeypatch):
+    mgr = make_manager(provider_grace_ms=200)
+    call_id = "test-call-replaced-during-grace"
+    old_stream_id = "stream:resp:test-call-replaced-during-grace:1"
+    new_stream_id = "stream:resp:test-call-replaced-during-grace:2"
+    mgr.active_streams[call_id] = {
+        "stream_id": old_stream_id,
+        "end_reason": "provider-complete",
+        "start_time": time.time(),
+    }
+    grace_started = asyncio.Event()
+    release_grace = asyncio.Event()
+
+    async def controlled_sleep(_seconds):
+        grace_started.set()
+        await release_grace.wait()
+
+    monkeypatch.setattr(
+        "src.core.streaming_playback_manager.asyncio.sleep",
+        controlled_sleep,
+    )
+
+    cleanup = asyncio.create_task(mgr._cleanup_stream(call_id, old_stream_id))
+    await asyncio.wait_for(grace_started.wait(), timeout=1)
+    replacement = {
+        "stream_id": new_stream_id,
+        "end_reason": "",
+        "start_time": time.time(),
+    }
+    mgr.active_streams[call_id] = replacement
+    release_grace.set()
+    await asyncio.wait_for(cleanup, timeout=1)
+
+    assert mgr.active_streams[call_id] is replacement
 
 
 def test_low_water_grace_does_not_rearm_after_expiry_without_audio():

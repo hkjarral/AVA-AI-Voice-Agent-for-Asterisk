@@ -24,7 +24,16 @@ barge_in:
     - google_live
     - deepgram
     - local
+    # ElevenLabs interruption delivery is Agent-dashboard controlled. Keep a
+    # caller-isolated local fallback so barge-in still works when that event is
+    # disabled or the provider misses a short telephony utterance.
+    - elevenlabs_agent
     - grok
+  # Grok's native VAD remains authoritative, while this caller-isolated local
+  # fallback makes a short one-word interruption responsive on telephony audio.
+  # Other hosted providers retain the global 250 ms minimum.
+  provider_fallback_min_ms_by_provider:
+    grok: 120
   provider_output_suppress_ms: 1200
   provider_output_suppress_extend_ms: 600
   provider_output_suppress_chunk_extend_ms: 250

@@ -441,11 +441,34 @@ class StreamingPlaybackManager:
             stream_id if successful, None if failed
         """
         try:
-            # Reuse active stream if one already exists
-            if self.is_stream_active(call_id):
-                existing = self.active_streams[call_id]['stream_id']
-                logger.debug("Streaming already active for call", call_id=call_id, stream_id=existing)
-                return existing
+            # Reuse a live stream. If its producer has already exited, settle
+            # that exact stream before allocating replacement per-call queues.
+            # Otherwise the old producer's finally block can wake later and
+            # delete the replacement stream's jitter/remainder/gating state.
+            cleanup_deadline = asyncio.get_running_loop().time() + 3.0
+            while True:
+                existing_info = self.active_streams.get(call_id)
+                if not existing_info:
+                    break
+                existing = str(existing_info.get('stream_id') or '')
+                if existing and self.is_stream_active(call_id, existing):
+                    logger.debug(
+                        "Streaming already active for call",
+                        call_id=call_id,
+                        stream_id=existing,
+                    )
+                    return existing
+                if call_id not in self._cleanup_in_progress and existing:
+                    await self._cleanup_stream(call_id, existing)
+                    continue
+                if asyncio.get_running_loop().time() >= cleanup_deadline:
+                    logger.error(
+                        "Cannot replace stale stream before cleanup settled",
+                        call_id=call_id,
+                        stream_id=existing,
+                    )
+                    return None
+                await asyncio.sleep(0.01)
 
             # Get session to determine target channel
             session = await self.session_store.get_by_call_id(call_id)
@@ -3397,8 +3420,20 @@ class StreamingPlaybackManager:
         except Exception:
             logger.debug("end_segment_gating failed", call_id=call_id, exc_info=True)
 
+    @staticmethod
+    def _is_interrupted_end_reason(reason: Any) -> bool:
+        normalized = str(reason or "").strip().lower()
+        return any(token in normalized for token in ("barge", "interrupt", "cancel"))
+
     async def _cleanup_stream(self, call_id: str, stream_id: str) -> None:
         """Clean up streaming resources."""
+        current = self.active_streams.get(call_id)
+        # The producer task also owns cleanup in its finally block. A caller of
+        # stop_streaming_playback() must not repeat cleanup (and its grace wait)
+        # after that task has already removed the exact stream. Likewise, an old
+        # producer must never clean up a replacement stream for the same call.
+        if not current or current.get("stream_id") != stream_id:
+            return
         if call_id in self._cleanup_in_progress:
             return
         self._cleanup_in_progress.add(call_id)
@@ -3592,13 +3627,47 @@ class StreamingPlaybackManager:
                     self.call_tap_post_pcm16.pop(call_id, None)
                     self.call_tap_rate.pop(call_id, None)
 
-            # Before clearing gating/state, give provider a grace period and flush any remaining audio
-            # to avoid chopping off the tail of the playback.
+            # Before clearing gating/state, give naturally completed provider
+            # audio a grace period so its tail is not chopped. An interrupted
+            # stream wants the opposite behavior: stop immediately and discard
+            # all remaining audio.
             try:
-                if self.provider_grace_ms:
+                cleanup_info = self.active_streams.get(call_id) or {}
+                interrupted = self._is_interrupted_end_reason(
+                    cleanup_info.get("end_reason")
+                )
+                if self.provider_grace_ms and not interrupted:
                     await asyncio.sleep(self.provider_grace_ms / 1000.0)
             except Exception:
                 pass
+
+            # A replacement is not expected because start_streaming_playback()
+            # waits for stale cleanup, but retain an ownership check across the
+            # grace await as a final fail-closed boundary. Never let an old
+            # producer clear a newer stream's per-call resources.
+            current = self.active_streams.get(call_id)
+            if not current or current.get("stream_id") != stream_id:
+                try:
+                    if self.conversation_coordinator:
+                        await self.conversation_coordinator.on_tts_end(
+                            call_id, stream_id, "superseded-stream-cleanup"
+                        )
+                    else:
+                        await self.session_store.clear_gating_token(call_id, stream_id)
+                except Exception:
+                    logger.debug(
+                        "Failed clearing superseded stream gating",
+                        call_id=call_id,
+                        stream_id=stream_id,
+                        exc_info=True,
+                    )
+                logger.info(
+                    "Skipped cleanup for superseded stream",
+                    call_id=call_id,
+                    stream_id=stream_id,
+                    current_stream_id=(current or {}).get("stream_id"),
+                )
+                return
 
             # Flush any remainder bytes as a final frame
             try:
@@ -3612,7 +3681,7 @@ class StreamingPlaybackManager:
                     end_reason = str((self.active_streams.get(call_id) or {}).get('end_reason', '') or '')
                 except Exception:
                     pass
-                barge_in_end = any(k in end_reason for k in ("barge", "interrupt", "cancel"))
+                barge_in_end = self._is_interrupted_end_reason(end_reason)
                 if rem and not barge_in_end:
                     self._decrement_buffered_bytes(call_id, len(rem))
                     if self.audio_transport == "audiosocket":

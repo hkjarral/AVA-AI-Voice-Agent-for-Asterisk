@@ -65,6 +65,11 @@ export function normalizeSttOptions(
 ): SttOptions {
     const source = asSttOptions(options);
     const normalized = portableSttOptions(source);
+    if (String(sttKey || '').trim().toLowerCase() === 'local_stt') {
+        for (const key of ['segment_energy_threshold', 'segment_silence_ms']) {
+            if (source[key] != null) normalized[key] = source[key];
+        }
+    }
     const mode = getSttStreamingMode(sttKey, providers);
     const preserveStreamingChoice = config.preserveStreamingChoice !== false;
 

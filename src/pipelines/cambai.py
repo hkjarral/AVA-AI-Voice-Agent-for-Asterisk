@@ -150,7 +150,9 @@ class CambAiTTSAdapter(TTSComponent):
                 latency_ms = (time.perf_counter() - started_at) * 1000.0
 
                 # Convert PCM16 to μ-law 8kHz for telephony
-                converted = self._convert_to_ulaw(raw_audio, output_format)
+                converted = self._convert_to_ulaw(
+                    raw_audio, output_format, merged["output_resampler"]
+                )
 
                 logger.info(
                     "CAMB AI TTS synthesis completed",
@@ -175,18 +177,30 @@ class CambAiTTSAdapter(TTSComponent):
             )
             raise
 
-    def _convert_to_ulaw(self, raw_audio: bytes, output_format: str) -> bytes:
+    def _convert_to_ulaw(
+        self,
+        raw_audio: bytes,
+        output_format: str,
+        output_resampler: str = "linear",
+    ) -> bytes:
         """Convert CAMB AI audio output to μ-law 8kHz for telephony."""
         if output_format == "pcm_s16le":
             # Raw PCM 16-bit signed little-endian at 24kHz -> resample to 8kHz -> μ-law
-            resampled, _ = resample_audio(raw_audio, CAMB_AI_PCM_SAMPLE_RATE, 8000)
+            resampled, _ = resample_audio(
+                raw_audio,
+                CAMB_AI_PCM_SAMPLE_RATE,
+                8000,
+                mode=output_resampler,
+            )
             return pcm16le_to_mulaw(resampled)
         elif output_format == "wav":
             # Parse WAV container to extract raw PCM frames and sample rate
             with wave.open(io.BytesIO(raw_audio), "rb") as wf:
                 pcm_data = wf.readframes(wf.getnframes())
                 source_rate = wf.getframerate()
-            resampled, _ = resample_audio(pcm_data, source_rate, 8000)
+            resampled, _ = resample_audio(
+                pcm_data, source_rate, 8000, mode=output_resampler
+            )
             return pcm16le_to_mulaw(resampled)
         else:
             logger.warning(
@@ -220,6 +234,12 @@ class CambAiTTSAdapter(TTSComponent):
                 self._pipeline_defaults.get("output_format", self._provider_config.output_format)),
             "chunk_size_ms": runtime_options.get("chunk_size_ms",
                 self._pipeline_defaults.get("chunk_size_ms", 20)),
+            "output_resampler": runtime_options.get(
+                "output_resampler",
+                self._pipeline_defaults.get(
+                    "output_resampler", self._provider_config.output_resampler
+                ),
+            ),
         }
 
         return merged

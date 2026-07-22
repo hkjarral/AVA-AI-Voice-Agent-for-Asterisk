@@ -410,7 +410,12 @@ class GroqTTSAdapter(TTSComponent):
                 continue
             pcm_bytes, source_rate = audio_pcm
             if source_rate and source_rate != target_sample_rate:
-                pcm_bytes, _ = resample_audio(pcm_bytes, source_rate, target_sample_rate)
+                pcm_bytes, _ = resample_audio(
+                    pcm_bytes,
+                    source_rate,
+                    target_sample_rate,
+                    mode=merged["output_resampler"],
+                )
             converted = convert_pcm16le_to_target_format(pcm_bytes, target_encoding)
 
             for chunk in _chunk_audio(converted, target_encoding, target_sample_rate, chunk_ms):
@@ -535,6 +540,12 @@ class GroqTTSAdapter(TTSComponent):
                 runtime_options.get("request_timeout_sec", self._pipeline_defaults.get("request_timeout_sec", self._provider_defaults.request_timeout_sec))
             ),
             "format": merged_format,
+            "output_resampler": runtime_options.get(
+                "output_resampler",
+                self._pipeline_defaults.get(
+                    "output_resampler", self._provider_defaults.output_resampler
+                ),
+            ),
         }
 
 

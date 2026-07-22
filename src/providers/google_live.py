@@ -229,6 +229,20 @@ class GoogleLiveProvider(AIProviderInterface):
         
         # Golden Baseline: Simple input buffer for 20ms chunking
         self._input_buffer = bytearray()
+        self._output_resample_state: Optional[tuple] = None
+        configured_output_resampler = os.getenv(
+            "AAVA_GOOGLE_OUTPUT_RESAMPLER",
+            getattr(config, "output_resampler", "linear"),
+        ).strip().lower()
+        if configured_output_resampler not in ("linear", "bandlimited"):
+            logger.warning(
+                "Invalid Google output resampler; using compatibility default",
+                configured=configured_output_resampler,
+                fallback="linear",
+            )
+            configured_output_resampler = "linear"
+        self._output_resampler_mode = configured_output_resampler
+        self._output_resampler_logged = False
         
         # Metrics tracking
         self._session_start_time: Optional[float] = None
@@ -409,6 +423,8 @@ class GoogleLiveProvider(AIProviderInterface):
         self._last_input_transcription_fragment = ""
         self._output_transcription_buffer = ""
         self._last_output_transcription_fragment = ""
+        self._output_resample_state = None
+        self._output_resampler_logged = False
         self._model_text_buffer = ""
 
     @staticmethod
@@ -1561,6 +1577,10 @@ class GoogleLiveProvider(AIProviderInterface):
             )
             if self._in_audio_burst:
                 self._in_audio_burst = False
+            # The next provider audio belongs to a new response. Never carry
+            # FIR history across the discarded response boundary.
+            self._output_resample_state = None
+            self._output_resampler_logged = False
             try:
                 if self.on_event:
                     await self.on_event(
@@ -1933,11 +1953,29 @@ class GoogleLiveProvider(AIProviderInterface):
                 logger.debug("Failed to emit Google Live output PCM rate log", call_id=self._call_id, exc_info=True)
             
             if provider_output_rate != target_rate:
-                pcm16_target, _ = resample_audio(
+                pcm16_target, self._output_resample_state = resample_audio(
                     pcm16_provider,
                     source_rate=provider_output_rate,
                     target_rate=target_rate,
+                    state=self._output_resample_state,
+                    mode=self._output_resampler_mode,
                 )
+                if not self._output_resampler_logged:
+                    alias_safe = bool(
+                        self._output_resampler_mode == "bandlimited"
+                        and provider_output_rate > target_rate
+                        and provider_output_rate % target_rate == 0
+                    )
+                    logger.info(
+                        "Google output resampler selected",
+                        call_id=self._call_id,
+                        configured_mode=self._output_resampler_mode,
+                        active_mode=("bandlimited" if alias_safe else "linear"),
+                        source_rate_hz=provider_output_rate,
+                        target_rate_hz=target_rate,
+                        alias_safe=alias_safe,
+                    )
+                    self._output_resampler_logged = True
             else:
                 pcm16_target = pcm16_provider
 
@@ -1995,6 +2033,10 @@ class GoogleLiveProvider(AIProviderInterface):
             # Prevent the watchdog from emitting duplicate HangupReady events.
             if self._hangup_fallback_armed:
                 self._hangup_fallback_emitted = True
+
+        if had_audio:
+            self._output_resample_state = None
+            self._output_resampler_logged = False
 
         # Mark greeting as complete after first turn
         if not self._greeting_completed:
@@ -2497,6 +2539,8 @@ class GoogleLiveProvider(AIProviderInterface):
             self._call_id = None
             self._session_id = None
             self._input_buffer.clear()
+            self._output_resample_state = None
+            self._output_resampler_logged = False
             self._hangup_after_response = False
             self._hangup_fallback_armed = False
             self._hangup_fallback_emitted = False

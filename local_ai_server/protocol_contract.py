@@ -51,6 +51,8 @@ PROTOCOL_SCHEMA: Dict[str, Any] = {
                 "type": {"const": "set_mode"},
                 "mode": {"enum": ["full", "stt", "llm", "tts"]},
                 "call_id": {"type": "string"},
+                "segment_energy_threshold": {"type": "integer", "minimum": 0, "maximum": 32767},
+                "segment_silence_ms": {"type": "integer", "minimum": 100, "maximum": 5000},
             },
             "additionalProperties": True,
         },

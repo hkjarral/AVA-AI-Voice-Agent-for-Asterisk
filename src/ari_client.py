@@ -728,6 +728,59 @@ class ARIClient:
             logger.error("Error starting ARI channel recording", channel_id=channel_id, exc_info=True)
             return False
 
+    async def record_bridge(
+        self,
+        bridge_id: str,
+        name: str,
+        format: str = "wav",
+        if_exists: str = "overwrite",
+        max_duration_seconds: int = 180,
+        max_silence_seconds: int = 0,
+        beep: bool = False,
+        terminate_on: str = "none",
+    ) -> bool:
+        """Start a mixed bridge recording via ARI.
+
+        Recording the completed media bridge is the valid diagnostic lifecycle
+        point for AudioSocket/ExternalMedia calls. Asterisk rejects channel
+        recording once that channel belongs to a bridge.
+        """
+        try:
+            logger.info(
+                "Starting ARI bridge recording",
+                bridge_id=bridge_id,
+                name=name,
+                format=format,
+                ifExists=if_exists,
+            )
+            payload = {
+                "name": str(name),
+                "format": str(format),
+                "ifExists": str(if_exists),
+                "maxDurationSeconds": str(int(max_duration_seconds)),
+                "maxSilenceSeconds": str(int(max_silence_seconds)),
+                "beep": "true" if bool(beep) else "false",
+                "terminateOn": str(terminate_on),
+            }
+            response = await self.send_command(
+                "POST",
+                f"bridges/{bridge_id}/record",
+                params=payload,
+            )
+            status = response.get("status") if isinstance(response, dict) else None
+            if status is not None and not (200 <= int(status) < 300):
+                logger.error(
+                    "Failed to start ARI bridge recording",
+                    bridge_id=bridge_id,
+                    response=response,
+                )
+                return False
+            logger.info("ARI bridge recording started", bridge_id=bridge_id, name=name)
+            return True
+        except Exception:
+            logger.error("Error starting ARI bridge recording", bridge_id=bridge_id, exc_info=True)
+            return False
+
     async def add_channel_to_bridge(self, bridge_id: str, channel_id: str) -> bool:
         """Add a channel to a bridge."""
         try:

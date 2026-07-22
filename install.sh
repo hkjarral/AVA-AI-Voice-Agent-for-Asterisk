@@ -405,9 +405,10 @@ check_asterisk_modules() {
         print_warning "Asterisk CLI not found. Skipping Asterisk module checks."
         return
     fi
-    print_info "Checking Asterisk modules (res_ari_applications, app_audiosocket)..."
+    print_info "Checking Asterisk modules (res_ari_applications, app_audiosocket, format_wav)..."
     asterisk -rx "module show like res_ari_applications" || true
     asterisk -rx "module show like app_audiosocket" || true
+    asterisk -rx "module show like format_wav" || true
     print_info "If modules are not Running, on FreePBX use: asterisk-switch-version (select 18+)."
 }
 

@@ -141,6 +141,12 @@ const BargeInPage = () => {
         ? (bargeInConfig.provider_fallback_providers as string[]).filter(Boolean)
         : [];
     const providerFallbackProvidersStr = providerFallbackProviders.join(', ');
+    const providerFallbackMinByProvider =
+        bargeInConfig.provider_fallback_min_ms_by_provider &&
+        typeof bargeInConfig.provider_fallback_min_ms_by_provider === 'object' &&
+        !Array.isArray(bargeInConfig.provider_fallback_min_ms_by_provider)
+            ? bargeInConfig.provider_fallback_min_ms_by_provider
+            : {};
 
     const bannerMessage = applyMethod === 'hot_reload'
         ? 'Changes saved. Apply Changes to hot reload AI Engine without dropping active calls.'
@@ -309,6 +315,25 @@ const BargeInPage = () => {
                                             )
                                         }
                                         tooltip="Comma-separated provider names where local fallback may apply (e.g., google_live, deepgram)."
+                                    />
+                                    <FormInput
+                                        label="Grok Fallback Min Duration (ms)"
+                                        type="number"
+                                        value={providerFallbackMinByProvider.grok ?? 120}
+                                        onChange={(e) => {
+                                            const value = Number.parseInt(e.target.value, 10);
+                                            if (!Number.isFinite(value)) return;
+                                            updateBargeInConfig(
+                                                'provider_fallback_min_ms_by_provider',
+                                                {
+                                                    ...providerFallbackMinByProvider,
+                                                    grok: value,
+                                                }
+                                            );
+                                        }}
+                                        min={40}
+                                        max={5000}
+                                        tooltip="Grok-only local fallback threshold for short commands such as ‘stop’. Other hosted providers continue to use Minimum Duration above. Isolation, VAD, energy, cooldown, and protection guards still apply."
                                     />
                                     <FormInput
                                         label="Suppress Extend (ms)"

@@ -565,6 +565,7 @@ class GoogleTTSAdapter(TTSComponent):
             merged["audio_sample_rate"],
             merged["target_format"]["encoding"],
             merged["target_format"]["sample_rate"],
+            merged["output_resampler"],
         )
 
         latency_ms = (time.perf_counter() - started_at) * 1000.0
@@ -617,6 +618,9 @@ class GoogleTTSAdapter(TTSComponent):
                 "encoding": (target_format.get("encoding") or "mulaw").lower(),
                 "sample_rate": int(target_format.get("sample_rate") or 8000),
             },
+            "output_resampler": merged.get(
+                "output_resampler", self._provider_defaults.output_resampler
+            ),
         }
 
     @staticmethod
@@ -626,6 +630,7 @@ class GoogleTTSAdapter(TTSComponent):
         source_rate: int,
         target_encoding: str,
         target_rate: int,
+        output_resampler: str = "linear",
     ) -> bytes:
         if not audio_bytes:
             return b""
@@ -637,7 +642,12 @@ class GoogleTTSAdapter(TTSComponent):
             pcm_bytes = audio_bytes
 
         if source_rate != target_rate:
-            pcm_bytes, _ = resample_audio(pcm_bytes, source_rate, target_rate)
+            pcm_bytes, _ = resample_audio(
+                pcm_bytes,
+                source_rate,
+                target_rate,
+                mode=output_resampler,
+            )
 
         return convert_pcm16le_to_target_format(pcm_bytes, target_encoding)
 

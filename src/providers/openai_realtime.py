@@ -13,6 +13,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import time
 import uuid
 import audioop
@@ -151,6 +152,19 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
         self._input_resample_state: Optional[tuple] = None
         self._output_resample_state: Optional[tuple] = None
+        configured_output_resampler = os.getenv(
+            "AAVA_OPENAI_OUTPUT_RESAMPLER",
+            getattr(config, "output_resampler", "linear"),
+        ).strip().lower()
+        if configured_output_resampler not in ("linear", "bandlimited"):
+            logger.warning(
+                "Invalid OpenAI output resampler; using compatibility default",
+                configured=configured_output_resampler,
+                fallback="linear",
+            )
+            configured_output_resampler = "linear"
+        self._output_resampler_mode: str = configured_output_resampler
+        self._output_resampler_logged: bool = False
         self._transcript_buffer: str = ""
         self._input_info_logged: bool = False
         self._allowed_tools: Optional[List[str]] = None
@@ -384,6 +398,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
         self._first_output_chunk_logged = False
         self._input_resample_state = None
         self._output_resample_state = None
+        self._output_resampler_logged = False
         self._transcript_buffer = ""
         self._closing = False
         self._closed = False
@@ -2363,7 +2378,24 @@ class OpenAIRealtimeProvider(AIProviderInterface):
                 source_rate,
                 target_rate,
                 state=self._output_resample_state,
+                mode=self._output_resampler_mode,
             )
+            if not self._output_resampler_logged:
+                alias_safe = bool(
+                    self._output_resampler_mode == "bandlimited"
+                    and source_rate > target_rate
+                    and source_rate % target_rate == 0
+                )
+                logger.info(
+                    "OpenAI output resampler selected",
+                    call_id=self._call_id,
+                    configured_mode=self._output_resampler_mode,
+                    active_mode=("bandlimited" if alias_safe else "linear"),
+                    source_rate_hz=source_rate,
+                    target_rate_hz=target_rate,
+                    alias_safe=alias_safe,
+                )
+                self._output_resampler_logged = True
 
             outbound = convert_pcm16le_to_target_format(pcm_target, self.config.target_encoding)
             if not outbound:
@@ -2428,6 +2460,7 @@ class OpenAIRealtimeProvider(AIProviderInterface):
             except Exception:
                 logger.debug("Failed to pause pacer on AgentAudioDone", call_id=self._call_id, exc_info=True)
             self._output_resample_state = None
+            self._output_resampler_logged = False
             self._first_output_chunk_logged = False
 
         # If a hangup was requested and we just finished emitting the farewell audio, trigger hangup now.

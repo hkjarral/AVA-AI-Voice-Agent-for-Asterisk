@@ -43,6 +43,7 @@ const MODULE_DESCRIPTIONS: Record<string, string> = {
     res_stasis: 'Stasis application framework',
     chan_pjsip: 'PJSIP channel driver',
     res_http_websocket: 'HTTP WebSocket support for ARI events',
+    format_wav: 'WAV writer required for ARI diagnostic recordings',
 };
 
 const CONFIG_CHECK_LABELS: Record<string, { label: string; fixHint: string }> = {
@@ -61,6 +62,14 @@ const CONFIG_CHECK_LABELS: Record<string, { label: string; fixHint: string }> = 
     dialplan_context: {
         label: 'Dialplan Context',
         fixHint: 'Add a context in /etc/asterisk/extensions_custom.conf:\n\n[from-ai-agent]\nexten => s,1,NoOp(AI Agent)\n same => n,Stasis({APP_NAME})\n same => n,Hangup()',
+    },
+    module_format_wav: {
+        label: 'WAV Recording Module',
+        fixHint: "Load format_wav.so in Asterisk (for example: asterisk -rx 'module load format_wav.so') and ensure it is not excluded in modules.conf",
+    },
+    recording_spool: {
+        label: 'Diagnostic Recording Spool',
+        fixHint: 'Create the ARI recording directory with Asterisk ownership:\n\nsudo install -d -o asterisk -g asterisk -m 0770 /var/spool/asterisk/recording',
     },
 };
 

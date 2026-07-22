@@ -71,3 +71,7 @@ class SessionContext:
     stt_segment_buffer: bytes = b""
     stt_segment_last_voice_mono: float = 0.0
     stt_segment_in_speech: bool = False
+    # Optional per-session Whisper segmenter policy supplied by the modular
+    # pipeline. None inherits the Local AI Server environment/default.
+    stt_segment_energy_threshold: Optional[int] = None
+    stt_segment_silence_ms: Optional[int] = None

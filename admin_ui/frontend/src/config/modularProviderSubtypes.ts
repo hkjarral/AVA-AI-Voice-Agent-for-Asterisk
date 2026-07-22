@@ -156,6 +156,16 @@ const STT_SUBTYPES: ProviderSubtype[] = [
 // ---------------------------------------------------------------------------
 // TTS subtypes
 // ---------------------------------------------------------------------------
+const OUTPUT_RESAMPLER_FIELD: SubtypeField = {
+  key: 'output_resampler',
+  label: 'Output Downsampling',
+  type: 'combobox',
+  required: false,
+  default: 'linear',
+  suggestions: ['linear', 'bandlimited'],
+  tooltip: 'linear preserves current behavior; bandlimited removes out-of-band energy before 16/24 kHz audio is reduced to 8 kHz telephony.',
+};
+
 const TTS_SUBTYPES: ProviderSubtype[] = [
   {
     id: 'openai',
@@ -167,6 +177,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
       { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: 'tts-1', suggestions: ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts'] },
       { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'alloy', suggestions: ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'] },
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${OPENAI_API_KEY}' },
+      OUTPUT_RESAMPLER_FIELD,
     ],
   },
   {
@@ -178,6 +189,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
       { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GROQ_API_KEY}' },
       { key: 'tts_model', label: 'Model', type: 'combobox', required: false, default: 'canopylabs/orpheus-v1-english', suggestions: ['canopylabs/orpheus-v1-english', 'canopylabs/orpheus-arabic-saudi'] },
       { key: 'voice', label: 'Voice', type: 'combobox', required: false, default: 'hannah', suggestions: ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy'] },
+      OUTPUT_RESAMPLER_FIELD,
     ],
   },
   {
@@ -190,6 +202,47 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
       { key: 'voice_id', label: 'Voice ID', type: 'text', required: false, default: '21m00Tcm4TlvDq8ikWAM', placeholder: 'Rachel voice ID' },
       { key: 'model_id', label: 'Model', type: 'combobox', required: false, default: 'eleven_turbo_v2_5', suggestions: ['eleven_turbo_v2_5', 'eleven_multilingual_v2', 'eleven_monolingual_v1'] },
       { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'ulaw_8000', suggestions: ['ulaw_8000', 'pcm_16000', 'pcm_24000', 'mp3_44100'] },
+      OUTPUT_RESAMPLER_FIELD,
+    ],
+  },
+  {
+    id: 'deepgram',
+    label: 'Deepgram Aura',
+    description: 'Deepgram text-to-speech with native telephony output support',
+    yamlType: 'deepgram',
+    fields: [
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${DEEPGRAM_API_KEY}' },
+      { key: 'tts_model', label: 'Voice Model', type: 'text', required: false, default: 'aura-asteria-en' },
+      { key: 'output_encoding', label: 'Output Encoding', type: 'combobox', required: false, default: 'mulaw', suggestions: ['mulaw', 'linear16'] },
+      { key: 'output_sample_rate_hz', label: 'Output Sample Rate (Hz)', type: 'number', required: false, default: 8000 },
+      OUTPUT_RESAMPLER_FIELD,
+    ],
+  },
+  {
+    id: 'google',
+    label: 'Google Cloud TTS',
+    description: 'Google Cloud text-to-speech',
+    yamlType: 'google',
+    fields: [
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${GOOGLE_API_KEY}' },
+      { key: 'tts_voice_name', label: 'Voice', type: 'text', required: false, default: 'en-US-Neural2-C' },
+      { key: 'tts_audio_encoding', label: 'Output Encoding', type: 'combobox', required: false, default: 'MULAW', suggestions: ['MULAW', 'LINEAR16'] },
+      { key: 'tts_sample_rate_hz', label: 'Output Sample Rate (Hz)', type: 'number', required: false, default: 8000 },
+      OUTPUT_RESAMPLER_FIELD,
+    ],
+  },
+  {
+    id: 'cambai',
+    label: 'CAMB AI',
+    description: 'CAMB AI MARS text-to-speech',
+    yamlType: 'cambai',
+    fields: [
+      { key: 'api_key', label: 'API Key', type: 'password', required: true, placeholder: '${CAMB_API_KEY}' },
+      { key: 'voice_id', label: 'Voice ID', type: 'number', required: false, default: 147320 },
+      { key: 'speech_model', label: 'Speech Model', type: 'combobox', required: false, default: 'mars-flash', suggestions: ['mars-flash', 'mars-pro', 'mars-instruct'] },
+      { key: 'language', label: 'Language', type: 'text', required: false, default: 'en-us' },
+      { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'pcm_s16le', suggestions: ['pcm_s16le', 'wav'] },
+      OUTPUT_RESAMPLER_FIELD,
     ],
   },
   {
@@ -202,6 +255,7 @@ const TTS_SUBTYPES: ProviderSubtype[] = [
       { key: 'region', label: 'Region', type: 'combobox', required: true, default: 'eastus', suggestions: ['eastus', 'westus2', 'westeurope', 'southeastasia'] },
       { key: 'voice_name', label: 'Voice', type: 'combobox', required: false, default: 'en-US-JennyNeural', suggestions: ['en-US-JennyNeural', 'en-US-GuyNeural', 'en-GB-SoniaNeural'] },
       { key: 'output_format', label: 'Output Format', type: 'combobox', required: false, default: 'raw-8khz-16bit-mono-pcm', suggestions: ['raw-8khz-16bit-mono-pcm', 'raw-16khz-16bit-mono-pcm'] },
+      OUTPUT_RESAMPLER_FIELD,
     ],
   },
   {

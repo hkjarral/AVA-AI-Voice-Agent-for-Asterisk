@@ -7,7 +7,7 @@ import pytest
 
 from src.core.models import CallSession
 from src.engine import Engine
-from src.config import LocalProviderConfig
+from src.config import BargeInConfig, LocalProviderConfig
 from src.providers.local import LocalProvider
 
 
@@ -52,6 +52,35 @@ def test_provider_fallback_allowlist_matches_named_instance_by_kind():
     assert engine._provider_fallback_is_allowed("grok3", {"grok"}) is True
     assert engine._provider_fallback_is_allowed("grok3", {"deepgram"}) is False
     assert engine._provider_fallback_is_allowed("grok3", set()) is True
+
+
+def test_provider_event_barge_in_does_not_suppress_next_provider_response():
+    cfg = SimpleNamespace(provider_output_suppress_ms=1200)
+
+    assert (
+        Engine._resolve_provider_output_suppress_ms(
+            cfg,
+            source="provider_event",
+            provider_kind="elevenlabs_agent",
+        )
+        == 0
+    )
+    assert (
+        Engine._resolve_provider_output_suppress_ms(
+            cfg,
+            source="local_vad_fallback",
+            provider_kind="elevenlabs_agent",
+        )
+        == 1200
+    )
+    assert (
+        Engine._resolve_provider_output_suppress_ms(
+            cfg,
+            source="local_vad_fallback",
+            provider_kind="grok",
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -147,6 +176,141 @@ async def test_named_grok_instance_triggers_local_vad_fallback():
     )
 
     assert applied == [("call-grok3", "local_vad_fallback", "grok3:externalmedia")]
+
+
+@pytest.mark.asyncio
+async def test_named_grok_instance_uses_scoped_short_fallback_threshold():
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"grok3": "grok"}
+    engine.config = SimpleNamespace(
+        default_provider="grok",
+        barge_in=SimpleNamespace(
+            enabled=True,
+            provider_fallback_enabled=True,
+            provider_fallback_providers=["grok"],
+            provider_fallback_min_ms_by_provider={"grok": 120},
+            energy_threshold=1000,
+            min_ms=250,
+            cooldown_ms=500,
+        ),
+    )
+    engine.streaming_playback_manager = SimpleNamespace(
+        is_stream_active=lambda _call_id: True
+    )
+    engine.vad_manager = None
+    applied = []
+
+    async def apply(call_id, *, source, reason):
+        applied.append((call_id, source, reason))
+
+    engine._apply_barge_in_action = apply
+    session = SimpleNamespace(
+        call_id="call-grok3-scoped-threshold",
+        provider_name="grok3",
+        media_rx_confirmed=True,
+        vad_state={},
+        barge_in_candidate_ms=0,
+        barge_start_ts=0.0,
+        last_barge_in_ts=0.0,
+    )
+
+    for _ in range(5):
+        await engine._maybe_provider_barge_in_fallback(
+            session,
+            pcm16=b"\xff\x7f" * 160,
+            pcm_rate_hz=16000,
+            audiosocket_wire=None,
+            source="externalmedia",
+        )
+    assert applied == []
+
+    await engine._maybe_provider_barge_in_fallback(
+        session,
+        pcm16=b"\xff\x7f" * 160,
+        pcm_rate_hz=16000,
+        audiosocket_wire=None,
+        source="externalmedia",
+    )
+
+    assert applied == [
+        (
+            "call-grok3-scoped-threshold",
+            "local_vad_fallback",
+            "grok3:externalmedia",
+        )
+    ]
+
+
+@pytest.mark.parametrize("duration_ms", [39, 5001])
+def test_provider_fallback_minimum_override_is_bounded(duration_ms):
+    with pytest.raises(ValueError, match="between 40 and 5000 ms"):
+        BargeInConfig(
+            provider_fallback_min_ms_by_provider={"grok": duration_ms}
+        )
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_audiosocket_uses_default_local_barge_in_fallback():
+    engine = Engine.__new__(Engine)
+    engine.provider_kinds = {"elevenlabs_agent": "elevenlabs_agent"}
+    defaults = BargeInConfig()
+    assert "elevenlabs_agent" in defaults.provider_fallback_providers
+    assert defaults.provider_fallback_min_ms_by_provider == {"grok": 120}
+    engine.config = SimpleNamespace(
+        default_provider="elevenlabs_agent",
+        barge_in=SimpleNamespace(
+            enabled=True,
+            provider_fallback_enabled=True,
+            provider_fallback_providers=defaults.provider_fallback_providers,
+            energy_threshold=1000,
+            min_ms=20,
+            cooldown_ms=500,
+            initial_protection_ms=0,
+            greeting_protection_ms=0,
+        ),
+    )
+    engine.streaming_playback_manager = SimpleNamespace(
+        is_stream_active=lambda _call_id: True
+    )
+    engine.session_store = SimpleNamespace(
+        list_playbacks_for_call=lambda _call_id: _async_result(["stream-1"])
+    )
+    engine._call_providers = {}
+    engine.vad_manager = None
+    applied = []
+
+    async def apply(call_id, *, source, reason):
+        applied.append((call_id, source, reason))
+
+    engine._apply_barge_in_action = apply
+    session = SimpleNamespace(
+        call_id="call-elevenlabs",
+        provider_name="elevenlabs_agent",
+        media_rx_confirmed=True,
+        music_snoop_channel_id=None,
+        conversation_state="active",
+        tts_started_ts=0.0,
+        vad_state={},
+        barge_in_candidate_ms=0,
+        barge_start_ts=0.0,
+        last_barge_in_ts=0.0,
+    )
+
+    await engine._maybe_provider_barge_in_fallback(
+        session,
+        pcm16=b"\xff\x7f" * 160,
+        pcm_rate_hz=8000,
+        audiosocket_wire=b"\xff\x7f" * 160,
+        source="audiosocket",
+    )
+
+    assert applied == [
+        (
+            "call-elevenlabs",
+            "local_vad_fallback",
+            "elevenlabs_agent:audiosocket",
+        )
+    ]
 
 
 @pytest.mark.asyncio

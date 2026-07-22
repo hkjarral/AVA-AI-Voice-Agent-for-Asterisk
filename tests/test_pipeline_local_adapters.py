@@ -122,6 +122,39 @@ async def test_local_stt_adapter_transcribes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_local_stt_adapter_sends_pipeline_segmenter_overrides(monkeypatch):
+    app_config = _build_app_config()
+    provider_config = LocalProviderConfig(**app_config.providers["local"])
+    adapter = LocalSTTAdapter(
+        "local_stt",
+        app_config,
+        provider_config,
+        {
+            "mode": "stt",
+            "segment_energy_threshold": 800,
+            "segment_silence_ms": 1200,
+        },
+    )
+    mock_ws = _MockWebSocket()
+
+    async def fake_connect(*_args, **_kwargs):
+        return mock_ws
+
+    monkeypatch.setattr("src.pipelines.local.websockets.connect", fake_connect)
+
+    await adapter.open_call("call-segment-policy", {})
+
+    assert json.loads(mock_ws.sent[0]) == {
+        "type": "set_mode",
+        "mode": "stt",
+        "call_id": "call-segment-policy",
+        "segment_energy_threshold": 800,
+        "segment_silence_ms": 1200,
+    }
+    await adapter.close_call("call-segment-policy")
+
+
+@pytest.mark.asyncio
 async def test_local_stt_stream_accepts_linear16_alias(monkeypatch):
     app_config = _build_app_config()
     provider_config = LocalProviderConfig(**app_config.providers["local"])

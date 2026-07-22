@@ -330,6 +330,8 @@ const PipelinesPage = () => {
                 if (nextTtsOpts.timeout_sec != null) portable.timeout_sec = nextTtsOpts.timeout_sec;
                 if (nextTtsOpts.response_timeout_sec != null) portable.response_timeout_sec = nextTtsOpts.response_timeout_sec;
                 if (nextTtsOpts.mode) portable.mode = nextTtsOpts.mode;
+                if (nextTtsOpts.output_resampler) portable.output_resampler = nextTtsOpts.output_resampler;
+                if (typeof nextTtsOpts.streaming_overlap === 'boolean') portable.streaming_overlap = nextTtsOpts.streaming_overlap;
             }
             mergedPipeline.options = { ...(mergedPipeline.options || {}), tts: portable };
         }
