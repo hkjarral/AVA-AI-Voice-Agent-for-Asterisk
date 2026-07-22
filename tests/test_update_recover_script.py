@@ -216,6 +216,9 @@ def test_update_recover_branch_bootstrap_builds_selected_ref(tmp_path: Path) -> 
         "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q 'localtoken' \"$GIT_CONFIG_GLOBAL\"; then\n"
         "  printf 'git_config_has_auth yes\\n' >>\"$AAVA_TEST_LOG\"\n"
         "fi\n"
+        "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q 'proxy.invalid:8080' \"$GIT_CONFIG_GLOBAL\"; then\n"
+        "  printf 'git_config_has_http_proxy yes\\n' >>\"$AAVA_TEST_LOG\"\n"
+        "fi\n"
         "if [ -n \"${GIT_CONFIG_GLOBAL:-}\" ] && grep -q '/home/owner/.git-credentials' \"$GIT_CONFIG_GLOBAL\"; then\n"
         "  printf 'git_config_has_credential yes\\n' >>\"$AAVA_TEST_LOG\"\n"
         "fi\n"
@@ -273,11 +276,15 @@ git_repo() {{
       ;;
     "config --name-only --get-regexp "*)
       printf 'http.https://example.invalid/.extraHeader\\n'
+      printf 'http.proxy\\n'
       printf 'credential.helper\\n'
       printf 'core.fsmonitor\\n'
       ;;
     "config --get-all http.https://example.invalid/.extraHeader")
       printf 'AUTHORIZATION: bearer localtoken\\n'
+      ;;
+    "config --get-all http.proxy")
+      printf 'http://proxy.invalid:8080\\n'
       ;;
     "config --get-all credential.helper")
       printf 'store --file=/home/owner/.git-credentials\\n'
@@ -305,6 +312,7 @@ install_branch_cli codex/update-recovery-script
     assert "git_config_has_include yes" in commands
     assert "git_config_has_rewrite yes" in commands
     assert "git_config_has_auth yes" in commands
+    assert "git_config_has_http_proxy yes" in commands
     assert "git_config_has_credential yes" in commands
     assert "AUTHORIZATION: bearer localtoken" not in commands
     assert "--add http.https://example.invalid/.extraHeader" not in commands
@@ -315,6 +323,7 @@ install_branch_cli codex/update-recovery-script
     assert "git ls-remote -- aava-recovery-origin:" in commands
     assert "git -C " in commands
     assert " archive --format=tar --output=" in commands
+    assert "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa^{commit}" in commands
     assert ":/src:ro,Z" in commands
     assert ":/out:Z" in commands
     assert agent_bin.exists()
@@ -340,7 +349,8 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
     assert 'git ls-remote -- "${clone_url}"' in install_branch
     assert 'actual_oid="$(git -C "${owner_clone}" rev-parse --verify HEAD^{commit})"' in install_branch
     assert 'git -C "${owner_clone}" fsck --no-progress' in install_branch
-    assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}" HEAD' in install_branch
+    assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}" "${expected_oid}^{commit}"' in install_branch
+    assert 'git -C "${owner_clone}" archive --format=tar --output="${source_tar}" HEAD' not in install_branch
     assert 'tar -C "${build_repo}" -xf "${source_tar}"' in install_branch
     assert 'cp -a -- "${owner_clone}/." "${build_repo}/"' not in install_branch
     assert 'chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}"' in install_branch

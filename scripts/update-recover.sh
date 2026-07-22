@@ -1037,6 +1037,22 @@ with open(config_file, "a", encoding="utf-8") as fh:
 PY
 }
 
+is_clone_transport_git_config_key() {
+  local key_lc="$1"
+  case "${key_lc}" in
+    http.extraheader|http.proxy|http.sslcainfo|http.sslcapath|http.sslcert|http.sslkey|http.sslverify)
+      return 0
+      ;;
+    http.*.extraheader|http.*.proxy|http.*.sslcainfo|http.*.sslcapath|http.*.sslcert|http.*.sslkey|http.*.sslverify)
+      return 0
+      ;;
+    credential.helper|credential.*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 append_repo_local_auth_git_config() {
   local config_file="$1"
   local key key_lc value
@@ -1044,15 +1060,14 @@ append_repo_local_auth_git_config() {
   while IFS= read -r key; do
     [ -n "${key}" ] || continue
     key_lc="$(printf '%s' "${key}" | tr '[:upper:]' '[:lower:]')"
-    case "${key_lc}" in
-      http.*.extraheader|http.*.proxy|http.*.sslcainfo|http.*.sslcapath|http.*.sslcert|http.*.sslkey|http.*.sslverify|credential.helper|credential.*)
-        while IFS= read -r value; do
-          printf '%s' "${value}" | append_git_config_value "${config_file}" "${key}" \
-            || die "failed to copy checkout-local Git auth config"
-        done < <(git_repo config --get-all "${key}" 2>/dev/null || true)
-        ;;
-    esac
-  done < <(git_repo config --name-only --get-regexp '^(http\..*\.|credential\.)' 2>/dev/null || true)
+    if ! is_clone_transport_git_config_key "${key_lc}"; then
+      continue
+    fi
+    while IFS= read -r value; do
+      printf '%s' "${value}" | append_git_config_value "${config_file}" "${key}" \
+        || die "failed to copy checkout-local Git auth config"
+    done < <(git_repo config --get-all "${key}" 2>/dev/null || true)
+  done < <(git_repo config --name-only --get-regexp '^(http\.|credential\.)' 2>/dev/null || true)
 }
 
 canonicalize_standalone_remote_url() {
@@ -1161,7 +1176,7 @@ install_branch_cli() {
   git -C "${owner_clone}" fsck --no-progress \
     || die "fetched CLI source failed Git object validation"
   source_tar="${tmp_src}/source.tar"
-  git -C "${owner_clone}" archive --format=tar --output="${source_tar}" HEAD \
+  git -C "${owner_clone}" archive --format=tar --output="${source_tar}" "${expected_oid}^{commit}" \
     || die "failed to archive validated CLI source"
   tar -C "${build_repo}" -xf "${source_tar}" \
     || die "failed to unpack validated CLI source into root-owned build directory"
