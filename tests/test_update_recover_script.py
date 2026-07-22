@@ -453,7 +453,10 @@ def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> 
     repo = tmp_path / "repo"
     (repo / "models").mkdir(parents=True)
     (repo / "models" / "registry.json").write_text("", encoding="utf-8")
-    (repo / "models").chmod(0o007)
+    (repo / "models").chmod(0o707)
+    models_stat = (repo / "models").stat()
+    synthetic_uid = 1 if models_stat.st_uid != 1 else 2
+    synthetic_gid = models_stat.st_gid
     tracked_list = tmp_path / "tracked.z"
     tracked_list.write_bytes(b"models/registry.json\0")
     traversal_state = tmp_path / "restore.tsv"
@@ -464,9 +467,9 @@ def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> 
             "-c",
             instrumented_source,
             str(repo),
-            str(os.getuid()),
-            str(os.getgid()),
-            str(os.getgid()),
+            str(synthetic_uid),
+            str(synthetic_gid),
+            str(synthetic_gid),
             str(tracked_list),
             str(traversal_state),
         ],
@@ -476,8 +479,8 @@ def test_update_recover_respects_permission_class_precedence(tmp_path: Path) -> 
     )
 
     chmod_calls = json.loads(result.stdout)
-    assert ["models", 0o507] in chmod_calls
-    assert traversal_state.read_text(encoding="utf-8") == f"7\t{repo / 'models'}\n"
+    assert ["models", 0o757] in chmod_calls
+    assert traversal_state.read_text(encoding="utf-8") == f"707\t{repo / 'models'}\n"
 
 
 def test_update_recover_cleanup_preserves_signal_and_restore_failures() -> None:
@@ -807,8 +810,10 @@ def test_update_recover_runs_as_checkout_owner_without_adding_docker_socket_grou
     assert 'docker_gid="$(stat -c' not in script
     assert "check_owner_docker_access" in script
     assert 'HOME=${update_home}' in script
-    assert 'chmod a+x -- "${parent}"' in script
+    assert 'make_dir_traversable_for_owner "${parent}"' in script
+    assert 'chmod a+x -- "${parent}"' not in script
     assert 'os.fchmod(fd, mode)' in script
+    assert 'os.fchmod(fd, new_mode)' in script
 
 
 def test_update_recover_fails_fast_when_owner_cannot_access_docker_socket(tmp_path: Path) -> None:

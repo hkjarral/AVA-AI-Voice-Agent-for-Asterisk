@@ -1065,6 +1065,46 @@ if failed:
 PY
 }
 
+make_dir_traversable_for_owner() {
+  local path="$1"
+  python3 - "${path}" "${TARGET_UID}" "${TARGET_GROUPS}" "${TRAVERSAL_STATE}" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+uid = int(sys.argv[2])
+groups = {int(group) for group in sys.argv[3].split(",") if group}
+traversal_state = sys.argv[4]
+
+st = os.lstat(path)
+if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+    raise SystemExit(f"refusing unsafe traversal directory: {path}")
+
+mode = stat.S_IMODE(st.st_mode)
+if st.st_uid == uid:
+    new_mode = mode | 0o100
+elif st.st_gid in groups:
+    new_mode = mode | 0o010
+else:
+    new_mode = mode | 0o001
+
+if new_mode == mode:
+    raise SystemExit(0)
+
+fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    fd_st = os.fstat(fd)
+    if not stat.S_ISDIR(fd_st.st_mode) or (fd_st.st_dev, fd_st.st_ino) != (st.st_dev, st.st_ino):
+        raise SystemExit(f"refusing changed traversal directory: {path}")
+    with open(traversal_state, "a", encoding="utf-8") as fh:
+        fh.write(f"{mode:o}\t{path}\n")
+    os.fchmod(fd, new_mode)
+finally:
+    os.close(fd)
+PY
+}
+
 secure_updater_state_dirs() {
   python3 - "${TARGET_UID}" "${TARGET_GID}" "$@" <<'PY'
 import os
@@ -1149,13 +1189,11 @@ prepare_owner_execution() {
   chown "${TARGET_UID}:${TARGET_GID}" "${TEMP_HOME}"
 
   TRAVERSAL_STATE="$(mktemp)" || die "failed to create traversal restore state"
-  local parent mode
+  local parent
   parent="$(dirname "${REPO}")"
   while [ "${parent}" != "/" ]; do
     if ! "${SETPRIV_BIN}" --reuid="${TARGET_UID}" --regid="${TARGET_GID}" --groups="${TARGET_GROUPS}" test -x "${parent}"; then
-      mode="$(stat -c '%a' "${parent}")" || die "failed to read mode for ${parent}"
-      printf '%s\t%s\n' "${mode}" "${parent}" >>"${TRAVERSAL_STATE}"
-      chmod a+x -- "${parent}" || die "failed to make updater parent traversable: ${parent}"
+      make_dir_traversable_for_owner "${parent}" || die "failed to make updater parent traversable: ${parent}"
     fi
     parent="$(dirname "${parent}")"
   done
