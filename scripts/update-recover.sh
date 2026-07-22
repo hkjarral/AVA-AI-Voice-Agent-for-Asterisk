@@ -261,6 +261,7 @@ tracked_list = sys.argv[5]
 traversal_state = sys.argv[6]
 protected_roots = {"data", "models", "secrets"}
 adjusted_protected_dirs = set()
+no_follow = getattr(os, "O_NOFOLLOW", 0)
 
 
 def owner_can_read_write_execute(st):
@@ -329,8 +330,15 @@ def ensure_protected_dir_access(name, dir_fd, st, display_rel):
         raise SystemExit(f"failed to make protected tracked directory writable by checkout owner: {display_rel}")
     adjusted_protected_dirs.add(display_rel)
 
-root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
+repo_st = os.lstat(repo)
+if stat.S_ISLNK(repo_st.st_mode) or not stat.S_ISDIR(repo_st.st_mode):
+    raise SystemExit(f"refusing unsafe checkout root: {repo}")
+
+root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | no_follow)
 try:
+    root_st = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_st.st_mode) or (root_st.st_dev, root_st.st_ino) != (repo_st.st_dev, repo_st.st_ino):
+        raise SystemExit(f"refusing changed checkout root: {repo}")
     with open(tracked_list, "rb") as fh:
         rels = [entry.decode("utf-8", "surrogateescape") for entry in fh.read().split(b"\0") if entry]
     for rel in rels:

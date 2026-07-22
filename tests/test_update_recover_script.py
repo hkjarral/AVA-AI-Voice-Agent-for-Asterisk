@@ -1032,6 +1032,8 @@ def test_update_recover_runs_as_checkout_owner_without_adding_docker_socket_grou
     assert "UPDATER_GROUPS" not in script
     assert 'docker_gid="$(stat -c' not in script
     assert "check_owner_docker_access" in script
+    assert 'root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | no_follow)' in script
+    assert "refusing changed checkout root" in script
     assert 'HOME=${update_home}' in script
     assert 'make_dir_traversable_for_owner "${parent}"' in script
     assert 'chmod a+x -- "${parent}"' not in script
