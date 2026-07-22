@@ -76,6 +76,7 @@ def test_update_recover_supports_release_and_branch_cli_bootstrap() -> None:
     assert "pin_branch_cli_output" in script
     assert 'install -m 0755 "${tmp_src}/agent.pinned" "${AGENT_BIN}"' in script
     assert 'install -m 0755 "${tmp_src}/out/agent" "${AGENT_BIN}"' not in script
+    assert 'pin_branch_cli_output "${build_out}/agent" "${tmp_src}/agent.pinned"' in script
     assert "append_git_config_value" in script
     assert 'git config --file "${config_file}" --add "${key}" "${value}"' not in script
     assert 'AAVA_RECOVERY_STATUS=$?' in script
@@ -305,13 +306,21 @@ def test_update_recover_branch_bootstrap_does_not_hand_root_temp_to_owner() -> N
 
     assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}"' not in install_branch
     assert 'chmod 0711 "${tmp_src}"' in install_branch
-    assert 'mkdir -m 0700 -- "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
+    assert 'owner_clone="${tmp_src}/owner-clone"' in install_branch
+    assert 'build_repo="${tmp_src}/repo"' in install_branch
+    assert 'build_out="${tmp_src}/out"' in install_branch
+    assert 'mkdir -m 0700 -- "${owner_clone}" "${build_repo}" "${build_out}"' in install_branch
     assert 'chmod 0700 "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
-    assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' in install_branch
+    assert 'chown "${TARGET_UID}:${TARGET_GID}" "${owner_clone}"' in install_branch
+    assert 'chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out"' not in install_branch
+    assert 'chown -R 0:0 "${owner_clone}"' in install_branch
+    assert 'git -C "${owner_clone}" diff --quiet HEAD --' in install_branch
+    assert 'cp -a -- "${owner_clone}/." "${build_repo}/"' in install_branch
+    assert 'chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}"' in install_branch
     assert 'chmod 0400 "${tmp_src}/gitconfig"' in install_branch
     assert ': >"${clone_err}"' in install_branch
     assert 'chmod 0600 "${clone_err}"' in install_branch
-    assert 'pin_branch_cli_output "${tmp_src}/out/agent" "${tmp_src}/agent.pinned"' in install_branch
+    assert 'pin_branch_cli_output "${build_out}/agent" "${tmp_src}/agent.pinned"' in install_branch
 
 
 def test_update_recover_canonicalizes_relative_branch_cli_remote(tmp_path: Path) -> None:
@@ -835,8 +844,9 @@ def test_update_recover_preserves_state_before_overwrite_can_run() -> None:
     assert "src.backup(dst)" in script
     assert "open_regular_pinned" in script
     assert 'os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))' in script
-    assert "link_pinned_source" in script
-    assert 'os.link(fd_path, target, follow_symlinks=True)' in script
+    assert "copy_pinned_source" in script
+    assert 'os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)' in script
+    assert 'os.link(fd_path, target, follow_symlinks=True)' not in script
     assert 'sqlite3.connect("file:" + stage_base + "?mode=ro", uri=True, timeout=30)' in script
     assert 'sqlite3.connect("file:" + source + "?mode=ro"' not in script
     assert "data/operator/agents.db-wal" not in script

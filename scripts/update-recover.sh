@@ -656,18 +656,23 @@ def open_regular_pinned(path, *, required):
         os.close(fd)
         raise
 
-def link_pinned_source(fd, fd_st, target):
-    fd_path = f"/proc/self/fd/{fd}"
-    if not os.path.exists(fd_path):
-        raise SystemExit("SQLite recovery requires /proc/self/fd support")
+def copy_pinned_source(fd, target):
     try:
         os.unlink(target)
     except FileNotFoundError:
         pass
-    os.link(fd_path, target, follow_symlinks=True)
-    linked = os.stat(target, follow_symlinks=False)
-    if (linked.st_dev, linked.st_ino) != (fd_st.st_dev, fd_st.st_ino):
-        raise SystemExit(f"refusing unpinned SQLite staging link: {target}")
+    out_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(os.dup(fd), "rb") as src, os.fdopen(out_fd, "wb") as dst:
+            out_fd = -1
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+    finally:
+        if out_fd != -1:
+            os.close(out_fd)
 
 try:
     source_fd = open_regular_pinned(source, required=True)
@@ -694,7 +699,7 @@ try:
         fd, fd_st = pinned
         opened.append(fd)
         stage = stage_base + suffix
-        link_pinned_source(fd, fd_st, stage)
+        copy_pinned_source(fd, stage)
         staged_paths.append(stage)
 
     src = sqlite3.connect("file:" + stage_base + "?mode=ro", uri=True, timeout=30)
@@ -1072,6 +1077,7 @@ install_branch_cli() {
   local ref="$1"
   need_cmd docker
   local remote_url tmp_src clone_err clone_url escaped_remote_url owner_gitconfig xdg_gitconfig escaped_include
+  local owner_clone build_repo build_out
   remote_url="$(git_repo ls-remote --get-url "${REMOTE}" 2>/dev/null || true)"
   if [ -z "${remote_url}" ]; then
     remote_url="$(git_repo config --get "remote.${REMOTE}.url" 2>/dev/null || true)"
@@ -1105,26 +1111,43 @@ install_branch_cli() {
   chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/gitconfig" \
     || die "failed to hand temporary Git URL rewrite config to checkout owner"
   chmod 0711 "${tmp_src}" || die "failed to make temporary CLI source directory traversable"
-  mkdir -m 0700 -- "${tmp_src}/repo" "${tmp_src}/out" \
+  owner_clone="${tmp_src}/owner-clone"
+  build_repo="${tmp_src}/repo"
+  build_out="${tmp_src}/out"
+  mkdir -m 0700 -- "${owner_clone}" "${build_repo}" "${build_out}" \
     || die "failed to create private CLI build directories"
-  chown "${TARGET_UID}:${TARGET_GID}" "${tmp_src}/repo" "${tmp_src}/out" \
-    || die "failed to hand temporary CLI build directories to checkout owner"
+  chown "${TARGET_UID}:${TARGET_GID}" "${owner_clone}" \
+    || die "failed to hand temporary CLI clone directory to checkout owner"
   clone_err="${tmp_src}/git-clone.err"
   : >"${clone_err}" || die "failed to create temporary Git clone diagnostics"
   chmod 0600 "${clone_err}" || die "failed to secure temporary Git clone diagnostics"
   clone_url="aava-recovery-origin:"
   log "==> Building agent CLI from ${REMOTE}/${ref}"
   if ! run_as_checkout_owner_home /usr/bin/env "GIT_CONFIG_GLOBAL=${tmp_src}/gitconfig" \
-    git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${tmp_src}/repo" \
+    git clone --quiet --depth 1 --single-branch --branch "${ref}" -- "${clone_url}" "${owner_clone}" \
     2>"${clone_err}"; then
     if [ -s "${clone_err}" ]; then
       redact_remote_url <"${clone_err}" >&2 || true
     fi
     die "failed to fetch selected CLI source ${ref} from $(printf '%s\n' "${remote_url}" | redact_remote_url)"
   fi
+  chown -R 0:0 "${owner_clone}" \
+    || die "failed to freeze fetched CLI source ownership"
+  chmod -R u+rwX,go-rwx "${owner_clone}" \
+    || die "failed to freeze fetched CLI source permissions"
+  git -C "${owner_clone}" diff --quiet HEAD -- \
+    || die "fetched CLI source changed before build"
+  git -C "${owner_clone}" diff --cached --quiet \
+    || die "fetched CLI index changed before build"
+  [ -z "$(git -C "${owner_clone}" status --porcelain --untracked-files=all)" ] \
+    || die "fetched CLI source contains untracked files before build"
+  cp -a -- "${owner_clone}/." "${build_repo}/" \
+    || die "failed to copy fetched CLI source into root-owned build directory"
+  chmod -R u+rwX,go-rwx "${build_repo}" "${build_out}" \
+    || die "failed to secure root-owned CLI build directories"
   docker run --rm \
-    -v "${tmp_src}/repo/cli:/src:ro,Z" \
-    -v "${tmp_src}/out:/out:Z" \
+    -v "${build_repo}/cli:/src:ro,Z" \
+    -v "${build_out}:/out:Z" \
     -w /src \
     -e HOME=/tmp \
     -e GOCACHE=/tmp/go-build \
@@ -1133,7 +1156,7 @@ install_branch_cli() {
     golang:1.22-bookworm \
     bash -c 'go mod download && CGO_ENABLED=0 go build -buildvcs=false -ldflags "-X main.version=$AAVA_CLI_VERSION" -o /out/agent ./cmd/agent' \
     || die "failed to build CLI from selected ref"
-  pin_branch_cli_output "${tmp_src}/out/agent" "${tmp_src}/agent.pinned" \
+  pin_branch_cli_output "${build_out}/agent" "${tmp_src}/agent.pinned" \
     || die "failed to pin selected-ref CLI build output"
   mkdir -p -- "$(dirname "${AGENT_BIN}")" \
     || die "failed to create CLI install directory for ${AGENT_BIN}"
